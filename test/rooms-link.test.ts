@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBroker, type BrokerRuntime } from "../src/broker/server.ts";
-import { canonicalBytes, createInvite, createJoin, createRoomEpoch, roomMembers, sealFrame } from "../src/rooms/wire.ts";
+import { canonicalBytes, createInvite, createJoin, createRoomEpoch, roomMembers, sealFrame, openFrame } from "../src/rooms/wire.ts";
 import { encodeBase64url, generateHubIdentity, randomBytes } from "../src/rooms/crypto.ts";
 import { FakeBrokerClient } from "./fakes/broker-client.ts";
 import { RoomStore } from "../src/rooms/store.ts";
@@ -33,10 +33,10 @@ function bounded<T>(promise: Promise<T>): Promise<T> {
 async function storeAt(root: string, name: string) {
   const store = await RoomStore.open({ stateDir: join(root, name) }); stores.push(store); return store;
 }
-async function fixture() {
+async function fixture(brokerOffsetMs = 0) {
   const root = mkdtempSync(join(tmpdir(), "ahub-room-link-")); roots.push(root);
   const owner = await storeAt(root, "owner"), guest = await storeAt(root, "guest");
-  const broker = await startBroker({ stateDir: join(root, "broker"), port: 0, owners: [owner.identity.public.fingerprint] }); brokers.push(broker);
+  const broker = await startBroker({ stateDir: join(root, "broker"), port: 0, owners: [owner.identity.public.fingerprint] }, { clock: () => Date.now() + brokerOffsetMs }); brokers.push(broker);
   const created = await createRoomEpoch({ owner: owner.identity, members: [{ ...owner.identity.public, label: "owner", exposedPeers: ["codex"] }] });
   await owner.install({ name: "test", broker: broker.publicUrl, wire: created.wire, expectedDigest: null });
   const invite = await createInvite({ epoch: created.epoch, owner: owner.identity, broker: broker.publicUrl, expiresAt: Date.now() + 60_000 });
@@ -145,4 +145,57 @@ test("a signed presence naming an unexposed peer is refused before replay-inbox 
   guest.send(wire); await guest.take("stored"); await owner.offline();
   expect(observed).toBe(0);
   expect(f.owner.pendingInbox("test")).toEqual([]);
+});
+
+
+test("broker challenge authentication accepts independent host clocks in either direction", async () => {
+  for (const offset of [-60_000, 60_000]) {
+    const f = await fixture(offset), owner = linked(f.owner), guest = linked(f.guest);
+    await owner.link.start(); await owner.online();
+    await guest.link.start(); await guest.online();
+    expect(owner.link.status().state).toBe("online");
+    expect(guest.link.status().state).toBe("online");
+    owner.link.stop(); guest.link.stop();
+  }
+});
+
+test("a presence exposure removed while encryption waits is withheld before the socket send", async () => {
+  const f = await fixture(), initial = deferred(), final = deferred(), entered = deferred(), release = deferred();
+  let exposed = false, empty = 0;
+  const observations: (readonly RoomPresencePeer[])[] = [];
+  const owner = linked(f.owner, { presence: () => exposed ? [{ id: "codex", state: "busy" }] : [] });
+  const guest = linked(f.guest, { onPresence: value => {
+    if (value.member !== f.owner.identity.public.fingerprint) return;
+    observations.push(value.peers);
+    if (value.peers.length === 0) { if (++empty === 1) initial.resolve(); else final.resolve(); }
+  } });
+  await owner.link.start(); await owner.online(); await guest.link.start(); await guest.online(); await bounded(initial.promise);
+  const reserve = f.owner.sequence.reserve;
+  f.owner.sequence.reserve = async input => { const seq = await reserve(input); entered.resolve(); await release.promise; return seq; };
+  try {
+    exposed = true;
+    const publishing = owner.link.publishPresence();
+    await bounded(entered.promise);
+    exposed = false;
+    await owner.link.publishPresence(); // Coalesced while the prior snapshot still awaits encryption.
+    release.resolve();
+    await publishing;
+    await bounded(final.promise);
+    expect(observations.every(peers => peers.length === 0)).toBe(true);
+  } finally { release.resolve(); f.owner.sequence.reserve = reserve; }
+});
+
+test("recovery discards and settles presence whose exposed id was removed by a later epoch", async () => {
+  const f = await fixture(), before = f.owner.get("test")!, recipient = f.guest.get("test")!;
+  const wire = await sealFrame({ epoch: before.current, identity: f.owner.identity, recipients: [f.guest.identity.public.fingerprint], plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "busy" }] }), sequence: f.owner.sequence });
+  expect((await openFrame({ wire, identity: f.guest.identity, current: recipient.current, replay: f.guest.replay })).status).toBe("accepted");
+  expect(f.guest.pendingInbox("test").length).toBe(1);
+  const rotated = await f.owner.rotate("test", roomMembers(before.current).map(member => member.fingerprint === f.owner.identity.public.fingerprint ? { ...member, exposedPeers: [] } : member), before.current.digest);
+  await f.guest.install({ name: "test", broker: rotated.broker, wire: rotated.wire, expectedDigest: recipient.current.digest });
+  const observations: (readonly RoomPresencePeer[])[] = [];
+  const owner = linked(f.owner), guest = linked(f.guest, { onPresence: value => { observations.push(value.peers); } });
+  await owner.link.start(); await owner.online(); await guest.link.start(); await guest.online();
+  expect(guest.link.status().state).toBe("online");
+  expect(f.guest.pendingInbox("test")).toEqual([]);
+  expect(observations.every(peers => peers.every(peer => peer.id !== "codex"))).toBe(true);
 });

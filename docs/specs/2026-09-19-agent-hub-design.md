@@ -1129,6 +1129,7 @@ bounded digest receipts remain for duplicate handling.
 
 Limits are 64 rooms, 128 invitations, 64 pending joins, 200 pending inbox records
 per room, 16 MiB aggregate inbox bytes, 1,000 retained digest receipts per room,
+256 retained historical sender floors per room (new senders refuse at the cap),
 and host outbox ports capped at 200 records per room/16 MiB aggregate. Outbox broker
 storage is only `accepted`, never application `completed`. X3 presence is ephemeral
 and uses durable sequence/replay without filling the application outbox. Signed

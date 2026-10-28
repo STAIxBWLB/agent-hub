@@ -113,6 +113,10 @@ export async function runRoomCommand(args: readonly string[], request: RoomReque
   console.log(`Owner fingerprint: ${preview.owner}`);
   console.log(`Member fingerprint: ${preview.member}`);
   const result = success(await request({ t: "room", op: "execute", ticket: preview.ticket }));
+  if (result.name !== undefined) {
+    if (typeof result.name !== "string" || !ID.test(result.name)) fail("invalid_reply");
+    console.log(`Room: ${result.name}`);
+  }
   if (result.artifact !== undefined) {
     if (typeof result.artifact !== "string") fail("invalid_reply");
     let encoded: string;

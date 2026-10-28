@@ -34,6 +34,8 @@ export class RoomPolicy {
     }
     return config;
   }
+  // ponytail: at most two fresh hardened Git/file probes per room publication, with
+  // at most 64 rooms. Profile before replacing this with shared per-turn/stat-keyed snapshots.
   get(name: string): string[] {
     roomName(name);
     try { return exposedPeers(this.read().rooms?.[name]?.expose ?? []); }

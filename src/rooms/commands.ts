@@ -198,7 +198,7 @@ export class RoomCommands {
         const body: Omit<ExposureRequest, "signature"> = { v: 1, type: "exposure", room: state.current.room, owner, member: own, digest, peers };
         const request = canonicalBytes({ ...body, signature: encodeBase64url(await signBytes(store.identity, exposureBytes(body))) });
         this.current(check); if (store.get(name)?.current.digest !== digest) refuse("state_changed");
-        this.policy.set(name, peers, check);
+        this.policy.set(name, peers, check); this.changed();
         return { name, owner, member: own, kind: "exposure-request", artifact: encodeBase64url(request) };
       } };
     }

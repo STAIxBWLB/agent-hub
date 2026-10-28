@@ -76,6 +76,8 @@ export class RoomLink {
   private attempts = 0;
   private state: RoomLinkState = "offline";
   private publishing = false;
+  private publishDirty = false;
+  private republish?: ReturnType<typeof setTimeout>;
   constructor(private readonly options: RoomLinkOptions) {}
 
   status(): { state: RoomLinkState; members: number } {
@@ -125,9 +127,12 @@ export class RoomLink {
       this.current(session, row.current.digest);
       const member = members.find(value => value.fingerprint === entry.sender);
       if (member) {
-        const peers = presence(entry.plaintext, member.exposedPeers);
-        try { this.options.onPresence?.({ member: entry.sender, peers }); } catch { /* observation only */ }
+        let peers: RoomPresencePeer[] | undefined;
+        try { peers = presence(entry.plaintext, member.exposedPeers); } catch { /* a rotation may have removed an exposed id since the durable receive */ }
+        if (peers) { try { this.options.onPresence?.({ member: entry.sender, peers }); } catch { /* observation only */ } }
       }
+      // Presence is ephemeral: stale exposure/member metadata is discarded, never
+      // replayed after a rotation or left at the head of recovery forever.
       this.current(session, row.current.digest);
       this.options.store.settleInbox(this.options.name, entry.digest);
     }
@@ -136,6 +141,9 @@ export class RoomLink {
     if (session && session !== this.session) return;
     this.generation++;
     this.session = undefined;
+    this.publishDirty = false;
+    if (this.republish) clearTimeout(this.republish);
+    this.republish = undefined;
     if (session) {
       clearTimeout(session.handshake);
       session.queue.length = 0; session.queuedBytes = 0;
@@ -201,13 +209,13 @@ export class RoomLink {
     const local = this.current(session), message = packet(bytes);
     if (session.phase === "challenge") {
       const challenge = decodeBrokerChallenge(bytes);
-      if (challenge.expiresAt <= Date.now() || challenge.expiresAt > Date.now() + LIMITS.handshakeMs) fail("untrusted");
+      // The broker enforces its own signed challenge deadline. Our local timer
+      // bounds this exchange without comparing clocks across hosts (D5).
       session.phase = "roster"; session.challengeDigest = challenge.rosterDigest;
       const owner = decodeRoster(local.wire).owner;
       if (challenge.rosterDigest === null && owner !== this.options.store.identity.public.fingerprint) fail("untrusted");
       const auth = await createBrokerAuth({ challenge, identity: this.options.store.identity, broker: local.broker, room: local.current.room, ...(challenge.rosterDigest === null ? { initialRoster: local.wire } : {}) });
       this.current(session, local.current.digest);
-      if (Date.now() >= challenge.expiresAt) fail("untrusted");
       this.send(session, auth); return;
     }
     if (message.type === "roster") {
@@ -292,26 +300,50 @@ export class RoomLink {
   private async frameDigest(bytes: Uint8Array): Promise<string> {
     return encodeBase64url(await sha256(bytes));
   }
+  private currentPresence(exposed: readonly string[]): RoomPresencePeer[] {
+    const source = this.options.presence?.() ?? [];
+    if (!Array.isArray(source) || source.length > 64) fail("limit");
+    const peers = source.filter(peer => exposed.includes(peer.id)).map(peer => {
+      if (!PEER_ID.test(peer.id) || !STATES.includes(peer.state)) fail();
+      return { id: peer.id, state: peer.state as RoomPresenceState };
+    }).sort((a, b) => a.id.localeCompare(b.id));
+    if (peers.some((peer, index) => index > 0 && peers[index - 1]!.id === peer.id)) fail();
+    return peers;
+  }
   async publishPresence(): Promise<void> {
     const session = this.session;
-    if (!session || session.phase !== "ready" || this.publishing) return;
+    if (!session || session.phase !== "ready") return;
+    if (this.publishing) { this.publishDirty = true; return; }
+    if (this.republish) clearTimeout(this.republish);
+    this.republish = undefined; this.publishDirty = false;
     this.publishing = true;
     try {
       const row = this.current(session), identity = this.options.store.identity;
       const own = roomMembers(row.current).find(member => member.fingerprint === identity.public.fingerprint);
       if (!own) fail("untrusted");
-      const source = this.options.presence?.() ?? [];
-      if (!Array.isArray(source) || source.length > 64) fail("limit");
-      const peers = source.filter(peer => own.exposedPeers.includes(peer.id)).map(peer => {
-        if (!PEER_ID.test(peer.id) || !STATES.includes(peer.state)) fail();
-        return { id: peer.id, state: peer.state as RoomPresenceState };
-      }).sort((a, b) => a.id.localeCompare(b.id));
-      if (peers.some((peer, index) => index > 0 && peers[index - 1]!.id === peer.id)) fail();
+      const peers = this.currentPresence(own.exposedPeers);
       const recipients = roomMembers(row.current).map(member => member.fingerprint).filter(member => member !== identity.public.fingerprint).sort();
       if (!recipients.length) return;
       const wire = await sealFrame({ epoch: row.current, identity, recipients, plaintext: canonicalBytes({ v: 1, type: "presence", peers }), sequence: this.options.store.sequence });
       this.current(session, row.current.digest);
+      // Machine-local exposure can change during reserve/encryption/signing even
+      // when the signed roster is unchanged. Never emit an id it now withholds.
+      const allowed = new Set(this.currentPresence(own.exposedPeers).map(peer => peer.id));
+      if (peers.some(peer => !allowed.has(peer.id))) return;
       this.send(session, wire);
-    } finally { this.publishing = false; }
+    } finally {
+      this.publishing = false;
+      const dirty = this.publishDirty, next = this.session;
+      this.publishDirty = false;
+      if (dirty && this.running && next?.phase === "ready") {
+        // Coalesce all changes during one seal into one later fresh snapshot.
+        // Capture the target so stop/refresh cannot publish through a stale link.
+        this.republish = setTimeout(() => {
+          this.republish = undefined;
+          if (this.running && this.session === next && next.phase === "ready") void this.publishPresence().catch(() => this.retry(next));
+        }, 0);
+        this.republish.unref?.();
+      }
+    }
   }
 }

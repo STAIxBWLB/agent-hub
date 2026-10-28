@@ -3,16 +3,17 @@ import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, open
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { realPath } from "../hub/project.ts";
-import { assertRoomCryptoReady, exportHubIdentityForStorage, generateHubIdentity, importHubIdentity, encodeBase64url, sha256, type HubIdentity, type LocalIdentityRecord } from "./crypto.ts";
-import { acceptJoin, acceptRoomEpoch, brokerUrl, createRoomEpoch, decodeInvite, decodeJoin, decodeRoster, positiveU64, roomMembers, type ReplayCommit, type ReplayPort, type SequenceBinding, type SequencePort, type VerifiedEpoch, type RoomMember, verifyPublicRoster, verifyPublicFrame } from "./wire.ts";
+import { assertRoomCryptoReady, exportHubIdentityForStorage, generateHubIdentity, importHubIdentity, decodeBase64url, encodeBase64url, sha256, type HubIdentity, type LocalIdentityRecord } from "./crypto.ts";
+import { acceptJoin, acceptRoomEpoch, brokerUrl, createRoomEpoch, decodeInvite, decodeJoin, decodeRoster, positiveU64, roomMembers, type ReplayCommit, type ReplayPort, type SequenceBinding, type SequencePort, type VerifiedEpoch, type RoomMember, type VerifiedPublicRoster, verifyPublicRoster, verifyPublicFrame } from "./wire.ts";
 
-export const ROOM_STORE_LIMITS = Object.freeze({ rooms: 64, invites: 128, pendingJoins: 64, inboxPerRoom: 200, inboxBytes: 16 * 1024 * 1024, receiptsPerRoom: 1000, outboxPerRoom: 200, outboxBytes: 16 * 1024 * 1024 });
+export const ROOM_STORE_LIMITS = Object.freeze({ rooms: 64, invites: 128, pendingJoins: 64, inboxPerRoom: 200, inboxBytes: 16 * 1024 * 1024, receiptsPerRoom: 1000, outboxPerRoom: 200, outboxBytes: 16 * 1024 * 1024, floorsPerRoom: 256 });
 export type RoomStoreCode = "invalid" | "busy" | "corrupt" | "unsupported" | "limit" | "untrusted" | "state_changed" | "clock_rollback" | "closed";
 export class RoomStoreError extends Error {
   constructor(readonly code: RoomStoreCode) { super(`Room store: ${code}`); this.name = "RoomStoreError"; }
 }
 function fail(code: RoomStoreCode): never { throw new RoomStoreError(code); }
 const DB_NAME = "rooms.db", SCHEMA = 1, GRACE_MS = 60_000;
+// ponytail: keep at most 256 historical sender floors per room; refuse new senders at the ceiling until versioned archival preserves replay proofs.
 const NAME = /^[a-z][a-z0-9-]{0,31}$/;
 interface Row { name: string; room: string; broker: string; owner: string; epoch: string; digest: string; wire: Uint8Array; previous_wire: Uint8Array | null; previous_digest: string | null; previous_epoch: string | null; previous_expires: number | null; left: number }
 interface InviteRow { name: string; id: string; wire: Uint8Array; digest: string; expires: number; request_digest: string | null }
@@ -30,6 +31,20 @@ function assertCurrent(current?: () => boolean): void {
 }
 const copy = (wire: Uint8Array): Uint8Array => Uint8Array.from(wire);
 const digest = async (wire: Uint8Array) => encodeBase64url(await sha256(wire));
+
+function validSelection(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== "string" || value.length > 4096) return false;
+  try {
+    const selected: unknown = JSON.parse(value);
+    if (!selected || typeof selected !== "object" || Array.isArray(selected)) return false;
+    const row = selected as Record<string, unknown>;
+    if (Object.keys(row).sort().join(",") !== "label,peers" || typeof row.label !== "string" || !NAME.test(row.label)
+      || !Array.isArray(row.peers) || row.peers.length > 64) return false;
+    const peers: unknown[] = row.peers;
+    return peers.every((peer, index) => typeof peer === "string" && NAME.test(peer) && (index === 0 || String(peers[index - 1]) < peer));
+  } catch { return false; }
+}
 
 export class RoomStore {
   readonly sequence: SequencePort;
@@ -76,12 +91,12 @@ export class RoomStore {
           CREATE TABLE inbox (room TEXT NOT NULL, sender TEXT NOT NULL, seq TEXT NOT NULL, digest TEXT NOT NULL, plaintext BLOB, gap TEXT NOT NULL, UNIQUE(room,sender,seq));
           CREATE INDEX inbox_room ON inbox(room);
           CREATE TABLE invites (name TEXT NOT NULL, id TEXT PRIMARY KEY, wire BLOB NOT NULL, digest TEXT NOT NULL, expires INTEGER NOT NULL, request_digest TEXT) WITHOUT ROWID;
-          CREATE TABLE outbox (room TEXT NOT NULL, digest TEXT PRIMARY KEY, wire BLOB NOT NULL, state TEXT NOT NULL);
+          CREATE TABLE outbox (room TEXT NOT NULL, digest TEXT PRIMARY KEY, wire BLOB NOT NULL, roster BLOB NOT NULL, state TEXT NOT NULL);
           CREATE TABLE pending_joins (name TEXT PRIMARY KEY, invite BLOB NOT NULL, request BLOB NOT NULL, selection TEXT) WITHOUT ROWID;
           PRAGMA user_version=1;
         `);
       }
-      const tables = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(x => x.name).join(",");
+      const tables = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 9").all().map(x => x.name).join(",");
       if (tables !== "counters,floors,inbox,invites,meta,outbox,pending_joins,rooms") fail("unsupported");
       const columns: Record<string, string[]> = {
         meta: ["key", "value"],
@@ -89,12 +104,15 @@ export class RoomStore {
         counters: ["room", "seq"], floors: ["room", "sender", "seq", "digest"],
         inbox: ["room", "sender", "seq", "digest", "plaintext", "gap"],
         invites: ["name", "id", "wire", "digest", "expires", "request_digest"],
-        outbox: ["room", "digest", "wire", "state"], pending_joins: ["name", "invite", "request", "selection"],
+        outbox: ["room", "digest", "wire", "roster", "state"], pending_joins: ["name", "invite", "request", "selection"],
       };
       for (const [table, names] of Object.entries(columns)) {
         if (db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map(x => x.name).join(",") !== names.join(",")) fail("unsupported");
       }
       if (db.query<{ quick_check: string }, []>("PRAGMA quick_check").all().some(x => x.quick_check !== "ok")) fail("corrupt");
+      const meta = db.query<{ key: string; n: number }, []>("SELECT key,length(value) AS n FROM meta LIMIT 4").all();
+      if (meta.length > 2 || meta.some(row => !["identity", "clock"].includes(row.key) || row.n > (row.key === "identity" ? 4096 : 32))) fail("corrupt");
+      if (!created && (!meta.some(row => row.key === "identity") || !meta.some(row => row.key === "clock"))) fail("corrupt");
       let identity: HubIdentity;
       const stored = db.query<{ value: string }, []>("SELECT value FROM meta WHERE key='identity'").get();
       if (stored) identity = await importHubIdentity(JSON.parse(stored.value) as LocalIdentityRecord);
@@ -106,6 +124,8 @@ export class RoomStore {
       db.exec("COMMIT;");
       const store = new RoomStore(db, identity, clock);
       store.transaction(() => undefined);
+      if ((db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM rooms").get()?.n ?? 0) > ROOM_STORE_LIMITS.rooms
+        || db.query("SELECT 1 FROM rooms WHERE length(name)>32 OR length(room)>43 OR length(broker)>2048 OR length(owner)>64 OR length(epoch)>20 OR length(digest)>43 OR length(previous_epoch)>20 OR length(previous_digest)>43 OR length(wire)>524288 OR length(previous_wire)>524288 LIMIT 1").get()) fail("corrupt");
       const rows = db.query<Row, []>("SELECT * FROM rooms ORDER BY name LIMIT 65").all();
       if (rows.length > ROOM_STORE_LIMITS.rooms) fail("corrupt");
       for (const row of rows) {
@@ -115,12 +135,14 @@ export class RoomStore {
         let previous: RoomState["previous"];
         const fields = [row.previous_wire, row.previous_digest, row.previous_epoch, row.previous_expires];
         if (fields.some(x => x !== null)) {
-          if (fields.some(x => x === null) || !Number.isSafeInteger(row.previous_expires) || BigInt(row.previous_epoch!) + 1n !== BigInt(row.epoch)) fail("corrupt");
+          if (fields.some(x => x === null) || !Number.isSafeInteger(row.previous_expires) || row.previous_expires! <= 0 || row.previous_expires! > store.now() + GRACE_MS || BigInt(row.previous_epoch!) + 1n !== BigInt(row.epoch)) fail("corrupt");
           const epoch = await acceptRoomEpoch({ wire: row.previous_wire!, identity, pin: { room: row.room, owner: row.owner, minEpoch: row.previous_epoch!, digest: row.previous_digest! } });
           previous = { epoch, expiresAt: row.previous_expires! };
         }
         store.rooms.set(row.name, { name: row.name, broker: row.broker, current, wire: copy(row.wire), ...(previous ? { previous } : {}), left: row.left === 1 });
       }
+      try { await store.validateRows(); }
+      catch { fail("corrupt"); }
       return store;
     } catch (e) {
       try { db?.exec("ROLLBACK;"); } catch { /* no transaction */ }
@@ -130,11 +152,114 @@ export class RoomStore {
     }
   }
 
+  /** Restore validates bounded rows before any sequence, replay or transport port is published. */
+  private async validateRows(): Promise<void> {
+    const limits = ROOM_STORE_LIMITS;
+    const cap = (table: string, maximum: number) => {
+      const count = this.db.query<{ n: number }, []>(`SELECT COUNT(*) AS n FROM ${table}`).get()?.n ?? 0;
+      if (!Number.isSafeInteger(count) || count > maximum) fail("corrupt");
+    };
+    cap("counters", limits.rooms); cap("floors", limits.rooms * limits.floorsPerRoom);
+    cap("inbox", limits.rooms * (limits.receiptsPerRoom + limits.inboxPerRoom));
+    cap("outbox", limits.rooms * limits.outboxPerRoom); cap("invites", limits.invites); cap("pending_joins", limits.pendingJoins);
+    const groupCap = (table: string, filter: string, maximum: number) => {
+      if (this.db.query<{ room: string }, [number]>(`SELECT room FROM ${table} ${filter} GROUP BY room HAVING COUNT(*)>? LIMIT 1`).get(maximum)) fail("corrupt");
+    };
+    groupCap("floors", "", limits.floorsPerRoom);
+    groupCap("inbox", "WHERE plaintext IS NOT NULL", limits.inboxPerRoom);
+    groupCap("inbox", "WHERE plaintext IS NULL", limits.receiptsPerRoom);
+    groupCap("outbox", "", limits.outboxPerRoom);
+    const metadataBounds: Record<string, string> = {
+      counters: "length(room)>43 OR length(seq)>20",
+      floors: "length(room)>43 OR length(sender)>64 OR length(seq)>20 OR length(digest)>43",
+      inbox: "length(room)>43 OR length(sender)>64 OR length(seq)>20 OR length(digest)>43 OR length(gap)>20",
+      invites: "length(name)>32 OR length(id)>43 OR length(digest)>43 OR length(request_digest)>43",
+      outbox: "length(room)>43 OR length(digest)>43 OR length(state)>16",
+      pending_joins: "length(name)>32",
+    };
+    for (const [table, condition] of Object.entries(metadataBounds)) {
+      if (this.db.query(`SELECT 1 FROM ${table} WHERE ${condition} LIMIT 1`).get()) fail("corrupt");
+    }
+    const blob = (value: unknown, maximum: number): Uint8Array => {
+      if (!(value instanceof Uint8Array) || value.byteLength > maximum || value.byteLength === 0) fail("corrupt");
+      return value;
+    };
+    const fp = (value: unknown): string => {
+      if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) fail("corrupt");
+      return value;
+    };
+    const hash = (value: unknown): string => {
+      if (typeof value !== "string" || encodeBase64url(decodeBase64url(value, 32)) !== value) fail("corrupt");
+      return value;
+    };
+    const room = (value: string): RoomState => this.byRoom(value) ?? fail("corrupt");
+    const bodyBytes = this.db.query<{ n: number }, []>("SELECT COALESCE(SUM(length(plaintext)),0) AS n FROM inbox").get()?.n ?? 0;
+    const outboxBytes = this.db.query<{ n: number }, []>("SELECT COALESCE(SUM(length(wire)+length(roster)),0) AS n FROM outbox").get()?.n ?? 0;
+    if (bodyBytes > limits.inboxBytes || outboxBytes > limits.outboxBytes) fail("corrupt");
+    if (this.db.query("SELECT 1 FROM inbox WHERE length(plaintext)>65536 LIMIT 1").get()
+      || this.db.query("SELECT 1 FROM outbox WHERE length(wire)>131072 OR length(roster)>524288 LIMIT 1").get()
+      || this.db.query("SELECT 1 FROM invites WHERE length(wire)>16384 LIMIT 1").get()
+      || this.db.query("SELECT 1 FROM pending_joins WHERE length(invite)>16384 OR length(request)>16384 OR length(selection)>4096 LIMIT 1").get()) fail("corrupt");
+    const counters = new Map<string, string>();
+    for (const row of this.db.query<{ room: string; seq: string }, []>("SELECT room,seq FROM counters LIMIT 65").all()) {
+      room(row.room); counters.set(row.room, positiveU64(row.seq));
+    }
+    const floors = new Map<string, { seq: string; digest: string }>();
+    for (const row of this.db.query<{ room: string; sender: string; seq: string; digest: string }, []>(`SELECT room,sender,seq,digest FROM floors LIMIT ${limits.rooms * limits.floorsPerRoom + 1}`).all()) {
+      room(row.room); fp(row.sender); positiveU64(row.seq); hash(row.digest);
+      // Removed senders keep their floor. Current membership is checked at acceptance, not retroactively imposed on history.
+      floors.set(`${row.room}|${row.sender}`, { seq: row.seq, digest: row.digest });
+    }
+    for (const row of this.db.query<{ room: string; sender: string; seq: string; digest: string; plaintext: Uint8Array | null; gap: string }, []>(`SELECT room,sender,seq,digest,plaintext,gap FROM inbox LIMIT ${limits.rooms * (limits.receiptsPerRoom + limits.inboxPerRoom) + 1}`).all()) {
+      room(row.room); fp(row.sender); positiveU64(row.seq); hash(row.digest);
+      if (typeof row.gap !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(row.gap) || BigInt(row.gap) >= BigInt(row.seq)) fail("corrupt");
+      if (row.plaintext !== null && (!(row.plaintext instanceof Uint8Array) || row.plaintext.length > 65536)) fail("corrupt");
+      const floor = floors.get(`${row.room}|${row.sender}`);
+      if (!floor || BigInt(floor.seq) < BigInt(row.seq) || (floor.seq === row.seq && floor.digest !== row.digest)) fail("corrupt");
+    }
+    const proofs = new Map<string, VerifiedPublicRoster>();
+    for (const row of this.db.query<{ room: string; digest: string; wire: Uint8Array; roster: Uint8Array; state: string }, []>(`SELECT room,digest,wire,roster,state FROM outbox LIMIT ${limits.rooms * limits.outboxPerRoom + 1}`).all()) {
+      const installed = room(row.room), own = this.identity.public;
+      hash(row.digest); blob(row.wire, 131072); blob(row.roster, 524288);
+      if (!["dispatching", "accepted"].includes(row.state)) fail("corrupt");
+      const rosterHash = await digest(row.roster);
+      let proof = proofs.get(rosterHash);
+      if (!proof) {
+        proof = await verifyPublicRoster({ wire: row.roster, pin: { room: row.room, owner: decodeRoster(installed.wire).owner, minEpoch: "0" } });
+        proofs.set(rosterHash, proof);
+      }
+      if (proof.room !== row.room || BigInt(proof.epoch) > BigInt(installed.current.epoch)
+        || (proof.epoch === installed.current.epoch && proof.digest !== installed.current.digest)
+        || (proof.epoch === installed.previous?.epoch.epoch && proof.digest !== installed.previous.epoch.digest)) fail("corrupt");
+      const sender = proof.members.find(member => member.fingerprint === own.fingerprint);
+      if (!sender || sender.signingKey !== own.signingKey || sender.agreementKey !== own.agreementKey) fail("corrupt");
+      const frame = await verifyPublicFrame({ wire: row.wire, roster: proof });
+      const reserved = counters.get(row.room);
+      if (frame.digest !== row.digest || frame.sender !== own.fingerprint || !reserved || BigInt(frame.seq) > BigInt(reserved)) fail("corrupt");
+    }
+    for (const row of this.db.query<InviteRow, []>(`SELECT * FROM invites LIMIT ${limits.invites + 1}`).all()) {
+      const installed = this.rooms.get(row.name); if (!installed) fail("corrupt");
+      const invite = decodeInvite(blob(row.wire, 16384));
+      if (invite.owner !== this.identity.public.fingerprint || invite.owner !== decodeRoster(installed.wire).owner
+        || invite.room !== installed.current.room || invite.broker !== installed.broker || invite.inviteId !== row.id || invite.expiresAt !== row.expires || await digest(row.wire) !== hash(row.digest)) fail("corrupt");
+      if (row.request_digest !== null) hash(row.request_digest);
+    }
+    for (const row of this.db.query<{ name: string; invite: Uint8Array; request: Uint8Array; selection: string | null }, []>(`SELECT * FROM pending_joins LIMIT ${limits.pendingJoins + 1}`).all()) {
+      named(row.name); if (this.rooms.has(row.name)) fail("corrupt");
+      const invite = decodeInvite(blob(row.invite, 16384)), request = decodeJoin(blob(row.request, 16384)), own = this.identity.public;
+      if (request.room !== invite.room || request.owner !== invite.owner || request.inviteId !== invite.inviteId
+        || request.member.fingerprint !== own.fingerprint || request.member.signingKey !== own.signingKey || request.member.agreementKey !== own.agreementKey) fail("corrupt");
+      if (!validSelection(row.selection)) fail("corrupt");
+    }
+  }
+
   private assertOpen(): void { if (this.closed) fail("closed"); }
   private now(): number {
     this.assertOpen();
     const now = this.clock();
-    const last = Number(this.db.query<{ value: string }, []>("SELECT value FROM meta WHERE key='clock'").get()?.value ?? "0");
+    const rawLast = this.db.query<{ value: string }, []>("SELECT value FROM meta WHERE key='clock'").get()?.value;
+    if (rawLast !== undefined && (typeof rawLast !== "string" || !/^[1-9][0-9]{0,15}$/.test(rawLast))) fail("corrupt");
+    const last = Number(rawLast ?? "0");
     if (!Number.isSafeInteger(now) || now < 1 || !Number.isSafeInteger(last)) fail("invalid");
     if (now < last) fail("clock_rollback");
     return now;
@@ -157,8 +282,9 @@ export class RoomStore {
 
   /** Pending enrollment is explicit local person authority; a roster can never establish its own owner pin. */
   savePendingJoin(name: string, input: { invite: Uint8Array; request: Uint8Array; selection?: string }): void {
-    named(name); const invite = decodeInvite(input.invite), request = decodeJoin(input.request);
-    if (request.member.fingerprint !== this.identity.public.fingerprint || request.room !== invite.room || request.owner !== invite.owner || request.inviteId !== invite.inviteId || this.rooms.has(name)) fail("untrusted");
+    named(name); if (!validSelection(input.selection)) fail("invalid");
+    const invite = decodeInvite(input.invite), request = decodeJoin(input.request);
+    if (request.member.fingerprint !== this.identity.public.fingerprint || request.member.signingKey !== this.identity.public.signingKey || request.member.agreementKey !== this.identity.public.agreementKey || request.room !== invite.room || request.owner !== invite.owner || request.inviteId !== invite.inviteId || this.rooms.has(name)) fail("untrusted");
     this.transaction(now => {
       if (now > invite.expiresAt + 600000) fail("untrusted");
       for (const row of this.db.query<{ name: string; invite: Uint8Array }, []>("SELECT name,invite FROM pending_joins LIMIT 65").all()) {
@@ -303,6 +429,7 @@ export class RoomStore {
       if (known) return { status: known.digest === input.frameDigest ? "duplicate" : "conflict" };
       const floor = this.db.query<{ seq: string; digest: string }, [string, string]>("SELECT seq,digest FROM floors WHERE room=? AND sender=?").get(input.room, input.sender);
       if (floor && BigInt(input.seq) <= BigInt(floor.seq)) return { status: input.seq === floor.seq ? floor.digest === input.frameDigest ? "duplicate" : "conflict" : "stale" };
+      if (!floor && (this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM floors WHERE room=?").get(input.room)?.n ?? 0) >= ROOM_STORE_LIMITS.floorsPerRoom) fail("limit");
       const count = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM inbox WHERE room=? AND plaintext IS NOT NULL").get(input.room)?.n ?? 0;
       const size = this.db.query<{ n: number }, []>("SELECT COALESCE(SUM(length(plaintext)),0) AS n FROM inbox").get()?.n ?? 0;
       if (!(input.plaintext instanceof Uint8Array) || input.plaintext.length > 65536 || count >= ROOM_STORE_LIMITS.inboxPerRoom || size + input.plaintext.length > ROOM_STORE_LIMITS.inboxBytes) fail("limit");
@@ -328,9 +455,9 @@ export class RoomStore {
         return;
       }
       const count = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM outbox WHERE room=?").get(frame.room)?.n ?? 0;
-      const bytes = this.db.query<{ n: number }, []>("SELECT COALESCE(SUM(length(wire)),0) AS n FROM outbox").get()?.n ?? 0;
-      if (count >= ROOM_STORE_LIMITS.outboxPerRoom || bytes + wire.length > ROOM_STORE_LIMITS.outboxBytes) fail("limit");
-      this.db.query("INSERT INTO outbox(room,digest,wire,state) VALUES(?,?,?,'dispatching')").run(frame.room, frame.digest, wire);
+      const bytes = this.db.query<{ n: number }, []>("SELECT COALESCE(SUM(length(wire)+length(roster)),0) AS n FROM outbox").get()?.n ?? 0;
+      if (count >= ROOM_STORE_LIMITS.outboxPerRoom || bytes + wire.length + state.wire.length > ROOM_STORE_LIMITS.outboxBytes) fail("limit");
+      this.db.query("INSERT INTO outbox(room,digest,wire,roster,state) VALUES(?,?,?,?,'dispatching')").run(frame.room, frame.digest, wire, state.wire);
     });
   }
   outbox(name: string): { digest: string; wire: Uint8Array; state: "dispatching" | "accepted" }[] {

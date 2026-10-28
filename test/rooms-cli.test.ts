@@ -135,3 +135,11 @@ test("real room CLI refuses agent-marker and live-test mutations without exposin
     }
   }
 });
+
+
+test("room CLI reports the generated pending name needed by the later roster import", async () => {
+  const lines = await printed(async () => runRoomCommand(["join", artifact], async message => message.op === "preview"
+    ? { ok: true, owner, member, ticket }
+    : { ok: true, name: "room-generated", artifact, kind: "join-request" }));
+  expect(lines).toContain("Room: room-generated");
+});

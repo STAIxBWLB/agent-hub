@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RoomStore } from "../src/rooms/store.ts";
 import { createInvite, createJoin, createRoomEpoch, openFrame, roomMembers, sealFrame, type RoomMember } from "../src/rooms/wire.ts";
-import { generateHubIdentity, type HubIdentity } from "../src/rooms/crypto.ts";
+import { encodeBase64url, generateHubIdentity, type HubIdentity } from "../src/rooms/crypto.ts";
 
 const dirs: string[] = [], stores: RoomStore[] = [];
 const locations = new WeakMap<RoomStore, string>();
@@ -174,4 +175,67 @@ test("room pending enrollment can be explicitly cancelled without forgetting an 
   await expect(guest.install({ name: "work", broker: initial.broker, wire: initial.wire, expectedDigest: null })).rejects.toMatchObject({ code: "untrusted" });
   owner.cancelPendingJoin("work");
   expect(owner.get("work")?.current.digest).toBe(initial.current.digest);
+});
+
+test("room restore rejects a zero or noncanonical durable sender counter before publishing sequence ports", async () => {
+  for (const seq of ["0", "01", "18446744073709551616"]) {
+    const dir = join(root(), "state"), owner = await store(dir), state = await created(owner);
+    await owner.sequence.reserve({ room: state.current.room, sender: owner.identity.public.fingerprint, epoch: state.current.epoch, rosterDigest: state.current.digest });
+    owner.close();
+    const db = new Database(join(dir, "rooms.db"));
+    try { db.query("UPDATE counters SET seq=?").run(seq); } finally { db.close(); }
+    await expect(RoomStore.open({ stateDir: dir })).rejects.toMatchObject({ code: "corrupt" });
+  }
+});
+
+test("room restore rejects invalid replay floors and never resets them to a permissive default", async () => {
+  const f = await pair(), state = f.guest.get("work")!;
+  const wire = await sealFrame({ epoch: f.roster.current, identity: f.owner.identity, recipients: [f.guest.identity.public.fingerprint], plaintext: text.encode("committed"), sequence: f.owner.sequence });
+  await openFrame({ wire, identity: f.guest.identity, current: state.current, replay: f.guest.replay });
+  const directory = locations.get(f.guest)!; f.guest.close();
+  const db = new Database(join(directory, "rooms.db"));
+  try { db.query("UPDATE floors SET seq='0'").run(); } finally { db.close(); }
+  await expect(RoomStore.open({ stateDir: directory })).rejects.toMatchObject({ code: "corrupt" });
+});
+
+test("room restore refuses an over-cap pending table of otherwise valid enrollment rows", async () => {
+  const dir = join(root(), "state"), value = await store(dir), owner = await store(), state = await created(owner);
+  const token = await createInvite({ epoch: state.current, owner: owner.identity, broker: state.broker, expiresAt: Date.now() + 600000 });
+  const request = await createJoin({ invite: token, identity: value.identity, label: "pending", exposedPeers: [] });
+  value.close();
+  const db = new Database(join(dir, "rooms.db"));
+  try {
+    const insert = db.query("INSERT INTO pending_joins(name,invite,request,selection) VALUES(?,?,?,NULL)");
+    for (let i = 0; i < 65; i++) insert.run(`pending-${i}`, token, request);
+  } finally { db.close(); }
+  await expect(RoomStore.open({ stateDir: dir })).rejects.toMatchObject({ code: "corrupt" });
+});
+
+test("room restore authenticates retained historical outbox rosters without lowering the live epoch pin", async () => {
+  const f = await pair(), state = f.owner.get("work")!;
+  const wire = await sealFrame({ epoch: state.current, identity: f.owner.identity, recipients: [f.guest.identity.public.fingerprint], plaintext: text.encode("retained"), sequence: f.owner.sequence });
+  await f.owner.enqueue("work", wire);
+  const middle = await f.owner.rotate("work", roomMembers(state.current), state.current.digest);
+  const latest = await f.owner.rotate("work", roomMembers(middle.current), middle.current.digest);
+  const directory = locations.get(f.owner)!; f.owner.close();
+  const restored = await store(directory);
+  expect(restored.get("work")?.current.digest).toBe(latest.current.digest);
+  expect(restored.outbox("work")[0]?.wire).toEqual(wire);
+  restored.close();
+  const db = new Database(join(directory, "rooms.db"));
+  try { db.query("UPDATE outbox SET digest=?").run(encodeBase64url(new Uint8Array(32))); } finally { db.close(); }
+  await expect(RoomStore.open({ stateDir: directory })).rejects.toMatchObject({ code: "corrupt" });
+});
+
+test("room restore revalidates stored invitation digests and pending identity metadata", async () => {
+  const f = await pair(), directory = locations.get(f.owner)!; f.owner.close();
+  const db = new Database(join(directory, "rooms.db"));
+  try { db.query("UPDATE invites SET digest=?").run(encodeBase64url(new Uint8Array(32))); } finally { db.close(); }
+  await expect(RoomStore.open({ stateDir: directory })).rejects.toMatchObject({ code: "corrupt" });
+  const guest = await store(), pendingDir = locations.get(guest)!;
+  const request = await createJoin({ invite: f.token, identity: guest.identity, label: "pending", exposedPeers: [] });
+  guest.savePendingJoin("pending", { invite: f.token, request, selection: JSON.stringify({ label: "pending", peers: [] }) }); guest.close();
+  const pendingDb = new Database(join(pendingDir, "rooms.db"));
+  try { pendingDb.query("UPDATE pending_joins SET selection=?").run("x".repeat(4097)); } finally { pendingDb.close(); }
+  await expect(RoomStore.open({ stateDir: pendingDir })).rejects.toMatchObject({ code: "corrupt" });
 });
