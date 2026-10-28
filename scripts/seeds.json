@@ -3816,6 +3816,30 @@
       "replacement": "if (false) {\n        // A diagnostic legacy pass is not evidence that an automatic proposal was attempted.",
       "testFile": "test/task-cancel-core.test.ts",
       "testName": "stall planner advice is a once-per-cause preface, never an ordinary queued turn"
+    },
+    {
+      "id": "queue-pressure-decline-retry",
+      "file": "src/hub/tasks.ts",
+      "search": "task = this.d.board.update(task.id, by, \"unassigned\", { owner: null });",
+      "replacement": "return this.d.board.update(task.id, by, \"unassigned\", { owner: null });",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "a declined automatic offer retains its queue origin across replanning and resumes after drain"
+    },
+    {
+      "id": "queue-pressure-claim-no-offer",
+      "file": "src/hub/tasks.ts",
+      "search": "...(opts.queueOverride || opts.claim ? { queueOverride: opts.queueOverride ?? \"owner\" as const } : {})",
+      "replacement": "...(opts.queueOverride ? { queueOverride: opts.queueOverride } : {})",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "self claims bypass only owner queue admission and named proposals resume only to their target"
+    },
+    {
+      "id": "queue-pressure-review-admission-only",
+      "file": "src/hub/tasks.ts",
+      "search": "return selection.reviewSelection || queueRefused || heldSelection ? selection : undefined;",
+      "replacement": "return selection.reviewSelection || weights.queueBackpressure || heldSelection ? selection : undefined;",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "enabled pressure preserves a continuing reviewer below thresholds despite a busier state"
     }
   ]
 }
