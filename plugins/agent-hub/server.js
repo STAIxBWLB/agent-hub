@@ -22076,7 +22076,7 @@ var package_default = {
     bun: ">=1.4.2"
   },
   dependencies: {
-    "@staix/agent-mem": "0.11.0"
+    "@staix/agent-mem": "0.12.0"
   },
   devDependencies: {
     "@modelcontextprotocol/sdk": "^1.27.1",
