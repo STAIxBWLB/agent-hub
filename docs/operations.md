@@ -4605,7 +4605,7 @@ The selected project's configured conductor may run the commands below through i
 | stop peer | Existing hub-owned peer stop, ownership and recovery guards |
 | queue show/resolve/discard | Public queue projection and existing revision/confirmation guards |
 | task cancel | Existing hub_task_cancel with the real peer; eligibility follows the task-board policy |
-| doctor --orphans --kill | Selected project's positively identified hub-owned process only; no cross-project registrations or unsigned process files |
+| doctor --orphans --kill | Selected project's positively identified hub-owned process only; no cross-project registrations or unsigned process files. Prints the stopped pids for a person; `--json` prints the hub's reply |
 | logs / export | Bounded daemon projections, with unsupported/private records withheld; logs -f ends when authority ends |
 | settings set | Only the twelve existing live registry keys listed below |
 

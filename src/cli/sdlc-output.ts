@@ -253,3 +253,28 @@ export function renderAuthorization(authorization: unknown, columns?: number, no
     ...pair("id", a?.id ?? "unknown", columns, w, "muted"), blank,
     ...para("A daemon restart revokes this authorization.", columns, "muted")];
 }
+
+// ---- sdlc merge ---------------------------------------------------------------------------------------------------
+
+const MERGE_STATE: Record<string, [string, Tone]> = { merged: ["merged", "success"], not_merged: ["not merged", "failure"], unknown: ["merge state unknown", "attention"] };
+/** `ahub sdlc merge <task> [--dry-run]` (#899): the hub's decision, every gate that refused it, the `gh` command, and GitHub's readback after a run. */
+export function renderSdlcMerge(view: unknown, columns?: number, _now = Date.now()): Span[][] {
+  const v = view as any;
+  const w = 8, refused = list(v?.refused), argv = list(v?.argv);
+  const out: Line[] = [...heading(`Guarded merge of task #${v?.task ?? "unknown"}`, columns)];
+  out.push(...pair("mode", v?.mode ?? "unknown", columns, w, v?.mode === "off" ? "attention" : undefined));
+  if (v?.decision === "merge") out.push(...pair("decision", "merge: every gate passed", columns, w, "success"));
+  else if (v?.decision === "refused") out.push(...pair("decision", `refused by ${plural(refused.length, "gate")}`, columns, w, "attention"));
+  else out.push(...pair("decision", "unknown", columns, w, "attention"));
+  out.push(...bullets("refused", refused, columns, "attention", "  "));
+  if (argv.length) out.push(...pair("command", `gh ${argv.join(" ")}`, columns, w));
+  const ran = v?.ran === true ? "yes" : v?.ran === false ? (v?.mode === "dry-run" && argv.length ? "no (dry run: the command above was not run)" : "no") : "unknown";
+  out.push(...pair("ran", ran, columns, w, v?.ran === true ? undefined : "muted"));
+  const r = v?.result;
+  if (r && typeof r === "object") {
+    const [state, tone] = MERGE_STATE[String(r.state)] ?? ["merge state unknown", "attention" as Tone];
+    out.push(blank, ...pair("result", `${state}, gh exit ${count(r.exit)}${r.mergeCommit ? `, merge commit ${short(r.mergeCommit)}` : ""}`, columns, w, tone));
+    if (r.cleanup) out.push(...pair("cleanup", `branch cleanup ${String(r.cleanup).replaceAll("_", " ")}${r.reason ? ` (${String(r.reason).replaceAll("_", " ")})` : ""}`, columns, w, r.cleanup === "deleted" ? undefined : "muted"));
+  }
+  return out;
+}

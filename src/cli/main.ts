@@ -97,10 +97,10 @@ import { agentShellCause, classifyPeerCommand, cliCommandLabel, detectCliIdentit
 import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
-import { outputWidth, renderRoster, renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
+import { outputWidth, renderRoster, renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp } from "./help.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
-import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus } from "./sdlc-output.ts";
+import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus } from "./sdlc-output.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
 
@@ -1556,14 +1556,19 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     if (sub === "merge") {
       // #786 T1: the guarded merge of one approved task; a person or the configured conductor asks, the daemon re-reads every gate.
-      const flags = takeFlags(args.slice(2), [], []);
+      // #899: the decision prints for a person; `--json` is the same view as a document. The presentation flags are read before the
+      // request, so an invalid --color refuses before a mutation is sent, and they never reach the hub.
+      const split = splitPresentation(args.slice(1)), display = outputOptions(split.flags);
+      const task = Number(split.operands[0]), flags = takeFlags(split.operands.slice(1), [], []);
       const dryRun = flags.rest.includes("--dry-run");
-      if (flags.rest.some(arg => arg !== "--dry-run") || !Number.isSafeInteger(id) || id! <= 0) fail("usage: ahub sdlc merge <task> [--dry-run]");
+      if (flags.rest.some(arg => arg !== "--dry-run") || !Number.isSafeInteger(task) || task <= 0) fail("usage: ahub sdlc merge <task> [--dry-run] [--json]");
       const hub = await connect();
       try {
-        const reply = await hub.request({ t: "sdlc", op: "merge", id, ...(dryRun ? { dryRun: true } : {}) }, 60_000);
+        const reply = await hub.request({ t: "sdlc", op: "merge", id: task, ...(dryRun ? { dryRun: true } : {}) }, 60_000);
         if (!reply.ok) fail(reply.error);
-        console.log(JSON.stringify({ task: reply.task, mode: reply.mode, ran: reply.ran, decision: reply.decision, ...(reply.argv ? { argv: reply.argv } : {}), ...(reply.refused ? { refused: reply.refused } : {}), ...(reply.result ? { result: reply.result } : {}) }, null, 2));
+        const view = { task: reply.task, mode: reply.mode, ran: reply.ran, decision: reply.decision, ...(reply.argv ? { argv: reply.argv } : {}), ...(reply.refused ? { refused: reply.refused } : {}), ...(reply.result ? { result: reply.result } : {}) };
+        if (display.json) console.log(JSON.stringify(view, null, 2));
+        else printOutput(renderSdlcMerge(view, display.columns, Date.now()), display.color);
         if (reply.decision === "refused" || reply.ran && reply.result?.state !== "merged") process.exitCode = 1;
       } finally { hub.close(); }
       return;
@@ -2376,7 +2381,15 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     if (args.includes("--orphans")) {
       if(identity.role==="tools" && args.includes("--kill")) {
-        const hub=await connect();try {const result=await hub.request({t:"conductor_operational",op:"orphans"},10_000);if(result.ok!==true)fail(String(result.error??"orphan inspection unavailable"),result.refusalAudited===true,result.authorityRefused);console.log(JSON.stringify(result,null,2));}finally{hub.close();}return;
+        // #812: the conductor's shell asks the hub to stop its own orphan; #899: the answer prints for a person unless --json.
+        const hub=await connect();
+        try {
+          const result=await hub.request({t:"conductor_operational",op:"orphans"},10_000);
+          if(result.ok!==true)fail(String(result.error??"orphan inspection unavailable"),result.refusalAudited===true,result.authorityRefused);
+          if (options.json) console.log(JSON.stringify(result,null,2));
+          else printOutput(renderOrphanCleanup(result, options.columns), options.color);
+        } finally{hub.close();}
+        return;
       }
       return orphanDoctor(args.includes("--kill"), options);
     }
