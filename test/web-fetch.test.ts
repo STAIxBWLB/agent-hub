@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:net";
 import { runTool, TOOL_SCHEMAS, WEB_FETCH_SCHEMA, type ToolContext } from "../src/local/tools.ts";
-import { checkWebUrl, htmlText, webFetch, webFetchAllow, webHostProblem, WEB_FETCH_MAX_BYTES, WEB_FETCH_MAX_REDIRECTS, WEB_FETCH_PII, WEB_FETCH_TIMEOUT_MS, type WebFetchContext } from "../src/local/web-fetch.ts";
+import { checkWebUrl, htmlText, webFetch, webFetchAllow, webHostProblem, WEB_FETCH_MAX_BYTES, WEB_FETCH_MAX_REDIRECTS, WEB_FETCH_PII, type WebFetchContext, type WebFetchPort } from "../src/local/web-fetch.ts";
 import { startEgressProxy, type EgressProxy } from "../src/local/proxy.ts";
 import { OUTPUT_CAP, profile } from "../src/local/sandbox.ts";
 import { realPath } from "../src/hub/project.ts";
@@ -366,8 +366,7 @@ import { OmniRoute } from "../src/omniroute/client.ts";
 import { FakeMemoryClient as MemoryClient, startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, toolCall, type Script as ModelScript } from "./fakes/model-server.ts";
 
-// Deadline-based, not a count of sleeps: under load a sleep overshoots, so 400 of them is more than 4 s of wall time and a count measures the runner (#553).
-const until = async (cond: () => boolean, what = "condition", ms = 4000) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await Bun.sleep(10); if (!cond()) throw new Error(`timed out waiting for ${what}`); };
+const until = async (cond: () => boolean, what = "condition") => { for (let i = 0; i < 400 && !cond(); i++) await Bun.sleep(10); if (!cond()) throw new Error(`timed out waiting for ${what}`); };
 async function worker(script: ModelScript, tools: Record<string, unknown>, extra: Record<string, unknown> = {}) {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-webworker-"))); dirs.push(cwd);
   const model = startFakeModelServer({ key: "sk-fake-secret", script });
@@ -449,12 +448,12 @@ test("web_fetch results and URLs reach neither claude-mem capture nor the resear
 import { startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 
-async function daemonWith(web: { allow: string[] } | undefined, script: ModelScript, local: Record<string, unknown> = {}) {
+async function daemonWith(web: { allow: string[] } | undefined, script: ModelScript, local: Record<string, unknown> = {}, transport?: WebFetchPort["fetch"]) {
   const prior = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "web-fixture-key";
   closers.push(() => { if (prior === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = prior; });
   const cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-web-daemon-"))), stateDir = join(cwd, "state"); dirs.push(cwd);
   const model = startFakeModelServer({ key: "web-fixture-key", script }); closers.push(model.stop);
-  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, ...(transport ? { webFetchTransport: transport } : {}),
     config: { ...DEFAULT_CONFIG, batch_ms: 0, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [model.url], access_hosts: [] }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, local: { ...DEFAULT_CONFIG.local, ...(web ? { web_fetch: web } : {}), ...local } } } as never);
@@ -480,20 +479,21 @@ test("in a real daemon with no host listed there is no web_fetch tool and no web
   expect(r.logs().some((line: string) => line.includes("web_fetch egress proxy"))).toBe(false);
 });
 
-test("in a real daemon with a host listed the model is offered web_fetch, the web proxy starts on its own list, and a host that is listed for the tool but not for the proxy cannot be reached", async () => {
-  const r = await daemonWith({ allow: ["iana.org"] }, webCall);
+test("in a real daemon with a host listed the model is offered web_fetch, the web proxy starts on its own list, and the tool fetches through that proxy only", async () => {
+  // Hermetic (#553): the transport is a fixture, so the answer does not wait on a round trip to a public host (that wait was the flake: 99 percent of the answer time, with a tail past
+  // the old 4 s bound under load). The tool still runs for real inside the daemon; what the fixture records is what the daemon handed it.
+  const requests: { url: string; proxy: string }[] = [];
+  const transport: WebFetchPort["fetch"] = async (url, init) => { requests.push({ url, proxy: init.proxy }); return new Response("<p>FIXTURE_PAGE</p>", { status: 200, headers: { "content-type": "text/html" } }); };
+  const r = await daemonWith({ allow: ["iana.org"] }, webCall, {}, transport);
   expect(r.logs().some((line: string) => line.includes("web_fetch egress proxy") && line.includes("1 allowed host(s)"))).toBe(true);
   expect(r.logs().some((line: string) => line.includes("egress proxy on") && !line.includes("web_fetch"))).toBe(false); // the bash proxy is not started by this setting
   expect((await r.send("go")).ok).toBe(true);
-  // The answer waits on a REAL round trip to iana.org through the real proxy (about 1 s, p99 2.2 s and a tail past 4 s when this was measured; 99 percent of the answer time). The tool aborts
-  // its own fetch at WEB_FETCH_TIMEOUT_MS and always answers with text, so that is the latest the answer can arrive: wait for the condition up to that bound, not for a guess of how fast the network is (#553).
-  await until(() => r.answers.length === 1, "answer", WEB_FETCH_TIMEOUT_MS + 3000);
+  await until(() => r.answers.length === 1, "answer");
   expect(r.model.requests[0]!.body.tools.map((t: any) => t.function.name)).toContain("web_fetch");
-  // iana.org is listed, so the real request is attempted through the real proxy; this sandbox may have no route out, so only the offline-safe fact is asserted:
-  // the tool answered with text and did not throw, and nothing outside the list was contacted
-  expect(r.answers[0]).toStartWith("result: ");
-  expect(r.logs().filter((line: string) => line.includes("network: refused"))).toEqual([]);
-}, 20_000); // the gate's own limit (scripts/check.sh --timeout 20000): the bound above is 18 s, so this is the most a test may ask for (tests.md)
+  // The request the model asked for reached the transport once, through the daemon's own web proxy and no other address, and its page came back as the tool result.
+  expect(requests).toEqual([{ url: "https://iana.org/", proxy: `http://127.0.0.1:${r.daemon.egressPorts().web}` }]);
+  expect(r.answers[0]).toStartWith("result: "); expect(r.answers[0]).toContain("FIXTURE_PAGE");
+});
 
 test("in a real daemon the bash proxy and the web proxy do not share a list: listing a host for web_fetch opens nothing to a shell command, and the reverse", async () => {
   const r = await daemonWith({ allow: ["iana.org"] }, webCall, { bash_network: true, network_allow: ["registry.npmjs.org"] });
