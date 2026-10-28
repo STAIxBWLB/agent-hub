@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Bus, type BusEvent, type BusSnapshot } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { newEnvelope, type Envelope, type PeerState } from "../src/hub/envelope.ts";
+import { newEnvelope, replyAudience, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 
 const roots: string[] = [], buses: Bus[] = [];
 afterEach(() => { for (const bus of buses.splice(0)) bus.closeJournal(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -312,8 +312,9 @@ test("two remote targets refuse before limiter, telemetry or local fanout, while
   const sender = new Peer("sender"), local = new Peer("local"), a = new Peer(remote, room), b = new Peer("kimi@hub-b", "room-b");
   for (const peer of [sender, local, a, b]) bus.add(peer);
   const events: BusEvent[] = []; bus.tap(event => events.push(event));
-  let error: unknown; try { sender.onMessage?.("mixed fanout", { to: [local.id, a.id, b.id] }); } catch (cause) { error = cause; }
-  expect(String(error)).toContain(a.id); expect(String(error)).toContain(b.id); expect(String(error)).toContain("send to each remote peer separately");
+  const refusal = sender.onMessage?.("mixed fanout", { to: [local.id, a.id, b.id] });
+  expect(refusal).toContain(a.id); expect(refusal).toContain(b.id); expect(refusal).toContain("send to each remote peer separately");
+  expect(bus.snapshot(false).prefaces[sender.id]?.body).toContain("your message was not delivered");
   expect(admitted).toBe(0); expect(events).toEqual([]); expect(bus.snapshot(false).seen).toEqual([]);
   for (const peer of [local, a, b]) expect(bus.queueIds(peer.id)).toEqual([]);
   sender.onMessage?.("one explicit remote", { to: [local.id, a.id] });
@@ -362,4 +363,33 @@ test("a native failed_safe receipt still retains its original for the existing r
   expect(journal.list(target.id).some(row => row.state === "failed" && row.reason === "native safe failure")).toBe(true);
   expect(failed).toBe(1);
   await target.stop();
+});
+
+
+test("a native turn answer to remote senders returns a refusal and settles idle instead of throwing", async () => {
+  for (const mode of ["multi", "full", "late-full"] as const) {
+    let full = mode === "full", admissions = 0;
+    const { bus, journal } = fixture({
+      remotePending: () => full ? Array.from({ length: 200 }, (_, n) => `already-pending-${n}`) : [],
+      admit: () => { admissions++; if (mode === "late-full") full = true; return undefined; },
+    });
+    const native = new Peer("codex"), a = new Peer("claude@bob", room), b = new Peer("codex@bob", room);
+    for (const peer of [native, a, b]) bus.add(peer);
+    let outcome: unknown;
+    native.accepted = async (envs, id) => {
+      native.set("busy");
+      // Like a turn/completed handler, there is no caller catch around the turn answer.
+      outcome = native.onMessage?.("native answer", { to: replyAudience(envs), inReplyTo: envs[0] });
+      native.onDelivery?.({ id: id!, state: "completed" }); native.set("idle");
+    };
+    bus.publish(newEnvelope(a.id, "one sender", { to: [native.id] }));
+    if (mode === "multi") bus.publish(newEnvelope(b.id, "second sender", { to: [native.id] }));
+    await native.start(); await until(() => native.batches.length === 1 && !bus.hasInFlight(native.id));
+    expect(native.state).toBe("idle");
+    expect(outcome).toContain(mode === "multi" ? "send to each remote peer separately" : "remote room queue is full");
+    expect(bus.snapshot(false).prefaces[native.id]?.body).toContain(String(outcome));
+    expect(bus.queued(a.id)).toBe(0); expect(bus.queued(b.id)).toBe(0);
+    expect(journal.list(native.id).filter(row => row.state === "completed")).toHaveLength(1);
+    expect(admissions).toBe(mode === "late-full" ? 1 : 0);
+  }
 });

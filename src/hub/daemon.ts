@@ -7192,6 +7192,8 @@ export async function startDaemon(opts: DaemonOptions) {
         const inReplyTo = msg.reply_to ? bus.get(String(msg.reply_to)) : undefined;
         // Built first: limits count the audience it really has (a reply goes to the parent's sender).
         let env = newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) });
+        try { bus.checkRemotePublication(env); }
+        catch (error) { return void reply({ t: "sent", ok: false, error: error instanceof Error && /^(?:room|remote) /.test(error.message) ? sanitize(error.message).slice(0, 8192) : "message admission unavailable" }); }
         const offRoster = bus.offRosterRecipients(env);
         if (offRoster.length && offRoster.length === new Set(env.to?.filter(id => id !== env.from)).size) return void reply({ t: "sent", ok: false, error: `off roster: ${offRoster.join(", ")}` });
         const admittedEnv = offRoster.length ? { ...env, to: env.to!.filter(id => !offRoster.includes(id)) } : env;

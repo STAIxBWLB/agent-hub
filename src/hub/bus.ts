@@ -255,7 +255,12 @@ export class Bus {
       const audienceOriginals = originals ?? (opts?.to?.includes(DIGEST) && condensed ? last?.originals : undefined);
       const to = opts?.to?.length ? resolveTo(opts.to, audienceOriginals) : undefined;
       let env = newEnvelope(peer.id, body, { ...opts, ...(to ? { to } : {}), priority: opts?.priority ?? capPriority(peer, priority, opts?.inReplyTo, originals) });
-      this.checkRemotePublication(env);
+      try { this.checkRemotePublication(env); }
+      catch (error) {
+        if (!(error instanceof PreEffectToolRefusal)) throw error;
+        this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered: ${error.message}`));
+        return error.message;
+      }
       const offRoster = this.offRosterRecipients(env);
       if (offRoster.length && offRoster.length === new Set(env.to?.filter(id => id !== env.from)).size) {
         const reason = `off roster: ${offRoster.join(", ")}`;
@@ -281,7 +286,13 @@ export class Bus {
         this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered: ${refused}`));
         return refused;
       }
-      const published = this.publishResult(env);
+      let published: PublishResult;
+      try { published = this.publishResult(env); }
+      catch (error) {
+        if (!(error instanceof PreEffectToolRefusal)) throw error;
+        this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered: ${error.message}`));
+        return error.message;
+      }
       if (offRoster.length && published.dropped !== "hop") this.note(peer.id, noteLine(HUB, "decision", `your message is retained off roster for ${offRoster.join(", ")}; delivered to the other recipients`));
       // The sender's result (issue #107): a turn answer has no caller, so it hears it on its next delivery. It counts as
       // not sent only when nobody got it.
@@ -838,7 +849,8 @@ export class Bus {
     for (const [id, peer] of this.activeDeliveries) if ((this.remoteQueueRooms.get(peer) ?? this.peers.get(peer)?.remoteRoom) === room) for (const env of this.journal?.get(id)?.originals ?? []) ids.add(env.id);
     return [...ids];
   }
-  private checkRemotePublication(env: Envelope): string[] {
+  /** Remote preflight precedes limiter admission; publication rechecks before effects. */
+  checkRemotePublication(env: Envelope): string[] {
     if (env.to?.some(remoteId) && this.opts.remotePrivate) {
       try { if (this.opts.remotePrivate(env) !== false) env.private = true; }
       catch { env.private = true; }

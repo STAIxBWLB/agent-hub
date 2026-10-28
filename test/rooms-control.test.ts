@@ -6,7 +6,7 @@ import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import type { Envelope } from "../src/hub/envelope.ts";
+import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { createJoin } from "../src/rooms/wire.ts";
 import { decodeBase64url, encodeBase64url, generateHubIdentity } from "../src/rooms/crypto.ts";
 import { RemotePeer } from "../src/rooms/remote-peer.ts";
@@ -25,7 +25,7 @@ async function mutation(client: ControlClient, action: string, input: Record<str
   expect(preview.ok).toBe(true);
   return client.request({ t: "room", op: "execute", ticket: preview.ticket, confirm: preview.member }, 5000);
 }
-async function fixture() {
+async function fixture(limits = DEFAULT_CONFIG.limits) {
   const root = mkdtempSync(join(tmpdir(), "ahub-room-control-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const overrides: Record<string, string | undefined> = {
     HOME: join(root, "home"), AGENTHUB_HOME: join(root, "hub-home"), AMEM_HOME: join(root, "amem-home"),
@@ -43,7 +43,7 @@ async function fixture() {
   writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ roles, rooms: { work: { expose: ["codex"] } } }));
   const stateDir = join(root, "state");
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, agentDrift: false, shellDefaultBranchProbe: async () => "main",
-    config: { ...DEFAULT_CONFIG, roles, batch_ms: 0,
+    config: { ...DEFAULT_CONFIG, roles, limits, batch_ms: 0,
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] },
       mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false } } });
@@ -103,4 +103,21 @@ test("full daemon remote identities have no control or native lifecycle authorit
   expect(events.some(row => row.type === "turn_start" && row.peer === id)).toBe(false);
   const status = await f.person.request({ t: "status" }, 5000); expect(status.status.roleInfo).not.toHaveProperty(id);
   expect(await f.person.request({ t: "room", op: "list" }, 5000)).toMatchObject({ ok: true });
+});
+
+
+test("a control remote-cap refusal spends neither repeat identity nor limiter tokens", async () => {
+  const f = await fixture({ sender_per_min: 1, pair_per_min: 1, important_per_hour: 0, repeat_window_s: 120 });
+  const target = "codex@guest", queued = Array.from({ length: 200 }, (_, n) => newEnvelope("user", `offline queue ${n}`, { to: [target] }));
+  for (const env of queued) f.daemon.bus.publish(env);
+  const tools = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex" }); cleanups.push(() => tools.close());
+  const message = { t: "send", to: [target], body: "same message after capacity returns" };
+  const refused = await tools.request(message, 5000);
+  expect(refused).toMatchObject({ ok: false }); expect(refused.error).toBe("remote room queue is full");
+  expect(f.daemon.bus.queued(target)).toBe(200);
+  f.daemon.bus.withdraw(env => env.id === queued[0]!.id);
+  expect(f.daemon.bus.queued(target)).toBe(199);
+  const accepted = await tools.request(message, 5000);
+  expect(accepted).toMatchObject({ ok: true, targets: [target] });
+  expect(f.daemon.bus.queued(target)).toBe(200);
 });
