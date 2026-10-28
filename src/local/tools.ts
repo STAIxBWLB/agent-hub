@@ -4,6 +4,7 @@ import { realPath } from "../hub/project.ts";
 import { isHubWritePath } from "../hub/permission-mode.ts";
 import { matchesPolicy } from "../hub/path-policy.ts";
 import { isDenied } from "./deny.ts";
+import { docRead, type DocReadContext, type DocReadPort } from "./doc-read.ts";
 import { OUTPUT_CAP, sandboxedExec } from "./sandbox.ts";
 
 export { isDenied };
@@ -34,6 +35,8 @@ export interface ToolContext {
   permit: (title: string, tool?: string, signal?: AbortSignal, canonicalTarget?: string, observe?: ApprovalObserver, originalPath?: string, input?: unknown, policy?: ShellPermitPolicy) => Promise<ToolApproval>;
   /** Host-only synchronous recheck, immediately before a shell process can be spawned. */
   shellExecutionCheck?: (input: unknown) => ShellExecutionCheck;
+  /** #515: present only when the project opted in (`local.doc_read`), so `doc_read` exists for this worker and nothing else gets it. `pii`: this turn is a PII task turn. */
+  docRead?: DocReadPort & { pii: boolean };
   /** Trusted process status, independent of what its stdout says. */
   onProcessExit?: (code: number | null) => void;
   /** Publish a message to other peers mid-turn. Returns a one-line receipt. */
@@ -110,6 +113,13 @@ export const TOOL_SCHEMAS = [
   fn("git", "Run git in the project. status, diff, log, show, ls-files, blame, rev-parse run freely; add, commit, restore, checkout, switch, stash, mv, rm, branch, merge, rebase, cherry-pick, revert, tag need approval; everything else (push, fetch, config, remote ...) is refused.", { args: { type: "array", items: str, minItems: 1 } }, ["args"]),
   fn("hub_send", "Send a message to the other agents now, before your turn ends. Conclusions only. Your final answer is shared anyway; use this for something that cannot wait.", { text: str, to: { type: "array", items: str } }, ["text"]),
 ];
+
+/**
+ * #515: offered only to a worker whose project set `local.doc_read` (off by default), never part of TOOL_SCHEMAS. The model names a path and a line window; the converter
+ * is the person's `text_projection` entry for the extension, run in the projection sandbox, and the text is bounded and passed through `sanitize()`.
+ */
+export const DOC_READ_SCHEMA = fn("doc_read", "Read a PDF, DOCX or HWPX document inside the project as plain text, through the converters the project configured. Returns numbered lines, bounded; read again with offset for more. Read-only.", { path: str, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } }, ["path"]);
+export type { DocReadContext, DocReadPort };
 
 /** Every path-like argument of a call, for the memory capture filter. */
 export function touchedPaths(name: string, args: Record<string, unknown>): string[] {
@@ -212,6 +222,11 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         const res = await sandboxedExec(["git", "--no-pager", ...args], { cwd: ctx.cwd, profile: ctx.sandboxProfile, readOnlyData: !!ctx.readOnly?.length, ...(ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
         try { ctx.onProcessExit?.(res.code); } catch { /* optional status observer never changes a tool result */ }
         return `${res.output}\n(exit ${res.code})`;
+      }
+      case "doc_read": {
+        if (!ctx.docRead) return "error: doc_read is not enabled for this project (local.doc_read in .agenthub/config.local.json)";
+        const file = guardPath(ctx, String(a.path), "read");
+        return docRead(file, String(a.path), a, ctx.docRead, ctx.cwd);
       }
       case "hub_send":
         return a.text ? ctx.send(String(a.text), Array.isArray(a.to) ? a.to.map(String) : undefined) : "error: text is required";

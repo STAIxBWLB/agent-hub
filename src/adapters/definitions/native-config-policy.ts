@@ -6,7 +6,7 @@ export function piConfigSchema(v: NativeConfigValidators): Record<string, Native
   return { pi: v.block({ enabled: v.bool, auto_start: v.bool, cmd: v.argv, backend: v.words(["auto", "dgx", "mlx"]), dgx_coding: v.text, dgx_fast: v.text, max_steps: v.number(1, 1_000_000, true) }) };
 }
 export function localConfigSchema(v: NativeConfigValidators): Record<string, NativeConfigCheck> {
-  return { local: v.block({ deny: v.strings, bash_network: (value, key) => { if (value !== "direct") v.bool(value, key); }, network_allow: v.strings, max_steps: v.number(1, 1_000_000, true), read_allow: v.strings }) };
+  return { local: v.block({ deny: v.strings, bash_network: (value, key) => { if (value !== "direct") v.bool(value, key); }, network_allow: v.strings, max_steps: v.number(1, 1_000_000, true), read_allow: v.strings, doc_read: v.bool }) };
 }
 export function piRoutingSchema(v: NativeConfigValidators): Record<string, NativeConfigCheck> {
   return { pi: v.block({ dgx_max_context_tokens: v.number(), mlx_max_context_tokens: v.number(), efficient_wait_ms: v.number(0, 119999) }) };
@@ -24,7 +24,7 @@ export const PI_RESTART_REASONS: Readonly<Record<string, string>> = {
 };
 export const LOCAL_RESTART_REASONS: Readonly<Record<string, string>> = {
   "local.deny": "Existing native sessions retain their sandbox deny policy", "local.read_allow": "Existing native sessions retain their sandbox read grants",
-  "local.bash_network": "Existing sandbox and egress proxy contracts require a new instance", "local.network_allow": "Existing egress proxy ownership requires a new instance",
+  "local.bash_network": "Existing sandbox and egress proxy contracts require a new instance", "local.network_allow": "Existing egress proxy ownership requires a new instance", "local.doc_read": "The worker's tool list is bound when its session starts",
 };
 export function piEffectiveConfig(raw: Record<string, unknown>, fail: (key: string, reason: string) => never): void {
   const object = (value: unknown, key: string): Record<string, unknown> => {

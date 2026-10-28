@@ -4746,6 +4746,18 @@ Where the code states or fixes a detail the section above leaves open:
 - Outside PII turns it runs only through the egress proxy, to hosts in a machine-local per-project allowlist, and returns bounded text only.
 - `doc_read` is unaffected by this rule; it keeps its own `pii.paths` and `data.readonly` checks.
 
+#### On-prem document reading (#515a) implementation notes (hub task #320: `doc_read`, `src/local/doc-read.ts`)
+
+Where the code states or fixes a detail the section above leaves open. `web_fetch` is a separate task and waits for its owner decision.
+
+- **Opt-in.** `local.doc_read: true` (machine-local: in `MACHINE_LOCAL`, and never editable from settings) gives the local worker a `doc_read` tool. Off by default: `DOC_READ_SCHEMA` is not in `TOOL_SCHEMAS`, the worker offers it only when the daemon passes a `docRead` port, and a model that names it anyway gets "doc_read is not enabled". Pi shares `TOOL_SCHEMAS` and does not get it.
+- **What it reads.** The model names `path` (and `offset`, `limit` as for `read`). The path goes through `guardPath` in read mode, the same guard as `read` and the one #418 shares (inside the project after `realPath`, no link out, no secrets denylist, `local.deny`). Then the file must be a regular file with one name and at most 16 MiB. The converter is the person's `text_projection` entry for the extension (PDF, DOCX, HWPX are whatever the person configured), run by `TextProjections` in its seatbelt profile on a private copy of the bytes, bounded by its input, time and output caps and cached by content in the hub state directory. An extension with no entry is refused with the way to configure one. The hub never picks a converter.
+- **Screens, in order.** `pii.paths` by the document's path (`matchesPolicy`, so globs and folded spellings count): an ordinary turn is refused before anything is converted. After conversion, a text matching `signals.pii_patterns` (or a pattern that cannot be evaluated) is refused the same way. A PII task turn is the case these refusals point to, so it reads both: that is what the on-prem worker is for. Then `sanitize()` quotes any line that forges a hub header, and the output is cut at the shared output cap with how to continue (`offset`).
+- **`data.readonly`.** A read is not a write, so the policy is not a reason to refuse. What it guards holds: the converter runs read-only in its sandbox, its cache is in the hub state directory, and `doc_read` writes nothing beside the document.
+- **Never memory evidence.** Converted text is document content (a converter can surface hidden text), so the result is excluded from claude-mem capture and from the research observation on every turn, not only a PII turn.
+- **Tests.** Fakes stand in for the projections (the converter itself is `text-projection.test.ts`'s subject); one macOS leg runs a real shell converter through `TextProjections`. The live leg on the on-prem worker with a real PDF, DOCX and HWPX converter is a separate person leg.
+- **Not in this slice.** `web_fetch`, which waits for an owner decision, and an async conversion: it is synchronous in the daemon process, bounded by the converter's 8 s timeout (ponytail comment in `doc-read.ts`).
+
 ## Amendment: roles per SDLC stage (#525)
 
 Written against main `8efdba48` (v0.12.45 + #671). Claims about current code carry `file:line` at that commit. "Probe" means a read-only `bun` run of `validateInstances` / `resolveSettledRoles` against that commit on 2026-10-22. Anything marked unverified was not run or read.
