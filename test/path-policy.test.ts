@@ -221,3 +221,31 @@ test("the typed name is judged relative to the project, so a project under a den
   expect(guardPath({ cwd: dir, deny: [] }, "ok.txt", "read")).toBe(join(realPath(dir), "ok.txt"));
   expect(guardPath({ cwd: dir, deny: [] }, "ok.txt", "write")).toBe(join(realPath(dir), "ok.txt"));
 });
+
+// #555: the typed-name checks of guardPath judge only names INSIDE the project (insideRoot, #944), as Facts.rel and the deliverable vetting do. A typed name outside it
+// that resolves to an ordinary file inside is accepted; an inside typed name that is denied or hub-owned is still refused although it resolves to an innocent file.
+test("guardPath: a typed name outside the project that resolves to an ordinary file inside it is accepted, in read and write mode", () => {
+  const base = realPath(mkdtempSync(join(tmpdir(), "ahub-guard-outside-"))); cleanup.push(() => rmSync(base, { recursive: true, force: true }));
+  const dir = join(base, "p"), elsewhere = join(base, "o");
+  mkdirSync(join(dir, "docs"), { recursive: true }); mkdirSync(elsewhere, { recursive: true });
+  writeFileSync(join(dir, "docs/ok.txt"), "ok");
+  symlinkSync(join(dir, "docs/ok.txt"), join(elsewhere, ".env")); symlinkSync(join(dir, "docs/ok.txt"), join(elsewhere, "config")); mkdirSync(join(elsewhere, ".git"));
+  symlinkSync(join(dir, "docs/ok.txt"), join(elsewhere, ".git/config"));
+  const ctx = { cwd: dir, deny: [".env", "**/.env"] };
+  for (const mode of ["read", "write"] as const) {
+    expect(guardPath(ctx, join(elsewhere, ".env"), mode)).toBe(join(dir, "docs/ok.txt")); // typed `../o/.env`: denied by name if it were inside, but it is not
+    expect(guardPath(ctx, join(elsewhere, ".git/config"), mode)).toBe(join(dir, "docs/ok.txt")); // typed `../o/.git/config`: hub-owned by name if it were inside
+  }
+  expect(() => guardPath(ctx, "../o-not-a-link/x", "read")).toThrow("outside the project directory"); // containment stays on the resolved path
+});
+
+test("guardPath: an inside typed name that is denied or hub-owned is refused even when the file is an innocent one", () => {
+  const dir = root(); mkdirSync(join(dir, "docs"), { recursive: true }); mkdirSync(join(dir, ".agenthub"), { recursive: true });
+  writeFileSync(join(dir, "docs/ok.txt"), "ok");
+  linkSync(join(dir, "docs/ok.txt"), join(dir, ".env")); linkSync(join(dir, "docs/ok.txt"), join(dir, ".agenthub/state.json"));
+  const ctx = { cwd: dir, deny: [".env", "**/.env"] };
+  expect(() => guardPath(ctx, ".env", "read")).toThrow("secrets denylist");
+  expect(() => guardPath(ctx, ".env", "write")).toThrow("secrets denylist");
+  expect(() => guardPath(ctx, ".agenthub/state.json", "write")).toThrow("not writable by the local worker");
+  expect(guardPath(ctx, "docs/ok.txt", "write")).toBe(join(dir, "docs/ok.txt"));
+});

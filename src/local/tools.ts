@@ -2,7 +2,7 @@ import { lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "nod
 import { dirname, join, relative, resolve } from "node:path";
 import { realPath } from "../hub/project.ts";
 import { isHubWritePath } from "../hub/permission-mode.ts";
-import { matchesPolicy } from "../hub/path-policy.ts";
+import { insideRoot, matchesPolicy } from "../hub/path-policy.ts";
 import { isDenied } from "./deny.ts";
 import { docRead, type DocReadContext, type DocReadPort } from "./doc-read.ts";
 import { webFetch, type WebFetchContext, type WebFetchPort } from "./web-fetch.ts";
@@ -73,12 +73,13 @@ export function guardPath(ctx: Pick<ToolContext, "cwd" | "deny" | "readOnly">, p
   const rel = relative(root, real);
   if (rel.startsWith("..") || resolve(root, rel) !== real) throw new Error(`${path} is outside the project directory`);
   // Never trust the resolved name alone (#541): on a hardlinked file Bun's realpath sometimes names another link of the same inode, so the
-  // name the caller typed is judged too. A refusal on either name stands; the typed name only ever adds refusals.
-  const typed = relative(root, abs);
-  if (isDenied(rel, ctx.deny) || isDenied(typed, ctx.deny)) throw new Error(`${path} is on the secrets denylist`);
+  // name the caller typed is judged too. A refusal on either name stands; the typed name only ever adds refusals. Only a typed name INSIDE the project is judged
+  // (`insideRoot`, #555): a name outside it (`../o/.env`, a link into the project) is no project path for any policy to name, and it was never refused before #541.
+  const typed = relative(root, abs), inside = insideRoot(typed);
+  if (isDenied(rel, ctx.deny) || inside && isDenied(typed, ctx.deny)) throw new Error(`${path} is on the secrets denylist`);
   // Not secret, but writing .git or .agenthub changes what runs outside the worker's control. Names are compared
   // folded: a new `.GIT/config` is `.git/config` to a case-insensitive disk, and git then runs what it names.
-  if (mode === "write" && (isHubWritePath(rel) || isHubWritePath(typed))) throw new Error(`${path} is not writable by the local worker`);
+  if (mode === "write" && (isHubWritePath(rel) || inside && isHubWritePath(typed))) throw new Error(`${path} is not writable by the local worker`);
   // Identity refusal is stable even when realPath names a protected hardlink alias.
   if (mode === "write" && ctx.readOnly?.length && (lstatSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) throw new Error("hardlinked write target cannot be verified with data.readonly");
   if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? [])) throw new Error("target is protected by data.readonly");
