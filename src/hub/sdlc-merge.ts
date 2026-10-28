@@ -28,7 +28,7 @@ export interface MergeInput {
   run: SdlcGh;
   readableMetadata?: (path: string) => boolean;
   /** Final synchronous authority and queue-input fence, after fresh gates and immediately before the gh call. */
-  beforeMerge?: () => string | undefined;
+  beforeMerge?: (queue: MergeQueue | undefined) => string | undefined;
   /** Post-run host fence and durable progress record. False or a throw withholds cleanup. No remote text is supplied. */
   recordMerge?: (record: MergeRecord) => boolean;
   /**
@@ -57,7 +57,7 @@ const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
  * threads, draft). Its other blockers (identity, local gate, GitHub approval) are the lifecycle's, not this merge's, and are not repeated here.
  */
 const QUEUE_BLOCKERS = [/^touching PRs require a person order$/, /^dependency /, /^artifact dependency cycle/, /^open PR /, /^PR file coverage is incomplete/,
-  /^required check .*: not successful on current head$/, /^review requests pending or unknown$/, /^review threads unresolved or unknown$/, /^PR is draft or draft status unknown$/];
+  /^required check .*: not successful on current head$/, /^review requests pending or unknown$/, /^review threads unresolved or unknown$/, /^PR is draft or draft status is unknown$/];
 
 /** The mode that applies to one repository: its own table first, then the top-level key, default off. */
 export function mergeModeFor(config: SdlcConfig, repo: string | undefined): AutoMergeMode {
@@ -114,7 +114,7 @@ function dropEchoes(gates: string[]): string[] {
     if (check) return !named(new RegExp(`^required check ${check[1]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: `));
     if (gate === "queue: review requests pending or unknown") return !named(/review requests? (unknown|pending)|^\d+ review requests? pending$/);
     if (gate === "queue: review threads unresolved or unknown") return !named(/review threads unknown|unresolved review thread/);
-    if (gate === "queue: PR is draft or draft status unknown") return !named(/^draft /);
+    if (gate === "queue: PR is draft or draft status is unknown") return !named(/^draft /);
     return true;
   });
 }
@@ -168,7 +168,7 @@ function evalGaps(config: SdlcConfig, evidence: PrEvidence, result: EvalResult |
  * Every failing gate, never the first only: a person reading a refusal fixes them in one pass. Unknown evidence is a failing gate, never a pass.
  * `approvedHead` is the head the reviewer's verdict recorded (`receipt.reviewedHead`); a head that moved since is `head changed`.
  */
-export async function decideMerge(input: MergeInput): Promise<MergeDecision> {
+export async function decideMerge(input: MergeInput, seen?: { queue?: MergeQueue }): Promise<MergeDecision> {
   const { subject, config, run } = input, receipt = subject.receipt, repo = receipt?.repo, pr = receipt?.pr, approved = receipt?.reviewedHead;
   const gates: string[] = [];
   if (subject.private) return { refused: ["private task: a person merges"] };
@@ -183,6 +183,7 @@ export async function decideMerge(input: MergeInput): Promise<MergeDecision> {
   gates.push(...localGates({ subject, state: input.state, taskState: input.taskState, config, head: evidence.head }));
   let queue: MergeQueue | undefined;
   try { queue = await readMergeQueue(repo, config, input.tasks, run, input.readableMetadata); } catch { queue = undefined; }
+  if (seen) seen.queue = queue;   // `guardedMerge` hands it to the final fence: that fence compares the board links this queue read and no others (#491)
   gates.push(...queueGates(queue, pr));
   // The queue read newer evidence than the first read. Read the PR once more, last, and judge every gate on it too: a check, review request, thread, draft or
   // head that moved between the reads refuses here. `--match-head-commit` pins the head only, never these gates.
@@ -219,7 +220,8 @@ export function dispatchGates(input: Pick<MergeInput, "subject" | "taskState"> &
  */
 export async function guardedMerge(input: MergeInput & { mode: AutoMergeMode }): Promise<MergeOutcome> {
   if (input.mode === "off") return { mode: "off", decision: { refused: ["auto_merge is off for this repository"] }, ran: false };
-  const decision = await decideMerge(input);
+  const seen: { queue?: MergeQueue } = {};
+  const decision = await decideMerge(input, seen);
   if (!("action" in decision) || input.mode !== "on") return { mode: input.mode, decision, ran: false };
   // ---- synchronous dispatch segment: no await from here to the call to `run` ----
   assertMergeArgv(decision.argv, decision.head);
@@ -228,7 +230,7 @@ export async function guardedMerge(input: MergeInput & { mode: AutoMergeMode }):
     if (refused.length) return { mode: input.mode, decision: { refused }, ran: false };
   }
   let started: Promise<{ code: number; stdout: string }>;
-  const moved = input.beforeMerge?.();
+  const moved = input.beforeMerge?.(seen.queue);
   if (moved) return { mode: input.mode, decision: { refused: [moved] }, ran: false };
   try { started = Promise.resolve(input.run(decision.argv, 10_000)); } catch { started = Promise.resolve({ code: 1, stdout: "" }); }
   // ---- end of the synchronous segment ----
