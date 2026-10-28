@@ -40,7 +40,7 @@ function signals() {
       if (done) return;
       if (checking) { again = true; return; }
       checking = true;
-      void (async () => { do { again = false; if (await check()) return finish(); } while (again && !done); })().catch(finish).finally(() => { checking = false; });
+      void (async () => { do { again = false; if (await check()) return finish(); } while (again && !done); })().catch(finish).finally(() => { checking = false; if (again && !done) inspect(); });
     };
     const timer = setTimeout(() => finish(new Error(`room delivery barrier timed out: ${label}`)), 5000);
     listeners.add(inspect); inspect();
@@ -48,8 +48,18 @@ function signals() {
   return { notify, wait };
 }
 type Signal = ReturnType<typeof signals>;
+test("delivery signals retain a notification arriving after an async check returns", async () => {
+  const signal = signals(); let ready = false, checks = 0, release!: (value: boolean) => void;
+  const first = new Promise<boolean>(resolve => { release = resolve; });
+  const pending = signal.wait(() => ++checks === 1 ? first : ready, "re-entrant notification"); void pending.catch(() => {});
+  release(false);
+  queueMicrotask(() => { ready = true; signal.notify(); });
+  await new Promise<void>(resolve => setImmediate(resolve)); // Flush the queued check/notification reactions, without wall-clock delay.
+  try { expect(checks).toBe(2); }
+  finally { signal.notify(); await pending; }
+});
 interface Control {
-  phase: string; holdSender?: string; hold: boolean; entered: boolean; gate: ReturnType<typeof deferred>;
+  now: number; phase: string; holdSender?: string; hold: boolean; entered: boolean; gate: ReturnType<typeof deferred>;
   afterPublication?: (label: string, env: Envelope, result: PublishResult) => void;
   afterReceive?: (label: string, input: Parameters<RoomLinkApplication["receive"]>[1]) => void;
   afterSend?: (label: string, message: RoomMessage) => Promise<void>;
@@ -71,7 +81,7 @@ async function hub(root: string, label: string, event: Signal, control: Control,
   const publish = bus.publishResult.bind(bus);
   bus.publishResult = env => { const result = publish(env); if (env.from.includes("@")) { control.afterPublication?.(label, env, result); event.notify(); } return result; };
   const routing = parseRouting('[local]\nfixed_model="fixture"\n');
-  chat = new RoomChat({ bus, cwd, routing: () => routing, piiPaths: () => [], senderPrivate: () => false, taskPrivate: () => false, modelScreenOn: () => false,
+  chat = new RoomChat({ bus, cwd, now: () => control.now, routing: () => routing, piiPaths: () => [], senderPrivate: () => false, taskPrivate: () => false, modelScreenOn: () => false,
     screen: async () => ({ label: "clear", ms: 0 }), policyVersion: () => control.policyVersion ?? 1,
     roster: ids => { roster.clear(); roster.add("codex"); for (const id of ids) roster.add(id); event.notify(); }, changed: event.notify, notice: value => { notices.push({ ...value }); event.notify(); } });
   let ownedStore: RoomStore | undefined, ownedLink: RoomLink | undefined;
@@ -97,10 +107,11 @@ async function hub(root: string, label: string, event: Signal, control: Control,
     }
     members(context);
   };
+  chat.application.transportAck = () => event.notify();
   const receive = chat.application.receive;
   chat.application.receive = async (context, input) => { try { await receive(context, input); } finally { control.afterReceive?.(label, input); event.notify(); } };
   const peer = new LocalPeer(); bus.add(peer); await peer.start();
-  const commands = new RoomCommands({ cwd, stateDir, chat, presence: () => [{ id: "codex", state: bus.stateOf("codex") }] });
+  const commands = new RoomCommands({ cwd, stateDir, clock: () => control.now, chat, presence: () => [{ id: "codex", state: bus.stateOf("codex") }] });
   bus.onQueues = () => { chat!.queueChanged(); event.notify(); };
   let nativeStates = 0;
   bus.tap(eventRow => { if (eventRow.t === "state" && !eventRow.peer.includes("@")) { nativeStates++; commands.changed(); } event.notify(); });
@@ -119,7 +130,7 @@ const meshes: Mesh[] = [];
 afterEach(async () => { for (const mesh of meshes.splice(0).reverse()) await mesh.close(); });
 async function mesh(ackSeconds = 600, brokerQueueCap?: number): Promise<Mesh> {
   const root = mkdtempSync(join(tmpdir(), "ahub-room-delivery-")), event = signals();
-  const control: Control = { phase: "setup", hold: false, entered: false, gate: deferred() }, frames: Mesh["frames"] = [], brokerEvents: Mesh["brokerEvents"] = [];
+  const control: Control = { now: Date.now(), phase: "setup", hold: false, entered: false, gate: deferred() }, frames: Mesh["frames"] = [], brokerEvents: Mesh["brokerEvents"] = [];
   const brokerRoot = join(root, "broker");
   const broker = await startBroker({ stateDir: brokerRoot, port: 0, ...(brokerQueueCap ? { limits: { queuedPerRoom: brokerQueueCap } } : {}) }, {
     log: (kind, ids) => { brokerEvents.push({ event: kind, ...(ids.member ? { member: ids.member } : {}), ...(ids.code ? { code: ids.code } : {}) }); event.notify(); },
@@ -156,6 +167,17 @@ async function mesh(ackSeconds = 600, brokerQueueCap?: number): Promise<Mesh> {
   result.owner = owner; result.guest = guest;
   await event.wait(() => result.a.bus.stateOf("codex@beta") === "idle" && result.b.bus.stateOf("codex@alpha") === "idle", "both room peers online");
   control.phase = "before"; return result;
+}
+async function acknowledgementDeadline(f: Mesh, side: Hub, application: string): Promise<void> {
+  await f.event.wait(() => side.store?.applicationOutbox("work").some(row => row.application === application && row.ackDeadline !== undefined) === true, "host acknowledgement deadline persisted");
+  const row = side.store!.applicationOutbox("work").find(row => row.application === application)!;
+  expect(row.ackDeadline).toBeDefined();
+  f.control.now = Math.max(f.control.now, row.ackDeadline! + 1);
+  side.chat.tick(); f.event.notify();
+}
+async function reconnectGuest(f: Mesh, after: number): Promise<void> {
+  await f.event.wait(() => f.brokerEvents.slice(after).some(row => row.event === "disconnected" && row.member === f.guest), "interrupted guest transport disconnected");
+  f.b.link!.refresh(); // Drive the existing host reconnect, not randomized backoff.
 }
 async function reverseBarrier(f: Mesh, body: string): Promise<void> {
   const barrier = newEnvelope("codex", body, { to: ["codex@alpha"] }); f.b.bus.publish(barrier);
@@ -207,8 +229,10 @@ test("an exact sequence redelivery resends its signed receipt without a second l
     if (input.digest === originalDigest && input.message === undefined) duplicateReceives++;
     if (!interrupted && input.message?.type === "chat" && input.message.envelope.id === env.id) { originalDigest = input.digest; interrupted = true; throw new Error("fixture interrupted after signed application receipt"); }
   };
+  const disconnectAt = f.brokerEvents.length;
   f.a.bus.publish(env);
   await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "signed receipt admitted");
+  await reconnectGuest(f, disconnectAt);
   await f.event.wait(() => duplicateReceives > 0 && f.broker.stats().queuedFrames === 0 && f.b.bus.stateOf("codex@alpha") === "idle", "redelivery transport ACK completed");
   expect(interrupted).toBe(true); expect(duplicateReceives).toBeGreaterThan(0); expect(publications).toBe(1); expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
   expect(f.a.journal.list("codex@beta").filter(row => row.originals.some(original => original.id === env.id) && row.state === "completed")).toHaveLength(1);
@@ -219,6 +243,7 @@ test("a late signed admission receipt is visible evidence and never auto-complet
   f.control.afterPublication = (label, incoming) => { if (label === "beta" && incoming.id === env.id) { f.control.holdSender = f.guest; f.control.hold = true; } };
   f.a.bus.publish(env);
   await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "accepted" && f.control.entered, "recipient receipt held after broker storage");
+  await acknowledgementDeadline(f, f.a, env.id);
   await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "local ACK deadline reached");
   f.control.hold = false; f.control.gate.release();
   await f.event.wait(async () => (await outbound(f.a, env.id))?.lateReceipt === "completed (admitted)", "late signed evidence displayed");
@@ -300,6 +325,7 @@ test("a frame held before broker storage reaches the local acknowledgement deadl
   try {
     f.a.bus.publish(env);
     await f.event.wait(() => f.control.entered, "wire verification held before stored reply");
+    await acknowledgementDeadline(f, f.a, env.id);
     await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "pre-stored acknowledgement deadline reached");
     expect(f.b.peer.got.some(row => row.id === env.id)).toBe(false);
     expect(f.a.journal.unresolved("codex@beta").some(row => row.state === "needs_review" && row.originals.some(item => item.id === env.id))).toBe(true);
@@ -315,6 +341,7 @@ test("a real broker queue_full refusal is nonterminal and an un-stored applicati
   await f.event.wait(() => f.broker.stats().queuedFrames === 1, "signed presence fills offline broker queue");
   const env = newEnvelope("user", "queue full before stored", { to: ["codex@beta"] }); f.a.bus.publish(env);
   await f.event.wait(() => f.brokerEvents.some(row => row.event === "refused" && row.code === "queue_full"), "wire queue_full received");
+  await acknowledgementDeadline(f, f.a, env.id);
   await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "queue-refused application acknowledgement deadline");
   expect((await f.a.commands.rows("work"))[0]?.state).toBe("online");
   expect(f.b.peer.got.some(row => row.id === env.id)).toBe(false);
@@ -325,6 +352,8 @@ test("room status never reconciles person dispositions, while the explicit tick 
   f.control.afterPublication = (label, incoming) => { if (label === "beta" && incoming.id === env.id) { f.control.holdSender = f.guest; f.control.hold = true; } };
   try {
     f.a.bus.publish(env);
+    await f.event.wait(() => f.control.entered, "recipient signed receipt held before clock advance");
+    await acknowledgementDeadline(f, f.a, env.id);
     await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "known uncertainty awaiting person");
     const row = (await outbound(f.a, env.id))!, id = String(row.id), before = f.a.journal.get(id)!;
     f.a.bus.resolveDelivery(id, before.revision, "discard", "person discards known uncertainty");
@@ -364,7 +393,9 @@ test("a verified stale classification resends the retained signed receipt withou
     }
   };
   try {
+    const disconnectAt = f.brokerEvents.length;
     f.a.bus.publish(env);
+    await reconnectGuest(f, disconnectAt);
     await f.event.wait(() => stale > 0 && f.broker.stats().queuedFrames === 0, "stale frame retired after signed receipt resend");
     expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
     expect(f.b.store!.refused("work")).toContainEqual(expect.objectContaining({ digest: originalDigest, reason: "stale" }));

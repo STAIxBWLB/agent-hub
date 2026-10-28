@@ -48,10 +48,10 @@ export class RoomCommands {
   private stopped = false;
   private readonly links = new Map<string, RoomLink>();
   private readonly policy: RoomPolicy;
-  constructor(private readonly options: { stateDir: string; cwd: string; presence?: () => readonly {id: string; state: string}[]; chat?: RoomChat }) { this.policy = new RoomPolicy(options.cwd); }
+  constructor(private readonly options: { stateDir: string; cwd: string; clock?: () => number; presence?: () => readonly {id: string; state: string}[]; chat?: RoomChat }) { this.policy = new RoomPolicy(options.cwd); }
   private async open(): Promise<RoomStore> {
     if (this.stopped) refuse("stopped");
-    this.pending ??= RoomStore.open({ stateDir: join(this.options.stateDir, "rooms") }).then(store => {
+    this.pending ??= RoomStore.open({ stateDir: join(this.options.stateDir, "rooms"), ...(this.options.clock ? { clock: this.options.clock } : {}) }).then(store => {
       if (this.stopped) { store.close(); return refuse("stopped"); }
       this.store = store; return store;
     });

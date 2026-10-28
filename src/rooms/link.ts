@@ -26,6 +26,8 @@ export interface RoomLinkApplication {
   receive(context: RoomLinkContext, input: { digest: string; sender: string; message?: RoomMessage }): Promise<void>;
   online(context: RoomLinkContext): Promise<void>;
   stored(context: RoomLinkContext, input: { digest: string; seq: string }): void;
+  /** Fixed transport metadata only; never application completion or authority. */
+  transportAck?(context: RoomLinkContext, input: { digest: string }): void;
   capacityChanged?(context: RoomLinkContext): void;
   gap?(context: RoomLinkContext, input: { sender: string; count: string }): void;
 }
@@ -367,6 +369,8 @@ export class RoomLink {
     if (message.type === "queue_ack") {
       const row = exact(message, ["v", "type", "digest"]);
       if (typeof row.digest !== "string" || !DIGEST.test(row.digest)) fail();
+      try { this.options.application?.transportAck?.(this.context(session, local.current.digest), { digest: row.digest }); }
+      catch { /* A transport observer cannot change delivery or reconnect the link. */ }
       return;
     }
     if (message.type === "roster_installed") {
