@@ -1,3 +1,4 @@
+import { queueBackpressure, queueBackpressurePolicy, type QueueBackpressureCode, type QueueBackpressurePolicy, type QueueBackpressureStatus, type QueuePressure } from "./queue-backpressure.ts";
 import { canonicalMemorySymbolNode, normalizeMemorySymbolInput, MEMORY_SYMBOL_LIMIT, type MemorySymbolNodes } from "./memory-symbols.ts";
 import { createHash } from "node:crypto";
 import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-command.ts";
@@ -73,6 +74,8 @@ export interface TasksDeps {
   board: Board;
   bus: Bus;
   routing: () => Routing;
+  /** #800: normalized machine-local admission policy; absent or both zero preserve the old queue behaviour. */
+  queueBackpressure?: () => QueueBackpressurePolicy;
   /** Startup-bound project declarations; routing never discovers instances from peer names. */
   instances?: () => InstancesConfig;
   /** Host proof of each live extra runtime's actual isolated execution root; config paths alone are not proof. */
@@ -214,6 +217,10 @@ const DEMOTE_AT = 1.5;
 /** An approval counts as contradicted when work on the same places fails within this window (issue #35). */
 const CONTRADICTION_WINDOW_MS = 7 * 86_400_000;
 const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
+const QUEUE_PRESSURE_CODES: readonly QueueBackpressureCode[] = ["queue-count", "queue-age", "queue-age-unknown"];
+const isQueuePressureCode = (code: string): code is QueueBackpressureCode => (QUEUE_PRESSURE_CODES as readonly string[]).includes(code);
+const QUEUE_RECHECK_PAGE = 32;
+interface QueuePressurePass { ownerAfter: number; reviewAfter: number; ownerDone: boolean; reviewDone: boolean; retained: boolean; generation: number }
 /** Board events that leave a task where its completion check found it; any other event means it moved on meanwhile. */
 const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
 QUIET_EVENTS.add("ready held"); // #655: the hub's note that a ready task waits for its reserved owner's WIP slot.
@@ -737,6 +744,7 @@ export class Tasks {
       ...(h.unmetCriteria?.length ? { unmetCriteria: h.unmetCriteria } : {}),
       ...(h.deliverables?.length ? { deliverables: publicDeliverables(h.deliverables, this.nameable) } : {}),
       ...(h.reviewBlocked ? { reviewBlocked: true } : {}),
+      ...(h.queueReviewHeld ? { queueReviewHeld: true } : {}),
       ...(h.reviewerFailure ? { reviewerFailure: { peer: screenHistoryText(h.reviewerFailure.peer, "reviewer"), cause: h.reviewerFailure.cause, ...(h.reviewerFailure.head ? { head: screenHistoryText(h.reviewerFailure.head, "review head") } : {}) } } : {}),
       ...(h.planning ? { planning: { revision: h.planning.revision, fields: h.planning.fields, ...(h.planning.split ? { children: h.planning.split.children.map(child => child.id) } : {}) } } : {}),
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
@@ -822,13 +830,44 @@ export class Tasks {
     return { adapterCatalog: this.d.adapterCatalog, instances, ownerIsolation: this.d.ownerIsolation?.() ?? {}, wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])), load: Object.fromEntries(peers.map(peer => [peer, this.d.bus.queued(peer)])) };
   }
 
+  private queuePolicy(): QueueBackpressurePolicy | undefined {
+    const policy = queueBackpressurePolicy(this.d.queueBackpressure?.());
+    return policy.max_queued > 0 || policy.max_oldest_s > 0 ? policy : undefined;
+  }
+
+  /** Admission is pending metadata only; an unavailable read never invents an empty/fresh queue. */
+  private queueRouting(peers: readonly PeerId[], policy = this.queuePolicy()): Pick<InstanceRoutingOptions, "queues" | "queueBackpressure"> & { now?: number } {
+    if (!policy) return {};
+    const queues = Object.fromEntries([...new Set(peers)].map(peer => {
+      let value: QueuePressure;
+      try { value = this.d.bus.assignmentQueue(peer); } catch { value = { queued: NaN }; }
+      return [peer, value];
+    }));
+    return { queueBackpressure: policy, queues, now: this.d.now?.() ?? Date.now() };
+  }
+
+  /** Public ids/counts/reasons only; no board history, pending envelope body or task text is read. */
+  queuePressureStatus(peers: readonly string[]): QueueBackpressureStatus | undefined {
+    const policy = this.queuePolicy();
+    if (!policy) return undefined;
+    const all = [...new Set(peers)].filter(peer => /^[a-z][a-z0-9-]{0,31}$/.test(peer));
+    const bounded = all.slice(0, 4096), input = this.queueRouting(bounded, policy), now = input.now!;
+    const rows = Object.fromEntries(bounded.map(peer => {
+      const value = peerEntry(input.queues, peer), refusal = queueBackpressure(peer, policy, value, now);
+      const queued = value && Number.isSafeInteger(value.queued) && value.queued >= 0 ? value.queued : null;
+      const at = queued !== null && queued > 0 && typeof value?.oldestQueuedAt === "number" && Number.isSafeInteger(value.oldestQueuedAt) && value.oldestQueuedAt >= 0 && value.oldestQueuedAt <= now ? value.oldestQueuedAt : null;
+      return [peer, { queued, oldestQueuedAt: at, oldestAgeMs: at === null ? null : now - at, blocked: refusal !== undefined, ...(refusal ? { code: refusal.code, reason: refusal.reason } : {}) }];
+    }));
+    return { policy, peers: rows, ...(all.length > bounded.length ? { truncated: true as const } : {}) };
+  }
+
   /** Peer health and roles the daemon feeds routing (issues #89, #90, #92): failing peers are skipped, held queues explained. */
   private health() {
     const failing = this.d.failing?.();
     const held = this.d.held?.();
     const workload = this.instanceRouting();
     const peers = workload.instances ? [...new Set([...(this.d.adapterCatalog?.definitions ?? ADAPTERS).map(adapter => adapter.kind), ...Object.keys(workload.instances), ...this.d.bus.peers.keys()])] : (this.d.adapterCatalog?.definitions ?? ADAPTERS).map(adapter => adapter.kind);
-    return { ...workload, reviewPool: { pool: this.d.review?.pool ?? DEFAULT_REVIEW_POOL, rerotate: this.d.review?.rerotate, required: this.d.review?.pool !== undefined, ...(this.d.review?.same_family === "never" ? { sameFamily: "never" as const } : {}) }, ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => (this.d.adapterCatalog?.definitionOf ?? definitionOf)(peer.id, workload.instances)?.attach?.pullOnlyForms?.length && peer.pullOnly).map(peer => peer.id), offRoster: peers.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+    return { ...workload, ...this.queueRouting([...new Set([...peers, ...this.d.bus.peers.keys()])]), reviewPool: { pool: this.d.review?.pool ?? DEFAULT_REVIEW_POOL, rerotate: this.d.review?.rerotate, required: this.d.review?.pool !== undefined, ...(this.d.review?.same_family === "never" ? { sameFamily: "never" as const } : {}) }, ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => (this.d.adapterCatalog?.definitionOf ?? definitionOf)(peer.id, workload.instances)?.attach?.pullOnlyForms?.length && peer.pullOnly).map(peer => peer.id), offRoster: peers.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
   }
 
   private reviewHead(task: Task): string | undefined { return task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead; }
@@ -848,17 +887,22 @@ export class Tasks {
   private poolReview(task: Task, refs?: TaskRefs): Assignment | undefined {
     if (this.manuallyNamedReviewer(task) || this.isPii(task) || task.class === "review") return undefined;
     const draft = { ...task, refs: { ...task.refs, ...cleanRefs(refs) } };
-    const selection = assign(draft, this.states(), this.d.routing(), { ...this.weights(task.class, draft), candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}) });
-    return selection.reviewSelection ? selection : undefined;
+    const weights = this.weights(task.class, draft);
+    const selection = assign(draft, this.states(), this.d.routing(), { ...weights, candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}) });
+    const heldSelection = task.reviewer === USER && task.history[this.reviewRequestRevision(task) - 1]?.queueReviewHeld === true;
+    return selection.reviewSelection || weights.queueBackpressure || heldSelection ? selection : undefined;
   }
 
-  private reviewMetadata(assignment?: Assignment): ReviewerHistory {
+  private reviewMetadata(assignment?: Assignment, task?: Task): ReviewerHistory {
     const choice = assignment?.reviewSelection;
     const family = choice && assignment?.plannerFallback && assignment.reviewer ? (this.d.adapterCatalog?.familyOf ?? familyOf)(assignment.reviewer, this.d.instances?.()) : choice?.family;
     const reason = choice && assignment?.plannerFallback
       ? assignment.sameFamilyFallback ? "same-family fallback" as const : "unavailable skip" as const
       : choice?.reason;
-    return { ...(family ? { reviewerFamily: family } : {}), ...(reason ? { reviewerReason: reason } : {}), ...(assignment?.reviewBlocked ? { reviewBlocked: true } : {}) };
+    const queueReviewHeld = task !== undefined && !this.isPii(task) && assignment?.reviewer === USER && assignment.reviewBlocked === true
+      && assignment.refusals?.some(row => row.role === "reviewer" && isQueuePressureCode(row.code));
+    const queueReviewBinding = task ? this.queueReviewBinding(task) : undefined;
+    return { ...(family ? { reviewerFamily: family } : {}), ...(reason ? { reviewerReason: reason } : {}), ...(assignment?.reviewBlocked ? { reviewBlocked: true } : {}), ...(queueReviewHeld ? { queueReviewHeld: true as const, ...(queueReviewBinding !== undefined ? { queueReviewBinding } : {}) } : {}) };
   }
 
   /** Capability admission precedes explicit assignments/reservations, independent of readiness or transient peer health. */
@@ -885,7 +929,8 @@ export class Tasks {
   private weights(cls: TaskClass, task?: Task) {
     const now = Date.now();
     const quota = this.d.quota?.();
-    return { ...this.health(), planners: this.plannerHolders(), ...(task ? { reviewPool: this.reviewPoolOptions(task), ...(task.planner ? { keptPlanner: task.planner } : {}) } : {}), now, demoted: this.demoted(cls, now), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
+    const health = this.health(), clock = health.now ?? now;
+    return { ...health, planners: this.plannerHolders(), ...(task ? { reviewPool: this.reviewPoolOptions(task), ...(task.planner ? { keptPlanner: task.planner } : {}) } : {}), now: clock, demoted: this.demoted(cls, clock), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
   }
 
   /**
@@ -1221,6 +1266,7 @@ export class Tasks {
   plannerRefusal(task: Task): string {
     const parts: string[] = [];
     const excluded = [...new Set(this.excluded(task))];
+    const pressure = this.queueRouting(Object.keys(this.states()));
     if (excluded.length) parts.push(`${excluded.join(", ")} declined or was escalated away from this task for good; only a person's ahub task assign lifts that`);
     for (const peer of Object.keys(this.states())) {
       if (excluded.includes(peer)) continue;
@@ -1228,14 +1274,16 @@ export class Tasks {
       if (wip >= limit) parts.push(`${peer} WIP full (${wip}/${limit}); no eligible planner WIP capacity`);
       else if (queue.heldBy) parts.push(`${peer} has a held queue (a delivery is held; resolve it with ahub queue list)`);
       else if (queue.needsReview > 0) parts.push(`${peer} has ${queue.needsReview} delivery(ies) in needs_review`);
+      const refusal = queueBackpressure(peer, pressure.queueBackpressure, peerEntry(pressure.queues, peer), pressure.now ?? NaN);
+      if (refusal) parts.push(`${peer} ${refusal.reason}`);
     }
     return parts.length ? `no peer can take the planner pull: ${parts.join("; ")}` : "no peer has eligible planner WIP capacity";
   }
-  private plannerAssignment(task: Task, reservedOnly = false, routing: Routing = this.d.routing()): Assignment {
+  private plannerAssignment(task: Task, reservedOnly = false, routing: Routing = this.d.routing(), queueOverride?: "owner"): Assignment {
     const states = this.states();
     const full = this.plannerFull(task);
     // Preview the To Do transition without routing or offering the persisted backlog row.
-    return assign({ ...task, state: "proposed" }, states, routing, { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
+    return assign({ ...task, state: "proposed" }, states, routing, { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task), ...(queueOverride ? { queueOverride } : {}) });
   }
 
   async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }, opts: { onBehalfOf?: PeerId; guard?: () => void } = {}): Promise<Task> {
@@ -1243,11 +1291,15 @@ export class Tasks {
     // #785 P1c: `by` is the actor the history records; the hub's opt-in auto pull names the planner it acts for, and that planner's authority is what is checked.
     if (opts.onBehalfOf !== undefined && by !== HUB) throw new PreEffectToolRefusal("only the hub pulls on a planner's behalf");
     const planner = opts.onBehalfOf ?? by;
+    let queueAssignment: { current: () => void } | undefined;
     // `opts.guard` (the auto pull's own admission, #785 P1c) throws a PreEffectToolRefusal once the pull is no longer wanted; it runs wherever authority is rechecked, so it
     // also runs after the awaited PII screen and right before the assignment write, where a setting turned off or a recovery that began meanwhile must still stop it.
-    const authorized = () => { this.planningAuthority(planner); opts.guard?.(); };
+    const authorized = () => { this.planningAuthority(planner); opts.guard?.(); queueAssignment?.current(); };
     authorized();
     if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0 || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("planner pull needs an id, revision and bounded reason");
+    queueAssignment = by !== HUB && opts.onBehalfOf === undefined && this.d.board.get(input.id)?.reserved
+      ? this.explicitQueueAssignment(by, "owner", true) : undefined;
+    queueAssignment?.current();
     const validate = () => {
       const task = this.d.board.get(input.id);
       if (task?.draft) throw new PreEffectToolRefusal(`task #${task.id} is an intake draft; the person approves it first`);
@@ -1268,7 +1320,7 @@ export class Tasks {
         })) throw new PreEffectToolRefusal("a person's P0 backlog order is retained");
       }
       if (task.reserved && this.excluded(task).includes(task.reserved)) throw new PreEffectToolRefusal(this.plannerRefusal(task));
-      const assignment = this.plannerAssignment(task, !!task.reserved);
+      const assignment = this.plannerAssignment(task, !!task.reserved, this.d.routing(), queueAssignment ? "owner" : undefined);
       if (!assignment.owner) {
         const refusal = task.reserved ? `reserved peer ${task.reserved} cannot take the planner pull: ${assignment.refusals?.find(row => row.role === "owner" && row.peer === task.reserved)?.reason ?? "not eligible"}; ${this.plannerRefusal(task)}` : this.plannerRefusal(task);
         throw new PreEffectToolRefusal(`${this.hasPersonReservation(task) ? "a person's reservation is retained; " : ""}${refusal}`);
@@ -1279,7 +1331,7 @@ export class Tasks {
     authorized();
     const current = validate();
     if (current.task.reserved) {
-      return this.assignOwner(current.task, by, { candidates: [current.owner], namedOwner: current.owner, planner: true, refuseNamed: "pre",
+      return this.assignOwner(current.task, by, { candidates: [current.owner], namedOwner: current.owner, planner: true, refuseNamed: "pre", ...(queueAssignment ? { queueOverride: "owner" as const, current: queueAssignment.current } : {}),
         plannerPull: { revision: input.revision, note: input.reason.trim(), withheld, guard: () => {
           authorized();
           const checked = validate();
@@ -2499,7 +2551,7 @@ export class Tasks {
   }
 
   /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
-  private async assignOwner(task: Task, by: PeerId, opts: { current?: () => void; candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number; refuseNamed?: "pre" | "plain"; plannerPull?: { revision: number; note: string; withheld: boolean; guard: () => void } } = {}): Promise<Task> {
+  private async assignOwner(task: Task, by: PeerId, opts: { current?: () => void; queueOverride?: "owner"; candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number; refuseNamed?: "pre" | "plain"; plannerPull?: { revision: number; note: string; withheld: boolean; guard: () => void } } = {}): Promise<Task> {
     opts.current?.();
     if (task.state === "backlog" && !opts.plannerPull) throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
@@ -2529,7 +2581,7 @@ export class Tasks {
     const waits = this.waitsFor(task);
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
     const plannerFull = plannedMove ? this.plannerFull(task) : [];
-    const a = assign(opts.plannerPull ? { ...task, state: "proposed" } : task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: plannerFull, ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class, task), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}) });
+    const a = assign(opts.plannerPull ? { ...task, state: "proposed" } : task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: plannerFull, ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class, task), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}), ...(opts.queueOverride ? { queueOverride: opts.queueOverride } : {}) });
 
     if (waits.length) {
       if (opts.plannerPull) throw new PreEffectToolRefusal("planner pull waits for dependency approval");
@@ -2543,7 +2595,7 @@ export class Tasks {
         const why = a.refusals?.find(row => row.role === "owner" && row.peer === opts.namedOwner)?.reason ?? "not eligible";
         throw new (opts.refuseNamed === "pre" ? PreEffectToolRefusal : Error)(`cannot assign task #${task.id} to ${opts.namedOwner}: ${why}${/offline|not attached/.test(why) ? "; assign again once it is attached" : ""}`);
       }
-      if (!task.owner && task.state === "proposed") this.reportStall(task, this.ownerStallCause(task, a));
+      if (!task.owner && task.state === "proposed") this.reportStall(task, this.ownerStallCause(task, a, opts.candidates === undefined && opts.namedOwner === undefined && !opts.claim));
       this.releaseNotice(opts.roster
         ? `task ${this.publicTitle(task)}: ${task.owner} is off roster and no peer can take it; it stays with ${task.owner} in ${task.state}; assign with: ahub task assign ${task.id} <peer>`
         : `task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: ahub task assign ${task.id} <peer>`);
@@ -2561,11 +2613,12 @@ export class Tasks {
     opts.plannerPull?.guard();
     const assignmentNote = this.assignmentNote(`${opts.note ?? `to ${a.owner}`}${passed}`, a);
     const binding = this.plannerBinding(task, a, !!opts.plannerPull);
-    const assignmentExtra = { ...this.reviewMetadata(a), ...(binding ? { plannerReason: binding.plannerReason } : {}), ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) };
+    const assignmentExtra = { ...this.reviewMetadata(a, task), ...(binding ? { plannerReason: binding.plannerReason } : {}), ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) };
     opts.current?.();
     const next = opts.plannerPull
       ? this.d.board.pullAssigned(task.id, by, a.owner, opts.plannerPull.revision, opts.plannerPull.note, opts.plannerPull.withheld, a.reviewer ?? null, assignmentNote, assignmentExtra, task.history.length, binding)
       : this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(binding ? { planner: binding.planner } : {}), ...(opts.roster && task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, assignmentNote, assignmentExtra, opts.expectedFlowRevision);
+    this.queueReviewWritten(next);
     if (opts.plannerPull) this.planningRecorded({ by, task: next.id, fields: ["pull", "reserved"], revision: next.planningRevision! });
     // What calibration reads (issue #109): routing chose the first owner (no single named candidate, no claim; not an
     // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
@@ -2833,6 +2886,138 @@ export class Tasks {
     if (this.stallView?.key !== key) this.stallView = { key, stalls: this.stallCandidates.rows.filter(({ stall, task, planned }) => stall.cause.kind === "no-writes" || stall.cause.kind === "cancelled-dependency" || !(planned ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.health() })).owner).map(({ stall }) => stall) };
     return structuredClone(this.stallView.stalls);
   }
+  private queuePressureKnown: boolean | undefined;
+  private queuePressureGeneration = 0;
+  private queuePressureQueued = false;
+  private queuePressureRunning = false;
+  private queuePressureDirty = false;
+  private queuePressureStopped = false;
+  private queuePressurePass?: QueuePressurePass;
+  private queuePressureContinuation?: ReturnType<typeof setImmediate>;
+
+  private markQueuePressureCandidate(): void {
+    this.queuePressureKnown = true; this.queuePressureGeneration++;
+    this.scheduleQueuePressureRecheck();
+  }
+  private queueReviewWritten(task: Task): void {
+    if (task.state === "in_review" && task.reviewer === USER && task.history.at(-1)?.queueReviewHeld) this.markQueuePressureCandidate();
+  }
+  private queuePressureAdmitted(): boolean {
+    try { return !this.queuePressureStopped && !this.d.sweepHeld?.() && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError; }
+    catch { return false; }
+  }
+  /** Run after the bus's synchronous queue checkpoint, coalescing notifications without polling. */
+  scheduleQueuePressureRecheck(): void {
+    if (this.queuePressureStopped || this.queuePressureKnown === false) return;
+    this.queuePressureDirty = true;
+    if (this.queuePressureQueued || this.queuePressureRunning || this.queuePressureContinuation) return;
+    this.queuePressureQueued = true;
+    queueMicrotask(() => {
+      this.queuePressureQueued = false;
+      if (!this.queuePressureAdmitted()) return;
+      this.queuePressureDirty = false;
+      const pass = this.queuePressurePass ??= { ownerAfter: 0, reviewAfter: 0, ownerDone: false, reviewDone: false, retained: false, generation: this.queuePressureGeneration };
+      this.queuePressureRunning = true;
+      let failed = false;
+      void this.recheckQueuePressureBatch(pass).catch(() => {
+        failed = true;
+        // A failed/unknown metadata or authority read never creates an assignment.
+        this.queuePressureKnown = true; this.queuePressurePass = undefined;
+      }).finally(() => {
+        this.queuePressureRunning = false;
+        if (!this.queuePressureAdmitted()) { this.queuePressurePass = undefined; return; }
+        if (failed) return;
+        if (this.queuePressurePass && (!pass.ownerDone || !pass.reviewDone)) {
+          this.queuePressureContinuation = setImmediate(() => { this.queuePressureContinuation = undefined; this.scheduleQueuePressureRecheck(); });
+          this.queuePressureContinuation.unref?.();
+          return;
+        }
+        this.queuePressurePass = undefined;
+        const changed = pass.generation !== this.queuePressureGeneration;
+        this.queuePressureKnown = pass.retained || changed;
+        if ((this.queuePressureDirty || changed) && this.queuePressureKnown) this.scheduleQueuePressureRecheck();
+      });
+    });
+  }
+  /** Recovery waits for queued/running host writers; a stop fences a writer already in an await. */
+  queuePressureRechecksPending = (): number => Number(this.queuePressureQueued || this.queuePressureRunning || this.queuePressureContinuation !== undefined);
+  stopQueuePressureRechecks(): void {
+    this.queuePressureStopped = true; this.queuePressureDirty = false; this.queuePressureQueued = false;
+    if (this.queuePressureContinuation) clearImmediate(this.queuePressureContinuation);
+    this.queuePressureContinuation = undefined; this.queuePressurePass = undefined;
+  }
+  private ordinaryQueueProposal(stall: TaskStall, task: Task | undefined): task is Task {
+    return !!task && task.state === "proposed" && !task.owner && !task.reserved && !task.deps?.length
+      && (task.planningRevision ?? 0) === stall.replanRevision && !this.personUnassigned(task) && !this.plannerPullRecord(task)?.pull
+      && !task.history.some(entry => OWNERSHIP_EVENTS.has(entry.event) || ["accepted", "done", "done (checking)"].includes(entry.event));
+  }
+  private queueReviewBinding(task: Task): string {
+    return createHash("sha256").update(JSON.stringify([this.reviewHead(task) ?? null, task.refs.repo ?? null, task.sdlc?.repo ?? null, task.sdlc?.pr ?? null])).digest("hex");
+  }
+  private queueReviewHeld(task: Task): boolean {
+    if (task.state !== "in_review" || task.reviewer !== USER || this.isPii(task) || this.manuallyNamedReviewer(task)) return false;
+    const role = task.history[this.reviewRequestRevision(task) - 1];
+    return role?.queueReviewHeld === true && role.queueReviewBinding === this.queueReviewBinding(task);
+  }
+  private async recheckQueuePressureBatch(pass: QueuePressurePass): Promise<void> {
+    if (!this.queuePressureAdmitted()) return;
+    if (!pass.ownerDone) {
+      const page = this.d.board.queuePressureStallPage(pass.ownerAfter, QUEUE_RECHECK_PAGE);
+      pass.ownerAfter = page.afterTask; pass.ownerDone = page.done;
+      for (const stall of page.rows) {
+        if (!this.queuePressureAdmitted()) return;
+        const task = this.d.board.get(stall.task);
+        if (!this.ordinaryQueueProposal(stall, task)) { this.d.board.clearStall(stall.task); continue; }
+        const choice = assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
+        if (choice.owner) {
+          const current = () => { if (!this.queuePressureAdmitted()) throw new PreEffectToolRefusal("queue-pressure retry is no longer admitted"); };
+          try { await this.assignOwner(task, HUB, { current }); } catch (error) {
+            if (!(error instanceof AssignmentUndeliveredError) && this.queuePressureAdmitted()) pass.retained = true;
+          }
+          if (!this.queuePressureAdmitted()) return;
+        }
+        const latest = this.d.board.get(task.id);
+        if (this.ordinaryQueueProposal(stall, latest)) pass.retained = true;
+        else this.d.board.clearStall(task.id);
+      }
+    }
+    if (!pass.reviewDone && this.queuePressureAdmitted()) {
+      const ids = this.d.board.humanReviewPage(pass.reviewAfter, QUEUE_RECHECK_PAGE);
+      pass.reviewAfter = ids.at(-1) ?? pass.reviewAfter; pass.reviewDone = ids.length < QUEUE_RECHECK_PAGE;
+      for (const id of ids) {
+        if (!this.queuePressureAdmitted()) return;
+        const task = this.d.board.get(id);
+        if (!task || !this.queueReviewHeld(task)) continue;
+        const reviewer = await this.recheckQueueReview(task);
+        if (!this.queuePressureAdmitted()) return;
+        const latest = this.d.board.get(id);
+        if (!reviewer && latest && this.queueReviewHeld(latest)) pass.retained = true;
+      }
+    }
+  }
+  private async recheckQueueReview(before: Task): Promise<PeerId | undefined> {
+    const revision = this.reviewRequestRevision(before), head = this.reviewHead(before), owner = before.owner;
+    const valid = () => {
+      if (!this.queuePressureAdmitted()) throw new PreEffectToolRefusal("queue-pressure retry is no longer admitted");
+      const task = this.need(before.id, false, true);
+      if (!this.queueReviewHeld(task) || this.reviewRequestRevision(task) !== revision || this.reviewHead(task) !== head || task.owner !== owner) throw new PreEffectToolRefusal("queue-held review changed");
+      return task;
+    };
+    const choose = (task: Task) => assign(task, this.states(), this.d.routing(), { ...this.weights(task.class, task), candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}) });
+    const initial = choose(valid());
+    if (!initial.reviewer || initial.reviewer === USER || initial.reviewBlocked) return undefined;
+    try {
+      const admission = await this.reviewRequestAdmission(before, undefined, true, before.owner ?? USER, undefined, () => { valid(); return true; });
+      const task = valid(), selection = choose(task), reviewer = selection.reviewer;
+      if (!reviewer || reviewer === USER || selection.reviewBlocked) return undefined;
+      valid();
+      const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, this.assignmentNote("queue pressure cleared", selection), this.reviewMetadata(selection), task.history.length);
+      this.heldReviews.delete(next.id); this.ciWatchers.cancel(next.id);
+      this.releaseNotice(`task #${next.id}: queued review request unavailable`, () => this.sendReview(next, reviewer, "", admission));
+      return reviewer;
+    } catch { return undefined; }
+  }
+
   /** Why a proposal's named owner (a self-claim included) did not get it, from the stall its proposal recorded (#601); undefined when it did. */
   namedOwnerNote(task: Task, named: PeerId | undefined, by: PeerId): string | undefined {
     if (!named || task.owner || task.state !== "proposed") return undefined;
@@ -2841,15 +3026,17 @@ export class Tasks {
     const code = stall.cause.refusals?.find(row => row.peer === named)?.code ?? (stall.cause.peer === named ? stall.cause.code : undefined);
     return `${named} was not assigned${code ? ` (${code})` : ""}: ${stall.cause.kind}; assign it again with hub_task_assign once ${named} can take it`;
   }
-  private ownerStallCause(task: Task, admission: Assignment): TaskStall["cause"] {
+  private ownerStallCause(task: Task, admission: Assignment, automatic = true): TaskStall["cause"] {
     const refusal = admission.refusals?.find(row => row.role === "owner" && row.peer === task.reserved);
     // Persist the existing stall vocabulary; the assignment/explain keeps the precise instance/family refusal.
     const persisted = (code: NonNullable<Assignment["refusals"]>[number]["code"]): TaskStall["cause"]["code"] => code === "instance" || code === "family" ? "policy" : code;
-    return refusal ? { kind: "reservation", peer: refusal.peer, code: persisted(refusal.code) } : { kind: "no-eligible-peer", code: "unavailable", refusals: admission.refusals?.filter(row => row.role === "owner").map(({ peer, code }) => ({ peer, code: persisted(code) })).sort((a, b) => a.peer.localeCompare(b.peer)) ?? [] };
+    const pressure = automatic ? admission.refusals?.find(row => row.role === "owner" && isQueuePressureCode(row.code)) : undefined;
+    return refusal ? { kind: "reservation", peer: refusal.peer, code: persisted(refusal.code) } : { kind: "no-eligible-peer", code: pressure ? persisted(pressure.code) : "unavailable", refusals: admission.refusals?.filter(row => row.role === "owner").map(({ peer, code }) => ({ peer, code: persisted(code) })).sort((a, b) => a.peer.localeCompare(b.peer)) ?? [] };
   }
   private reportStall(task: Task, cause: TaskStall["cause"], now = Date.now(), description?: string): void {
     const stall: TaskStall = { task: task.id, cause, signature: JSON.stringify(cause), replanRevision: task.planningRevision ?? 0, at: now };
     if (!this.d.board.recordStall(stall)) return;
+    if (cause.kind === "no-eligible-peer" && isQueuePressureCode(cause.code)) this.markQueuePressureCandidate();
     const text = description ?? `Task #${task.id} stalled: ${cause.kind}${cause.peer ? ` ${cause.peer}` : ""}${cause.dependency ? ` #${cause.dependency}` : ""} (${cause.code}); configure the runner or peer, ahub task assign ${task.id} <peer>, re-plan dependencies, or cancel it.`;
     this.releaseNotice(text);
     try { this.d.stallNotice?.(stall); } catch { /* advisory never changes task authority */ }
@@ -2910,13 +3097,13 @@ export class Tasks {
       if (cancelledDependency) { this.reportStall(t, { kind: "cancelled-dependency", dependency: cancelledDependency, code: "cancelled" }); continue; }
       const last = t.history.findLast(entry => !QUIET_EVENTS.has(entry.event))?.event, planned = this.plannerPullRecord(t)?.pull === true;
       if (this.personUnassigned(t) || this.offered.has(t.id) || this.waitsFor(t).length) continue;
+      if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || (!planned && last !== "blocked" && last !== "ready" && last !== "reserved" && !this.isHeld(t))) continue;
       const admission = planned ? this.plannerAssignment(t, true) : assign(t, this.states(), this.d.routing(), { exclude: this.excluded(t), ...this.health() });
       if (!admission.owner) {
         this.reportStall(t, this.ownerStallCause(t, admission));
         continue;
       }
       this.d.board.clearStall(t.id);
-      if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || (!planned && last !== "blocked" && last !== "ready" && last !== "reserved" && !this.isHeld(t))) continue;
       // ponytail: a reserved owner (#207) that attaches after another peer that can take the task is passed over here like
       // an offline one; hold reserved tasks for a grace period if restarts show that up.
       await this.offerReady(t, "nothing left to wait for");
@@ -4542,7 +4729,8 @@ export class Tasks {
     this.warmRepository({ ...task, refs: { ...task.refs, ...completedRefs } });
     const noWrites = this.noWritesRecorded({ ...task, refs: { ...task.refs, ...completedRefs } });
     const capacity = this.capacityBefore(task);
-    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...completedRefs } }), state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...completedRefs } }), state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, refs: { ...task.refs, ...completedRefs } }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    this.queueReviewWritten(next);
     this.writePlannerNotices(next, capacity, next.state === "approved");
     this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id); // a newer head or a move ends the old head's watcher (#785 P1b)
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
@@ -4896,7 +5084,8 @@ export class Tasks {
     valid();
     const note = manual ? "named reviewer recorded no verdict; the person must review"
       : selection?.reviewSelection ? this.assignmentNote(`reviewer unavailable: ${failure.cause}`, selection) : "no declared reviewer pool can receive the fallback; the person must review";
-    const next = this.d.board.update(task.id, HUB, "reviewer unavailable", { reviewer }, note, { ...this.reviewMetadata(selection), ...(reviewer === USER ? { reviewBlocked: true } : {}), reviewerFailure: { peer: failedPeer, cause: failure.cause, ...(failure.head ? { head: failure.head } : {}) } }, task.history.length);
+    const next = this.d.board.update(task.id, HUB, "reviewer unavailable", { reviewer }, note, { ...this.reviewMetadata(selection, task), ...(reviewer === USER ? { reviewBlocked: true } : {}), reviewerFailure: { peer: failedPeer, cause: failure.cause, ...(failure.head ? { head: failure.head } : {}) } }, task.history.length);
+    this.queueReviewWritten(next);
     this.releaseNotice(`task ${this.publicTitle(next)}: former review request withdrawal incomplete`, () => this.withdrawRoleRequest(task, next, "reviewer"));
     let offered = false;
     if (reviewer === USER) {
@@ -5254,6 +5443,17 @@ export class Tasks {
     });
   }
 
+  private explicitQueueAssignment(by: PeerId, role: Exclude<TaskAssignmentRole, "planner">, preEffect: boolean): { role: "owner" | "reviewer"; current: () => void } | undefined {
+    if (!this.queuePolicy()) return undefined;
+    if (by === USER) return { role, current: () => {} };
+    const current = () => {
+      const holders = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([peer]) => peer);
+      return holders.length === 1 && holders[0] === by && this.d.bus.isRostered(by);
+    };
+    if (!current()) return undefined;
+    return { role, current: () => { if (!current()) throw new (preEffect ? PreEffectToolRefusal : Error)("only the current configured conductor may override queue backpressure"); } };
+  }
+
   /** Caller authority is checked by the daemon; keep the real actor in task history. */
   async assignTo(id: unknown, peer: PeerId, by: PeerId = USER, preEffect = false, role: TaskAssignmentRole = "owner", expectedFlowRevision?: number): Promise<Task> {
     if (role !== "owner" && role !== "reviewer" && role !== "planner") throw new (preEffect ? PreEffectToolRefusal : Error)("role must be owner, reviewer or planner");
@@ -5272,6 +5472,8 @@ export class Tasks {
       const conductors = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor);
       if (conductors.length !== 1 || conductors[0] !== by) throw new (preEffect ? PreEffectToolRefusal : Error)("only the console user or the configured conductor may name a reviewer");
     }
+    const queueAssignment = this.explicitQueueAssignment(by, role, preEffect);
+    queueAssignment?.current();
     const task = this.need(id, role === "owner", preEffect);
     this.checkFlowRevision(task, expectedFlowRevision, preEffect);
     if (!this.d.bus.isRostered(peer)) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} is off roster; add it to the roster before assigning work`);
@@ -5279,10 +5481,11 @@ export class Tasks {
     if (role === "reviewer") {
       if (!OPEN.includes(task.state) && task.state !== "in_review") throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is ${task.state}: its reviewer can no longer change`);
       this.ready(task, preEffect);
-      const a = assign(task, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class, task) });
+      const a = assign(task, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class, task), ...(queueAssignment ? { queueOverride: queueAssignment.role } : {}) });
       if (a.reviewer !== peer) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot name ${peer} as reviewer: ${a.trace.filter(line => line.includes("reviewer") || line.includes("pii")).join("; ")}`);
       const admission = task.state === "in_review" ? await this.reviewRequestAdmission(task, undefined, preEffect, by) : undefined;
       // Every runtime authority check precedes the final write, including revocations during the metadata await.
+      queueAssignment?.current();
       const current = this.need(task.id, false, preEffect);
       if (current.history.length !== task.history.length) throw new (preEffect ? PreEffectToolRefusal : Error)("task changed during reviewer admission");
       if (by !== USER) {
@@ -5291,8 +5494,9 @@ export class Tasks {
       }
       if (!this.d.bus.isRostered(peer)) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} is off roster`);
       this.requireCapabilities(current, peer, role, preEffect);
-      const eligible = assign(current, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(current.owner ? { notReviewer: current.owner } : {}), ...this.weights(current.class, current) });
+      const eligible = assign(current, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(current.owner ? { notReviewer: current.owner } : {}), ...this.weights(current.class, current), ...(queueAssignment ? { queueOverride: queueAssignment.role } : {}) });
       if (eligible.reviewer !== peer) throw new (preEffect ? PreEffectToolRefusal : Error)("reviewer is no longer eligible");
+      queueAssignment?.current();
       const next = this.d.board.update(task.id, by, "reviewer changed", { reviewer: peer }, this.assignmentNote(`named reviewer ${peer}`, a), { reason: "manual" }, expectedFlowRevision);
       if (next.state === "in_review" && task.reviewer && task.reviewer !== peer) {
         this.withdrawRoleRequest(task, next, "reviewer");
@@ -5301,7 +5505,8 @@ export class Tasks {
       return next;
     }
     // Work that waits is handed to nobody yet (issue #207): the peer becomes its reserved owner instead.
-    if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], namedOwner: peer, event: "reassigned", reason: "manual", override: by === USER, expectedFlowRevision, refuseNamed: preEffect ? "pre" : "plain" });
+    if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], namedOwner: peer, event: "reassigned", reason: "manual", override: by === USER, expectedFlowRevision, refuseNamed: preEffect ? "pre" : "plain", ...(queueAssignment ? { queueOverride: "owner" as const, current: queueAssignment.current } : {}) });
+    queueAssignment?.current();
     const next = this.d.board.update(task.id, by, "reserved", { reserved: peer }, `for ${peer}`, { reason: "manual" }, expectedFlowRevision);
     this.releaseNotice(`task ${this.publicTitle(next)} reserved for ${peer} by ${by}; it is offered to ${peer} first once what it waits for is approved`);
     return next;
@@ -5401,7 +5606,8 @@ export class Tasks {
           continue;
         }
         current?.();
-        const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, this.assignmentNote(why, a), this.reviewMetadata(a));
+        const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, this.assignmentNote(why, a), this.reviewMetadata(a, task));
+        this.queueReviewWritten(next);
         moved.push({ id: task.id, title: this.publicTitle(task), to: reviewer, role: "reviewer" });
         current?.();
         if (next.state === "in_review" && reviewer && reviewer !== USER) {

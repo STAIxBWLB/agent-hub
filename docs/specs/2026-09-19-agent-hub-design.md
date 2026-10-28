@@ -5825,3 +5825,75 @@ The [person accepted these choices on 2026-10-27](https://github.com/STAIxBWLB/a
 | O2 initial roles | Implementer, verifier and ordinary continuing reviewer within an explicit module-role subset and the kind ceiling, with existing independence and MCP restrictions. Every instance has its own worktree. Planner, conductor and fresh/isolated reviewer capabilities stay excluded; no fresh-reviewer isolation is claimed. |
 | O3 offline declaration binding | Keep module declarations as `{path, sha256}` and require the matching authenticated live startup catalog for semantic instance resolution; offline rows remain declared/unknown. |
 | O4 controlled recovery scope | Preserve the live-module refusal. Stop the instance explicitly, then a person starts it again with the same binding; there is no automatic resume. |
+
+## Queue backpressure for automatic assignment (#800)
+
+`tasks.queue_backpressure` is an opt-in machine-local config block. It does not
+change the shipped routing template or frozen routing corpus. Its independently
+optional integer fields are `max_queued` (0..10,000 envelopes) and `max_oldest_s`
+(0..604,800 seconds). Each defaults to zero, which disables that threshold. Trusted
+config layers merge these fields independently. A committed project cannot enable
+the policy, and the person-only settings controls write untracked local config.
+Reload applies the policy live. Zero disables a guard, so these controls have no
+conductor-editable permissive floor.
+
+The guard applies only to new automatic owner/reviewer offers. Counts strictly
+above the configured maximum hold an offer; equality is allowed. An oldest pending
+age strictly above its threshold also holds. Missing, invalid, future or otherwise
+unproven age holds when age policy is enabled, rather than becoming zero or fresh.
+A verified empty queue has no pending age and is allowed. Unknown count holds when
+a queue policy is enabled. The fixed reasons are `queue-count`, `queue-age` and
+`queue-age-unknown`. A queue-blocked automatic reviewer walk never turns into direct
+approval: it remains blocked for a person or a later eligible reviewer.
+
+The pure `assign()` receives policy, pending metadata and one host clock as data.
+`Tasks` uses the same inputs for real assignment and `ahub route explain`; routing
+never reads a journal or clock itself for this guard. The guard does not replace
+WIP, capability, privacy, independence, roster or runtime ownership admission.
+Planner-pull reservations still count in their own WIP metric, not as queue work.
+When both thresholds are off, routing results/traces and delivery behavior stay
+unchanged, and no queue metadata query is added to routing.
+
+Only an explicit person/current single-conductor nomination can bypass queue
+pressure, and only for that nominated owner or reviewer role. An explicit reserved
+pull may bypass the owner's queue guard; an ordinary planner pull, an unreserved
+pull choosing its owner automatically, or HUB auto-pull on a planner's behalf may
+not. Merely having `namedOwner`, `namedReviewer` or a reservation is not authority.
+Override authority and all other admission conditions are rechecked after awaits.
+An owner nomination does not waive an automatically chosen reviewer's guard.
+Future automatic offers reevaluate current queue conditions; no lasting override
+is inferred from free-text history.
+
+`Bus.assignmentQueue()` matches the number of envelopes actually waiting in
+`Bus.queued`, not the number of digest batches, active deliveries or WIP tasks.
+Age comes from host queue-arrival provenance, not an envelope sender's timestamp.
+Opt-in arrival metadata is bounded and persisted with the existing v1 bus snapshot;
+default-off snapshots keep their old shape. Legacy, missing or recovery-deferred
+arrival provenance remains unknown across resaves/restarts until those entries
+leave the queue. Advisory metadata may be omitted at the existing snapshot byte
+ceiling rather than refusing an otherwise valid delivery.
+
+The journal keeps small per-peer summaries committed with the bus snapshot. Reads
+use summary/count/oldest/revision metadata only, never delivery body JSON or a sort
+of full delivery history. A revision mismatch, including an older daemon writing
+the snapshot without updating summaries, produces unknown age. Summaries are also
+checked against the bus's exact current queue count. Existing queue/delivery
+ordering, steering, withdrawals, settlement and recovery traffic are not changed.
+
+Queue-origin holds are reconsidered after queue mutations commit, on relevant peer
+state/policy changes and at bootstrap. Rechecks are coalesced and bounded; they do
+not poll delivery history or reassign unrelated legacy/person-unassigned work.
+Ordinary ownerless proposals are identified by their host-written root queue stall
+code. Automatic review holds carry a host-only `queueReviewHeld` history marker,
+bound to the current review role boundary and an opaque SHA-256 of the selected
+head/repository/PR identity; manual reviewer or artifact changes invalidate it.
+Candidate pages use board metadata, with fresh role/head/privacy/admission checks
+before effects. Shutdown/recovery cancels queued recheck callbacks and fences awaited passes.
+
+Status exposes policy and bounded per-peer queued count, host oldest timestamp,
+age and fixed blocked reason separately from WIP. Unknown numeric values are null,
+and human output says unknown. With the policy on, an unknown host age does not
+fall back to a sender timestamp and appear fresh. The stall view retains the same
+queue reason codes; metrics contain ids/numbers/closed words, not envelope bodies
+or task text. The policy changes assignment admission only: it never drops,
+reorders, auto-resolves or cancels existing delivery.

@@ -1,4 +1,5 @@
 import { RoomCommands, type RoomPreview } from "../rooms/commands.ts";
+import { queueBackpressurePolicy, type QueueBackpressurePolicy } from "./queue-backpressure.ts";
 import { assertNativeProofPorts } from "../adapters/native-proof-ports.ts";
 import { externalInstanceCatalog } from "../adapters/external-metadata.ts";
 import { externalInstanceBinding, sameExternalInstanceBinding, externalInstanceStateDir, readExternalInstanceRecord, writeExternalInstanceRecord, type ExternalInstanceBinding } from "./external-instance.ts";
@@ -231,7 +232,7 @@ export interface HubConfig {
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
-  tasks: { release_after_min: number; wip_limits?: Record<string, number>; escalate_after: number; /** #785 P1c: pull the top explicitly reserved ready card when a slot frees; machine-local, default off. */ auto_pull?: boolean };
+  tasks: { release_after_min: number; wip_limits?: Record<string, number>; escalate_after: number; /** #785 P1c: pull the top explicitly reserved ready card when a slot frees; machine-local, default off. */ auto_pull?: boolean; queue_backpressure?: Partial<QueueBackpressurePolicy> };
   /** Between-turn task escalation, disabled unless explicitly enabled (#186). */
   task_sweep: TaskSweepConfig;
   /** #512a: machine-local schedules; checked by `schedulesConfig`, never set from a committed file. */
@@ -416,6 +417,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     resolveProfile(file.profile, file.profile_overrides);
     projectionConfig(file.text_projection);
     corpusConfig(file.corpus);
+    queueBackpressurePolicy(file.tasks?.queue_backpressure);
     for (const [block, key] of [["pii", "paths"], ["data", "readonly"]] as const) {
       const raw = file[block];
       if (raw !== undefined && (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).some(k => k !== key))) throw new Error(block + " must be a bounded path policy block");
@@ -446,6 +448,8 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
   });
   if (!files.length) return routingRetired.length ? { ...DEFAULT_CONFIG, retired: [...routingRetired] } : DEFAULT_CONFIG;
   const file = files.reduce((a, b) => ({ ...a, ...b, ...Object.fromEntries(CONFIG_BLOCKS.filter((k) => a[k] !== undefined && b[k] !== undefined).map((k) => [k, { ...a[k], ...b[k] }])) }));
+  const pressureLayers = files.filter(layer => layer.tasks?.queue_backpressure !== undefined);
+  if (pressureLayers.length) file.tasks = { ...file.tasks, queue_backpressure: pressureLayers.reduce((prior, layer) => ({ ...prior, ...layer.tasks.queue_backpressure }), {}) };
   const wipLayers = files.filter(layer => layer.tasks?.wip_limits !== undefined);
   if (wipLayers.length) file.tasks = { ...file.tasks, wip_limits: wipLayers.reduce((prior, layer) => ({ ...prior, ...planningWipLimits(layer.tasks.wip_limits) }), {} as Record<string, number>) };
   const overrides = files.reduce<unknown>((prior, layer) => mergeProfileOverrides(prior, layer.profile_overrides), undefined);
@@ -1210,7 +1214,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const staleOff = () => config.experiments?.stale_notices === "deliver";
   if (staleOff()) log("experiment: stale notices are delivered as before 0.12.4 (the issue #106 ablation)");
   const requestedPeerStops = new Set<string>();
-  const bus = new Bus({ rostered: membershipAllowed, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
+  const queuePolicy = () => queueBackpressurePolicy(config.tasks.queue_backpressure);
+  const bus = new Bus({ rostered: membershipAllowed, trackQueuePressure: () => { const policy = queuePolicy(); return policy.max_queued > 0 || policy.max_oldest_s > 0; }, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
     doing: (peer, kind, text) => observeDoing(peer, kind, text),
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (isWsPeer(p)) p.notifyQueued(counts); } });
   startupCleanup.push(() => bus.closeJournal());
@@ -1897,6 +1902,7 @@ export async function startDaemon(opts: DaemonOptions) {
     sweepHeld: () => stopping || recoveryActive(),
     ciWatch: opts.ciWatch,
     autoPull: () => config.tasks.auto_pull === true,
+    queueBackpressure: queuePolicy,
     cancellationHeld: () => stopping || recoveryActive(),
     offerRead: (peer, envelopeId) => journal.offerRead(peer, envelopeId),
     offerPullOnly: (id) => { const peer = bus.peers.get(id); return peer?.pullOnly === true; },
@@ -3495,6 +3501,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || ("recoveryReady" in peer && peer.recoveryReady !== true))) return false;
     if (checkPending.size !== 0) return false;
     if (tasks.autoPullsPending() !== 0) return false; // #785 P1c: an automatic backlog pull mid-admission would write after the commit's digest; its own line keeps the line above exact for scripts/seeds.json
+    if (tasks.queuePressureRechecksPending() !== 0) return false;
     if (tasks.schedulesPending() !== 0) return false; // #512a: a scheduled run mid-admission (its PII screen is awaited) would write after the commit's digest; the hold fence refuses its write, and this waits for it to end
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
@@ -3712,7 +3719,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const taskStalls = tasks.stalled();
     const pendingTaskOffers = tasks.pendingOffers().filter(offer => offer.pullOnly === true);
     const peerIds = byKind(statusPeerIds(taskNeeds));
+    const queueBackpressure = tasks.queuePressureStatus(peerIds);
     const view = {
+    ...(queueBackpressure ? { queueBackpressure } : {}),
     ...(crashReport.length ? { crash: crashReport } : {}),
     projectId,
     instanceId,
@@ -3757,7 +3766,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: !!ownerWriteRoot(id) && ownerWriteRoot(id) !== opts.cwd, ...(!ownerWriteRoot(id) ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const pressure = queueBackpressure?.peers[id]; const oldestQueuedAt = pressure ? pressure.oldestQueuedAt : summary.oldestQueuedAt; const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: !!ownerWriteRoot(id) && ownerWriteRoot(id) !== opts.cwd, ...(!ownerWriteRoot(id) ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(typeof oldestQueuedAt === "number" ? { oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: tasks.wipBreakdown(peerIds),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
@@ -3844,6 +3853,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   const noticedHolds = new Set<string>();
   let reportingQueues = false;
+  let queuePressureStatusQueued = false;
   bus.onQueues = () => {
     if (stopping || settlingSuperseded || reportingQueues) return;
     reportingQueues = true;
@@ -3857,6 +3867,18 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       writeStatus();
     } finally { reportingQueues = false; }
+    if (ready) {
+      tasks.scheduleQueuePressureRecheck();
+      const policy = queuePolicy();
+      if ((policy.max_queued > 0 || policy.max_oldest_s > 0) && !queuePressureStatusQueued) {
+        queuePressureStatusQueued = true;
+        // withdraw() notifies before its synchronous checkpoint. Refresh only after it commits.
+        queueMicrotask(() => {
+          queuePressureStatusQueued = false;
+          if (!stopping) try { writeStatus(); } catch { log("queue pressure status unavailable"); }
+        });
+      }
+    }
   };
   // Opening the journal/restoring the snapshot preceded callbacks; classify those holds too.
   settleSupersededDeliveries();
@@ -4100,6 +4122,7 @@ export async function startDaemon(opts: DaemonOptions) {
       roomCommands.changed();
       log(`state ${e.peer} -> ${e.state}`);
       event({ type: "state", peer: e.peer, state: e.state });
+      if (ready) tasks.scheduleQueuePressureRecheck();
       // #248: the add-ons it works with, once per attach (names and versions only).
       // A result is written unless a later attachment began meanwhile: a peer that detached before its probe settled
       // still did its work under that attachment.
@@ -6018,6 +6041,7 @@ export async function startDaemon(opts: DaemonOptions) {
       desiredRouting = structuredClone(prepared.routing);
       acknowledgeConfiguration(sources, prepared.accepted);
       if (priorDesired !== JSON.stringify([desiredConfig, desiredRouting, acceptedSources.trustLayers])) configRevision++;
+      if (ready && changes.some(change => change.key === "tasks.queue_backpressure" || change.key.startsWith("tasks.queue_backpressure."))) tasks.scheduleQueuePressureRecheck();
       pendingRestart = configChanges({ ...config, roles: policyRoles }, candidate, [{ catalog: adapterCatalog, instances: declarations }, configIdentityScope(acceptedSources.identity), configIdentityScope(sources.identity)]).filter(change => change.applies === "restart").map(change => ({ key: change.key, reason: change.reason! }));
       pendingRestart.push(...routingChanges.filter(key => configApply(key).applies === "restart").map(key => ({ key, reason: configApply(key).reason! })));
       retainedConfig = retainedConfigAfterReload(sources, prepared.fileConfig, prepared.rejected, scope);
@@ -6486,6 +6510,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ...(taskOpsInFlight !== 0 ? ["a task command in flight"] : []),
       ...(tasks.checksPending() !== 0 ? ["completion checks queued or running"] : []),
       ...(tasks.autoPullsPending() !== 0 ? ["an automatic backlog pull in flight"] : []),
+      ...(tasks.queuePressureRechecksPending() !== 0 ? ["a queue-pressure assignment recheck in flight"] : []),
       ...(tasks.schedulesPending() !== 0 ? ["a scheduled task proposal in flight"] : []),
       ...(checkPending.size !== 0 ? ["isolated checks queued or running"] : []),
       ...(piCallsInFlight() !== 0 ? ["Pi tool calls in flight"] : []),
@@ -6577,7 +6602,7 @@ export async function startDaemon(opts: DaemonOptions) {
       recoveryPhase = undefined;
       recoveryPeerSnapshot = undefined;
       clearTimeout(recoveryLeaseTimer);
-      budget.setRecoveryHold(false);
+      budget.setRecoveryHold(false); tasks.scheduleQueuePressureRecheck();
       writeStatus();
       return { t: "recovery", ok: true, aborted: true, recovery: recoveryView() };
     }
@@ -6617,7 +6642,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (msg.op === "release") {
       if (recoveryPhase === "released") {
-        bus.setRecoveryHold(false); budget.setRecoveryHold(false);
+        bus.setRecoveryHold(false); budget.setRecoveryHold(false); tasks.scheduleQueuePressureRecheck();
         return { t: "recovery", ok: true, released: true, recovery: recoveryView() };
       }
       if (recoveryPhase !== "restored") return recoveryError("recovery is not restored");
@@ -6633,7 +6658,7 @@ export async function startDaemon(opts: DaemonOptions) {
       recoveryPhase = "released";
       clearTimeout(recoveryLeaseTimer);
       bus.setRecoveryHold(false);
-      budget.setRecoveryHold(false);
+      budget.setRecoveryHold(false); tasks.scheduleQueuePressureRecheck();
       writeStatus();
       return { t: "recovery", ok: true, released: true, recovery: recoveryView() };
     }
@@ -7816,6 +7841,7 @@ export async function startDaemon(opts: DaemonOptions) {
   async function stopOnce(): Promise<void> {
     stopping = true;
     roomCommands.stop();
+    tasks.stopQueuePressureRechecks();
     let implementerShellCleanupFailed = false;
     const implementerShellStopped = implementerShellStart?.then(wrapper => wrapper.close()).catch(() => { implementerShellCleanupFailed = true; log("host shell cleanup failed during shutdown"); });
     terminalLaunches.clear();
@@ -7911,6 +7937,7 @@ export async function startDaemon(opts: DaemonOptions) {
   bus.onQueues(); // initial restored holds are reported only after the listener is bound; writes status.json too
   log(`${RUN_START}${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
   ready = true;
+  tasks.scheduleQueuePressureRecheck();
   for (const name of CONFIG_SOURCE_FILES) {
     const path = join(opts.cwd, ".agenthub", name);
     const listener = (current: import("node:fs").Stats, previous: import("node:fs").Stats) => {

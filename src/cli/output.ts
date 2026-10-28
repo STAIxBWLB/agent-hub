@@ -1,3 +1,4 @@
+import type { QueueBackpressureStatus } from "../hub/queue-backpressure.ts";
 import { definitionOf } from "../adapters/registry.ts";
 import { windowKind } from "../hub/window-kind.ts";
 import { boardColumns, type BoardPeerInput } from "../ui/task-board.ts";
@@ -11,6 +12,7 @@ import type { Counter, LimitsResult, TotalResult, UsageResult } from "../hub/usa
 
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
+  queueBackpressure?: QueueBackpressureStatus;
   pendingRestart?: readonly { key: string; reason: string }[];
   retainedConfig?: readonly { key: string; reason: string }[];
   /** #572 AC3: advisory, present while the project root checkout is on a branch other than the default. */
@@ -219,6 +221,15 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     const when = (at: number) => new Date(at).toISOString().replace("T", " ").slice(0, 16) + "Z";
     const text = `${row.state === "paused" ? `paused (ahub schedule resume ${row.id}); would be next ${when(row.next)}` : row.state === "scheduled" ? `next ${when(row.next)}` : row.state === "due" ? "due now" : row.state === "waiting" ? `due, waiting for task #${row.task} to close` : "due, held (the hub is stopping or recovering)"}; every ${row.every}; ${row.class} to ${row.queue}${row.last ? `; last ${when(row.last)}${row.task ? ` as task #${row.task}` : ""}` : "; never run"}${row.coalesced ? `; ${row.coalesced} skipped run${row.coalesced === 1 ? "" : "s"} coalesced` : ""}${row.error ? `; last error: ${row.error}` : ""}`;
     out.push(...detail(`schedule ${row.id}`, text, columns, row.error ? "attention" : undefined));
+  }
+  if (data.queueBackpressure) {
+    const pressure = data.queueBackpressure, policy = pressure.policy;
+    out.push(...detail("queue backpressure", `max queued ${policy.max_queued || "disabled"}; max oldest age ${policy.max_oldest_s ? `${policy.max_oldest_s}s` : "disabled"}; explicit assignment overrides only that role`, columns));
+    for (const [peer, row] of Object.entries(pressure.peers)) {
+      if (row.queued === 0 && !row.blocked) continue;
+      const age = typeof row.oldestAgeMs === "number" && Number.isFinite(row.oldestAgeMs) && row.oldestAgeMs >= 0 ? duration(row.oldestAgeMs) : "unknown";
+      out.push(...detail(`${peer} queue pressure`, `queued ${row.queued ?? "unknown"}; oldest ${age}${row.blocked ? `; automatic offers held: ${row.reason ?? row.code ?? "unknown"}` : ""}`, columns, row.blocked ? "attention" : undefined));
+    }
   }
   for (const stall of data.taskStalls ?? []) out.push(...detail(`task #${stall.task} stalled`, `${stall.cause.kind}${stall.cause.peer ? ` ${stall.cause.peer}` : ""}${stall.cause.dependency ? ` #${stall.cause.dependency}` : ""}: ${stall.cause.code}; configure the peer, ahub task assign ${stall.task} <peer>, or ahub task cancel ${stall.task} --reason <text>`, columns, "attention"));
   for (const offer of data.pendingTaskOffers ?? []) out.push(...detail("task offer", `open ${offer.peer}: task #${offer.task} is waiting for it`, columns, "attention"));
