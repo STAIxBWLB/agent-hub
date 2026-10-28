@@ -152,6 +152,15 @@ test("AC2: a task that names another repository gets no notice, because this pro
   expect(other.ok, other.error).toBe(true); expect(other.text ?? "").not.toContain("submodule");
 });
 
+test("AC2: a submodule declared with an inline comment in .gitmodules still gets the notice", async () => {
+  const { root } = workspace();
+  writeFileSync(join(root, ".gitmodules"), readFileSync(join(root, ".gitmodules"), "utf8").replace(/path = sub\n/, "path = sub # the notes\n"));
+  const h = await hub(root, { snapshots: false });
+  const commented = await h.op("hub_task_propose", { title: "edit the sub notes", class: "implement", owner: "claude", refs: { paths: ["sub/f.md"] } });
+  expect(commented.ok, commented.error).toBe(true);
+  expect(commented.text).toContain("inside submodule sub:");
+});
+
 test("AC2: a backlog proposal gets the notice too, and an absolute path inside the project resolves to the same submodule", async () => {
   const { root } = workspace();
   const h = await hub(root, { snapshots: false });
@@ -190,7 +199,12 @@ test("submodulePaths reads .gitmodules without a git call, resolves a subdirecto
   expect(submodulePaths(repoOf(root)!)).toEqual(["sub"]);
   writeFileSync(join(root, ".gitmodules"), `[submodule "a"]\n\tpath = mods/a\n\turl = x\n[submodule "b"]\n\tpath = "quoted dir/b"\n[submodule "c"]\n\tpath = ../escape\n[submodule "d"]\n\tpath = /abs\n[submodule "e"]\n\tpath = mods/a/\n[submodule "f"]\n\t# path = commented\n`);
   expect(submodulePaths(repoOf(root)!)).toEqual(["mods/a", "quoted dir/b"]);
+  // Checked against `git config -f .gitmodules --get-regexp` on this exact file: git reads the same five paths and an empty one for `f`.
+  // git's own comment rules (a reviewer's catch on #934): an unquoted # or ; ends the value, a quoted one does not, and blanks around an unquoted value are not part of it.
+  writeFileSync(join(root, ".gitmodules"), `[submodule "a"]\n\tpath = sub # a comment\n[submodule "b"]\n\tpath = other ; a comment\n[submodule "c"]\n\tpath = "has # hash"  # and a comment\n[submodule "d"]\n\tpath =   spaced   \n[submodule "e"]\n\tpath = "q\\"uote"\n[submodule "f"]\n\tpath = # nothing\n`);
+  expect(submodulePaths(repoOf(root)!)).toEqual(['has # hash', 'other', 'q"uote', 'spaced', 'sub']);
   const top = repoOf(root)!;
+  writeFileSync(join(root, ".gitmodules"), `[submodule "a"]\n\tpath = mods/a\n`);
   expect(submodulePaths({ ...top, prefix: "mods/" })).toEqual(["a"]);       // a project inside the repository sees only what is under it, project-relative
   expect(submodulePaths({ ...top, prefix: "other/" })).toEqual([]);
   expect(submodulePaths({ ...top, shadow: true })).toEqual([]);

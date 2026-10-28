@@ -609,9 +609,27 @@ export function dirtySubmodules(repo: Repo, budget?: SnapshotBudget): string[] |
 }
 
 /**
+ * One git-config value as git reads it: an unquoted `#` or `;` starts a comment, a quoted run keeps them, quotes are dropped, and `\"` and `\\` are unescaped inside a quoted
+ * run. ponytail: other escapes (`\t`, octal) are kept as the character after the backslash; use `git config -f .gitmodules --get-regexp path` if a name needs them.
+ */
+function configValue(raw: string): string {
+  let out = "", keep = 0, quoted = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]!;
+    if (quoted && c === "\\" && i + 1 < raw.length) { out += raw[++i]; keep = out.length; continue; }
+    if (c === '"') { quoted = !quoted; keep = out.length; continue; }
+    if (!quoted && (c === "#" || c === ";")) break;
+    if (!quoted && out.length === 0 && /\s/.test(c)) continue; // leading blanks
+    out += c;
+    if (quoted || !/\s/.test(c)) keep = out.length;       // trailing blanks outside quotes are not part of the value
+  }
+  return out.slice(0, keep);
+}
+
+/**
  * The submodule paths a project declares, relative to the project (#798 D1), read from `.gitmodules` with no git call. Empty without the file, and for a shadow
  * repository. A path outside the project's own directory in a larger repository is not the project's. A path git quotes (`"a\tb"`) is taken as written, never
- * unescaped: ponytail: the notice then misses a submodule whose name needs git's escapes; use `git config -f .gitmodules --get-regexp path` if that ever matters.
+ * unescaped beyond `\"` and `\\`: see `configValue`.
  */
 export function submodulePaths(repo: Repo): string[] {
   if (repo.shadow) return [];
@@ -619,9 +637,8 @@ export function submodulePaths(repo: Repo): string[] {
   try { text = readFileSync(join(repo.top, ".gitmodules"), "utf8"); } catch { return []; }
   const found = new Set<string>();
   for (const line of text.split(/\r?\n/)) {
-    const match = /^\s*path\s*=\s*(.*?)\s*$/.exec(line);
-    let path = match?.[1] ?? "";
-    if (path.length >= 2 && path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1);
+    const match = /^\s*path\s*=(.*)$/.exec(line);
+    let path = match ? configValue(match[1]!) : "";
     path = path.replace(/\/+$/, "");
     if (path && !path.startsWith("/") && !path.split("/").includes("..") && path.startsWith(repo.prefix)) found.add(path.slice(repo.prefix.length));
   }
