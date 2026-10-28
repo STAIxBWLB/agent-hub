@@ -8,11 +8,22 @@ async function client(permission: boolean) {
   const root = mkdtempSync(join(tmpdir(), "ahub-print-permission-client-"));
   const requests: Record<string, any>[] = [], replies = new Map<number, (value: any) => void>();
   let sequence = 0, diagnostics = "", mode: "allow" | "wrapper" | "bad-wrapper" | "future-wrapper" | "deny" | "error" | "disconnect" = "allow";
+  let probeMode: "allow" | "error" | "disconnect" | "hold" = "error", releaseProbe: (() => void) | undefined;
+  let seenProbe: (() => void) | undefined;
   const daemon = Bun.serve({ hostname: "127.0.0.1", port: 0,
     fetch(request, server) { return server.upgrade(request) ? undefined : new Response("websocket only", { status: 400 }); },
     websocket: { message(ws, data) {
       const message = JSON.parse(String(data)); requests.push(message);
       if (message.t === "hello") return void ws.send(JSON.stringify({ t: "welcome", rid: message.rid, ok: true, projectId: "permission-fixture", instanceId: "permission-instance", cwd: root }));
+      if (message.t === "permission_failure_probe") {
+        const respond = () => ws.send(JSON.stringify({ t: message.t, rid: message.rid,
+          ...(probeMode === "error" ? { ok: false, error: "unknown control message" } : { ok: true, behavior: "allow", updatedInput: { command: "MALICIOUS_ALLOW_CANARY" } }) }));
+        if (probeMode === "hold") releaseProbe = respond;
+        seenProbe?.();
+        if (probeMode === "hold") return;
+        if (probeMode === "disconnect") return void ws.close(4401, "fixture disconnected");
+        return void respond();
+      }
       if (message.t === "permission_request") {
         if (mode === "disconnect") return void ws.close(4401, "fixture disconnected");
         return void ws.send(JSON.stringify({ t: message.t, rid: message.rid,
@@ -59,6 +70,12 @@ async function client(permission: boolean) {
     for (let n = 0; n < 300 && !diagnostics.includes('connected to hub as "claude"'); n++) await Bun.sleep(5);
     expect(diagnostics).toContain('connected to hub as "claude"');
     return { rpc, requests, close, mode(value: typeof mode) { mode = value; },
+      probe(value: typeof probeMode) { probeMode = value; },
+      holdProbe() {
+        probeMode = "hold";
+        const seen = new Promise<void>(resolve => { seenProbe = resolve; });
+        return { seen, release() { expect(releaseProbe).toBeDefined(); releaseProbe!(); } };
+      },
       call: (name: string, args: Record<string, unknown> = {}) => rpc("tools/call", { name, arguments: args }) };
   } catch (error) { await close(); throw error; }
 }
@@ -77,6 +94,9 @@ test("#525 headless permission MCP exposes prompt and inbox, and person allow pr
     expect(Object.keys(schema.properties).sort()).toEqual(["input", "tool_name", "tool_use_id"]); expect(schema.additionalProperties).toBe(false);
     expect(decision(await f.call("hub_permission_request", request))).toEqual({ behavior: "allow", updatedInput: request.input });
     expect(f.requests.filter(row => row.t === "permission_request")).toEqual([expect.objectContaining({ tool: request.tool_name, input: request.input })]);
+    expect(f.requests.filter(row => row.t === "permission_request").map(({ rid: _rid, ...body }) => body))
+      .toEqual([{ t: "permission_request", tool: request.tool_name, input: request.input, wrapperProtocol: 1 }]);
+    expect(f.requests.filter(row => row.t === "permission_failure_probe")).toEqual([]);
     expect(f.requests.some(row => ["facts", "native_facts", "native_hook_launch"].includes(row.t))).toBe(false);
     await f.call("hub_inbox"); expect(f.requests.filter(row => row.t === "inbox")).toHaveLength(1);
   } finally { await f.close(); }
@@ -116,12 +136,71 @@ test("#845 the fixed wrapper protocol passes only host replacement input; malfor
 });
 
 
-test("#525 malformed native permission calls deny before reaching the daemon", async () => {
+test("#525 malformed native permission calls deny before reaching the daemon approval path", async () => {
   const f = await client(true);
   try {
     for (const bad of [{ ...request, input: null }, { ...request, input: [] }, { ...request, tool_use_id: "" }, { ...request, tool_name: "spoof\nBash" }]) {
-      expect(decision(await f.call("hub_permission_request", bad)).behavior).toBe("deny");
+      expect(decision(await f.call("hub_permission_request", bad))).toEqual({ behavior: "deny", message: "invalid native permission request" });
     }
+    expect(f.requests.filter(row => row.t === "permission_request")).toEqual([]);
+    expect(f.requests.filter(row => row.t === "permission_failure_probe")).toHaveLength(4);
+  } finally { await f.close(); }
+});
+
+for (const mode of ["allow", "error", "disconnect"] as const) test(`#551 invalid native request stays denied after diagnostic probe ${mode}`, async () => {
+  const f = await client(true);
+  try {
+    f.probe(mode);
+    const bad = { ...request, tool_use_id: "" };
+    expect(decision(await f.call("hub_permission_request", bad))).toEqual({ behavior: "deny", message: "invalid native permission request" });
+    expect(f.requests.filter(row => row.t === "permission_request")).toEqual([]);
+    expect(f.requests.filter(row => row.t === "permission_failure_probe")).toEqual([expect.objectContaining({ request: bad })]);
+  } finally { await f.close(); }
+});
+
+test("#551 invalid native request awaits the diagnostic probe but never adopts its allow", async () => {
+  const f = await client(true);
+  try {
+    const gate = f.holdProbe(); let returned = false;
+    const pending = f.call("hub_permission_request", { ...request, tool_use_id: "" }).then(value => { returned = true; return value; });
+    await Promise.race([gate.seen, pending.then(() => { throw new Error("native denial arrived without the held probe"); })]);
+    expect(returned).toBe(false);
+    gate.release();
+    expect(decision(await pending)).toEqual({ behavior: "deny", message: "invalid native permission request" });
+    expect(f.requests.filter(row => row.t === "permission_request")).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test("#551 invalid request probe budget is four per owned client and every reply remains deny", async () => {
+  const f = await client(true);
+  try {
+    f.probe("allow");
+    for (let index = 0; index < 6; index++) {
+      expect(decision(await f.call("hub_permission_request", { ...request, tool_use_id: "", attempt: index })))
+        .toEqual({ behavior: "deny", message: "invalid native permission request" });
+    }
+    const probes = f.requests.filter(row => row.t === "permission_failure_probe");
+    expect(probes.map(row => row.request.attempt)).toEqual([0, 1, 2, 3]);
+    expect(f.requests.filter(row => row.t === "permission_request")).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test("#551 oversized and deep invalid requests consume probe budget without sending their bodies", async () => {
+  const f = await client(true);
+  try {
+    let deep: unknown = null; for (let index = 0; index < 10; index++) deep = { child: deep };
+    const invalid = [
+      { ...request, tool_use_id: "", input: { body: "OVERSIZE_CANARY".repeat(400) } },
+      { ...request, tool_use_id: "", input: { deep } },
+      { ...request, tool_use_id: "", attempt: 2 },
+      { ...request, tool_use_id: "", attempt: 3 },
+      { ...request, tool_use_id: "", attempt: 4 },
+      { ...request, tool_use_id: "", attempt: 5 },
+    ];
+    for (const bad of invalid) expect(decision(await f.call("hub_permission_request", bad))).toEqual({ behavior: "deny", message: "invalid native permission request" });
+    const probes = f.requests.filter(row => row.t === "permission_failure_probe");
+    expect(probes.map(row => row.request.attempt)).toEqual([2, 3]);
+    expect(JSON.stringify(probes)).not.toContain("OVERSIZE_CANARY");
     expect(f.requests.filter(row => row.t === "permission_request")).toEqual([]);
   } finally { await f.close(); }
 });

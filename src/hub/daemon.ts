@@ -15,6 +15,8 @@ import { canonicalMemorySymbolNode, resolveMemorySymbolNodes, type MemorySymbolN
 import { AsyncLocalStorage } from "node:async_hooks";
 import { normalizeUsage } from "../omniroute/usage.ts";
 import { permissionPayload } from "./permission-payload.ts";
+import { createClaudeFailureTrace, type ClaudeFailureTrace } from "./claude-failure-stage.ts";
+import { buildNativePermissionProbe, NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH, validateNativePermissionRequest } from "./native-permission-request.ts";
 import { createClaudeLaunchProof, readClaudeLaunchProof } from "./claude-launch-proof.ts";
 import { InboxPolling } from "./inbox-polling.ts";
 import { ActionBudgets, actionPolicyConfig, type ActionPolicyConfig } from "./action-policy.ts";
@@ -2547,6 +2549,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const owned = board.list("in_progress").filter(task => task.owner === peer && !tasks.isPii(task));
     return owned.length === 1 ? owned[0]!.id : undefined;
   }
+  type ImplementerFailureEntry = { launchId: string; generation: string; signal: AbortSignal; trace: ClaudeFailureTrace; probeCount: number; permissionAttempt: number };
+  const implementerFailures = new WeakMap<PeerAdapter, ImplementerFailureEntry>();
   function currentImplementerTools(c: Client, verifyRoot = true): ReturnType<NonNullable<PeerAdapter["ownedTools"]>> {
     const bound = c.toolsOwner, peer = c.peer;
     if (!bound || !peer || c.role !== "tools" || stopping || recoveryActive() || !membershipAllowed(peer) || contextPii(peer) || definitionOf(peer)?.start.daemonPort !== "claude-implementer" || bus.peers.get(peer) !== bound.owner) return undefined;
@@ -2564,6 +2568,10 @@ export async function startDaemon(opts: DaemonOptions) {
     const binding = c.toolsOwner, launch = currentImplementerTools(c);
     return () => c.toolsOwner === binding && !!launch && currentImplementerTools(c) === launch;
   }
+  function currentImplementerFailure(c: Client, launch = currentImplementerTools(c)): ImplementerFailureEntry | undefined {
+    const owner = c.toolsOwner?.owner, entry = owner && implementerFailures.get(owner);
+    return launch && entry && entry.launchId === launch.launchId && entry.generation === launch.generation && entry.signal === launch.signal && !entry.signal.aborted ? entry : undefined;
+  }
   const shellProjectRepository = githubOriginRepository(opts.cwd);
   const shellNeedsDefault = Object.keys(declarations).some(peer => instanceDefinitionOf(peer, declarations, adapterCatalog)?.start.daemonPort === "claude-implementer");
   const shellDefaultBranch = shellNeedsDefault && shellProjectRepository
@@ -2571,7 +2579,7 @@ export async function startDaemon(opts: DaemonOptions) {
     : undefined;
   let implementerShellStart: Promise<HostShellWrapper> | undefined;
   const implementerShellProfiles = new WeakMap<object, { key: string; sandbox: { profile: string; readOnlyData: boolean } }>();
-  async function automaticImplementerShell(c: Client, tool: string, original: Record<string, unknown>, current: () => boolean): Promise<{ command: string; timeout: number; description: string } | undefined> {
+  async function automaticImplementerShell(c: Client, tool: string, original: Record<string, unknown>, current: () => boolean, failure?: { entry: ImplementerFailureEntry; attempt: number }): Promise<{ command: string; timeout: number; description: string } | undefined> {
     const peer = c.peer, launch = currentImplementerTools(c), root = peer && ownerWriteRoot(peer), policy = config;
     if (!peer || !launch || !root || launch.task === undefined || tool !== "Bash" || permissionMode(peer) !== "ask-when-needed") return;
     if (Object.keys(original).some(key => !["command", "description", "timeout"].includes(key)) || typeof original.command !== "string"
@@ -2640,7 +2648,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const argv = readProof?.program === "git" ? hubGitArgv([...proof.argv]).slice(1) : proof.argv;
     const command = wrapper.issue({ peer, task: taskId, generation: launch.generation, root, branch: binding.branch, executable: proof.executable, argv,
       env: taskProof?.env ?? (git ? Object.fromEntries(Object.entries(hubGitEnv(env, { repositoryIsolation: true })).filter((entry): entry is [string, string] => entry[1] !== undefined)) : env),
-      signal: launch.signal, timeoutMs: Number(input.timeout ?? 120_000), current: recheck, activity: () => c.toolsOwner?.owner.keepApprovalAlive?.(), ...(sandbox ? { sandbox } : {}) });
+      signal: launch.signal, timeoutMs: Number(input.timeout ?? 120_000), current: recheck, activity: () => c.toolsOwner?.owner.keepApprovalAlive?.(),
+      onRefused: () => { if (failure && failure.entry.permissionAttempt === failure.attempt) failure.entry.trace.record("wrapper_refused"); }, ...(sandbox ? { sandbox } : {}) });
     if (command) log(`permission auto-allowed for ${peer}: bash (host wrapper ${readProof ? "read-only shell" : "task command"})`);
     return command && { command: command.command, timeout: Math.min(600_000, Number(input.timeout ?? 120_000) + 2000), description: "Hub-owned task command" };
   }
@@ -4420,7 +4429,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return !gate.denyOnly && picked.optionId === "allow";
   }
-  async function requestPermission(req: PermissionRequest, signal?: AbortSignal, observe?: ApprovalObserver, requirePerson = false): Promise<PermissionResult> {
+  async function requestPermission(req: PermissionRequest, signal?: AbortSignal, observe?: ApprovalObserver, requirePerson = false, lifecycle?: { registered(id: string): void; expired(id: string): void }): Promise<PermissionResult> {
     const requestEpoch = permissionAnswerEpoch(req.peer);
     const observed = (source: "person" | "automatic" | "expired" | "aborted") => {
       try { observe?.({ source, answerEpoch: permissionAnswerEpoch(req.peer), ...(source === "expired" ? { eligibleExpiry: requestEpoch === permissionAnswerEpoch(req.peer) } : {}) }); }
@@ -4458,6 +4467,7 @@ export async function startDaemon(opts: DaemonOptions) {
         signal?.removeEventListener("abort", aborted);
         permissions.delete(id); // withdrawal happens before any observer, resolution or late grant
         writeStatus(); // token-free readers must observe withdrawal before settlement callbacks
+        if (!option && reason === "expired") { try { lifecycle?.expired(id); } catch { /* Host diagnostics never change approval settlement. */ } }
         const outcome = option ? "answered" : reason;
         if (surface) permissionAnswerEpochs.set(req.peer, permissionAnswerEpoch(req.peer) + 1);
         observed(surface ? "person" : outcome === "expired" ? "expired" : "aborted");
@@ -4471,6 +4481,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return true;
       };
       permissions.set(id, { push, done, peer: req.peer, ...(publicTool ? { tool: publicTool } : {}), createdAt, expiresAt });
+      try { lifecycle?.registered(id); } catch { /* Host diagnostics never change approval admission. */ }
       writeStatus(); // an approval can wait without any subsequent bus event
       timer = setTimeout(() => done(undefined, undefined, "expired"), timeoutMs);
       signal?.addEventListener("abort", aborted, { once: true });
@@ -5409,6 +5420,25 @@ export async function startDaemon(opts: DaemonOptions) {
           } catch { return false; }
         },
         chatTask: () => implementerChatTask(peer),
+        failureTrace: (launch, nativeVersion) => {
+          const trace = createClaudeFailureTrace({ instanceId, nativeVersion, current: () => {
+            const active = implementer.ownedTools?.(launch.launchId);
+            return bus.peers.get(peer) === implementer && implementerFailures.get(implementer) === entry
+              && active?.generation === launch.generation && active.signal === launch.signal && !launch.signal.aborted;
+          } });
+          const entry: ImplementerFailureEntry = { launchId: launch.launchId, generation: launch.generation, signal: launch.signal, trace, probeCount: 0, permissionAttempt: 0 };
+          implementerFailures.set(implementer, entry);
+          return trace;
+        },
+        failurePrivate: taskId => {
+          try {
+            if (bus.peers.get(peer) !== implementer || !turns.has(peer) || contextPii(peer)) return true;
+            if (taskId === undefined) return false;
+            const task = board.get(taskId);
+            return !task || task.owner !== peer || tasks.isPii(task);
+          } catch { return true; }
+        },
+        failureLog: message => log(message),
         transcriptPersisted: (task, session) => {
           const path = implementerTranscripts.get(`${peer}:${task}:${session}`);
           return path ? pathEvidence(path, lstatSync) : "unknown";
@@ -6983,9 +7013,22 @@ export async function startDaemon(opts: DaemonOptions) {
     if (c.externalOwner && !currentExternalTools(c)) return void reply({ ok: false, error: "external instance launch or execution root changed" });
     if (c.toolsOwner && !currentImplementerTools(c)) return void reply({ ok: false, error: "Claude child generation or execution root changed" });
     switch (msg.t) {
+      case "permission_failure_probe": {
+        const launch = currentImplementerTools(c), entry = currentImplementerFailure(c, launch);
+        if (!entry || ++entry.probeCount > NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH) return void reply({ ok: false, error: "permission diagnostic unavailable" });
+        // Validation input is temporary. No caller-selected stage, native id or body is retained or echoed.
+        const probe = buildNativePermissionProbe(msg.request);
+        if (!probe || validateNativePermissionRequest(probe.request)) return void reply({ ok: false, error: "permission diagnostic unavailable" });
+        entry.permissionAttempt++;
+        const recorded = entry.trace.record("invalid_permission_request");
+        return void reply(recorded ? { ok: true } : { ok: false, error: "permission diagnostic unavailable" });
+      }
       case "permission_request": {
         const peer = c.peer, launch = currentImplementerTools(c), current = captureImplementerTools(c);
         if (!peer || !launch || c.role !== "tools" || typeof msg.tool !== "string" || !msg.input || typeof msg.input !== "object" || Array.isArray(msg.input)) return void reply({ ok: false, behavior: "deny", message: "permission unavailable" });
+        const failure = currentImplementerFailure(c, launch), attempt = failure ? ++failure.permissionAttempt : 0;
+        failure?.trace.permissionObserved();
+        const failureCurrent = () => !!failure && failure.permissionAttempt === attempt && currentImplementerFailure(c) === failure;
         const shown = permissionPayload(msg.tool, msg.input, tasks.publicMetadataText);
         const pending = new AbortController(), abortPending = () => pending.abort();
         launch.signal.addEventListener("abort", abortPending, { once: true });
@@ -6994,10 +7037,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const heartbeat = setInterval(() => { if (currentImplementerTools(c, false) === launch) c.toolsOwner?.owner.keepApprovalAlive?.(); else pending.abort(); }, Math.max(10, Math.min(1000, Math.floor(config.watchdog_ms / 3)))); heartbeat.unref();
         c.toolsOwner?.owner.keepApprovalAlive?.();
         void (async () => {
-          const updatedInput = msg.wrapperProtocol === 1 ? await automaticImplementerShell(c, msg.tool, msg.input, () => sock.readyState === WebSocket.OPEN && current()) : undefined;
+          const updatedInput = msg.wrapperProtocol === 1 ? await automaticImplementerShell(c, msg.tool, msg.input, () => sock.readyState === WebSocket.OPEN && current(), failure ? { entry: failure, attempt } : undefined) : undefined;
           if (updatedInput && current()) return void reply({ ok: true, behavior: "allow", wrapperProtocol: 1, updatedInput });
           if (!current()) return void reply({ ok: true, behavior: "deny", message: "permission denied" });
-          const result = await requestPermission({ peer, title: shown.title, tool: shown.tool, classed: true, options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] }, pending.signal);
+          const result = await requestPermission({ peer, title: shown.title, tool: shown.tool, classed: true, options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] }, pending.signal, undefined, false, {
+            registered: id => { if (failureCurrent()) failure!.trace.permissionObserved(id); },
+            expired: id => { if (failureCurrent()) failure!.trace.record("manual_queue_expired", id); },
+          });
           const allowed = current() && result.outcome === "answered" && result.optionId === "allow";
           reply({ ok: true, behavior: allowed ? "allow" : "deny", ...(allowed ? {} : { message: result.outcome === "expired" ? "no person answered" : "permission denied" }) });
         })().catch(() => reply({ ok: true, behavior: "deny", message: "hub permission unavailable" })).finally(() => { clearInterval(heartbeat); launch.signal.removeEventListener("abort", abortPending); }).catch(() => {});

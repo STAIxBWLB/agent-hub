@@ -11,8 +11,20 @@ import { sessionSettings } from "../cli/launch.ts";
 import { assessVersion, COMPAT } from "./compat.ts";
 import { OwnedPrintChild, PrintChildCleanupError, type OwnedPrintChildOptions } from "./claude-print-child.ts";
 import { ClaudeTaskSessions } from "./claude-task-sessions.ts";
+import { formatClaudeFailure, type ClaudeFailureTrace } from "../hub/claude-failure-stage.ts";
 import type { PermissionMode } from "../hub/permission-mode.ts";
 import type { ReviewerPrintUsage } from "./reviewer-print.ts";
+
+const provenVersions = new WeakMap<() => boolean, string>();
+function provenVersion(binding: () => boolean): string | undefined { return provenVersions.get(binding); }
+function sealFailureTrace(trace: ClaudeFailureTrace | undefined): void { try { trace?.seal(); } catch { /* diagnostics never affect owned cleanup */ } }
+function discardFailureTrace(trace: ClaudeFailureTrace | undefined): void { try { trace?.discard(); } catch { /* diagnostics never affect owned cleanup */ } }
+function readFailureTrace(trace: ClaudeFailureTrace | undefined): unknown {
+  if (!trace) return undefined;
+  // Every returned trace is sealed by onLeaderExit before authority is revoked.
+  try { return trace.take(); }
+  catch { discardFailureTrace(trace); return undefined; }
+}
 
 export interface ClaudeImplementerOptions {
   cwd: string;
@@ -38,6 +50,12 @@ export interface ClaudeImplementerOptions {
   notify?(message: string): void;
   /** Test/embedding-only proof port; project configuration cannot select it. */
   prove?(): Promise<() => boolean>;
+  /** Host-observed failure evidence bound to one admitted native launch. */
+  failureTrace?(launch: Readonly<OwnedToolsLaunch>, nativeVersion?: string): ClaudeFailureTrace;
+  /** Resolve current privacy at final rendering; unknown or a throw is private. */
+  failurePrivate?(task?: number): boolean;
+  /** Optional host observer of the fixed, already privacy-screened failure message. */
+  failureLog?(message: string): void;
 }
 export interface ImplementerTurn { sessionId: string; resume: boolean; persistent: boolean }
 export function claudeImplementerArgs(turn: ImplementerTurn, mcp: string, settings: string, prompt: string, model?: string): string[] {
@@ -65,7 +83,9 @@ export async function proveClaudeImplementer(peer: string, command: readonly str
     const observed = COMPAT["claude-implementer"].parse(version), verdict = assessVersion("claude-implementer", observed);
     if (!verdict.ok) throw new Error(verdict.reason);
     if (fingerprint() !== binding) throw new Error("Claude implementer binary changed during proof");
-    return () => { try { return fingerprint() === binding; } catch { return false; } };
+    const proof = () => { try { return fingerprint() === binding; } catch { return false; } };
+    provenVersions.set(proof, verdict.version);
+    return proof;
   } finally { clearTimeout(timer); await child.stop(); rmSync(home, { recursive: true, force: true }); }
 }
 
@@ -84,6 +104,7 @@ export class ClaudeImplementerPeer extends BasePeer {
   private command: readonly string[] | undefined;
   private deliveryId: string | undefined;
   private inputReleased = false;
+  private failureTrace: ClaudeFailureTrace | undefined;
   private sessions: ClaudeTaskSessions;
   private stopping: Promise<void> | undefined;
   private stoppingTarget: "idle" | "offline" | undefined;
@@ -126,6 +147,7 @@ export class ClaudeImplementerPeer extends BasePeer {
     }
     this.stoppingTarget = next;
     ++this.generation; this.active = undefined; this.childAbort?.abort(); this.childAbort = undefined; this.abort?.abort(); this.clearWatchdog();
+    discardFailureTrace(this.failureTrace); this.failureTrace = undefined;
     this.settle(this.inputReleased ? "needs_review" : "failed_safe", reason);
     if (this.owned || this.running) this.setState("busy");
     const work: Promise<void> = Promise.resolve().then(async () => {
@@ -166,8 +188,10 @@ export class ClaudeImplementerPeer extends BasePeer {
   }
   private async run(groups: { task?: number; envs: Envelope[] }[], generation: number, running: Promise<void>): Promise<void> {
     const current = () => generation === this.generation && !this.abort?.signal.aborted;
+    let failureReason: string | undefined;
     try {
       for (let group of groups) {
+        failureReason = undefined;
         if (!current() || !this.binding?.()) throw new Error("Claude implementer admission changed");
         group = { ...group, envs: group.envs.filter(env => !env.private && this.options.admit(env)) };
         if (!group.envs.length) continue;
@@ -181,6 +205,7 @@ export class ClaudeImplementerPeer extends BasePeer {
           }
         }
         const launchId = randomUUID(), directory = mkdtempSync(join(this.options.stateDir, "claude-child-")), settings = join(directory, "settings.json");
+        let launchFailureTrace: ClaudeFailureTrace | undefined;
         this.cleanup = () => rmSync(directory, { recursive: true, force: true });
         writeFileSync(settings, sessionSettings(undefined, { script: this.options.factsHook, stateDir: this.options.stateDir, purpose: "permission" }), { mode: 0o600, flag: "wx" });
         const env = { AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: this.id, AGENTHUB_STATE_DIR: this.options.stateDir, AGENTHUB_PROJECT_DIR: this.options.projectRoot,
@@ -197,11 +222,15 @@ export class ClaudeImplementerPeer extends BasePeer {
               void this.cancel("Claude implementer admission changed before child start", "idle").catch(() => {});
               return;
             }
-            this.inputReleased = true; // OwnedPrintChild releases stdin immediately after this synchronous admission fence.
             this.childAbort = new AbortController();
-            this.active = { permissionHook: true, launchId, generation: `${generation}:${launchId}`, sessionId: turn.sessionId, signal: this.childAbort.signal, ...(group.task !== undefined ? { task: group.task } : {}) };
+            const launch: OwnedToolsLaunch = Object.freeze({ permissionHook: true, launchId, generation: `${generation}:${launchId}`, sessionId: turn.sessionId, signal: this.childAbort.signal, ...(group.task !== undefined ? { task: group.task } : {}) });
+            this.active = launch;
+            try { launchFailureTrace = this.options.failureTrace?.(Object.freeze({ ...launch }), provenVersion(this.binding!)); }
+            catch { launchFailureTrace = undefined; }
+            this.failureTrace = launchFailureTrace;
+            this.inputReleased = true; // OwnedPrintChild releases stdin immediately after this synchronous admission fence.
           },
-          onLeaderExit: () => { this.active = undefined; this.childAbort?.abort(); this.childAbort = undefined; },
+          onLeaderExit: () => { sealFailureTrace(launchFailureTrace); this.active = undefined; this.childAbort?.abort(); this.childAbort = undefined; },
           onActivity: () => this.touch(),
           onLimit: () => { void this.cancel("Claude implementer output limit exceeded", "idle").catch(() => {}); },
           onFrame: event => {
@@ -220,12 +249,21 @@ export class ClaudeImplementerPeer extends BasePeer {
         catch (error) {
           // spawn ENOENT has no owned group. A started child with failed group cleanup must keep its handle.
           if (child.process.pid === undefined) this.owned = undefined;
+          if (error instanceof PrintChildCleanupError) failureReason = this.failureReason(group.task, launchFailureTrace);
+          else discardFailureTrace(launchFailureTrace);
+          if (this.failureTrace === launchFailureTrace) this.failureTrace = undefined;
           throw error;
         }
         this.active = undefined; this.owned = undefined;
         this.cleanup?.(); this.cleanup = undefined;
-        if (!current()) return;
-        if (code !== 0 || !result || failed) throw new Error("Claude implementer turn failed");
+        if (!current()) { discardFailureTrace(launchFailureTrace); if (this.failureTrace === launchFailureTrace) this.failureTrace = undefined; return; }
+        if (code !== 0 || !result || failed) {
+          failureReason = this.failureReason(group.task, launchFailureTrace) ?? "Claude implementer turn failed";
+          if (this.failureTrace === launchFailureTrace) this.failureTrace = undefined;
+          throw new Error("Claude implementer turn failed");
+        }
+        discardFailureTrace(launchFailureTrace);
+        if (this.failureTrace === launchFailureTrace) this.failureTrace = undefined;
       }
       if (current()) {
         if (this.running === running) this.running = undefined;
@@ -234,7 +272,11 @@ export class ClaudeImplementerPeer extends BasePeer {
     } catch (error) {
       this.active = undefined; this.childAbort?.abort(); this.childAbort = undefined;
       if (current()) {
-        this.settle(this.inputReleased ? "needs_review" : "failed_safe", error instanceof PrintChildCleanupError ? "Claude implementer cleanup incomplete" : "Claude implementer turn failed");
+        const reason = error instanceof PrintChildCleanupError
+          ? failureReason === "Claude implementer turn failed (details withheld)" ? failureReason
+            : failureReason ? `Claude implementer cleanup incomplete; ${failureReason}` : "Claude implementer cleanup incomplete"
+          : failureReason ?? "Claude implementer turn failed";
+        this.settle(this.inputReleased ? "needs_review" : "failed_safe", reason);
         if (this.owned) this.setState("busy"); else {
           this.cleanup?.(); this.cleanup = undefined;
           if (this.running === running) this.running = undefined;
@@ -242,5 +284,16 @@ export class ClaudeImplementerPeer extends BasePeer {
         }
       }
     }
+  }
+
+  private failureReason(task: number | undefined, trace: ClaudeFailureTrace | undefined): string | undefined {
+    if (!trace) return undefined;
+    const evidence = readFailureTrace(trace);
+    if (!evidence) return undefined;
+    let privateTurn = true;
+    try { privateTurn = this.options.failurePrivate?.(task) !== false; } catch { /* unknown privacy is private */ }
+    const message = formatClaudeFailure(evidence, privateTurn);
+    try { this.options.failureLog?.(message); } catch { /* host observation never changes settlement */ }
+    return message;
   }
 }

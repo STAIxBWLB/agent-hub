@@ -278,3 +278,62 @@ test.skipIf(!sandboxAvailable())("wrapper target environment equals the existing
   delete wanted.TMPDIR; delete observed.TMPDIR;
   expect(observed).toEqual(wanted);
 }, 20_000);
+
+test("only matched ticket refusals notify the original host observer with no payload", async () => {
+  const f = await fixture(), marker = join(f.root, "must-not-run");
+  for (const reason of ["current", "stamp", "schema", "expiry"] as const) {
+    const observed: unknown[][] = []; let current = true;
+    const executable = join(f.root, `observer-${reason}`);
+    writeFileSync(executable, "#!/bin/sh\nprintf must-not-run"); chmodSync(executable, 0o700);
+    const grant = f.grant(`await Bun.write(${JSON.stringify(marker)},"effect")`, {
+      current: () => current, onRefused: (...args: unknown[]) => { observed.push(args); },
+      ...(reason === "stamp" ? { executable, argv: [] } : {}),
+    });
+    const issued = f.wrapper.issue(grant)!; expect(issued).toBeDefined();
+    if (reason === "current") current = false;
+    if (reason === "stamp") writeFileSync(executable, "#!/bin/sh\nprintf changed-executable");
+    const later = Date.now() + 31_000;
+    const clock = reason === "expiry" ? spyOn(Date, "now") : undefined;
+    try {
+      if (clock) clock.mockReturnValue(later);
+      const reply = await raw(issued.command, {}, reason === "schema" ? { extra: "withheld" } : {});
+      expect(reply).toEqual({ status: 403, text: "host shell execution refused\n" });
+      expect(observed, reason).toEqual([[]]); expect(existsSync(marker)).toBe(false);
+      expect((await raw(issued.command)).status).toBe(403);
+      expect(observed, "a consumed ticket has no owner attribution").toEqual([[]]);
+    } finally { clock?.mockRestore(); }
+  }
+});
+
+test("a throwing refusal observer cannot alter the fixed refusal or execute a target", async () => {
+  const f = await fixture(), marker = join(f.root, "must-not-run"); let current = true, calls = 0;
+  const issued = f.wrapper.issue(f.grant(`await Bun.write(${JSON.stringify(marker)},"effect")`, {
+    current: () => current, onRefused: () => { calls++; throw new Error("observer-private-detail"); },
+  }))!;
+  current = false;
+  expect(await raw(issued.command)).toEqual({ status: 403, text: "host shell execution refused\n" });
+  expect(calls).toBe(1); expect(existsSync(marker)).toBe(false);
+});
+
+test("unissued, malformed and forgotten tickets and an ordinary target exit never notify refusal", async () => {
+  const f = await fixture(); let calls = 0;
+  const onRefused = () => { calls++; };
+  expect(f.wrapper.issue(f.grant("", { current: () => false, onRefused }))).toBeUndefined();
+  const controller = new AbortController();
+  const forgotten = f.wrapper.issue(f.grant("", { signal: controller.signal, onRefused }))!; controller.abort();
+  expect((await raw(forgotten.command)).status).toBe(403);
+  const issued = f.wrapper.issue(f.grant("process.exit(23)", { onRefused }))!;
+  expect((await raw(issued.command, {}, { ticket: "0".repeat(64) })).status).toBe(403);
+  expect((await raw(issued.command, {}, { ticket: "malformed" })).status).toBe(403);
+  expect((await collect(invoke(issued.command))).code).toBe(23);
+  expect(calls).toBe(0);
+}, 10_000);
+
+test("changing an issued refusal callback fences execution and never invokes the replacement", async () => {
+  const f = await fixture(), marker = join(f.root, "must-not-run"); let original = 0, replacement = 0;
+  const grant = f.grant(`await Bun.write(${JSON.stringify(marker)},"effect")`, { onRefused: () => { original++; } });
+  const issued = f.wrapper.issue(grant)!;
+  grant.onRefused = () => { replacement++; };
+  expect(await raw(issued.command)).toEqual({ status: 403, text: "host shell execution refused\n" });
+  expect(original).toBe(1); expect(replacement).toBe(0); expect(existsSync(marker)).toBe(false);
+});
