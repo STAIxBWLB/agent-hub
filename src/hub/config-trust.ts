@@ -29,6 +29,7 @@ export const MACHINE_LOCAL = [
   "local.doc_read", // #515: gives the local worker a document reader; a committed config may not hand a model more tools on someone else's machine
   "terminal.open", // the command a hub-made TUI start runs to open a terminal (#269)
   "tasks.auto_pull", // #785 P1c: lets the hub start work on its own; a committed config may not turn it on for someone else's machine
+  "folder_triggers", // #512c: entries make the hub read a folder and propose a task per new file; a committed config may not point the hub at a folder on someone else's machine
   "schedules", // #512: entries make the hub propose tasks on a timer; a committed config may not create work on someone else's machine
   "corpus.paths", // #510: folders the hub reads as evidence; a committed config may not point the hub at a folder on someone else's machine
 ] as const;

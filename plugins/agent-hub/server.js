@@ -21505,6 +21505,7 @@ var MACHINE_LOCAL = [
   "local.doc_read",
   "terminal.open",
   "tasks.auto_pull",
+  "folder_triggers",
   "schedules",
   "corpus.paths"
 ];
@@ -22047,11 +22048,11 @@ init_git();
 
 // src/hub/tasks.ts
 init_spec_read();
-
 // src/hub/schedules.ts
 var MIN_EVERY_MS = 15 * 60000;
 var MAX_EVERY_MS = 365 * 86400000;
 var KEYS = new Set(["id", "every", "cron", "class", "title", "detail", "sources", "owner", "queue"]);
+var FOLDER_KEYS = new Set(["id", "folder", "glob", "class", "title", "detail", "owner", "queue"]);
 
 // src/hub/intake.ts
 var INTAKE_MAX_ANSWER = 64 * 1024;

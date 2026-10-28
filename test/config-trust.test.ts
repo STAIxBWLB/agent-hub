@@ -40,6 +40,7 @@ const CHOSEN = {
   tasks: { auto_pull: true }, // #785 P1c: a cloned repository never lets the hub start work on its own
   schedules: [{ id: "nightly", every: "1h", class: "plan", title: "t" }], // #512: a cloned repository never makes the hub create tasks on a timer
   corpus: { paths: ["/Users/someone/notes"] }, // #510: a cloned repository never chooses a folder the hub reads
+  folder_triggers: [{ id: "inbox", folder: "inbox", class: "plan", title: "t" }], // #512c: a cloned repository never makes the hub read a folder and create a task per new file
   roles: { codex: ["reviewer"] },
   budget: { gate: 0.5 },
 };
@@ -64,6 +65,7 @@ test("a committed config keeps the defaults for every machine-local field, logs 
   expect(config.terminal).toEqual({ open: [] }); // #269: a cloned repository never chooses the command that opens a terminal
   expect(config.tasks.auto_pull).toBe(false);
   expect(config.schedules).toEqual([]);
+  expect(config.folder_triggers).toEqual([]);
   expect(config.corpus).toEqual({ paths: [] });
   expect(config.ignored).toEqual([`${MACHINE_LOCAL.join(", ")} in .agenthub/config.json ignored: .agenthub/config.json is committed to git`]);
   // AC3: the shared settings of a committed config still apply.

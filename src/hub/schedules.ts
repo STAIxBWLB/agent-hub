@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
+import { corpusPathProblem } from "./corpus-config.ts";
 
 // agent-hub #512 (hub task #330): machine-local schedules. Spec: "Schedules and folder triggers (#512)".
 
@@ -70,6 +71,96 @@ export function schedulesConfig(input: unknown): ScheduleEntry[] {
     });
   });
   return out;
+}
+
+// agent-hub #512c (hub task #336): machine-local folder triggers. The pure config only; the scan, the store and the registration are in `folder-trigger.ts`, which reaches the disk.
+export const MAX_FOLDER_TRIGGERS = 16;
+export const MAX_FOLDER_GLOB = 100;
+/** The first line of a folder-triggered task's detail: which trigger made it. A task per file, so unlike a schedule's marker it blocks nothing. */
+export const FOLDER_MARKER = "Folder trigger: ";
+
+export interface FolderEntry {
+  id: string;
+  folder: string;
+  glob?: string;
+  class: string;
+  title: string;
+  detail?: string;
+  owner?: string;
+  queue: "backlog" | "ready";
+}
+const FOLDER_KEYS = new Set(["id", "folder", "glob", "class", "title", "detail", "owner", "queue"]);
+
+/** A file-name pattern: letters, digits, `.`, `_`, `-`, space, `*` and `?`. Never a path, so it cannot reach outside the folder. */
+export const folderGlobProblem = (value: unknown): string | undefined =>
+  typeof value !== "string" || !value || value.length > MAX_FOLDER_GLOB || !/^[A-Za-z0-9._ *?-]+$/.test(value) || value === "." || value === ".."
+    ? `glob is a file-name pattern of at most ${MAX_FOLDER_GLOB} characters (letters, digits, . _ - space, * and ?), never a path` : undefined;
+
+/** Whether a file name matches a trigger's glob. Dot files never match: a hidden file is not something a person dropped in. */
+export function folderGlobMatches(glob: string | undefined, name: string): boolean {
+  if (name.startsWith(".")) return false;
+  if (glob === undefined) return true;
+  return new RegExp(`^${glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`).test(name);
+}
+
+/** The checked `folder_triggers` list. Every refusal names the entry; nothing here reads the disk (the folder check does, at each poll). */
+export function foldersConfig(input: unknown): FolderEntry[] {
+  if (input === undefined) return [];
+  if (!Array.isArray(input)) throw new Error("folder_triggers must be a list");
+  if (input.length > MAX_FOLDER_TRIGGERS) throw new Error(`folder_triggers holds at most ${MAX_FOLDER_TRIGGERS} entries`);
+  const seen = new Set<string>(), out: FolderEntry[] = [];
+  input.forEach((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`folder_triggers[${index}] must be an object`);
+    const row = raw as Record<string, unknown>;
+    const name = typeof row.id === "string" && ID.test(row.id) ? `folder_triggers.${row.id}` : `folder_triggers[${index}]`;
+    const bad = (reason: string): never => { throw new Error(`${name}: ${reason}`); };
+    for (const key of Object.keys(row)) if (!FOLDER_KEYS.has(key)) bad(`unknown key ${key}`);
+    if (typeof row.id !== "string" || !ID.test(row.id)) bad("id is 1 to 48 lower-case letters, digits, - or _");
+    if (seen.has(row.id as string)) bad("duplicate id");
+    seen.add(row.id as string);
+    const folderProblem = corpusPathProblem(row.folder);
+    if (folderProblem) bad(folderProblem.replace("a corpus path", "folder"));
+    if (row.glob !== undefined) { const problem = folderGlobProblem(row.glob); if (problem) bad(problem); }
+    if (typeof row.class !== "string" || !CLASS.test(row.class)) bad("class is required");
+    if (typeof row.title !== "string" || !row.title.trim() || row.title.length > 300 || control.test(row.title)) bad("title is 1 to 300 printable characters on one line");
+    if (row.detail !== undefined && (typeof row.detail !== "string" || row.detail.length > MAX_SCHEDULE_DETAIL || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(row.detail))) bad(`detail is text of at most ${MAX_SCHEDULE_DETAIL} characters`);
+    if (row.owner !== undefined && (typeof row.owner !== "string" || !PEER.test(row.owner))) bad("owner is a peer id");
+    if (row.queue !== undefined && row.queue !== "backlog" && row.queue !== "ready") bad('queue is "backlog" or "ready"');
+    out.push({
+      id: row.id as string, folder: row.folder as string, ...(row.glob !== undefined ? { glob: row.glob as string } : {}), class: row.class as string,
+      title: (row.title as string).replace(/\s+/g, " ").trim(), ...(row.detail !== undefined ? { detail: row.detail as string } : {}),
+      ...(row.owner !== undefined ? { owner: row.owner as string } : {}), queue: (row.queue as "backlog" | "ready" | undefined) ?? "backlog",
+    });
+  });
+  return out;
+}
+
+/** What one poll of a trigger did: `baseline` (first poll, recorded only), `ran`, `none`, `held`, `refused` (the folder may not be read, with the reason) or `failed`. */
+export interface FolderRunResult { id: string; outcome: "baseline" | "ran" | "none" | "held" | "refused" | "failed"; tasks: number[]; files: number; reason?: string; more?: true }
+/**
+ * One file a poll found: its real path, name, size, mtime and SHA-256, and never its bytes (a scan of a big inbox would hold them all). `seen` marks a file the trigger
+ * already recorded at this path, size and mtime: its hash is the recorded one and the file was not read again.
+ */
+export interface ScannedFile { real: string; name: string; size: number; mtime: number; sha256: string; seen?: true }
+/** What a read of a trigger's folder gave. `refused` is the reason the folder may not be read; `truncated` says the hash budget ran out and some files wait for the next poll. */
+export interface FolderScan { folder?: string; files: ScannedFile[]; skipped: { name: string; reason: string }[]; refused?: string; truncated: boolean }
+/** The part of the folder state `Tasks` needs. The scan, the disk and the table are in `folder-trigger.ts`, which the Claude channel bundle must not reach. */
+export interface FolderStorePort {
+  baselined(trigger: string): boolean;
+  begin(trigger: string, now: number): void;
+  markBaselined(trigger: string, now: number): void;
+  polled(trigger: string, now: number, error?: string): void;
+  isNew(trigger: string, sha256: string): boolean;
+  record(trigger: string, file: Pick<ScannedFile, "real" | "size" | "mtime" | "sha256">, task: number | null, now: number): void;
+  observe(trigger: string, file: Pick<ScannedFile, "real" | "size" | "mtime" | "sha256">, now: number): void;
+  prune(keep: readonly string[]): void;
+}
+/** New files one poll registers per trigger: a drop of a whole archive becomes a handful of tasks per tick, never a burst. */
+export const MAX_NEW_PER_POLL = 20;
+
+/** The detail of a folder-triggered task: the marker first, then the person's text, then the one source it names. Never the file's name or path: both can be private. */
+export function folderDetail(entry: FolderEntry, source: string): string {
+  return [`${FOLDER_MARKER}${entry.id}`, `Made by the machine-local folder trigger "${entry.id}" for a new file, registered as the source below.`, ...(entry.detail ? ["", entry.detail] : []), "", `Source: ${source}`].join("\n");
 }
 
 export interface ScheduleRow {

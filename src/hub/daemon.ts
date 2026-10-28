@@ -74,7 +74,9 @@ import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
-import { scheduleViews, schedulesConfig, ScheduleStore, type ScheduleEntry } from "./schedules.ts";
+import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
+import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
+import type { ScannedFile } from "./schedules.ts";
 import { corpusConfig } from "./corpus-config.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
 import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateEffectiveConfig, validatePetConfig } from "./config-apply.ts";
@@ -234,6 +236,8 @@ export interface HubConfig {
   task_sweep: TaskSweepConfig;
   /** #512a: machine-local schedules; checked by `schedulesConfig`, never set from a committed file. */
   schedules: ScheduleEntry[];
+  /** #512c: machine-local folder triggers, polled on the schedules timer; checked by `foldersConfig`, never set from a committed file. */
+  folder_triggers: FolderEntry[];
   /** A command per task class run when the owner marks the task done, and its timeout (issue #7). */
   checks: { timeout_s: number; runner?: "container" | "remote"; remote?: RemoteRunnerConfig; [cls: string]: string | number | RemoteRunnerConfig | undefined };
   /** A git tree at each turn boundary for `ahub turns` and `ahub undo`, the last `keep` per peer (issue #33). */
@@ -295,6 +299,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   tasks: { release_after_min: 30, escalate_after: ESCALATE_AFTER, auto_pull: false },
   task_sweep: DEFAULT_TASK_SWEEP,
   schedules: [],
+  folder_triggers: [],
   corpus: { paths: [] },
   checks: { timeout_s: 600 },
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
@@ -511,6 +516,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks, ...(file.tasks?.wip_limits !== undefined ? { wip_limits: planningWipLimits(file.tasks.wip_limits) } : {}) },
     task_sweep: taskSweepConfig(file.task_sweep),
     schedules: schedulesConfig(file.schedules),
+    folder_triggers: foldersConfig(file.folder_triggers),
     corpus: corpusConfig(file.corpus),
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks, runner: file.checks?.runner === "remote" ? "remote" : file.checks?.runner === "container" ? "container" : undefined,
       ...(file.checks?.remote !== undefined || file.checks?.runner === "remote" ? { remote: remoteRunnerConfig(file.checks?.remote) } : {}) },
@@ -2823,6 +2829,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // It runs no task sweep. Held while stopping or recovering (inside `proposeFromSchedules`), where a due schedule counts the skip and coalesces.
   const schedulesStore = new ScheduleStore(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => schedulesStore.close());
+  const folderStore = new FolderStore(join(opts.stateDir, "hub.db"));
+  startupCleanup.push(() => folderStore.close());
   let schedulesTimer: ReturnType<typeof setInterval> | undefined;
   const scheduleNow = () => opts.schedulesNow?.() ?? Date.now();
   /** The pass in flight, so a stop can wait for it before the board and the store close. */
@@ -2840,13 +2848,26 @@ export async function startDaemon(opts: DaemonOptions) {
         if (run.outcome === "ran") log(`schedule ${run.id}: proposed task #${run.task}`);
         else if (run.outcome === "failed") log(`schedule ${run.id}: could not propose; see ahub status`);
       }
+      if (config.folder_triggers.length) {
+        const policy: FolderPolicy = { cwd: opts.cwd, dataPaths: config.data?.readonly ?? [], piiPaths: config.pii?.paths ?? [], deny: config.local.deny };
+        // Registration is the same two steps `ahub source add` takes (`registerScanned`): one decision about privacy, then the registry. The scan kept no bytes, so the file
+        // is read again there and refused if it no longer hashes to what the scan saw. A file under pii.paths or whose text matches a PII pattern is a private source.
+        const register = (file: ScannedFile) => registerScanned(file, { registry: sourceRegistry, cwd: opts.cwd, piiPaths: config.pii?.paths ?? [], piiPatterns: () => activeRouting().signals.pii_patterns,
+          project: (extension, data) => projections.projectBytes(join(opts.cwd, `source${extension}`), data)?.text });
+        for (const run of await tasks.runFolderTriggers(folderStore, config.folder_triggers, entry => scanFolder(entry, policy, (real, size, mtime) => folderStore.known(entry.id, real, size, mtime)), register, scheduleNow(), () => opts.schedulesHeld?.() === true)) {
+          if (run.outcome === "ran") log(`folder trigger ${run.id}: proposed ${run.tasks.map(id => `task #${id}`).join(", ")}`);
+          else if (run.outcome === "failed" || run.outcome === "refused") log(`folder trigger ${run.id}: ${run.outcome}: ${sanitize(run.reason ?? "").slice(0, 160)}`);
+        }
+      }
       if (!stopping) writeStatus(); // a pass that ends during shutdown must not republish the status file shutdown is about to remove
     } catch (error) { log(`schedules pass failed: ${sanitize((error as Error).message).slice(0, 160)}`); }
   };
   const rescheduleSchedules = () => {
     if (schedulesTimer) clearInterval(schedulesTimer);
     schedulesTimer = undefined;
-    if (!config.schedules.length) { try { schedulesStore.prune([]); } catch { /* the store is closed while stopping */ } return; }
+    if (!config.folder_triggers.length) { try { folderStore.prune([]); } catch { /* the store is closed while stopping */ } }
+    if (!config.schedules.length && !config.folder_triggers.length) { try { schedulesStore.prune([]); } catch { /* the store is closed while stopping */ } return; }
+    if (!config.schedules.length) { try { schedulesStore.prune([]); } catch { /* the store is closed while stopping */ } }
     schedulesTimer = setInterval(() => { void runSchedules(); }, opts.schedulesEveryMs ?? 60_000);
     schedulesTimer.unref?.();
   };
@@ -5987,7 +6008,7 @@ export async function startDaemon(opts: DaemonOptions) {
       config.permission_default_sources = candidate.permission_default_sources;
       for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
       if (changes.some(change => change.key === "task_sweep" || change.key.startsWith("task_sweep."))) rescheduleSweep();
-      if (changes.some(change => change.key === "schedules" || change.key.startsWith("schedules."))) rescheduleSchedules();
+      if (changes.some(change => change.key === "schedules" || change.key.startsWith("schedules.") || change.key === "folder_triggers" || change.key.startsWith("folder_triggers."))) rescheduleSchedules();
       if (changes.some(change => ["batch_max", "batch_ms", "queue_cap"].includes(change.key))) bus.configureScheduling({ batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap });
       if (changes.some(change => change.key === "watchdog_ms")) for (const peer of bus.peers.values()) if (peer instanceof BasePeer) peer.configureWatchdog(config.watchdog_ms);
       Object.assign(limits, config.limits);
@@ -7846,6 +7867,7 @@ export async function startDaemon(opts: DaemonOptions) {
       for (const id of [...researchPending.keys()]) writeResearch(id); // the peers have stopped, so their turns have ended
       budget.close();
       schedulesStore.close();
+      folderStore.close();
       conductorHolds.close();
       executionBudget.close();
       syncStop.abort(); // a sync in flight kills its git step and ends before the store closes
