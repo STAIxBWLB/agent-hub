@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HELP, helpCommands } from "../src/cli/help.ts";
 import { classifyPeerCommand, cliCommandLabel, liveTestRefusal } from "../src/cli/identity.ts";
-import { parseRoomCommand, roomCommandError, runRoomCommand, type RoomRequest } from "../src/cli/room.ts";
+import { parseRoomCommand, roomCommandError, runRoomCommand, type RoomRequest, type RoomConfirmationIO } from "../src/cli/room.ts";
 
 const owner = "1".repeat(64), member = "2".repeat(64), artifact = "e30", ticket = "a".repeat(43);
 const room = "b".repeat(43);
@@ -12,6 +12,7 @@ const CLI = join(import.meta.dir, "../src/cli/main.ts");
 const root = mkdtempSync(join(tmpdir(), "ahub-rooms-cli-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const row = { name: "example", room, owner, member, epoch: "2", state: "ready" };
+const nonTTY: RoomConfirmationIO = { isTTY: () => false, answer: async () => { throw new Error("must not prompt without a TTY"); } };
 
 async function printed(work: (lines: string[]) => Promise<void>): Promise<string[]> {
   const lines: string[] = [], original = console.log;
@@ -37,6 +38,7 @@ test("room parser and help cover OOB enrollment, rotation and ids-only read form
   expect(parseRoomCommand(["list", "--json"])).toEqual({ op: "list", input: {}, json: true });
   expect(parseRoomCommand(["status", "example"])).toEqual({ op: "status", input: { name: "example" }, json: false });
   expect(parseRoomCommand(["status", "--json"])).toEqual({ op: "status", input: {}, json: true });
+  expect(parseRoomCommand(["invite", "example", "--confirm", member.slice(0, 16)])).toEqual({ op: "mutation", action: "invite", input: { name: "example" }, confirm: member.slice(0, 16) });
 });
 
 test("room parser refuses extra flags, ambiguous artifacts and mutation JSON before any request", async () => {
@@ -45,7 +47,10 @@ test("room parser refuses extra flags, ambiguous artifacts and mutation JSON bef
     ["invite", "example", "--accept"], ["invite", "example", "--accept", "a=b"], ["join", "../secret"],
     ["join", "example", "--roster", artifact, "--label", "new"], ["leave", "example", "extra"],
     ["revoke", "example", "not-a-fingerprint"], ["expose", "example", "user@remote"], ["expose", "example", "same", "same"],
-    ["invite", "example", "--json"], ["join", artifact, "--json"], ["leave", "example", "--live-test"]];
+    ["invite", "example", "--json"], ["join", artifact, "--json"], ["leave", "example", "--live-test"],
+    ["invite", "example", "--confirm"], ["invite", "example", "--confirm", "2".repeat(15)],
+    ["invite", "example", "--confirm", "A".repeat(16)], ["invite", "example", "--confirm", "2".repeat(65)],
+    ["invite", "example", "--confirm", member, "--confirm", member], ["list", "--confirm", member], ["status", "--confirm", member]];
   let calls = 0;
   for (const args of invalid) {
     expect(() => parseRoomCommand(args), args.join(" ")).toThrow("usage:");
@@ -80,12 +85,12 @@ test("room CLI shows both fingerprints before executing its same-connection prev
         return { ok: true, owner, member, ticket };
       }
       expect(lines).toEqual([`Owner fingerprint: ${owner}`, `Member fingerprint: ${member}`]);
-      expect(message).toEqual({ t: "room", op: "execute", ticket });
+      expect(message).toEqual({ t: "room", op: "execute", ticket, confirm: member.slice(0, 16) });
       return { ok: true, artifact, kind: "invite" };
     };
-    await runRoomCommand(["invite", "example"], request);
+    await runRoomCommand(["invite", "example", "--confirm", member.slice(0, 16)], request, nonTTY);
   });
-  expect(requests).toEqual([{ t: "room", op: "preview", action: "invite", input: { name: "example" } }, { t: "room", op: "execute", ticket }]);
+  expect(requests).toEqual([{ t: "room", op: "preview", action: "invite", input: { name: "example" } }, { t: "room", op: "execute", ticket, confirm: member.slice(0, 16) }]);
   expect(lines.slice(2)).toEqual(["Room artifact (share out of band):", artifact]);
 });
 
@@ -99,7 +104,7 @@ test("room CLI never executes an invalid preview or prints artifacts from a refu
     expect(calls).toBe(1);
   }
   await printed(async lines => {
-    await expect(runRoomCommand(["invite", "example"], async message => message.op === "preview" ? { ok: true, owner, member, ticket } : { ok: false, artifact })).rejects.toThrow("operation refused");
+    await expect(runRoomCommand(["invite", "example", "--confirm", member], async message => message.op === "preview" ? { ok: true, owner, member, ticket } : { ok: false, artifact }, nonTTY)).rejects.toThrow("operation refused");
     expect(lines.join("\n")).not.toContain(artifact);
   });
   expect(roomCommandError(new Error("private token and broker details"))).toBe("room: operation failed");
@@ -134,12 +139,64 @@ test("real room CLI refuses agent-marker and live-test mutations without exposin
       expect(error).not.toContain("private-invitation-token");
     }
   }
+  // The person does not inherit agent markers either: --live-test itself still refuses before a control connection.
+  const child = Bun.spawn([process.execPath, CLI, "--live-test", "room", "join", "private-invitation-token"], { cwd: root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const timeout = setTimeout(() => child.kill("SIGTERM"), 10_000);
+  const [code, out, error] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]).finally(() => clearTimeout(timeout));
+  expect(code).not.toBe(0); expect(out).toBe(""); expect(error).toContain("live-test cannot");
+  expect(error).not.toContain("private-invitation-token"); expect(error).not.toContain("no hub running");
 });
 
 
 test("room CLI reports the generated pending name needed by the later roster import", async () => {
-  const lines = await printed(async () => runRoomCommand(["join", artifact], async message => message.op === "preview"
+  const lines = await printed(async () => runRoomCommand(["join", artifact, "--confirm", member], async message => message.op === "preview"
     ? { ok: true, owner, member, ticket }
     : { ok: true, name: "room-generated", artifact, kind: "join-request" }));
   expect(lines).toContain("Room: room-generated");
+});
+
+test("every room mutation waits for explicit confirmation and abort never sends execute", async () => {
+  const forms = [["create", "example", "--broker", "wss://relay.example/"], ["invite", "example"], ["invite", "example", "--accept", artifact],
+    ["join", artifact], ["join", "example", "--roster", artifact], ["leave", "example"], ["revoke", "example", member], ["expose", "example", "agent-one"]];
+  for (const args of forms) for (const answer of ["", "n", "N", "no"]) {
+    const requests: Record<string, unknown>[] = [];
+    await printed(async lines => {
+      const io: RoomConfirmationIO = { isTTY: () => true, answer: async prompt => {
+        expect(lines).toEqual([`Owner fingerprint: ${owner}`, `Member fingerprint: ${member}`]);
+        expect(prompt).toContain("[y/N]"); return answer;
+      } };
+      await expect(runRoomCommand(args, async message => { requests.push(message); return { ok: true, owner, member, ticket }; }, io)).rejects.toThrow("not confirmed");
+      expect(lines).toHaveLength(2);
+    });
+    expect(requests).toHaveLength(1); expect(requests[0]!.op).toBe("preview");
+  }
+});
+
+test("non-TTY missing or mismatched fingerprint confirmation cannot execute", async () => {
+  for (const args of [["invite", "example"], ["invite", "example", "--confirm", owner]]) {
+    const requests: Record<string, unknown>[] = [];
+    await printed(async lines => {
+      await expect(runRoomCommand(args, async message => { requests.push(message); return { ok: true, owner, member, ticket }; }, nonTTY)).rejects.toThrow("confirmation");
+      expect(lines).toEqual([`Owner fingerprint: ${owner}`, `Member fingerprint: ${member}`]);
+    });
+    expect(requests).toHaveLength(1); expect(requests[0]!.op).toBe("preview");
+  }
+});
+
+test("TTY confirmation sends the exact displayed member fingerprint and EOF aborts", async () => {
+  const requests: Record<string, unknown>[] = [];
+  await printed(async lines => {
+    await runRoomCommand(["expose", "example"], async message => {
+      requests.push(message); return message.op === "preview" ? { ok: true, owner, member, ticket } : { ok: true };
+    }, { isTTY: () => true, answer: async () => { expect(lines).toHaveLength(2); return "y"; } });
+  });
+  expect(requests[1]).toEqual({ t: "room", op: "execute", ticket, confirm: member });
+  let executed = false;
+  await printed(async () => {
+    await expect(runRoomCommand(["leave", "example"], async message => {
+      if (message.op === "execute") executed = true;
+      return { ok: true, owner, member, ticket };
+    }, { isTTY: () => true, answer: async () => { throw new Error("input closed"); } })).rejects.toThrow("not confirmed");
+  });
+  expect(executed).toBe(false);
 });

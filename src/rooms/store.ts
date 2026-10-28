@@ -6,7 +6,7 @@ import { realPath } from "../hub/project.ts";
 import { assertRoomCryptoReady, exportHubIdentityForStorage, generateHubIdentity, importHubIdentity, decodeBase64url, encodeBase64url, sha256, type HubIdentity, type LocalIdentityRecord } from "./crypto.ts";
 import { acceptJoin, acceptRoomEpoch, brokerUrl, createRoomEpoch, decodeInvite, decodeJoin, decodeRoster, positiveU64, roomMembers, type ReplayCommit, type ReplayPort, type SequenceBinding, type SequencePort, type VerifiedEpoch, type RoomMember, type VerifiedPublicRoster, verifyPublicRoster, verifyPublicFrame } from "./wire.ts";
 
-export const ROOM_STORE_LIMITS = Object.freeze({ rooms: 64, invites: 128, pendingJoins: 64, inboxPerRoom: 200, inboxBytes: 16 * 1024 * 1024, receiptsPerRoom: 1000, outboxPerRoom: 200, outboxBytes: 16 * 1024 * 1024, floorsPerRoom: 256 });
+export const ROOM_STORE_LIMITS = Object.freeze({ rooms: 64, invites: 128, pendingJoins: 64, inboxPerRoom: 200, inboxBytes: 16 * 1024 * 1024, receiptsPerRoom: 1000, outboxPerRoom: 200, outboxBytes: 16 * 1024 * 1024, floorsPerRoom: 256, refusedPerRoom: 1000 });
 export type RoomStoreCode = "invalid" | "busy" | "corrupt" | "unsupported" | "limit" | "untrusted" | "state_changed" | "clock_rollback" | "closed";
 export class RoomStoreError extends Error {
   constructor(readonly code: RoomStoreCode) { super(`Room store: ${code}`); this.name = "RoomStoreError"; }
@@ -20,6 +20,13 @@ interface Row { name: string; room: string; broker: string; owner: string; epoch
 interface InviteRow { name: string; id: string; wire: Uint8Array; digest: string; expires: number; request_digest: string | null }
 export interface RoomState { name: string; broker: string; current: VerifiedEpoch; wire: Uint8Array; previous?: { epoch: VerifiedEpoch; expiresAt: number }; left: boolean }
 export interface RoomInboxEntry { sender: string; seq: string; digest: string; plaintext: Uint8Array; gap: string }
+const ROOM_REFUSAL_REASONS = ["invalid_presence", "wrong_epoch", "trust_changed", "stale", "invalid_frame"] as const;
+export type RoomRefusalReason = typeof ROOM_REFUSAL_REASONS[number];
+export interface RoomRefusal { digest: string; reason: RoomRefusalReason; at: number }
+function validDigest(value: unknown): value is string {
+  if (typeof value !== "string" || value.length !== 43) return false;
+  try { return encodeBase64url(decodeBase64url(value, 32)) === value; } catch { return false; }
+}
 function code(error: unknown): RoomStoreCode {
   const value = String(error).toLowerCase();
   return value.includes("locked") || value.includes("busy") ? "busy" : "corrupt";
@@ -95,18 +102,19 @@ export class RoomStore {
           CREATE TABLE invites (name TEXT NOT NULL, id TEXT PRIMARY KEY, wire BLOB NOT NULL, digest TEXT NOT NULL, expires INTEGER NOT NULL, request_digest TEXT) WITHOUT ROWID;
           CREATE TABLE outbox (room TEXT NOT NULL, digest TEXT PRIMARY KEY, wire BLOB NOT NULL, roster BLOB NOT NULL, state TEXT NOT NULL);
           CREATE TABLE pending_joins (name TEXT PRIMARY KEY, invite BLOB NOT NULL, request BLOB NOT NULL, selection TEXT) WITHOUT ROWID;
+          CREATE TABLE refusals (room TEXT NOT NULL, digest TEXT NOT NULL, reason TEXT NOT NULL, at INTEGER NOT NULL, UNIQUE(room,digest));
           PRAGMA user_version=1;
         `);
       }
-      const tables = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 9").all().map(x => x.name).join(",");
-      if (tables !== "counters,floors,inbox,invites,meta,outbox,pending_joins,rooms") fail("unsupported");
+      const tables = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 10").all().map(x => x.name).join(",");
+      if (tables !== "counters,floors,inbox,invites,meta,outbox,pending_joins,refusals,rooms") fail("unsupported");
       const columns: Record<string, string[]> = {
         meta: ["key", "value"],
         rooms: ["name", "room", "broker", "owner", "epoch", "digest", "wire", "previous_wire", "previous_digest", "previous_epoch", "previous_expires", "left"],
         counters: ["room", "seq"], floors: ["room", "sender", "seq", "digest"],
         inbox: ["room", "sender", "seq", "digest", "plaintext", "gap"],
         invites: ["name", "id", "wire", "digest", "expires", "request_digest"],
-        outbox: ["room", "digest", "wire", "roster", "state"], pending_joins: ["name", "invite", "request", "selection"],
+        outbox: ["room", "digest", "wire", "roster", "state"], pending_joins: ["name", "invite", "request", "selection"], refusals: ["room", "digest", "reason", "at"],
       };
       for (const [table, names] of Object.entries(columns)) {
         if (db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map(x => x.name).join(",") !== names.join(",")) fail("unsupported");
@@ -163,7 +171,7 @@ export class RoomStore {
     };
     cap("counters", limits.rooms); cap("floors", limits.rooms * limits.floorsPerRoom);
     cap("inbox", limits.rooms * (limits.receiptsPerRoom + limits.inboxPerRoom));
-    cap("outbox", limits.rooms * limits.outboxPerRoom); cap("invites", limits.invites); cap("pending_joins", limits.pendingJoins);
+    cap("outbox", limits.rooms * limits.outboxPerRoom); cap("invites", limits.invites); cap("pending_joins", limits.pendingJoins); cap("refusals", limits.rooms * limits.refusedPerRoom);
     const groupCap = (table: string, filter: string, maximum: number) => {
       if (this.db.query<{ room: string }, [number]>(`SELECT room FROM ${table} ${filter} GROUP BY room HAVING COUNT(*)>? LIMIT 1`).get(maximum)) fail("corrupt");
     };
@@ -171,6 +179,7 @@ export class RoomStore {
     groupCap("inbox", "WHERE plaintext IS NOT NULL", limits.inboxPerRoom);
     groupCap("inbox", "WHERE plaintext IS NULL", limits.receiptsPerRoom);
     groupCap("outbox", "", limits.outboxPerRoom);
+    groupCap("refusals", "", limits.refusedPerRoom);
     const metadataBounds: Record<string, string> = {
       counters: "length(room)>43 OR length(seq)>20",
       floors: "length(room)>43 OR length(sender)>64 OR length(seq)>20 OR length(digest)>43",
@@ -178,6 +187,7 @@ export class RoomStore {
       invites: "length(name)>32 OR length(id)>43 OR length(digest)>43 OR length(request_digest)>43",
       outbox: "length(room)>43 OR length(digest)>43 OR length(state)>16",
       pending_joins: "length(name)>32",
+      refusals: "length(room)>43 OR length(digest)>43 OR length(reason)>32",
     };
     for (const [table, condition] of Object.entries(metadataBounds)) {
       if (this.db.query(`SELECT 1 FROM ${table} WHERE ${condition} LIMIT 1`).get()) fail("corrupt");
@@ -245,6 +255,10 @@ export class RoomStore {
       if (invite.owner !== this.identity.public.fingerprint || invite.owner !== decodeRoster(installed.wire).owner
         || invite.room !== installed.current.room || invite.broker !== installed.broker || invite.inviteId !== row.id || invite.expiresAt !== row.expires || await digest(row.wire) !== hash(row.digest)) fail("corrupt");
       if (row.request_digest !== null) hash(row.request_digest);
+    }
+    for (const row of this.db.query<{ room: string; digest: string; reason: RoomRefusalReason; at: number }, []>(`SELECT room,digest,reason,at FROM refusals LIMIT ${limits.rooms * limits.refusedPerRoom + 1}`).all()) {
+      room(row.room); hash(row.digest);
+      if (!ROOM_REFUSAL_REASONS.includes(row.reason) || !Number.isSafeInteger(row.at) || row.at <= 0 || row.at > this.now()) fail("corrupt");
     }
     for (const row of this.db.query<{ name: string; invite: Uint8Array; request: Uint8Array; selection: string | null }, []>(`SELECT * FROM pending_joins LIMIT ${limits.pendingJoins + 1}`).all()) {
       named(row.name); if (this.rooms.has(row.name)) fail("corrupt");
@@ -386,7 +400,8 @@ export class RoomStore {
         const stored = this.db.query<{ request_digest: string | null }, [string]>("SELECT request_digest FROM invites WHERE id=?").get(claim.inviteId);
         return stored?.request_digest === claim.requestDigest ? "duplicate" : "refused";
       }
-      if (claim.room !== previous.current.room || claim.owner !== this.identity.public.fingerprint) return "refused";
+      // A consumed invitation never re-enrolls a subsequently revoked member.
+      if (invite.request_digest !== null || claim.room !== previous.current.room || claim.owner !== this.identity.public.fingerprint) return "refused";
       const candidate = await createRoomEpoch({ owner: this.identity, members: [...members, claim.member], previous: previous.current });
       next = this.transaction(now => {
         assertCurrent(current);
@@ -469,6 +484,26 @@ export class RoomStore {
   markStored(name: string, digestValue: string): void {
     const room = this.get(name); if (!room || room.left) fail("untrusted");
     this.transaction(() => { this.db.query("UPDATE outbox SET state='accepted' WHERE room=? AND digest=?").run(room.current.room, digestValue); });
+  }
+  /** Diagnostic transport-drop receipt only. It never advances crypto replay or application-delivery state. */
+  recordRefused(name: string, digestValue: string, reason: RoomRefusalReason, current?: () => boolean): void {
+    const state = this.get(name);
+    if (!state || state.left) fail("untrusted");
+    if (!validDigest(digestValue) || !ROOM_REFUSAL_REASONS.includes(reason)) fail("invalid");
+    this.transaction(now => {
+      assertCurrent(current);
+      const latest = this.rooms.get(name);
+      if (!latest || latest.left || latest.current.digest !== state.current.digest) fail("state_changed");
+      this.db.query("INSERT INTO refusals(room,digest,reason,at) VALUES(?,?,?,?) ON CONFLICT(room,digest) DO NOTHING")
+        .run(state.current.room, digestValue, reason, now);
+      // These are non-authority diagnostics; evicting them never forgets a replay floor or accepted receipt.
+      this.db.query("DELETE FROM refusals WHERE room=? AND rowid NOT IN (SELECT rowid FROM refusals WHERE room=? ORDER BY rowid DESC LIMIT ?)")
+        .run(state.current.room, state.current.room, ROOM_STORE_LIMITS.refusedPerRoom);
+    });
+  }
+  refused(name: string): RoomRefusal[] {
+    const state = this.get(name); if (!state) return [];
+    return this.db.query<RoomRefusal, [string]>("SELECT digest,reason,at FROM refusals WHERE room=? ORDER BY rowid").all(state.current.room);
   }
   pendingInbox(name: string): RoomInboxEntry[] {
     const room = this.get(name); if (!room) return [];

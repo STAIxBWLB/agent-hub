@@ -1,8 +1,8 @@
 /** Outbound room transport. The local bus and application delivery boundary belong to X4. */
 import { createBrokerAuth, decodeBrokerChallenge, encodeBrokerControl } from "../broker/protocol.ts";
-import { assertRoomCryptoReady, encodeBase64url, sha256 } from "./crypto.ts";
-import { brokerUrl, canonicalBytes, decodeFrame, decodeRoster, openFrame, roomMembers, sealFrame, verifyPublicRoster, type VerifiedPublicRoster } from "./wire.ts";
-import type { RoomState, RoomStore } from "./store.ts";
+import { assertRoomCryptoReady, encodeBase64url, sha256, RoomCryptoError } from "./crypto.ts";
+import { brokerUrl, canonicalBytes, decodeFrame, decodeRoster, openFrame, roomMembers, sealFrame, verifyPublicRoster, RoomWireError, type FrameWire, type FrameOpenResult, type VerifiedPublicRoster } from "./wire.ts";
+import type { RoomRefusalReason, RoomState, RoomStore } from "./store.ts";
 
 export type RoomLinkState = "offline" | "connecting" | "online";
 export type RoomPresenceState = "idle" | "busy" | "paused" | "offline";
@@ -253,30 +253,7 @@ export class RoomLink {
     }
     if (message.type === "frame") {
       if (session.phase !== "ready") fail("untrusted");
-      const frame = decodeFrame(bytes), digest = local.current.digest;
-      const result = await openFrame({ wire: bytes, identity: this.options.store.identity, current: local.current, ...(local.previous ? { previous: local.previous } : {}), replay: { accept: async input => {
-        const latest = this.current(session, digest);
-        const sender = roomMembers(latest.current).find(member => member.fingerprint === input.sender);
-        if (!sender) fail("untrusted");
-        presence(input.plaintext, sender.exposedPeers);
-        return this.options.store.replay.accept(input);
-      } } });
-      const acceptedDigest = await this.frameDigest(bytes);
-      const latest = this.current(session, digest);
-      if (result.status === "stale") return;
-      if (result.status === "accepted") {
-        const sender = roomMembers(latest.current).find(member => member.fingerprint === frame.sender);
-        if (!sender) fail("untrusted");
-        const peers = presence(result.plaintext, sender.exposedPeers);
-        this.current(session, digest);
-        try { this.options.onPresence?.({ member: frame.sender, peers }); } catch { /* validated observation only */ }
-        this.current(session, digest);
-        this.options.store.settleInbox(this.options.name, acceptedDigest);
-        this.current(session, digest);
-      }
-      // The replay transaction accepted the identical digest before this transport ACK.
-      this.current(session, digest);
-      this.send(session, encodeBrokerControl({ v: 1, type: "received", digest: acceptedDigest }));
+      await this.receiveFrame(session, bytes, local);
       return;
     }
     if (message.type === "stored") {
@@ -296,6 +273,62 @@ export class RoomLink {
     }
     if (message.type === "error") { exact(message, ["v", "type", "code"]); fail("unavailable"); }
     fail();
+  }
+  private frameCurrent(session: Session, frame: FrameWire): RoomState {
+    const row = this.current(session), identity = this.options.store.identity.public;
+    const own = roomMembers(row.current).find(member => member.fingerprint === identity.fingerprint);
+    if (frame.room !== session.room || !frame.recipients.includes(identity.fingerprint) || !own || own.signingKey !== identity.signingKey || own.agreementKey !== identity.agreementKey) fail("untrusted");
+    return row;
+  }
+  private isFrameCurrent(session: Session, frame: FrameWire): boolean {
+    try { this.frameCurrent(session, frame); return true; } catch { return false; }
+  }
+  private async receiveFrame(session: Session, bytes: Uint8Array, local: RoomState): Promise<void> {
+    // Only a canonical frame addressed to this active room membership is eligible
+    // for transport retirement. No malformed/foreign packet earns an ACK.
+    const frame = decodeFrame(bytes), digest = local.current.digest;
+    this.frameCurrent(session, frame);
+    let result: FrameOpenResult | undefined, refused: RoomRefusalReason | undefined, invalidPresence = false;
+    try {
+      result = await openFrame({ wire: bytes, identity: this.options.store.identity, current: local.current, ...(local.previous ? { previous: local.previous } : {}), replay: { accept: async input => {
+        const latest = this.frameCurrent(session, frame);
+        if (latest.current.digest !== digest) return { status: "trust_changed" };
+        const sender = roomMembers(latest.current).find(member => member.fingerprint === input.sender);
+        if (!sender) return { status: "trust_changed" };
+        try { presence(input.plaintext, sender.exposedPeers); } catch (error) { invalidPresence = true; throw error; }
+        return this.options.store.replay.accept(input);
+      } } });
+    } catch (error) {
+      if (invalidPresence) refused = "invalid_presence";
+      else if (error instanceof RoomWireError) {
+        if (error.code === "wrong_epoch") refused = "wrong_epoch";
+        else if (error.code === "state_changed" || error.code === "untrusted") refused = "trust_changed";
+        else if (error.code === "authentication_failed" || error.code === "invalid_wire" || error.code === "limit") refused = "invalid_frame";
+        else throw error; // A durable-state/runtime failure must retain the broker packet.
+      } else if (error instanceof RoomCryptoError && error.code === "authentication_failed") refused = "invalid_frame";
+      else throw error;
+    }
+    const acceptedDigest = await this.frameDigest(bytes);
+    const latest = this.frameCurrent(session, frame);
+    if (latest.current.digest !== digest) refused = "trust_changed";
+    if (result?.status === "stale") refused = "stale";
+    if (refused) {
+      this.options.store.recordRefused(this.options.name, acceptedDigest, refused, () => this.isFrameCurrent(session, frame));
+      this.frameCurrent(session, frame);
+      this.options.store.settleInbox(this.options.name, acceptedDigest);
+    } else if (result?.status === "accepted") {
+      const sender = roomMembers(latest.current).find(member => member.fingerprint === frame.sender);
+      if (!sender) fail("untrusted");
+      const peers = presence(result.plaintext, sender.exposedPeers);
+      this.current(session, digest);
+      try { this.options.onPresence?.({ member: frame.sender, peers }); } catch { /* validated observation only */ }
+      this.current(session, digest);
+      this.options.store.settleInbox(this.options.name, acceptedDigest);
+    } else if (result?.status !== "duplicate") fail("unavailable");
+    this.frameCurrent(session, frame);
+    // This ACK only retires ciphertext from the broker queue. A durable refusal
+    // or stale drop is never a signed recipient application-completion receipt.
+    this.send(session, encodeBrokerControl({ v: 1, type: "received", digest: acceptedDigest }));
   }
   private async frameDigest(bytes: Uint8Array): Promise<string> {
     return encodeBase64url(await sha256(bytes));

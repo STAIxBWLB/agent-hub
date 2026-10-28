@@ -188,8 +188,9 @@ export class RoomCommands {
     }
     if (action === "expose") {
       const peers = exposedPeers(row.peers ?? []);
+      this.policy.assertWritable(name, peers, check);
       return { owner, member: own, commit: async () => {
-        this.current(check);
+        this.current(check); this.policy.assertWritable(name, peers, check);
         if (store.get(name)?.current.digest !== digest) refuse("state_changed");
         if (owner === own) {
           const next = await store.rotate(name, roomMembers(state.current).map(m => m.fingerprint === own ? { ...m, exposedPeers: peers } : m), digest, check);

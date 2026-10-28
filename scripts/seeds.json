@@ -3752,6 +3752,22 @@
       "replacement": "try { await Promise.resolve(); }",
       "testFile": "test/rooms-store.test.ts",
       "testName": "room restore rejects a zero or noncanonical durable sender counter before publishing sequence ports"
+    },
+    {
+      "id": "room-cli-fingerprint-confirmation",
+      "file": "src/cli/room.ts",
+      "search": "if (answer.trim().toLowerCase() !== \"y\") fail(\"not_confirmed\");",
+      "replacement": "if (false) fail(\"not_confirmed\");",
+      "testFile": "test/rooms-cli.test.ts",
+      "testName": "every room mutation waits for explicit confirmation and abort never sends execute"
+    },
+    {
+      "id": "room-host-fingerprint-confirmation",
+      "file": "src/hub/daemon.ts",
+      "search": "typeof msg.confirm !== \"string\" || !/^[0-9a-f]{16,64}$/.test(msg.confirm) || !ticket.preview.member.startsWith(msg.confirm)",
+      "replacement": "false",
+      "testFile": "test/rooms-daemon.test.ts",
+      "testName": "room execute requires a matching member fingerprint and burns unconfirmed tickets without installing"
     }
   ]
 }

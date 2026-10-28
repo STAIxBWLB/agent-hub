@@ -7515,7 +7515,8 @@ export async function startDaemon(opts: DaemonOptions) {
         if (msg.op === "execute") {
           const ticket = roomTickets.get(sock); roomTickets.delete(sock);
           if (!ticket || msg.ticket !== ticket.id || Date.now() >= ticket.expires
-            || Object.keys(msg).some(key => !["t", "op", "ticket", "rid"].includes(key))) return roomFailure();
+            || typeof msg.confirm !== "string" || !/^[0-9a-f]{16,64}$/.test(msg.confirm) || !ticket.preview.member.startsWith(msg.confirm)
+            || Object.keys(msg).some(key => !["t", "op", "ticket", "confirm", "rid"].includes(key))) return roomFailure();
           void ticket.preview.commit().then(result => reply({ ok: true, ...result }), roomFailure);
           return;
         }

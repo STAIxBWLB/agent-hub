@@ -1058,7 +1058,11 @@ conductor delegation. Daemon mutations require a console connection, and every
 operation, unknown or refused included, answers its `rid`.
 
 A mutation first prepares a connection-bound, one-use, 30-second ticket. The CLI
-prints both owner and member fingerprints before executing it. The ticket binds
+prints both owner and member fingerprints before executing it. The person must
+compare them and explicitly confirm: a TTY asks y/N (default No), and a non-TTY
+requires `--confirm <member-fingerprint-prefix>` with 16..64 matching lowercase hex
+characters. No, EOF, missing or mismatched confirmation executes nothing. The
+daemon also matches confirmation to the ticket's member fingerprint. The ticket binds
 the captured action and arguments; execute accepts no replacement action/input.
 Socket ownership, shutdown and recovery holds are rechecked after crypto awaits
 and inside the final state transaction. Preview does not install a room or consume
@@ -1099,7 +1103,8 @@ slice may fetch an already signed roster from the broker and remove the manual
 `rooms.<name>.expose` lives only in an untracked `.agenthub/config.local.json`.
 Shared/committed configuration and generic settings cannot enable it. The live
 local policy and the verified roster are intersected before any presence is sent;
-loss of config trust removes exposure. Empty exposure is the default. Room keys,
+loss of config trust removes exposure. Writable local policy is checked before
+any owner exposure rotation, not only when saving the policy afterward. Empty exposure is the default. Room keys,
 broker binding, pending invites and membership are private machine-local state,
 not project config or synced memory. A hub stop closes links and retains membership.
 `leave` disconnects locally and retains owner/epoch/replay pins; an owner uses
@@ -1149,7 +1154,15 @@ Presence is an encrypted, signed frame containing only exposed peer ids and clos
 idle/busy/paused/offline states. It is sent on connection and coalesced peer-state
 changes, never titles, bodies, private task context or credentials. Unknown payload
 types and unexposed ids refuse before replay commit. Broker ACKs are transport
-facts only. A failed room state or crypto initialization disables rooms and leaves
+facts only. A canonical room/recipient-bound frame that is refused or stale is
+recorded in a durable metadata-only drop ledger before transport retirement ACK.
+This does not accept plaintext, advance a replay floor or assert application
+completion. Fixed refusal codes, digest and local timestamp are retained, capped
+at 1,000 diagnostics per room; eviction removes only old diagnostic rows, never
+cryptographic replay state. Wrong/missing session or membership authority and a
+failed durable record produce no ACK. Noncanonical/foreign-room packets still
+refuse without a transport ACK. Later valid packets are not blocked behind a
+retired refused packet. A failed room state or crypto initialization disables rooms and leaves
 local hub work available. Fake-hub/broker tests are not a live TLS/proxy or X7 receipt.
 
 ## Risks

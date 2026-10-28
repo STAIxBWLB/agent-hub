@@ -614,7 +614,10 @@ The amem host screens the actual data that may persist, including literal keys/v
 
 Room mutations require a person console and refuse agent markers and `--live-test`.
 One-use connection tickets let the CLI print both fingerprints before any room
-install or invitation consumption. Joining pins the owner from a private OOB
+install or invitation consumption. Execution then requires an explicit TTY y/N
+(default No), or a matching 16..64 lowercase-hex member fingerprint prefix through
+`--confirm`; the daemon verifies that confirmation against the ticket. Abort, EOF
+and missing/mismatched confirmation install and consume nothing. Joining pins the owner from a private OOB
 invitation; a broker-provided key or roster cannot establish that pin. The
 invitation secret is sent only to the joining person, never to the broker. The
 HMAC'd request and signed roster omit it and every private key.
@@ -632,3 +635,10 @@ Local leave retains pins and replay records; actual member revocation is the own
 signed epoch rotation. Broker storage ACKs never assert application completion.
 The live TLS/proxy/two-machine receipt and X4 envelope privacy boundary are separate
 obligations, not proved by the fake broker/hub integration tests.
+
+Canonical refused or stale room frames are durably recorded as digest/fixed-reason/
+timestamp diagnostics before a broker transport retirement ACK. This drops a
+poison queue head without accepting its body, advancing replay state or issuing
+an application-completion receipt. Unproven session/recipient authority or failed
+durable storage receives no ACK. Only bounded diagnostic records may be evicted;
+sequence/replay records retain their existing rules.

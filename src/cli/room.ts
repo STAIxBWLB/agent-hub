@@ -1,19 +1,22 @@
 /** Room mutations are person-only; main.ts refuses agent and live-test calls before importing this module. */
-export const ROOM_USAGE = "usage: ahub room create <name> --broker <url> [--label <id>] | invite <name> [--accept <request>] | join <token> [--name <name>] [--label <id>] | join <name> --roster <signed-roster> | leave <name> | revoke <name> <fingerprint> | expose <name> [<peer>...] | list [--json] | status [<name>] [--json]";
+export const ROOM_USAGE = "usage: ahub room create <name> --broker <url> [--label <id>] | invite <name> [--accept <request>] | join <token> [--name <name>] [--label <id>] | join <name> --roster <signed-roster> | leave <name> | revoke <name> <fingerprint> | expose <name> [<peer>...] (mutations require TTY y/N or --confirm <member-fingerprint-prefix>, 16..64 lowercase hex) | list [--json] | status [<name>] [--json]";
 
 type RoomAction = "create" | "invite" | "join" | "leave" | "revoke" | "expose";
 export type RoomCliCommand =
   | { op: "list" | "status"; input: Record<string, unknown>; json: boolean }
-  | { op: "mutation"; action: RoomAction; input: Record<string, unknown> };
+  | { op: "mutation"; action: RoomAction; input: Record<string, unknown>; confirm?: string };
 export type RoomRequest = (message: Record<string, unknown>) => Promise<any>;
+/** Fixed host/test I/O only, never a callback selected by project configuration. */
+export interface RoomConfirmationIO { isTTY(): boolean; answer(prompt: string): Promise<string> }
 
 export class RoomCliError extends Error {
-  constructor(readonly code: "usage" | "refused" | "invalid_reply") {
-    super(code === "usage" ? ROOM_USAGE : `room: ${code === "refused" ? "operation refused" : "invalid control reply"}`);
+  constructor(readonly code: "usage" | "refused" | "invalid_reply" | "confirmation_required" | "not_confirmed" | "confirmation_mismatch") {
+    const message = { refused: "operation refused", invalid_reply: "invalid control reply", confirmation_required: "confirmation required; use a TTY or --confirm with the member fingerprint prefix", not_confirmed: "not confirmed; nothing executed", confirmation_mismatch: "confirmation does not match the member fingerprint; nothing executed" };
+    super(code === "usage" ? ROOM_USAGE : `room: ${message[code]}`);
     this.name = "RoomCliError";
   }
 }
-function fail(code: "usage" | "refused" | "invalid_reply" = "usage"): never { throw new RoomCliError(code); }
+function fail(code: ConstructorParameters<typeof RoomCliError>[0] = "usage"): never { throw new RoomCliError(code); }
 const ID = /^[a-z][a-z0-9-]{0,31}$/;
 const FP = /^[0-9a-f]{64}$/;
 const B64 = /^[A-Za-z0-9_-]+$/;
@@ -33,7 +36,7 @@ function flags(args: readonly string[], allowed: readonly string[]): Map<string,
 }
 
 /** The parser carries no authorization, filesystem or network effects. The daemon validates every value again. */
-export function parseRoomCommand(args: readonly string[]): RoomCliCommand {
+function parseRoomInput(args: readonly string[]): RoomCliCommand {
   const [action, operand, ...rest] = args;
   if (action === "list" || action === "status") {
     const json = args.includes("--json"), values = args.slice(1).filter(value => value !== "--json");
@@ -74,6 +77,45 @@ export function parseRoomCommand(args: readonly string[]): RoomCliCommand {
   return fail();
 }
 
+export function parseRoomCommand(args: readonly string[]): RoomCliCommand {
+  if (args[0] === "list" || args[0] === "status") return parseRoomInput(args);
+  let confirm: string | undefined;
+  const input: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== "--confirm") { input.push(args[i]!); continue; }
+    const value = args[++i];
+    if (confirm !== undefined || !value || !/^[0-9a-f]{16,64}$/.test(value)) fail();
+    confirm = value;
+  }
+  const command = parseRoomInput(input);
+  if (command.op !== "mutation") return fail();
+  return { ...command, ...(confirm !== undefined ? { confirm } : {}) };
+}
+
+const confirmationIO: RoomConfirmationIO = {
+  isTTY: () => process.stdin.isTTY === true && process.stdout.isTTY === true,
+  answer: async prompt => {
+    const { createInterface } = await import("node:readline/promises");
+    const terminal = createInterface({ input: process.stdin, output: process.stdout });
+    const controller = new AbortController(), abort = () => controller.abort();
+    terminal.once("close", abort); terminal.once("SIGINT", abort);
+    try { return await terminal.question(prompt, { signal: controller.signal }); }
+    finally { terminal.off("close", abort); terminal.off("SIGINT", abort); terminal.close(); }
+  },
+};
+async function confirmMember(member: string, explicit: string | undefined, io: RoomConfirmationIO): Promise<string> {
+  if (explicit !== undefined) {
+    if (!member.startsWith(explicit)) fail("confirmation_mismatch");
+    return explicit;
+  }
+  if (!io.isTTY()) fail("confirmation_required");
+  let answer: string;
+  try { answer = await io.answer("Compare both fingerprints out of band. Proceed with this member? [y/N] "); }
+  catch { return fail("not_confirmed"); }
+  if (answer.trim().toLowerCase() !== "y") fail("not_confirmed");
+  return member;
+}
+
 interface RoomRow { name: string; room: string; owner: string; member: string; epoch: string; state: string }
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return fail("invalid_reply");
@@ -98,7 +140,7 @@ function roomRows(value: unknown): RoomRow[] {
 }
 
 /** Uses one already authenticated control connection so an ephemeral preview ticket cannot cross callers. */
-export async function runRoomCommand(args: readonly string[], request: RoomRequest): Promise<void> {
+export async function runRoomCommand(args: readonly string[], request: RoomRequest, io: RoomConfirmationIO = confirmationIO): Promise<void> {
   const command = parseRoomCommand(args);
   if (command.op !== "mutation") {
     const result = success(await request({ t: "room", op: command.op, input: command.input })), rows = roomRows(result.rooms);
@@ -112,7 +154,8 @@ export async function runRoomCommand(args: readonly string[], request: RoomReque
     || typeof preview.ticket !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(preview.ticket)) fail("invalid_reply");
   console.log(`Owner fingerprint: ${preview.owner}`);
   console.log(`Member fingerprint: ${preview.member}`);
-  const result = success(await request({ t: "room", op: "execute", ticket: preview.ticket }));
+  const confirm = await confirmMember(preview.member, command.confirm, io);
+  const result = success(await request({ t: "room", op: "execute", ticket: preview.ticket, confirm }));
   if (result.name !== undefined) {
     if (typeof result.name !== "string" || !ID.test(result.name)) fail("invalid_reply");
     console.log(`Room: ${result.name}`);

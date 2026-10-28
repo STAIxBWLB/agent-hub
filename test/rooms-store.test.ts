@@ -3,9 +3,9 @@ import { Database } from "bun:sqlite";
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { RoomStore } from "../src/rooms/store.ts";
+import { RoomStore, type RoomRefusalReason } from "../src/rooms/store.ts";
 import { createInvite, createJoin, createRoomEpoch, openFrame, roomMembers, sealFrame, type RoomMember } from "../src/rooms/wire.ts";
-import { encodeBase64url, generateHubIdentity, type HubIdentity } from "../src/rooms/crypto.ts";
+import { encodeBase64url, sha256, generateHubIdentity, type HubIdentity } from "../src/rooms/crypto.ts";
 
 const dirs: string[] = [], stores: RoomStore[] = [];
 const locations = new WeakMap<RoomStore, string>();
@@ -238,4 +238,87 @@ test("room restore revalidates stored invitation digests and pending identity me
   const pendingDb = new Database(join(pendingDir, "rooms.db"));
   try { pendingDb.query("UPDATE pending_joins SET selection=?").run("x".repeat(4097)); } finally { pendingDb.close(); }
   await expect(RoomStore.open({ stateDir: pendingDir })).rejects.toMatchObject({ code: "corrupt" });
+});
+
+test("room transport-drop ledger is durable fixed metadata and never advances replay floors or inbox delivery", async () => {
+  let now = 100000;
+  const f = await pair(() => now), state = f.guest.get("work")!;
+  const wire = await sealFrame({ epoch: f.roster.current, identity: f.owner.identity, recipients: [f.guest.identity.public.fingerprint], plaintext: text.encode("not a drop receipt body"), sequence: f.owner.sequence });
+  const frameDigest = encodeBase64url(await sha256(wire));
+  f.guest.recordRefused("work", frameDigest, "invalid_presence");
+  expect(f.guest.refused("work")).toEqual([{ digest: frameDigest, reason: "invalid_presence", at: now }]);
+  now += 1;
+  f.guest.recordRefused("work", frameDigest, "invalid_frame");
+  expect(f.guest.refused("work")).toEqual([{ digest: frameDigest, reason: "invalid_presence", at: now - 1 }]);
+  expect(f.guest.pendingInbox("work")).toHaveLength(0);
+  const directory = locations.get(f.guest)!; f.guest.close();
+  const db = new Database(join(directory, "rooms.db"));
+  try {
+    expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM floors").get()?.n).toBe(0);
+    expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox").get()?.n).toBe(0);
+    expect(db.query<{ name: string }, []>("PRAGMA table_info(refusals)").all().map(row => row.name)).toEqual(["room", "digest", "reason", "at"]);
+  } finally { db.close(); }
+  const restored = await store(directory, () => now);
+  expect(restored.refused("work")).toEqual([{ digest: frameDigest, reason: "invalid_presence", at: now - 1 }]);
+  const accepted = await openFrame({ wire, identity: restored.identity, current: restored.get("work")!.current, replay: restored.replay });
+  expect(accepted).toMatchObject({ status: "accepted", gap: "0" });
+  expect(state.current.digest).toBe(restored.get("work")!.current.digest);
+});
+
+test("room transport-drop ledger refuses invalid metadata and stale authority, and evicts only bounded diagnostics", async () => {
+  const owner = await store(), state = await created(owner), hash = encodeBase64url(new Uint8Array(32));
+  for (const bad of ["", "not-a-digest", `${hash}=`, "A".repeat(42) + "B"]) {
+    expect(() => owner.recordRefused("work", bad, "invalid_frame")).toThrow("invalid");
+  }
+  expect(() => owner.recordRefused("work", hash, "arbitrary" as RoomRefusalReason)).toThrow("invalid");
+  expect(() => owner.recordRefused("work", hash, "trust_changed", () => false)).toThrow("state_changed");
+  expect(owner.refused("work")).toHaveLength(0);
+  const binding = { room: state.current.room, sender: owner.identity.public.fingerprint, epoch: state.current.epoch, rosterDigest: state.current.digest };
+  expect(await owner.sequence.reserve(binding)).toBe("1");
+  for (let i = 0; i < 1002; i++) {
+    const raw = new Uint8Array(32); new DataView(raw.buffer).setUint32(0, i);
+    owner.recordRefused("work", encodeBase64url(raw), "stale");
+  }
+  const rows = owner.refused("work");
+  expect(rows).toHaveLength(1000);
+  expect(rows.some(row => row.digest === hash)).toBe(false);
+  expect(await owner.sequence.reserve(binding)).toBe("2");
+  expect(owner.pendingInbox("work")).toHaveLength(0);
+  owner.leave("work");
+  expect(() => owner.recordRefused("work", hash, "stale")).toThrow("untrusted");
+  expect(owner.refused("work")).toHaveLength(1000);
+});
+
+test("room restore rejects forged transport-drop metadata or over-cap diagnostic records", async () => {
+  for (const mutation of ["reason", "digest", "time", "cap"]) {
+    const directory = join(root(), "state"), owner = await store(directory), state = await created(owner);
+    owner.recordRefused("work", encodeBase64url(new Uint8Array(32)), "wrong_epoch"); owner.close();
+    const db = new Database(join(directory, "rooms.db"));
+    try {
+      if (mutation === "reason") db.query("UPDATE refusals SET reason='body from model'").run();
+      else if (mutation === "digest") db.query("UPDATE refusals SET digest='invalid'").run();
+      else if (mutation === "time") db.query("UPDATE refusals SET at=0").run();
+      else for (let i = 1; i < 1001; i++) {
+        const raw = new Uint8Array(32); new DataView(raw.buffer).setUint32(0, i);
+        db.query("INSERT INTO refusals(room,digest,reason,at) VALUES(?,?,?,?)").run(state.current.room, encodeBase64url(raw), "stale", Date.now());
+      }
+    } finally { db.close(); }
+    await expect(RoomStore.open({ stateDir: directory })).rejects.toMatchObject({ code: "corrupt" });
+  }
+});
+
+test("a consumed JoinWire cannot re-enroll a member after owner revocation", async () => {
+  const f = await pair(), guest = f.guest.identity.public.fingerprint;
+  const before = f.owner.get("work")!;
+  const revoked = await f.owner.rotate("work", roomMembers(before.current).filter(row => row.fingerprint !== guest), before.current.digest);
+  await expect(f.owner.enroll("work", f.request)).rejects.toMatchObject({ code: "state_changed" });
+  expect(f.owner.get("work")?.current.digest).toBe(revoked.current.digest);
+  expect(roomMembers(f.owner.get("work")!.current).some(row => row.fingerprint === guest)).toBe(false);
+  const directory = locations.get(f.owner)!; f.owner.close();
+  const db = new Database(join(directory, "rooms.db"));
+  try {
+    expect(db.query<{ digest: string }, []>("SELECT digest FROM rooms WHERE name='work'").get()?.digest).toBe(revoked.current.digest);
+    const rows = db.query<{ request_digest: string | null }, []>("SELECT request_digest FROM invites").all();
+    expect(rows).toHaveLength(1); expect(rows[0]?.request_digest).not.toBeNull();
+  } finally { db.close(); }
 });

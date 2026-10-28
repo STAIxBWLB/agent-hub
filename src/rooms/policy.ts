@@ -41,13 +41,20 @@ export class RoomPolicy {
     try { return exposedPeers(this.read().rooms?.[name]?.expose ?? []); }
     catch { return []; } // Loss of trust revokes exposure, never widens it.
   }
-  set(name: string, peers: string[], current: () => boolean): void {
+  private prepare(name: string, peers: string[]): { config: Record<string, any>; bytes: string } {
     roomName(name); const expose = exposedPeers(peers), config = this.read();
+    const bytes = JSON.stringify({ ...config, rooms: { ...config.rooms, [name]: { expose } } }, null, 2) + "\n";
+    if (Buffer.byteLength(bytes) > 1_048_576) throw new Error("room: config_full");
+    return { config, bytes };
+  }
+  assertWritable(name: string, peers: string[], current: () => boolean): void {
+    this.prepare(name, peers);
+    if (!current()) throw new Error("room: state_changed");
+  }
+  set(name: string, peers: string[], current: () => boolean): void {
+    const { config, bytes } = this.prepare(name, peers);
     const dir = join(this.cwd, ".agenthub"), file = join(dir, "config.local.json");
     if (!current()) throw new Error("room: state_changed");
-    const next = { ...config, rooms: { ...config.rooms, [name]: { expose } } };
-    const bytes = JSON.stringify(next, null, 2) + "\n";
-    if (Buffer.byteLength(bytes) > 1_048_576) throw new Error("room: config_full");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const temporary = join(dir, `.room-${crypto.randomUUID()}.tmp`);
     let fd: number | undefined;

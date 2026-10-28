@@ -4689,8 +4689,11 @@ Exchange these artifacts privately out of band:
 3. Owner: `ahub room invite team --accept <request>`, send the printed signed roster.
 4. Joiner: `ahub room join team --roster <signed-roster>`.
 
-Both consoles print owner and member fingerprints before installing/consuming;
-compare them out of band. Only the invitation token contains its one-time secret.
+Both consoles print owner and member fingerprints before installing/consuming.
+Compare them out of band, then answer the TTY's y/N prompt (default No). A non-TTY
+must pass `--confirm <member-fingerprint-prefix>` with 16..64 matching lowercase
+hex characters; it does not execute on a missing or mismatched confirmation.
+This flag does not delegate to an agent or bypass the `--live-test` refusal. Only the invitation token contains its one-time secret.
 The join request/roster contain no private key or invitation secret. Keep tokens
 out of shell transcripts, shared logs and source control. A saved pending join can
 be retried with the same token/name/label; `room leave team` cancels it if needed.
