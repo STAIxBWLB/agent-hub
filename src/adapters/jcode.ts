@@ -5,7 +5,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, op
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { Readable } from "node:stream";
-import { renderDigest, type Envelope, type PeerState } from "../hub/envelope.ts";
+import { JCODE_DEFERRED_TOOLS_INSTRUCTION, renderDigest, type Envelope, type PeerState } from "../hub/envelope.ts";
 import { AcpPeer, type AcpOptions } from "./acp.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
@@ -24,6 +24,10 @@ export function jcodeCommand(command: string[], kind: "serve" | "acp", socket: s
   if (!command.length || command.some(word => typeof word !== "string" || !word)) throw new Error("jcode_cmd must name an executable argv");
   return [...command, kind, "--socket", socket, "--cwd", cwd, "--no-update", "--no-selfdev", ...(provider ? ["-p", provider] : []), ...(model ? ["--model", model] : []), ...(profile ? ["--provider-profile", profile] : []),
     ...(kind === "serve" ? ["--temporary-server", "--owner-pid", String(process.pid), "--server-name", `agent-hub-${peer}`] : ["--mcp-tools", "eager"])];
+}
+/** The session preamble of a Jcode peer: the deferred-tools guidance (#912), then the hub's role contract when there is one. Sent once, with the session's first prompt. */
+export function jcodePreamble(roleContract?: string): string {
+  return roleContract ? `${JCODE_DEFERRED_TOOLS_INSTRUCTION}\n\n${roleContract}` : JCODE_DEFERRED_TOOLS_INSTRUCTION;
 }
 export interface JcodeTuiBinding { launchId: string; sessionId: string }
 export type JcodeTuiState = { state: "waiting"; binding: JcodeTuiBinding } |
@@ -201,7 +205,7 @@ export class JcodePeer extends AcpPeer {
     const launchId = crypto.randomUUID();
     // The ACP child gets peerChildEnv(this.id): the instance id, so its hub tools act as this peer and never as the base Jcode. The launch id
     // goes with it: the daemon admits a hub-tools hello for this peer only when it carries the id of this peer's current owned launch (#368).
-    super(peer, { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, AGENTHUB_LAUNCH_ID: launchId, ...JCODE_OWNED_ENV }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
+    super(peer, { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, AGENTHUB_LAUNCH_ID: launchId, ...JCODE_OWNED_ENV }, mcpServers: [], preamble: jcodePreamble(jcode.preamble), requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
     this.root = root; this.socket = socket; this.launchId = launchId;
   }
 
