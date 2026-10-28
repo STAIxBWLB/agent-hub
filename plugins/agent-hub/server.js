@@ -22053,6 +22053,9 @@ var MIN_EVERY_MS = 15 * 60000;
 var MAX_EVERY_MS = 365 * 86400000;
 var KEYS = new Set(["id", "every", "cron", "class", "title", "detail", "sources", "owner", "queue"]);
 
+// src/hub/intake.ts
+var INTAKE_MAX_ANSWER = 64 * 1024;
+
 // src/hub/tasks.ts
 init_sdlc_metrics();
 init_security_baseline();
