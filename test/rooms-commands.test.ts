@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RoomCommands } from "../src/rooms/commands.ts";
@@ -64,5 +64,6 @@ test("a full exposure policy refuses a new key before rotating or corrupting the
   const bytes = JSON.stringify({ rooms });
   writeFileSync(join(cwd, ".agenthub/config.local.json"), bytes);
   await expect(run(commands, "expose", { name: "test", peers: ["codex"] })).rejects.toThrow("config_full");
+  expect(readFileSync(join(cwd, ".agenthub/config.local.json"), "utf8")).toBe(bytes);
   expect((await commands.rows("test"))[0]!.epoch).toBe(before);
 });
