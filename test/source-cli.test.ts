@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HELP, helpCommands, renderHelp } from "../src/cli/help.ts";
@@ -97,6 +97,19 @@ test("a path under pii.paths is stored private, and a text match on the configur
   expect(inText.stdout + inText.stderr).not.toContain("900101");
 });
 
+test("a symlink typed under pii.paths is stored private and a name outside it stays public (#552 keeps the CLI path intact)", async () => {
+  // This does NOT prove the typed-name argument: matchesPolicy already follows symlinks, so a symlink is private with or without it (a mutant that drops the argument survives
+  // here, and is reported as such). The decision itself, with the hardlink flip, is looped in-process in test/realpath-name-audit.test.ts; the flip cannot be forced from a subprocess.
+  const p = project();
+  writeFileSync(join(p.dir, "open", "public.txt"), "ordinary text");
+  symlinkSync(join(p.dir, "open", "public.txt"), join(p.dir, "secret", "link.txt"));
+  const added = await cli(p, ["source", "add", join(p.dir, "secret", "link.txt"), "--json"]);
+  expect(JSON.parse(added.stdout), added.stderr).toMatchObject({ private: true, reasons: ["path under pii.paths"] });
+  // A control with different bytes (the same bytes would be private by monotonicity, as the test below shows): a name outside pii.paths stays public.
+  writeFileSync(join(p.dir, "open", "other.txt"), "different ordinary text");
+  const control = await cli(p, ["source", "add", join(p.dir, "open", "other.txt"), "--json"]);
+  expect(JSON.parse(control.stdout), control.stderr).toMatchObject({ private: false, reasons: [] });
+});
 test("privacy is monotonic through the CLI in both registration orders: same bytes, same id, private either way", async () => {
   // public path first, then a private path
   const a = project(), bytes = "identical bytes in two places";

@@ -221,13 +221,17 @@ export class Facts {
       }
     }
     const r = relative(this.root, real);
-    if (!r || r.startsWith("..") || isAbsolute(r) || this.o.repo?.shadow && isHubWritePath(r)) return undefined;
+    // Never trust the resolved name alone (#552, the #541 class): Bun's realpath can name another hardlink of the same file, so the name the
+    // caller gave is judged too. A refusal on either name stands.
+    const typed = relative(this.root, abs);
+    if (!r || r.startsWith("..") || isAbsolute(r) || this.o.repo?.shadow && (isHubWritePath(r) || !typed.startsWith("..") && isHubWritePath(typed))) return undefined;
     if (this.o.repo?.shadow) {
       const ignored = Bun.spawnSync(this.gitArgs(["check-ignore", "--no-index", "--quiet", "--", r]), { cwd: this.root, stdout: "pipe", stderr: "pipe", env: this.gitEnv(), timeout: 3000 });
       if (ignored.exitCode !== 1) return undefined; // ignored or unavailable policy is not readable fact evidence
     }
-    // Never git's own files, and never what the denylist keeps from every agent.
-    return /(^|\/)\.git(\/|$)/i.test(r) || isDenied(r, this.o.deny ?? []) ? undefined : r;
+    // Never git's own files, and never what the denylist keeps from every agent (the typed name counts as well when it lies inside the project).
+    const named = (name: string) => /(^|\/)\.git(\/|$)/i.test(name) || isDenied(name, this.o.deny ?? []);
+    return named(r) || !typed.startsWith("..") && !isAbsolute(typed) && named(typed) ? undefined : r;
   }
 
   /**
