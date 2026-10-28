@@ -6450,8 +6450,74 @@ async function readBounded(res) {
   return { text: new TextDecoder("utf-8", { fatal: false }).decode(Buffer.concat(chunks)), cut };
 }
 function htmlText(html) {
-  return html.replace(/<!--[\s\S]*?-->/g, " ").replace(/<(script|style|noscript|template|svg|head)\b[\s\S]*?<\/\1\s*>/gi, " ").replace(/<\/(p|div|li|tr|h[1-6]|section|article|br|pre|blockquote|table)\s*>|<br\s*\/?>/gi, `
-`).replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, "&").replace(/[ \t\f\v]+/g, " ").replace(/ *\n */g, `
+  const out = [];
+  const closerMissing = new Set;
+  const n = html.length;
+  let i = 0, text = 0;
+  const flush = (to) => {
+    if (to > text)
+      out.push(html.slice(text, to));
+  };
+  while (i < n) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1)
+      break;
+    const next = html.charCodeAt(lt + 1);
+    if (html.startsWith("<!--", lt)) {
+      flush(lt);
+      const end = html.indexOf("-->", lt + 4);
+      if (end === -1) {
+        text = i = n;
+        break;
+      }
+      out.push(" ");
+      text = i = end + 3;
+      continue;
+    }
+    const closing = next === 47;
+    if (!(isAsciiLetter(next) || closing && isAsciiLetter(html.charCodeAt(lt + 2)) || next === 33 || next === 63)) {
+      i = lt + 1;
+      continue;
+    }
+    flush(lt);
+    const gt = html.indexOf(">", lt + 1);
+    if (gt === -1) {
+      text = i = n;
+      break;
+    }
+    let nameStart = lt + (closing ? 2 : 1), nameEnd = nameStart;
+    while (nameEnd < gt && isNameCode(html.charCodeAt(nameEnd)))
+      nameEnd++;
+    const name = html.slice(nameStart, nameEnd).toLowerCase(), rest = html.slice(nameEnd, gt).trim();
+    i = text = gt + 1;
+    if (closing) {
+      out.push(BLOCK_CLOSERS.has(name) && rest === "" ? `
+` : " ");
+      continue;
+    }
+    if (name === "br" && (rest === "" || rest === "/")) {
+      out.push(`
+`);
+      continue;
+    }
+    out.push(" ");
+    if (SKIPPED_ELEMENTS.has(name) && !rest.endsWith("/")) {
+      if (closerMissing.has(name))
+        continue;
+      const closer = new RegExp(`</${name}\\s*>`, "gi");
+      closer.lastIndex = i;
+      const found = closer.exec(html);
+      if (found) {
+        i = text = found.index + found[0].length;
+      } else {
+        closerMissing.add(name);
+        if (RAW_TEXT_ELEMENTS.has(name))
+          i = text = n;
+      }
+    }
+  }
+  flush(n);
+  return out.join("").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, "&").replace(/[ \t\f\v]+/g, " ").replace(/ *\n */g, `
 `).replace(/\n{3,}/g, `
 
 `).trim();
@@ -6544,7 +6610,7 @@ async function webFetch(url, args, port, signal) {
   return more ? `${out}
 ${more}` : out;
 }
-var WEB_FETCH_PII = "error: web_fetch is not available in a PII task turn, whatever the host: the URL or a query could carry PII to the web. Use doc_read or read for what the project already holds", WEB_FETCH_TIMEOUT_MS = 15000, WEB_FETCH_MAX_BYTES, WEB_FETCH_MAX_URL = 2000, WEB_FETCH_MAX_REDIRECTS = 3, DEFAULT_WEB_LINES = 2000, TEXT_TYPE;
+var WEB_FETCH_PII = "error: web_fetch is not available in a PII task turn, whatever the host: the URL or a query could carry PII to the web. Use doc_read or read for what the project already holds", WEB_FETCH_TIMEOUT_MS = 15000, WEB_FETCH_MAX_BYTES, WEB_FETCH_MAX_URL = 2000, WEB_FETCH_MAX_REDIRECTS = 3, DEFAULT_WEB_LINES = 2000, TEXT_TYPE, SKIPPED_ELEMENTS, RAW_TEXT_ELEMENTS, BLOCK_CLOSERS, isAsciiLetter = (code) => code >= 65 && code <= 90 || code >= 97 && code <= 122, isNameCode = (code) => isAsciiLetter(code) || code >= 48 && code <= 57 || code === 45;
 var init_web_fetch = __esm(() => {
   init_envelope();
   init_sandbox();
@@ -6552,6 +6618,9 @@ var init_web_fetch = __esm(() => {
   init_web_fetch_config();
   WEB_FETCH_MAX_BYTES = 512 * 1024;
   TEXT_TYPE = /^(?:text\/[a-z0-9.+-]+|application\/(?:json|xml|xhtml\+xml|[a-z0-9.+-]+\+(?:json|xml)))(?:\s*;.*)?$/i;
+  SKIPPED_ELEMENTS = new Set(["script", "style", "noscript", "template", "svg", "head"]);
+  RAW_TEXT_ELEMENTS = new Set(["script", "style"]);
+  BLOCK_CLOSERS = new Set(["p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "br", "pre", "blockquote", "table"]);
 });
 
 // src/local/tools.ts

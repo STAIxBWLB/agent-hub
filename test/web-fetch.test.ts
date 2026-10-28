@@ -220,7 +220,9 @@ test("html conversion: unclosed raw-text elements end the page, unclosed others 
 });
 
 test("a hostile near-cap page comes back as text quickly through the tool itself, never stalling the caller", async () => {
-  const { ctx } = rig({ script: { [URL1]: page("ok<script>".repeat(50_000) + "<!--".repeat(10_000)) } });
+  const body = "ok<script>".repeat(45_000) + "<!--".repeat(10_000);   // 490,000 bytes: under the cap, so the answer is the conversion's, not the cut's
+  expect(body.length).toBeLessThan(WEB_FETCH_MAX_BYTES);
+  const { ctx } = rig({ script: { [URL1]: page(body) } });
   const started = performance.now();
   const out = await call(ctx, { url: URL1 });
   expect(performance.now() - started).toBeLessThan(2000);
