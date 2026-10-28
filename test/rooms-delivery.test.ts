@@ -103,7 +103,7 @@ async function hub(root: string, label: string, event: Signal, control: Control,
     }
     if (!wrappedLinks.has(context.link)) {
       wrappedLinks.add(context.link); const publish = context.link.publishApplication.bind(context.link);
-      context.link.publishApplication = async (message, recipient, outgoing, current) => { const digest = await publish(message, recipient, outgoing, current); await control.afterSend?.(label, message); return digest; };
+      context.link.publishApplication = async (message, recipient, outgoing, current) => { const digest = await publish(message, recipient, outgoing, current); event.notify(); await control.afterSend?.(label, message); return digest; };
     }
     members(context);
   };
@@ -337,8 +337,16 @@ test("a real broker queue_full refusal is nonterminal and an un-stored applicati
   await f.event.wait(() => f.brokerEvents.slice(at).some(row => row.event === "disconnected" && row.member === f.guest), "recipient link offline");
   f.a.bus.pause("codex");
   await f.event.wait(() => f.broker.stats().queuedFrames === 1, "signed presence fills offline broker queue");
-  const env = newEnvelope("user", "queue full before stored", { to: ["codex@beta"] }); f.a.bus.publish(env);
-  await f.event.wait(() => f.brokerEvents.some(row => row.event === "refused" && row.code === "queue_full"), "wire queue_full received");
+  const env = newEnvelope("user", "queue full before stored", { to: ["codex@beta"] });
+  const refusalAt = f.brokerEvents.length; f.a.bus.publish(env);
+  await f.event.wait(() => {
+    const target = f.a.store!.applicationOutbox("work").find(row => row.application === env.id);
+    return target !== undefined
+      && f.frames.some(frame => frame.sender === f.owner && frame.digest === target.digest)
+      && f.brokerEvents.slice(refusalAt).some(row => row.event === "refused" && row.member === f.owner && row.code === "queue_full");
+  }, "fresh wire queue_full after this application reached broker verification");
+  expect(f.broker.stats().queuedFrames).toBe(1);
+  expect(f.a.store!.applicationOutbox("work").find(row => row.application === env.id)?.state).toBe("dispatching");
   await acknowledgementDeadline(f, f.a, env.id);
   await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "queue-refused application acknowledgement deadline");
   expect((await f.a.commands.rows("work"))[0]?.state).toBe("online");
