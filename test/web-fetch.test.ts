@@ -182,6 +182,51 @@ test("only text, JSON and XML are read: a binary type is refused without reading
   expect(out).toBe("error: the page could not be fetched (ECONNRESET)"); expect(out).not.toContain("secret");
 });
 
+// A page the model fetched is the page's author's input to a synchronous parse in the daemon: an AbortSignal cannot interrupt it, so the work itself must be linear.
+// Each body is near the 512 KiB cap and unclosed in a different way; the old regex scans retried the whole remaining suffix at every opener (quadratic, seconds to minutes).
+const NEAR_CAP = WEB_FETCH_MAX_BYTES - 1024;
+const hostile: [string, string][] = [
+  ["unclosed <script>", "<script>".repeat(Math.floor(NEAR_CAP / 8))],
+  ["unclosed <style>", "<style>".repeat(Math.floor(NEAR_CAP / 7))],
+  ["unclosed <svg> with text between", "<svg>x".repeat(Math.floor(NEAR_CAP / 6))],
+  ["unterminated comments", "<!--".repeat(Math.floor(NEAR_CAP / 4))],
+  ["a lone < with no tag end", "<a".repeat(Math.floor(NEAR_CAP / 2))],
+  ["bare angle brackets", "< ".repeat(Math.floor(NEAR_CAP / 2))],
+  ["closers that never match", "<script></style>".repeat(Math.floor(NEAR_CAP / 16))],
+  ["opening tags with no end and nested names", "<div ".repeat(Math.floor(NEAR_CAP / 5))],
+];
+for (const [name, body] of hostile) {
+  test(`html conversion stays linear on a near-cap body: ${name}`, () => {
+    expect(body.length).toBeLessThanOrEqual(WEB_FETCH_MAX_BYTES);
+    const started = performance.now();
+    const text = htmlText(body);
+    const took = performance.now() - started;
+    expect(typeof text).toBe("string");
+    expect(took, `${name} took ${took.toFixed(0)} ms`).toBeLessThan(250); // linear work is a few ms here; a quadratic scan is orders of magnitude over
+  });
+}
+
+test("html conversion: unclosed raw-text elements end the page, unclosed others lose only their tag, a comment never ends early, a < that opens no tag is text", () => {
+  expect(htmlText("before<script>alert(1) after")).toBe("before");
+  expect(htmlText("before<style>.x{} after")).toBe("before");
+  expect(htmlText("before<svg>kept")).toBe("before kept");
+  expect(htmlText("a<!-- never closed")).toBe("a");
+  expect(htmlText("a<!-- one --> b <!-- two --> c")).toBe("a b c");
+  expect(htmlText("a<!-- x > y <script> -->b")).toBe("a b");   // a > or a tag inside a comment is still the comment
+  expect(htmlText("1 < 2 and 3 > 2")).toBe("1 < 2 and 3 > 2");
+  expect(htmlText("x<script>a</script>y<script>b</SCRIPT >z")).toBe("x y z");
+  expect(htmlText("<script src=a /><p>kept</p>")).toBe("kept");
+  expect(htmlText("<P>a</P><BR/>b")).toBe("a\n\nb"); // a block end and a <br> are two breaks, as before the rewrite
+});
+
+test("a hostile near-cap page comes back as text quickly through the tool itself, never stalling the caller", async () => {
+  const { ctx } = rig({ script: { [URL1]: page("ok<script>".repeat(50_000) + "<!--".repeat(10_000)) } });
+  const started = performance.now();
+  const out = await call(ctx, { url: URL1 });
+  expect(performance.now() - started).toBeLessThan(2000);
+  expect(out).toBe("1\tok");
+});
+
 test("html becomes text: scripts, styles and comments go, block tags break lines, entities are decoded, hidden markup is not shown", async () => {
   const html = "<html><head><title>T</title><style>.x{}</style></head><body><!-- hidden comment --><h1>Heading</h1><p>One &amp; two</p><script>alert('x')</script><div>Three<br>four</div><svg><text>nope</text></svg></body></html>";
   expect(htmlText(html)).toBe("Heading\nOne & two\nThree\nfour");

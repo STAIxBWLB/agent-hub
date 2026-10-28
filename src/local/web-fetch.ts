@@ -67,13 +67,59 @@ async function readBounded(res: Response): Promise<{ text: string; cut: boolean 
   return { text: new TextDecoder("utf-8", { fatal: false }).decode(Buffer.concat(chunks)), cut };
 }
 
-/** Markup reduced to its text, enough to read a page: scripts and styles go, tags go, entities are decoded for the few that matter, runs of blank lines collapse. */
+const SKIPPED_ELEMENTS = new Set(["script", "style", "noscript", "template", "svg", "head"]);
+/** Their content is never markup, so an unclosed one swallows the rest of the page (what a browser does); the others lose only their tag. */
+const RAW_TEXT_ELEMENTS = new Set(["script", "style"]);
+const BLOCK_CLOSERS = new Set(["p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "br", "pre", "blockquote", "table"]);
+const isAsciiLetter = (code: number) => (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+const isNameCode = (code: number) => isAsciiLetter(code) || (code >= 48 && code <= 57) || code === 45;
+
+/**
+ * Markup reduced to its text, enough to read a page: scripts and styles go, tags go, entities are decoded for the few that matter, runs of blank lines collapse.
+ * One forward pass over a body that a hostile page controls: every index only moves ahead, and a search that finds nothing is never repeated for the same
+ * target, so the work is linear in the body whatever is left unclosed (a repeated `<script>`, `<!--` or `<` costs one scan, not one per opener).
+ * The 512 KiB body cap bounds the input; this bounds the CPU, because an AbortSignal cannot interrupt synchronous code.
+ */
 export function htmlText(html: string): string {
-  return html
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<(script|style|noscript|template|svg|head)\b[\s\S]*?<\/\1\s*>/gi, " ")
-    .replace(/<\/(p|div|li|tr|h[1-6]|section|article|br|pre|blockquote|table)\s*>|<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]*>/g, " ")
+  const out: string[] = [];
+  const closerMissing = new Set<string>();  // a failed search covered the whole suffix, so a later one for the same name would fail too
+  const n = html.length;
+  let i = 0, text = 0;                      // text: start of the plain run not yet copied
+  const flush = (to: number) => { if (to > text) out.push(html.slice(text, to)); };
+  while (i < n) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) break;
+    const next = html.charCodeAt(lt + 1);
+    if (html.startsWith("<!--", lt)) {
+      flush(lt);
+      const end = html.indexOf("-->", lt + 4);
+      if (end === -1) { text = i = n; break; }   // an unterminated comment runs to the end of the page
+      out.push(" "); text = i = end + 3;
+      continue;
+    }
+    const closing = next === 47;
+    if (!(isAsciiLetter(next) || (closing && isAsciiLetter(html.charCodeAt(lt + 2))) || next === 33 || next === 63)) { i = lt + 1; continue; } // `a < b` is text
+    flush(lt);
+    const gt = html.indexOf(">", lt + 1);
+    if (gt === -1) { text = i = n; break; }       // an unterminated tag at the end of the page is dropped
+    let nameStart = lt + (closing ? 2 : 1), nameEnd = nameStart;
+    while (nameEnd < gt && isNameCode(html.charCodeAt(nameEnd))) nameEnd++;
+    const name = html.slice(nameStart, nameEnd).toLowerCase(), rest = html.slice(nameEnd, gt).trim();
+    i = text = gt + 1;
+    if (closing) { out.push(BLOCK_CLOSERS.has(name) && rest === "" ? "\n" : " "); continue; }
+    if (name === "br" && (rest === "" || rest === "/")) { out.push("\n"); continue; }
+    out.push(" ");
+    if (SKIPPED_ELEMENTS.has(name) && !rest.endsWith("/")) {
+      if (closerMissing.has(name)) continue;   // only a non-raw-text element gets here: an unclosed script or style already ended the page
+      const closer = new RegExp(`</${name}\\s*>`, "gi");
+      closer.lastIndex = i;
+      const found = closer.exec(html);
+      if (found) { i = text = found.index + found[0].length; }
+      else { closerMissing.add(name); if (RAW_TEXT_ELEMENTS.has(name)) i = text = n; }
+    }
+  }
+  flush(n);
+  return out.join("")
     .replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, "&")
     .replace(/[ \t\f\v]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
