@@ -84,7 +84,8 @@ export function normalizeACPUsage(value: unknown, source: ACPUsageDiagnostic["so
     const a = f[input!], b = f[output!];
     return valid(a) && valid(b) && Number.isFinite(a + b) ? { source, availability: "known", shape: "input-output", total: a + b } : { source, availability: "invalid", shape: "input-output" };
   }
-  if (f.used !== undefined) {
+  // Either half of the pair names an occupancy update: one with `size` but no `used` (or the reverse) is a malformed reading, which must invalidate the previous value, not vanish as unrelated.
+  if (f.used !== undefined || f.size !== undefined) {
     if (!valid(f.used) || !valid(f.size) || !Number.isSafeInteger(f.used) || !Number.isSafeInteger(f.size) || f.size <= 0) return { source, availability: "invalid", shape: "context-used" };
     // Qwen 0.24.7 derives this from collectContextData: occupancy is not cumulative consumption.
     return { source, availability: "unsupported", shape: "context-used", contextUsed: f.used, contextCapacity: f.size };

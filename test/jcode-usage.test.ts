@@ -50,6 +50,15 @@ test("a usage_update's {used, size} is occupancy and never consumption: ACP norm
   expect(normalizeACPUsage({ used: 1100, size: 200000 })).not.toHaveProperty("total");
 });
 
+test("an occupancy update with only one half of the pair is a malformed context reading, not an unrelated update (review of #936)", () => {
+  for (const half of [{ size: 200000 }, { used: 1100 }, { size: 200000, note: "x" }]) {
+    expect(normalizeACPUsage(half), JSON.stringify(half)).toEqual({ source: "usage_update", availability: "invalid", shape: "context-used" });
+  }
+  // An update that names neither half is still unrelated, so a stray usage_update never invalidates a good reading.
+  expect(normalizeACPUsage({ unrelated: "x" })).toEqual({ source: "usage_update", availability: "unsupported", shape: "none" });
+  expect(normalizeACPUsage({})).toEqual({ source: "usage_update", availability: "unsupported", shape: "none" });
+});
+
 test("a prompt result's usage is read as per-turn buckets, never from totalTokens", () => {
   expect(acpTurnUsage(LIVE_RESULT)).toEqual({ inputTokens: 2100, outputTokens: 40, cacheReadTokens: 100 });
   // Jcode's totalTokens adds the cached read on top of an input that already contains it for OpenAI-style providers (input 1234 + cached 100 + output 56 = 1390), so it is never used.
@@ -135,6 +144,25 @@ test("the adapter hands a prompt's counters to onTurnUsage with its own session 
   expect(a.seen.diagnostics).toHaveLength(2);                          // the occupancy update, and the prompt result's own diagnostic
 });
 
+test("the adapter reports a half-pair occupancy update as an invalid context reading, so the daemon can invalidate the previous value", async () => {
+  const a = await adapter({ updates: [{ used: 1100, size: 200000 }, { size: 200000 }], usage: null });
+  await a.turn(1);
+  const context = a.seen.diagnostics.filter(d => (d as { shape: string }).shape === "context-used") as { availability: string; contextUsed?: number }[];
+  expect(context.map(d => d.availability)).toEqual(["unsupported", "invalid"]);   // the good one, then the malformed one
+  expect(context[1]!.contextUsed).toBeUndefined();
+});
+
+test("an idle adapter reports a half-pair occupancy update for the current session too, and ignores one that names another session", async () => {
+  const a = await adapter({ updates: [], usage: null });
+  const feed = (sessionId: string | undefined, update: object) => (a.peer as unknown as { onLine: (line: string) => void }).onLine(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { ...(sessionId ? { sessionId } : {}), update: { sessionUpdate: "usage_update", ...update } } }));
+  expect(a.peer.state).toBe("idle");
+  feed(SESSION, { used: 1100, size: 200000 });
+  feed(SESSION, { size: 200000 });                 // the half pair, arriving after the turn settled (Jcode writes occupancy per provider call)
+  feed("some-other-session", { size: 200000 });    // another session: dropped before anything is reported
+  const shapes = a.seen.diagnostics.map(d => `${(d as { shape: string }).shape}:${(d as { availability: string }).availability}`);
+  expect(shapes).toEqual(["context-used:unsupported", "context-used:invalid"]);
+});
+
 test("the adapter ignores an occupancy update that names another session, and a throwing counter sink never costs the turn", async () => {
   const wrong = await adapter({ sessionId: "some-other-session", updates: [{ used: 1100, size: 200000 }], usage: null });
   await wrong.turn(1);
@@ -205,6 +233,14 @@ test("through the daemon: two turns write two usage records with distinct ids, a
   expect(usage).toHaveLength(2);
   expect(new Set(usage.map(e => e.id)).size).toBe(2);
   for (const record of usage) { expect(Object.keys(record).sort()).not.toContain("sessionId"); expect(JSON.stringify(record)).not.toContain("JCODE_REPLY"); expect(JSON.stringify(record)).not.toContain(h.dir); }
+});
+
+test("through the daemon: a malformed occupancy update after a good one leaves the context unknown, not the previous percentage (review of #936)", async () => {
+  const h = await hub({ updates: [{ used: 1100, size: 200000 }, { size: 200000 }], usage: null });
+  await h.turn(1);
+  const context = await h.context();
+  expect(context === undefined || (context.tokens === null && context.used === null)).toBe(true);
+  expect(context?.tokens).not.toBe(1100);
 });
 
 test("through the daemon: a turn whose prompt reports no usage writes no usage record and leaves occupancy as the last valid reading says", async () => {
