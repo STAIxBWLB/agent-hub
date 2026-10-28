@@ -38,10 +38,19 @@ export type CorpusRootCheck = { ok: true; real: string } | { ok: false; reason: 
 const errno = (error: unknown): string | undefined => (error as NodeJS.ErrnoException | undefined)?.code;
 const clean = (text: string): string => text.replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim();
 
-/** Whether `.obsidian` exists directly in `dir`: true or false, and a thrown error for anything but absence (unreadable evidence is never "no vault"). */
+/**
+ * Whether an entry named `.obsidian` exists directly in `dir`, in any folded spelling (the walk below a root folds names the same way, so a root and its ancestors are
+ * judged alike on a case-sensitive disk, where `.OBSIDIAN` is a different name than `.obsidian`). A literal `lstat` answers first (it also covers a case-insensitive disk
+ * without a listing); otherwise the folder is listed, bounded. A thrown error for anything but absence: unreadable evidence is never "no vault".
+ */
 function hasObsidian(dir: string): boolean {
   try { lstatSync(join(dir, ".obsidian")); return true; }
-  catch (error) { if (errno(error) === "ENOENT" || errno(error) === "ENOTDIR") return false; throw error; }
+  catch (error) { if (errno(error) !== "ENOENT" && errno(error) !== "ENOTDIR") throw error; }
+  let names: string[];
+  try { names = readdirSync(dir); }
+  catch (error) { if (errno(error) === "ENOTDIR") return false; throw error; }
+  if (names.length > MAX_ENTRIES) throw Object.assign(new Error("too many entries"), { code: "E2BIG" });
+  return names.some(name => foldSegment(name) === ".obsidian");
 }
 
 /**
@@ -127,7 +136,7 @@ function prose(body: string): { text: string; headings: { level: number; text: s
     const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
     if (marker) { const mark = marker[1]![0]!; if (!fence) fence = mark; else if (fence === mark) fence = undefined; continue; }
     if (fence) continue;
-    const heading = /^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+    const heading = /^ {0,3}(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/.exec(line); // a closing run of # is a closer only after whitespace: `# C#` is "C#"
     if (heading) { if (headings.length < MAX_HEADINGS) headings.push({ level: heading[1]!.length, text: clean(heading[2]!).slice(0, 200) }); else truncated = true; }
     kept.push(line.replace(/`[^`\n]*`/g, " "));
   }

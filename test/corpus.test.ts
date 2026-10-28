@@ -319,3 +319,28 @@ test("a refused root does not hide the others: each root is judged alone, and a 
   expect(index.notes().map(note => note.id)).toEqual(["note:good/g.md"]);
   expect(report.removed).toBe(1);
 });
+
+test("a vault marker in a folded spelling is found in an ancestor too, as in the walk (a case-sensitive disk keeps .OBSIDIAN apart from .obsidian)", () => {
+  const { dir, cwd } = base(), vault = join(dir, "vault");
+  put(vault, ".OBSIDIAN/app.json", "{}"); put(vault, "notes/n.md", "# N");
+  const inside = checkCorpusRoot(join(vault, "notes"), ctx(cwd, [join(vault, "notes")]));
+  expect(inside.ok, "a root inside a vault marked .OBSIDIAN").toBe(false);
+  expect((inside as { reason: string }).reason).toContain(`the vault folder is ${vault}`);
+  expect(checkCorpusRoot(vault, ctx(cwd, [vault])).ok, "the vault itself, by the same check").toBe(false);
+  for (const spelling of [".Obsidian", ".OBSIDIAN", ".obsidian\u200d"]) {
+    const root = join(dir, "v" + spelling.length); put(root, `${spelling}/x`, "1"); put(root, "sub/n.md", "# N");
+    expect(checkCorpusRoot(join(root, "sub"), ctx(cwd, [join(root, "sub")])).ok, JSON.stringify(spelling)).toBe(false);
+  }
+  const clean = join(dir, "clean"); put(clean, "sub/n.md", "# N"); put(clean, ".obsidian-not/x", "1");
+  expect(checkCorpusRoot(join(clean, "sub"), ctx(cwd, [join(clean, "sub")])).ok, "a similar name is not a vault").toBe(true);
+});
+
+test("a trailing # that belongs to a heading is kept, and only a closing run after whitespace is dropped", () => {
+  expect(parseNote("# C#\n").title).toBe("C#");
+  expect(parseNote("## F#\n## Foo ##\n### Bar ###  \n# C# #\n## #hashtag\n").headings).toEqual([
+    { level: 2, text: "F#" }, { level: 2, text: "Foo" }, { level: 3, text: "Bar" }, { level: 1, text: "C#" }, { level: 2, text: "#hashtag" },
+  ]);
+  const note = parseNote("# Languages\n[[Languages#C#]]");
+  expect(note.links[0]).toEqual({ target: "Languages", heading: "C#", embed: false });
+  expect(note.headings.map(item => item.text)).toEqual(["Languages"]);
+});
