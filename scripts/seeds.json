@@ -3698,6 +3698,14 @@
       "replacement": "try { return this.corpus.policyVersion() === corpusRevision; }",
       "testFile": "test/brief-corpus.test.ts",
       "testName": "privacy or policy changes during a corpus await drop the brief without poisoning seen state"
+    },
+    {
+      "id": "ask-pii-model-pin",
+      "file": "src/hub/inference.ts",
+      "search": "model: pinnedModel ?? this.d.fixedModel(), messages, max_tokens: maxTokens",
+      "replacement": "model: this.d.fixedModel(), messages, max_tokens: maxTokens",
+      "testFile": "test/ask-corpus.test.ts",
+      "testName": "a PII task requires an on-campus call and pins the selected host model before gateway probing"
     }
   ]
 }
