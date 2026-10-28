@@ -32,9 +32,12 @@ async function rig(options: { modelUrl?: string; accessHosts?: string[]; piiScre
     ...(options.piiScreen ? { piiScreen: options.piiScreen } : {}) });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => console_.close());
+  const publicEvents: unknown[] = [];
+  console_.onPush = message => { if (message.t === "event") publicEvents.push(message.e); };
+  console_.send({ t: "tail" });
   const registry = new SourceRegistry(stateDir);
   const op = (client: ControlClient, args: Record<string, unknown>) => client.request({ t: "task", op: "hub_source_read", args });
-  return { root, stateDir, daemon, console_, registry, op };
+  return { root, stateDir, daemon, console_, registry, op, publicEvents };
 }
 
 async function localWorkerRead(accessHosts: string[]) {
@@ -123,7 +126,9 @@ test("the in-process local worker can read a private source inside a PII task on
   const toolResult = onCampus.model.requests.flatMap(request => request.body.messages as { role: string; content?: unknown }[])
     .filter(message => message.role === "tool").map(message => String(message.content));
   expect(toolResult.some(result => result.includes(onCampus.bytes))).toBe(true);
-  expect(onCampus.delivered.every(body => body.includes("task #1") && !body.includes(onCampus.bytes))).toBe(true);
+  // The trusted bus carries the private answer; the public control stream must carry only its stub.
+  expect(JSON.stringify(onCampus.publicEvents)).not.toContain(onCampus.bytes);
+  expect(JSON.stringify(onCampus.publicEvents)).toContain("task #1");
 
   const offCampus = await localWorkerRead(["127.0.0.1"]);
   const offCampusToolResult = offCampus.model.requests.flatMap(request => request.body.messages as { role: string; content?: unknown }[])
