@@ -1292,6 +1292,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   room: async () => {
+    if (liveTest && !["list", "status"].includes(args[0] ?? "")) fail(LIVE_TEST_PERSON_REFUSAL);
     const { runRoomCommand, roomCommandError } = await import("./room.ts");
     const hub = await connect();
     try { await runRoomCommand(args, message => hub.request(message)); }

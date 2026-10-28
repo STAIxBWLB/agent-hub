@@ -13,7 +13,7 @@ export class RoomCliError extends Error {
     this.name = "RoomCliError";
   }
 }
-const fail = (code: "usage" | "refused" | "invalid_reply" = "usage"): never => { throw new RoomCliError(code); };
+function fail(code: "usage" | "refused" | "invalid_reply" = "usage"): never { throw new RoomCliError(code); }
 const ID = /^[a-z][a-z0-9-]{0,31}$/;
 const FP = /^[0-9a-f]{64}$/;
 const B64 = /^[A-Za-z0-9_-]+$/;

@@ -60,8 +60,11 @@ test("two person consoles enroll out of band, rotate exposure and revoke without
   const token = await mutation(owner.person, "invite", { name: "test" }); expect(token.ok).toBe(true);
   const invite = decodeInvite(decodeBase64url(token.artifact));
   const request = await mutation(guest.person, "join", { name: "test", token: token.artifact, label: "guest" }); expect(request.ok).toBe(true);
-  const join = decodeJoin(decodeBase64url(request.artifact));
-  expect(JSON.stringify(join)).not.toContain(invite.secret);
+  const joined = decodeJoin(decodeBase64url(request.artifact));
+  const retry = await mutation(guest.person, "join", { name: "test", token: token.artifact, label: "guest" });
+  expect(retry.artifact).toBe(request.artifact); // Crash after durable save but before printing is recoverable.
+
+  expect(JSON.stringify(joined)).not.toContain(invite.secret);
   const accepted = await mutation(owner.person, "invite", { name: "test", request: request.artifact }); expect(accepted.ok).toBe(true);
   const roster = decodeRoster(decodeBase64url(accepted.artifact)); expect(roster.members).toHaveLength(2);
   expect((await mutation(guest.person, "join", { name: "test", roster: accepted.artifact })).ok).toBe(true);
@@ -73,7 +76,7 @@ test("two person consoles enroll out of band, rotate exposure and revoke without
   const rows = await guest.person.request({ t: "room", op: "list" });
   expect(Object.keys(rows.rooms[0]).sort()).toEqual(["epoch","member","name","owner","room","state"]);
   expect(JSON.stringify(rows)).not.toContain("broker"); expect(JSON.stringify(rows)).not.toContain(invite.secret);
-  expect((await mutation(owner.person, "revoke", { name: "test", member: join.member.fingerprint })).ok).toBe(true);
+  expect((await mutation(owner.person, "revoke", { name: "test", member: joined.member.fingerprint })).ok).toBe(true);
   expect((await mutation(guest.person, "leave", { name: "test" })).ok).toBe(true);
   expect((await guest.person.request({ t: "room", op: "status" })).rooms[0].state).toBe("left");
   for (const fixture of [owner, guest]) {

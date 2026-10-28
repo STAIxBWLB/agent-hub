@@ -11,7 +11,7 @@ export type RoomStoreCode = "invalid" | "busy" | "corrupt" | "unsupported" | "li
 export class RoomStoreError extends Error {
   constructor(readonly code: RoomStoreCode) { super(`Room store: ${code}`); this.name = "RoomStoreError"; }
 }
-const fail = (code: RoomStoreCode): never => { throw new RoomStoreError(code); };
+function fail(code: RoomStoreCode): never { throw new RoomStoreError(code); }
 const DB_NAME = "rooms.db", SCHEMA = 1, GRACE_MS = 60_000;
 const NAME = /^[a-z][a-z0-9-]{0,31}$/;
 interface Row { name: string; room: string; broker: string; owner: string; epoch: string; digest: string; wire: Uint8Array; previous_wire: Uint8Array | null; previous_digest: string | null; previous_epoch: string | null; previous_expires: number | null; left: number }
@@ -77,7 +77,7 @@ export class RoomStore {
           CREATE INDEX inbox_room ON inbox(room);
           CREATE TABLE invites (name TEXT NOT NULL, id TEXT PRIMARY KEY, wire BLOB NOT NULL, digest TEXT NOT NULL, expires INTEGER NOT NULL, request_digest TEXT) WITHOUT ROWID;
           CREATE TABLE outbox (room TEXT NOT NULL, digest TEXT PRIMARY KEY, wire BLOB NOT NULL, state TEXT NOT NULL);
-          CREATE TABLE pending_joins (name TEXT PRIMARY KEY, invite BLOB NOT NULL, request BLOB NOT NULL) WITHOUT ROWID;
+          CREATE TABLE pending_joins (name TEXT PRIMARY KEY, invite BLOB NOT NULL, request BLOB NOT NULL, selection TEXT) WITHOUT ROWID;
           PRAGMA user_version=1;
         `);
       }
@@ -89,7 +89,7 @@ export class RoomStore {
         counters: ["room", "seq"], floors: ["room", "sender", "seq", "digest"],
         inbox: ["room", "sender", "seq", "digest", "plaintext", "gap"],
         invites: ["name", "id", "wire", "digest", "expires", "request_digest"],
-        outbox: ["room", "digest", "wire", "state"], pending_joins: ["name", "invite", "request"],
+        outbox: ["room", "digest", "wire", "state"], pending_joins: ["name", "invite", "request", "selection"],
       };
       for (const [table, names] of Object.entries(columns)) {
         if (db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map(x => x.name).join(",") !== names.join(",")) fail("unsupported");
@@ -156,7 +156,7 @@ export class RoomStore {
   private byRoom(room: string): RoomState | undefined { return [...this.rooms.values()].find(x => x.current.room === room); }
 
   /** Pending enrollment is explicit local person authority; a roster can never establish its own owner pin. */
-  savePendingJoin(name: string, input: { invite: Uint8Array; request: Uint8Array }): void {
+  savePendingJoin(name: string, input: { invite: Uint8Array; request: Uint8Array; selection?: string }): void {
     named(name); const invite = decodeInvite(input.invite), request = decodeJoin(input.request);
     if (request.member.fingerprint !== this.identity.public.fingerprint || request.room !== invite.room || request.owner !== invite.owner || request.inviteId !== invite.inviteId || this.rooms.has(name)) fail("untrusted");
     this.transaction(now => {
@@ -170,17 +170,17 @@ export class RoomStore {
         return;
       }
       if ((this.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM pending_joins").get()?.n ?? 0) >= ROOM_STORE_LIMITS.pendingJoins) fail("limit");
-      this.db.query("INSERT INTO pending_joins(name,invite,request) VALUES(?,?,?)").run(name, input.invite, input.request);
+      this.db.query("INSERT INTO pending_joins(name,invite,request,selection) VALUES(?,?,?,?)").run(name, input.invite, input.request, input.selection ?? null);
     });
   }
   cancelPendingJoin(name: string): void {
     named(name);
     this.transaction(() => { this.db.query("DELETE FROM pending_joins WHERE name=?").run(name); });
   }
-  pendingJoin(name: string): { invite: Uint8Array; request: Uint8Array } | undefined {
+  pendingJoin(name: string): { invite: Uint8Array; request: Uint8Array; selection?: string } | undefined {
     this.now(); named(name);
-    const row = this.db.query<{ invite: Uint8Array; request: Uint8Array }, [string]>("SELECT invite,request FROM pending_joins WHERE name=?").get(name);
-    return row && { invite: copy(row.invite), request: copy(row.request) };
+    const row = this.db.query<{ invite: Uint8Array; request: Uint8Array; selection: string | null }, [string]>("SELECT invite,request,selection FROM pending_joins WHERE name=?").get(name);
+    return row ? { invite: copy(row.invite), request: copy(row.request), ...(row.selection !== null ? { selection: row.selection } : {}) } : undefined;
   }
 
   private prepareInstall(name: string, broker: string, wire: Uint8Array, expectedDigest: string | null): { previous?: RoomState; pin: { room: string; owner: string; minEpoch: string; digest?: string } } {

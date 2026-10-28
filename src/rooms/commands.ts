@@ -103,10 +103,18 @@ export class RoomCommands {
     if (action === "join" && Object.hasOwn(fields(raw, [], ["token", "name", "label", "roster"]), "token")) {
       const row = fields(raw, ["token"], ["name", "label"]), inviteWire = artifact(row.token, 16384), invite = decodeInvite(inviteWire);
       const name = roomName(row.name ?? `room-${invite.room.slice(0, 8).toLowerCase().replace(/[^a-z0-9-]/g, "a")}`), label = roomName(row.label ?? `hub-${own.slice(0, 8)}`);
+      const peers = this.policy.get(name), selection = JSON.stringify({ label, peers }), saved = store.pendingJoin(name);
+      if (Date.now() > invite.expiresAt + 600000) refuse("expired");
+      if (saved && (encodeBase64url(saved.invite) !== row.token || saved.selection !== selection)) refuse("pending_join_changed");
       return { owner: invite.owner, member: own, commit: async () => {
         this.current(check);
-        const request = await createJoin({ invite: inviteWire, identity: store.identity, label, exposedPeers: this.policy.get(name) });
-        this.current(check); store.savePendingJoin(name, { invite: inviteWire, request });
+        if (saved) {
+          const latest = store.pendingJoin(name);
+          if (!latest || encodeBase64url(latest.request) !== encodeBase64url(saved.request)) refuse("state_changed");
+          return { name, owner: invite.owner, member: own, kind: "join-request", artifact: encodeBase64url(saved.request) };
+        }
+        const request = await createJoin({ invite: inviteWire, identity: store.identity, label, exposedPeers: peers });
+        this.current(check); store.savePendingJoin(name, { invite: inviteWire, request, selection });
         return { name, owner: invite.owner, member: own, kind: "join-request", artifact: encodeBase64url(request) };
       } };
     }
