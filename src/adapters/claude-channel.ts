@@ -17,7 +17,7 @@ import { VERSION } from "../version.ts";
 import { IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION, projectConductorTools, projectToolList, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
 import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
 import { renderHeldHint } from "../hub/delivery-hints.ts";
-import { buildNativePermissionProbe, NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH, validateNativePermissionRequest } from "../hub/native-permission-request.ts";
+import { acceptsNativePermissionRequest, buildNativePermissionProbe, NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH } from "../hub/native-permission-request.ts";
 
 // A native session is pinned at launch. Unlike a new CLI invocation after `cd`,
 // its MCP server must not silently move to another hub (including while offline).
@@ -398,7 +398,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
   if (name === "hub_permission_request") {
     const deny = (message: string) => text(JSON.stringify({ behavior: "deny", message }));
     if (!permissionTool || !hub) return deny("hub permission unavailable");
-    if (!validateNativePermissionRequest(args)) {
+    if (!acceptsNativePermissionRequest(args)) {
       // Diagnostic validation only: its response can never authorize this invalid native request.
       if (++invalidPermissionAttempts <= NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH) {
         const probe = buildNativePermissionProbe(args);

@@ -4,7 +4,17 @@ export const NATIVE_PERMISSION_PROBE_MAX_BYTES = 4096;
 export const NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH = 4;
 const MAX_DEPTH = 8, MAX_NODES = 256;
 
-/** Native permission input only. Validation grants nothing and never reads accessor values. */
+/** The approval path's pre-existing inline checks, deliberately without stricter shape checks.
+ * Keep ordinary property reads and their failure behavior; diagnostics cannot change native admission. */
+export function acceptsNativePermissionRequest(value: unknown): boolean {
+  const args = value as Record<string, unknown> | undefined;
+  if (typeof args?.tool_name !== "string" || !/^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$/.test(args.tool_name)
+    || !args.input || typeof args.input !== "object" || Array.isArray(args.input)
+    || typeof args.tool_use_id !== "string" || !args.tool_use_id.length || args.tool_use_id.length > 256) return false;
+  return true;
+}
+
+/** Strict diagnostic classification only. Never use this to narrow the approval path. */
 export function validateNativePermissionRequest(value: unknown): boolean {
   try {
     if (!value || typeof value !== "object" || types.isProxy(value) || Array.isArray(value)) return false;

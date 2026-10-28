@@ -1,7 +1,35 @@
 import { expect, test } from "bun:test";
-import { buildNativePermissionProbe, NATIVE_PERMISSION_PROBE_MAX_BYTES, NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH, validateNativePermissionRequest } from "../src/hub/native-permission-request.ts";
+import { acceptsNativePermissionRequest, buildNativePermissionProbe, NATIVE_PERMISSION_PROBE_MAX_BYTES, NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH, validateNativePermissionRequest } from "../src/hub/native-permission-request.ts";
 
 const valid = () => ({ tool_name: "Bash", input: { command: "fixture" }, tool_use_id: "native-call-17" });
+
+test("native permission approval preserves legacy extra, inherited, proxy, accessor and opaque object acceptance", () => {
+  const values = [
+    { ...valid(), extra: "native extension" },
+    { ...valid(), [Symbol("extra")]: true },
+    Object.create(valid()),
+    Object.assign(Object.create({ extra: true }), valid()),
+    Object.assign([], valid()),
+    Object.assign(() => {}, valid()),
+    { ...valid(), input: new Date(0), tool_use_id: " " },
+    new Proxy(valid(), { ownKeys() { throw new Error("approval must not inspect keys"); }, getOwnPropertyDescriptor() { throw new Error("approval must not inspect descriptors"); } }),
+  ];
+  for (const value of values) expect(acceptsNativePermissionRequest(value)).toBe(true);
+  let reads = 0;
+  const accessor = Object.defineProperty(valid(), "tool_name", { get() { reads++; return "Bash"; } });
+  expect(acceptsNativePermissionRequest(accessor)).toBe(true); expect(reads).toBeGreaterThan(0);
+  expect(() => acceptsNativePermissionRequest(Object.defineProperty(valid(), "tool_name", { get() { throw new Error("legacy getter failure"); } }))).toThrow("legacy getter failure");
+});
+
+test("native permission approval retains the old name regex and input/id boundaries without trimming", () => {
+  for (const tool_name of ["Bash", "Bash\n", "Bash\r", "Bash\r\n", " Bash", "Bash ", "a".repeat(128), "a".repeat(129)]) {
+    expect(acceptsNativePermissionRequest({ ...valid(), tool_name })).toBe(/^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$/.test(tool_name));
+  }
+  for (const value of [undefined, null, {}, { ...valid(), input: null }, { ...valid(), input: [] }, { ...valid(), tool_use_id: "" }, { ...valid(), tool_use_id: "a".repeat(257) }]) {
+    expect(acceptsNativePermissionRequest(value)).toBe(false);
+  }
+  expect(acceptsNativePermissionRequest({ ...valid(), tool_use_id: "a".repeat(256) })).toBe(true);
+});
 
 test("native permission validator accepts exactly the three native own-data fields and original boundaries", () => {
   expect(validateNativePermissionRequest(valid())).toBe(true);

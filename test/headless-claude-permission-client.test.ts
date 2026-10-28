@@ -136,6 +136,17 @@ test("#845 the fixed wrapper protocol passes only host replacement input; malfor
 });
 
 
+test("#551 native permission request extensions preserve the existing approval path", async () => {
+  const f = await client(true);
+  try {
+    const extended = { ...request, extra: { native_extension: true } };
+    expect(decision(await f.call("hub_permission_request", extended))).toEqual({ behavior: "allow", updatedInput: request.input });
+    expect(f.requests.filter(row => row.t === "permission_request").map(({ rid: _rid, ...body }) => body))
+      .toEqual([{ t: "permission_request", tool: request.tool_name, input: request.input, wrapperProtocol: 1 }]);
+    expect(f.requests.filter(row => row.t === "permission_failure_probe")).toEqual([]);
+  } finally { await f.close(); }
+});
+
 test("#525 malformed native permission calls deny before reaching the daemon approval path", async () => {
   const f = await client(true);
   try {
