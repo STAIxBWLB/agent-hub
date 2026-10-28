@@ -3029,7 +3029,7 @@ export class Tasks {
               this.d.board.recordStall({ ...stall, replanRevision: latest.planningRevision ?? 0 });
               pass.retained = true;
             }
-          } // A plan/policy refusal replaced the origin; preserve that stall and stop queue-driven retries.
+          } // Other replacing gates keep their stall and own any later retry.
         } else this.d.board.clearStall(task.id);
       }
     }
