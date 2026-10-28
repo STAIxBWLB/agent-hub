@@ -47,7 +47,7 @@ function hasObsidian(dir: string): boolean {
 /**
  * Whether a configured corpus root may be read. The check runs on the `realPath` of the root (a symlink into a vault is caught), looks for `.obsidian/` at the
  * root and in every ancestor of the real path (a root inside a vault), and refuses on evidence it cannot read. `pii.paths` and the deny rules are checked here too:
- * a root under either is never a corpus (a root that merely contains a protected folder is read, and the walk skips that folder). The walk below the root (refusing any `.obsidian` it meets) is `CorpusIndex.refresh`.
+ * a root under either is never a corpus, and the walk refuses a root that holds a protected folder, because that folder is never listed and cannot be shown free of a vault. The walk below the root (refusing any `.obsidian` it meets) is `CorpusIndex.refresh`.
  */
 export function checkCorpusRoot(configured: string, ctx: CorpusContext): CorpusRootCheck {
   let real: string;
@@ -278,12 +278,9 @@ export class CorpusIndex {
         const rel = relative(root, abs).split(sep).join("/");
         const protectedPath = () => isDenied(abs, deny) || (pii.length > 0 && (matchesPolicyLexically(this.ctx.cwd, abs, pii) || matchesPolicy(this.ctx.cwd, abs, pii)));
         if (entry.isDirectory()) {
-          if (protectedPath()) {
-            report.skipped.protected++;
-            // A protected folder is not read, but a vault folder directly inside it is still named (a stat of one name, no listing).
-            try { if (hasObsidian(abs)) return `${VAULT_REASON} (found ${join(abs, ".obsidian")})`; } catch { return `has a protected folder that cannot be checked for a vault (${abs})`; }
-            continue;
-          }
+          // A protected folder is never listed or read, so a vault anywhere below it cannot be ruled out: the root cannot be shown free of a vault, and it is refused
+          // (the owner decision: evidence that cannot be checked refuses). Point corpus.paths at a folder that holds no protected folder. A protected FILE is only skipped.
+          if (protectedPath()) return `holds the protected folder ${abs} (pii.paths, the deny rules or local.deny), which is never listed, so the root cannot be shown to be free of an Obsidian vault; point corpus.paths at a folder with no protected folder in it`;
           subdirs.push(abs);
         } else if (entry.isFile() && NOTE_EXT.test(entry.name)) {
           if (protectedPath()) { report.skipped.protected++; continue; }

@@ -185,26 +185,57 @@ test("a folder tree that is too deep or too big to be shown free of a vault is r
   expect(report.notes).toBe(0);
 });
 
-test("pii.paths and the deny rules apply first: a protected root is refused, a protected folder or note is skipped and counted", () => {
+test("pii.paths and the deny rules apply first: a protected root is refused, a protected note is skipped and counted, a protected folder refuses the root", () => {
   const { cwd } = base();
   const root = join(cwd, "notes");
-  put(root, "open.md", "# Open"); put(root, "secret/s.md", "# S"); put(root, "credentials.md", "# Creds"); put(root, ".env", "KEY=1"); put(root, "private-x/p.md", "# P");
-  const index = new CorpusIndex(ctx(cwd, [root], { piiPaths: ["notes/secret"], deny: ["private-x"] }));
+  put(root, "open.md", "# Open"); put(root, "secret.md", "# Secret note"); put(root, "credentials.md", "# Creds"); put(root, ".env", "KEY=1"); put(root, "private-x.md", "# P");
+  const index = new CorpusIndex(ctx(cwd, [root], { piiPaths: ["notes/secret.md"], deny: ["private-x"] }));
   const report = index.refresh();
-  expect(index.notes().map(note => note.path), "credentials.md is on the built-in secrets denylist, secret/ is pii.paths, private-x/ is local.deny").toEqual(["open.md"]);
+  expect(index.notes().map(note => note.path), "credentials.md is on the built-in secrets denylist, secret.md is pii.paths, private-x.md is local.deny").toEqual(["open.md"]);
   expect(report.roots[0]!.skipped.protected).toBe(3);
-  expect(JSON.stringify(index.notes())).not.toContain("# S");
+  expect(JSON.stringify(index.notes())).not.toContain("Secret note");
   const piiRoot = new CorpusIndex(ctx(cwd, [root], { piiPaths: ["notes"] })).refresh();
   expect(piiRoot.roots[0]!.refused).toContain("pii.paths");
   expect(piiRoot.notes).toBe(0);
+  put(root, "secret/s.md", "# S");
   const inside = new CorpusIndex(ctx(cwd, [join(root, "secret")], { piiPaths: ["notes/secret"] })).refresh();
   expect(inside.roots[0]!.refused, "a root inside a pii path is refused").toContain("pii.paths");
-  const parent = new CorpusIndex(ctx(cwd, [cwd], { piiPaths: ["notes/secret"] }));
-  parent.refresh();
-  expect(parent.notes().map(note => note.path), "a root that merely contains a pii folder is read, minus that folder").not.toContain("notes/secret/s.md");
-  expect(parent.notes().length).toBeGreaterThan(0);
   const denied = new CorpusIndex(ctx(cwd, [root], { deny: ["notes"] })).refresh();
   expect(denied.roots[0]!.refused).toContain("denylist");
+});
+
+for (const [name, extra] of [["pii.paths", { piiPaths: ["notes/secret"] }], ["a pii.paths glob", { piiPaths: ["notes/sec*"] }], ["local.deny", { deny: ["secret"] }], ["the built-in secrets denylist", {}]] as const) {
+  test(`a folder protected by ${name} is never listed, so the root that holds it is refused and contributes no notes, even when it holds no vault`, () => {
+    const { cwd } = base(), root = join(cwd, "notes"), folder = name === "the built-in secrets denylist" ? ".maru/secrets" : "secret";
+    put(root, "open.md", "# Open"); put(root, `${folder}/s.md`, "# S");
+    const index = new CorpusIndex(ctx(cwd, [root], extra)), report = index.refresh();
+    expect(report.roots[0]!.refused).toContain("protected folder");
+    expect(report.roots[0]!.refused).toContain("free of an Obsidian vault");
+    expect(index.notes(), "nothing from a root that cannot be shown vault-free").toEqual([]);
+    expect(report.notes).toBe(0);
+  });
+
+  test(`a vault nested below a folder protected by ${name} cannot hide: the root is refused (the owner decision: a vault anywhere, or evidence that cannot be checked)`, () => {
+    const { cwd } = base(), root = join(cwd, "notes"), folder = name === "the built-in secrets denylist" ? ".maru/secrets" : "secret";
+    put(root, "open.md", "# Open"); put(root, `${folder}/deep/er/.obsidian/app.json`, "{}"); put(root, `${folder}/deep/er/n.md`, "# N");
+    const index = new CorpusIndex(ctx(cwd, [root], extra)), report = index.refresh();
+    expect(report.roots[0]!.refused, "the reproducer: open.md plus <protected>/deep/.obsidian").toBeDefined();
+    expect(index.notes()).toEqual([]);
+    expect(report.notes).toBe(0);
+  });
+}
+
+test("the protected subtree is never listed or read to reach that refusal", () => {
+  const { cwd } = base(), root = join(cwd, "notes");
+  put(root, "open.md", "# Open"); put(root, "secret/deep/.obsidian/app.json", "{}");
+  chmodSync(join(root, "secret"), 0o000); // listing it would fail: the refusal must come without trying
+  try {
+    // local.deny has no discovery step of its own (pii.paths goes through matchesPolicy, which does its own bounded alias discovery and fails closed on an unreadable folder),
+    // so this isolates what the corpus walk itself does: a protected folder is refused by its name, never opened.
+    const report = new CorpusIndex(ctx(cwd, [root], { deny: ["secret"] })).refresh();
+    expect(report.roots[0]!.refused).toContain("protected folder");
+    expect(report.roots[0]!.refused).not.toContain("cannot be read");
+  } finally { chmodSync(join(root, "secret"), 0o755); }
 });
 
 test("a note whose text matches signals.pii_patterns is not indexed, and a pattern that cannot be evaluated indexes nothing", () => {
@@ -269,16 +300,12 @@ test("an invalid corpus block is refused by the loader with the path named", () 
   expect(() => loadConfig(extra.cwd)).toThrow("corpus.vault: unknown key");
 });
 
-test("a vault directly inside a protected folder still refuses the root, though the folder itself is never read", () => {
-  const { cwd } = base(), root = join(cwd, "notes");
-  put(root, "open.md", "# Open"); put(root, "secret/.obsidian/app.json", "{}"); put(root, "secret/s.md", "# S");
-  const index = new CorpusIndex(ctx(cwd, [root], { piiPaths: ["notes/secret"] })), report = index.refresh();
-  expect(report.roots[0]!.refused).toContain("Obsidian MCP tools");
-  expect(index.notes()).toEqual([]);
-  const plain = join(cwd, "plain");
-  put(plain, "open.md", "# Open"); put(plain, "secret/s.md", "# S");
-  const ok = new CorpusIndex(ctx(cwd, [plain], { piiPaths: ["plain/secret"] }));
-  expect(ok.refresh().notes).toBe(1);
+test("a root with no protected folder in it is read normally beside protected files", () => {
+  const { cwd } = base(), plain = join(cwd, "plain");
+  put(plain, "open.md", "# Open"); put(plain, "secret.md", "# S"); put(plain, "sub/more.md", "# More");
+  const ok = new CorpusIndex(ctx(cwd, [plain], { piiPaths: ["plain/secret.md"] }));
+  expect(ok.refresh().notes).toBe(2);
+  expect(ok.notes().map(note => note.path)).toEqual(["open.md", "sub/more.md"]);
 });
 
 test("a refused root does not hide the others: each root is judged alone, and a refusal removes its earlier notes on the next refresh", () => {
