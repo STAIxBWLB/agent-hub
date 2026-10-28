@@ -14,7 +14,8 @@ type Schema = { type?: string; properties?: Record<string, Schema>; required?: s
 
 /**
  * The first rule a value breaks, as `path: rule`, or undefined. A small subset of JSON Schema, the keywords the hub's tool schemas use.
- * The message never carries the value, so a refusal about a private request cannot leak its text into a note.
+ * The message never carries model text: not a value, and not a property NAME either. The path is built only from the schema's own property names and array indexes, and a
+ * property the schema does not list is reported as `<path>: an unexpected property` without its name, so a refusal about a private request cannot leak its text into a note.
  */
 export function schemaError(schema: unknown, value: unknown, path = "parts"): string | undefined {
   const s = (schema ?? {}) as Schema;
@@ -30,7 +31,7 @@ export function schemaError(schema: unknown, value: unknown, path = "parts"): st
     for (const key of s.required ?? []) if (row[key] === undefined) return `${path}.${key}: required`;
     for (const key of Object.keys(row)) {
       const child = s.properties?.[key];
-      if (!child) { if (s.additionalProperties === false) return `${path}.${key}: not allowed`; continue; }
+      if (!child) { if (s.additionalProperties === false) return `${path}: an unexpected property`; continue; }
       const error = schemaError(child, row[key], `${path}.${key}`);
       if (error) return error;
     }

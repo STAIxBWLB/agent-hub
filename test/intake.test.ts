@@ -65,7 +65,7 @@ test("schemaError checks the keywords the hub_backlog_split schema uses, and nev
   expect(schemaError(PARTS_SCHEMA, [GOOD.parts[0]])).toContain("at least 2");
   expect(schemaError(PARTS_SCHEMA, Array.from({ length: 9 }, () => GOOD.parts[0]))).toContain("at most 8");
   expect(schemaError(PARTS_SCHEMA, [{ title: "" }, GOOD.parts[0]])).toContain("too short");
-  expect(schemaError(PARTS_SCHEMA, [{ title: "x", extra: "SECRET-STUDENT" }, GOOD.parts[0]])).toBe("parts[0].extra: not allowed");
+  expect(schemaError(PARTS_SCHEMA, [{ title: "x", extra: "SECRET-STUDENT" }, GOOD.parts[0]])).toBe("parts[0]: an unexpected property");
   expect(schemaError(PARTS_SCHEMA, [{ title: "x", afterParts: [-1] }, GOOD.parts[0]])).toContain("too small");
   expect(schemaError(PARTS_SCHEMA, [{ title: "x", afterParts: [0, 0] }, GOOD.parts[0]])).toContain("unique");
   expect(schemaError(PARTS_SCHEMA, [{ detail: "no title" }, GOOD.parts[0]])).toBe("parts[0].title: required");
@@ -84,7 +84,7 @@ test("parseIntakeSplit takes bare JSON, a fenced block or prose around it, and r
   expect(parseIntakeSplit("{\"parts\": 4}", PARTS_SCHEMA)).toMatchObject({ error: expect.stringContaining("expected an array") });
   expect(parseIntakeSplit("x".repeat(70_000), PARTS_SCHEMA)).toEqual({ error: "the model's answer was too long" });
   const bad = { parts: [{ title: "a", detail: "AC1: x", class: "plan" }, { title: "b", detail: "AC1: y", extra: 1 }] };
-  expect(parseIntakeSplit(JSON.stringify(bad), PARTS_SCHEMA)).toEqual({ error: "invalid split: parts[1].extra: not allowed" });
+  expect(parseIntakeSplit(JSON.stringify(bad), PARTS_SCHEMA)).toEqual({ error: "invalid split: parts[1]: an unexpected property" });
 });
 
 test("a split part needs acceptance criteria in the #507 id format and may use only the request's sources", () => {
@@ -92,7 +92,7 @@ test("a split part needs acceptance criteria in the #507 id format and may use o
   expect(parseIntakeSplit(JSON.stringify(noCriteria), PARTS_SCHEMA, [SRC])).toEqual({ error: "invalid split: parts[0].detail: no acceptance criteria" });
   // the dev profile's plan has no sources key; a profile that selects it (research) accepts only the ids the request named
   const dev = { parts: [{ ...GOOD.parts[0], plan: { sources: [SRC] } }, GOOD.parts[1]] };
-  expect(parseIntakeSplit(JSON.stringify(dev), PARTS_SCHEMA, [SRC])).toEqual({ error: "invalid split: parts[0].plan.sources: not allowed" });
+  expect(parseIntakeSplit(JSON.stringify(dev), PARTS_SCHEMA, [SRC])).toEqual({ error: "invalid split: parts[0].plan: an unexpected property" });
   const invented = { parts: [{ ...GOOD.parts[0], plan: { sources: [OTHER] } }, GOOD.parts[1]] };
   expect(parseIntakeSplit(JSON.stringify(invented), RESEARCH_SCHEMA, [SRC])).toEqual({ error: "invalid split: parts[0].plan.sources: not one of the request's sources" });
   const named = { parts: [{ ...GOOD.parts[0], plan: { sources: [SRC] } }, GOOD.parts[1]] };
@@ -214,7 +214,7 @@ test("invalid model output leaves the draft unsplit, with the reason on its hist
     [undefined, "the model gave no answer"],
     ["I cannot help with that.", "not a JSON split"],
     [JSON.stringify({ parts: [GOOD.parts[0]] }), "at least 2"],
-    [JSON.stringify({ parts: [{ ...GOOD.parts[0], extra: 1 }, GOOD.parts[1]] }), "extra: not allowed"],
+    [JSON.stringify({ parts: [{ ...GOOD.parts[0], extra: 1 }, GOOD.parts[1]] }), "parts[0]: an unexpected property"],
     [JSON.stringify({ parts: [{ title: "a", detail: "no criteria" }, GOOD.parts[1]] }), "no acceptance criteria"],
     [JSON.stringify({ parts: [{ ...GOOD.parts[0], class: "nonsense" }, GOOD.parts[1]] }), "refused"],
   ];
@@ -231,6 +231,41 @@ test("invalid model output leaves the draft unsplit, with the reason on its hist
     expect(draft.deps ?? []).toEqual([]);
     expect(draft.history.at(-1)).toMatchObject({ by: "hub", event: "intake unsplit", note: expect.stringContaining(reason) });
   }
+});
+
+test("a reason never carries anything the model wrote: a secret property name, value, class or source is absent from the reason and from the draft's whole history", async () => {
+  const SECRET = "PRIVATE_PAYLOAD_9f3c";
+  const bad: [string, string][] = [
+    ["a property NAME", JSON.stringify({ parts: [{ ...GOOD.parts[0], [SECRET]: "x" }, GOOD.parts[1]] })],
+    ["a nested property name", JSON.stringify({ parts: [{ ...GOOD.parts[0], plan: { [SECRET]: ["x"] } }, GOOD.parts[1]] })],
+    ["a property value", JSON.stringify({ parts: [{ ...GOOD.parts[0], title: 5, detail: SECRET }, GOOD.parts[1]] })],
+    ["a class", JSON.stringify({ parts: [{ ...GOOD.parts[0], class: SECRET }, GOOD.parts[1]] })],
+    ["a source id", JSON.stringify({ parts: [{ ...GOOD.parts[0], plan: { sources: [SECRET] } }, GOOD.parts[1]] })],
+    ["prose around invalid JSON", `Sure! ${SECRET} {"parts": [`],
+    ["a top-level key", JSON.stringify({ [SECRET]: [GOOD.parts[0]], parts: [GOOD.parts[0]] })],
+    ["an array of bad parts", JSON.stringify([{ title: "", detail: SECRET }, SECRET])],
+  ];
+  for (const [what, answer] of bad) {
+    const r = await rig({ answer });
+    const result = await r.tasks.intake(USER, { text: "ordinary request" });
+    expect(result.split, what).toBe("unsplit");
+    expect(result.reason, what).toBeDefined();
+    expect(result.reason, `${what}: reason`).not.toContain(SECRET);
+    const draft = r.board.get(result.draft.id)!;
+    expect(JSON.stringify(draft.history), `${what}: history`).not.toContain(SECRET);
+    expect(JSON.stringify(r.tasks.publicView(draft, true)), `${what}: public view`).not.toContain(SECRET);
+    expect(JSON.stringify(r.board.list()), `${what}: nothing on the board`).not.toContain(SECRET);
+  }
+});
+
+test("a schema-owned property keeps a useful path in the reason, and a refusal from the board carries only fixed text", async () => {
+  expect(schemaError(PARTS_SCHEMA, [{ detail: "no title" }, GOOD.parts[0]])).toBe("parts[0].title: required");
+  expect(schemaError(PARTS_SCHEMA, [{ title: "x", afterParts: [-1] }, GOOD.parts[0]])).toBe("parts[0].afterParts[0]: too small");
+  expect(schemaError(PARTS_SCHEMA, [{ title: "x", plan: { paths: "a" } }, GOOD.parts[0]])).toBe("parts[0].plan.paths: expected an array");
+  const r = await rig({ answer: JSON.stringify({ parts: [{ ...GOOD.parts[0], class: "nonsense" }, GOOD.parts[1]] }) });
+  const result = await r.tasks.intake(USER, { text: "ordinary request" });
+  expect(result.reason).toMatch(/^the split was refused: class must be one of /); // the profile's own class names, from config
+  expect(result.reason).not.toContain("nonsense");
 });
 
 test("a throwing model or a missing model leaves the draft unsplit", async () => {

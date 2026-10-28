@@ -1722,7 +1722,7 @@ export class Tasks {
     try {
       const result = await this.splitBacklog(HUB, { id: draft.id, revision: current.planningRevision ?? 0, parts: parsed.parts, reason: "intake: split by the hub model" }, { intake: true });
       return { children: result.children, split: "hub" };
-    } catch (error) { return unsplit(`the split was refused: ${sanitize(error instanceof Error ? error.message : String(error)).slice(0, 200)}`); }
+    } catch (error) { return unsplit(`the split was refused: ${error instanceof PreEffectToolRefusal ? sanitize(error.message).slice(0, 200) : "the board refused it"}`); }
   }
 
   /** #334: the person approves a draft; it and its children leave draft and follow the normal backlog pull. */
