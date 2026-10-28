@@ -258,6 +258,14 @@ test("a reason never carries anything the model wrote: a secret property name, v
   }
 });
 
+test("an error thrown by the board while writing the split is reduced to fixed text in the reason and the history", async () => {
+  const r = await rig({ answer: JSON.stringify(GOOD) });
+  r.board.splitBacklog = () => { throw new Error("SQLITE_CONSTRAINT: PRIVATE_PAYLOAD_9f3c in table tasks"); };
+  const result = await r.tasks.intake(USER, { text: "ordinary request" });
+  expect(result).toMatchObject({ split: "unsplit", reason: "the split was refused: the board refused it" });
+  expect(JSON.stringify(r.board.get(result.draft.id)!.history)).not.toContain("PRIVATE_PAYLOAD");
+});
+
 test("a schema-owned property keeps a useful path in the reason, and a refusal from the board carries only fixed text", async () => {
   expect(schemaError(PARTS_SCHEMA, [{ detail: "no title" }, GOOD.parts[0]])).toBe("parts[0].title: required");
   expect(schemaError(PARTS_SCHEMA, [{ title: "x", afterParts: [-1] }, GOOD.parts[0]])).toBe("parts[0].afterParts[0]: too small");
