@@ -133,6 +133,15 @@ export class Inference {
     return CLASSES.find((c) => c === word);
   }
 
+  /**
+   * #334: the hub model's JSON split of a person's request. The person waits for this one answer, so it is `interactive`: its own, longer clock that
+   * neither obeys nor trips the delivery backoff. The answer is parsed and validated by the caller (`parseIntakeSplit`), never trusted here.
+   */
+  async split(system: string, user: string, opts: { campusOnly?: boolean } = {}): Promise<string | undefined> {
+    // `campusOnly`: the request is PII, so transport itself refuses the Access endpoint, as the PII screen does, whatever an earlier check saw.
+    return this.complete(system, user, 3000, { interactive: true, timeoutMs: 60_000, ...(opts.campusOnly ? { onCampusOnly: true } : {}) });
+  }
+
   /** A closed escalation verdict, or no verdict when inference is unavailable or malformed. */
   async escalate(conversation: Conversation, turn: number): Promise<EscalationVerdict | undefined> {
     const request = buildEscalationJudgeRequest(conversation, turn);
