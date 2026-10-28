@@ -305,13 +305,19 @@ test("stop waits for a manual run in flight and the run's bookkeeping lands befo
   else expect(h.tasks()).toHaveLength(0);
 });
 
-test("a manual run is refused once the hub is stopping", async () => {
-  const clock = { now: T0 }, h = await start(clock);
-  const stopping = h.daemon.stop();
-  const reply = await h.op(h.person, "schedule_run", { id: "nightly" }).catch(error => ({ ok: false, error: String(error) }));
-  await stopping;
-  expect(reply.ok).toBe(false);
-  expect(h.tasks()).toHaveLength(0);
+test("a manual run that arrives while stop is draining another is refused and writes nothing", async () => {
+  let release: (() => void) | undefined, entered = 0;
+  const clock = { now: T0 };
+  const h = await start(clock, { piiScreen: () => new Promise(resolve => { entered++; release = () => resolve({ label: "clear", ms: 0 }); }) }, undefined, true);
+  const first = h.op(h.person, "schedule_run", { id: "nightly" });
+  await until(() => entered >= 1, "the first manual run is inside its PII screen");
+  const stopping = h.daemon.stop(); // stop now waits for that run, with the control socket still open
+  await Bun.sleep(100);
+  const second = await h.op(h.person, "schedule_run", { id: "weekly" }).catch(error => ({ ok: false, error: String(error) }));
+  expect(entered, "the second run never reached the PII screen").toBe(1);
+  expect(second).toMatchObject({ ok: false, error: "hub is stopping" });
+  release!(); await stopping; await first.catch(() => undefined);
+  expect(h.tasks().filter(task => task.detail.includes("weekly"))).toHaveLength(0);
 });
 
 // ---- the store and the view, without a daemon

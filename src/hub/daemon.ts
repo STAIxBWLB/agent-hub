@@ -3218,8 +3218,8 @@ export async function startDaemon(opts: DaemonOptions) {
         if (by !== USER) throw new PreEffectToolRefusal("schedule list is a console command");
         return JSON.stringify(scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true));
       case "schedule_run": {
-        // The run is registered with the shutdown drain (`schedulesPass`), so `stopOnce` waits for it, as for a timer pass, before the board and the store close (#335).
-        if (stopping) throw new PreEffectToolRefusal("the hub is stopping");
+        // The run is registered with the shutdown drain, so `stopOnce` waits for it, as for a timer pass, before the board and the store close (#335). A run that arrives
+        // once stop has begun is refused earlier still, by the control layer ("hub is stopping"); the test below holds that, so nothing here repeats it.
         const run = tasks.runScheduleNow(by, schedulesStore, config.schedules, a.id, scheduleNow(), () => opts.schedulesHeld?.() === true);
         const drained = run.then(() => undefined, () => undefined);
         manualSchedulePasses.add(drained); void drained.finally(() => manualSchedulePasses.delete(drained));
