@@ -102,7 +102,7 @@ export async function runRoomCommand(args: readonly string[], request: RoomReque
   const command = parseRoomCommand(args);
   if (command.op !== "mutation") {
     const result = success(await request({ t: "room", op: command.op, input: command.input })), rows = roomRows(result.rooms);
-    if (command.json) return console.log(JSON.stringify(rows));
+    if (args.includes("--json")) return console.log(JSON.stringify(rows));
     console.log(`Rooms (${rows.length})`);
     for (const row of rows) console.log(`${row.name} ${row.room} epoch ${row.epoch} ${row.state}\n  owner ${row.owner}\n  member ${row.member}`);
     return;
