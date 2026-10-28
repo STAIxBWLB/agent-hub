@@ -88,7 +88,8 @@ test("a receipt edited by hand to say pass is caught: the check recomputes the n
   const forged = receiptFor(BASE, BAD, r => { r.evidence.verdict = "pass"; r.evidence.reasons = []; r.evidence.guardRegressions = []; r.evidence.regressions = []; r.evidence.primary.candidateCorrect = r.evidence.primary.baseCorrect; });
   const result = checkReceipt(input(BAD, [forged]));
   expect(result.ok).toBe(false);
-  expect(reason(result)).toContain("its numbers are not what the corpus gives");
+  expect(reason(result)).toContain("it is not what the corpus gives for these two files");
+  expect(reason(result)).toContain("verdict differs");
   expect(reason(result)).toContain("it was edited or made from other files");
 });
 
@@ -121,10 +122,66 @@ test("a deleted or newly created template is refused with its own reason", () =>
 test("templates that do not parse give a reason, never an exception", () => {
   const broken = "this is [[not toml";
   const forged = receiptFor(BASE, NEUTRAL);
-  const bad = { ...forged, text: forged.text.replaceAll(sha256(NEUTRAL), sha256(broken)) };
+  const text = forged.text.replaceAll(sha256(NEUTRAL), sha256(broken));
+  const bad = { path: forged.path.replace(sha256(NEUTRAL).slice(0, 8), sha256(broken).slice(0, 8)), text };
   const result = checkReceipt(input(broken, [bad]));
   expect(result.ok).toBe(false);
-  expect(reason(result)).toMatch(/do not parse|numbers are not/);
+  expect(reason(result)).toContain("the templates do not parse");
+});
+
+// Every field of a receipt that the two files determine is recomputed: a receipt that passes the verdict but lies about anything else is refused.
+const tamper: [string, (r: ReturnType<typeof buildReceipt>) => void, string][] = [
+  ["the candidate configuration emptied", r => { r.candidate.config = {}; }, "candidate differs"],
+  ["the base configuration emptied", r => { r.base.config = {}; }, "base differs"],
+  ["the changed keys erased", r => { r.changed_keys = []; }, "changed_keys differs"],
+  ["a changed key invented", r => { r.changed_keys = ["classes.implement.peers"]; }, "changed_keys differs"],
+  ["the reviewer metric inflated", r => { r.evidence.secondary.reviewer.candidate = 1; r.evidence.secondary.reviewer.base = 0.5; }, "secondary differs"],
+  ["the whole-case rate changed", r => { r.evidence.secondary.fullCase.candidate = 0.123; }, "secondary differs"],
+  ["the primary rate changed", r => { r.evidence.primary.candidate = 0.5; }, "primary differs"],
+  ["the primary base rate changed", r => { r.evidence.primary.base = 0.75; }, "primary differs"],
+  ["the primary metric renamed", r => { r.evidence.primary.metric = "something kinder"; }, "primary differs"],
+  ["a case outcome rewritten", r => { r.evidence.cases[0]!.candidate.owner = "kimi"; }, "cases differs"],
+  ["a case marked failing", r => { r.evidence.cases[0]!.candidatePass = false; }, "cases differs"],
+  ["a case dropped", r => { r.evidence.cases = r.evidence.cases.slice(1); }, "cases differs"],
+  ["the improvements invented", r => { r.evidence.improvements = ["pii-plan-nobody"]; }, "improvements differs"],
+  ["the reasons rewritten", r => { r.evidence.reasons = ["fine"]; }, "reasons differs"],
+  ["the served-model note rewritten", r => { r.served_models = "gpt-whatever"; }, "served_models differs"],
+  ["an extra field added", r => { (r as unknown as Record<string, unknown>).approved_by = "someone"; }, "extra or missing field"],
+  ["the surface changed", r => { (r as { surface: string }).surface = "model-routing"; }, "surface differs"],
+  ["the version changed", r => { (r as { version: number }).version = 2; }, "no routing receipt"],
+];
+for (const [name, patch, expected] of tamper) {
+  test(`a receipt with ${name} is refused although its verdict still says pass`, () => {
+    const result = checkReceipt(input(NEUTRAL, [receiptFor(BASE, NEUTRAL, patch)]));
+    expect(result.ok, name).toBe(false);
+    expect(reason(result), name).toContain(expected);
+  });
+}
+
+test("the human-readable part cannot be edited either: a summary or case table that disagrees with the data is refused", () => {
+  const good = receiptFor(BASE, NEUTRAL);
+  expect(checkReceipt(input(NEUTRAL, [good]))).toMatchObject({ ok: true });
+  for (const [name, edit] of [
+    ["the verdict line", (t: string) => t.replace("Verdict: **pass**", "Verdict: **pass** (reviewed and approved)")],
+    ["a case row", (t: string) => t.replace("| pii-implement-local-offline | pii |", "| pii-implement-local-offline | none |")],
+    ["the summary heading", (t: string) => t.replace("# Routing promotion receipt", "# Routing promotion receipt (approved)")],
+    ["a trailing note", (t: string) => `${t}\nApproved by the conductor.\n`],
+  ] as const) {
+    const result = checkReceipt(input(NEUTRAL, [{ path: good.path, text: edit(good.text) }]));
+    expect(result.ok, name).toBe(false);
+    expect(reason(result), name).toContain("outside the machine block");
+  }
+  // line endings and trailing blank lines are not content
+  expect(checkReceipt(input(NEUTRAL, [{ path: good.path, text: good.text.replace(/\n/g, "\r\n") + "\r\n\r\n" }]))).toMatchObject({ ok: true });
+});
+
+test("the receipt's own choices are bounded: a malformed date or base label, and a file name that does not carry them, are refused", () => {
+  expect(reason(checkReceipt(input(NEUTRAL, [receiptFor(BASE, NEUTRAL, r => { r.generated = "tomorrow"; })])))).toContain("YYYY-MM-DD");
+  expect(reason(checkReceipt(input(NEUTRAL, [receiptFor(BASE, NEUTRAL, r => { r.base.ref = "x y; rm -rf /"; })])))).toContain("short git ref label");
+  const good = receiptFor(BASE, NEUTRAL);
+  expect(reason(checkReceipt(input(NEUTRAL, [{ path: `${RECEIPT_DIR}/2026-01-01-routing-${sha256(NEUTRAL).slice(0, 8)}.md`, text: good.text }])))).toContain("the file name must be");
+  // a different date and base label are honest choices, so a receipt made on another day against a branch name is accepted
+  expect(checkReceipt(input(NEUTRAL, [receiptFor(BASE, NEUTRAL, r => { r.base.ref = "origin/main"; })]))).toMatchObject({ ok: true });
 });
 
 test("when several receipts exist, one matching receipt is enough, and the reasons of the others are reported only if none matches", () => {

@@ -2,7 +2,10 @@
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { compare, parseConfigs, parseReceipt, sha256, validateCorpus, type Corpus } from "./benchmarks/routing-corpus.ts";
+import { buildReceipt, canonicalJson, changedKeys, compare, parseConfigs, parseReceipt, policySummary, renderReceipt, sha256, validateCorpus, type Comparison, type Corpus, type Receipt } from "./benchmarks/routing-corpus.ts";
+
+/** Line endings and trailing blank lines are not content: a checkout that rewrites them must not fail a receipt. */
+const normalize = (text: string): string => text.replace(/\r\n/g, "\n").replace(/\s+$/, "");
 
 // agent-hub #637 part 1 (hub task #321): fail a PR that changes templates/routing.toml without a receipt that matches it.
 // The rule is the "Routing promotion rule" in docs/agent-notes/benchmarks.md. No model runs here: the check reads files and git, and RECOMPUTES the comparison from the
@@ -39,7 +42,7 @@ export function checkReceipt(input: CheckInput): CheckResult {
   try { corpus = validateCorpus(JSON.parse(input.corpusText)); }
   catch (error) { return { ok: false, reason: (error as Error).message }; }
   const headSha = sha256(input.headTemplate), baseSha = sha256(input.baseTemplate);
-  const candidates = input.receipts.flatMap(file => { const receipt = parseReceipt(file.text); return receipt ? [{ file, receipt }] : []; });
+  const candidates = input.receipts.flatMap(file => { const receipt = parseReceipt(file.text.replace(/\r\n/g, "\n")); return receipt ? [{ file, receipt }] : []; });
   if (!candidates.length) return { ok: false, reason: `no routing receipt under ${RECEIPT_DIR}/; ${needs}` };
   const named = candidates.filter(({ receipt }) => receipt.candidate.sha256 === headSha);
   if (!named.length) return { ok: false, reason: `no receipt names this ${TEMPLATE} (sha256 ${headSha.slice(0, 12)}); a receipt for an earlier version of the file does not count. ${needs}` };
@@ -50,15 +53,26 @@ export function checkReceipt(input: CheckInput): CheckResult {
     if (receipt.corpus_hash !== corpus.hash) { problems.push(`${here}it was made for corpus ${receipt.corpus_hash.slice(0, 12)}, the corpus is ${corpus.hash.slice(0, 12)}; regenerate it`); continue; }
     if (receipt.base.sha256 !== baseSha) { problems.push(`${here}its current default (${receipt.base.sha256.slice(0, 12)}) is not the default at the merge base (${baseSha.slice(0, 12)}); regenerate it against the current default`); continue; }
     if (receipt.split !== "test") { problems.push(`${here}the promotion rule is read on the test split, not ${receipt.split}`); continue; }
-    let again;
-    try { const { base, candidate } = parseConfigs(input.baseTemplate, input.headTemplate); again = compare(corpus, base, candidate, "test"); }
-    catch (error) { problems.push(`${here}the templates do not parse: ${(error as Error).message}`); continue; }
-    const stated = receipt.evidence;
-    if (stated.verdict !== again.verdict || stated.primary.baseCorrect !== again.primary.baseCorrect || stated.primary.candidateCorrect !== again.primary.candidateCorrect
-      || stated.n !== again.n || JSON.stringify(stated.regressions) !== JSON.stringify(again.regressions) || JSON.stringify(stated.guardRegressions) !== JSON.stringify(again.guardRegressions)) {
-      problems.push(`${here}its numbers are not what the corpus gives for these two files (it says ${stated.verdict}, ${stated.primary.candidateCorrect}/${stated.n}; recomputed ${again.verdict}, ${again.primary.candidateCorrect}/${again.n}); it was edited or made from other files`);
+    // The receipt may choose only two things the files do not determine: its date and the label of the base ref. Everything else, the configurations, the changed
+    // keys, every metric and every per-case outcome, is REBUILT from the corpus and the two files, and the machine block and the whole document must equal that.
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(receipt.generated)) { problems.push(`${here}generated is a YYYY-MM-DD date`); continue; }
+    if (typeof receipt.base.ref !== "string" || !/^[\w./~^@-]{1,100}$/.test(receipt.base.ref)) { problems.push(`${here}base.ref is a short git ref label`); continue; }
+    if (!file.path.endsWith(`${receipt.generated}-routing-${headSha.slice(0, 8)}.md`)) { problems.push(`${here}the file name must be ${receipt.generated}-routing-${headSha.slice(0, 8)}.md (its date and the first 8 digits of the candidate's sha256)`); continue; }
+    let again: Comparison, expected: Receipt;
+    try {
+      const { base, candidate } = parseConfigs(input.baseTemplate, input.headTemplate);
+      again = compare(corpus, base, candidate, "test");
+      const baseSummary = policySummary(base), candidateSummary = policySummary(candidate);
+      expected = buildReceipt(corpus, again, { baseRef: receipt.base.ref, baseSha256: baseSha, candidateSha256: headSha, generated: receipt.generated, changedKeys: changedKeys(baseSummary, candidateSummary), base: baseSummary, candidate: candidateSummary });
+    } catch (error) { problems.push(`${here}the templates do not parse: ${(error as Error).message}`); continue; }
+    if (canonicalJson(receipt) !== canonicalJson(expected)) {
+      const field = ["verdict", "primary", "secondary", "regressions", "guardRegressions", "improvements", "cases", "n", "reasons"].find(key => canonicalJson((receipt.evidence as Record<string, unknown>)?.[key]) !== canonicalJson((expected.evidence as Record<string, unknown>)[key]))
+        ?? ["base", "candidate", "changed_keys", "served_models", "surface", "kind", "version", "split"].find(key => canonicalJson((receipt as unknown as Record<string, unknown>)[key]) !== canonicalJson((expected as unknown as Record<string, unknown>)[key])) ?? "an extra or missing field";
+      problems.push(`${here}it is not what the corpus gives for these two files: ${field} differs (it says ${receipt.evidence?.verdict}, ${receipt.evidence?.primary?.candidateCorrect}/${receipt.evidence?.n}; recomputed ${again.verdict}, ${again.primary.candidateCorrect}/${again.n}); it was edited or made from other files. Regenerate it with routing-gate.ts --receipt`);
       continue;
     }
+    // The human-readable part is rendered from the same data: a summary or table edited by hand no longer matches.
+    if (normalize(file.text) !== normalize(renderReceipt(expected))) { problems.push(`${here}the text outside the machine block (the summary and the case table) is not what the gate renders for this data; it was edited. Regenerate it with routing-gate.ts --receipt`); continue; }
     if (again.verdict !== "pass") { problems.push(`${here}the promotion rule blocks this change: ${again.reasons.join("; ")}`); continue; }
     return { ok: true, note: `${file.path} matches: corpus ${corpus.hash.slice(0, 12)}, owner top-1 ${again.primary.baseCorrect}/${again.n} to ${again.primary.candidateCorrect}/${again.n}, no PII or refusal regression` };
   }
