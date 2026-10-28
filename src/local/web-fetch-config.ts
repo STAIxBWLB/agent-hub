@@ -1,6 +1,18 @@
-// agent-hub #515 (hub task #332): the `local.web_fetch` config block. Pure on purpose: it is read by the config schema, which the Claude channel bundle reaches, so it
-// imports nothing that touches the file system or spawns a process. The tool itself is in `web-fetch.ts`.
+// agent-hub #515 (hub task #332): the `local.web_fetch` config block and the host matcher both the tool and the egress proxy use. Pure on purpose: the config schema reaches the
+// Claude channel bundle, so this file imports nothing that touches the file system, opens a socket or spawns a process. The tool is in `web-fetch.ts`, the proxy in `proxy.ts`.
 import { isIP } from "node:net";
+
+/** `host` or `host:port`; a name also matches its subdomains, an address only itself. Port 443 unless named. */
+export function allowed(list: string[], host: string, port: number): boolean {
+  const h = host.toLowerCase().replace(/\.$/, "");
+  return list.some((raw) => {
+    const entry = raw.trim().toLowerCase();
+    const at = entry.lastIndexOf(":");
+    const [name, p] = at > 0 && !entry.includes("]") && /^\d+$/.test(entry.slice(at + 1)) ? [entry.slice(0, at), Number(entry.slice(at + 1))] : [entry, 443];
+    if (!name || p !== port) return false;
+    return h === name || (!isIP(name) && h.endsWith(`.${name}`));
+  });
+}
 /** At most this many hosts: a list is a small, deliberate thing. */
 export const MAX_WEB_HOSTS = 64;
 /**

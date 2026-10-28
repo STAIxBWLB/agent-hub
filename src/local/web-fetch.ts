@@ -1,7 +1,7 @@
 import { isIP } from "node:net";
 import { sanitize } from "../hub/envelope.ts";
-import { allowed } from "./proxy.ts";
 import { OUTPUT_CAP } from "./sandbox.ts";
+import { allowed } from "./web-fetch-config.ts";
 export { MAX_WEB_HOSTS, webFetchAllow, webHostProblem } from "./web-fetch-config.ts";
 
 // agent-hub #515 (hub task #332): the local worker's `web_fetch`. Spec: "On-prem web reading (#515)", the owner decision of 2026-10-22.

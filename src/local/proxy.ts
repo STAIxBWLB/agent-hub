@@ -31,17 +31,8 @@ export interface EgressProxy {
   close(): Promise<void>;
 }
 
-/** `host` or `host:port`; a name also matches its subdomains, an address only itself. Port 443 unless named. */
-export function allowed(list: string[], host: string, port: number): boolean {
-  const h = host.toLowerCase().replace(/\.$/, "");
-  return list.some((raw) => {
-    const entry = raw.trim().toLowerCase();
-    const at = entry.lastIndexOf(":");
-    const [name, p] = at > 0 && !entry.includes("]") && /^\d+$/.test(entry.slice(at + 1)) ? [entry.slice(0, at), Number(entry.slice(at + 1))] : [entry, 443];
-    if (!name || p !== port) return false;
-    return h === name || (!isIP(name) && h.endsWith(`.${name}`));
-  });
-}
+import { allowed } from "./web-fetch-config.ts";
+export { allowed };
 
 // Parsed, not prefix-matched: an IPv4-mapped IPv6 address in any spelling (`::ffff:7f00:1`) checks as its IPv4 address.
 const INTERNAL = new BlockList();
