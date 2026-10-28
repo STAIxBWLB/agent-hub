@@ -115,7 +115,9 @@ import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
 import { reviewDiff } from "../adapters/claude-print.ts";
 import { Capture } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
-import { Briefs } from "../memory/brief.ts";
+import { CorpusIndex } from "./corpus.ts";
+import { corpusEvidence } from "./corpus-evidence.ts";
+import { Briefs, type BriefTask } from "../memory/brief.ts";
 import { Board, isClosedTaskState, taskProposalAt, taskHasStarted, CLASSES, type Task, type TaskClass } from "./board.ts";
 import { UsageRollup, USAGE_GROUPS, LIMITS_MAX, type UsageGroup } from "./usage-rollup.ts";
 import { Budget, readNativeQuota, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
@@ -134,7 +136,7 @@ import { drainCliAudits } from "../cli/identity-audit.ts";
 import { launcherPreview } from "../cli/preview.ts";
 import { AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig, type PiiVerdict } from "./inference.ts";
-import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
+import { taskEvidencePrivacy, type TaskEvidencePrivacy, ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
 import { NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { githubOriginRepository } from "./task-repository.ts";
@@ -1643,6 +1645,25 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const boundedSafe = (text: string) => !looksSecret(text) && screenMemory([{ title: null, text }]).length === 1
     && !mentionsPrivatePath(text, [], [...(config.pii?.paths ?? []), ...config.local.deny], opts.cwd);
+  let corpusRuntime: { key: string; index: CorpusIndex } | undefined;
+  const corpusPolicyVersion = () => JSON.stringify({ revision: configRevision, paths: config.corpus.paths, pii: config.pii?.paths ?? [], deny: config.local.deny, signals: activeRouting().signals });
+  const publicCorpus = (query: string, allowed: () => boolean) => {
+    if (!allowed() || !config.corpus.paths.length) return [];
+    const key = corpusPolicyVersion();
+    if (!corpusRuntime || corpusRuntime.key !== key) corpusRuntime = { key, index: new CorpusIndex({ cwd: opts.cwd, paths: [...config.corpus.paths], piiPaths: [...config.pii?.paths ?? []], deny: [...config.local.deny], piiPatterns: [...activeRouting().signals.pii_patterns] }) };
+    return corpusEvidence(query, corpusRuntime.index, {
+      allowed, version: corpusPolicyVersion,
+      safe: (text, paths) => boundedSafe(text) && !mentionsPrivatePath(text, paths.map(path => `path:${path}`), [...config.pii?.paths ?? [], ...config.local.deny], opts.cwd),
+    });
+  };
+  const corpusBriefAllowed = (task: BriefTask) => {
+    const latest = task.id === undefined ? undefined : board.get(task.id);
+    return !stopping && !!latest && latest.created === task.created && latest.updated === task.updated && latest.owner === task.owner
+      && (!task.history || latest.history.length === task.history.length) && !tasks.isPii(latest)
+      && !turns.get(latest.owner ?? "")?.private && !contextPii(latest.owner ?? "")
+      && boundedSafe(JSON.stringify({ title: task.title, refs: task.refs, plan: task.plan }));
+  };
+
   const publicCheck = (receipt: RunReceipt) => {
     const safeTail = boundedSafe(receipt.tail), safeError = !receipt.error || boundedSafe(receipt.error);
     return { run: receipt.run, task: receipt.task, status: receipt.status, sha: receipt.sha, tree: receipt.tree, lockfile: receipt.lockfile,
@@ -1818,11 +1839,15 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(config.memory.enabled ? { memory } : {}),
     candidates, candidateScreen: screenMemory, privateTurn: peer => !!turns.get(peer)?.private || contextPii(peer),
     memoryCheck: checkMemory,
-    ...(config.memory.enabled || memoryStore ? { briefs: new Briefs(config.memory.enabled ? memory : undefined, chain.at(-1)!, () => config.memory.brief_items,
+    briefs: new Briefs(config.memory.enabled ? memory : undefined, chain.at(-1)!, () => config.memory.brief_items,
       memoryStore ? taskMemoryItems : undefined,
       (peer, task, counts) => event({ type: "memory_brief", source: "amem", peer, task, ...counts }),
       items => { const stale = staleness(); return items.map(item => `${item.line}${stale(item.about ?? []) ? " (stale?)" : ""}`); },
-      memoryStore ? taskIntentBrief : undefined) } : {}),
+      memoryStore ? taskIntentBrief : undefined,
+      {
+        allowed: corpusBriefAllowed, policyVersion: corpusPolicyVersion,
+        read: task => publicCorpus([task.title, ...task.refs.paths ?? [], ...task.plan?.paths ?? [], ...task.plan?.symbols ?? []].join(" "), () => corpusBriefAllowed(task)).map(item => ({ id: item.id, kind: "note", line: `${item.id}: ${item.text.replace(/\s+/g, " ")}` })),
+      }),
     ...(memoryStore ? { planFails: (task: import("./board.ts").Task) => {
       checkMemory();
       const context = { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny };
@@ -7556,14 +7581,31 @@ export async function startDaemon(opts: DaemonOptions) {
           return void reply({ t: msg.t, ok: true, text });
         }
         catch (e) { return void reply({ t: msg.t, ok: false, error: (e as Error).message }); }
-      case "ask":
+      case "ask": {
         // Console only: the evidence may hold PII task text (on campus), and the answer is for the person at the terminal.
         if (c.role !== "console") return void reply({ t: "ask", ok: false, error: "ask is a console command" });
+        const client = sock.data, revision = configRevision, policy = corpusPolicyVersion();
+        const callerPrivate = () => !!client.peer && contextPii(client.peer);
+        const initialPrivate = callerPrivate();
+        const isPiiText = (text: string) => activeRouting().constraints.pii === "local_only" && detectSignals({ title: text, detail: "", refs: {} }, activeRouting(), opts.cwd).includes("pii");
+        let evidencePrivacy: readonly TaskEvidencePrivacy[] = [];
+        const askCurrent = () => !stopping && sock.data === client && sock.readyState === WebSocket.OPEN
+          && configRevision === revision && corpusPolicyVersion() === policy && callerPrivate() === initialPrivate
+          && evidencePrivacy.every(previous => {
+            const latest = board.get(previous.id);
+            if (!latest || latest.created !== previous.created) return false;
+            const privacy = taskEvidencePrivacy(latest, { isPii: task => tasks.isPii(task), isPiiText });
+            return privacy.pii === previous.pii && privacy.notePii === previous.notePii;
+          });
         ask(String(msg.question ?? ""), {
           board,
           isPii: (t) => tasks.isPii(t),
           onCampus,
-          isPiiText: (q) => activeRouting().constraints.pii === "local_only" && detectSignals({ title: q, detail: "", refs: {} }, activeRouting(), opts.cwd).includes("pii"),
+          current: askCurrent,
+          privateContext: callerPrivate,
+          bindTaskEvidence: rows => { evidencePrivacy = rows; },
+          corpus: keys => publicCorpus(keys.join(" "), askCurrent),
+          isPiiText,
           ...(config.memory.enabled ? { memory } : {}),
           // #258: entries that match the question, then the graph neighbourhood of what they are about.
           ...(memoryStore ? { native: (keys: string[]) => {
@@ -7579,6 +7621,7 @@ export async function startDaemon(opts: DaemonOptions) {
           ...(inference ? { inference } : {}),
         })
           .then(async (res) => {
+            if (!askCurrent()) return void reply({ t: "ask", ok: true, found: false, evidence: [], pii: true, note: "evidence context changed" });
             let saved: string | undefined;
             if (msg.remember) {
               if (res.pii) saved = "not saved: PII is involved";
@@ -7599,6 +7642,7 @@ export async function startDaemon(opts: DaemonOptions) {
           })
           .catch((e: Error) => reply({ t: "ask", ok: false, error: e.message }));
         return;
+      }
       case "budget":
         if (c.role !== "console") {
           if (msg.resume !== undefined || msg.set !== undefined) return void reply({ t: "budget", ok: false, error: "budget mutations are console commands" });

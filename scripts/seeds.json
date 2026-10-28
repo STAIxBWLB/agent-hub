@@ -3680,6 +3680,46 @@
       "replacement": "                    submit(SECOND_PROMPT); queued = true;",
       "testFile": "test/smoke-qwen.test.ts",
       "testName": "completed first turns cannot prove queued input"
+    },
+    {
+      "id": "corpus-whole-note-screen",
+      "file": "src/hub/corpus-evidence.ts",
+      "search": "policy.safe(`${read.text}\\n${currentMetadata}`, [read.path, record.path, record.id])",
+      "replacement": "policy.safe(`${read.text.slice(0, 20)}\\n${currentMetadata}`, [read.path, record.path, record.id])",
+      "testFile": "test/corpus-evidence.test.ts",
+      "testName": "the complete current note and raw metadata are screened before excerpts are returned"
+    },
+    {
+      "id": "ask-pii-campus-transport",
+      "file": "src/hub/inference.ts",
+      "search": "const res = await this.d.omni.chat(body, { signal, ...(onCampusOnly ? { onCampusOnly: true } : {}) });",
+      "replacement": "const res = await this.d.omni.chat(body, { signal });",
+      "testFile": "test/ask-corpus.test.ts",
+      "testName": "a PII task requires an on-campus call and pins the selected host model before gateway probing"
+    },
+    {
+      "id": "brief-corpus-private-fence",
+      "file": "src/memory/brief.ts",
+      "search": "try { return allowed() && this.corpus.policyVersion() === corpusRevision; }",
+      "replacement": "try { return this.corpus.policyVersion() === corpusRevision; }",
+      "testFile": "test/brief-corpus.test.ts",
+      "testName": "privacy or policy changes during a corpus await drop the brief without poisoning seen state"
+    },
+    {
+      "id": "ask-pii-model-pin",
+      "file": "src/hub/inference.ts",
+      "search": "model: pinnedModel ?? this.d.fixedModel(), messages, max_tokens: maxTokens",
+      "replacement": "model: this.d.fixedModel(), messages, max_tokens: maxTokens",
+      "testFile": "test/ask-corpus.test.ts",
+      "testName": "a PII task requires an on-campus call and pins the selected host model before gateway probing"
+    },
+    {
+      "id": "ask-gathered-privacy-not-global-board",
+      "file": "src/hub/daemon.ts",
+      "search": "        let evidencePrivacy: readonly TaskEvidencePrivacy[] = [];\n        const askCurrent = () => !stopping",
+      "replacement": "        let evidencePrivacy: readonly TaskEvidencePrivacy[] = [];\n        const initialBoardRevision = board.statusRevision();\n        const askCurrent = () => board.statusRevision() === initialBoardRevision && !stopping",
+      "testFile": "test/corpus-privacy-daemon.test.ts",
+      "testName": "an unrelated task write or public history update does not invalidate a slow ask"
     }
   ]
 }
