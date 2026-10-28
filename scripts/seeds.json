@@ -3808,6 +3808,14 @@
       "replacement": "this.heldReviews.delete(next.id); this.ciWatchers.cancel(next.id);\n      // The current head is unchanged; its watcher reads the live reviewer at completion.",
       "testFile": "test/task-queue-backpressure.test.ts",
       "testName": "a queue-held review moving to its new reviewer keeps the pending CI notification alive"
+    },
+    {
+      "id": "queue-pressure-legacy-stall-diagnostics",
+      "file": "src/hub/tasks.ts",
+      "search": "if (!admission.owner) {\n        // A diagnostic legacy pass is not evidence that an automatic proposal was attempted.",
+      "replacement": "if (false) {\n        // A diagnostic legacy pass is not evidence that an automatic proposal was attempted.",
+      "testFile": "test/task-cancel-core.test.ts",
+      "testName": "stall planner advice is a once-per-cause preface, never an ordinary queued turn"
     }
   ]
 }
