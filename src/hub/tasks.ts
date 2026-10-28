@@ -890,7 +890,9 @@ export class Tasks {
     const weights = this.weights(task.class, draft);
     const selection = assign(draft, this.states(), this.d.routing(), { ...weights, candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}) });
     const heldSelection = task.reviewer === USER && task.history[this.reviewRequestRevision(task) - 1]?.queueReviewHeld === true;
-    return selection.reviewSelection || weights.queueBackpressure || heldSelection ? selection : undefined;
+    const previous = task.reviewer && task.reviewer !== USER ? assign(draft, this.states(), this.d.routing(), { ...weights, candidates: [], namedReviewer: task.reviewer, ...(task.owner ? { notReviewer: task.owner } : {}) }) : undefined;
+    const queueRefused = previous?.refusals?.some(row => row.role === "reviewer" && row.peer === task.reviewer && isQueuePressureCode(row.code));
+    return selection.reviewSelection || queueRefused || heldSelection ? selection : undefined;
   }
 
   private reviewMetadata(assignment?: Assignment, task?: Task): ReviewerHistory {
@@ -930,7 +932,7 @@ export class Tasks {
     const now = Date.now();
     const quota = this.d.quota?.();
     const health = this.health(), clock = health.now ?? now;
-    return { ...health, planners: this.plannerHolders(), ...(task ? { reviewPool: this.reviewPoolOptions(task), ...(task.planner ? { keptPlanner: task.planner } : {}) } : {}), now: clock, demoted: this.demoted(cls, clock), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
+    return { ...health, ...(task && this.hasPersonReservation(task) && task.reserved ? { queueReservedHold: task.reserved } : {}), planners: this.plannerHolders(), ...(task ? { reviewPool: this.reviewPoolOptions(task), ...(task.planner ? { keptPlanner: task.planner } : {}) } : {}), now: clock, demoted: this.demoted(cls, clock), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
   }
 
   /**
@@ -2581,7 +2583,8 @@ export class Tasks {
     const waits = this.waitsFor(task);
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
     const plannerFull = plannedMove ? this.plannerFull(task) : [];
-    const a = assign(opts.plannerPull ? { ...task, state: "proposed" } : task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: plannerFull, ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class, task), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}), ...(opts.queueOverride ? { queueOverride: opts.queueOverride } : {}) });
+    const a = assign(opts.plannerPull ? { ...task, state: "proposed" } : task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: plannerFull, ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class, task), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}), // A self-claim hands over no envelope; reviewer admission remains automatic.
+      ...(opts.queueOverride || opts.claim ? { queueOverride: opts.queueOverride ?? "owner" as const } : {}) });
 
     if (waits.length) {
       if (opts.plannerPull) throw new PreEffectToolRefusal("planner pull waits for dependency approval");
@@ -2595,14 +2598,18 @@ export class Tasks {
         const why = a.refusals?.find(row => row.role === "owner" && row.peer === opts.namedOwner)?.reason ?? "not eligible";
         throw new (opts.refuseNamed === "pre" ? PreEffectToolRefusal : Error)(`cannot assign task #${task.id} to ${opts.namedOwner}: ${why}${/offline|not attached/.test(why) ? "; assign again once it is attached" : ""}`);
       }
-      if (!task.owner && task.state === "proposed") this.reportStall(task, this.ownerStallCause(task, a, opts.candidates === undefined && opts.namedOwner === undefined && !opts.claim));
       this.releaseNotice(opts.roster
         ? `task ${this.publicTitle(task)}: ${task.owner} is off roster and no peer can take it; it stays with ${task.owner} in ${task.state}; assign with: ahub task assign ${task.id} <peer>`
         : `task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: ahub task assign ${task.id} <peer>`);
       // Only a decline takes the task away from its owner; a failed console assign or escalation leaves it where it was.
       if (opts.clearOnFail && task.owner) {
         this.cohorts.leave(task.id);
-        return this.d.board.update(task.id, by, "unassigned", { owner: null });
+        task = this.d.board.update(task.id, by, "unassigned", { owner: null });
+      }
+      if (!task.owner && task.state === "proposed") {
+        const cause = this.ownerStallCause(task, a, !opts.claim);
+        // A named proposal remains bound to that target when pressure clears.
+        this.reportStall(task, cause.kind === "no-eligible-peer" && isQueuePressureCode(cause.code) && opts.namedOwner ? { ...cause, peer: opts.namedOwner } : cause);
       }
       return task;
     }
@@ -2947,9 +2954,8 @@ export class Tasks {
     this.queuePressureContinuation = undefined; this.queuePressurePass = undefined;
   }
   private ordinaryQueueProposal(stall: TaskStall, task: Task | undefined): task is Task {
-    return !!task && task.state === "proposed" && !task.owner && !task.reserved && !task.deps?.length
-      && (task.planningRevision ?? 0) === stall.replanRevision && !this.personUnassigned(task) && !this.plannerPullRecord(task)?.pull
-      && !task.history.some(entry => OWNERSHIP_EVENTS.has(entry.event) || ["accepted", "done", "done (checking)"].includes(entry.event));
+    return !!task && task.state === "proposed" && !task.owner && !task.draft
+      && !this.waitsFor(task).length && !this.personUnassigned(task) && !this.plannerPullRecord(task)?.pull;
   }
   private queueReviewBinding(task: Task): string {
     return createHash("sha256").update(JSON.stringify([this.reviewHead(task) ?? null, task.refs.repo ?? null, task.sdlc?.repo ?? null, task.sdlc?.pr ?? null])).digest("hex");
@@ -2968,17 +2974,23 @@ export class Tasks {
         if (!this.queuePressureAdmitted()) return;
         const task = this.d.board.get(stall.task);
         if (!this.ordinaryQueueProposal(stall, task)) { this.d.board.clearStall(stall.task); continue; }
-        const choice = assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
+        // A planning revision asks for fresh admission, never erases an automatic offer.
+        const namedOwner = stall.cause.peer;
+        const retry = namedOwner ? { candidates: [namedOwner], namedOwner } : {};
+        const choice = assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), waitsFor: this.waitsFor(task), ...this.weights(task.class, task), ...retry });
         if (choice.owner) {
           const current = () => { if (!this.queuePressureAdmitted()) throw new PreEffectToolRefusal("queue-pressure retry is no longer admitted"); };
-          try { await this.assignOwner(task, HUB, { current }); } catch (error) {
+          try { await this.assignOwner(task, HUB, { current, ...retry }); } catch (error) {
             if (!(error instanceof AssignmentUndeliveredError) && this.queuePressureAdmitted()) pass.retained = true;
           }
           if (!this.queuePressureAdmitted()) return;
         }
         const latest = this.d.board.get(task.id);
-        if (this.ordinaryQueueProposal(stall, latest)) pass.retained = true;
-        else this.d.board.clearStall(task.id);
+        if (this.ordinaryQueueProposal(stall, latest)) {
+          // Retain the queue origin even while another transient admission gate holds it.
+          this.reportStall(latest, stall.cause);
+          pass.retained = true;
+        } else this.d.board.clearStall(task.id);
       }
     }
     if (!pass.reviewDone && this.queuePressureAdmitted()) {
@@ -3032,7 +3044,7 @@ export class Tasks {
     // Persist the existing stall vocabulary; the assignment/explain keeps the precise instance/family refusal.
     const persisted = (code: NonNullable<Assignment["refusals"]>[number]["code"]): TaskStall["cause"]["code"] => code === "instance" || code === "family" ? "policy" : code;
     const pressure = automatic ? admission.refusals?.find(row => row.role === "owner" && isQueuePressureCode(row.code)) : undefined;
-    return refusal ? { kind: "reservation", peer: refusal.peer, code: persisted(refusal.code) } : { kind: "no-eligible-peer", code: pressure ? persisted(pressure.code) : "unavailable", refusals: admission.refusals?.filter(row => row.role === "owner").map(({ peer, code }) => ({ peer, code: persisted(code) })).sort((a, b) => a.peer.localeCompare(b.peer)) ?? [] };
+    return refusal && !(automatic && isQueuePressureCode(refusal.code)) ? { kind: "reservation", peer: refusal.peer, code: persisted(refusal.code) } : { kind: "no-eligible-peer", code: pressure ? persisted(pressure.code) : "unavailable", refusals: admission.refusals?.filter(row => row.role === "owner").map(({ peer, code }) => ({ peer, code: persisted(code) })).sort((a, b) => a.peer.localeCompare(b.peer)) ?? [] };
   }
   private reportStall(task: Task, cause: TaskStall["cause"], now = Date.now(), description?: string): void {
     const stall: TaskStall = { task: task.id, cause, signature: JSON.stringify(cause), replanRevision: task.planningRevision ?? 0, at: now };
@@ -3103,10 +3115,10 @@ export class Tasks {
         const origin = this.d.board.queuePressureStallPage(t.id - 1, 1).rows.find(row => row.task === t.id);
         if (origin && this.ordinaryQueueProposal(origin, t)) { this.scheduleQueuePressureRecheck(); continue; }
       }
-      const admission = planned ? this.plannerAssignment(t, true) : assign(t, this.states(), this.d.routing(), { exclude: this.excluded(t), ...this.health() });
+      const admission = planned ? this.plannerAssignment(t, true) : assign(t, this.states(), this.d.routing(), { exclude: this.excluded(t), ...this.weights(t.class, t) });
       if (!admission.owner) {
         // A diagnostic legacy pass is not evidence that an automatic proposal was attempted.
-        this.reportStall(t, this.ownerStallCause(t, admission, false));
+        this.reportStall(t, this.ownerStallCause(t, admission, this.hasPersonReservation(t)));
         continue;
       }
       this.d.board.clearStall(t.id);

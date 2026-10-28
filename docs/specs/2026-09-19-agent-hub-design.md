@@ -5641,7 +5641,7 @@ Slice 525-3 is implemented, as the "Purity" bullet of the #525 amendment specifi
 - **Planner walk.** `plannerWalk` (`src/hub/routing.ts`) is a pure function of the sorted settled holders, the task id, an optional named planner, an optional kept planner and a per-holder `blocked` reason. A PII task has no planner (`planner: none (pii: planning stays with the person)`). A named planner is exact: a name that is not a holder is refused in the trace and never replaced by rotation, and a named holder that is paused or offline is still the choice, with the state shown. Otherwise a recorded planner is kept while it is still a holder. Otherwise rotation starts at `task.id mod n` over the holders sorted by id and walks forward past unavailable holders; the denominator is every holder, so availability never renumbers it (the #519 rule); when all are unavailable the seed holder is taken, `rotation (none available)`.
 - **Inputs and outputs.** `assign()` takes `planners`, `namedPlanner` and `keptPlanner` and returns `Assignment.planner` and `plannerReason` (`rotation`, `named`, `kept`, `none`). Without `planners` it walks no planner, so a caller that does not pass them is unchanged. A holder is unavailable when the adapter role ceiling excludes planning, it is off roster, not attached, offline, paused under `budget_paused = skip_peer`, or failing: the same state inputs the owner and reviewer walks read. The walk is independent of both: planner and owner, or planner and reviewer, may be the same peer.
 - **Explain parity.** The walk's lines (`  planner candidate X: ...`, then `planner: X (reason)`) are part of `assign()`'s trace, after the owner and before the reviewer. `Tasks.weights()` supplies `planners` (the rostered holders of the settled role map, sorted) to every `assign()` path, so `ahub route explain` prints exactly what assignment ran.
-- **I-2.** A peer with an `accepted` or `done` history entry on the task never reviews it (`implementers`), whoever owns it now, a named reviewer and the declared reviewer pool included: refusal code `policy`, reason `implemented this task`. It is the last check in `blocked()`, so it only ever removes a candidate that was otherwise eligible: a former implementer that is offline, not attached, paused, failing or off roster is refused for that real reason and leaves the outcome as it was before I-2 (a task with no other reviewer still approves directly). When I-2 removes the last eligible candidate, the reviewer is the person and `reviewBlocked` is set (`every eligible reviewer implemented this task: the person reviews`); there is no fallback to an implementer. The person's own entries are not an implementation. A review-class and a PII task are unchanged.
+- **I-2.** A peer with an `accepted` or `done` history entry on the task never reviews it (`implementers`), whoever owns it now, a named reviewer and the declared reviewer pool included: refusal code `policy`, reason `implemented this task`. It is the last capability/independence check in `blocked()`, before queue admission, so it only ever removes a candidate that was otherwise eligible: a former implementer that is offline, not attached, paused, failing or off roster is refused for that real reason and leaves the outcome as it was before I-2 (a task with no other reviewer still approves directly). When I-2 removes the last eligible candidate, the reviewer is the person and `reviewBlocked` is set (`every eligible reviewer implemented this task: the person reviews`); there is no fallback to an implementer. The person's own entries are not an implementation. A review-class and a PII task are unchanged.
 - **Not in this slice.** Nothing records the planner: no board column, no history entry, no notice, no authority check. `Tasks` passes `planners` and reads nothing back; 525-2 owns recording and the per-task authority. A task proposed today behaves exactly as before.
 
 ## Amendment: deliverable records bound to content hashes (#509a)
@@ -5859,6 +5859,8 @@ pressure, and only for that nominated owner or reviewer role. An explicit reserv
 pull may bypass the owner's queue guard; an ordinary planner pull, an unreserved
 pull choosing its owner automatically, or HUB auto-pull on a planner's behalf may
 not. Merely having `namedOwner`, `namedReviewer` or a reservation is not authority.
+A self-claim delivers no owner offer and skips owner queue admission only. A
+person reservation holds its target under pressure instead of rerouting it.
 Override authority and all other admission conditions are rechecked after awaits.
 An owner nomination does not waive an automatically chosen reviewer's guard.
 Future automatic offers reevaluate current queue conditions; no lasting override
@@ -5873,7 +5875,8 @@ arrival provenance remains unknown across resaves/restarts until those entries
 leave the queue. Advisory metadata may be omitted at the existing snapshot byte
 ceiling rather than refusing an otherwise valid delivery.
 
-The journal keeps small per-peer summaries committed with the bus snapshot. Reads
+When tracking is enabled, the journal keeps small per-peer summaries committed
+with the bus snapshot; disabled writes do not rewrite the summary rows. Reads
 use summary/count/oldest/revision metadata only, never delivery body JSON or a sort
 of full delivery history. A revision mismatch, including an older daemon writing
 the snapshot without updating summaries, produces unknown age. Summaries are also
@@ -5883,8 +5886,11 @@ ordering, steering, withdrawals, settlement and recovery traffic are not changed
 Queue-origin holds are reconsidered after queue mutations commit, on relevant peer
 state/policy changes and at bootstrap. Rechecks are coalesced and bounded; they do
 not poll delivery history or reassign unrelated legacy/person-unassigned work.
-Ordinary ownerless proposals are identified by their host-written root queue stall
-code. Automatic review holds carry a host-only `queueReviewHeld` history marker,
+Ownerless proposals, including automatic decline/budget reroutes, are identified
+by their host-written root queue stall code. A planning revision triggers fresh
+admission rather than discarding that origin. A held named proposal keeps its
+intended target. Continuing reviewers stay bound unless that reviewer is actually
+queue-refused (or the existing reviewer-pool rules require selection). Automatic review holds carry a host-only `queueReviewHeld` history marker,
 bound to the current review role boundary and an opaque SHA-256 of the selected
 head/repository/PR identity; manual reviewer or artifact changes invalidate it.
 Candidate pages use board metadata, with fresh role/head/privacy/admission checks

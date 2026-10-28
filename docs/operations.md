@@ -4734,6 +4734,11 @@ role, not other automatic choices, and does not waive privacy/independence/runti
 admission. Automatic reserved planner pulls are still guarded.
 
 Queue-origin holds are retried after committed queue/state/policy changes, without
-routing work a person explicitly unassigned. Setting both values to zero returns
+routing work a person explicitly unassigned. Automatic decline/budget reroutes
+retain their retry intent across planning updates; a named proposal keeps its
+target. A person reservation waits under pressure rather than moving to another
+peer. Self-claims enqueue no owner request and skip only that queue guard.
+Continuing reviewers remain bound unless their own queue refuses the new offer.
+Setting both values to zero returns
 to ordinary automatic assignment. This PR changes no live repository setting or
 routing template; real-use adoption metrics remain separate from fixture checks.

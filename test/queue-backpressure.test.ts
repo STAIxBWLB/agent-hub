@@ -106,3 +106,50 @@ test("planner holder selection stays independent of owner and reviewer queue bac
   const result = assign(task, states, routing, { now, planners: ["claude"], queues: { ...empty(), claude: { queued: 3 } }, queueBackpressure: count });
   expect(result).toMatchObject({ owner: "codex", reviewer: "user", reviewBlocked: true, planner: "claude", plannerReason: "rotation" });
 });
+
+test("I2 independence precedes reviewer queue pressure and never becomes a queue-held review", () => {
+  const result = assign({ ...task, history: [{ by: "claude", event: "accepted", at: now }] }, states, routing, {
+    now, queues: { ...empty(), claude: { queued: 3, oldestQueuedAt: now } }, queueBackpressure: count,
+  });
+  expect(result).toMatchObject({ owner: "codex", reviewer: "user", reviewBlocked: true });
+  expect(result.refusals).toContainEqual({ peer: "claude", role: "reviewer", code: "policy", reason: "implemented this task" });
+  expect(result.refusals?.some(row => row.role === "reviewer" && row.code.startsWith("queue-"))).toBe(false);
+  expect(result.trace).toContain("  every eligible reviewer implemented this task: the person reviews");
+  expect(result.trace.some(line => line.includes("reviewer queue backpressure"))).toBe(false);
+  const offline = assign({ ...task, history: [{ by: "claude", event: "accepted", at: now }] }, { ...states, claude: "offline" }, routing, {
+    now, queues: { ...empty(), claude: { queued: 3, oldestQueuedAt: now } }, queueBackpressure: count,
+  });
+  expect(offline.refusals).toContainEqual({ peer: "claude", role: "reviewer", code: "offline", reason: "offline" });
+  expect(offline.reviewer).toBeUndefined();
+});
+
+test("a person-reserved queue-blocked owner is held until its queue admits without another idle peer stealing it", () => {
+  const reserved = { ...task, reserved: "codex" };
+  const options = { now, queueBackpressure: count, queueReservedHold: "codex" };
+  const held = assign(reserved, states, routing, { ...options, queues: { ...empty(), codex: { queued: 3, oldestQueuedAt: now } } });
+  expect(held.owner).toBeUndefined();
+  expect(held.unreserved).toBe("queue backpressure: queued 3 exceeds max 2");
+  expect(held.trace).toContain("reserved owner codex: held, queue backpressure: queued 3 exceeds max 2; reservation retained");
+  expect(held.trace.some(line => line.startsWith("  owner candidate kimi:"))).toBe(false);
+  for (const queued of [2, 1, 0]) {
+    const admitted = assign(reserved, states, routing, { ...options, queues: { ...empty(), codex: { queued, oldestQueuedAt: queued ? now : null } } });
+    expect(admitted.owner).toBe("codex"); expect(admitted.unreserved).toBeUndefined();
+  }
+  const overridden = assign(reserved, states, routing, { ...options, queues: { ...empty(), codex: { queued: 3, oldestQueuedAt: now } }, queueOverride: "owner" });
+  expect(overridden.owner).toBe("codex");
+  // Automatic reservations retain the prior fallback semantics; the host alone supplies the person's pin.
+  expect(assign(reserved, states, routing, { now, queueBackpressure: count, queues: { ...empty(), codex: { queued: 3, oldestQueuedAt: now } } }).owner).toBe("kimi");
+  const disabled = assign(reserved, states, routing, { now });
+  expect(JSON.stringify(assign(reserved, states, routing, { now, queueReservedHold: "codex", queues: { codex: { queued: 999 } } }))).toBe(JSON.stringify(disabled));
+});
+
+test("a person's reservation queue hold leaves non-queue refusals and explicit nominations unchanged", () => {
+  const reserved = { ...task, reserved: "codex" }, queues = { ...empty(), codex: { queued: 3, oldestQueuedAt: now } };
+  const options = { now, queues, queueBackpressure: count, queueReservedHold: "codex" };
+  const excluded = assign(reserved, states, routing, { ...options, exclude: ["codex"] });
+  expect(excluded).toMatchObject({ owner: "kimi", unreserved: "excluded (declined or replaced)" });
+  expect(assign(reserved, states, routing, { ...options, candidates: ["kimi"], namedOwner: "kimi" }).owner).toBe("kimi");
+  const ageHeld = assign(reserved, states, routing, { ...options, queueBackpressure: age, queues: { ...empty(), codex: { queued: 1 } } });
+  expect(ageHeld.owner).toBeUndefined();
+  expect(ageHeld.refusals).toContainEqual(expect.objectContaining({ peer: "codex", role: "owner", code: "queue-age-unknown" }));
+});

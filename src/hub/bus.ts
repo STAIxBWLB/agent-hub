@@ -131,6 +131,7 @@ export class Bus {
   private readonly queues = new Map<PeerId, Envelope[]>();
   private readonly queueTimes = new Map<PeerId, Map<string, number | null>>();
   private queueTimeEntries = 0;
+  private queuePressureWasTracked = false;
   private readonly prefaces = new Map<PeerId, Envelope>();
   private readonly paused = new Set<PeerId>();
   private readonly manualPaused = new Set<PeerId>();
@@ -181,6 +182,7 @@ export class Bus {
     this.opts = { ...DEFAULT_BUS, ...opts };
     this.onDeliver = opts.onDeliver;
     this.journal = opts.journal;
+    this.trackingQueuePressure();
     if (this.journal) {
       const state = this.journal.snapshot();
       const bus = state.bus as BusSnapshot;
@@ -282,10 +284,11 @@ export class Bus {
 
   private persist(): void {
     if (!this.journal) return;
+    const tracking = this.trackingQueuePressure();
     try {
       this.journal.transaction(() => {
         for (const outcome of this.pendingOutcomes) this.journal!.createDelivery(outcome);
-        this.journal!.persistBus(this.snapshotWithoutJournal(), [...this.manualPaused]);
+        this.journal!.persistBus(this.snapshotWithoutJournal(), [...this.manualPaused], tracking);
       });
       this.pendingOutcomes.length = 0;
       this.storageError = undefined;
@@ -296,7 +299,7 @@ export class Bus {
   private durableHandoff(peer: PeerId, deliveryId: string, originals: Envelope[], out: Envelope[], observe = true): void {
     if (!this.journal) return;
     const delivery = { id: deliveryId, peer, state: "dispatching" as const, createdAt: Date.now(), originals, out };
-    this.journal.checkpointDelivery(this.snapshotWithoutJournal(), delivery);
+    this.journal.checkpointDelivery(this.snapshotWithoutJournal(), delivery, this.trackingQueuePressure());
     if (observe) this.memoryDelivery(peer, deliveryId, out, "rendered", originals);
   }
 
@@ -427,7 +430,7 @@ export class Bus {
     if (_operationId && this.journal) {
       const current = this.journal.snapshot();
       if (current.revision === 0) {
-        this.journal.importSnapshot(snapshot.journal ?? { schemaVersion: 1, revision: 1, instanceId: this.journal.instanceId, bus: snapshot, deliveries: [], manualPaused: snapshot.manualPaused ?? [] }, _operationId);
+        this.journal.importSnapshot(snapshot.journal ?? { schemaVersion: 1, revision: 1, instanceId: this.journal.instanceId, bus: snapshot, deliveries: [], manualPaused: snapshot.manualPaused ?? [] }, _operationId, this.trackingQueuePressure());
       }
       const committedQueues = snapshot.queues;
       snapshot = this.journal.snapshot().bus;
@@ -515,6 +518,7 @@ export class Bus {
 
   resolveDelivery(id: string, revision: number, action: "completed" | "retry" | "discard", reason: string, actor: string = "user"): void {
     if (!this.journal || this.storageError) throw new Error("delivery journal unavailable");
+    this.trackingQueuePressure();
     const record = this.queueShow(id);
     if (!record) throw new Error("unknown delivery");
     const previous = this.journal.resolution(id);
@@ -590,6 +594,7 @@ export class Bus {
     if (this.closed) return;
     const owner = this.activeDeliveries.get(receipt.id);
     if (!owner || owner !== peer || !this.journal) return;
+    this.trackingQueuePressure();
     const id = receipt.id;
     const before = this.journal.get(id);
     const state: JournalDeliveryState = receipt.state === "accepted" ? "accepted" : receipt.state === "completed" ? "completed" : receipt.state === "failed_safe" ? "failed" : "needs_review";
@@ -619,6 +624,7 @@ export class Bus {
 
   completeReply(peer: PeerId, envelopeId: string): void {
     if (!this.journal) return;
+    this.trackingQueuePressure();
     for (const [id, owner] of this.activeDeliveries) {
       if (owner !== peer) continue;
       const row = this.journal.get(id);
@@ -728,6 +734,7 @@ export class Bus {
    */
   discardDeferredHub(reason: string): string[] {
     if (this.peers.size || this.flushingHub || this.replayingHub || !this.journal || this.storageError) throw new Error("deferred reset requires a stopped, readable delivery journal");
+    this.trackingQueuePressure();
     const pending = [...this.deferredHub];
     const settled: string[] = [];
     try {
@@ -939,16 +946,11 @@ export class Bus {
 
   /** New automatic offers use only bounded pending metadata, never queue/history bodies. */
   assignmentQueue(peer: PeerId): QueuePressure {
-    const queued = this.queued(peer);
+    const queued = this.queued(peer), tracking = this.trackingQueuePressure();
     if (this.storageError) return { queued };
     if (queued === 0) return { queued: 0, oldestQueuedAt: null };
-    if (this.journal) {
-      try {
-        const saved = this.journal.pendingQueueMetadata(peer);
-        return saved?.queued === queued ? saved : { queued };
-      } catch { return { queued }; }
-    }
-    if (!this.trackingQueuePressure()) return { queued };
+    if (!tracking) return { queued };
+    // A durable summary cannot revive provenance that this host discarded while tracking was off.
     const times = this.queueTimes.get(peer);
     let oldest: number | undefined;
     for (const env of this.queues.get(peer) ?? []) {
@@ -956,12 +958,24 @@ export class Bus {
       if (typeof at !== "number" || !Number.isSafeInteger(at) || at <= 0) return { queued };
       oldest = oldest === undefined ? at : Math.min(oldest, at);
     }
+    if (this.journal) {
+      try {
+        const saved = this.journal.pendingQueueMetadata(peer);
+        return saved?.queued === queued ? saved : { queued };
+      } catch { return { queued }; }
+    }
     return oldest === undefined ? { queued } : { queued, oldestQueuedAt: oldest };
   }
 
   private trackingQueuePressure(): boolean {
-    try { return this.opts.trackQueuePressure?.() === true; } catch { return false; }
+    let tracking = false;
+    try { tracking = this.opts.trackQueuePressure?.() === true; } catch { /* unknown policy is not enabled */ }
+    if (!tracking && this.queuePressureWasTracked) { this.queueTimes.clear(); this.queueTimeEntries = 0; }
+    this.queuePressureWasTracked = tracking;
+    this.journal?.setQueueMetadataTracking(tracking);
+    return tracking;
   }
+
   private recordQueueTime(peer: PeerId, id: string, at: number | null): void {
     if (!this.trackingQueuePressure()) return;
     let times = this.queueTimes.get(peer);

@@ -17,6 +17,7 @@ class QueuePeer extends BasePeer {
   constructor(id: string, readonly pullOnly = false) { super(id); }
   delivered: Envelope[] = [];
   async start() { this.setState("idle"); }
+  busy() { this.setState("busy"); }
   async stop() { this.setState("offline"); }
   async deliver(envs: Envelope[]) { this.delivered.push(...envs); }
 }
@@ -423,4 +424,68 @@ test("diagnostic-only legacy queue stalls do not become automatic proposal retry
   expect(f.board.queuePressureStallPage().rows).toEqual([]);
   f.bus.pull("codex"); await settled(f.tasks); await f.tasks.releaseReady();
   expect(f.board.get(legacy.id)?.owner).toBeNull();
+});
+
+test("a declined automatic offer retains its queue origin across replanning and resumes after drain", async () => {
+  const f = await fixture({ pullOnly: true, hold: false }); f.wire();
+  const row = await f.tasks.propose(USER, { title: "decline under pressure", class: "implement" });
+  expect(row.owner).toBe("codex");
+  f.control.policy = { max_queued: 1, max_oldest_s: 0 }; f.enqueue("kimi", 2);
+  const back = await f.tasks.decline("codex", row.id, "cannot implement");
+  expect(back.owner).toBeNull(); await settled(f.tasks);
+  expect(f.board.queuePressureStallPage().rows.map(row => row.task)).toContain(back.id);
+  f.board.update(back.id, HUB, "planned", { planningRevision: 2 });
+  await f.tasks.releaseReady(); await settled(f.tasks);
+  expect(f.board.queuePressureStallPage().rows.find(row => row.task === back.id)?.replanRevision).toBe(2);
+  f.bus.pull("kimi"); await owned(f, back.id, "kimi");
+  expect(f.board.get(back.id)?.history.filter(row => row.event === "assigned" || row.event === "reassigned")).toHaveLength(2);
+});
+
+test("a budget-cleared automatic offer resumes after its replacement queue drains", async () => {
+  const f = await fixture({ pullOnly: true, hold: false }); f.wire();
+  const row = await f.tasks.propose(USER, { title: "budget reroute", class: "implement" });
+  f.tasks.accept("codex", row.id); f.bus.pause("codex");
+  f.control.policy = { max_queued: 1, max_oldest_s: 0 }; f.enqueue("kimi", 2);
+  await f.tasks.reassignForPause("codex", undefined); await settled(f.tasks);
+  expect(f.board.get(row.id)?.owner).toBeNull();
+  expect(f.board.queuePressureStallPage().rows.map(row => row.task)).toContain(row.id);
+  f.bus.pull("kimi"); await owned(f, row.id, "kimi");
+});
+
+test("self claims bypass only owner queue admission and named proposals resume only to their target", async () => {
+  const f = await fixture({ pullOnly: true, hold: false }); f.wire();
+  f.control.policy = { max_queued: 1, max_oldest_s: 0 }; f.enqueue("codex", 2); f.enqueue("claude", 2);
+  const before = f.bus.queueIds("codex");
+  const claim = await f.tasks.propose("codex", { title: "own work", class: "implement", owner: "codex" });
+  expect(claim.owner).toBe("codex"); expect(claim.reviewer).toBe(USER);
+  expect(f.bus.queueIds("codex")).toEqual(before);
+  const named = await f.tasks.propose(HUB, { title: "named offer", class: "implement", owner: "codex" });
+  expect(named.owner).toBeNull(); await settled(f.tasks);
+  expect(f.board.queuePressureStallPage().rows.find(row => row.task === named.id)?.cause.peer).toBe("codex");
+  expect(f.board.get(named.id)?.owner).toBeNull(); // An idle alternative never replaces the named target.
+  f.bus.pull("codex"); await owned(f, named.id, "codex");
+});
+
+test("enabled pressure preserves a continuing reviewer below thresholds despite a busier state", async () => {
+  const f = await fixture({ roles: { kimi: ["reviewer"] } });
+  const row = await f.tasks.propose(USER, { title: "continuing reviewer", class: "implement" });
+  expect(row.reviewer).toBe("claude"); f.tasks.accept("codex", row.id);
+  const first = await f.tasks.done("codex", row.id, "first pass");
+  await f.tasks.review("claude", first.id, "changes_requested", "one correction");
+  f.peers.claude!.busy(); f.control.policy = { max_queued: 100, max_oldest_s: 0 };
+  const second = await f.tasks.done("codex", row.id, "delta complete");
+  expect(second.reviewer).toBe("claude");
+});
+
+test("a person's ready reservation stays held rather than rerouting under queue pressure", async () => {
+  const f = await fixture({ pullOnly: true, hold: false }); f.wire();
+  const dep = f.board.propose(USER, { title: "dependency", class: "implement" });
+  const row = await f.tasks.propose(USER, { title: "waiting reservation", class: "implement", deps: [dep.id] });
+  await f.tasks.assignTo(row.id, "codex", USER);
+  f.control.policy = { max_queued: 1, max_oldest_s: 0 }; f.enqueue("codex", 2);
+  f.board.update(dep.id, USER, "approved", { state: "approved" });
+  await f.tasks.releaseReady(); await settled(f.tasks);
+  expect(f.board.get(row.id)).toMatchObject({ owner: null, reserved: "codex" });
+  expect(f.tasks.explain(row.id).join("\n")).toContain("reservation retained");
+  f.bus.pull("codex"); await owned(f, row.id, "codex");
 });

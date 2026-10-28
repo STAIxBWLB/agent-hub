@@ -16,13 +16,14 @@ class Peer implements PeerAdapter {
   onMessage?: (body: string) => unknown;
   onFailed?: (envs: Envelope[]) => void;
   batches: Envelope[][] = [];
+  deliveryIds: string[] = [];
   admitted?: () => void;
   set(state: PeerState): void { this.state = state; this.onState?.(state); }
   async start(): Promise<void> { this.set("idle"); }
   async stop(): Promise<void> { this.set("offline"); }
   async deliver(envs: Envelope[], id?: string): Promise<void> {
     this.batches.push(envs); this.set("busy");
-    if (id) this.onDelivery?.({ id, state: "accepted" });
+    if (id) { this.deliveryIds.push(id); this.onDelivery?.({ id, state: "accepted" }); }
     this.admitted?.();
   }
 }
@@ -36,6 +37,19 @@ function fixture(tracked: () => boolean = () => true) {
   cleanup.push(() => bus.closeJournal());
   const peer = new Peer(); bus.add(peer);
   return { dir, file, open, journal, bus, peer };
+}
+function querySpy(journal: DeliveryJournal): { sql: string[]; restore: () => void } {
+  const sql: string[] = [], db = (journal as any).db;
+  (journal as any).db = new Proxy(db, { get(target, key) {
+    const value = Reflect.get(target, key);
+    if (["query", "run", "exec"].includes(String(key))) return (query: string, ...args: unknown[]) => { sql.push(query); return value.call(target, query, ...args); };
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  return { sql, restore: () => { (journal as any).db = db; } };
+}
+function expectNoSummaryMutation(sql: readonly string[]): void {
+  expect(sql.filter(query => /^(?:DELETE FROM|INSERT INTO) delivery_queue_meta(?:\b|_state\b)/.test(query))).toEqual([]);
+  expect(sql.filter(query => /^UPDATE delivery_queue_meta_state SET revision=\?/.test(query))).toEqual([]);
 }
 const env = (text: string, priority: "status" | "important" = "status") => newEnvelope("user", text, { to: ["worker"], priority });
 function bounded<T>(promise: Promise<T>): Promise<T> {
@@ -161,7 +175,7 @@ test("arrival metadata cannot push an otherwise valid queued snapshot beyond its
   items[20]!.body += "x".repeat(remainder);
   expect(JSON.stringify(snapshot).length).toBe(maximum - 32);
   snapshot.queuedAt = { worker: Object.fromEntries(items.map(item => [item.id, Date.now()])) };
-  expect(() => f.journal.persistBus(snapshot, [])).not.toThrow();
+  expect(() => f.journal.persistBus(snapshot, [], true)).not.toThrow();
   expect(f.journal.pendingQueueMetadata("worker")).toEqual({ queued: 21 });
   const saved = f.journal.snapshot().bus;
   expect(saved.queuedAt).toBeUndefined();
@@ -188,4 +202,82 @@ test("materializing a recovery-deferred notice never fabricates a fresh queued a
   f.bus.setRecoveryHold(false);
   expect(f.bus.assignmentQueue("worker")).toEqual({ queued: 1 });
   expect(f.bus.snapshot(false).queues.worker?.map(item => item.id)).toEqual([notice.id]);
+});
+
+
+test("default-off publishes and checkpoints never rewrite summary rows or carry summary revisions", () => {
+  const f = fixture(() => false), spy = querySpy(f.journal);
+  try {
+    for (let n = 0; n < 3; n++) {
+      f.bus.publish(env(`off ${n}`));
+      f.bus.setManualPaused([]);
+      expect(f.bus.pull("worker")).toHaveLength(1);
+    }
+    f.journal.persistBusAndDeliveries(f.bus.snapshot(false), [], []);
+    expectNoSummaryMutation(spy.sql);
+    expect(spy.sql.filter(query => /^UPDATE delivery_queue_meta_state SET revision=-1/.test(query)).length).toBeLessThanOrEqual(1);
+    expect(f.journal.pendingQueueMetadata("worker")).toBeUndefined();
+    expect(f.bus.snapshot(false).queuedAt).toBeUndefined();
+  } finally { spy.restore(); }
+});
+
+test("receipts after a live disable do not carry summary revisions before any disabled snapshot write", async () => {
+  let tracking = true;
+  const f = fixture(() => tracking); f.bus.publish(env("first tracked turn"));
+  const first = new Promise<void>(resolve => { f.peer.admitted = resolve; }); f.peer.set("idle"); await bounded(first);
+  tracking = false;
+  const spy = querySpy(f.journal);
+  try {
+    f.bus.deliveryReceipt("worker", { id: f.peer.deliveryIds.at(-1)!, state: "completed" });
+    expect(f.journal.pendingQueueMetadata("worker")).toBeUndefined();
+    for (let n = 0; n < 2; n++) {
+      f.bus.publish(env(`off receipt ${n}`));
+      const next = new Promise<void>(resolve => { f.peer.admitted = resolve; }); f.peer.set("idle"); await bounded(next);
+      f.bus.deliveryReceipt("worker", { id: f.peer.deliveryIds.at(-1)!, state: "completed" });
+    }
+    expectNoSummaryMutation(spy.sql);
+    expect(spy.sql.filter(query => /^UPDATE delivery_queue_meta_state SET revision=-1/.test(query)).length).toBeLessThanOrEqual(1);
+  } finally { spy.restore(); }
+});
+
+test("enable-disable-enable never revives discarded queue age, including across restart", () => {
+  let tracking = true;
+  const f = fixture(() => tracking), old = env("old tracked"); f.bus.publish(old);
+  expect(f.bus.assignmentQueue("worker").oldestQueuedAt).toBeGreaterThan(0);
+  tracking = false;
+  const spy = querySpy(f.journal), disabled = env("arrived while disabled");
+  try {
+    f.bus.publish(disabled);
+    for (let n = 0; n < 3; n++) f.bus.setManualPaused([]);
+    expectNoSummaryMutation(spy.sql);
+    expect(spy.sql.filter(query => /^UPDATE delivery_queue_meta_state SET revision=-1/.test(query))).toHaveLength(1);
+    expect(f.journal.snapshot().bus.queuedAt).toBeUndefined();
+  } finally { spy.restore(); }
+  tracking = true;
+  expect(f.bus.assignmentQueue("worker")).toEqual({ queued: 2 });
+  const fresh = env("tracked again"); f.bus.publish(fresh);
+  const at = f.bus.snapshot(false).queuedAt?.worker?.[fresh.id];
+  expect(at).toBeGreaterThan(0);
+  expect(f.journal.pendingQueueMetadata("worker")).toEqual({ queued: 3 });
+  f.bus.closeJournal();
+  const journal = f.open("second"), bus = new Bus({ journal, batchMs: 0, trackQueuePressure: () => true }); cleanup.push(() => bus.closeJournal());
+  expect(bus.assignmentQueue("worker")).toEqual({ queued: 3 });
+  bus.withdraw(old.id); bus.withdraw(disabled.id);
+  expect(bus.assignmentQueue("worker")).toEqual({ queued: 1, oldestQueuedAt: at });
+});
+
+test("the explicit tracking flag covers empty queues and disabled imports ignore supplied arrival metadata", () => {
+  const enabled = fixture(() => true), empty = enabled.bus.snapshot(false);
+  expect(empty.queuedAt).toBeUndefined();
+  enabled.journal.persistBus(empty, [], true);
+  expect(enabled.journal.pendingQueueMetadata("worker")).toEqual({ queued: 0, oldestQueuedAt: null });
+  const disabled = fixture(() => false), waiting = env("imported while disabled");
+  const snapshot: BusSnapshot = { schemaVersion: 1, queues: { worker: [waiting] }, prefaces: {}, seen: [], attempts: {}, withdrawn: [], queuedAt: { worker: { [waiting.id]: Date.now() } } };
+  const spy = querySpy(disabled.journal);
+  try {
+    expect(disabled.journal.importSnapshot({ schemaVersion: 1, revision: 7, instanceId: "source", bus: snapshot, deliveries: [], manualPaused: [] }, "import-off")).toBe(true);
+    expectNoSummaryMutation(spy.sql);
+    expect(disabled.journal.pendingQueueMetadata("worker")).toBeUndefined();
+    expect(disabled.journal.snapshot().bus.queuedAt).toBeUndefined();
+  } finally { spy.restore(); }
 });
