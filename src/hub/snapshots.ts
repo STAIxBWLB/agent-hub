@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -543,6 +543,8 @@ export interface TurnRecord {
   start_tree: string | null;
   end_tree: string | null;
   changed: string[];
+  /** Dirty submodules at the turn's end, whose contents nothing here observes (#798 D2). Absent: not recorded (an older turn, or git could not answer), which is unknown, never none. */
+  unobserved?: string[];
   native: string | null;
 }
 
@@ -606,6 +608,43 @@ export function dirtySubmodules(repo: Repo, budget?: SnapshotBudget): string[] |
   return result.status === 0 ? parseDirtySubmodules(result.stdout) : undefined;
 }
 
+/**
+ * One git-config value as git reads it: an unquoted `#` or `;` starts a comment, a quoted run keeps them, quotes are dropped, and `\"` and `\\` are unescaped inside a quoted
+ * run. ponytail: other escapes (`\t`, octal) are kept as the character after the backslash; use `git config -f .gitmodules --get-regexp path` if a name needs them.
+ */
+function configValue(raw: string): string {
+  let out = "", keep = 0, quoted = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]!;
+    if (quoted && c === "\\" && i + 1 < raw.length) { out += raw[++i]; keep = out.length; continue; }
+    if (c === '"') { quoted = !quoted; keep = out.length; continue; }
+    if (!quoted && (c === "#" || c === ";")) break;
+    if (!quoted && out.length === 0 && /\s/.test(c)) continue; // leading blanks
+    out += c;
+    if (quoted || !/\s/.test(c)) keep = out.length;       // trailing blanks outside quotes are not part of the value
+  }
+  return out.slice(0, keep);
+}
+
+/**
+ * The submodule paths a project declares, relative to the project (#798 D1), read from `.gitmodules` with no git call. Empty without the file, and for a shadow
+ * repository. A path outside the project's own directory in a larger repository is not the project's. A path git quotes (`"a\tb"`) is taken as written, never
+ * unescaped beyond `\"` and `\\`: see `configValue`.
+ */
+export function submodulePaths(repo: Repo): string[] {
+  if (repo.shadow) return [];
+  let text: string;
+  try { text = readFileSync(join(repo.top, ".gitmodules"), "utf8"); } catch { return []; }
+  const found = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\s*path\s*=(.*)$/.exec(line);
+    let path = match ? configValue(match[1]!) : "";
+    path = path.replace(/\/+$/, "");
+    if (path && !path.startsWith("/") && !path.split("/").includes("..") && path.startsWith(repo.prefix)) found.add(path.slice(repo.prefix.length));
+  }
+  return [...found].sort();
+}
+
 /** Turn records in hub.db: the daemon writes them, `ahub turns` and `ahub undo` read them. */
 export class Turns {
   private readonly db: Database;
@@ -623,6 +662,7 @@ export class Turns {
     this.db.run("CREATE TABLE IF NOT EXISTS touches (task INTEGER NOT NULL, peer TEXT NOT NULL, path TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (task, peer, path))");
     this.db.run("CREATE INDEX IF NOT EXISTS touches_path ON touches (path)"); // the PreToolUse hook looks up one path
     this.db.run("CREATE TABLE IF NOT EXISTS turn_workspaces (turn TEXT PRIMARY KEY, root TEXT NOT NULL, start_tree TEXT, end_tree TEXT, changed TEXT NOT NULL DEFAULT '[]')");
+    this.db.run("CREATE TABLE IF NOT EXISTS turn_unobserved (turn TEXT PRIMARY KEY, paths TEXT NOT NULL)");
     this.db.run("CREATE TABLE IF NOT EXISTS task_snapshots (task INTEGER NOT NULL, proposed_at INTEGER NOT NULL, start_tree TEXT, PRIMARY KEY (task, proposed_at))");
   }
   /** A proposal's original project snapshot; task ids may be reused after reset. Never repair a missing baseline later. */
@@ -665,8 +705,9 @@ export class Turns {
   native(id: string, native: string): void {
     this.db.query("UPDATE turns SET native = ? WHERE id = ? AND native IS NULL").run(native, id);
   }
-  end(id: string, endTree: string | undefined, changed: string[], keep: number): void {
+  end(id: string, endTree: string | undefined, changed: string[], keep: number, unobserved?: string[]): void {
     this.db.transaction(() => {
+      if (unobserved !== undefined) this.db.query("INSERT OR REPLACE INTO turn_unobserved (turn, paths) VALUES (?, ?)").run(id, JSON.stringify(unobserved));
       const scoped = this.workspace(id) !== undefined;
       // Older CLIs do not know workspace receipts. Leave their canonical-checkout snapshot view unknown.
       this.db.query("UPDATE turns SET ended = ?, end_tree = ?, changed = ? WHERE id = ?").run(Date.now(), scoped ? null : endTree ?? null, scoped ? "[]" : JSON.stringify(changed), id);
@@ -675,18 +716,35 @@ export class Turns {
     const peer = (this.db.query("SELECT peer FROM turns WHERE id = ?").get(id) as { peer: string } | null)?.peer;
     if (peer) this.db.query("DELETE FROM turns WHERE peer = ? AND id NOT IN (SELECT id FROM turns WHERE peer = ? ORDER BY started DESC, rowid DESC LIMIT ?)").run(peer, peer, keep);
     this.db.run("DELETE FROM turn_workspaces WHERE turn NOT IN (SELECT id FROM turns)");
+    this.db.run("DELETE FROM turn_unobserved WHERE turn NOT IN (SELECT id FROM turns)");
+  }
+  /** The dirty submodules recorded when the turn ended; undefined when none were recorded (unknown, not "none"). */
+  unobserved(id: string): string[] | undefined {
+    try {
+      const row = this.db.query("SELECT paths FROM turn_unobserved WHERE turn = ?").get(id) as { paths: string } | null;
+      if (!row) return undefined;
+      const paths = JSON.parse(row.paths);
+      return Array.isArray(paths) && paths.every(path => typeof path === "string") ? paths : undefined;
+    } catch (error) {
+      if (/no such table/.test((error as Error).message)) return undefined;
+      throw error;
+    }
+  }
+  private withUnobserved<T extends { id: string }>(record: T): T & { unobserved?: string[] } {
+    const unobserved = this.unobserved(record.id);
+    return unobserved === undefined ? record : { ...record, unobserved };
   }
   list(peer?: string, limit = 20): TurnRecord[] {
     const rows = (peer
       ? this.db.query("SELECT * FROM turns WHERE peer = ? ORDER BY started DESC, rowid DESC LIMIT ?").all(peer, limit)
       : this.db.query("SELECT * FROM turns ORDER BY started DESC, rowid DESC LIMIT ?").all(limit)) as (Omit<TurnRecord, "changed"> & { changed: string })[];
-    return rows.map(row => this.snapshotFields(row)).map((r) => ({ ...r, changed: JSON.parse(r.changed) as string[] }));
+    return rows.map(row => this.snapshotFields(row)).map((r) => this.withUnobserved({ ...r, changed: JSON.parse(r.changed) as string[] }));
   }
   get(id: string): TurnRecord | undefined {
     const r = this.db.query("SELECT * FROM turns WHERE id = ?").get(id) as (Omit<TurnRecord, "changed"> & { changed: string }) | null;
     if (!r) return undefined;
     const record = this.snapshotFields(r);
-    return { ...record, changed: JSON.parse(record.changed) as string[] };
+    return this.withUnobserved({ ...record, changed: JSON.parse(record.changed) as string[] });
   }
   /**
    * Other peers' turns that overlapped this one in time: their changes are in this turn's diff too. `unknown` lists

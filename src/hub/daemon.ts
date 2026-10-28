@@ -165,7 +165,7 @@ import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
 import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
-import { soleWorktree, branchHeads, changedPaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, budgetNow, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
+import { soleWorktree, branchHeads, changedPaths, dirtySubmodules, submodulePaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, budgetNow, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
 import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate } from "../cli/terminal-recovery.ts";
@@ -1917,6 +1917,7 @@ export async function startDaemon(opts: DaemonOptions) {
     review: config.review,
     sweep: taskSweepConfig(config.task_sweep),
     sweepHeld: () => stopping || recoveryActive(),
+    submodules: () => factsRepo ? submodulePaths(factsRepo) : [], // #798 D1: read from .gitmodules, no git call
     ciWatch: opts.ciWatch,
     autoPull: () => config.tasks.auto_pull === true,
     queueBackpressure: queuePolicy,
@@ -3176,10 +3177,11 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_task_propose": {
         const t = await tasks.propose(by, a);
         const repoHint = tasks.refsRepoHint(t); // #723: advice only; never part of the write
-        if (t.state === "backlog") return [line(t), repoHint].filter(Boolean).join("\n");
+        const submodules = tasks.submoduleNotice(t); // #798 D1: advice only too
+        if (t.state === "backlog") return [line(t), repoHint, submodules].filter(Boolean).join("\n");
         const overlap = tasks.overlaps(t, t.owner === by);
         if (t.owner === by && tasks.silentFor(t.id) && factsOn()) factsFor(by).sawPlans(by, tasks.overlapTasks(t)); // as for an accept
-        return [line(t), tasks.namedOwnerNote(t, a.owner as PeerId | undefined, by), overlap, tasks.claimRoleGuidance(t, by), t.owner === by ? tasks.planGuardText(t) : "", repoHint].filter(Boolean).join("\n");
+        return [line(t), tasks.namedOwnerNote(t, a.owner as PeerId | undefined, by), overlap, tasks.claimRoleGuidance(t, by), t.owner === by ? tasks.planGuardText(t) : "", repoHint, submodules].filter(Boolean).join("\n");
       }
       case "hub_task_accept": {
         // S1 spec acceptance and S9 plan review are checked against one task snapshot before acceptance.
@@ -3188,7 +3190,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const silent = tasks.silentFor(t.id);
         const overlap = a.plan == null && a.refs == null && !silent ? "" : tasks.overlaps(t);
         if (silent && factsOn()) factsFor(by).sawPlans(by, tasks.overlapTasks(t)); // the plans in this answer need no fact later
-        return [line(t), overlap, tasks.planGuardText(t)].filter(Boolean).join("\n");
+        return [line(t), overlap, tasks.planGuardText(t), tasks.submoduleNotice(t)].filter(Boolean).join("\n"); // #798 D1
       }
       case "hub_task_cancel": {
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !["id", "reason", "superseded_by", "revision"].includes(key))
@@ -4249,7 +4251,11 @@ export async function startDaemon(opts: DaemonOptions) {
             }
           }
           snapshotMs = (snapshotMs ?? 0) + end.ms;
-          try { turnLog.end(open.id, end.tree, changed, Math.max(1, Number(config.snapshots.keep) || 20)); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
+          // #798 D2: a submodule's own edits never move the superproject's gitlink, so the diff above cannot see them. Name the dirty ones as unobserved (never as changed:
+          // undo would try to restore them). Only for a turn whose trees are known; a read git cannot answer, or the budget cut short, records nothing, which stays unknown.
+          let unobserved: string[] | undefined;
+          if (open.tree && end.tree && end.repo) try { unobserved = dirtySubmodules(end.repo, end.budget); } catch (error) { snapshotFailure(`the submodules of ${open.id}`, error); }
+          try { turnLog.end(open.id, end.tree, changed, Math.max(1, Number(config.snapshots.keep) || 20), unobserved); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
           // After the turn_end event: a notice delivered at once starts the peer's next turn, which must come after it.
           if (changed.length) afterTurn = () => detectConflicts(e.peer, open.id, open.start, changed);
         }

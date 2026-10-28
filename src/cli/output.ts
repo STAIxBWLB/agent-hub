@@ -474,8 +474,11 @@ export function renderTurns(turns: any[], columns?: number, now = Date.now()): S
   return rows(["TURN", "PEER", "STARTED", "STATE", "FILES"], turns.map(turn => {
     const state = !turn.ended ? "running" : !turn.end_tree ? "no end snapshot" : "completed";
     const files = turn.changed ?? [];
+    // #798 D2: a dirty submodule is listed beside the files, tagged, so a turn that edited only a submodule never reads "0 files".
+    const unobserved: string[] = Array.isArray(turn.unobserved) ? turn.unobserved.filter((path: unknown): path is string => typeof path === "string") : [];
+    const shown = [...files, ...unobserved.map(path => `${path} (changed, contents unobserved)`)];
     return [span(turn.id, "info"), span(turn.peer ?? "unknown", peerTone(turn.peer)), span(moment(turn.started, now), "muted"),
-      span(state, state === "running" ? "attention" : state === "no end snapshot" ? "failure" : "success"), { ...span(`${plural(files.length, "file")}${files.length ? `: ${files.join(", ")}` : ""}`), ...(files.length ? { items: files, pathItems: true, prefix: `${plural(files.length, "file")}:` } : {}) }];
+      span(state, state === "running" ? "attention" : state === "no end snapshot" ? "failure" : "success"), { ...span(`${plural(files.length, "file")}${shown.length ? `: ${shown.join(", ")}` : ""}`), ...(shown.length ? { items: shown, pathItems: true, prefix: `${plural(files.length, "file")}:` } : {}) }];
   }), columns);
 }
 export function renderOrphans(orphans: { project: any; pids: number[] }[], columns?: number, _now = Date.now(), killing = false): Span[][] {
