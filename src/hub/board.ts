@@ -1,4 +1,5 @@
 import { HOST_CODE_SYMBOLS, parseTaskCodeSymbols, type TaskCodeSymbols } from "./task-code-symbols.ts";
+import { createHash } from "node:crypto";
 import { planFingerprint } from "./plan-conformance.ts";
 import type { PlannerReason } from "./routing.ts";
 import type { ReviewerPoolReason } from "./reviewer-pool.ts";
@@ -126,7 +127,11 @@ export interface HistoryEntry {
 /** #901: one person verdict on a plan claim, with the model label the person says produced the claim. All closed or bounded; nothing here is claim text. */
 export const CLAIM_VERDICTS = ["supported", "unsupported", "unclear"] as const;
 /** `modelVerdict` is what the model's own fact check said of the claim, as the person enters it: with it the scorecard can say whether person and model agree; without it agreement is unknown. */
-export interface ClaimVerdict { slot: number; verdict: (typeof CLAIM_VERDICTS)[number]; model?: string; modelVerdict?: (typeof CLAIM_VERDICTS)[number] }
+export interface ClaimVerdict { slot: number; verdict: (typeof CLAIM_VERDICTS)[number]; model?: string; modelVerdict?: (typeof CLAIM_VERDICTS)[number]; /** `claimListId` of the plan's claims when the verdict was entered: the list it evaluated, as a hash. Set by the hub, never by the person. */ list?: string }
+/** A short opaque identity of an ordered claim list (a sha-256 prefix of its canonical form): equal lists, in order, give equal ids; it reveals nothing of the claims. Absent list: the empty list's id. */
+export function claimListId(claims: readonly string[] | undefined): string {
+  return createHash("sha256").update(planFingerprint({ claims: [...(claims ?? [])] })).digest("hex").slice(0, 16);
+}
 /** A claim slot is a position in the plan's claim list (at most 50, as the scorecard's own bound); a model label is a bounded token, never prose. */
 export function parseClaimVerdict(value: unknown, slots: number): ClaimVerdict {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("claim verdict must be an object");

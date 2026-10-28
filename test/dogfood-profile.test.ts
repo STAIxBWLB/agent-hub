@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { Board } from "../src/hub/board.ts";
+import { Board, claimListId } from "../src/hub/board.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { loadRouting } from "../src/hub/routing.ts";
@@ -372,9 +372,9 @@ test("reader retains legacy task history when profile JSON or history metadata i
     expect(collected.complete).toBe(false);expect(collected.data.map(t=>t.id)).toEqual([5,4,3,2,1]);
     expect(collected.data.every(t=>t.history.length===1)).toBe(true);
     expect(collected.data.find(t=>t.id===1)!.profileMetadata).toBeUndefined();
-    expect(collected.data.find(t=>t.id===2)!.profileMetadata!.plan).toEqual({sources:0,claims:0});
+    expect(collected.data.find(t=>t.id===2)!.profileMetadata!.plan).toEqual({sources:0,claims:0,claimList:claimListId(undefined)});   // #901: the (empty) claim list also has an id
     expect(collected.data.find(t=>t.id===3)!.profileMetadata!.plan).toBeUndefined();
-    expect(collected.data.find(t=>t.id===4)!.profileMetadata!.plan).toEqual({sources:50,claims:0});
+    expect(collected.data.find(t=>t.id===4)!.profileMetadata!.plan).toEqual({sources:50,claims:0,claimList:claimListId([])});
     expect(collected.data.find(t=>t.id===5)!.profileMetadata!.plan).toBeUndefined();
     expect(JSON.stringify(collected)).not.toMatch(/PRIVATE_CLAIM|PRIVATE_SOURCE|broken/);
   } finally {f.close();}
@@ -424,7 +424,7 @@ test("a parsed research plan counts an undeclared key as zero and a malformed li
     insert.run(2,"{}","[]",JSON.stringify([{at:120,event:"accepted"}]),"test",research,JSON.stringify({claims:"PRIVATE_CLAIM"}));
     db.close();const collected=dogfoodTasks(file);
     expect(collected.complete).toBe(true);
-    expect(collected.data.find(t=>t.id===1)!.profileMetadata!.plan).toEqual({sources:0,claims:1});
+    expect(collected.data.find(t=>t.id===1)!.profileMetadata!.plan).toMatchObject({sources:0,claims:1});
     expect(collected.data.find(t=>t.id===2)!.profileMetadata!.plan).toBeUndefined();
     expect(JSON.stringify(collected)).not.toMatch(/PRIVATE_CLAIM/);
   } finally {f.close();}

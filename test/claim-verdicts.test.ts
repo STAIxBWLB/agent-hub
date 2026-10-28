@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Board, parseClaimVerdict } from "../src/hub/board.ts";
+import { Board, claimListId, parseClaimVerdict } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { dogfoodScorecard, formatDogfood, source, type DogfoodInput } from "../src/hub/dogfood.ts";
 import { dogfoodTasks } from "../src/hub/dogfood-read.ts";
@@ -207,13 +207,65 @@ test("a verdict dated outside the report window never counts, even when the slot
   const { Database } = await import("bun:sqlite");
   const db = new Database(r.file); const row = db.query("SELECT history FROM tasks WHERE id = ?").get(task.id) as { history: string };
   const old = Date.now() - 10 * 86_400_000;
-  db.query("UPDATE tasks SET history = ? WHERE id = ?").run(JSON.stringify([...JSON.parse(row.history), { at: old, by: "user", event: "claim verdict", claim: { slot: 1, verdict: "unsupported", model: "old-model", modelVerdict: "unsupported" } }]), task.id); db.close();
+  db.query("UPDATE tasks SET history = ? WHERE id = ?").run(JSON.stringify([...JSON.parse(row.history), { at: old, by: "user", event: "claim verdict", claim: { slot: 1, verdict: "unsupported", model: "old-model", modelVerdict: "unsupported", list: claimListId(["c1", "c2", "c3"]) } }]), task.id); db.close();
   r.tasks.recordClaimVerdict("user", task.id, { slot: 1, verdict: "supported", model: "new-model", modelVerdict: "supported" });
   const week = (since: number, until: number) => { const s = scorecard(r.file); return dogfoodScorecard({ ...s.input, since, until }).profile!.rows.find(x => x.profile === "research" && x.alias === null)!; };
   const recent = week(Date.now() - 86_400_000, Date.now() + 60_000);
   expect(recent.research!.claims.perTask[0]!.claims![0]).toMatchObject({ modelLabel: "new-model", personVerdict: "supported" });
   const older = week(old - 1000, old + 1000);
   expect(older.research!.claims.perTask[0]!.claims![0]).toMatchObject({ modelLabel: "old-model", personVerdict: "unsupported" });   // the window picks the verdict in force within it, not the newest ever
+});
+
+test("recording a verdict while the completion check runs does not discard the check's result (review of #937: claim verdict is quiet history)", async () => {
+  const r = await rig({ output: "citations: 2 declared keys, 0 missing" });
+  const task = await factCheckTask(r);
+  let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; });
+  // The check blocks until released; the person records a verdict in the meantime.
+  (r.tasks as unknown as { d: { runCheck: () => Promise<unknown> } }).d.runCheck = async () => { await held; return { code: 0, timedOut: false, tail: "citations: 2 declared keys, 0 missing" }; };
+  await r.tasks.done("codex", task.id, "checked");
+  expect(r.tasks.checksPending()).toBe(1);
+  r.tasks.recordClaimVerdict("user", task.id, { slot: 1, verdict: "supported", model: "m", modelVerdict: "supported" });
+  release();
+  await until(() => r.tasks.checksPending() === 0);
+  const history = r.board.get(task.id)!.history;
+  expect(history.some(h => h.event === "check finished late")).toBe(false);
+  expect(history.findLast(h => h.event === "check passed")).toMatchObject({ checkKey: "fact_check", missingKeys: 0 });
+  expect(r.board.get(task.id)!.state).toBe("in_review");                  // the check's result decided what came next, as without a verdict
+});
+
+test("a verdict belongs to the claim list it evaluated: replacing or reordering the plan's claims leaves it naming no claim of the new list (review of #937)", async () => {
+  const r = await rig();
+  const task = await factCheckTask(r, ["alpha", "beta", "gamma"]);
+  r.tasks.recordClaimVerdict("user", task.id, { slot: 1, verdict: "supported", model: "m", modelVerdict: "supported" });
+  const slot1 = () => scorecard(r.file).row.research!.claims.perTask[0]!.claims![0]!;
+  expect(slot1()).toMatchObject({ personVerdict: "supported", agreement: true });
+  // The owner replaces the claim in slot 1 with an unrelated one: the old verdict must not be reported for it.
+  const accept = (claims: string[]) => r.tasks.accept("codex", task.id, { paths: ["report.md"], sources: ["doi:1"], claims });
+  accept(["something else entirely", "beta", "gamma"]);
+  expect(slot1()).toEqual({ slot: 1, modelLabel: null, personVerdict: null, agreement: null });
+  expect(scorecard(r.file).row.research!.claims.reachedPersonVerdict).toBeNull();
+  expect(scorecard(r.file).row.research!.factCheck.agreement.every(a => a.count === null)).toBe(true);
+  // A new verdict on the new list counts; reordering the claims invalidates it again.
+  r.tasks.recordClaimVerdict("user", task.id, { slot: 1, verdict: "unsupported", model: "m", modelVerdict: "supported" });
+  expect(slot1()).toMatchObject({ personVerdict: "unsupported", agreement: false });
+  accept(["beta", "something else entirely", "gamma"]);
+  expect(slot1()).toMatchObject({ personVerdict: null });
+  // Restoring the exact list makes the earlier verdict the one in force again (same ordered list, same id).
+  accept(["something else entirely", "beta", "gamma"]);
+  expect(slot1()).toMatchObject({ personVerdict: "unsupported" });
+  // The record holds an opaque id, never a claim.
+  const entry = r.board.get(task.id)!.history.findLast(h => h.event === "claim verdict")!;
+  expect(entry.claim!.list).toMatch(/^[0-9a-f]{16}$/);
+  expect(JSON.stringify(entry)).not.toMatch(/alpha|beta|gamma|something else/);
+});
+
+test("a verdict recorded before claim lists were bound cannot be attributed to any list, so it does not count", async () => {
+  const r = await rig();
+  const task = await factCheckTask(r);
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(r.file); const row = db.query("SELECT history FROM tasks WHERE id = ?").get(task.id) as { history: string };
+  db.query("UPDATE tasks SET history = ? WHERE id = ?").run(JSON.stringify([...JSON.parse(row.history), { at: Date.now(), by: "user", event: "claim verdict", claim: { slot: 1, verdict: "supported", model: "m", modelVerdict: "supported" } }]), task.id); db.close();
+  expect(scorecard(r.file).row.research!.claims.reachedPersonVerdict).toBeNull();
 });
 
 test("a PII task: its verdicts count but name no model, its history entry is a stub, and no claim, key or label text reaches the scorecard", async () => {

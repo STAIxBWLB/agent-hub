@@ -9,11 +9,11 @@ import type { StampedEvent } from "./events.ts";
 export interface ProfileHistory {
   at: number; event: string; criteria?: string[]; criteriaPrivate?: true; deliverables?: string[];
   /** #901: on the hub's own check entries, the check key and the example check's unresolved-key count; on a `claim verdict` entry, the person's verdict. Closed values only, no claim text. */
-  checkKey?: string; missingKeys?: number; claim?: { slot: number; verdict: "supported" | "unsupported" | "unclear"; model?: string; modelVerdict?: "supported" | "unsupported" | "unclear" };
+  checkKey?: string; missingKeys?: number; claim?: { slot: number; verdict: "supported" | "unsupported" | "unclear"; model?: string; modelVerdict?: "supported" | "unsupported" | "unclear"; list?: string };
 }
 export interface ProfileTaskMetadata {
   profile: ProfileName; state?: string; class: string; alias: string | null; history: ProfileHistory[];
-  plan?: { sources: number | null; claims: number | null };
+  plan?: { sources: number | null; claims: number | null; /** #901: `claimListId` of the plan's claims now (an opaque hash, never their text); absent when the list could not be read. */ claimList?: string };
 }
 const complete = (s: Source<unknown>) => s.available && s.complete;
 const number = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
@@ -233,7 +233,9 @@ export function profileScorecard(input: DogfoodInput) {
       // #901: claim verdicts and check provenance, read only from entries the hub or the person wrote with closed values. Unknown stays unknown, never zero: a count exists only when its source
       // history is complete, and a row without its basis (no verdict, no model verdict, no recorded check key) is null.
       type Verdict = "supported" | "unsupported" | "unclear";
-      const lastVerdict = (t: BoundTask, slot: number) => t.metadata.history.filter(h => h.event === "claim verdict" && h.claim?.slot === slot && inWindow(h.at)).sort((a, b) => a.at - b.at).at(-1)?.claim;
+      // A verdict counts only for the claim list it evaluated: its `list` must equal the plan's current claim-list id. After the owner replaces or reorders the claims, an earlier verdict names no claim
+      // of the new list (it is unknown again, not carried over to whatever now sits in its slot), and a verdict from before ids were recorded cannot be bound, so it does not count.
+      const lastVerdict = (t: BoundTask, slot: number) => t.metadata.history.filter(h => h.event === "claim verdict" && h.claim?.slot === slot && inWindow(h.at) && t.metadata.plan?.claimList !== undefined && h.claim.list === t.metadata.plan.claimList).sort((a, b) => a.at - b.at).at(-1)?.claim;
       const slotRows = group.tasks.map(t => {
         const count = planCount(t, "claims");
         return { task: t.id, claims: count === null ? null : Array.from({ length: count }, (_, i) => {
