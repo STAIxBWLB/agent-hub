@@ -252,7 +252,7 @@
     {
       "id": "roster-empty-status",
       "file": "src/hub/daemon.ts",
-      "search": "    return [...ids].filter(peer => isExternalInstance(peer) || externalRefusedRows.has(peer) || membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));",
+      "search": "    return [...ids].filter(peer => !peer.includes(\"@\") && (isExternalInstance(peer) || externalRefusedRows.has(peer) || membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer)));",
       "replacement": "    return [...ids];",
       "testFile": "test/roster.test.ts",
       "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
@@ -324,8 +324,8 @@
     {
       "id": "roster-detached-pi-recovery",
       "file": "src/hub/daemon.ts",
-      "search": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\" || (\"recoveryReady\" in peer && peer.recoveryReady !== true))) return false;",
-      "replacement": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\")) return false;",
+      "search": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].filter(peer => !peer.id.includes(\"@\")).some((peer) => peer.state === \"busy\" || (\"recoveryReady\" in peer && peer.recoveryReady !== true))) return false;",
+      "replacement": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].filter(peer => !peer.id.includes(\"@\")).some((peer) => peer.state === \"busy\")) return false;",
       "testFile": "test/roster-pi.test.ts",
       "testName": "controlled recovery refuses a removed personal Pi owner until the person ends it (#315)"
     },
@@ -2668,8 +2668,8 @@
     {
       "id": "planner-reserved-status-row",
       "file": "src/hub/daemon.ts",
-      "search": "new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds(), ...reservations])",
-      "replacement": "new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds()])",
+      "search": "new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds(), ...reservations].filter(id => !id.includes(\"@\")))",
+      "replacement": "new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds()].filter(id => !id.includes(\"@\")))",
       "testFile": "test/planner-pull-surfaces.test.ts",
       "testName": "restarted ownerless pull reservations retain an unattached peer WIP status row"
     },
@@ -3856,6 +3856,206 @@
       "replacement": "if (task.reserved) await this.assignOwner(task, HUB, { current, ...retry });",
       "testFile": "test/task-queue-backpressure.test.ts",
       "testName": "a queue-held person reservation rechecks the WIP cap before taking a newly occupied slot"
+    },
+    {
+      "id": "room-x4-no-implicit-broadcast",
+      "file": "src/hub/bus.ts",
+      "search": "    return (env.to ?? [...this.peers.keys()]).filter((id) => id !== env.from && (known.has(id) || !this.isRostered(id)) && (env.to !== undefined || this.isRostered(id)) && (env.to !== undefined || !remoteId(id)));",
+      "replacement": "    return (env.to ?? [...this.peers.keys()]).filter((id) => id !== env.from && (known.has(id) || !this.isRostered(id)) && (env.to !== undefined || this.isRostered(id)));",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "room peers never join a broadcast and malformed or unknown explicit remote targets refuse before effects"
+    },
+    {
+      "id": "room-x4-private-envelope-boundary",
+      "file": "src/rooms/boundary.ts",
+      "search": "    if (env.kind !== \"chat\" && env.kind !== \"status\" || env.private === true) return refused(\"boundary_refused\");",
+      "replacement": "    if (env.kind !== \"chat\" && env.kind !== \"status\") return refused(\"boundary_refused\");",
+      "testFile": "test/rooms-boundary.test.ts",
+      "testName": "forbidden classes, hub/digest/remote senders, private flags and implicit broadcasts never reach the model"
+    },
+    {
+      "id": "room-x4-unknown-screen-withholds",
+      "file": "src/rooms/boundary.ts",
+      "search": "withheld = verdict?.label !== \"clear\";",
+      "replacement": "withheld = verdict?.label === \"pii\";",
+      "testFile": "test/rooms-boundary.test.ts",
+      "testName": "model pii, unknown, throws and absent ports fail closed without reflecting diagnostics"
+    },
+    {
+      "id": "room-x4-proof-dispatch-fence",
+      "file": "src/rooms/boundary.ts",
+      "search": "try { return state.current() === true ? { ...state.envelope } : undefined; }",
+      "replacement": "try { return { ...state.envelope }; }",
+      "testFile": "test/rooms-boundary.test.ts",
+      "testName": "outbound proofs are opaque, copy-only and become unreadable when their captured authority changes"
+    },
+    {
+      "id": "room-x4-restored-sender-exposure",
+      "file": "src/rooms/service.ts",
+      "search": "    else if (chat.from !== USER && !member.exposedPeers.includes(chat.from)) refusal = \"not_exposed\";",
+      "replacement": "    else if (false) refusal = \"not_exposed\";",
+      "testFile": "test/rooms-recovery.test.ts",
+      "testName": "restored authenticated chat rechecks current sender exposure before local Bus admission"
+    },
+    {
+      "id": "room-x4-uncertain-recipient-binding",
+      "file": "src/hub/bus.ts",
+      "search": "return Object.fromEntries([...values].filter(([peer]) => this.hasRemoteWork(peer, pending)));",
+      "replacement": "return Object.fromEntries([...values].filter(([peer]) => (this.queues.get(peer)?.length ?? 0) > 0));",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "remote identity survives dispatch restart and refuses foreign re-enrollment, a new send and person retry"
+    },
+    {
+      "id": "room-x4-one-remote-pre-effect",
+      "file": "src/hub/bus.ts",
+      "search": "    if (targets.length > 1) throw new PreEffectToolRefusal(`remote targets ${targets.slice(0, 64).join(\", \")}${targets.length > 64 ? ` and ${targets.length - 64} more` : \"\"}: send to each remote peer separately`);",
+      "replacement": "    if (false) throw new PreEffectToolRefusal(`remote targets ${targets.slice(0, 64).join(\", \")}${targets.length > 64 ? ` and ${targets.length - 64} more` : \"\"}: send to each remote peer separately`);",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "two remote targets refuse before limiter, telemetry or local fanout, while one remote plus locals works"
+    },
+    {
+      "id": "room-x4-routing-no-local-role",
+      "file": "src/hub/routing.ts",
+      "search": "if (isRemotePeerId(peer)) return deny(\"policy\", \"remote peers cannot hold local roles\");",
+      "replacement": "if (false) return deny(\"policy\", \"remote peers cannot hold local roles\");",
+      "testFile": "test/rooms-tasks.test.ts",
+      "testName": "remote namespace cannot acquire local owner, reviewer or planner authority from routing data"
+    },
+    {
+      "id": "room-x4-late-proof-evidence-only",
+      "file": "src/hub/bus.ts",
+      "search": "if (row.reason !== reason) this.journal.transition(row.id, \"needs_review\", reason, row.revision);",
+      "replacement": "if (row.reason !== reason) this.journal.transition(row.id, \"completed\", reason, row.revision);",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "late signed evidence for a known recipient never auto-completes needs_review"
+    },
+    {
+      "id": "room-x4-observer-body-stub",
+      "file": "src/hub/bus.ts",
+      "search": "      e = { ...e, env: { ...env, body: \"[remote room message withheld]\", ...(env.to ? { to: env.to.filter(id => /^[a-z][a-z0-9-]{0,31}$/.test(id) || !!parseRemotePeerId(id)) } : {}) }, ...(\"reason\" in e ? { reason: \"remote room delivery\" } : {}) };",
+      "replacement": "      e = { ...e, env: { ...env, body: env.body, ...(env.to ? { to: env.to.filter(id => /^[a-z][a-z0-9-]{0,31}$/.test(id) || !!parseRemotePeerId(id)) } : {}) }, ...(\"reason\" in e ? { reason: \"remote room delivery\" } : {}) };",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "remote-origin mixed local batches bypass condensation and memory while telemetry gets only stubs"
+    },
+    {
+      "id": "room-x4-native-refusal-settlement",
+      "file": "src/hub/bus.ts",
+      "search": "      try { this.checkRemotePublication(env); }\n      catch (error) {\n        if (!(error instanceof PreEffectToolRefusal)) throw error;\n        this.note(peer.id, noteLine(HUB, \"decision\", `your message was not delivered: ${error.message}`));\n        return error.message;\n      }",
+      "replacement": "      try { this.checkRemotePublication(env); }\n      catch (error) {\n        if (!(error instanceof PreEffectToolRefusal)) throw error;\n        this.note(peer.id, noteLine(HUB, \"decision\", `your message was not delivered: ${error.message}`));\n        throw error;\n      }",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "a native turn answer to remote senders returns a refusal and settles idle instead of throwing"
+    },
+    {
+      "id": "room-x4-control-preflight-before-limits",
+      "file": "src/hub/daemon.ts",
+      "search": "try { bus.checkRemotePublication(env); }",
+      "replacement": "try { void env; }",
+      "testFile": "test/rooms-control.test.ts",
+      "testName": "a control remote-cap refusal spends neither repeat identity nor limiter tokens"
+    },
+    {
+      "id": "room-x4-claude-single-body-sanitize",
+      "file": "src/adapters/claude-channel.ts",
+      "search": "  const content = single ? sanitize(parent.body) : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---\\n${sanitize(e.body)}`).join(\"\\n\\n\");",
+      "replacement": "  const content = single ? parent.body : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---\\n${sanitize(e.body)}`).join(\"\\n\\n\");",
+      "testFile": "test/rooms-native-privacy.test.ts",
+      "testName": "single Claude channel push quotes forged hub headers and keeps digest framing unchanged"
+    },
+    {
+      "id": "room-x4-local-remote-capture",
+      "file": "src/adapters/local-worker.ts",
+      "search": "const capture = policy?.pii || remoteTurn ? undefined : this.opts.capture;",
+      "replacement": "const capture = policy?.pii ? undefined : this.opts.capture;",
+      "testFile": "test/rooms-native-privacy.test.ts",
+      "testName": "remote and mixed local-worker turns never capture tools, summaries or body observers"
+    },
+    {
+      "id": "room-x4-local-remote-history",
+      "file": "src/adapters/local-worker.ts",
+      "search": "const preserveHistory = !policy?.pii && !remoteTurn;",
+      "replacement": "const preserveHistory = !policy?.pii;",
+      "testFile": "test/rooms-native-privacy.test.ts",
+      "testName": "a later local turn retains earlier local history but cannot capture a preceding remote transcript"
+    },
+    {
+      "id": "room-x4-durable-handoff-ack-deadline",
+      "file": "src/rooms/store.ts",
+      "search": "        .run(frame.room, frame.digest, application.deliveryId, application.application, application.remotePeer, application.recipient, application.peer, now, expires, application.ackTimeoutMs, deadline);",
+      "replacement": "        .run(frame.room, frame.digest, application.deliveryId, application.application, application.remotePeer, application.recipient, application.peer, now, expires, application.ackTimeoutMs, null);",
+      "testFile": "test/rooms-application-store.test.ts",
+      "testName": "a dispatching application without any broker stored ACK expires at its durable handoff deadline"
+    },
+    {
+      "id": "room-x4-retained-matched-identity",
+      "file": "src/rooms/store.ts",
+      "search": "this.applicationCapacity(state.current.room, now, !saved, saved ?? undefined);",
+      "replacement": "this.applicationCapacity(state.current.room, now, !saved, undefined);",
+      "testFile": "test/rooms-application-store.test.ts",
+      "testName": "alias capacity cannot evict the retained settled identity that matched this exact application content"
+    },
+    {
+      "id": "room-x4-settled-inbox-pruning",
+      "file": "src/rooms/store.ts",
+      "search": "    this.db.query(\"DELETE FROM inbox WHERE room=? AND plaintext IS NULL AND rowid NOT IN (SELECT rowid FROM inbox WHERE room=? ORDER BY rowid DESC LIMIT ?)\")",
+      "replacement": "    this.db.query(\"DELETE FROM inbox WHERE room=? AND plaintext IS NULL AND 0 AND rowid NOT IN (SELECT rowid FROM inbox WHERE room=? ORDER BY rowid DESC LIMIT ?)\")",
+      "testFile": "test/rooms-application-store.test.ts",
+      "testName": "settled chat prunes null inbox receipts without presence traffic and retained aliases still prove exact duplicates after reopen"
+    },
+    {
+      "id": "room-x4-receipt-reserve-matched-only",
+      "file": "src/rooms/store.ts",
+      "search": "if (!matched) throw new RoomUnmatchedReceiptError();",
+      "replacement": "if (false) throw new RoomUnmatchedReceiptError();",
+      "testFile": "test/rooms-application-store.test.ts",
+      "testName": "200 pending chats cannot block a matching authenticated receipt and unmatched receipts reserve no slot or replay floor"
+    },
+    {
+      "id": "room-x4-receipt-reserve-eight-slot-bound",
+      "file": "src/rooms/store.ts",
+      "search": "        if (pending >= ROOM_STORE_LIMITS.receiptReservePerRoom || bytes + input.plaintext.length > ROOM_STORE_LIMITS.rooms * ROOM_STORE_LIMITS.receiptReservePerRoom * ROOM_STORE_LIMITS.receiptReserveBytes) fail(\"limit\");",
+      "replacement": "        if (false || bytes + input.plaintext.length > ROOM_STORE_LIMITS.rooms * ROOM_STORE_LIMITS.receiptReservePerRoom * ROOM_STORE_LIMITS.receiptReserveBytes) fail(\"limit\");",
+      "testFile": "test/rooms-application-store.test.ts",
+      "testName": "the receipt reserve admits eight pending matches, refuses the ninth without dropping it and frees a slot only after settlement"
+    },
+    {
+      "id": "room-x4-ready-roster-publication",
+      "file": "src/rooms/link.ts",
+      "search": "return session.phase === \"ready\" && session.roster?.digest === digest && this.isCurrent(session, digest);",
+      "replacement": "return session.phase === \"ready\" && this.isCurrent(session, digest);",
+      "testFile": "test/rooms-link.test.ts",
+      "testName": "a new local epoch cannot publish ciphertext before that socket verifies the same roster"
+    },
+    {
+      "id": "room-x4-owner-upgrade-no-premature-replay",
+      "file": "src/rooms/link.ts",
+      "search": "session.deferredFrame = Uint8Array.from(bytes);",
+      "replacement": "await this.receiveFrame(session, bytes, local);",
+      "testFile": "test/rooms-link.test.ts",
+      "testName": "a verified owner upgrade holds one old ciphertext without replay, plaintext or ACK until the new ready"
+    },
+    {
+      "id": "room-x4-retry-deadline-proof",
+      "file": "src/hub/bus.ts",
+      "search": "if (!Number.isSafeInteger(deadline) || deadline! <= Date.now()) throw new PreEffectToolRefusal(\"remote original deadline unavailable or expired; discard it or send a new message explicitly\");",
+      "replacement": "if (false) throw new PreEffectToolRefusal(\"remote original deadline unavailable or expired; discard it or send a new message explicitly\");",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "an expired offline remote queue refuses retry without a successful person disposition"
+    },
+    {
+      "id": "room-x4-unresolved-deadline-checkpoint",
+      "file": "src/hub/bus.ts",
+      "search": "for (const row of this.journal?.unresolved(peer) ?? []) for (const env of row.originals) pending.add(env.id);",
+      "replacement": "// Omit unresolved originals from deadline retention.",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "a remote uncertain retry validates its valid enqueue deadline before recording disposition"
+    },
+    {
+      "id": "room-x4-fresh-chat-capacity-fifo",
+      "file": "src/rooms/link.ts",
+      "search": "if (application?.type === \"chat\" && error instanceof RoomFreshChatCapacityError) freshChatCapacity = true;",
+      "replacement": "if (false) freshChatCapacity = true;",
+      "testFile": "test/rooms-recovery.test.ts",
+      "testName": "a fresh 201st signed chat is retired without admission so the matching receipt behind it can settle"
     }
   ]
 }

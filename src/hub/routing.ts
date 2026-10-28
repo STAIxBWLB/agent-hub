@@ -341,6 +341,9 @@ export function ownerRoleOfClass(cls: TaskClass): "planner" | "implementer" | "r
 /** Why a planner was chosen: the person named it, rotation reached it, the task's recorded planner is kept, or there is none (PII, no holder). */
 export type PlannerReason = "rotation" | "named" | "kept" | "none";
 
+/** The remote namespace has no local task, reviewer or planner authority, even for malformed remote ids. */
+export function isRemotePeerId(peer: unknown): boolean { return typeof peer === "string" && peer.includes("@"); }
+
 /**
  * I-2 (#525-3): the peers that implemented a task, read from its own history: any peer with an `accepted` or `done` entry. A reviewer is
  * never one of them, so a multi-role holder (implementer and reviewer) never reviews a change it made, even after the task changed hands.
@@ -375,10 +378,11 @@ export interface PlannerWalk { planner?: PeerId; reason: PlannerReason; walk: { 
  *   holder, availability never renumbers it (the #519 seed rule). When all are skipped, the seed holder is taken, "rotation (none available)".
  */
 export function plannerWalk(input: PlannerWalkInput): PlannerWalk {
-  const holders = [...new Set(input.planners)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const holders = [...new Set(input.planners)].filter(peer => !isRemotePeerId(peer)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const walk: { peer: PeerId; note: string }[] = [];
   const finish = (reason: PlannerReason, planner: PeerId | undefined, detail: string): PlannerWalk => ({ ...(planner ? { planner } : {}), reason, walk, line: planner ? `planner: ${planner} (${detail})` : `planner: none (${detail})` });
   if (input.pii) return finish("none", undefined, "pii: planning stays with the person");
+  if (isRemotePeerId(input.named)) return finish("none", undefined, "remote peers cannot hold local roles");
   if (!holders.length) return finish("none", undefined, "no planner holder");
   if (input.named !== undefined) {
     if (!holders.includes(input.named)) { walk.push({ peer: input.named, note: "skipped, not a planner holder" }); return finish("none", undefined, `named ${input.named} is not a planner holder`); }
@@ -471,6 +475,7 @@ export function assign(
   const former = implementers(task.history);
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
     const deny = (code: RoutingRefusalCode, reason: string): string => { refusals.set(`${role}:${peer}`, { peer, role, code, reason }); return reason; };
+    if (isRemotePeerId(peer)) return deny("policy", "remote peers cannot hold local roles");
     const ceiling = (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.routing?.allowedRoles;
     const requiredRole = role === "reviewer" ? "reviewer" : ownerRoleOfClass(task.class);
     if (ceiling && !ceiling.includes(requiredRole)) return deny("policy", "adapter role ceiling excludes this assignment");

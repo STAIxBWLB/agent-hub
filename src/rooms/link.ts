@@ -3,6 +3,8 @@ import { createBrokerAuth, decodeBrokerChallenge, encodeBrokerControl } from "..
 import { assertRoomCryptoReady, encodeBase64url, sha256, RoomCryptoError } from "./crypto.ts";
 import { brokerUrl, canonicalBytes, decodeFrame, decodeRoster, openFrame, roomMembers, sealFrame, verifyPublicRoster, RoomWireError, type FrameWire, type FrameOpenResult, type VerifiedPublicRoster } from "./wire.ts";
 import type { RoomRefusalReason, RoomState, RoomStore } from "./store.ts";
+import { RoomUnmatchedReceiptError, RoomFreshChatCapacityError, type RoomOutgoingInput } from "./store.ts";
+import { decodeRoomMessage, encodeRoomMessage, type RoomMessage } from "./application.ts";
 
 export type RoomLinkState = "offline" | "connecting" | "online";
 export type RoomPresenceState = "idle" | "busy" | "paused" | "offline";
@@ -13,6 +15,25 @@ export interface RoomLinkOptions {
   presence?: () => readonly { id: string; state: string }[];
   onPresence?: (value: { member: string; peers: readonly RoomPresencePeer[] }) => void;
   onState?: (state: RoomLinkState) => void;
+  application?: RoomLinkApplication;
+}
+/** Host-bound application ports; broker/config data never selects callbacks. */
+export interface RoomLinkContext {
+  store: RoomStore; name: string; link: RoomLink; current: () => boolean;
+}
+export interface RoomLinkApplication {
+  members(context: RoomLinkContext): void;
+  receive(context: RoomLinkContext, input: { digest: string; sender: string; message?: RoomMessage }): Promise<void>;
+  online(context: RoomLinkContext): Promise<void>;
+  stored(context: RoomLinkContext, input: { digest: string; seq: string }): void;
+  /** Fixed transport metadata only; never application completion or authority. */
+  transportAck?(context: RoomLinkContext, input: { digest: string }): void;
+  capacityChanged?(context: RoomLinkContext): void;
+  gap?(context: RoomLinkContext, input: { sender: string; count: string }): void;
+}
+/** Host port signal: no application claim/effect occurred; the durable plaintext remains pending. */
+export class RoomApplicationDeferredError extends Error {
+  constructor(readonly code: "capacity" | "journal_unavailable" | "admission_limit") { super(`Room application deferred: ${code}`); this.name = "RoomApplicationDeferredError"; }
 }
 export class RoomLinkError extends Error {
   constructor(readonly code: "unavailable" | "invalid_wire" | "state_changed" | "untrusted" | "limit") {
@@ -37,6 +58,9 @@ interface Session {
   initialRoster: boolean;
   roster?: VerifiedPublicRoster;
   handshake: ReturnType<typeof setTimeout>;
+  requestPresenceReply: boolean;
+  ownerUpgrading?: boolean;
+  deferredFrame?: Uint8Array;
 }
 function fail(code: ConstructorParameters<typeof RoomLinkError>[0] = "invalid_wire"): never { throw new RoomLinkError(code); }
 function exact(value: unknown, fields: readonly string[]): Record<string, unknown> {
@@ -56,7 +80,8 @@ function packet(bytes: Uint8Array): Record<string, unknown> {
   return row;
 }
 function presence(bytes: Uint8Array, exposed: readonly string[]): RoomPresencePeer[] {
-  const row = exact(packet(bytes), ["v", "type", "peers"]);
+  const decoded = packet(bytes), row = exact(decoded, Object.hasOwn(decoded, "requestReply") ? ["v", "type", "peers", "requestReply"] : ["v", "type", "peers"]);
+  if (row.requestReply !== undefined && typeof row.requestReply !== "boolean") fail();
   if (row.type !== "presence" || !Array.isArray(row.peers) || row.peers.length > 64) fail();
   const peers = row.peers.map(value => {
     const peer = exact(value, ["id", "state"]);
@@ -77,7 +102,13 @@ export class RoomLink {
   private state: RoomLinkState = "offline";
   private publishing = false;
   private publishDirty = false;
+  private replyPresence = false;
+  private inboxRetry?: Promise<void>;
+  private inboxRetryDirty = false;
+  private retiredPresenceBytes = 0;
+  private forcePresenceRequest = false;
   private republish?: ReturnType<typeof setTimeout>;
+  private sendTail: Promise<void> = Promise.resolve();
   constructor(private readonly options: RoomLinkOptions) {}
 
   status(): { state: RoomLinkState; members: number } {
@@ -121,12 +152,44 @@ export class RoomLink {
   private isCurrent(session: Session, digest: string): boolean {
     try { this.current(session, digest); return true; } catch { return false; }
   }
-  private restorePresence(session: Session): void {
+  private publicationCurrent(session: Session, digest: string): boolean {
+    return session.phase === "ready" && session.roster?.digest === digest && this.isCurrent(session, digest);
+  }
+  /** A dropped ephemeral observation requests one fresh signed state when its space is available. */
+  async refreshPresenceIfCapacityFree(): Promise<void> {
+    const session = this.session, bytes = this.retiredPresenceBytes;
+    if (!bytes || !session || !this.running) return;
+    const row = this.current(session);
+    if (!this.publicationCurrent(session, row.current.digest) || !this.options.store.ordinaryInboxAvailable(this.options.name, bytes)) return;
+    // Intent survives coalescing, ordinary responses and publication failure.
+    // Only an actually sent request with current capacity may clear the numeric flag.
+    session.requestPresenceReply = true; this.forcePresenceRequest = true;
+    try { await this.publishPresence(); }
+    catch (error) { this.retry(session); throw error; }
+  }
+  private capacityChanged(session: Session, digest: string): void {
+    try { this.options.application?.capacityChanged?.(this.context(session, digest)); } catch { /* advisory metadata refresh grants nothing */ }
+  }
+  private context(session: Session, digest: string): RoomLinkContext {
+    return { store: this.options.store, name: this.options.name, link: this, current: () => this.isCurrent(session, digest) };
+  }
+  private async restorePresence(session: Session): Promise<void> {
     const row = this.current(session), members = roomMembers(row.current);
     for (const entry of this.options.store.pendingInbox(this.options.name)) {
       this.current(session, row.current.digest);
       const member = members.find(value => value.fingerprint === entry.sender);
+      if (!member) {
+        const application = this.options.store.incomingApplication(this.options.name, entry.digest);
+        if (application?.state === "pending" || application?.state === "dispatching") this.options.store.quarantineApplication(this.options.name, entry.digest);
+      }
       if (member) {
+        let application: RoomMessage | undefined;
+        try { application = decodeRoomMessage(entry.plaintext); } catch { /* X3 presence has its own strict codec. */ }
+        if (application && this.options.application) {
+          await this.deliverApplication(session, row.current.digest, { digest: entry.digest, sender: entry.sender, message: application });
+          this.current(session, row.current.digest);
+          continue;
+        }
         let peers: RoomPresencePeer[] | undefined;
         try { peers = presence(entry.plaintext, member.exposedPeers); } catch { /* a rotation may have removed an exposed id since the durable receive */ }
         if (peers) { try { this.options.onPresence?.({ member: entry.sender, peers }); } catch { /* observation only */ } }
@@ -135,18 +198,40 @@ export class RoomLink {
       // replayed after a rotation or left at the head of recovery forever.
       this.current(session, row.current.digest);
       this.options.store.settleInbox(this.options.name, entry.digest);
+      this.capacityChanged(session, row.current.digest);
     }
+  }
+  private async deliverApplication(session: Session, digest: string, input: Parameters<RoomLinkApplication["receive"]>[1]): Promise<void> {
+    try { await this.options.application?.receive(this.context(session, digest), input); }
+    catch (error) { if (!(error instanceof RoomApplicationDeferredError)) throw error; }
+    this.current(session, digest);
+  }
+  /** One bounded pass; repeated external disposition/online notifications coalesce, never poll. */
+  retryPendingApplications(): Promise<void> {
+    const session = this.session;
+    if (!session || session.phase !== "ready" || !this.running) return Promise.resolve();
+    if (this.inboxRetry) { this.inboxRetryDirty = true; return this.inboxRetry; }
+    const work = Promise.resolve().then(async () => { await this.restorePresence(session); await this.refreshPresenceIfCapacityFree(); });
+    this.inboxRetry = work;
+    void work.finally(() => {
+      if (this.inboxRetry !== work) return;
+      this.inboxRetry = undefined;
+      const again = this.inboxRetryDirty; this.inboxRetryDirty = false;
+      if (again && this.session === session && this.running) void this.retryPendingApplications().catch(() => undefined);
+    }).catch(() => undefined);
+    return work;
   }
   private disconnect(session = this.session): void {
     if (session && session !== this.session) return;
     this.generation++;
     this.session = undefined;
-    this.publishDirty = false;
+    this.publishDirty = false; this.replyPresence = false; this.forcePresenceRequest = false; this.inboxRetryDirty = false;
+    this.inboxRetry = undefined; // A new ready session must never await an old generation's restore pass.
     if (this.republish) clearTimeout(this.republish);
     this.republish = undefined;
     if (session) {
       clearTimeout(session.handshake);
-      session.queue.length = 0; session.queuedBytes = 0;
+      session.queue.length = 0; session.queuedBytes = 0; session.deferredFrame = undefined;
       try { session.ws.close(1000, "disconnected"); } catch { /* already closed */ }
     }
     this.setState("offline");
@@ -175,7 +260,7 @@ export class RoomLink {
     try { ws = new WebSocket(url.href); } catch { this.retry(); return; }
     ws.binaryType = "arraybuffer";
     const generation = ++this.generation;
-    const session: Session = { ws, generation, room: row.current.room, broker: row.broker, phase: "challenge", queue: [], queuedBytes: 0, processing: false, initialRoster: true,
+    const session: Session = { ws, generation, room: row.current.room, broker: row.broker, phase: "challenge", queue: [], queuedBytes: 0, processing: false, initialRoster: true, requestPresenceReply: true,
       handshake: setTimeout(() => this.retry(session), LIMITS.handshakeMs) };
     session.handshake.unref?.();
     this.session = session;
@@ -191,7 +276,7 @@ export class RoomLink {
   }
   private receive(session: Session, data: unknown): void {
     if (this.session !== session || !this.running) return;
-    if (!(data instanceof ArrayBuffer) || data.byteLength === 0 || data.byteLength > LIMITS.packetBytes || session.queue.length >= LIMITS.packets || session.queuedBytes + data.byteLength > LIMITS.queuedBytes) { this.retry(session); return; }
+    if (!(data instanceof ArrayBuffer) || data.byteLength === 0 || data.byteLength > LIMITS.packetBytes || session.queue.length + (session.deferredFrame ? 1 : 0) >= LIMITS.packets || session.queuedBytes + (session.deferredFrame?.byteLength ?? 0) + data.byteLength > LIMITS.queuedBytes) { this.retry(session); return; }
     const bytes = new Uint8Array(data).slice();
     session.queue.push(bytes); session.queuedBytes += bytes.length;
     this.drain(session);
@@ -232,6 +317,7 @@ export class RoomLink {
       } else {
         const installed = await this.options.store.install({ name: this.options.name, broker: local.broker, wire: bytes, expectedDigest: local.current.digest, current: () => this.isCurrent(session, local.current.digest) });
         this.current(session, installed.current.digest);
+        this.options.application?.members(this.context(session, installed.current.digest));
       }
       session.initialRoster = false; session.roster = proof;
       session.phase = "roster";
@@ -243,27 +329,48 @@ export class RoomLink {
       if (!roster || ready.room !== local.current.room || ready.member !== this.options.store.identity.public.fingerprint || ready.epoch !== roster.epoch || ready.digest !== roster.digest) fail("untrusted");
       if (roster.digest !== local.current.digest) {
         if (roster.owner !== this.options.store.identity.public.fingerprint || BigInt(roster.epoch) >= BigInt(local.current.epoch)) fail("untrusted");
+        session.ownerUpgrading = true;
         this.send(session, local.wire); return;
       }
-      session.phase = "ready"; clearTimeout(session.handshake); this.attempts = 0;
+      session.phase = "ready"; session.ownerUpgrading = false; clearTimeout(session.handshake); this.attempts = 0;
+      if (session.deferredFrame) {
+        session.queue.unshift(session.deferredFrame); session.queuedBytes += session.deferredFrame.byteLength; session.deferredFrame = undefined;
+      }
       this.setState("online");
-      this.restorePresence(session);
+      const context = this.context(session, local.current.digest);
+      this.options.application?.members(context);
+      await this.retryPendingApplications();
+      this.current(session, local.current.digest);
+      await this.options.application?.online(context);
+      this.current(session, local.current.digest);
       void this.publishPresence().catch(() => this.retry(session));
       return;
     }
     if (message.type === "frame") {
-      if (session.phase !== "ready") fail("untrusted");
+      if (session.phase !== "ready") {
+        // X2 may already have one ciphertext in flight while this verified owner
+        // installs its newer local roster. Let roster/ready controls pass it;
+        // never decrypt, advance replay or ACK until the new roster is ready.
+        if (!session.ownerUpgrading || !session.roster || session.roster.owner !== this.options.store.identity.public.fingerprint || BigInt(session.roster.epoch) >= BigInt(local.current.epoch) || session.deferredFrame) fail("untrusted");
+        const deferred = decodeFrame(bytes); // Still require a canonical bounded room/recipient frame.
+        if (deferred.room !== session.room || !deferred.recipients.includes(this.options.store.identity.public.fingerprint)) fail("untrusted");
+        session.deferredFrame = Uint8Array.from(bytes);
+        return;
+      }
       await this.receiveFrame(session, bytes, local);
       return;
     }
     if (message.type === "stored") {
       const row = exact(message, ["v", "type", "digest", "seq", "duplicate"]);
       if (typeof row.digest !== "string" || !DIGEST.test(row.digest) || typeof row.seq !== "string" || !/^[1-9][0-9]{0,19}$/.test(row.seq) || typeof row.duplicate !== "boolean") fail();
+      this.options.application?.stored(this.context(session, local.current.digest), { digest: row.digest, seq: row.seq });
       return; // Broker storage is not a signed recipient application-completion receipt.
     }
     if (message.type === "queue_ack") {
       const row = exact(message, ["v", "type", "digest"]);
       if (typeof row.digest !== "string" || !DIGEST.test(row.digest)) fail();
+      try { this.options.application?.transportAck?.(this.context(session, local.current.digest), { digest: row.digest }); }
+      catch { /* A transport observer cannot change delivery or reconnect the link. */ }
       return;
     }
     if (message.type === "roster_installed") {
@@ -271,7 +378,13 @@ export class RoomLink {
       if (row.epoch !== local.current.epoch || row.digest !== local.current.digest || typeof row.changed !== "boolean") fail("untrusted");
       return;
     }
-    if (message.type === "error") { exact(message, ["v", "type", "code"]); fail("unavailable"); }
+    if (message.type === "error") {
+      const error = exact(message, ["v", "type", "code"]);
+      // X2 declares these refusal controls nonterminal. Their unsigned control
+      // cannot settle any application; its local ACK deadline records uncertainty.
+      if (error.code === "queue_full" || error.code === "replay_refused" || error.code === "unexpected_ack") return;
+      fail("unavailable");
+    }
     fail();
   }
   private frameCurrent(session: Session, frame: FrameWire): RoomState {
@@ -288,18 +401,43 @@ export class RoomLink {
     // for transport retirement. No malformed/foreign packet earns an ACK.
     const frame = decodeFrame(bytes), digest = local.current.digest;
     this.frameCurrent(session, frame);
-    let result: FrameOpenResult | undefined, refused: RoomRefusalReason | undefined, invalidPresence = false;
+    let result: FrameOpenResult | undefined, refused: RoomRefusalReason | undefined, invalidPresence = false, invalidApplication = false, unmatchedReceipt = false, freshChatCapacity = false, presenceCapacity = false;
+    let application: RoomMessage | undefined;
     try {
       result = await openFrame({ wire: bytes, identity: this.options.store.identity, current: local.current, ...(local.previous ? { previous: local.previous } : {}), replay: { accept: async input => {
         const latest = this.frameCurrent(session, frame);
         if (latest.current.digest !== digest) return { status: "trust_changed" };
         const sender = roomMembers(latest.current).find(member => member.fingerprint === input.sender);
         if (!sender) return { status: "trust_changed" };
-        try { presence(input.plaintext, sender.exposedPeers); } catch (error) { invalidPresence = true; throw error; }
-        return this.options.store.replay.accept(input);
+        let validPresence = false;
+        try {
+          if (packet(input.plaintext).type === "presence") { presence(input.plaintext, sender.exposedPeers); validPresence = true; }
+          else {
+            invalidApplication = true;
+            if (!this.options.application) fail("untrusted");
+            application = decodeRoomMessage(input.plaintext);
+            if (application.type === "chat" && application.envelope.from !== "user" && !sender.exposedPeers.includes(application.envelope.from)) fail("untrusted");
+            invalidApplication = false;
+          }
+        } catch (error) { if (!invalidApplication) invalidPresence = true; throw error; }
+        // This readonly metadata test stays outside the grammar catch: SQL/runtime
+        // errors cannot become safe drops. Only explicit physical-cap false qualifies.
+        if (validPresence && !this.options.store.ordinaryInboxAvailable(this.options.name, input.plaintext.byteLength)) {
+          presenceCapacity = true; this.retiredPresenceBytes = Math.max(this.retiredPresenceBytes, input.plaintext.byteLength);
+          fail("limit");
+        }
+        try { return await this.options.store.replay.accept(input); }
+        catch (error) {
+          if (application?.type === "receipt" && error instanceof RoomUnmatchedReceiptError) unmatchedReceipt = true;
+          if (application?.type === "chat" && error instanceof RoomFreshChatCapacityError) freshChatCapacity = true;
+          throw error;
+        }
       } } });
     } catch (error) {
-      if (invalidPresence) refused = "invalid_presence";
+      if (presenceCapacity) refused = "invalid_presence";
+      else if (unmatchedReceipt || freshChatCapacity) refused = "invalid_frame";
+      else if (invalidApplication) refused = "invalid_frame";
+      else if (invalidPresence) refused = "invalid_presence";
       else if (error instanceof RoomWireError) {
         if (error.code === "wrong_epoch") refused = "wrong_epoch";
         else if (error.code === "state_changed" || error.code === "untrusted") refused = "trust_changed";
@@ -311,24 +449,43 @@ export class RoomLink {
     const acceptedDigest = await this.frameDigest(bytes);
     const latest = this.frameCurrent(session, frame);
     if (latest.current.digest !== digest) refused = "trust_changed";
-    if (result?.status === "stale") refused = "stale";
+    if (result?.status === "stale") {
+      // A retained authenticated application receipt may outlive the ordinary
+      // crypto inbox tombstone. Unknown lower sequences still fabricate nothing.
+      await this.deliverApplication(session, digest, { digest: acceptedDigest, sender: frame.sender });
+      refused = "stale";
+    }
     if (refused) {
       this.options.store.recordRefused(this.options.name, acceptedDigest, refused, () => this.isFrameCurrent(session, frame));
       this.frameCurrent(session, frame);
       this.options.store.settleInbox(this.options.name, acceptedDigest);
+      if (result?.status === "accepted") this.capacityChanged(session, digest);
     } else if (result?.status === "accepted") {
+      if (result.gap !== "0") try { this.options.application?.gap?.(this.context(session, digest), { sender: frame.sender, count: result.gap }); } catch { /* metadata observation cannot affect admission */ }
       const sender = roomMembers(latest.current).find(member => member.fingerprint === frame.sender);
       if (!sender) fail("untrusted");
-      const peers = presence(result.plaintext, sender.exposedPeers);
-      this.current(session, digest);
-      try { this.options.onPresence?.({ member: frame.sender, peers }); } catch { /* validated observation only */ }
-      this.current(session, digest);
-      this.options.store.settleInbox(this.options.name, acceptedDigest);
-    } else if (result?.status !== "duplicate") fail("unavailable");
+      if (application && this.options.application) {
+        await this.deliverApplication(session, digest, { digest: acceptedDigest, sender: frame.sender, message: application });
+      } else {
+        const peers = presence(result.plaintext, sender.exposedPeers);
+        this.current(session, digest);
+        try { this.options.onPresence?.({ member: frame.sender, peers }); } catch { /* validated observation only */ }
+        this.current(session, digest);
+        this.options.store.settleInbox(this.options.name, acceptedDigest);
+        this.capacityChanged(session, digest);
+        if (packet(result.plaintext).requestReply === true) {
+          this.replyPresence = true;
+          void this.publishPresence().catch(() => this.retry(session));
+        }
+      }
+    } else if (result?.status === "duplicate") {
+      await this.deliverApplication(session, digest, { digest: acceptedDigest, sender: frame.sender });
+    } else fail("unavailable");
     this.frameCurrent(session, frame);
     // This ACK only retires ciphertext from the broker queue. A durable refusal
     // or stale drop is never a signed recipient application-completion receipt.
     this.send(session, encodeBrokerControl({ v: 1, type: "received", digest: acceptedDigest }));
+    await this.refreshPresenceIfCapacityFree().catch(() => undefined);
   }
   private async frameDigest(bytes: Uint8Array): Promise<string> {
     return encodeBase64url(await sha256(bytes));
@@ -343,30 +500,73 @@ export class RoomLink {
     if (peers.some((peer, index) => index > 0 && peers[index - 1]!.id === peer.id)) fail();
     return peers;
   }
+  /** Seal and send in reserve order; a concurrent presence must not overtake an application seq. */
+  private serialSend<T>(send: () => Promise<T>): Promise<T> {
+    const next = this.sendTail.then(send);
+    this.sendTail = next.then(() => undefined, () => undefined);
+    return next;
+  }
+  async publishApplication(message: RoomMessage, recipient: string, outgoing?: RoomOutgoingInput, current: () => boolean = () => true): Promise<string> {
+    const plaintext = encodeRoomMessage(message), metadata = outgoing ? { ...outgoing } : undefined;
+    const session = this.session;
+    if (!session || session.phase !== "ready") fail("unavailable");
+    const digest = this.current(session).current.digest;
+    const allowed = () => this.publicationCurrent(session, digest) && current();
+    return this.serialSend(async () => {
+      if (!allowed()) fail("state_changed");
+      const row = this.current(session, digest);
+      if (!roomMembers(row.current).some(member => member.fingerprint === recipient) || recipient === this.options.store.identity.public.fingerprint) fail("untrusted");
+      const wire = await sealFrame({ epoch: row.current, identity: this.options.store.identity, recipients: [recipient], plaintext, sequence: this.options.store.sequence });
+      if (!allowed()) fail("state_changed");
+      const record = metadata ? await this.options.store.queueApplication(this.options.name, wire, metadata, allowed) : undefined;
+      const frameDigest = record?.digest ?? await this.frameDigest(wire);
+      if (!allowed()) fail("state_changed");
+      this.send(session, wire);
+      return frameDigest;
+    });
+  }
   async publishPresence(): Promise<void> {
     const session = this.session;
     if (!session || session.phase !== "ready") return;
     if (this.publishing) { this.publishDirty = true; return; }
     if (this.republish) clearTimeout(this.republish);
     this.republish = undefined; this.publishDirty = false;
+    const response = this.replyPresence && !this.forcePresenceRequest;
+    if (response) this.replyPresence = false;
+    this.forcePresenceRequest = false;
+    let sent = false;
     this.publishing = true;
     try {
       const row = this.current(session), identity = this.options.store.identity;
+      if (!this.publicationCurrent(session, row.current.digest)) return;
       const own = roomMembers(row.current).find(member => member.fingerprint === identity.public.fingerprint);
       if (!own) fail("untrusted");
       const peers = this.currentPresence(own.exposedPeers);
       const recipients = roomMembers(row.current).map(member => member.fingerprint).filter(member => member !== identity.public.fingerprint).sort();
       if (!recipients.length) return;
-      const wire = await sealFrame({ epoch: row.current, identity, recipients, plaintext: canonicalBytes({ v: 1, type: "presence", peers }), sequence: this.options.store.sequence });
-      this.current(session, row.current.digest);
-      // Machine-local exposure can change during reserve/encryption/signing even
-      // when the signed roster is unchanged. Never emit an id it now withholds.
-      const allowed = new Set(this.currentPresence(own.exposedPeers).map(peer => peer.id));
-      if (peers.some(peer => !allowed.has(peer.id))) return;
-      this.send(session, wire);
+      await this.serialSend(async () => {
+        if (!this.publicationCurrent(session, row.current.digest)) return;
+        const requestReply = !response && session.requestPresenceReply;
+        const wire = await sealFrame({ epoch: row.current, identity, recipients, plaintext: canonicalBytes({ v: 1, type: "presence", peers, ...(requestReply ? { requestReply: true } : {}) }), sequence: this.options.store.sequence });
+        if (!this.publicationCurrent(session, row.current.digest)) return;
+        // Machine-local exposure can change during reserve/encryption/signing even
+        // when the signed roster is unchanged. Never emit an id it now withholds.
+        const allowed = new Set(this.currentPresence(own.exposedPeers).map(peer => peer.id));
+        if (peers.some(peer => !allowed.has(peer.id))) return;
+        this.send(session, wire); sent = true;
+        if (requestReply) {
+          session.requestPresenceReply = false;
+          if (this.retiredPresenceBytes && this.options.store.ordinaryInboxAvailable(this.options.name, this.retiredPresenceBytes)) this.retiredPresenceBytes = 0;
+        }
+      });
+    } catch (error) {
+      this.retry(session); // Existing bounded reconnect, never a self-polling refresh retry.
+      throw error;
     } finally {
       this.publishing = false;
-      const dirty = this.publishDirty, next = this.session;
+      const next = this.session;
+      if (sent && response && this.retiredPresenceBytes && session.requestPresenceReply) this.forcePresenceRequest = true;
+      const dirty = this.publishDirty || sent && (this.replyPresence || this.forcePresenceRequest);
       this.publishDirty = false;
       if (dirty && this.running && next?.phase === "ready") {
         // Coalesce all changes during one seal into one later fresh snapshot.

@@ -10967,13 +10967,15 @@ var init_local_worker = __esm(() => {
       const progress = { sideEffects: 0, last: "" };
       const requestedPolicy = this.opts.turnPolicy?.(envs);
       const policy = envs.some((env) => env.private) ? { ...requestedPolicy, pii: true } : requestedPolicy;
+      const remoteTurn = envs.some((env) => env.from.includes("@"));
+      const preserveHistory = !policy?.pii && !remoteTurn;
       const labelTurn = this.beginRouteTurn(turn, !!policy?.pii || envs.some((env) => env.private), policy?.task);
       let completed = false;
       const reply = { inReplyTo: replyParent(envs), to: replyAudience(envs), ...policy?.pii ? { to: [USER], private: true, priority: "important", ...policy.task ? { refs: { task: policy.task } } : {} } : {} };
       this.run(envs, turn, msgs, progress, policy, reply).then((answer) => {
         if (turn !== this.turn)
           return;
-        if (!policy?.pii)
+        if (preserveHistory)
           this.commit(msgs);
         if (answer)
           this.onMessage?.(answer, reply);
@@ -10984,36 +10986,38 @@ var init_local_worker = __esm(() => {
         if (turn !== this.turn)
           return;
         if (e instanceof ApprovalWaitStop) {
+          const message = remoteTurn ? "remote turn failed" : e.message;
           this.completeMissingToolResults(msgs, "not run: turn ended after unanswered approvals");
-          msgs.push({ role: "assistant", content: e.message });
-          if (!policy?.pii)
+          msgs.push({ role: "assistant", content: message });
+          if (preserveHistory)
             this.commit(msgs);
-          this.onMessage?.(e.message, reply);
+          this.onMessage?.(message, reply);
           if (deliveryId && this.activeDeliveryId === deliveryId)
-            this.delivery({ id: deliveryId, state: "completed", reason: e.message });
+            this.delivery({ id: deliveryId, state: "completed", reason: message });
           return;
         }
         if (this.budgetStopReason && !(e instanceof ExecutionBudgetStop))
           e = new ExecutionBudgetStop(this.budgetStopReason);
-        this.opts.log?.(`[${this.id}] turn failed: ${e.message}`);
+        const message = remoteTurn ? "remote turn failed" : e.message;
+        this.opts.log?.(`[${this.id}] turn failed: ${message}`);
         if (e instanceof ExecutionBudgetStop) {
-          this.reportBudgetStop(e, msgs, progress, reply, !!policy?.pii, deliveryId);
+          this.reportBudgetStop(e, msgs, progress, reply, !preserveHistory, deliveryId, remoteTurn);
           return;
         }
         if (!progress.sideEffects) {
           if (deliveryId && this.activeDeliveryId === deliveryId)
-            this.delivery({ id: deliveryId, state: "failed_safe", reason: e.message });
+            this.delivery({ id: deliveryId, state: "failed_safe", reason: message });
           else
             this.onFailed?.(envs);
           return;
         }
-        const note = `(turn failed after ${progress.sideEffects} tool call(s) with side effects: ${e.message.slice(0, 200)}. The work may be partial; check before repeating it.) ${progress.last}`.trim();
+        const note = remoteTurn ? message : `(turn failed after ${progress.sideEffects} tool call(s) with side effects: ${message.slice(0, 200)}. The work may be partial; check before repeating it.) ${progress.last}`.trim();
         msgs.push({ role: "assistant", content: note });
-        if (!policy?.pii)
+        if (preserveHistory)
           this.commit(msgs);
         this.onMessage?.(note, reply);
         if (deliveryId && this.activeDeliveryId === deliveryId)
-          this.delivery({ id: deliveryId, state: "needs_review", reason: e.message });
+          this.delivery({ id: deliveryId, state: "needs_review", reason: message });
       }).finally(() => {
         this.endRouteTurn(labelTurn, completed ? "completed" : "failed");
         if (turn === this.turn) {
@@ -11040,7 +11044,8 @@ var init_local_worker = __esm(() => {
     async run(envs, turn, msgs, progress, policy, reply) {
       const { maxSteps = 30 } = this.opts;
       const turnSignal = this.abort.signal;
-      const capture = policy?.pii ? undefined : this.opts.capture;
+      const remoteTurn = envs.some((env) => env.from.includes("@"));
+      const capture = policy?.pii || remoteTurn ? undefined : this.opts.capture;
       if (policy?.pii && !await this.opts.omni.onCampus()) {
         return "Refused: this is a PII task and the only reachable gateway is off campus (Cloudflare Access). Connect the VPN and assign it again.";
       }
@@ -11095,7 +11100,8 @@ var init_local_worker = __esm(() => {
               this.abort?.abort();
               throw new ApprovalWaitStop(this.approvalStopReason);
             }
-            this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
+            if (!remoteTurn)
+              this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
             if (name !== "hub_send" && name !== "doc_read" && name !== "web_fetch" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name))
               capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
           }
@@ -11176,15 +11182,16 @@ var init_local_worker = __esm(() => {
         }
       };
     }
-    reportBudgetStop(e, msgs, progress, reply, pii, deliveryId) {
-      this.completeMissingToolResults(msgs, `not run: ${e.message}`);
-      const detail = progress.sideEffects ? `(execution budget stopped after ${progress.sideEffects} tool call(s) with side effects; partial work may exist and needs review) ${progress.last}`.trim() : `(execution budget stopped before any tool side effects; no work was repeated) ${progress.last}`.trim();
+    reportBudgetStop(e, msgs, progress, reply, privateHistory, deliveryId, remoteTurn = false) {
+      const message = remoteTurn ? "remote turn failed" : e.message;
+      this.completeMissingToolResults(msgs, `not run: ${message}`);
+      const detail = remoteTurn ? message : progress.sideEffects ? `(execution budget stopped after ${progress.sideEffects} tool call(s) with side effects; partial work may exist and needs review) ${progress.last}`.trim() : `(execution budget stopped before any tool side effects; no work was repeated) ${progress.last}`.trim();
       msgs.push({ role: "assistant", content: detail });
-      if (!pii)
+      if (!privateHistory)
         this.commit(msgs);
       this.onMessage?.(detail, reply);
       if (deliveryId && this.activeDeliveryId === deliveryId)
-        this.delivery({ id: deliveryId, state: "needs_review", reason: e.message });
+        this.delivery({ id: deliveryId, state: "needs_review", reason: message });
     }
     async requireBudget(envs, unit) {
       if (!this.opts.admitBudget)
@@ -31375,7 +31382,7 @@ ${hint}`;
 async function push(envs, deliveryId, generation) {
   const parent = replyParent(envs);
   const single = envs.length === 1;
-  const content = single ? parent.body : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---
+  const content = single ? sanitize(parent.body) : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---
 ${sanitize(e.body)}`).join(`
 
 `);

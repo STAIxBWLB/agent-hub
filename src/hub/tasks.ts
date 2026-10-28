@@ -44,7 +44,7 @@ import { parseClaimVerdict, claimListId, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEY
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
-import { assign, detectSignals, peerEntry, predictSplit, relayCandidates, type Assignment, type InstanceRoutingOptions, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
+import { assign, isRemotePeerId, detectSignals, peerEntry, predictSplit, relayCandidates, type Assignment, type InstanceRoutingOptions, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
@@ -57,6 +57,10 @@ import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdap
 import { plannerGrooming, nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { CiWatchers, pollCi, type CiOutcome, type CiWatch } from "./ci-watch.ts";
 import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
+
+function requireLocalTaskPeer(peer: unknown): void {
+  if (isRemotePeerId(peer)) throw new PreEffectToolRefusal("remote peers have no local task authority");
+}
 
 export type TaskAssignmentRole = "owner" | "reviewer" | "planner";
 
@@ -450,6 +454,7 @@ export class Tasks {
 
   /** One bounded screen call. A screener that fails is no verdict, handled as PII (fail closed). */
   private requestCheck(by: PeerId, fence?: () => string | undefined): () => void {
+    requireLocalTaskPeer(by);
     const authority = this.d.requestAuthority?.(by);
     const check = () => { const reason = authority?.() ?? fence?.(); if (reason) throw new PreEffectToolRefusal(reason); };
     check(); return check;
@@ -570,6 +575,7 @@ export class Tasks {
 
   /** Captured at native turn start, not supplied by a model. */
   ownerTurnTasks(peer: PeerId): { id: number; acceptance: number }[] {
+    requireLocalTaskPeer(peer);
     return this.d.board.list("in_progress").flatMap(task => {
       const accepted = task.owner === peer && ["implement", "bulk_edit"].includes(task.class) ? this.ownerAcceptance(task) : undefined;
       return accepted ? [{ id: task.id, acceptance: accepted.index }] : [];
@@ -577,6 +583,7 @@ export class Tasks {
   }
 
   recordOwnerTurn(peer: PeerId, bindings: readonly { id: number; acceptance: number }[], changed: boolean | undefined, effect: boolean): void {
+    requireLocalTaskPeer(peer);
     this.noWriteTurns.retain(this.d.board.list("in_progress").filter(task => ["implement", "bulk_edit"].includes(task.class)).map(task => task.id));
     const current = new Map(this.ownerTurnTasks(peer).map(binding => [binding.id, binding.acceptance]));
     for (const binding of bindings) {
@@ -915,6 +922,7 @@ export class Tasks {
 
   /** Capability admission precedes explicit assignments/reservations, independent of readiness or transient peer health. */
   private requireCapabilities(task: Parameters<typeof assign>[0], peer: PeerId, role: Exclude<TaskAssignmentRole, "planner"> = "owner", preEffect = true): void {
+    requireLocalTaskPeer(peer);
     const instances = this.d.instances?.(), adapter = (this.d.adapterCatalog?.definitionOf ?? definitionOf)(peer, instances);
     const declaredExtra = !!adapter && adapter.kind !== peer;
     if ((!this.d.capabilities || this.isPii(task)) && !declaredExtra) return;
@@ -931,7 +939,7 @@ export class Tasks {
    * Selection stays in assign(); task bindings only keep that selection while the holder remains eligible.
    */
   private plannerHolders(): PeerId[] {
-    return Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => Array.isArray(roles) && roles.includes("planner") && this.d.bus.isRostered(peer)).map(([peer]) => peer).sort();
+    return Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => !isRemotePeerId(peer) && Array.isArray(roles) && roles.includes("planner") && this.d.bus.isRostered(peer)).map(([peer]) => peer).sort();
   }
 
   private weights(cls: TaskClass, task?: Task) {
@@ -1035,12 +1043,13 @@ export class Tasks {
 
   /** A removed/off-roster binding falls back to legacy holders; a busy, paused or offline holder keeps authority. */
   taskPlanner(task: Pick<Task, "planner">): PeerId[] {
-    const holders = Object.keys(this.d.roles ?? {}).filter(peer => this.d.roles?.[peer]?.includes("planner")).sort();
+    const holders = Object.keys(this.d.roles ?? {}).filter(peer => !isRemotePeerId(peer) && this.d.roles?.[peer]?.includes("planner")).sort();
     return task.planner && holders.includes(task.planner) && this.d.bus.isRostered(task.planner) ? [task.planner] : holders;
   }
 
   /** Current planner rulings amend review context, never person-only plan-departure acceptance. */
   plannerRulings(task: Task, recipient: PeerId): { historyIndex: number; by: PeerId; at: number; note: string }[] {
+    requireLocalTaskPeer(recipient);
     if (this.isPii(task)) return [];
     const boundary = task.history.findLastIndex(entry => entry.event === "accepted" || entry.event === "claimed");
     if (boundary < 0) return [];
@@ -1058,13 +1067,15 @@ export class Tasks {
   }
 
   private planningAuthority(by: PeerId, task?: Pick<Task, "planner">): void {
+    requireLocalTaskPeer(by);
     if (by !== USER && (!this.d.roles?.[by]?.includes("planner") || task !== undefined && !this.taskPlanner(task).includes(by))) throw new PreEffectToolRefusal(`planning requires a person or configured planner role${task ? "; only the task's effective planner may act" : ""}`);
   }
 
   /** #812 AC5: a peer holding the configured planner role. The conductor's task reads accept it; it grants no write. */
-  isConfiguredPlanner(peer: PeerId): boolean { return peer !== USER && peer !== HUB && !!this.d.roles?.[peer]?.includes("planner"); }
+  isConfiguredPlanner(peer: PeerId): boolean { return !isRemotePeerId(peer) && peer !== USER && peer !== HUB && !!this.d.roles?.[peer]?.includes("planner"); }
 
   private plannerWriteAuthority(by: PeerId, task?: Pick<Task, "planner">): void {
+    requireLocalTaskPeer(by);
     if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("planner writes are unavailable during a private turn");
     this.planningAuthority(by, task);
   }
@@ -1130,6 +1141,7 @@ export class Tasks {
 
   /** Host-observed task branch/root binding (#845), never a tool-call branch claim or an execution grant. */
   bindShellBranch(peer: PeerId, id: number, binding: TaskShellBinding & { worktree: string }, current: () => boolean): boolean {
+    requireLocalTaskPeer(peer);
     try {
       if (!Number.isSafeInteger(id) || id < 1 || !taskShellBindingValid(binding) || !this.publicMetadataText(binding.branch)
         || !current() || this.d.privateTurn?.(peer)) return false;
@@ -1426,7 +1438,7 @@ export class Tasks {
 
   /** One bounded ids-only batch per attached planner; failed or evicted copies stay pending. */
   flushPlannerNotices(): number {
-    const configured = Object.entries(this.d.roles ?? {}).filter(([, roles]) => roles.includes("planner")).map(([peer]) => peer);
+    const configured = Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => !isRemotePeerId(peer) && roles.includes("planner")).map(([peer]) => peer);
     for (const peer of this.knownPlanners) if (!configured.includes(peer)) {
       this.knownPlanners.delete(peer); this.plannerBacklog.delete(peer); this.plannerBlockedQueue.delete(peer);
       this.groomScan.pending.delete(peer); this.groomScan.sent.delete(peer);
@@ -1958,6 +1970,7 @@ export class Tasks {
 
   async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown; draft?: unknown; goal?: unknown }, external?: GitHubSource, created?: () => void, fence?: () => string | undefined): Promise<Task> {
     const requestCheck = this.requestCheck(by, fence);
+    requireLocalTaskPeer(input.owner);
     external = external ? { ...external } : undefined;
     if (external && (by !== USER || input.backlog !== true)) throw new PreEffectToolRefusal("external intake requires person-owned backlog staging");
     if (input.backlog !== undefined && typeof input.backlog !== "boolean") throw new PreEffectToolRefusal("backlog must be a boolean");
@@ -2286,6 +2299,7 @@ export class Tasks {
    * recipient, and carries `completedFor` so the bus replaces an earlier queued notice for the same `done` task and recipient.
    */
   whileOpenFor(to: PeerId, done: number, about: number[], body: string): void {
+    requireLocalTaskPeer(to);
     const env = newEnvelope(HUB, body, { to: [to], kind: "task", refs: { task: String(about[0]), taskRecipient: "owner", completedFor: done } });
     this.conditional.set(env.id, { peer: to, task: about[0]!, tasks: about, states: OPEN });
     if (this.conditional.size > 1024) this.conditional.delete(this.conditional.keys().next().value as string);
@@ -2293,6 +2307,7 @@ export class Tasks {
   }
 
   whileOpen(to: PeerId, task: number, body: string, states: Task["state"][] = OPEN): void {
+    requireLocalTaskPeer(to);
     const env = newEnvelope(HUB, body, { to: [to], kind: "task", refs: { task: String(task), taskRecipient: "owner" } });
     this.conditional.set(env.id, { peer: to, task, states });
     if (this.conditional.size > 1024) this.conditional.delete(this.conditional.keys().next().value as string);
@@ -2431,6 +2446,7 @@ export class Tasks {
    * Only when some other peer can take a task: with nobody to hand it to, it stays with its owner.
    */
   async releaseFromGone(peer: PeerId, minutes: number): Promise<{ id: number; title: string; to: PeerId | null }[]> {
+    requireLocalTaskPeer(peer);
     const moved: { id: number; title: string; to: PeerId | null }[] = [];
     const why = `owner ${peer} offline for ${minutes} min`;
     const ids = this.d.board.list().filter((t) => t.owner === peer && OPEN.includes(t.state)).map((t) => t.id);
@@ -2720,6 +2736,7 @@ export class Tasks {
 
   /** A self-claim has no assignment envelope; its tool result carries the same bounded guidance. */
   claimRoleGuidance(task: Task, peer: PeerId): string {
+    requireLocalTaskPeer(peer);
     return task.owner === peer && task.state === "in_progress" ? this.roleGuidance(task, peer) : "";
   }
 
@@ -3046,6 +3063,7 @@ export class Tasks {
 
   /** Why a proposal's named owner (a self-claim included) did not get it, from the stall its proposal recorded (#601); undefined when it did. */
   namedOwnerNote(task: Task, named: PeerId | undefined, by: PeerId): string | undefined {
+    requireLocalTaskPeer(by);
     if (!named || task.owner || task.state !== "proposed") return undefined;
     const stall = this.d.board.stalls().find(row => row.task === task.id);
     if (!stall) return undefined;
@@ -3086,6 +3104,7 @@ export class Tasks {
   }
 
   async cancel(id: unknown, by: PeerId, input: { reason: string; supersededBy?: string; expectedFlowRevision?: number }): Promise<Task> {
+    requireLocalTaskPeer(by);
     if (typeof input.reason !== "string" || !input.reason.trim() || Buffer.byteLength(input.reason) > 4000 || input.supersededBy !== undefined && (typeof input.supersededBy !== "string" || !input.supersededBy.trim() || Buffer.byteLength(input.supersededBy) > 1000)) throw new PreEffectToolRefusal("cancellation needs a bounded reason and supersession reference");
     const validate = () => {
       if (this.d.cancellationHeld?.() || this.d.bus.isRecoveryHeld) throw new PreEffectToolRefusal("recovery or shutdown is holding cancellation");
@@ -3197,6 +3216,7 @@ export class Tasks {
   }
 
   private mine(task: Task, by: PeerId, role: "owner" | "reviewer", preEffect = false): void {
+    requireLocalTaskPeer(by);
     if (by !== USER && task[role] !== by) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: only its ${role} (${task[role] ?? "none"}) or the console user can do that`);
   }
 
@@ -3470,6 +3490,7 @@ export class Tasks {
   }
 
   proposeFromBands(by: PeerId = HUB): number[] {
+    requireLocalTaskPeer(by);
     const config = this.d.sdlc?.config();
     if (!config || config.mode === "off" || !config.bands || !Object.keys(config.bands).length) return [];
     if (this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) return [];
@@ -3800,6 +3821,7 @@ export class Tasks {
   }
 
   recordLifecycle(by: PeerId, id: unknown, input: unknown, deliverables?: DeliverableRecord[]): Task {
+    requireLocalTaskPeer(by);
     const task = this.need(id, false, true);
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     const next = sdlcReceipt(input, task.sdlc, config, VERSION);
@@ -3891,8 +3913,9 @@ export class Tasks {
   private readonly mergesInFlight = new Set<number>();
   /** #786: who may ask for a guarded merge. The hub's own approval trigger acts as HUB; a peer must be the one configured conductor. */
   private mergeAuthority(by: PeerId): boolean {
+    if (isRemotePeerId(by)) return false;
     if (by === USER || by === HUB) return true;
-    const holders = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor);
+    const holders = Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => !isRemotePeerId(peer) && Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor);
     return holders.length === 1 && holders[0] === by;
   }
   /**
@@ -4205,6 +4228,7 @@ export class Tasks {
 
   /** Build entry with a live readback of the spec's body edit time (#481 S1): enforce refuses, advise notifies, off does nothing. */
   async specGate(by: PeerId, id: unknown): Promise<void> {
+    requireLocalTaskPeer(by);
     const task = this.need(id, false, true);
     if (!this.specGated(task) || task.owner !== by && by !== USER) return; // accept reports its own refusals
     const accepted = task.sdlc?.acceptance;
@@ -4215,6 +4239,7 @@ export class Tasks {
 
   /** #481 S1: a build stage change by an agent re-reads the body edit time first, as accept does. */
   async specStageGate(by: PeerId, id: unknown, input: unknown): Promise<void> {
+    requireLocalTaskPeer(by);
     const task = this.need(id, false, true), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off" || by === USER || !input || typeof input !== "object" || !("stage" in input)) return;
     let next: ReturnType<typeof sdlcReceipt>;
@@ -4366,6 +4391,7 @@ export class Tasks {
    * announced like one found at assignment (issue #31).
    */
   accept(by: PeerId, id: unknown, plan?: unknown, refs?: unknown): Task {
+    requireLocalTaskPeer(by);
     const metadata = acceptRefs(refs);
     const task = this.need(id, false, true);
     this.mine(task, by, "owner", true);
@@ -4701,6 +4727,7 @@ export class Tasks {
    * duplicate notice is the price of never losing one.
    */
   replayHeld(peer: PeerId): void {
+    requireLocalTaskPeer(peer);
     const finished = this.d.board.list().filter((u) => (u.state === "approved" || u.state === "in_review") && u.owner && !this.isPii(u));
     for (const t of this.d.board.list()) {
       if (!OPEN.includes(t.state) || t.owner !== peer || this.isPii(t)) continue;
@@ -4957,7 +4984,7 @@ export class Tasks {
     let quietDrift = false;
     const guard = () => {
       if (actor !== USER && actor !== task.owner) {
-        const holders = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([peer]) => peer);
+        const holders = Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => !isRemotePeerId(peer) && Array.isArray(roles) && roles.includes("conductor")).map(([peer]) => peer);
         if (holders.length !== 1 || holders[0] !== actor) throw new (preEffect ? PreEffectToolRefusal : Error)("review admission authority changed");
       }
       // #694: the board copy seen through the same staged identity link the caller's task carries.
@@ -5166,6 +5193,7 @@ export class Tasks {
 
   /** Host-only admission for a queued review after asynchronous native preparation. */
   reviewBindingCurrent(by: PeerId, id: number, binding: { head?: string; flowRevision?: number }): boolean {
+    requireLocalTaskPeer(by);
     const task = this.d.board.get(id);
     return !!task && task.state === "in_review" && task.reviewer === by && !this.isPii(task)
       && this.reviewRequestRevision(task) === binding.flowRevision && this.reviewHead(task) === binding.head;
@@ -5173,6 +5201,7 @@ export class Tasks {
 
   /** Host-only failure report, bound to the exact review request and its still-current child generation. */
   async retryReviewer(id: number, failedPeer: PeerId, failure: { head?: string; flowRevision?: number; cause: "start_failed" | "quota" | "no_verdict" }, current: () => boolean, onReoffered?: () => void): Promise<Task> {
+    requireLocalTaskPeer(failedPeer);
     if (!failure || !["start_failed", "quota", "no_verdict"].includes(failure.cause) || !/^[a-z][a-z0-9-]{0,63}$/.test(failedPeer) || !Number.isSafeInteger(failure.flowRevision) || failure.flowRevision! < 1 || failure.head !== undefined && (typeof failure.head !== "string" || text(failure.head) !== failure.head || Buffer.byteLength(failure.head) > 1200 || /\p{Cc}/u.test(failure.head))) throw new PreEffectToolRefusal("invalid reviewer failure binding");
     const valid = () => {
       const task = this.need(id, false, true);
@@ -5479,7 +5508,7 @@ export class Tasks {
    * the review or the task reaches it; a PII task's notice is private. With no conductor the person sees one console notice instead.
    */
   private tellConductorEvidenceOnly(task: Task, reviewer: PeerId): void {
-    const conductors = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor).filter(actor => actor !== reviewer);
+    const conductors = Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => !isRemotePeerId(peer) && Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor).filter(actor => actor !== reviewer);
     const text = evidenceOnlyNotice(task.id, reviewer);
     if (!conductors.length) { this.releaseNotice(text); return; }
     this.releaseNotice(`task #${task.id}: could not tell the conductor a code-scope review was evidence-only`, () => {
@@ -5489,6 +5518,7 @@ export class Tasks {
 
   /** Task-level escalation: the next attached peer in the class's escalate_to takes over, with the history. */
   async escalate(by: PeerId, id: unknown, why = "by hand", reason: TaskMoveReason | undefined = by === HUB ? undefined : "manual", preEffect = false): Promise<Task> {
+    requireLocalTaskPeer(by);
     let task = this.need(id, true, preEffect);
     const list = this.d.routing().classes[task.class]?.escalate_to ?? [];
     if (task.state === "changes_requested") task = this.d.board.update(task.id, HUB, "reopened", { state: "in_progress" });
@@ -5563,6 +5593,7 @@ export class Tasks {
 
   /** Caller authority is checked by the daemon; keep the real actor in task history. */
   async assignTo(id: unknown, peer: PeerId, by: PeerId = USER, preEffect = false, role: TaskAssignmentRole = "owner", expectedFlowRevision?: number): Promise<Task> {
+    requireLocalTaskPeer(by); requireLocalTaskPeer(peer);
     if (role !== "owner" && role !== "reviewer" && role !== "planner") throw new (preEffect ? PreEffectToolRefusal : Error)("role must be owner, reviewer or planner");
     if (role === "planner") {
       if (by !== USER) throw new PreEffectToolRefusal("only the person may name a task planner");
@@ -5576,7 +5607,7 @@ export class Tasks {
       return next;
     }
     if (role === "reviewer" && by !== USER) {
-      const conductors = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor);
+      const conductors = Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => !isRemotePeerId(peer) && Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor);
       if (conductors.length !== 1 || conductors[0] !== by) throw new (preEffect ? PreEffectToolRefusal : Error)("only the console user or the configured conductor may name a reviewer");
     }
     const queueAssignment = this.explicitQueueAssignment(by, role, preEffect);
@@ -5596,7 +5627,7 @@ export class Tasks {
       const current = this.need(task.id, false, preEffect);
       if (current.history.length !== task.history.length) throw new (preEffect ? PreEffectToolRefusal : Error)("task changed during reviewer admission");
       if (by !== USER) {
-        const holders = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor);
+        const holders = Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => !isRemotePeerId(peer) && Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor);
         if (holders.length !== 1 || holders[0] !== by) throw new (preEffect ? PreEffectToolRefusal : Error)("only the console user or the configured conductor may name a reviewer");
       }
       if (!this.d.bus.isRostered(peer)) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} is off roster`);
@@ -5647,11 +5678,13 @@ export class Tasks {
    * the usual constraints. Tasks it was reviewing get another reviewer. Moves are reported, never taken back automatically.
    */
   async reassignForPause(peer: PeerId, context: string | undefined, urgentOnly = false): Promise<{ id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]> {
+    requireLocalTaskPeer(peer);
     return this.reassignWork(peer, context, urgentOnly, false);
   }
 
   /** Read-only preview using the same assignment constraints as the roster relay. */
   rosterPreview(peer: PeerId): { id: number; title: string; role: "owner" | "reviewer"; to: PeerId | null }[] {
+    requireLocalTaskPeer(peer);
     const routing = this.d.routing();
     return this.d.board.list().filter(task => !isClosedTaskState(task.state) && (task.owner === peer || task.reviewer === peer)).map(task => {
       const owner = task.owner === peer;
@@ -5665,6 +5698,7 @@ export class Tasks {
 
   /** A roster removal offers work through the quota relay's constraints, preserving assignments nobody can take. */
   async reassignForRoster(peer: PeerId, current?: () => void): Promise<{ id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]> {
+    requireLocalTaskPeer(peer);
     return this.reassignWork(peer, undefined, false, true, current);
   }
 
@@ -5830,6 +5864,7 @@ export class Tasks {
   }
   /** A person links a board task of this project to a long-term task (`ahub goal link`). */
   linkGoal(by: PeerId, id: unknown, ref: unknown): string {
+    requireLocalTaskPeer(by);
     const task = this.d.board.get(Number(id));
     if (!task) throw new Error(`no task #${String(id).slice(0, 12)}`);
     const goal = this.goalFor(by, ref);

@@ -1,7 +1,9 @@
+import { decodeBase64url } from "../rooms/crypto.ts";
+import { roomReceiptReasonText, type RoomReceiptReason } from "../rooms/application.ts";
 /** Room mutations are person-only; main.ts refuses agent and live-test calls before importing this module. */
-export const ROOM_USAGE = "usage: ahub room create <name> --broker <url> [--label <id>] | invite <name> [--accept <request>] | join <token> [--name <name>] [--label <id>] | join <name> --roster <signed-roster> | leave <name> | revoke <name> <fingerprint> | expose <name> [<peer>...] (mutations require TTY y/N or --confirm <member-fingerprint-prefix>, 16..64 lowercase hex) | list [--json] | status [<name>] [--json]";
+export const ROOM_USAGE = "usage: ahub room create <name> --broker <url> [--label <id>] | invite <name> [--accept <request>] | join <token> [--name <name>] [--label <id>] | join <name> --roster <signed-roster> | leave <name> | revoke <name> <fingerprint> | expose <name> [<peer>...] | resolve <name> --frame <digest> --action accept|discard (mutations require TTY y/N or --confirm <member-fingerprint-prefix>, 16..64 lowercase hex) | list [--json] | status [<name>] [--json]";
 
-type RoomAction = "create" | "invite" | "join" | "leave" | "revoke" | "expose";
+type RoomAction = "create" | "invite" | "join" | "leave" | "revoke" | "expose" | "resolve";
 export type RoomCliCommand =
   | { op: "list" | "status"; input: Record<string, unknown>; json: boolean }
   | { op: "mutation"; action: RoomAction; input: Record<string, unknown>; confirm?: string };
@@ -25,11 +27,11 @@ function artifact(value: string | undefined): string {
   if (!value || value.length > 699_051 || !B64.test(value) || value.length % 4 === 1) fail();
   return value;
 }
-function flags(args: readonly string[], allowed: readonly string[]): Map<string, string> {
+function flags(args: readonly string[], allowed: readonly string[], dashValues: readonly string[] = []): Map<string, string> {
   const result = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
     const key = args[i], value = args[i + 1];
-    if (!key || !allowed.includes(key) || !value || value.startsWith("--") || result.has(key)) fail();
+    if (!key || !allowed.includes(key) || !value || value.startsWith("--") && !dashValues.includes(key) || result.has(key)) fail();
     result.set(key, value);
   }
   return result;
@@ -44,6 +46,12 @@ function parseRoomInput(args: readonly string[]): RoomCliCommand {
     return { op: action, input: values.length ? { name: id(values[0]) } : {}, json };
   }
   if (args.includes("--json")) fail(); // Invitation secrets are never a JSON data format.
+  if (action === "resolve") {
+    const name = id(operand), options = flags(rest, ["--frame", "--action"], ["--frame"]), frame = options.get("--frame"), choice = options.get("--action");
+    if (!frame || frame.length !== 43 || (choice !== "accept" && choice !== "discard")) fail();
+    try { decodeBase64url(frame, 32); } catch { fail(); }
+    return { op: "mutation", action, input: { name, frame, action: choice } };
+  }
   if (action === "create") {
     const name = id(operand), options = flags(rest, ["--broker", "--label"]), broker = options.get("--broker");
     if (!broker || broker.length > 2048) fail();
@@ -116,7 +124,50 @@ async function confirmMember(member: string, explicit: string | undefined, io: R
   return member;
 }
 
-interface RoomRow { name: string; room: string; owner: string; member: string; epoch: string; state: string }
+type DeliveryState = "pending" | "dispatching" | "accepted" | "completed" | "completed (admitted)" | "failed_safe" | "needs_review" | "disposed" | "disposed (accept, by person)" | "disposed (discard, by person)";
+interface DeliveryRow { direction: "inbound" | "outbound"; id: string; application: string; peer: string; state: DeliveryState; disposition?: "accept" | "completed" | "retry" | "discard"; lateReceipt?: "completed (admitted)" | "failed_safe"; refusalReason?: RoomReceiptReason }
+interface DeliverySummary { direction: "inbound"; pending: number; needsReview: number; truncated: boolean }
+interface RemotePeerRow { id: string; state: "idle" | "busy" | "paused" | "offline" }
+interface RoomRow { name: string; room: string; owner: string; member: string; epoch: string; state: string; deliveries?: (DeliveryRow | DeliverySummary)[]; remotePeers?: RemotePeerRow[] }
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const REMOTE_ID = /^[a-z][a-z0-9-]{0,31}@[a-z][a-z0-9-]{0,31}$/;
+const REFUSAL_REASONS: readonly RoomReceiptReason[] = ["admitted", "not_exposed", "boundary_refused", "invalid_message", "rate_limited", "hop", "person_inbox_unsupported"];
+const DELIVERY_STATES: readonly string[] = ["pending", "dispatching", "accepted", "completed", "completed (admitted)", "failed_safe", "needs_review", "disposed", "disposed (accept, by person)", "disposed (discard, by person)"];
+function digestId(value: unknown): value is string {
+  if (typeof value !== "string" || value.length !== 43) return false;
+  try { decodeBase64url(value, 32); return true; } catch { return false; }
+}
+function deliveryRows(value: unknown): (DeliveryRow | DeliverySummary)[] {
+  if (!Array.isArray(value) || value.length > 401) return fail("invalid_reply");
+  return value.map<DeliveryRow | DeliverySummary>(item => {
+    const row = record(item);
+    if (row.direction !== "inbound" && row.direction !== "outbound") return fail("invalid_reply");
+    if (row.id === undefined) {
+      if (row.direction !== "inbound" || typeof row.pending !== "number" || !Number.isSafeInteger(row.pending) || row.pending < 0 || row.pending > 10000
+        || typeof row.needsReview !== "number" || !Number.isSafeInteger(row.needsReview) || row.needsReview < 0 || row.needsReview > 10000
+        || typeof row.truncated !== "boolean") return fail("invalid_reply");
+      return { direction: "inbound", pending: row.pending, needsReview: row.needsReview, truncated: row.truncated };
+    }
+    if (typeof row.id !== "string" || !(UUID.test(row.id) || digestId(row.id)) || typeof row.application !== "string" || !UUID.test(row.application)
+      || typeof row.peer !== "string" || !(ID.test(row.peer) || REMOTE_ID.test(row.peer))
+      || typeof row.state !== "string" || !DELIVERY_STATES.includes(row.state)) return fail("invalid_reply");
+    if (row.disposition !== undefined && (typeof row.disposition !== "string" || (row.direction === "inbound" ? !["accept", "discard"].includes(row.disposition) : !["completed", "retry", "discard"].includes(row.disposition)))) return fail("invalid_reply");
+    if (row.lateReceipt !== undefined && row.lateReceipt !== "completed (admitted)" && row.lateReceipt !== "failed_safe") return fail("invalid_reply");
+    if (row.refusalReason !== undefined && (typeof row.refusalReason !== "string" || !REFUSAL_REASONS.includes(row.refusalReason as RoomReceiptReason))) return fail("invalid_reply");
+    if (row.direction === "outbound" && row.state.startsWith("disposed")) return fail("invalid_reply");
+    const state = row.state === "completed" ? "completed (admitted)" : row.state === "disposed" && row.disposition !== undefined ? `disposed (${row.disposition}, by person)` as DeliveryState : row.state as DeliveryState;
+    return { direction: row.direction, id: row.id, application: row.application, peer: row.peer, state,
+      ...(row.disposition !== undefined ? { disposition: row.disposition as DeliveryRow["disposition"] } : {}), ...(row.lateReceipt !== undefined ? { lateReceipt: row.lateReceipt as DeliveryRow["lateReceipt"] } : {}), ...(row.refusalReason !== undefined ? { refusalReason: row.refusalReason as RoomReceiptReason } : {}) };
+  });
+}
+function remotePeerRows(value: unknown): RemotePeerRow[] {
+  if (!Array.isArray(value) || value.length > 4096) return fail("invalid_reply");
+  return value.map<RemotePeerRow>(item => {
+    const row = record(item);
+    if (typeof row.id !== "string" || !REMOTE_ID.test(row.id) || typeof row.state !== "string" || !["idle", "busy", "paused", "offline"].includes(row.state)) return fail("invalid_reply");
+    return { id: row.id, state: row.state as RemotePeerRow["state"] };
+  });
+}
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return fail("invalid_reply");
   return value as Record<string, unknown>;
@@ -135,7 +186,8 @@ function roomRows(value: unknown): RoomRow[] {
       || typeof row.epoch !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(row.epoch)
       || typeof row.state !== "string" || !/^[a-z][a-z_-]{0,31}$/.test(row.state)) return fail("invalid_reply");
     // Ignore all other fields, even from a newer daemon: read output never grows into room bodies or secrets.
-    return { name: row.name, room: row.room, owner: row.owner, member: row.member, epoch: row.epoch, state: row.state };
+    return { name: row.name, room: row.room, owner: row.owner, member: row.member, epoch: row.epoch, state: row.state,
+      ...(row.deliveries !== undefined ? { deliveries: deliveryRows(row.deliveries) } : {}), ...(row.remotePeers !== undefined ? { remotePeers: remotePeerRows(row.remotePeers) } : {}) };
   });
 }
 
@@ -146,7 +198,14 @@ export async function runRoomCommand(args: readonly string[], request: RoomReque
     const result = success(await request({ t: "room", op: command.op, input: command.input })), rows = roomRows(result.rooms);
     if (args.includes("--json")) return console.log(JSON.stringify(rows));
     console.log(`Rooms (${rows.length})`);
-    for (const row of rows) console.log(`${row.name} ${row.room} epoch ${row.epoch} ${row.state}\n  owner ${row.owner}\n  member ${row.member}`);
+    for (const row of rows) {
+      console.log(`${row.name} ${row.room} epoch ${row.epoch} ${row.state}\n  owner ${row.owner}\n  member ${row.member}`);
+      for (const peer of row.remotePeers ?? []) console.log(`  peer ${peer.id}: ${peer.state}`);
+      for (const delivery of row.deliveries ?? []) {
+        if (!("id" in delivery)) console.log(`  inbound: pending ${delivery.pending}, needs_review ${delivery.needsReview}${delivery.truncated ? "; truncated" : ""}`);
+        else console.log(`  ${delivery.direction} ${delivery.id}: ${delivery.state}; application ${delivery.application}; peer ${delivery.peer}${delivery.disposition ? `; person disposition ${delivery.disposition}` : ""}${delivery.lateReceipt ? `; late receipt evidence ${delivery.lateReceipt}` : ""}${delivery.refusalReason ? `; refusal ${roomReceiptReasonText(delivery.refusalReason)}` : ""}`);
+      }
+    }
     return;
   }
   const preview = success(await request({ t: "room", op: "preview", action: command.action, input: command.input }));
@@ -166,7 +225,7 @@ export async function runRoomCommand(args: readonly string[], request: RoomReque
     try { encoded = artifact(result.artifact); } catch { return fail("invalid_reply"); }
     console.log("Room artifact (share out of band):");
     console.log(encoded);
-  } else console.log(`room ${command.action}: complete`);
+  } else console.log(command.action === "resolve" && result.kind === "disposed" ? "room resolve: disposed" : `room ${command.action}: complete`);
 }
 
 /** Never echo tokens, broker URLs, daemon payloads or native diagnostics on refusal. */

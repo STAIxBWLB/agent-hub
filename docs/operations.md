@@ -4702,7 +4702,7 @@ be retried with the same token/name/label; `room leave team` cancels it if neede
 `room expose team codex` sets the untracked local exposure policy. On a non-owner
 it prints a signed exposure request: send it through the same owner `invite --accept`
 and joiner `join --roster` round trip. Empty exposure is the default. `room status`
-shows ids/link state only. X3 exchanges signed presence; cross-hub chat is X4.
+shows ids and closed states. The X4 chat workflow is below.
 
 `room revoke team <fingerprint>` rotates the owner roster, giving no new key to the
 removed member. `room leave team` disconnects locally and retains replay/pin state;
@@ -4743,3 +4743,78 @@ Continuing reviewers remain bound unless their own queue refuses the new offer.
 Setting both values to zero returns
 to ordinary automatic assignment. This PR changes no live repository setting or
 routing template; real-use adoption metrics remain separate from fixture checks.
+
+
+## Screened room chat (#446 X4)
+
+After joining and confirming fingerprints, expose each receiving native peer with
+`ahub room expose team codex`. A non-owner returns the signed exposure request to
+the owner and installs the resulting roster as described above. Exposure is empty
+by default; this repository enables no room or exposure automatically.
+
+`ahub room status team` lists remote addresses such as `codex@hub-guest`. Send to
+one explicitly:
+
+```sh
+ahub say @codex@hub-guest "Please inspect the public example"
+```
+
+A local exposed agent can use `hub_send` with that exact address. Native peers
+can exchange round-trips. Console sends are one-way until X5 supplies a durable
+person inbox: a reply to `user@label` returns signed `failed_safe` with
+"person inbox not supported yet (X5)", rather than being admitted or lost. One remote plus
+local recipients is supported. X4 refuses multiple remote recipients before any
+delivery: send separately. Ordinary broadcasts stay local. Unknown or ambiguous
+addresses refuse. Private turns, PII task references and private envelopes do not
+cross; secret/path/pattern/model-screen failures produce an ids-only stub.
+
+Room status and `ahub queue show <delivery-id>` distinguish accepted ciphertext
+from **completed (admitted)**, meaning the remote hub saved the chat to its local
+peer queue. Native/model execution is independent. Incoming messages remain
+untrusted text and grant no local task, role, approval, tool or control authority.
+
+Offline queues are capped at 200 per room. In untracked config.local.json, optional
+`rooms.ack_timeout_s` defaults to 600 and `rooms.queue_ttl_h` to 24. A restart,
+expired deadline or uncertain publication leaves `needs_review`. It is not
+replayed automatically. A late signed receipt is visible as evidence in queue
+inspection; the person's disposition is still required. Old text cannot be
+retried to a replacement fingerprint reusing a label. An unproved terminal retry
+refuses and requires a deliberately authored new message.
+An expired or missing original enqueue deadline likewise refuses retry without
+recording a successful disposition. Send a new message deliberately instead.
+
+The ACK timeout starts when the application is handed to the room link, even if
+the broker never confirms storage. A reconnect or restart requests fresh signed
+presence from the other hub without waiting for its peer state to change.
+Capacity refusal of one incoming chat retains that pending chat while allowing
+later packets and receipts through; a later online or person-disposition event
+rechecks admission. Merely reading room status applies no disposition.
+Up to eight matching receipt payloads per room have a separate 1,024-byte-per-row
+durable reserve so a full chat inbox can still settle outstanding deliveries.
+The normal chat cap is unchanged; unrelated receipts cannot use that reserve.
+Presence retired at the ordinary cap is re-fetched once after capacity frees,
+so that a dropped state update does not leave the remote view stale indefinitely.
+Fresh authenticated chat that reaches the full ordinary inbox is refused and
+transport-ACKed without admission or a signed receipt. The sender's application
+expires to `needs_review`; receipt traffic behind the refused chat continues.
+
+For an incoming uncertain admission, copy its frame id from room status:
+
+```sh
+ahub room resolve team --frame FRAME_DIGEST --action accept
+ahub room resolve team --frame FRAME_DIGEST --action discard
+```
+
+Both forms show the owner/member fingerprints before asking y/N. Non-TTY use
+requires `--confirm` with a matching member fingerprint prefix. Accept records
+that the person vouches the local peer got it; discard records dropping it.
+Neither sends, re-admits, or produces a signed completion. The displayed state is
+**disposed (accept|discard, by person)**. These mutations refuse agent shells and
+`--live-test`, including after leaving a room.
+
+Application-id and trace metadata retain 30 days/10,000 per room, evicting settled
+rows first. Protected uncertainty remains until person disposition. Outside that
+retention no historical app-id or trace claim is made; permanent seq floors and
+MAX_HOP 3 still apply. Status prioritizes uncertainty and bounds each direction's
+rows to 200; queue inspection remains the delivery-history entry point. Broker,
+TLS/proxy and real two-machine/account receipts remain separate live proof.

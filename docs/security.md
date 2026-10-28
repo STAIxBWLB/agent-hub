@@ -642,3 +642,72 @@ poison queue head without accepting its body, advancing replay state or issuing
 an application-completion receipt. Unproven session/recipient authority or failed
 durable storage receives no ACK. Only bounded diagnostic records may be evicted;
 sequence/replay records retain their existing rules.
+
+
+## Screened room application traffic (#446 X4)
+
+Room encryption authenticates a hub, not local role authority. Remote ids contain
+`@` and cannot connect to local control, own tasks, review, plan, conduct, start a
+native runtime or become a recovery session. Incoming chat is explicitly directed
+to a current exposed local native peer, framed as untrusted, and capped at status.
+The same live sender-exposure check applies to restored inboxes. A removed
+sender's registered pending application is quarantined before its plaintext is
+retired, so it remains available for person disposition.
+
+`roomBoundary` is the outbound privacy owner. It snapshots inputs, drops refs,
+refuses private/PII/unknown-authority contexts and rechecks after awaits. Host
+private-turn provenance is retained at enqueue, so waiting offline cannot wash
+it away. Screen failure sends only a fixed stub with a public application id.
+Optional model screening uses the existing local/campus-only rule; unknown
+never permits the body. Patterns/models do not prove that paraphrased text is
+free of private meaning. Remote bodies enter no digest model, memory observation,
+public event payload or hub log; the local delivery journal retains the evidence.
+The local worker disables Capture and tool-body observation for an entire mixed
+or remote-origin turn, and does not commit that transcript to reusable local
+history. A later local-only turn therefore cannot capture the retained remote
+input through that history. Single Claude channel pushes sanitize bodies just
+as digests do.
+
+Recipient room/fingerprint bindings survive queued, active and uncertain journal
+work. Label reuse cannot retarget old text, including an explicit retry after
+restart. X4 permits one remote destination per send and refuses multiple remote
+targets before any local effect; implicit broadcast never crosses the boundary.
+
+Signed completion proves remote durable queue admission only and is displayed as
+completed (admitted). Crypto inbox, application claim and Bus publication use
+separate durable stages; a cross-DB failure is uncertainty, never an exactly-once
+or native-execution claim. Late proof cannot auto-settle uncertainty. Person
+accept/discard is local disposed metadata and never a signed application receipt.
+
+Schema3 reserves a separate durable lane for at most eight canonical receipt
+payloads per room, at most 1,024 bytes each and 512 KiB extra globally. A receipt
+can take a reserved slot only after its authenticated sender and exact
+frame/application/peer match this hub's outstanding outgoing row. Authenticated
+junk cannot consume the reserve. Normal chat retains its 200-row/16 MiB ceiling;
+presence, signatures and replay floors are unchanged. Settlement frees the slot,
+and reopen validates the marker, payload and bounds, refusing an over-cap store.
+Legacy rows migrate as ordinary rows, never with inferred receipt authority.
+Only at the physical cap, a current authenticated member's non-matching receipt
+is durably refused with `invalid_frame` and transport-ACKed without advancing
+the floor. A matching receipt with a full reserve remains unACKed until a slot
+frees. Neither path invents admission or a signed application outcome.
+Fully validated presence at the ordinary cap is durably refused with
+`invalid_presence` and transport-ACKed without a floor or state observation.
+Capacity recovery requests fresh presence once per transition; runtime and
+other storage errors stay unACKed.
+Fresh, fully authenticated chat at the ordinary cap is likewise durably refused
+and transport-ACKed without admission, floor advance or signed receipt. Its
+sender remains uncertain until the application ACK deadline; the refused chat
+cannot hold matching receipt traffic behind it in the broker FIFO.
+
+Permanent signed sequence floors survive all application retention/eviction.
+Application-id and trace guards retain 30 days/10,000 rows per room, settled first;
+outside that retention they make no historical claim. MAX_HOP 3 remains absolute.
+All-unsettled capacity refuses with ids/counts, and person disposition releases
+settled capacity. This state protects against other users, not hostile code
+running as the same user with access to the private room keys. Native/account,
+live TLS/proxy forwarding and X7 two-machine behavior remain unverified here.
+
+The console is a one-way room sender in X4. Replies to `user@label` receive an
+authenticated unsupported-person-inbox NACK, retained as a known terminal
+`failed_safe` outcome, never silently retried or claimed as person admission.

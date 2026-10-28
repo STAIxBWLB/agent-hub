@@ -285,3 +285,101 @@ test("a failed durable refusal write retains the broker packet without transport
     expect(f.owner.pendingInbox("test")).toEqual([]);
   } finally { f.owner.recordRefused = record; }
 });
+
+
+test("a new local epoch cannot publish ciphertext before that socket verifies the same roster", async () => {
+  const f = await fixture(), owner = linked(f.owner); await owner.link.start(); await owner.online();
+  const guest = await FakeBrokerClient.connect(f.broker.publicUrl, f.guest.get("test")!.current.room); clients.push(guest); await guest.authenticate(f.guest.identity);
+  const initial = await guest.take("frame"); await guest.ack(encodeBase64url(await sha256(initial)));
+  const before = f.owner.get("test")!;
+  // Keep the guest so an unfenced publisher has a real recipient and would reserve/send.
+  await f.owner.rotate("test", roomMembers(before.current), before.current.digest);
+  let reserved = 0; const reserve = f.owner.sequence.reserve;
+  f.owner.sequence.reserve = async input => { reserved++; return reserve(input); };
+  try { await owner.link.publishPresence(); expect(reserved).toBe(0); }
+  finally { f.owner.sequence.reserve = reserve; }
+});
+
+test("a runtime capacity metadata failure cannot become a safe presence drop or transport ACK", async () => {
+  const f = await fixture(), owner = linked(f.owner); await owner.link.start(); await owner.online();
+  const row = f.guest.get("test")!, guest = await FakeBrokerClient.connect(f.broker.publicUrl, row.current.room); clients.push(guest); await guest.authenticate(f.guest.identity);
+  const initial = await guest.take("frame"); await guest.ack(encodeBase64url(await sha256(initial)));
+  const available = f.owner.ordinaryInboxAvailable;
+  f.owner.ordinaryInboxAvailable = () => { throw new Error("fixture metadata read failed"); };
+  try {
+    const wire = await sealFrame({ epoch: row.current, identity: f.guest.identity, recipients: [f.owner.identity.public.fingerprint], plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "kimi", state: "idle" }] }), sequence: f.guest.sequence });
+    guest.send(wire); await guest.take("stored"); await owner.offline();
+    expect(f.broker.stats().queuedFrames).toBe(1); expect(f.owner.refused("test")).toEqual([]); expect(f.owner.pendingInbox("test")).toEqual([]);
+  } finally { f.owner.ordinaryInboxAvailable = available; }
+});
+
+/** A real signed old-epoch frame, with broker handshake controls gated independently. */
+async function ownerUpgradeBroker(mode: "one" | "two" | "before-ready") {
+  const f = await fixture(), before = f.owner.get("test")!;
+  const wire = await sealFrame({ epoch: before.current, identity: f.guest.identity, recipients: [f.owner.identity.public.fingerprint], plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "kimi", state: "idle" }] }), sequence: f.guest.sequence });
+  const digest = encodeBase64url(await sha256(wire));
+  const next = await f.owner.rotate("test", roomMembers(before.current), before.current.digest);
+  await f.broker.stop();
+  const reached = deferred(), closed = deferred(), admitted = deferred(), acknowledged = deferred(), online = deferred();
+  const acks: string[] = [], observations: unknown[] = [];
+  let replayCalls = 0, release: (() => void) | undefined;
+  const accept = f.owner.replay.accept;
+  f.owner.replay.accept = async input => { replayCalls++; return accept(input); };
+  const fake = Bun.serve({ hostname: "127.0.0.1", port: f.broker.port,
+    fetch(request, server) { return server.upgrade(request) ? undefined : new Response("no", { status: 400 }); },
+    websocket: {
+      open(ws) { ws.send(canonicalBytes({ v: 1, type: "challenge", room: before.current.room, broker: f.broker.publicUrl, nonce: encodeBase64url(randomBytes(32)), expiresAt: Date.now() + 10_000, rosterDigest: before.current.digest })); },
+      message(ws, data) {
+        const row = JSON.parse(typeof data === "string" ? data : new TextDecoder().decode(data)) as Record<string, unknown>;
+        if (row.type === "auth") {
+          if (mode === "before-ready") { ws.send(wire); return; }
+          ws.send(before.wire);
+        } else if (row.type === "roster_ready" && row.digest === before.current.digest) {
+          ws.send(canonicalBytes({ v: 1, type: "ready", room: before.current.room, member: f.owner.identity.public.fingerprint, epoch: before.current.epoch, digest: before.current.digest }));
+        } else if (row.type === "roster") {
+          ws.send(wire);
+          if (mode === "two") ws.send(wire);
+          // This control can pass the held ciphertext. Its host callback is the
+          // barrier proving the preceding frame was handled, not merely sent.
+          ws.send(canonicalBytes({ v: 1, type: "stored", digest, seq: "1", duplicate: false }));
+          release = () => {
+            ws.send(next.wire);
+            ws.send(canonicalBytes({ v: 1, type: "ready", room: next.current.room, member: f.owner.identity.public.fingerprint, epoch: next.current.epoch, digest: next.current.digest }));
+          };
+        } else if (row.type === "received") {
+          acks.push(String(row.digest)); if (row.digest === digest) acknowledged.resolve();
+        }
+      },
+      close() { closed.resolve(); },
+    },
+  }); fakes.push(fake);
+  const link = new RoomLink({ store: f.owner, name: "test",
+    onState: state => { if (state === "online") online.resolve(); },
+    onPresence: value => { observations.push(value); admitted.resolve(); },
+    application: { members() {}, async receive() {}, async online() {}, stored() { reached.resolve(); } },
+  }); links.push(link);
+  return { f, link, digest, acks, observations, replayCalls: () => replayCalls,
+    reached: () => bounded(reached.promise), closed: () => bounded(closed.promise), online: () => bounded(online.promise),
+    admitted: () => bounded(admitted.promise), acknowledged: () => bounded(acknowledged.promise),
+    release() { if (!release) throw new Error("upgrade control barrier not reached"); release(); },
+  };
+}
+
+test("a verified owner upgrade holds one old ciphertext without replay, plaintext or ACK until the new ready", async () => {
+  const f = await ownerUpgradeBroker("one"); await f.link.start(); await f.reached();
+  expect(f.link.status().state).toBe("connecting");
+  expect(f.replayCalls()).toBe(0); expect(f.observations).toEqual([]); expect(f.acks).toEqual([]);
+  expect(f.f.owner.pendingInbox("test")).toEqual([]); expect(f.f.owner.refused("test")).toEqual([]);
+  f.release(); await f.online(); await f.admitted(); await f.acknowledged();
+  expect(f.replayCalls()).toBe(1);
+  expect(f.observations).toEqual([{ member: f.f.guest.identity.public.fingerprint, peers: [{ id: "kimi", state: "idle" }] }]);
+  expect(f.acks).toEqual([f.digest]);
+});
+
+for (const mode of ["before-ready", "two"] as const) {
+  test(`owner upgrade deferral refuses ${mode === "two" ? "a second in-flight ciphertext" : "a generic pre-handshake ciphertext"} without replay or ACK`, async () => {
+    const f = await ownerUpgradeBroker(mode); await f.link.start(); await f.closed(); f.link.stop();
+    expect(f.replayCalls()).toBe(0); expect(f.observations).toEqual([]); expect(f.acks).toEqual([]);
+    expect(f.f.owner.pendingInbox("test")).toEqual([]); expect(f.f.owner.refused("test")).toEqual([]);
+  });
+}

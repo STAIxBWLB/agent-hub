@@ -6,6 +6,7 @@ import { acceptRoomEpoch, brokerUrl, canonicalBytes, createInvite, createJoin, c
 import { RoomStore, type RoomState } from "./store.ts";
 import { RoomLink } from "./link.ts";
 import { exposedPeers, roomName, RoomPolicy } from "./policy.ts";
+import type { RoomChat } from "./service.ts";
 
 export interface RoomCommandResult { kind?: string; artifact?: string; name?: string; room?: string; owner?: string; member?: string }
 export interface RoomPreview { owner: string; member: string; commit: () => Promise<RoomCommandResult> }
@@ -47,10 +48,10 @@ export class RoomCommands {
   private stopped = false;
   private readonly links = new Map<string, RoomLink>();
   private readonly policy: RoomPolicy;
-  constructor(private readonly options: { stateDir: string; cwd: string; presence?: () => readonly {id: string; state: string}[] }) { this.policy = new RoomPolicy(options.cwd); }
+  constructor(private readonly options: { stateDir: string; cwd: string; clock?: () => number; presence?: () => readonly {id: string; state: string}[]; chat?: RoomChat }) { this.policy = new RoomPolicy(options.cwd); }
   private async open(): Promise<RoomStore> {
     if (this.stopped) refuse("stopped");
-    this.pending ??= RoomStore.open({ stateDir: join(this.options.stateDir, "rooms") }).then(store => {
+    this.pending ??= RoomStore.open({ stateDir: join(this.options.stateDir, "rooms"), ...(this.options.clock ? { clock: this.options.clock } : {}) }).then(store => {
       if (this.stopped) { store.close(); return refuse("stopped"); }
       this.store = store; return store;
     });
@@ -61,18 +62,22 @@ export class RoomCommands {
     const store = await this.open();
     if (!this.stopped) for (const state of store.list()) if (!state.left) this.link(state.name);
   }
-  stop(): void { this.stopped = true; clearTimeout(this.presenceTimer); for (const link of this.links.values()) link.stop(); this.links.clear(); this.store?.close(); }
+  stop(): void { this.stopped = true; clearTimeout(this.presenceTimer); this.options.chat?.stop(); for (const link of this.links.values()) link.stop(); this.links.clear(); this.store?.close(); }
   private link(name: string): void {
     if (this.stopped || !this.store || this.store.get(name)?.left) return;
     let link = this.links.get(name);
     if (!link) {
-      const created = new RoomLink({ store: this.store, name, presence: () => {
+      const store = this.store;
+      const created: RoomLink = new RoomLink({ store, name, application: this.options.chat?.application,
+        onPresence: value => this.options.chat?.presence(store, name, created, value),
+        onState: state => this.options.chat?.linkState(store, name, created, state), presence: () => {
         const allowed = new Set(this.policy.get(name));
         return (this.options.presence?.() ?? []).filter(row => allowed.has(row.id));
       } });
       this.links.set(name, created); link = created;
+      this.options.chat?.bind(store, name, created);
       void created.start().catch(() => undefined);
-    } else link.refresh();
+    } else { this.options.chat?.bind(this.store, name, link); link.refresh(); }
   }
   private presenceTimer?: ReturnType<typeof setTimeout>;
   changed(): void {
@@ -88,10 +93,10 @@ export class RoomCommands {
   private active(store: RoomStore, name: string): RoomState {
     const state = store.get(name); if (!state || state.left) refuse("unavailable"); return state;
   }
-  async rows(name?: string): Promise<Record<string, unknown>[]> {
+  async rows(name?: string, details = name !== undefined): Promise<Record<string, unknown>[]> {
     if (!this.store && !existsSync(join(this.options.stateDir, "rooms"))) return [];
     const store = await this.open(); if (name !== undefined) roomName(name);
-    return store.list().filter(row => name === undefined || row.name === name).map(row => ({ name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch, state: row.left ? "left" : this.links.get(row.name)?.status().state ?? "offline" }));
+    return store.list().filter(row => name === undefined || row.name === name).map(row => ({ name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch, state: row.left ? "left" : this.links.get(row.name)?.status().state ?? "offline", ...(details && this.options.chat ? { deliveries: this.options.chat.rows(row.name), remotePeers: this.options.chat.peers(row.name) } : {}) }));
   }
   async preview(action: unknown, raw: unknown, check: () => boolean): Promise<RoomPreview> {
     if (typeof action !== "string") refuse("invalid_operation");
@@ -142,6 +147,27 @@ export class RoomCommands {
         this.current(check);
         const state = await store.install({ name, broker, wire, expectedDigest: existing?.current.digest ?? null, current: check, reactivate: true });
         return completed(state);
+      } };
+    }
+    if (action === "resolve") {
+      const row = fields(raw, ["name", "frame", "action"]), name = roomName(row.name);
+      if (typeof row.frame !== "string" || row.frame.length !== 43 || (row.action !== "accept" && row.action !== "discard")) refuse("invalid_resolution");
+      try { decodeBase64url(row.frame, 32); } catch { refuse("invalid_resolution"); }
+      // Disposition is metadata-only and remains available after leave or sender revocation.
+      const state = store.get(name), incoming = store.incomingApplication(name, row.frame);
+      if (!state || !incoming || incoming.state !== "needs_review" || !FP.test(incoming.sender)) refuse("resolution_unavailable");
+      const frame = row.frame as string, choice = row.action as "accept" | "discard", owner = this.owner(state), member = incoming.sender;
+      const binding = JSON.stringify([incoming.digest, incoming.sender, incoming.application, incoming.peer, incoming.state]);
+      const current = () => {
+        this.current(check);
+        const latest = store.incomingApplication(name, frame);
+        return !!latest && JSON.stringify([latest.digest, latest.sender, latest.application, latest.peer, latest.state]) === binding;
+      };
+      return { owner, member, commit: async () => {
+        if (!current()) refuse("state_changed");
+        store.disposeIncoming(name, frame, choice, current);
+        await this.options.chat?.retryPending();
+        return { name, room: state.current.room, owner, member, kind: "disposed" };
       } };
     }
     const row = fields(raw, ["name"], action === "invite" ? ["request"] : action === "revoke" ? ["member"] : action === "expose" ? ["peers"] : []);
