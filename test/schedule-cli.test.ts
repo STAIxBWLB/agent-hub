@@ -4,6 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { Database } from "bun:sqlite";
+import { Board } from "../src/hub/board.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { Tasks } from "../src/hub/tasks.ts";
+import { loadRouting } from "../src/hub/routing.ts";
+import { USER } from "../src/hub/envelope.ts";
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { startDaemon } from "../src/hub/daemon.ts";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -188,6 +194,49 @@ test("ahub status shows a paused schedule as paused with the command to resume i
   const shown = renderStatus({ ...status, peers: {} }, 200, T0).map(line => paint(line, false)).filter(line => line.includes("schedule nightly"));
   expect(shown).toHaveLength(1);
   expect(shown[0]).toContain("paused (ahub schedule resume nightly)");
+});
+
+// ---- the Tasks layer on its own: the daemon refuses a non-person op first, so these hold the second layer and the pass guard
+
+function tasksRig(options: { screen?: () => Promise<{ label: "clear"; ms: number }> } = {}) {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-schedule-tasks-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
+  const tasks = new Tasks({ cwd, board, bus, roles: {}, project: "fixture", routing: () => {
+    const routing = loadRouting(cwd);
+    return options.screen ? { ...routing, signals: { ...routing.signals, pii_screen: "local" } } : routing;
+  }, notify: () => {}, ...(options.screen ? { piiScreen: options.screen } : {}) });
+  const store = new ScheduleStore(join(cwd, "hub.db"));
+  cleanup.push(() => { store.close(); bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
+  const entries = [{ id: "a", every: "1h", class: "plan", title: "Scheduled work", queue: "backlog" as const }];
+  return { tasks, store, entries, board };
+}
+const refusal = async (call: () => unknown) => { let e: unknown; try { await call(); } catch (caught) { e = caught; } expect(e).toBeInstanceOf(PreEffectToolRefusal); return (e as Error).message; };
+
+test("run, pause and resume refuse every actor but the person, before anything is written", async () => {
+  const r = tasksRig();
+  for (const by of ["codex", "claude", "hub"]) {
+    expect(await refusal(() => r.tasks.runScheduleNow(by, r.store, r.entries, "a", T0))).toContain("console command");
+    expect(await refusal(() => r.tasks.setSchedulePaused(by, r.store, r.entries, "a", true, T0))).toContain("console command");
+    expect(await refusal(() => r.tasks.setSchedulePaused(by, r.store, r.entries, "a", false, T0))).toContain("console command");
+  }
+  expect(r.board.list()).toHaveLength(0);
+  expect(r.store.rows()).toEqual([]);
+  expect((await r.tasks.runScheduleNow(USER, r.store, r.entries, "a", T0)).outcome).toBe("ran");
+});
+
+test("a manual run never overlaps a schedules pass, and the pass guard is released whatever happens", async () => {
+  let release: (() => void) | undefined, entered = 0;
+  const r = tasksRig({ screen: () => new Promise(resolve => { entered++; release = () => resolve({ label: "clear", ms: 0 }); }) });
+  r.store.ensure("a", T0); // anchored at T0, so a pass two periods later finds it due
+  const running = r.tasks.proposeFromSchedules(r.store, r.entries, T0 + 2 * HOUR);
+  await until(() => entered >= 1, "the pass is inside its PII screen");
+  expect(r.tasks.schedulesPending()).toBe(1);
+  expect(await refusal(() => r.tasks.runScheduleNow(USER, r.store, r.entries, "a", T0 + 2 * HOUR))).toContain("pass is running");
+  release!(); await running;
+  expect(r.tasks.schedulesPending()).toBe(0);
+  expect(r.board.list().filter(task => scheduleKeyOf(task.detail) === "a")).toHaveLength(1);
+  // a refused id releases nothing it never took, and a later run still works
+  expect(await refusal(() => r.tasks.runScheduleNow(USER, r.store, r.entries, "missing", T0))).toContain("no schedule");
+  expect(r.tasks.schedulesPending()).toBe(0);
 });
 
 // ---- the store and the view, without a daemon
