@@ -22460,6 +22460,7 @@ init_deliverables();
 // src/hub/deliverable-files.ts
 import { constants as constants8, lstatSync as lstatSync15 } from "fs";
 init_tools();
+init_deny();
 init_permission_mode();
 init_project();
 init_deliverables();
