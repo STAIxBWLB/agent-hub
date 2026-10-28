@@ -1104,7 +1104,7 @@ slice may fetch an already signed roster from the broker and remove the manual
 Shared/committed configuration and generic settings cannot enable it. The live
 local policy and the verified roster are intersected before any presence is sent;
 loss of config trust removes exposure. Writable local policy is checked before
-any owner exposure rotation, not only when saving the policy afterward. Empty exposure is the default. Room keys,
+the owner's own exposure rotation, not only when saving the policy afterward. Empty exposure is the default. Room keys,
 broker binding, pending invites and membership are private machine-local state,
 not project config or synced memory. A hub stop closes links and retains membership.
 `leave` disconnects locally and retains owner/epoch/replay pins; an owner uses
