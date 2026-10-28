@@ -892,7 +892,8 @@ export class Tasks {
     const heldSelection = task.reviewer === USER && task.history[this.reviewRequestRevision(task) - 1]?.queueReviewHeld === true;
     const previous = task.reviewer && task.reviewer !== USER ? assign(draft, this.states(), this.d.routing(), { ...weights, candidates: [], namedReviewer: task.reviewer, ...(task.owner ? { notReviewer: task.owner } : {}) }) : undefined;
     const queueRefused = previous?.refusals?.some(row => row.role === "reviewer" && row.peer === task.reviewer && isQueuePressureCode(row.code));
-    return selection.reviewSelection || queueRefused || heldSelection ? selection : undefined;
+    const newlyBlocked = selection.reviewBlocked && selection.refusals?.some(row => row.role === "reviewer" && isQueuePressureCode(row.code));
+    return selection.reviewSelection || queueRefused || newlyBlocked || heldSelection ? selection : undefined;
   }
 
   private reviewMetadata(assignment?: Assignment, task?: Task): ReviewerHistory {
@@ -2890,7 +2891,7 @@ export class Tasks {
       const queue = this.d.bus.queueSummary(peer);
       return [peer, this.wipLimit(peer), queue.heldBy, queue.needsReview];
     })]);
-    if (this.stallView?.key !== key) this.stallView = { key, stalls: this.stallCandidates.rows.filter(({ stall, task, planned }) => stall.cause.kind === "no-writes" || stall.cause.kind === "cancelled-dependency" || !(planned ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.health() })).owner).map(({ stall }) => stall) };
+    if (this.stallView?.key !== key) this.stallView = { key, stalls: this.stallCandidates.rows.filter(({ stall, task, planned }) => stall.cause.kind === "no-writes" || stall.cause.kind === "cancelled-dependency" || !(planned ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.weights(task.class, task), ...(stall.cause.kind === "no-eligible-peer" && isQueuePressureCode(stall.cause.code) && stall.cause.peer ? { candidates: [stall.cause.peer], namedOwner: stall.cause.peer } : {}) })).owner).map(({ stall }) => stall) };
     return structuredClone(this.stallView.stalls);
   }
   private queuePressureKnown: boolean | undefined;

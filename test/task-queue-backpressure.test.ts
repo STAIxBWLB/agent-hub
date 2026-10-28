@@ -463,6 +463,7 @@ test("self claims bypass only owner queue admission and named proposals resume o
   expect(named.owner).toBeNull(); await settled(f.tasks);
   expect(f.board.queuePressureStallPage().rows.find(row => row.task === named.id)?.cause.peer).toBe("codex");
   expect(f.board.get(named.id)?.owner).toBeNull(); // An idle alternative never replaces the named target.
+  expect(f.tasks.stalled().map(row => row.task)).toContain(named.id);
   f.bus.pull("codex"); await owned(f, named.id, "codex");
 });
 
@@ -488,5 +489,18 @@ test("a person's ready reservation stays held rather than rerouting under queue 
   await f.tasks.releaseReady(); await settled(f.tasks);
   expect(f.board.get(row.id)).toMatchObject({ owner: null, reserved: "codex" });
   expect(f.tasks.explain(row.id).join("\n")).toContain("reservation retained");
+  expect(f.tasks.stalled().map(stall => stall.task)).toContain(row.id);
   f.bus.pull("codex"); await owned(f, row.id, "codex");
+  expect(f.tasks.stalled().map(stall => stall.task)).not.toContain(row.id);
+});
+
+
+test("a newly queue-blocked reviewer cannot directly approve work proposed without a reviewer", async () => {
+  const f = await fixture(); await f.peers.claude!.stop();
+  const row = await f.tasks.propose(USER, { title: "no initial reviewer", class: "implement" });
+  expect(row.reviewer).toBeNull(); f.tasks.accept("codex", row.id);
+  await f.peers.claude!.start(); f.control.policy = { max_queued: 1, max_oldest_s: 0 }; f.enqueue("claude", 2);
+  const done = await f.tasks.done("codex", row.id, "needs independent review");
+  expect(done).toMatchObject({ state: "in_review", reviewer: USER });
+  expect(done.history.findLast(row => row.event === "done")?.reviewBlocked).toBe(true);
 });

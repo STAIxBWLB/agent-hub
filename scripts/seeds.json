@@ -3836,7 +3836,7 @@
     {
       "id": "queue-pressure-review-admission-only",
       "file": "src/hub/tasks.ts",
-      "search": "return selection.reviewSelection || queueRefused || heldSelection ? selection : undefined;",
+      "search": "return selection.reviewSelection || queueRefused || newlyBlocked || heldSelection ? selection : undefined;",
       "replacement": "return selection.reviewSelection || weights.queueBackpressure || heldSelection ? selection : undefined;",
       "testFile": "test/task-queue-backpressure.test.ts",
       "testName": "enabled pressure preserves a continuing reviewer below thresholds despite a busier state"
