@@ -1,0 +1,635 @@
+{
+  "date": "2026-10-28",
+  "sourceHead": "243d4b535404d911ea2b1c728352d4abd82e5ea6",
+  "producer": "claude-permission-transport-native.py",
+  "producerSha256": "8f8885f7153b3a236f3b3f8ce49a344b908f2af3b3aba8b064762d82d1ecf12a",
+  "fixtureMcp": true,
+  "productionDaemon": false,
+  "hostWrapperRewriting": false,
+  "account": false,
+  "inference": false,
+  "results": [
+    {
+      "mode": "transport",
+      "cases": [
+        {
+          "version": "2.1.311",
+          "binarySha256": "85d8c08707fcfd1e78ffa0204eefbc6ec9e4fe22f375fb2767ef85d957ed3161",
+          "case": "allow",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": true,
+          "toolResultErrors": [
+            false
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 0
+            }
+          ],
+          "elapsedSeconds": 0.356,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.311",
+          "binarySha256": "85d8c08707fcfd1e78ffa0204eefbc6ec9e4fe22f375fb2767ef85d957ed3161",
+          "case": "deny",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 1
+            }
+          ],
+          "elapsedSeconds": 0.311,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.311",
+          "binarySha256": "85d8c08707fcfd1e78ffa0204eefbc6ec9e4fe22f375fb2767ef85d957ed3161",
+          "case": "missing-tool",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 1,
+          "stoppedExternally": false,
+          "mcpCalls": 0,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [],
+          "elapsedSeconds": 0.315,
+          "requests": 1,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.311",
+          "binarySha256": "85d8c08707fcfd1e78ffa0204eefbc6ec9e4fe22f375fb2767ef85d957ed3161",
+          "case": "hook-deny",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 1
+            }
+          ],
+          "elapsedSeconds": 0.368,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.311",
+          "binarySha256": "85d8c08707fcfd1e78ffa0204eefbc6ec9e4fe22f375fb2767ef85d957ed3161",
+          "case": "hook-allow",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": true,
+          "toolResultErrors": [
+            false
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 0
+            }
+          ],
+          "elapsedSeconds": 0.35,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.311",
+          "binarySha256": "85d8c08707fcfd1e78ffa0204eefbc6ec9e4fe22f375fb2767ef85d957ed3161",
+          "case": "mcp-error",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 0
+            }
+          ],
+          "elapsedSeconds": 0.365,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.311",
+          "binarySha256": "85d8c08707fcfd1e78ffa0204eefbc6ec9e4fe22f375fb2767ef85d957ed3161",
+          "case": "disconnect",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 0
+            }
+          ],
+          "elapsedSeconds": 0.256,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.311",
+          "binarySha256": "85d8c08707fcfd1e78ffa0204eefbc6ec9e4fe22f375fb2767ef85d957ed3161",
+          "case": "pending",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": null,
+          "stoppedExternally": true,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [],
+          "resultFrame": [],
+          "elapsedSeconds": 25.013,
+          "requests": 1,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.311",
+          "binarySha256": "85d8c08707fcfd1e78ffa0204eefbc6ec9e4fe22f375fb2767ef85d957ed3161",
+          "case": "deadline",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 1
+            }
+          ],
+          "elapsedSeconds": 0.416,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.312",
+          "binarySha256": "6b5ec691195e551b02c41df9f7d723f4ea61eaa03c2df90acefe3736f1aeb620",
+          "case": "allow",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": true,
+          "toolResultErrors": [
+            false
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 0
+            }
+          ],
+          "elapsedSeconds": 0.368,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.312",
+          "binarySha256": "6b5ec691195e551b02c41df9f7d723f4ea61eaa03c2df90acefe3736f1aeb620",
+          "case": "deny",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 1
+            }
+          ],
+          "elapsedSeconds": 0.366,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.312",
+          "binarySha256": "6b5ec691195e551b02c41df9f7d723f4ea61eaa03c2df90acefe3736f1aeb620",
+          "case": "missing-tool",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 1,
+          "stoppedExternally": false,
+          "mcpCalls": 0,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [],
+          "elapsedSeconds": 0.312,
+          "requests": 1,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.312",
+          "binarySha256": "6b5ec691195e551b02c41df9f7d723f4ea61eaa03c2df90acefe3736f1aeb620",
+          "case": "hook-deny",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 1
+            }
+          ],
+          "elapsedSeconds": 0.36,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.312",
+          "binarySha256": "6b5ec691195e551b02c41df9f7d723f4ea61eaa03c2df90acefe3736f1aeb620",
+          "case": "hook-allow",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": true,
+          "toolResultErrors": [
+            false
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 0
+            }
+          ],
+          "elapsedSeconds": 0.365,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.312",
+          "binarySha256": "6b5ec691195e551b02c41df9f7d723f4ea61eaa03c2df90acefe3736f1aeb620",
+          "case": "mcp-error",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 0
+            }
+          ],
+          "elapsedSeconds": 0.302,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.312",
+          "binarySha256": "6b5ec691195e551b02c41df9f7d723f4ea61eaa03c2df90acefe3736f1aeb620",
+          "case": "disconnect",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 0
+            }
+          ],
+          "elapsedSeconds": 0.252,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.312",
+          "binarySha256": "6b5ec691195e551b02c41df9f7d723f4ea61eaa03c2df90acefe3736f1aeb620",
+          "case": "pending",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": null,
+          "stoppedExternally": true,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [],
+          "resultFrame": [],
+          "elapsedSeconds": 25.007,
+          "requests": 1,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.312",
+          "binarySha256": "6b5ec691195e551b02c41df9f7d723f4ea61eaa03c2df90acefe3736f1aeb620",
+          "case": "deadline",
+          "tool": "Bash",
+          "rewriteBash": false,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 1
+            }
+          ],
+          "elapsedSeconds": 0.426,
+          "requests": 2,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        }
+      ],
+      "certified": true,
+      "account": false,
+      "inference": false,
+      "tool": "Bash",
+      "rewriteBash": false,
+      "serverName": "agent-hub",
+      "permissionTool": "hub_permission_request",
+      "requireToolUseId": true
+    },
+    {
+      "mode": "rewrite",
+      "cases": [
+        {
+          "version": "2.1.311",
+          "binarySha256": "85d8c08707fcfd1e78ffa0204eefbc6ec9e4fe22f375fb2767ef85d957ed3161",
+          "case": "allow",
+          "tool": "Bash",
+          "rewriteBash": true,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": true,
+          "toolResultErrors": [
+            false
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 0
+            }
+          ],
+          "elapsedSeconds": 0.324,
+          "requests": 2,
+          "originalCommandExecuted": false,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.311",
+          "binarySha256": "85d8c08707fcfd1e78ffa0204eefbc6ec9e4fe22f375fb2767ef85d957ed3161",
+          "case": "deny",
+          "tool": "Bash",
+          "rewriteBash": true,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 1
+            }
+          ],
+          "elapsedSeconds": 0.31,
+          "requests": 2,
+          "originalCommandExecuted": false,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.312",
+          "binarySha256": "6b5ec691195e551b02c41df9f7d723f4ea61eaa03c2df90acefe3736f1aeb620",
+          "case": "allow",
+          "tool": "Bash",
+          "rewriteBash": true,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": true,
+          "toolResultErrors": [
+            false
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 0
+            }
+          ],
+          "elapsedSeconds": 0.363,
+          "requests": 2,
+          "originalCommandExecuted": false,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        },
+        {
+          "version": "2.1.312",
+          "binarySha256": "6b5ec691195e551b02c41df9f7d723f4ea61eaa03c2df90acefe3736f1aeb620",
+          "case": "deny",
+          "tool": "Bash",
+          "rewriteBash": true,
+          "serverName": "agent-hub",
+          "permissionTool": "hub_permission_request",
+          "requireToolUseId": true,
+          "nativeExit": 0,
+          "stoppedExternally": false,
+          "mcpCalls": 1,
+          "fileWritten": false,
+          "toolResultErrors": [
+            true
+          ],
+          "resultFrame": [
+            {
+              "is_error": false,
+              "denials": 1
+            }
+          ],
+          "elapsedSeconds": 0.308,
+          "requests": 2,
+          "originalCommandExecuted": false,
+          "passed": true,
+          "nativeGroupEmpty": true,
+          "binaryUnchanged": true
+        }
+      ],
+      "certified": true,
+      "account": false,
+      "inference": false,
+      "tool": "Bash",
+      "rewriteBash": true,
+      "serverName": "agent-hub",
+      "permissionTool": "hub_permission_request",
+      "requireToolUseId": true
+    }
+  ]
+}
