@@ -76,7 +76,7 @@ jobs:
     if: needs.decision.outputs.admission == 'run' || needs.decision.outputs.admission == 'reuse'
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'macos-latest' && 40 || 35 }}
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 50 || 35 }}
     strategy:
       fail-fast: false
       matrix:
@@ -120,7 +120,13 @@ jobs:
           # its progress file (one byte per test result line or file header) has not grown for AHUB_CHECK_QUIET_S (300 s), which is the hang detector;
           # AHUB_CHECK_HANG_S is only the backstop for a run that keeps printing results while hung, so it sits well above
           # a slow, healthy run: 1500 s on Linux and 1800 s on macOS, with the job limits raised to 35 and 40 minutes.
-          AHUB_CHECK_HANG_S: ${{ runner.os == 'macOS' && '1800' || '1500' }}
+          # Healthy macOS legs now run past 1800 s: main f7450129 (run 40677039313) and PR #934 (run 40672988486, attempts 1 and 2 at
+          # 31m34s and 31m47s) were stopped with `hang-watch: cause=total quiet_for=1s` while tests were still printing results, and
+          # recent green legs took about 30 minutes (main 7a1d5cff, 10:46 to 11:17). macOS gets 2400 s and the job limit 50 minutes;
+          # Linux stays at 1500 s. The 300 s quiet bound above remains the hang detector.
+          # ponytail: this is the third raise of the macOS backstop. The ceiling is a symptom: the upgrade path is to shard the macOS
+          # leg the way the seeded guards are sharded (follow-up task), so each shard stays well under the bound.
+          AHUB_CHECK_HANG_S: ${{ runner.os == 'macOS' && '2400' || '1500' }}
           AHUB_CHECK_QUIET_S: '300'
           AHUB_RESTART_DIAGNOSTICS_DIR: ${{ runner.temp }}/ahub-restart-diagnostics
         run: scripts/check.sh
