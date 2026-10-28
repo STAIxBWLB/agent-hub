@@ -14,6 +14,7 @@ import { permissionDefaults } from "./permission-mode.ts";
 import { peerStartConfig, terminalTemplate } from "./start-mode.ts";
 import { catalogAssignments } from "./roles.ts";
 import { resolveProfile } from "./profiles.ts";
+import { schedulesConfig } from "./schedules.ts";
 import { taskSweepConfig } from "./task-sweep.ts";
 import { projectionConfig } from "./text-projection.ts";
 import { validateInstances, type InstancesConfig } from "./instances.ts";
@@ -176,6 +177,7 @@ const schema: Record<string, Check> = {
   mlx: block({ enabled: bool, provider: words(["legacy", "ollama"]), host: text, runtimeDir: text, modelPath: text, bin: text, port: number(1, 65535, true), model: text, sourceModel: text,
     contextWindow: number(1), maxInputTokens: number(1), maxTokens: number(1), maxConcurrency: number(1, 1024, true) }),
   approvals: block({ timeout_s: timerSeconds, notify: bool }), tasks: block({ release_after_min: number(0), wip_limits: map(number(0, 32, true)), escalate_after: number(1, 10, true), auto_pull: bool }),
+  schedules: v => { schedulesConfig(v); },
   task_sweep: (v, k) => { block({ enabled: bool, auto_reassign: bool, no_writes_turns: number(0, Number.MAX_SAFE_INTEGER, true), interval_s: timerSeconds, unaccepted_min: timerMinutes, idle_min: timerMinutes, review_min: timerMinutes, ready_min: timerMinutes, ladder_min: timerMinutes })(v, k); taskSweepConfig(v); },
   checks: (v, k) => { for (const [key, value] of Object.entries(object(v, k))) {
     if (value === undefined) continue;
@@ -230,7 +232,7 @@ const restart: Record<string, string> = {
   profile: "Session tool schemas and profile contracts are bound at startup", profile_overrides: "Session tool schemas and profile contracts are bound at startup",
   text_projection: "Converter and cache ownership are bound at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
 };
-const live = new Set(["action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "approvals.notify", "pet"]);
+const live = new Set(["action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "schedules", "approvals.notify", "pet"]);
 const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges"]);
 /** Closed top-level schema; leaf overrides retain the existing session/runtime boundaries. */
 export function configApply(key: string, scopes: readonly ConfigIdentityScope[] = []): ApplyRule {
@@ -247,7 +249,7 @@ export function configApply(key: string, scopes: readonly ConfigIdentityScope[] 
       if (shape?.fields) { if (!Object.hasOwn(shape.fields, part)) return fail(key, "unknown configuration key"); check = shape.fields[part]; }
       else if (shape?.item) { if (shape.keys && !shape.keys.includes(part) && !(top === "roster" && scopes.some(scope => scope.catalog.definitionOf(part, scope.instances)))) return fail(key, "unknown configuration key"); check = shape.item; }
       else if (index === 0 && (special[top]?.includes(part) || top === "checks" && /^[a-z][a-z0-9_]{0,47}$/.test(part))) break;
-      else if (["permission_modes", "catalog_roles", "profile_overrides", "text_projection", "peers", "instances", "adapters", "adapter_modules"].includes(top)) break;
+      else if (["permission_modes", "catalog_roles", "profile_overrides", "text_projection", "schedules", "peers", "instances", "adapters", "adapter_modules"].includes(top)) break;
       else return fail(key, "unknown configuration key");
     }
   }
