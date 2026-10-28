@@ -54,9 +54,9 @@ async function localWorkerRead(accessHosts: string[]) {
   const delivered: string[] = [];
   f.daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === "local") delivered.push(event.env.body); });
   expect((await f.console_.request({ t: "start", peer: "local", args: { model: "vllm/x" } })).ok).toBe(true);
-  expect((await f.console_.request({ t: "task", op: "hub_task_propose", args: { title: "patient 900101-1234567 source lookup", class: "implement" } })).ok).toBe(true);
-  for (let n = 0; n < 400 && (!delivered.length || f.daemon.bus.stateOf("local") !== "idle"); n++) await Bun.sleep(10);
-  expect(delivered.length).toBeGreaterThan(0);
+  expect((await f.console_.request({ t: "task", op: "hub_task_propose", args: { title: "SOURCE-PRIVATE patient source lookup", class: "implement" } })).ok).toBe(true);
+  for (let n = 0; n < 400 && (accessHosts.length === 0 ? !delivered.length || f.daemon.bus.stateOf("local") !== "idle" : f.daemon.bus.stateOf("local") !== "idle"); n++) await Bun.sleep(10);
+  if (accessHosts.length === 0) expect(delivered.length).toBeGreaterThan(0);
   expect(f.daemon.bus.stateOf("local")).toBe("idle");
   expect(readFileSync(join(f.stateDir, "hub.log"), "utf8")).not.toContain(bytes);
   return { ...f, model, delivered, bytes };
@@ -127,7 +127,8 @@ test("the in-process local worker can read a private source inside a PII task on
   const offCampus = await localWorkerRead(["127.0.0.1"]);
   const offCampusToolResult = offCampus.model.requests.flatMap(request => request.body.messages as { role: string; content?: unknown }[])
     .filter(message => message.role === "tool").map(message => String(message.content));
-  expect(offCampusToolResult.some(result => result.includes('"private":true'))).toBe(true);
+  // LocalWorker refuses a PII turn before calling any model when off campus.
+  expect(offCampusToolResult).toHaveLength(0);
   expect(offCampusToolResult.some(result => result.includes(offCampus.bytes))).toBe(false);
   expect(offCampus.delivered.every(body => !body.includes(offCampus.bytes))).toBe(true);
 });
