@@ -9,6 +9,8 @@ export interface RemotePeerPorts {
   context: (env: Envelope) => RoomBoundaryContext;
   send: (env: RoomChatEnvelope, deliveryId: string, expiresAt: number, current: () => boolean) => Promise<void>;
   now?: () => number;
+  /** Record post-publication trust loss locally before any late signed outcome can settle it. */
+  quarantine?: (deliveryId: string) => void;
 }
 
 export class RemotePeer extends BasePeer {
@@ -33,9 +35,10 @@ export class RemotePeer extends BasePeer {
   async start(): Promise<void> { this.running = true; this.generation++; this.update(); }
   async stop(): Promise<void> {
     this.running = false; this.generation++;
-    for (const id of [...this.pending]) this.receipt({ id, state: "needs_review", reason: "room transport stopped" });
+    for (const id of [...this.pending]) { this.quarantine(id); this.receipt({ id, state: "needs_review", reason: "room transport stopped" }); }
     this.deadlines.clear(); this.update();
   }
+  private quarantine(id: string): void { try { this.ports.quarantine?.(id); } catch { /* the Bus still retains uncertainty if room storage is unavailable */ } }
   presence(state: PeerState, online: boolean): void { this.observed = state; this.online = online; this.update(); }
   setRemoteDeadline(envelopeId: string, expiresAt: number): void {
     if (Number.isSafeInteger(expiresAt) && expiresAt > 0 && this.deadlines.size < 200) this.deadlines.set(envelopeId, expiresAt);
@@ -68,8 +71,9 @@ export class RemotePeer extends BasePeer {
     this.pending.add(deliveryId); this.update();
     try {
       await this.ports.send(view, deliveryId, expiresAt, () => current() && readRoomOutbound(result.proof) !== undefined);
-      if (!current()) this.receipt({ id: deliveryId, state: "needs_review", reason: "room trust changed during publication" });
+      if (!current()) { this.quarantine(deliveryId); this.receipt({ id: deliveryId, state: "needs_review", reason: "room trust changed during publication" }); }
     } catch {
+      this.quarantine(deliveryId);
       this.receipt({ id: deliveryId, state: "needs_review", reason: "room publication outcome is uncertain" });
     }
   }

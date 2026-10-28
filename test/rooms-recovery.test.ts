@@ -10,10 +10,10 @@ import type { Envelope } from "../src/hub/envelope.ts";
 import { parseRouting } from "../src/hub/routing.ts";
 import { RoomStore } from "../src/rooms/store.ts";
 import { RoomChat } from "../src/rooms/service.ts";
-import { RoomLink, type RoomLinkContext } from "../src/rooms/link.ts";
+import { RoomLink, RoomApplicationDeferredError, type RoomLinkContext } from "../src/rooms/link.ts";
 import { encodeRoomMessage, type RoomMessage } from "../src/rooms/application.ts";
-import { createInvite, createJoin, createRoomEpoch, openFrame, roomMembers, sealFrame } from "../src/rooms/wire.ts";
-import { encodeBase64url, sha256 } from "../src/rooms/crypto.ts";
+import { createInvite, createJoin, createRoomEpoch, openFrame, roomMembers, sealFrame, canonicalBytes } from "../src/rooms/wire.ts";
+import { encodeBase64url, sha256, randomBytes } from "../src/rooms/crypto.ts";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -147,3 +147,86 @@ test("a locally off-roster peer is not a room admission destination despite reta
   expect(f.bus.queued("codex")).toBe(0); expect(f.peer.effects).toBe(0);
   expect(f.guest.applicationReceipt("work", f.digest)).toMatchObject({ outcome: "failed_safe", reason: "not_exposed" });
 });
+
+
+async function fullPhysicalInbox(reserved: number) {
+  const root = mkdtempSync(join(tmpdir(), "ahub-room-receipt-lane-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const receiver = await RoomStore.open({ stateDir: join(root, "receiver") }), sender = await RoomStore.open({ stateDir: join(root, "sender") });
+  cleanups.push(() => receiver.close(), () => sender.close());
+  let resolveClosed!: () => void, resolveDone!: () => void;
+  const closed = new Promise<void>(resolve => { resolveClosed = resolve; }), done = new Promise<void>(resolve => { resolveDone = resolve; });
+  let targetWire: Uint8Array, junkWire: Uint8Array | undefined, targetDigest = "", junkDigest = "";
+  const acknowledgements: string[] = [], gaps: string[] = [];
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(request, host) { return host.upgrade(request) ? undefined : new Response("no", { status: 400 }); },
+    websocket: {
+      open(ws) { const row = receiver.get("work")!; ws.send(canonicalBytes({ v: 1, type: "challenge", room: row.current.room, broker: row.broker, nonce: encodeBase64url(randomBytes(32)), expiresAt: Date.now() + 10_000, rosterDigest: row.current.digest })); },
+      message(ws, data) {
+        const message = JSON.parse(String(data)) as { type: string; digest?: string }, row = receiver.get("work")!;
+        if (message.type === "auth") { ws.send(row.wire); ws.send(canonicalBytes({ v: 1, type: "ready", room: row.current.room, member: receiver.identity.public.fingerprint, epoch: row.current.epoch, digest: row.current.digest })); }
+        else if (message.type === "roster_ready") ws.send(junkWire ?? targetWire);
+        else if (message.type === "received") {
+          acknowledgements.push(message.digest!); ws.send(canonicalBytes({ v: 1, type: "queue_ack", digest: message.digest }));
+          if (message.digest === junkDigest && junkWire) ws.send(targetWire);
+          if (message.digest === targetDigest) resolveDone();
+        }
+      }, close() { resolveClosed(); },
+    },
+  }); cleanups.push(() => server.stop(true));
+  const broker = `ws://127.0.0.1:${server.port}/`, first = await createRoomEpoch({ owner: receiver.identity, members: [{ ...receiver.identity.public, label: "receiver", exposedPeers: ["codex"] }] });
+  await receiver.install({ name: "work", broker, wire: first.wire, expectedDigest: null });
+  const invite = await createInvite({ owner: receiver.identity, epoch: first.epoch, broker, expiresAt: Date.now() + 600_000 }); await receiver.saveInvite("work", invite);
+  const request = await createJoin({ invite, identity: sender.identity, label: "sender", exposedPeers: ["codex"] }); sender.savePendingJoin("work", { invite, request });
+  const roster = await receiver.enroll("work", request); await sender.install({ name: "work", broker, wire: roster.wire, expectedDigest: null });
+  const pairs: { digest: string; delivery: string; receipt: RoomMessage; wire: Uint8Array }[] = [];
+  const applications = Array.from({ length: reserved + 1 }, () => crypto.randomUUID());
+  for (const application of applications) {
+    const delivery = crypto.randomUUID(), chat: RoomMessage = { v: 1, type: "chat", envelope: { id: application, trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", kind: "chat", priority: "status", body: "outstanding receipt lane fixture", ts: Date.now() } };
+    const wire = await sealFrame({ epoch: roster.current, identity: receiver.identity, recipients: [sender.identity.public.fingerprint], sequence: receiver.sequence, plaintext: encodeRoomMessage(chat) });
+    const outgoing = await receiver.queueApplication("work", wire, { deliveryId: delivery, application, remotePeer: "codex@sender", recipient: sender.identity.public.fingerprint, peer: "codex", ackTimeoutMs: 600_000, ttlMs: 86_400_000 });
+    pairs.push({ digest: outgoing.digest, delivery, receipt: { v: 1, type: "receipt", frame: outgoing.digest, application, peer: "codex", outcome: "failed_safe", reason: "boundary_refused" }, wire: new Uint8Array() });
+  }
+  for (let n = 0; n < 200; n++) {
+    const chat: RoomMessage = { v: 1, type: "chat", envelope: { id: crypto.randomUUID(), trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", kind: "chat", priority: "status", body: "retained pre-claim chat", ts: Date.now() } };
+    const wire = await sealFrame({ epoch: roster.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: encodeRoomMessage(chat) });
+    expect((await openFrame({ wire, identity: receiver.identity, current: roster.current, replay: receiver.replay })).status).toBe("accepted");
+  }
+  for (const pair of pairs.slice(0, reserved)) {
+    pair.wire = await sealFrame({ epoch: roster.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: encodeRoomMessage(pair.receipt) });
+    expect((await openFrame({ wire: pair.wire, identity: receiver.identity, current: roster.current, replay: receiver.replay })).status).toBe("accepted");
+  }
+  if (!reserved) {
+    const junk: RoomMessage = { v: 1, type: "receipt", frame: encodeBase64url(randomBytes(32)), application: crypto.randomUUID(), peer: "codex", outcome: "failed_safe", reason: "boundary_refused" };
+    junkWire = await sealFrame({ epoch: roster.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: encodeRoomMessage(junk) });
+    junkDigest = encodeBase64url(await sha256(junkWire));
+  }
+  const target = pairs.at(-1)!;
+  targetWire = await sealFrame({ epoch: roster.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: encodeRoomMessage(target.receipt) }); targetDigest = encodeBase64url(await sha256(targetWire));
+  const link = new RoomLink({ store: receiver, name: "work", application: { members: () => {}, stored: () => {}, online: async () => {}, gap: (_context, input) => { gaps.push(input.count); }, receive: async (context, input) => {
+    if (input.message?.type !== "receipt" || input.digest !== targetDigest) throw new RoomApplicationDeferredError("capacity");
+    context.store.applyApplicationReceipt("work", input.digest, context.current); context.store.settleInbox("work", input.digest);
+  } } }); cleanups.push(() => link.stop());
+  const bounded = (promise: Promise<void>, label: string) => new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error(`receipt lane barrier timed out: ${label}`)), 5000); promise.then(() => { clearTimeout(timer); resolve(); }, error => { clearTimeout(timer); reject(error); }); });
+  return { receiver, sender, pairs, target, targetDigest, junkDigest, link, acknowledgements, gaps, closed: () => bounded(closed, "full reserve closes without ACK"), done: () => bounded(done, "matching signed receipt retires") };
+}
+
+test("200 retained chats do not let an unmatched receipt poison a matching receipt behind it", async () => {
+  const f = await fullPhysicalInbox(0); expect(f.receiver.pendingInbox("work")).toHaveLength(200);
+  await f.link.start(); await f.done();
+  expect(f.acknowledgements).toEqual([f.junkDigest, f.targetDigest]);
+  expect(f.receiver.pendingInbox("work")).toHaveLength(200);
+  expect(f.receiver.refused("work")).toContainEqual(expect.objectContaining({ digest: f.junkDigest, reason: "invalid_frame" }));
+  expect(f.receiver.applicationOutbox("work").find(row => row.deliveryId === f.target.delivery)?.state).toBe("failed_safe");
+  expect(f.gaps).toContain("1"); // The dropped unknown receipt never advanced the replay floor.
+}, 20_000);
+
+test("a matching ninth reserved receipt stays unacknowledged until one real reserved receipt is settled", async () => {
+  const f = await fullPhysicalInbox(8); expect(f.receiver.pendingInbox("work")).toHaveLength(208);
+  await f.link.start(); await f.closed();
+  expect(f.acknowledgements).toEqual([]); expect(f.receiver.refused("work").some(row => row.digest === f.targetDigest)).toBe(false);
+  const released = f.pairs[0]!, digest = encodeBase64url(await sha256(released.wire));
+  expect(f.receiver.applyApplicationReceipt("work", digest)?.state).toBe("failed_safe"); f.receiver.settleInbox("work", digest);
+  await f.done();
+  expect(f.acknowledgements).toEqual([f.targetDigest]); expect(f.receiver.pendingInbox("work")).toHaveLength(207);
+  expect(f.receiver.applicationOutbox("work").find(row => row.deliveryId === f.target.delivery)?.state).toBe("failed_safe");
+}, 20_000);

@@ -166,6 +166,7 @@ export class RoomCommands {
       return { owner, member, commit: async () => {
         if (!current()) refuse("state_changed");
         store.disposeIncoming(name, frame, choice, current);
+        await this.options.chat?.retryPending(name);
         return { name, room: state.current.room, owner, member, kind: "disposed" };
       } };
     }

@@ -9,7 +9,7 @@ import { RoomStore, RoomStoreError, RoomApplicationLimitError, type RoomOutgoing
 import { RoomPolicy } from "./policy.ts";
 import { RemotePeer } from "./remote-peer.ts";
 import { parseRemotePeerId, roomReceiptReasonText, type RoomMessage, type RoomReceiptReason } from "./application.ts";
-import type { RoomLink, RoomLinkApplication, RoomLinkContext, RoomLinkState, RoomPresencePeer } from "./link.ts";
+import { RoomApplicationDeferredError, type RoomLink, type RoomLinkApplication, type RoomLinkContext, type RoomLinkState, type RoomPresencePeer } from "./link.ts";
 
 export interface RoomChatOptions {
   bus: Bus; cwd: string; now?: () => number;
@@ -124,6 +124,15 @@ export class RoomChat {
               }, current);
             } catch (error) { binding.store.quarantineOutgoing(binding.name, deliveryId); throw error; }
             finally { this.refreshOutgoing(binding); this.queueChanged(); }
+          }, quarantine: deliveryId => {
+            const selected = this.targets.get(id);
+            const cached = [...this.outgoing.values()].filter(value => value.row.deliveryId === deliveryId && value.row.remotePeer === id && value.row.recipient === target.member).map(value => value.binding);
+            const bindings = [...new Set([...(selected?.member === target.member && selected.peer === target.peer ? [selected.binding] : []), ...cached])];
+            for (const binding of bindings) try {
+              if (binding.store.get(binding.name)?.current.room !== room) continue;
+              const row = binding.store.quarantineOutgoing(binding.name, deliveryId);
+              if (row && row.remotePeer === id && row.recipient === target.member) { this.outcome(binding, row); return; }
+            } catch { /* A retained old binding may already be closed after an explicit rejoin. */ }
           }, now: () => this.now(),
         });
         try { this.options.bus.add(remote); } catch { continue; }
@@ -156,7 +165,8 @@ export class RoomChat {
     const binding = this.bindings.get(name);
     if (!binding || binding.store !== store || binding.link !== link) return;
     binding.online = state === "online";
-    if (!binding.online) binding.states.clear();
+    // A transport blip does not revoke the last authenticated signed state.
+    // A new roster digest still clears it in bind(), before target reconstruction.
     if (!this.valid(binding)) {
       try { for (const row of binding.store.applicationOutbox(name, true)) if (row.state === "dispatching" || row.state === "accepted") {
         const unknown = binding.store.quarantineOutgoing(name, row.deliveryId); if (unknown) this.outcome(binding, unknown);
@@ -209,15 +219,18 @@ export class RoomChat {
     catch (error) {
       if (error instanceof RoomApplicationLimitError) try { this.options.notice?.({ code: "application_capacity", room: error.room, count: error.count }); } catch { /* fixed metadata observation only */ }
       if (error instanceof RoomStoreError && error.code === "invalid") { context.store.settleInbox(context.name, input.digest); return; }
+      if (error instanceof RoomApplicationLimitError) throw new RoomApplicationDeferredError("capacity");
+      if (error instanceof RoomStoreError && error.code === "limit") throw new RoomApplicationDeferredError("admission_limit");
       throw error;
     }
     if (!context.current() || !this.valid(binding)) throw new Error("room: state_changed");
     const duplicate = context.store.applicationReceipt(context.name, input.digest);
     if (duplicate) { await context.link.publishApplication(duplicate, input.sender, undefined, context.current); return; }
     if (!incoming.primary || incoming.state !== "pending") return;
-    if (!this.options.bus.deliveryJournalAvailable()) throw new Error("room: durable admission unavailable");
+    if (!this.options.bus.deliveryJournalAvailable()) throw new RoomApplicationDeferredError("journal_unavailable");
     const state = context.store.get(context.name)!, member = roomMembers(state.current).find(row => row.fingerprint === incoming.sender), chat = incoming.chat;
     const from = member ? `${chat.from}@${member.label}` : "";
+    const env: Envelope = { ...chat, from, to: [chat.to], priority: chat.priority === "fyi" ? "fyi" : "status" };
     let refusal: RoomReceiptReason | undefined;
     if (!member || !parseRemotePeerId(from) || !this.sourceUnambiguous(binding, incoming.sender, member.label)) refusal = "not_exposed";
     else if (chat.from !== USER && !member.exposedPeers.includes(chat.from)) refusal = "not_exposed";
@@ -225,15 +238,18 @@ export class RoomChat {
     else if (!this.exposed(binding, chat.to)) refusal = "not_exposed";
     else if (chat.priority === "fyi") refusal = "boundary_refused";
     else if (chat.hop > MAX_HOP || chat.hop < (context.store.applicationTraceHop(chat.trace) ?? 0)) refusal = "hop";
+    else if (this.options.bus.hushed(env).some(row => row.peer === chat.to)) refusal = "boundary_refused";
     else if (!this.rate(from, incoming.sender, chat.to, chat.body)) refusal = "rate_limited";
     if (refusal) context.store.finishApplication(context.name, input.digest, "failed_safe", refusal, context.current);
     else if (context.store.claimApplication(context.name, input.digest, context.current)) {
       try {
         if (!context.current() || !this.exposed(binding, chat.to)) throw new Error("room: state_changed");
-        const env: Envelope = { ...chat, from, to: [chat.to], priority: chat.priority === "fyi" ? "fyi" : "status" };
         const result = this.options.bus.publishResult(env);
-        if (result.targets.length !== 1 || result.targets[0] !== chat.to || result.dropped) throw new Error("room: admission unavailable");
-        context.store.finishApplication(context.name, input.digest, "completed", "admitted", context.current);
+        if (!result.targets.length) context.store.finishApplication(context.name, input.digest, "failed_safe", "boundary_refused", context.current);
+        else {
+          if (result.targets.length !== 1 || result.targets[0] !== chat.to || result.dropped) throw new Error("room: admission unavailable");
+          context.store.finishApplication(context.name, input.digest, "completed", "admitted", context.current);
+        }
       } catch (error) {
         // Revocation removes business authority, but still permits recording uncertainty.
         context.store.quarantineApplication(context.name, input.digest);
@@ -259,10 +275,29 @@ export class RoomChat {
     if (this.stopped) return;
     this.options.bus.expireRemoteQueues(this.now());
     for (const binding of this.bindings.values()) if (this.valid(binding)) {
-      try { for (const row of binding.store.expireApplications(binding.name)) this.outcome(binding, row); }
+      try {
+        for (const row of binding.store.expireApplications(binding.name)) this.outcome(binding, row);
+        this.reconcileDispositions(binding);
+      }
       catch { binding.online = false; for (const [key, entry] of this.outgoing) if (entry.binding === binding) this.outgoing.delete(key); }
     }
-    this.queueChanged();
+    void this.retryPending(); this.queueChanged();
+  }
+  /** Explicit disposition/online opportunities only; blocked plaintext is never polled. */
+  async retryPending(name?: string): Promise<void> {
+    if (this.stopped) return;
+    const retries: Promise<void>[] = [];
+    for (const binding of this.bindings.values()) try {
+      if ((name === undefined || name === binding.name) && this.valid(binding) && binding.online) retries.push(Promise.resolve().then(() => binding.link.retryPendingApplications()));
+    } catch { /* A completed person disposition must not fail because another room is unavailable. */ }
+    await Promise.allSettled(retries);
+  }
+  private reconcileDispositions(binding: Binding): void {
+    for (const row of binding.store.applicationOutbox(binding.name, true)) if (row.state === "needs_review" && !row.disposition) {
+      const action = this.options.bus.remoteDisposition(row.deliveryId);
+      if (action) binding.store.disposeApplication(binding.name, row.deliveryId, action, () => !this.stopped);
+    }
+    this.refreshOutgoing(binding);
   }
   disposition(peer: string, deliveryId: string, action: "completed" | "retry" | "discard"): void {
     if (this.options.bus.remoteDisposition(deliveryId) !== action) return;
@@ -272,7 +307,7 @@ export class RoomChat {
       binding.store.disposeApplication(binding.name, deliveryId, action, () => !this.stopped);
       this.refreshOutgoing(binding); break;
     }
-    this.refreshTargets(); this.queueChanged();
+    this.refreshTargets(); this.queueChanged(); void this.retryPending();
   }
   evidence(peer: string, deliveryId: string): { roomState: string; disposition?: string; lateReceipt?: string; refusalReason?: string } | undefined {
     if (!peer.includes("@")) return undefined;
@@ -292,11 +327,6 @@ export class RoomChat {
   }
   rows(name: string): Record<string, unknown>[] {
     const binding = this.bindings.get(name); if (!binding) return [];
-    const rows = binding.store.applicationOutbox(name);
-    for (const row of rows) if (row.state === "needs_review" && !row.disposition) {
-      const action = this.options.bus.remoteDisposition(row.deliveryId);
-      if (action) this.disposition(row.remotePeer, row.deliveryId, action);
-    }
     const incoming = binding.store.applicationStatus(name);
     return [...binding.store.applicationOutbox(name).sort((a, b) => Number(!ACTIVE.has(a.state) || !!a.disposition) - Number(!ACTIVE.has(b.state) || !!b.disposition) || b.createdAt - a.createdAt).slice(0, 200).map(row => ({ direction: "outbound", id: row.deliveryId, application: row.application, peer: row.remotePeer, state: row.state === "completed" ? "completed (admitted)" : row.state, ...(row.disposition ? { disposition: row.disposition } : {}), ...(row.lateReceipt ? { lateReceipt: row.lateReceipt.outcome === "completed" ? "completed (admitted)" : "failed_safe" } : {}), ...(row.reason && row.reason !== "admitted" || row.lateReceipt?.reason && row.lateReceipt.reason !== "admitted" ? { refusalReason: row.reason ?? row.lateReceipt!.reason } : {}) })),
       ...incoming.rows.map(row => ({ direction: "inbound", id: row.digest, application: row.application, state: row.state === "disposed" ? `disposed (${row.disposition}, by person)` : row.state, peer: row.peer, ...(row.disposedAt ? { disposedAt: row.disposedAt } : {}) })),

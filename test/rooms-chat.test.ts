@@ -69,7 +69,7 @@ async function side(root: string, label: string, signals: ReturnType<typeof chan
   const commands = new RoomCommands({ cwd, stateDir, chat, presence: () => [{ id: "codex", state: bus.stateOf("codex") }] });
   bus.onQueues = () => { chat!.queueChanged(); signals.notify(); };
   bus.onMemoryDelivery = (...args) => memory.push(args);
-  bus.tap(event => { events.push(event); appendFileSync(publicLog, JSON.stringify(event) + "\n"); commands.changed(); signals.notify(); });
+  bus.tap(event => { events.push(event); appendFileSync(publicLog, JSON.stringify(event) + "\n"); if (event.t === "state" && !event.peer.includes("@")) commands.changed(); signals.notify(); });
   const close = async () => { commands.stop(); await peer.stop(); bus.closeJournal(); };
   return { cwd, stateDir, label, journal, bus, peer, commands, chat, events, condensed, memory, publicLog, close };
 }
@@ -197,9 +197,8 @@ test("leaving and rejoining the same room rebinds an existing remote target befo
   expect(typeof f.roster).toBe("string");
   await command(f.a, "join", { name: "work", roster: f.roster });
   await f.wait(async () => (await f.a.commands.rows("work"))[0]?.state === "online", "replacement room link online");
-  // A fresh signed peer-state observation is required after the new link starts.
-  // This does not reset the retained RemotePeer object or its target binding.
-  f.b.commands.changed();
+  // Reconnect's authenticated presence request must discover an unchanged idle
+  // remote without a synthetic state event or a changed() hand-poke.
   await f.wait(() => f.a.bus.stateOf("codex@beta") === "idle", "remote presence after local rejoin");
   const second = newEnvelope("codex", "after local rejoin", { to: ["codex@beta"], priority: "status" });
   expect(f.a.bus.publish(second)).toEqual(["codex@beta"]);
