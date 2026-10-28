@@ -99,7 +99,7 @@ test("even legacy remote owner and reviewer rows grant no Tasks mutation authori
     () => f.tasks.remember(remote, { text: "no remote memory authority" }),
   ];
   for (const run of operations) {
-    await expect(async () => await run()).rejects.toThrow("remote peers have no local task authority");
+    await expect(Promise.resolve().then(run)).rejects.toThrow("remote peers have no local task authority");
     expect(f.board.statusRevision()).toBe(revision); expect(f.board.list()).toEqual(before);
   }
   expect(f.tasks.isConfiguredPlanner(remote)).toBe(false);
