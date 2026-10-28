@@ -103,17 +103,25 @@ export class ScheduleStore {
     return this.get(id)!;
   }
   /**
+   * A schedule's pause generation, in memory: `setPaused` bumps it. A run captures it when it is admitted and its write fence asks again, so a pause or a resume that
+   * lands while the run awaits its PII screen cancels that run instead of being overtaken by it. A restart ends every run in flight, so memory is enough.
+   */
+  private readonly epochs = new Map<string, number>();
+  epoch(id: string): number { return this.epochs.get(id) ?? 0; }
+  /**
    * #335: pause or resume one schedule. A pause stops the timer from proposing it and counts no skipped tick. Resuming starts a fresh period at `now`, so a long
    * pause is never replayed as a run the moment it ends, as a restart is never replayed either.
    */
   setPaused(id: string, paused: boolean, now: number): void {
+    this.epochs.set(id, this.epoch(id) + 1);
     this.db.query("INSERT OR IGNORE INTO schedule_runs(id, anchor) VALUES(?, ?)").run(id, now);
     if (paused) this.db.query("UPDATE schedule_runs SET paused = 1 WHERE id = ?").run(id);
     else this.db.query("UPDATE schedule_runs SET paused = 0, anchor = ?, coalesced = 0 WHERE id = ?").run(now, id);
   }
   skipped(id: string): void { this.db.query("UPDATE schedule_runs SET coalesced = coalesced + 1 WHERE id = ?").run(id); }
   ran(id: string, now: number, task: number): void {
-    this.db.query("UPDATE schedule_runs SET anchor = ?, last_run = ?, last_task = ?, coalesced = 0, last_error = NULL WHERE id = ?").run(now, now, task, id);
+    // The anchor never moves back: a resume that landed after the task was written already started a later period, and an older pass timestamp must not shorten it.
+    this.db.query("UPDATE schedule_runs SET anchor = MAX(anchor, ?), last_run = ?, last_task = ?, coalesced = 0, last_error = NULL WHERE id = ?").run(now, now, task, id);
   }
   failed(id: string, reason: string): void { this.db.query("UPDATE schedule_runs SET last_error = ? WHERE id = ?").run(reason.slice(0, 200), id); }
   /** A schedule removed from the config keeps no row. */
@@ -122,6 +130,10 @@ export class ScheduleStore {
   }
   close(): void { try { this.db.close(); } catch { /* already closed */ } }
 }
+
+/** What one run of a schedule did. `changed`: the person paused or resumed it after the run was admitted, so it wrote nothing (#335). */
+export type ScheduleOutcome = "ran" | "held" | "waiting" | "failed" | "changed";
+export interface ScheduleRunResult { id: string; outcome: ScheduleOutcome; task?: number }
 
 export type ScheduleState = "scheduled" | "due" | "waiting" | "held" | "paused";
 export interface ScheduleView {

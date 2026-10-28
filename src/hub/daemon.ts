@@ -2798,6 +2798,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const scheduleNow = () => opts.schedulesNow?.() ?? Date.now();
   /** The pass in flight, so a stop can wait for it before the board and the store close. */
   let schedulesPass: Promise<void> | undefined;
+  /** #335: `ahub schedule run` calls in flight. They are not the timer's pass, but `stopOnce` waits for them just the same. */
+  const manualSchedulePasses = new Set<Promise<void>>();
   const runSchedules = (): Promise<void> => {
     if (stopping || schedulesPass) return Promise.resolve();
     schedulesPass = runSchedulesOnce().finally(() => { schedulesPass = undefined; });
@@ -3215,8 +3217,14 @@ export async function startDaemon(opts: DaemonOptions) {
       case "schedule_list":
         if (by !== USER) throw new PreEffectToolRefusal("schedule list is a console command");
         return JSON.stringify(scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true));
-      case "schedule_run":
-        return JSON.stringify(await tasks.runScheduleNow(by, schedulesStore, config.schedules, a.id, scheduleNow(), () => opts.schedulesHeld?.() === true));
+      case "schedule_run": {
+        // The run is registered with the shutdown drain (`schedulesPass`), so `stopOnce` waits for it, as for a timer pass, before the board and the store close (#335).
+        if (stopping) throw new PreEffectToolRefusal("the hub is stopping");
+        const run = tasks.runScheduleNow(by, schedulesStore, config.schedules, a.id, scheduleNow(), () => opts.schedulesHeld?.() === true);
+        const drained = run.then(() => undefined, () => undefined);
+        manualSchedulePasses.add(drained); void drained.finally(() => manualSchedulePasses.delete(drained));
+        return JSON.stringify(await run);
+      }
       case "schedule_pause":
       case "schedule_resume":
         tasks.setSchedulePaused(by, schedulesStore, config.schedules, a.id, op === "schedule_pause", scheduleNow());
@@ -7709,9 +7717,9 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       // A schedules pass may be inside its PII screen: `stopping` is set, so its fence refuses the write when the screen returns. Wait for it (bounded, the screen has
       // its own timeout) before the peers stop, the board closes and the store closes, so no pass runs against a closed database.
-      if (schedulesPass) {
+      if (schedulesPass || manualSchedulePasses.size) {
         let timer: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([schedulesPass.catch(() => undefined), new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); timer.unref?.(); })]);
+        await Promise.race([Promise.all([schedulesPass?.catch(() => undefined), ...manualSchedulePasses]), new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); timer.unref?.(); })]);
         clearTimeout(timer);
       }
       await Promise.all([terminalReadsStopped, codeFactsStopped, implementerShellStopped]);

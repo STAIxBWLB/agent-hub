@@ -28,7 +28,7 @@ export function renderScheduleList(rows: unknown, columns?: number, now = Date.n
   return out;
 }
 
-const RESULT: Record<string, string> = { ran: "ran", held: "not run: the hub is held (stopping or recovering)", waiting: "not run: the task its last run made is still open", failed: "failed" };
+const RESULT: Record<string, string> = { changed: "not run: it was paused or resumed meanwhile", ran: "ran", held: "not run: the hub is held (stopping or recovering)", waiting: "not run: the task its last run made is still open", failed: "failed" };
 
 /** `ahub schedule run <id>`: what the run did. */
 export function renderScheduleRun(result: unknown, columns?: number): Span[][] {

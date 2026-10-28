@@ -9,7 +9,7 @@ import { completePlanInventory, planConformance, planConformanceBlockers, planFi
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
 import { qualifiedTitleRepos, siblingTitleRefs, specRefs } from "./spec-read.ts";
-import { parseEvery, scheduledDetail, scheduleKeyOf, type ScheduleEntry, type ScheduleStore } from "./schedules.ts";
+import { parseEvery, scheduledDetail, scheduleKeyOf, type ScheduleEntry, type ScheduleRunResult, type ScheduleStore } from "./schedules.ts";
 import { DEFAULT_BAND, EPISODE_LOOKBACK, sdlcMetrics, type BandMetric, type BandResult, type MetricTask, type MetricsReport, type SeriesPoint } from "./sdlc-metrics.ts";
 import { readSecurityScan } from "./security-baseline.ts";
 import { cleanMergeCost } from "./cost-governance.ts";
@@ -3173,7 +3173,7 @@ export class Tasks {
    * One due schedule's run: the hold, the open-task rule and the proposal, shared by the timer and `ahub schedule run`, so a manual run can never do what a due
    * one may not. `propose` asks the fence again right before its board write, so a run admitted and then overtaken by a hold writes nothing and counts as a skip.
    */
-  private async runSchedule(store: ScheduleStore, entry: ScheduleEntry, now: number, extraHold: () => boolean, manual = false): Promise<{ id: string; outcome: "ran" | "held" | "waiting" | "failed"; task?: number }> {
+  private async runSchedule(store: ScheduleStore, entry: ScheduleEntry, now: number, extraHold: () => boolean, manual = false): Promise<ScheduleRunResult> {
     const hold = () => this.schedulesHeld() || extraHold() ? "the hub is held" : undefined;
     // A skipped tick is counted for the timer only: a person's refused run is not a missed period, so it never feeds the coalescing count.
     const skip = () => { if (!manual) store.skipped(entry.id); };
@@ -3182,14 +3182,22 @@ export class Tasks {
     if (open !== undefined) { skip(); return { id: entry.id, outcome: "waiting", task: open }; }
     // The PII screen and triage are awaited inside `propose`, and a hold can begin during them (shutdown, recovery, a storage error). `propose` asks this fence
     // again right before its board write, so a run that was admitted and then overtaken by a hold writes nothing and counts as a skip, like one held at the start.
-    let overtaken = false;
-    const fence = () => { const reason = hold(); if (reason) overtaken = true; return reason; };
+    // The same fence also reads the schedule's pause generation (#335): a person who paused or resumed it after this run was admitted has changed what should happen,
+    // so the run writes nothing. A timer run that finds it paused or resumed meanwhile is dropped (the next pass decides); a person's own run never races its own command.
+    const admitted = store.epoch(entry.id);
+    let overtaken = false, changed = false;
+    const fence = () => {
+      const reason = hold(); if (reason) overtaken = true;
+      if (!reason && !manual && store.epoch(entry.id) !== admitted) { changed = true; return "the schedule was paused or resumed"; }
+      return reason;
+    };
     try {
       const task = await this.propose(HUB, { title: entry.title, detail: scheduledDetail(entry), class: entry.class, backlog: entry.queue === "backlog",
         ...(entry.owner ? { owner: entry.owner } : {}) }, undefined, undefined, fence);
       store.ran(entry.id, now, task.id);
       return { id: entry.id, outcome: "ran", task: task.id };
     } catch (error) {
+      if (changed) return { id: entry.id, outcome: "changed" };
       if (overtaken) { try { skip(); } catch { /* the store closed with the hub */ } return { id: entry.id, outcome: "held" }; }
       store.failed(entry.id, sanitize((error as Error).message));
       return { id: entry.id, outcome: "failed" };
@@ -3202,10 +3210,10 @@ export class Tasks {
    * while the task its previous run made is still open. While the hub is held the whole pass skips and every due schedule counts the skip, so a long hold
    * ends in one run per schedule, never a burst. A run restarts the period at `now`: nothing a restart or a hold missed is replayed. Returns what each due schedule did.
    */
-  async proposeFromSchedules(store: ScheduleStore, entries: readonly ScheduleEntry[], now: number, extraHold: () => boolean = () => false): Promise<{ id: string; outcome: "ran" | "held" | "waiting" | "failed"; task?: number }[]> {
+  async proposeFromSchedules(store: ScheduleStore, entries: readonly ScheduleEntry[], now: number, extraHold: () => boolean = () => false): Promise<ScheduleRunResult[]> {
     if (this.schedulesRunning) return [];
     this.schedulesRunning = true;
-    const out: { id: string; outcome: "ran" | "held" | "waiting" | "failed"; task?: number }[] = [];
+    const out: ScheduleRunResult[] = [];
     try {
       store.prune(entries.map(entry => entry.id));
       for (const entry of entries) {
@@ -3223,7 +3231,7 @@ export class Tasks {
    * overlaps one), the same hold, open-task and `propose` path (`runSchedule`), and restarts that schedule's period on success like a due run. A paused schedule
    * runs too: a pause stops the timer, not the person. Only the person may.
    */
-  async runScheduleNow(by: PeerId, store: ScheduleStore, entries: readonly ScheduleEntry[], id: unknown, now: number, extraHold: () => boolean = () => false): Promise<{ id: string; outcome: "ran" | "held" | "waiting" | "failed"; task?: number; reason?: string }> {
+  async runScheduleNow(by: PeerId, store: ScheduleStore, entries: readonly ScheduleEntry[], id: unknown, now: number, extraHold: () => boolean = () => false): Promise<ScheduleRunResult & { reason?: string }> {
     if (by !== USER) throw new PreEffectToolRefusal("schedule run is a console command");
     const entry = typeof id === "string" ? entries.find(candidate => candidate.id === id) : undefined;
     if (!entry) throw new PreEffectToolRefusal(`no schedule ${typeof id === "string" ? JSON.stringify(id.slice(0, 64)) : "named"}; ahub schedule list shows the configured ones`);

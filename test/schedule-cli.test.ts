@@ -38,20 +38,20 @@ const SHARED = {
 };
 const SCHEDULES = [{ id: "nightly", every: "1h", class: "plan", title: "Review the nightly board" }, { id: "weekly", every: "24h", class: "plan", title: "Weekly cleanup", queue: "ready" }];
 
-function project(local: Record<string, unknown> = { schedules: SCHEDULES }) {
+function project(local: Record<string, unknown> = { schedules: SCHEDULES }, screen = false) {
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-schedule-cli-"))), state = join(dir, ".agenthub/state");
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
   const git = (...args: string[]) => { const r = hubGitSync(["-C", dir, "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", ...args], { encoding: "utf8" }); expect(r.status, r.stderr).toBe(0); };
   writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify(SHARED));
   const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replace(/^pi_backend = "mlx"$/gm, 'pi_backend = "dgx"');
-  writeFileSync(join(dir, ".agenthub/routing.toml"), routing);
+  writeFileSync(join(dir, ".agenthub/routing.toml"), screen ? routing.replace(/^pii_screen = "off"/m, 'pii_screen = "local"') : routing);
   writeFileSync(join(dir, ".agenthub/config.local.json"), JSON.stringify(local));
   git("init", "-q"); git("add", "-f", ".agenthub/config.json", ".agenthub/routing.toml"); git("commit", "-qm", "baseline");
   return { dir, state };
 }
-async function start(clock: { now: number }, extra: Record<string, unknown> = {}, local?: Record<string, unknown>) {
-  const p = project(local);
+async function start(clock: { now: number }, extra: Record<string, unknown> = {}, local?: Record<string, unknown>, screen = false) {
+  const p = project(local, screen);
   const daemon = await startDaemon({ cwd: p.dir, stateDir: p.state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, schedulesNow: () => clock.now, schedulesEveryMs: 15, ...extra });
   cleanup.push(() => daemon.stop());
   const person = await ControlClient.connect(p.state, { role: "console" }); cleanup.push(() => person.close());
@@ -61,7 +61,8 @@ async function start(clock: { now: number }, extra: Record<string, unknown> = {}
   const tasks = () => (db.query("SELECT id, title, detail, class, state FROM tasks ORDER BY id").all() as { id: number; title: string; detail: string; class: string; state: string }[]).filter(task => scheduleKeyOf(task.detail) !== undefined);
   const row = (id: string) => db.query("SELECT * FROM schedule_runs WHERE id = ?").get(id) as { anchor: number; last_run: number | null; coalesced: number; paused: number } | null;
   if (local === undefined || "schedules" in local) await until(() => row("nightly") !== null && row("weekly") !== null, "the timer recorded both anchors");
-  return { daemon, person, agent, op, tasks, row, dir: p.dir };
+  const dbRow = (id: string) => { const d = new Database(join(p.state, "hub.db"), { readonly: true }); try { return d.query("SELECT * FROM schedule_runs WHERE id = ?").get(id) as { last_run: number | null } | null; } finally { d.close(); } };
+  return { daemon, person, agent, op, tasks, row, dbRow, dir: p.dir };
 }
 const list = async (h: Awaited<ReturnType<typeof start>>) => JSON.parse((await h.op(h.person, "schedule_list")).text) as any[];
 
@@ -237,6 +238,80 @@ test("a manual run never overlaps a schedules pass, and the pass guard is releas
   // a refused id releases nothing it never took, and a later run still works
   expect(await refusal(() => r.tasks.runScheduleNow(USER, r.store, r.entries, "missing", T0))).toContain("no schedule");
   expect(r.tasks.schedulesPending()).toBe(0);
+});
+
+test("a pause or resume that lands while a timer run awaits its PII screen cancels that run instead of being overtaken by it", async () => {
+  for (const action of ["pause", "resume"] as const) {
+    let release: (() => void) | undefined, entered = 0;
+    const r = tasksRig({ screen: () => new Promise(resolve => { entered++; release = () => resolve({ label: "clear", ms: 0 }); }) });
+    r.store.ensure("a", T0);
+    if (action === "resume") r.store.setPaused("a", true, T0 + HOUR / 2);
+    const pass = action === "pause"
+      ? r.tasks.proposeFromSchedules(r.store, r.entries, T0 + 2 * HOUR)
+      : (() => { r.store.setPaused("a", false, T0 + 2 * HOUR); return r.tasks.proposeFromSchedules(r.store, r.entries, T0 + 5 * HOUR); })();
+    await until(() => entered >= 1, "the run is inside its PII screen");
+    // the person acts while the run is admitted and waiting
+    if (action === "pause") r.tasks.setSchedulePaused(USER, r.store, r.entries, "a", true, T0 + 3 * HOUR);
+    else { r.tasks.setSchedulePaused(USER, r.store, r.entries, "a", true, T0 + 3 * HOUR); r.tasks.setSchedulePaused(USER, r.store, r.entries, "a", false, T0 + 4 * HOUR); }
+    release!();
+    const outcomes = await pass;
+    expect(outcomes, action).toEqual([{ id: "a", outcome: "changed" }]);
+    expect(r.board.list().filter(task => scheduleKeyOf(task.detail) === "a"), `${action}: the acknowledged command wins, no task is written`).toHaveLength(0);
+    expect(r.store.get("a")!.coalesced).toBe(0);
+    expect(r.store.get("a")!.last_run).toBeNull();
+    expect(r.store.get("a")!.anchor, `${action}: the fresh period is not overwritten by the older pass`).toBe(action === "pause" ? T0 : T0 + 4 * HOUR);
+  }
+});
+
+test("the anchor never moves back: a run that finishes after a later resume keeps the later period", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-schedule-anchor-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new ScheduleStore(join(dir, "hub.db")); cleanup.push(() => store.close());
+  store.ensure("a", 100);
+  store.setPaused("a", true, 150); store.setPaused("a", false, 400);
+  store.ran("a", 300, 9); // an older pass finishing late
+  expect(store.get("a")).toMatchObject({ anchor: 400, last_run: 300, last_task: 9 });
+  store.ran("a", 500, 10);
+  expect(store.get("a")).toMatchObject({ anchor: 500, last_run: 500 });
+});
+
+test("a manual run is outside the timer's epoch: a pause during it does not cancel the person's own run", async () => {
+  let release: (() => void) | undefined, entered = 0;
+  const r = tasksRig({ screen: () => new Promise(resolve => { entered++; release = () => resolve({ label: "clear", ms: 0 }); }) });
+  const running = r.tasks.runScheduleNow(USER, r.store, r.entries, "a", T0);
+  await until(() => entered >= 1, "the manual run is inside its PII screen");
+  r.tasks.setSchedulePaused(USER, r.store, r.entries, "a", true, T0 + 1);
+  release!();
+  expect((await running).outcome).toBe("ran");
+  expect(r.board.list().filter(task => scheduleKeyOf(task.detail) === "a")).toHaveLength(1);
+});
+
+test("stop waits for a manual run in flight and the run's bookkeeping lands before the store closes", async () => {
+  let release: (() => void) | undefined, entered = 0;
+  const clock = { now: T0 };
+  const h = await start(clock, { piiScreen: () => new Promise(resolve => { entered++; release = () => resolve({ label: "clear", ms: 0 }); }) }, undefined, true);
+  const run = h.op(h.person, "schedule_run", { id: "nightly" });
+  await until(() => entered >= 1, "the manual run is inside its PII screen");
+  let stopped = false;
+  const stopping = h.daemon.stop().then(() => { stopped = true; });
+  await Bun.sleep(150);
+  expect(stopped, "stop waits for the manual run in flight").toBe(false);
+  release!();
+  await stopping;
+  const reply = await run;
+  expect(stopped).toBe(true);
+  expect(reply.ok === false || JSON.parse(reply.text ?? "{}").outcome !== "ran" || h.dbRow("nightly")?.last_run === T0, "a run that ran left its bookkeeping").toBe(true);
+  const ran = reply.ok && JSON.parse(reply.text).outcome === "ran";
+  if (ran) expect(h.dbRow("nightly")).toMatchObject({ last_run: T0 });
+  else expect(h.tasks()).toHaveLength(0);
+});
+
+test("a manual run is refused once the hub is stopping", async () => {
+  const clock = { now: T0 }, h = await start(clock);
+  const stopping = h.daemon.stop();
+  const reply = await h.op(h.person, "schedule_run", { id: "nightly" }).catch(error => ({ ok: false, error: String(error) }));
+  await stopping;
+  expect(reply.ok).toBe(false);
+  expect(h.tasks()).toHaveLength(0);
 });
 
 // ---- the store and the view, without a daemon
