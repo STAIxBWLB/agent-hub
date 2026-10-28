@@ -101,13 +101,9 @@ python3 docs/verification/claude-permission-transport-native.py "$BASH_REWRITE_O
 
 The required repository gate remains `scripts/check.sh --changed` at that committed head. Any macOS host-wrapper positive branch must be reported separately from the Linux branch that deliberately asks without `sandbox-exec`.
 
-Isolated model-free native probe, after host-resource admission, using explicit reviewed installed paths and a new private output directory:
+The existing [host-wrapper receipt](2026-10-26-headless-claude-shell-context.md) names 2.1.309 and 2.1.310, not 2.1.311. Its unchanged `claude-shell-wrapper-native.py` explicitly accepts only those two versions, so it cannot be invoked with 2.1.312 as a valid reproduction command. The task description's reference to a 2.1.311 wrapper receipt is not supported by that checked-in document. No newer wrapper receipt was found in `docs/verification/` at this base.
 
-```sh
-python3 docs/verification/claude-shell-wrapper-native.py "$TRIAGE_OUTPUT" --bun "$BUN_BINARY" --claude "$CLAUDE_CONTROL_BINARY" --claude "$CLAUDE_2312_BINARY"
-```
-
-Repeat `docs/verification/claude-permission-transport-native.py` as well as the wrapper producer before proposing a verified-version bump. Read the existing [permission transport receipt](2026-10-23-headless-claude-permissions.md) and [host-wrapper receipt](2026-10-26-headless-claude-shell-context.md) for the exact strict MCP, empty settings sources, synthetic loopback provider, isolated homes, external 25-second deadline, original request/rewritten reply checks, replay effect count, owned-process-group cleanup and binary-fingerprint checks. The command above is a proposed local diagnostic, not a run receipt. It uses no account or real provider.
+Before proposing any verified-version bump, adapt and review that wrapper producer for the new binaries, then repeat both the wrapper and [generic transport](2026-10-23-headless-claude-permissions.md) procedures. The wrapper procedure must retain strict MCP, empty settings sources, synthetic loopback provider, isolated homes, the external deadline, exact original request/rewritten reply checks, replay effect count, owned cleanup and binary fences. It imports current production code and requires the pinned local dependencies. This triage does not run it with the Mac's stale ancestor dependency installation and does not claim a new wrapper receipt.
 
 ## Remaining unknowns
 
