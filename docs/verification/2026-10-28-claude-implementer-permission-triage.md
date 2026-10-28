@@ -11,6 +11,7 @@ The reported symptoms are a permission-tool harness error before `bun test test/
 | Version admission, wrapper and approval source paths | Read at the triage base `f7450129` |
 | Opt-in deterministic fake diagnostic cases | Corrected committed-head run at `9263ff67db8273a7f0b71c83d63a843ae5a628e0`: 15 pass, 0 fail, 116 assertions across the diagnostic and two related suites. Initial fixture-only assertion failures are corrected |
 | Installed native generic permission transport | 2.1.311 and 2.1.312 each 9/9 pass using the existing Python fixture MCP and loopback provider; no production-daemon or host-wrapper rewrite claim |
+| Native Bash transport and plain command replacement | Strict production-name/schema comparison: 18 transport cases and 4 allow/deny replacement cases passed across 2.1.311 and 2.1.312; no production-daemon or host-wrapper execution claim |
 | Native production-daemon task/host-wrapper rewrite at 2.1.312 | Unverified |
 | Person's reported incident and console connection identity | Not independently reproduced |
 | Real provider, model, credentials or account interaction | Not run |
@@ -68,21 +69,23 @@ This reproduced normal permission behavior, not the reported harness error. The
 fixture MCP is deliberately separate from the production SDK channel and daemon
 policy. No COMPAT value is changed and no new host-wrapper receipt is claimed.
 
-## Prepared Bash transport and rewrite follow-up
+## Native Bash transport and rewrite comparison
 
-The producer now accepts optional `--tool Write|Bash`, `--rewrite-bash`, `--server-name`, `--permission-tool` and `--require-tool-use-id` flags. The default remains the original nine-case Write table, original request/response checks, permission mode, isolated environment, 25-second external deadline, owned-group cleanup and binary fence. The optional modes have been prepared for review; no result is claimed for them here.
+The producer now accepts optional `--tool Write|Bash`, `--rewrite-bash`, `--server-name`, `--permission-tool` and `--require-tool-use-id` flags. The default remains the original nine-case Write table, original request/response checks, permission mode, isolated environment, 25-second external deadline, owned-group cleanup and binary fence. The optional modes ran sequentially at committed producer head `243d4b535404d911ea2b1c728352d4abd82e5ea6`. Strict Bash transport passed all 18 cases, and exact-command replacement passed all 4 allow/deny cases across the two binaries.
 
-| Mode | Cases per supplied binary | Prepared behavior |
+| Mode | Cases per supplied binary | Observed behavior |
 | --- | --- | --- |
 | Default or `--tool Write` | 9 | Original Write allow/deny/hook/MCP-error/disconnect/pending/deadline behavior |
 | `--tool Bash` | 9 | Same case table using an explicitly asked Bash command that only prints `probe` into the fixture target |
 | `--tool Bash --rewrite-bash` | 2 | Allow and deny only; original native command is exactly `bun test test/ci-watch.test.ts` |
 
-The server/tool names default to `fixture`/`approve` and accept only bounded ASCII letters, digits, underscores and hyphens with an initial letter. `--server-name agent-hub --permission-tool hub_permission_request` selects the exact production namespace `mcp__agent-hub__hub_permission_request`. The strict-schema flag adds required `tool_use_id`, the production name/id length bounds and `additionalProperties: false`; the default keeps the original two-field requirement. Bash settings ask for Bash with no newly granted `permission.allow` entry, matching the earlier wrapper fixture. These flags prepare a production-name/schema comparison without claiming the fixture is the production MCP implementation.
+The server/tool names default to `fixture`/`approve` and accept only bounded ASCII letters, digits, underscores and hyphens with an initial letter. `--server-name agent-hub --permission-tool hub_permission_request` selects the exact production namespace `mcp__agent-hub__hub_permission_request`. The strict-schema flag adds required `tool_use_id`, the production name/id length bounds and `additionalProperties: false`; the default keeps the original two-field requirement. Bash settings ask for Bash with no newly granted `permission.allow` entry, matching the earlier wrapper fixture. These flags select a production-name/schema comparison; the fixture remains separate from the production MCP implementation.
 
 In rewrite mode a private executable named `bun` is prepended to the native fixture PATH. A dummy `test/ci-watch.test.ts` exists under the disposable work directory for command-shape fidelity. If the original command runs, the shim records an execution marker and fails. Only the allow MCP server receives the replacement command, a harmless `printf` writer to the fixture target. The returned `updatedInput` is retained and checked exactly, the original `tool_name`, input and `tool_use_id` remain required, the original-execution marker must stay absent in both cases, and the target may contain `probe` only for allow. The final cleanup rechecks the original-execution marker. No repository test command or real Bun test is intended to run, and this probe imports neither `HostShellWrapper` nor the current daemon.
 
-This isolates native Bash argument replacement from the host's command-admission and sandbox policy. A successful optional run would establish only that specific fixture exchange on its supplied binary, not production SDK/daemon behavior, a new trusted/verified version, real account behavior or a complete host-wrapper receipt.
+This isolates native Bash argument replacement from the host's command-admission and sandbox policy. The successful run establishes only that specific fixture exchange on the supplied binaries, not production SDK/daemon behavior, a new trusted/verified version, real account behavior or a complete host-wrapper receipt. The original fake Bun execution marker remained absent in all four rewrite cases; the replacement wrote the fixture target only for allow. All 22 owned native groups were empty and binary hashes unchanged. The model-free comparison did not reproduce the reported harness failure.
+
+The sanitized [Bash transport receipt](2026-10-28-claude-2.1.311-2.1.312-bash-permission.json) contains fixed outcomes, counts, timings, producer hash and native binary hashes, with no command text, prompt, token, session id or path. Native admission at the start observed memory pressure 1, zero swap, thermal state 0, CPU idle 73.29%, load 5.88 on 18 logical CPUs, and no other local repository test/build job. The single worker ran sequentially, then released the slot.
 
 ## Commands for the implementer
 
@@ -92,7 +95,7 @@ Explicit fake diagnostic command, after committing the intended files and taking
 env -u AGENTHUB_HOME bun test ./docs/verification/claude-implementer-permission-triage.ts
 ```
 
-Prepared native Bash follow-up commands, after host-resource admission and review of the explicit installed paths, using two different new private output directories:
+Native Bash reproduction commands, after host-resource admission and review of the explicit installed paths, using two different new private output directories:
 
 ```sh
 python3 docs/verification/claude-permission-transport-native.py "$BASH_TRANSPORT_OUTPUT" --tool Bash --server-name agent-hub --permission-tool hub_permission_request --require-tool-use-id --claude "$CLAUDE_CONTROL_BINARY" --claude "$CLAUDE_2312_BINARY"
@@ -111,4 +114,10 @@ Before proposing any verified-version bump, adapt and review that wrapper produc
 - Whether the failing command reached `permission_request` and the wrapper proof, reached the manual queue, or failed before either.
 - Whether the reportedly empty console was attached to the same daemon instance and request id while the row was still pending.
 - Whether a controlled missed-push case occurs in normal use, beyond the deterministic console fixture.
-- Production-daemon/native host-wrapper behavior on 2.1.312 and a real person's account-backed approval leg. Generic transport passed the isolated comparison above.
+- Production-daemon/native host-wrapper behavior on 2.1.312 and a real person's account-backed approval leg. Generic Write and strict-schema Bash transport, including exact-command replacement, passed the isolated comparison above.
+
+## Disposition
+
+No production defect was reproduced, so this triage makes no source repair or permission relaxation. The trusted-versus-verified hypothesis is contradicted by the source and isolated admission fixture. The generic native-schema/replacement hypothesis did not reproduce in the 2.1.311/2.1.312 comparison. Ordinary daemon approval registration, inventory, push, late subscription and expiry passed the fake task fixture. The deliberately omitted-push case demonstrates a UI information boundary, not an observed normal-use defect.
+
+The incident remains unresolved without its original native tool-result error and the matching daemon instance/request id. The exact sanitized error and timing were requested from the reporting implementer. A subsequent incident should correlate whether a permission row was created, the live console's project/instance, and whether its tail received that same row before expiry. No additional prompt/body logging is proposed here. Existing native stderr suppression and fixed failure outcomes limit retrospective attribution.
