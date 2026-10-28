@@ -93,10 +93,10 @@ export class RoomCommands {
   private active(store: RoomStore, name: string): RoomState {
     const state = store.get(name); if (!state || state.left) refuse("unavailable"); return state;
   }
-  async rows(name?: string): Promise<Record<string, unknown>[]> {
+  async rows(name?: string, details = name !== undefined): Promise<Record<string, unknown>[]> {
     if (!this.store && !existsSync(join(this.options.stateDir, "rooms"))) return [];
     const store = await this.open(); if (name !== undefined) roomName(name);
-    return store.list().filter(row => name === undefined || row.name === name).map(row => ({ name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch, state: row.left ? "left" : this.links.get(row.name)?.status().state ?? "offline", ...(this.options.chat ? { deliveries: this.options.chat.rows(row.name), remotePeers: this.options.chat.peers(row.name) } : {}) }));
+    return store.list().filter(row => name === undefined || row.name === name).map(row => ({ name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch, state: row.left ? "left" : this.links.get(row.name)?.status().state ?? "offline", ...(details && this.options.chat ? { deliveries: this.options.chat.rows(row.name), remotePeers: this.options.chat.peers(row.name) } : {}) }));
   }
   async preview(action: unknown, raw: unknown, check: () => boolean): Promise<RoomPreview> {
     if (typeof action !== "string") refuse("invalid_operation");

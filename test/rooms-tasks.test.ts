@@ -74,6 +74,7 @@ test("even legacy remote owner and reviewer rows grant no Tasks mutation authori
   const running = f.board.propose(USER, { title: "legacy running", class: "implement" });
   f.board.update(running.id, USER, "accepted", { owner: remote, state: "in_progress" });
   const review = f.board.propose(USER, { title: "legacy review", class: "implement" });
+  f.board.update(review.id, USER, "accepted", { owner: "codex", state: "in_progress" });
   f.board.update(review.id, USER, "done", { owner: "codex", reviewer: remote, state: "in_review" });
   const backlog = f.board.propose(USER, { title: "legacy planner", class: "implement", backlog: true, planner: remote });
   const before = f.board.list(), revision = f.board.statusRevision(), authorityCalls = f.authorities;
@@ -113,7 +114,7 @@ test("a person cannot name a remote owner, reviewer or planner, even when remote
   }
   expect(f.board.get(task.id)).toEqual(task);
   const backlog = f.board.propose(USER, { title: "reserved target", class: "implement", backlog: true }), before = f.board.statusRevision();
-  await expect(f.tasks.planBacklog(USER, { id: backlog.id, revision: 0, fields: { reserved: remote }, reason: "remote reservation" })).rejects.toThrow("remote peers have no local task authority");
+  await expect(f.tasks.planBacklog(USER, { id: backlog.id, revision: 0, fields: { reserved: remote }, reason: "remote reservation" })).rejects.toThrow("reserved must be a valid agent peer id or null");
   expect(f.board.statusRevision()).toBe(before);
   const local = await f.tasks.propose(USER, { title: "ordinary local assignment", class: "implement" });
   expect(local.owner).toBe("codex"); expect(local.reviewer).toBe("claude"); expect(local.planner).not.toBe(remote);

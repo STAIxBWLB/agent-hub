@@ -4490,6 +4490,7 @@ export async function startDaemon(opts: DaemonOptions) {
     try { await pi.stop(); } finally { replacingPi.delete(pi); }
   }
   function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }, replacementAuthority?: symbol): Promise<Record<string, unknown>> {
+    if (peer.includes("@")) return Promise.resolve({ ok: false, error: "remote peers have no local runtime or control authority" });
     if (isExternalInstance(peer) && (Object.keys(args).some(key => !["mode", "sessionId"].includes(key)) || args.mode !== undefined && args.mode !== "headless")) return Promise.resolve({ ok: false, error: "external module instances permit only a headless start and recorded session id" });
     if (args.replaceSession !== undefined && (args.replaceSession !== true || replacementAuthority !== piReplacementAuthority || definitionOf(peer)?.start.daemonPort !== "pi-rpc")) return Promise.resolve({ ok: false, error: "Pi session replacement requires explicit person authorization" });
     if (externalRefusedRows.has(peer)) return Promise.resolve({ ok: false, error: "instance kind is unavailable in the startup catalog; check its kind spelling and person-owned module declarations, then restart the hub" });
@@ -7628,7 +7629,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (msg.op === "list" || msg.op === "status") {
           if (msg.input !== undefined && (!msg.input || typeof msg.input !== "object" || Array.isArray(msg.input)
             || Object.keys(msg.input).some(key => key !== "name") || (msg.input.name !== undefined && typeof msg.input.name !== "string"))) return roomFailure();
-          void roomCommands.rows(msg.input?.name).then(rooms => reply({ ok: true, rooms }), roomFailure);
+          void roomCommands.rows(msg.input?.name, msg.op === "status").then(rooms => reply({ ok: true, rooms }), roomFailure);
           return;
         }
         if (!personRoom) return void reply({ ok: false, error: "room mutations are person-only" });
