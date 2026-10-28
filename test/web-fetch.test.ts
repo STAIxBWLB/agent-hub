@@ -298,7 +298,7 @@ test("a listed host that resolves to this machine or its network is refused by t
   const port = (server.address() as { port: number }).port;
   const { proxy: p, log } = await proxy([`localhost:${port}`]);
   const result = await webFetch(`https://localhost:${port}/`, {}, { allow: () => [`localhost:${port}`], proxyUrl: () => p.url, pii: false }); // the real fetch, the real proxy
-  expect(result).toStartWith("error: the page could not be fetched");
+  expect(result, "a refused tunnel is an error whichever way this Bun reports it").toMatch(/^error: (the page could not be fetched|the server answered 403)/);
   expect(log.some(line => line.includes("resolves to an internal address"))).toBe(true);
 });
 
@@ -306,7 +306,7 @@ test("a real request through the real proxy to a host that is not listed is refu
   const { proxy: p, log } = await proxy(["docs.example.org"]);
   // the tool's own list is wider than the proxy's: only the proxy stands between this request and the network
   const result = await webFetch("https://iana.org/", {}, { allow: () => ["iana.org", "docs.example.org"], proxyUrl: () => p.url, pii: false });
-  expect(result).toStartWith("error: the page could not be fetched");
+  expect(result, "a refused tunnel is an error whichever way this Bun reports it").toMatch(/^error: (the page could not be fetched|the server answered 403)/);
   expect(log.some(line => line.includes("iana.org:443") && line.includes("is not in local.network_allow"))).toBe(true);
 });
 
