@@ -145,3 +145,57 @@ test("daemon corpus reads stay public, honor pii.paths and deny paths, and refus
   expect(afterVault.evidence.filter((item: { kind?: string }) => item.kind === "note")).toEqual([]);
   expect(JSON.stringify(afterVault)).not.toContain("PUBLIC_CORPUS_CANARY");
 });
+
+async function duringSlowAsk(f: Awaited<ReturnType<typeof corpusHub>>, change: () => Promise<void>) {
+  const { Inference } = await import("../src/hub/inference.ts");
+  const original = Inference.prototype.complete;
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const resume = new Promise<void>(resolve => { release = resolve; });
+  Inference.prototype.complete = async () => {
+    entered(); await resume;
+    return "The deployment plan is on the board [task #1].";
+  };
+  const pending = f.console_.request({ t: "ask", question: "deployment release plan" });
+  try {
+    await Promise.race([started, Bun.sleep(2000).then(() => { throw new Error("ask did not enter fake inference"); })]);
+    await change(); release();
+    return await pending;
+  } finally { release(); Inference.prototype.complete = original; }
+}
+
+test("an unrelated task write or public history update does not invalidate a slow ask", async () => {
+  for (const mode of ["new-task", "public-history"] as const) {
+    const f = await corpusHub();
+    expect((await f.console_.request({ t: "task", op: "hub_task_propose", args: { title: "deployment release plan", class: "implement" } })).ok).toBe(true);
+    const result = await duringSlowAsk(f, async () => {
+      if (mode === "new-task") {
+        // Created after evidence gathering, so this row was never supplied to the model.
+        expect((await f.console_.request({ t: "task", op: "hub_task_propose", args: { title: "unrelated work", class: "implement" } })).ok).toBe(true);
+      } else {
+        // Host fixture simulates another writer. Production writes still go through Tasks.
+        const { Board } = await import("../src/hub/board.ts");
+        const board = new Board(join(f.stateDir, "hub.db"));
+        try { board.update(1, "hub", "progress", {}, "ordinary public progress"); } finally { board.close(); }
+      }
+    });
+    expect(result).toMatchObject({ ok: true, found: true, answer: "The deployment plan is on the board [task #1].", pii: false });
+  }
+});
+
+test("a gathered task becoming PII or its note becoming withheld invalidates a slow ask", async () => {
+  for (const mode of ["task-pii", "note-pii"] as const) {
+    const f = await corpusHub();
+    expect((await f.console_.request({ t: "task", op: "hub_task_propose", args: { title: "deployment release plan", class: "implement" } })).ok).toBe(true);
+    const result = await duringSlowAsk(f, async () => {
+      const { Board } = await import("../src/hub/board.ts");
+      const board = new Board(join(f.stateDir, "hub.db"));
+      try {
+        if (mode === "task-pii") board.update(1, "hub", "screened", { signals: ["pii"] });
+        else board.update(1, "hub", "progress", {}, "withheld note", { withheld: true });
+      } finally { board.close(); }
+    });
+    expect(result).toMatchObject({ ok: true, found: false, evidence: [], pii: true, note: "evidence context changed" });
+    expect(result.answer).toBeUndefined();
+  }
+});

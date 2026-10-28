@@ -12,6 +12,8 @@ export interface Evidence {
   text: string;
 }
 
+export interface TaskEvidencePrivacy { id: number; created: number; pii: boolean; notePii: boolean }
+
 export interface AskDeps {
   board: Board;
   isPii: (task: Task) => boolean;
@@ -28,7 +30,9 @@ export interface AskDeps {
   /** Host-owned public corpus; never queried with a PII question or private task context. */
   corpus?: (keywords: string[]) => CorpusEvidence[];
   privateContext?: () => boolean;
-  /** Fresh caller, board and policy fence, checked across asynchronous retrieval and model calls. */
+  /** Host-only binding of the privacy snapshots for task rows that actually entered the evidence budget. */
+  bindTaskEvidence?: (rows: readonly TaskEvidencePrivacy[]) => void;
+  /** Fresh caller, gathered-task privacy and policy fence across retrieval/model calls. */
   current?: () => boolean;
   project: string;
   logFile: string;
@@ -82,6 +86,14 @@ function thisRunsLog(file: string): string[] {
   }
 }
 
+/** The same task/note privacy verdict used to render a task row and to revalidate its model evidence. */
+export function taskEvidencePrivacy(task: Task, d: Pick<AskDeps, "isPii" | "isPiiText">): TaskEvidencePrivacy {
+  const pii = d.isPii(task);
+  const last = task.history.findLast(entry => entry.event !== "memory reference started");
+  const notePii = !pii && !!last?.note && (!!last.withheld || (d.isPiiText?.(last.note) ?? false));
+  return { id: task.id, created: task.created, pii, notePii };
+}
+
 function current(d: AskDeps): boolean { try { return d.current?.() !== false; } catch { return false; } }
 function privateContext(d: AskDeps): boolean { try { return d.privateContext?.() === true; } catch { return true; } }
 
@@ -102,15 +114,17 @@ export async function gather(question: string, d: AskDeps): Promise<{ evidence: 
   // An ordinary task's last note is model-written (a summary, a review note): one that matches a PII pattern is shown
   // only on campus, like a PII task (#69).
   const lastActivity = (t: Task) => t.history.findLast(entry => entry.event !== "memory reference started");
-  const notePii = (t: Task) => { const last = lastActivity(t); return !d.isPii(t) && !!last?.note && (!!last.withheld || (d.isPiiText?.(last.note) ?? false)); };
+  const notePii = (t: Task) => taskEvidencePrivacy(t, d).notePii;
   const mentionedTasks = new Set([...question.matchAll(/(?:\btask\s*)?#(\d+)\b/gi)].map(match => Number(match[1])));
   piiQuestion ||= allTasks.some(task => (d.isPii(task) || notePii(task)) && (mentionedTasks.has(task.id) || hit(task.title) > 0));
   const anyPii = tasks.some((t) => d.isPii(t) || notePii(t));
   const showPii = anyPii ? await onCampus() : false;
   if (!current(d)) return unavailable();
   let piiShown = false;
+  const taskPrivacy = new Map<number, TaskEvidencePrivacy>();
   const taskRows: Evidence[] = tasks.map((t) => {
-    const secret = d.isPii(t);
+    const privacy = taskEvidencePrivacy(t, d); taskPrivacy.set(t.id, privacy);
+    const secret = privacy.pii;
     if (secret && showPii) piiShown = true;
     const last = lastActivity(t);
     if (notePii(t) && showPii) piiShown = true;
@@ -168,6 +182,12 @@ export async function gather(question: string, d: AskDeps): Promise<{ evidence: 
     size += e.text.length + e.id.length;
     evidence.push(e);
   }
+  try {
+    d.bindTaskEvidence?.(evidence.filter(row => row.kind === "task").flatMap(row => {
+      const id = Number(row.id.slice("task #".length)), privacy = taskPrivacy.get(id);
+      return privacy ? [privacy] : [];
+    }));
+  } catch { return unavailable(); }
   return { evidence, pii: piiQuestion || piiShown, onCampus: campus };
 }
 

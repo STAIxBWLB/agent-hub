@@ -136,7 +136,7 @@ import { drainCliAudits } from "../cli/identity-audit.ts";
 import { launcherPreview } from "../cli/preview.ts";
 import { AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig, type PiiVerdict } from "./inference.ts";
-import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
+import { taskEvidencePrivacy, type TaskEvidencePrivacy, ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
 import { NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { githubOriginRepository } from "./task-repository.ts";
@@ -7582,17 +7582,28 @@ export async function startDaemon(opts: DaemonOptions) {
       case "ask": {
         // Console only: the evidence may hold PII task text (on campus), and the answer is for the person at the terminal.
         if (c.role !== "console") return void reply({ t: "ask", ok: false, error: "ask is a console command" });
-        const client = sock.data, revision = configRevision, boardRevision = board.statusRevision(), policy = corpusPolicyVersion();
+        const client = sock.data, revision = configRevision, policy = corpusPolicyVersion();
+        const callerPrivate = () => !!client.peer && contextPii(client.peer);
+        const initialPrivate = callerPrivate();
+        const isPiiText = (text: string) => activeRouting().constraints.pii === "local_only" && detectSignals({ title: text, detail: "", refs: {} }, activeRouting(), opts.cwd).includes("pii");
+        let evidencePrivacy: readonly TaskEvidencePrivacy[] = [];
         const askCurrent = () => !stopping && sock.data === client && sock.readyState === WebSocket.OPEN
-          && configRevision === revision && board.statusRevision() === boardRevision && corpusPolicyVersion() === policy;
+          && configRevision === revision && corpusPolicyVersion() === policy && callerPrivate() === initialPrivate
+          && evidencePrivacy.every(previous => {
+            const latest = board.get(previous.id);
+            if (!latest || latest.created !== previous.created) return false;
+            const privacy = taskEvidencePrivacy(latest, { isPii: task => tasks.isPii(task), isPiiText });
+            return privacy.pii === previous.pii && privacy.notePii === previous.notePii;
+          });
         ask(String(msg.question ?? ""), {
           board,
           isPii: (t) => tasks.isPii(t),
           onCampus,
           current: askCurrent,
-          privateContext: () => !!client.peer && contextPii(client.peer),
+          privateContext: callerPrivate,
+          bindTaskEvidence: rows => { evidencePrivacy = rows; },
           corpus: keys => publicCorpus(keys.join(" "), askCurrent),
-          isPiiText: (q) => activeRouting().constraints.pii === "local_only" && detectSignals({ title: q, detail: "", refs: {} }, activeRouting(), opts.cwd).includes("pii"),
+          isPiiText,
           ...(config.memory.enabled ? { memory } : {}),
           // #258: entries that match the question, then the graph neighbourhood of what they are about.
           ...(memoryStore ? { native: (keys: string[]) => {
