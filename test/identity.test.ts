@@ -52,6 +52,7 @@ test("audit labels and human-action hints contain command names only", () => {
   expect(cliCommandLabel("task", ["private-text"])).toBe("task");
   expect(cliCommandLabel("task", ["assign", "42", "private-text"])).toBe("task assign");
   expect(cliCommandLabel("task", ["unassign", "42"])).toBe("task unassign");
+  expect(cliCommandLabel("task", ["claim", "42", "1", "supported"])).toBe("task claim");   // #901: its own label, not the generic "task"
   expect(cliCommandLabel("malformed\ncommand", [])).toBe("unknown");
   expect(cliCommandLabel("permit\n", [])).toBe("unknown");
   expect(peerCommandRefusal("claude", "permit")).toContain("ahub console or a terminal");

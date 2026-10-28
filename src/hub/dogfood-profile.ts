@@ -8,10 +8,12 @@ import type { StampedEvent } from "./events.ts";
 
 export interface ProfileHistory {
   at: number; event: string; criteria?: string[]; criteriaPrivate?: true; deliverables?: string[];
+  /** #901: on the hub's own check entries, the check key and the example check's unresolved-key count; on a `claim verdict` entry, the person's verdict. Closed values only, no claim text. */
+  checkKey?: string; missingKeys?: number; claim?: { slot: number; verdict: "supported" | "unsupported" | "unclear"; model?: string; modelVerdict?: "supported" | "unsupported" | "unclear"; list?: string };
 }
 export interface ProfileTaskMetadata {
   profile: ProfileName; state?: string; class: string; alias: string | null; history: ProfileHistory[];
-  plan?: { sources: number | null; claims: number | null };
+  plan?: { sources: number | null; claims: number | null; /** #901: `claimListId` of the plan's claims now (an opaque hash, never their text); absent when the list could not be read. */ claimList?: string };
 }
 const complete = (s: Source<unknown>) => s.available && s.complete;
 const number = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
@@ -228,12 +230,37 @@ export function profileScorecard(input: DogfoodInput) {
         const count=t.metadata.plan?.[key];
         return full && declarationCount(count) ? count : null;
       };
+      // #901: claim verdicts and check provenance, read only from entries the hub or the person wrote with closed values. Unknown stays unknown, never zero: a count exists only when its source
+      // history is complete, and a row without its basis (no verdict, no model verdict, no recorded check key) is null.
+      type Verdict = "supported" | "unsupported" | "unclear";
+      // A verdict counts only for the claim list it evaluated: its `list` must equal the plan's current claim-list id. After the owner replaces or reorders the claims, an earlier verdict names no claim
+      // of the new list (it is unknown again, not carried over to whatever now sits in its slot), and a verdict from before ids were recorded cannot be bound, so it does not count.
+      const lastVerdict = (t: BoundTask, slot: number) => t.metadata.history.filter(h => h.event === "claim verdict" && h.claim?.slot === slot && inWindow(h.at) && t.metadata.plan?.claimList !== undefined && h.claim.list === t.metadata.plan.claimList).sort((a, b) => a.at - b.at).at(-1)?.claim;
+      const slotRows = group.tasks.map(t => {
+        const count = planCount(t, "claims");
+        return { task: t.id, claims: count === null ? null : Array.from({ length: count }, (_, i) => {
+          const c = lastVerdict(t, i + 1);
+          return { slot: i + 1, modelLabel: c?.model ?? null, personVerdict: c?.verdict ?? null, agreement: c?.modelVerdict ? c.modelVerdict === c.verdict : null };
+        }) };
+      });
+      const slotted = slotRows.flatMap(row => row.claims ?? []);
+      const decided = slotted.filter(c => c.personVerdict !== null);
+      const checkEntries = history.filter(h => (h.event === "check passed" || h.event === "check failed") && h.checkKey === "fact_check");
+      const everyCheckKeyed = full && history.filter(h => h.event === "check passed" || h.event === "check failed").every(h => typeof h.checkKey === "string");
+      const compared = decided.filter(c => c.agreement !== null);
       const research = profile === "research" ? {research:{
         declarations:{scope:"current_plan",perTask:group.tasks.map(t=>({task:t.id,sources:planCount(t,"sources"),claims:planCount(t,"claims")}))},
-        claims:{reachedPersonVerdict:null,perTask:group.tasks.map(t=>{const count=planCount(t,"claims");return {task:t.id,claims:count===null?null:Array.from({length:count},(_,i)=>({slot:i+1,modelLabel:null,personVerdict:null,agreement:null}))};})},
+        // A verdict is the person's, entered with `ahub task claim`; task approval never supplies one. Null until at least the declarations are known; then the number of slots with a recorded verdict.
+        claims:{reachedPersonVerdict:full && slotRows.every(r => r.claims !== null) && decided.length > 0 ? decided.length : null,perTask:slotRows},
         observedCheckOutcomes:{scope:"task_check_history",passed:full?history.filter(h=>h.event==="check passed").length:null,failed:full?history.filter(h=>h.event==="check failed").length:null},
-        factCheck:{scope:null,selection:null,passed:null,failed:null,missingKeysPerRun:null,
-          agreement:["supported","unsupported","unclear"].map(label=>({label,count:null}))}
+        // Selection and pass/fail are proven only for entries that carry the hub's own check key, and only when every check entry of the group carries one (an older entry has no key: that is unknown, not "another check").
+        factCheck:{scope:everyCheckKeyed && checkEntries.length > 0 ? "task_check_history_with_key" : null,selection:everyCheckKeyed && checkEntries.length > 0 ? "checks.fact_check" : null,
+          passed:everyCheckKeyed && checkEntries.length > 0 ? checkEntries.filter(h => h.event === "check passed").length : null,
+          failed:everyCheckKeyed && checkEntries.length > 0 ? checkEntries.filter(h => h.event === "check failed").length : null,
+          missingKeysPerRun:everyCheckKeyed && checkEntries.length > 0 && checkEntries.every(h => h.missingKeys !== undefined) ? checkEntries.map(h => h.missingKeys!) : null,
+          // Agreement is a count of slots where the model's own verdict was entered and equals the person's, per label. A slot without the model's verdict (agreement null) is unknown and counts for nothing; one where they differ
+          // (agreement false) is a disagreement and counts for no label. With no comparable slot every label is null, never zero.
+          agreement:(["supported","unsupported","unclear"] as Verdict[]).map(label=>({label,count:compared.length > 0 ? compared.filter(c => c.agreement === true && c.personVerdict === label).length : null}))}
       }} : {};
       return {...research,profile, alias:group.alias, baseClass:group.base, tasks:[...ids].sort((a,b)=>a-b),
         flow:{scope,autoApprovalTransitions:{scope:"recorded_events",value:eventsFull?new Set(autoApprovals.map(e=>e.id)).size:null},proposed:count("proposed"),accepted:count("accepted"),approved:milestoneKnown&&!approvalUnknown?approvalIds.size:null,cancelled:count("cancelled"),proposeToApproveMs:full&&!approvalUnknown?quantiles(leads):{samples:null,p50:null,p90:null},reviewRounds:milestoneKnown?rounds:null,firstPassApproval:full&&!approvalUnknown&&first.length?first.reduce((a,b)=>a+b,0)/first.length:null,escalations:count("escalated")},

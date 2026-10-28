@@ -25,7 +25,7 @@ Copy only emitted counts and anonymous task/claim slots. These placeholders rema
 - Missing check keys per run: unknown
 - Section-overlap notices and confirmed section edits: unknown
 
-Task-check history alone does not prove checks.fact_check ran. A model label or task approval alone does not prove a person verdict or agreement. Preserve every emitted null.
+Task-check history alone does not prove checks.fact_check ran; only entries that carry the hub's own `checkKey` do (#901), and an older keyless entry makes the group unknown. A model label or task approval alone does not prove a person verdict or agreement; a verdict is the person's `ahub task claim` entry, and agreement needs the model's own verdict entered with it. Preserve every emitted null.
 
 ## Verification verdicts
 

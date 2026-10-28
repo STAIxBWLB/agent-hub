@@ -1,3 +1,4 @@
+import { claimListId } from "./board.ts";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -96,7 +97,10 @@ export function dogfoodTasks(file: string): Source<DogfoodTask[]> {
               if (history.some((h:any) => h && (h.unmetCriteria !== undefined && (!Array.isArray(h.unmetCriteria) || h.unmetCriteria.length>32 || new Set(h.unmetCriteria).size!==h.unmetCriteria.length || h.unmetCriteria.some((v:unknown)=>typeof v!=="string" || !/^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(v))) || h.deliverables !== undefined && (!Array.isArray(h.deliverables) || h.deliverables.length>16 || h.deliverables.some((v:any)=>typeof v?.id!=="string" || !/^d-[0-9a-f]{12}$/.test(v.id)))))) complete=false;
               const projection = history.filter((h:any)=>h && Number.isFinite(h.at) && typeof h.event==="string").map((h:any) => ({at:h.at,event:h.event,
                 ...(Array.isArray(h.unmetCriteria) ? {criteria:h.unmetCriteria.slice(0,32).filter((v:unknown)=>typeof v === "string" && /^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(v)).map((v:string)=>pii || h.withheld ? "withheld" : v), ...(h.withheld ? {criteriaPrivate:true as const} : {})} : {}),
-                ...(Array.isArray(h.deliverables) ? {deliverables:h.deliverables.slice(0,16).filter((v:any)=>typeof v?.id==="string" && /^d-[0-9a-f]{12}$/.test(v.id)).map((v:any)=>v.id)} : {})}));
+                ...(Array.isArray(h.deliverables) ? {deliverables:h.deliverables.slice(0,16).filter((v:any)=>typeof v?.id==="string" && /^d-[0-9a-f]{12}$/.test(v.id)).map((v:any)=>v.id)} : {}),
+                // #901: only closed values cross: a check key is a bounded identifier, a count a safe integer, a verdict one of three words and a model label a bounded token. Anything else is dropped (unknown).
+                ...(h.event==="check passed" || h.event==="check failed" ? {...(typeof h.checkKey==="string" && /^[a-z][a-z0-9_]{0,47}$/.test(h.checkKey) ? {checkKey:h.checkKey} : {}), ...(Number.isSafeInteger(h.missingKeys) && h.missingKeys>=0 && h.missingKeys<=100000 ? {missingKeys:h.missingKeys} : {})} : {}),
+                ...(h.event==="claim verdict" && h.claim && Number.isSafeInteger(h.claim.slot) && h.claim.slot>=1 && h.claim.slot<=50 && ["supported","unsupported","unclear"].includes(h.claim.verdict) ? {claim:{slot:h.claim.slot,verdict:h.claim.verdict,...(typeof h.claim.list==="string" && /^[0-9a-f]{16}$/.test(h.claim.list) ? {list:h.claim.list} : {}),...(typeof h.claim.model==="string" && /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63}$/.test(h.claim.model) && !pii ? {model:h.claim.model} : {}),...(["supported","unsupported","unclear"].includes(h.claim.modelVerdict) ? {modelVerdict:h.claim.modelVerdict} : {})}} : {})}));
               let declarations: ProfileTaskMetadata["plan"];
               if (!row.plan_cut && row.plan !== null) {
                 try {
@@ -110,7 +114,7 @@ export function dogfoodTasks(file: string): Source<DogfoodTask[]> {
                       if (!Array.isArray(value) || value.length>50 || value.some((v:unknown)=>typeof v!=="string" || v.length>300)) throw new Error("plan list malformed");
                       return value.length;
                     };
-                    declarations={sources:count("sources"),claims:count("claims")};
+                    declarations={sources:count("sources"),claims:count("claims"),claimList:claimListId(Array.isArray(rawPlan.claims) ? rawPlan.claims : undefined)};
                   }
                 } catch {planBad=true;}
               }

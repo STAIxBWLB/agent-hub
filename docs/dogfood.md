@@ -116,6 +116,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Feature | State here | Measured by |
 | --- | --- | --- |
 | Dogfood scorecard (#687) | on after release; read-only weekly receipt | `ahub report --dogfood --since 7d --json`; bounded evidence and explicit unknowns |
+| Claim verdicts and fact_check provenance (#901) | source/fixture coverage; the live research pilot (a person entering verdicts with `ahub task claim`) remains unverified | `ahub report --dogfood` research rows: `claims.reachedPersonVerdict`, per-slot `personVerdict`/`modelLabel`/`agreement`, `factCheck.selection`/`passed`/`failed`/`missingKeysPerRun`; null until a verdict or a keyed check is recorded |
 | Profile scorecard (#799) | source/fixture coverage; live writing/general/research pilot remains unverified | ahub report --dogfood profile rows; pure and reader dev byte goldens, private-text exclusion, research declarations/unknown verdicts and per-source unknown tests; anonymous weekly receipt templates |
 | Agent-shell read-only commands (#812 T1) | source/fixture coverage; active after release | the kept Allowed forms succeed from an agent shell and the demoted forms are refused with the console line (identity tests plus the live table in the PR body) |
 | Public agent CLI reads (#812 T1b) | source/fixture coverage; active after release | ordinary tools and agent-shell read success, private/secret projection tests, mutating-neighbour and planner-only refusals |

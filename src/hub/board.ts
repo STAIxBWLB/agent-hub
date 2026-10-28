@@ -1,4 +1,5 @@
 import { HOST_CODE_SYMBOLS, parseTaskCodeSymbols, type TaskCodeSymbols } from "./task-code-symbols.ts";
+import { createHash } from "node:crypto";
 import { planFingerprint } from "./plan-conformance.ts";
 import type { PlannerReason } from "./routing.ts";
 import type { ReviewerPoolReason } from "./reviewer-pool.ts";
@@ -86,6 +87,12 @@ export interface HistoryEntry {
   noWrites?: true;
   /** Host-recorded expected cost and exact review head, never narrative. */
   reviewCost?: ReviewCost;
+  /** #901: on the hub's own `check passed` / `check failed`: the check key (task class or profile class alias) whose command ran. Set by the hub from its own selection, never from output or an owner's words. */
+  checkKey?: string;
+  /** #901: on such an entry, the number of unresolved citation keys the example citation check printed (`citations: N declared keys, M missing`); absent when the check printed no such line. */
+  missingKeys?: number;
+  /** #901: a person's verdict on one declared claim of a document plan. `slot` is the claim's 1-based position in the current plan; no claim text, no source and no path is stored. */
+  claim?: ClaimVerdict;
   /** #223 R4: on a verdict, whether the reviewer's context was new for it; set by the hub, never by the reviewer. */
   reviewContext?: "fresh" | "continuing";
   /** #852: a verdict by a `code`-scope reviewer says so; a `full` reviewer's verdict carries nothing, so existing rows are unchanged. */
@@ -116,6 +123,25 @@ export interface HistoryEntry {
   queueReviewBinding?: string;
   reviewerFailure?: { peer: string; head?: string; cause: "start_failed" | "quota" | "no_verdict" };
   planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields; pull?: true; split?: { children: { id: number; revision: number; history: number }[] } };
+}
+/** #901: one person verdict on a plan claim, with the model label the person says produced the claim. All closed or bounded; nothing here is claim text. */
+export const CLAIM_VERDICTS = ["supported", "unsupported", "unclear"] as const;
+/** `modelVerdict` is what the model's own fact check said of the claim, as the person enters it: with it the scorecard can say whether person and model agree; without it agreement is unknown. */
+export interface ClaimVerdict { slot: number; verdict: (typeof CLAIM_VERDICTS)[number]; model?: string; modelVerdict?: (typeof CLAIM_VERDICTS)[number]; /** `claimListId` of the plan's claims when the verdict was entered: the list it evaluated, as a hash. Set by the hub, never by the person. */ list?: string }
+/** A short opaque identity of an ordered claim list (a sha-256 prefix of its canonical form): equal lists, in order, give equal ids; it reveals nothing of the claims. Absent list: the empty list's id. */
+export function claimListId(claims: readonly string[] | undefined): string {
+  return createHash("sha256").update(planFingerprint({ claims: [...(claims ?? [])] })).digest("hex").slice(0, 16);
+}
+/** A claim slot is a position in the plan's claim list (at most 50, as the scorecard's own bound); a model label is a bounded token, never prose. */
+export function parseClaimVerdict(value: unknown, slots: number): ClaimVerdict {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("claim verdict must be an object");
+  const v = value as Record<string, unknown>;
+  if (Object.keys(v).some(key => !["slot", "verdict", "model", "modelVerdict"].includes(key))) throw new Error("claim verdict carries only slot, verdict, model and modelVerdict");
+  if (!Number.isSafeInteger(v.slot) || (v.slot as number) < 1 || (v.slot as number) > Math.min(50, slots)) throw new Error(`claim slot must name one of the task's ${slots} declared claim${slots === 1 ? "" : "s"}`);
+  if (typeof v.verdict !== "string" || !(CLAIM_VERDICTS as readonly string[]).includes(v.verdict)) throw new Error(`claim verdict must be one of ${CLAIM_VERDICTS.join(", ")}`);
+  if (v.model !== undefined && (typeof v.model !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63}$/.test(v.model))) throw new Error("model label must be a short identifier (letters, digits and . _ : / @ + -)");
+  if (v.modelVerdict !== undefined && (typeof v.modelVerdict !== "string" || !(CLAIM_VERDICTS as readonly string[]).includes(v.modelVerdict))) throw new Error(`model verdict must be one of ${CLAIM_VERDICTS.join(", ")}`);
+  return { slot: v.slot as number, verdict: v.verdict as ClaimVerdict["verdict"], ...(v.model === undefined ? {} : { model: v.model }), ...(v.modelVerdict === undefined ? {} : { modelVerdict: v.modelVerdict as ClaimVerdict["verdict"] }) };
 }
 /** The ids a stored verdict may carry (#507b): bounded criterion identifiers in the S8 checklist's own format, at most its 32, each once. */
 function criterionIdList(value: unknown): string[] {
@@ -449,7 +475,7 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "planner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled" | "codeSymbols">>, note?: string, extra: Pick<HistoryEntry, "plannerReason" | "planAuthor" | "selfReview" | "profile" | "sweep" | "reason" | "from" | "capacity" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewScope" | "evidenceOnly" | "reviewFindings" | "unmetCriteria" | "deliverables" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number, codeSymbolsAuthority?: typeof HOST_CODE_SYMBOLS): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "planner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled" | "codeSymbols">>, note?: string, extra: Pick<HistoryEntry, "plannerReason" | "planAuthor" | "selfReview" | "profile" | "sweep" | "reason" | "from" | "capacity" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewScope" | "evidenceOnly" | "reviewFindings" | "unmetCriteria" | "deliverables" | "checkKey" | "missingKeys" | "claim" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number, codeSymbolsAuthority?: typeof HOST_CODE_SYMBOLS): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
@@ -506,7 +532,7 @@ export class Board {
     // Disabling reporting must not let plan or repository refs edits/reverts resurrect prior consent.
     const repositoryRefsChanged = patch.refs !== undefined && JSON.stringify([task.refs.repo, task.refs.paths]) !== JSON.stringify([next.refs.repo, next.refs.paths]);
     const departureInvalidated = extra.planDepartureInvalidated === true || hasDeparture && (planChanged || repositoryRefsChanged);
-    const history = [...task.history, { at: Date.now(), by, event, ...plannerHistory, ...authorHistory, ...(extra.selfReview === true ? { selfReview: true as const } : {}), ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(departureInvalidated ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(unmetCriteria?.length ? { unmetCriteria } : {}), ...(deliverables ? { deliverables } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewScope === "code" ? { reviewScope: "code" as const } : {}), ...(extra.evidenceOnly === true && event === "changes_requested" ? { evidenceOnly: true as const } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}) }];
+    const history = [...task.history, { at: Date.now(), by, event, ...plannerHistory, ...authorHistory, ...(extra.selfReview === true ? { selfReview: true as const } : {}), ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(departureInvalidated ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(unmetCriteria?.length ? { unmetCriteria } : {}), ...(deliverables ? { deliverables } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewScope === "code" ? { reviewScope: "code" as const } : {}), ...(extra.evidenceOnly === true && event === "changes_requested" ? { evidenceOnly: true as const } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}), ...(["check passed", "check failed"].includes(event) && typeof extra.checkKey === "string" && /^[a-z][a-z0-9_]{0,47}$/.test(extra.checkKey) ? { checkKey: extra.checkKey } : {}), ...(["check passed", "check failed"].includes(event) && Number.isSafeInteger(extra.missingKeys) && extra.missingKeys! >= 0 && extra.missingKeys! <= 100_000 ? { missingKeys: extra.missingKeys } : {}), ...(event === "claim verdict" && extra.claim ? { claim: extra.claim } : {}) }];
     this.taskWrite(() => {
       const result = this.db.query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ?, planner = ? WHERE id = ?")
         .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), planner, id);
