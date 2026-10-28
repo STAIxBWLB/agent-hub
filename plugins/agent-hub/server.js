@@ -2934,7 +2934,7 @@ function normalizeACPUsage(value, source = "usage_update") {
     const a = f[input], b = f[output];
     return valid(a) && valid(b) && Number.isFinite(a + b) ? { source, availability: "known", shape: "input-output", total: a + b } : { source, availability: "invalid", shape: "input-output" };
   }
-  if (f.used !== undefined) {
+  if (f.used !== undefined || f.size !== undefined) {
     if (!valid(f.used) || !valid(f.size) || !Number.isSafeInteger(f.used) || !Number.isSafeInteger(f.size) || f.size <= 0)
       return { source, availability: "invalid", shape: "context-used" };
     return { source, availability: "unsupported", shape: "context-used", contextUsed: f.used, contextCapacity: f.size };
