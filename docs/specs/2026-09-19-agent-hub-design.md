@@ -5888,7 +5888,10 @@ state/policy changes and at bootstrap. Rechecks are coalesced and bounded; they 
 not poll delivery history or reassign unrelated legacy/person-unassigned work.
 Ownerless proposals, including automatic decline/budget reroutes, are identified
 by their host-written root queue stall code. A planning revision triggers fresh
-admission rather than discarding that origin. A held named proposal keeps its
+admission rather than discarding that origin. A refusal from a separate plan or
+policy gate replaces the queue origin, so queue mutations cannot poll GitHub for
+plan evidence. Reserved retries pass through the existing WIP/in-flight-slot
+admission; a full slot hands readiness back to the existing WIP release path. A held named proposal keeps its
 intended target. Continuing reviewers stay bound unless that reviewer is actually
 queue-refused (or the existing reviewer-pool rules require selection). Automatic review holds carry a host-only `queueReviewHeld` history marker,
 bound to the current review role boundary and an opaque SHA-256 of the selected

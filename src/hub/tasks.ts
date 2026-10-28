@@ -2554,7 +2554,7 @@ export class Tasks {
   }
 
   /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
-  private async assignOwner(task: Task, by: PeerId, opts: { current?: () => void; queueRetry?: true; queueOverride?: "owner"; candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number; refuseNamed?: "pre" | "plain"; plannerPull?: { revision: number; note: string; withheld: boolean; guard: () => void } } = {}): Promise<Task> {
+  private async assignOwner(task: Task, by: PeerId, opts: { current?: () => void; queueOverride?: "owner"; candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number; refuseNamed?: "pre" | "plain"; plannerPull?: { revision: number; note: string; withheld: boolean; guard: () => void } } = {}): Promise<Task> {
     opts.current?.();
     if (task.state === "backlog" && !opts.plannerPull) throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
@@ -2575,8 +2575,7 @@ export class Tasks {
           if (opts.claim && opts.namedOwner === by) stagedClaimGap = gap;
           else {
             if (opts.refuseNamed && opts.namedOwner) throw new (opts.refuseNamed === "pre" ? PreEffectToolRefusal : Error)(`cannot assign task #${current.id} to ${opts.namedOwner}: ${gap}; planner: call hub_planner_groom then hub_plan_review`); // #601, before the stall write
-            // The queue controller retains its origin while a separate admission gate holds.
-            if (!opts.queueRetry) this.reportStall(current, { kind: "no-eligible-peer", code: "policy" });
+            this.reportStall(current, { kind: "no-eligible-peer", code: "policy" });
             return current;
           }
         }
@@ -2982,16 +2981,27 @@ export class Tasks {
         const choice = assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), waitsFor: this.waitsFor(task), ...this.weights(task.class, task), ...retry });
         if (choice.owner) {
           const current = () => { if (!this.queuePressureAdmitted()) throw new PreEffectToolRefusal("queue-pressure retry is no longer admitted"); };
-          try { await this.assignOwner(task, HUB, { current, queueRetry: true, ...retry }); } catch (error) {
+          try {
+            // Reserved ready work shares the existing WIP, in-flight slot and offered fences.
+            if (task.reserved) await this.offerReady(task, "queue pressure cleared", current);
+            else await this.assignOwner(task, HUB, { current, ...retry });
+          } catch (error) {
             if (!(error instanceof AssignmentUndeliveredError) && this.queuePressureAdmitted()) pass.retained = true;
           }
           if (!this.queuePressureAdmitted()) return;
+        } else {
+          // Admission belongs to its current gate; do not poll it through queue wakes.
+          const cause = this.ownerStallCause(task, choice);
+          this.reportStall(task, cause.kind === "no-eligible-peer" && isQueuePressureCode(cause.code) && namedOwner ? { ...cause, peer: namedOwner } : cause);
         }
         const latest = this.d.board.get(task.id);
         if (this.ordinaryQueueProposal(stall, latest)) {
-          // Retain the queue origin even while another transient admission gate holds it.
-          this.d.board.recordStall({ ...stall, replanRevision: latest.planningRevision ?? 0 });
-          pass.retained = true;
+          const origin = this.d.board.queuePressureStallPage(task.id - 1, 1).rows.find(row => row.task === task.id);
+          if (this.isHeld(latest)) this.d.board.clearStall(task.id); // WIP release owns its ready-held task now.
+          else if (origin) {
+            this.d.board.recordStall({ ...origin, replanRevision: latest.planningRevision ?? 0 });
+            pass.retained = true;
+          } // A plan/policy refusal replaced the origin; preserve that stall and stop queue-driven retries.
         } else this.d.board.clearStall(task.id);
       }
     }
@@ -3132,7 +3142,8 @@ export class Tasks {
   }
 
   /** Callers hold a list read before an await: re-read, or a task the other caller offered meanwhile is offered twice. */
-  private async offerReady(stale: Task, why: string): Promise<void> {
+  private async offerReady(stale: Task, why: string, current?: () => void): Promise<void> {
+    current?.();
     let offering = false, undelivered: AssignmentUndeliveredError | undefined, slot: PeerId | undefined;
     try {
       const t = this.d.board.get(stale.id);
@@ -3149,7 +3160,7 @@ export class Tasks {
       offering = true;
       const ready = t.history.at(-1)?.event === "ready" ? t : this.d.board.update(t.id, HUB, "ready", {}, why);
       this.releaseNotice(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
-      await this.assignOwner(ready, HUB, planned ? { candidates: [selected!], namedOwner: selected!, planner: true } : {});
+      await this.assignOwner(ready, HUB, { current, ...(planned ? { candidates: [selected!], namedOwner: selected!, planner: true } : {}) });
     } catch (e) {
       // A saved move whose delivery failed is not "could not be assigned" (#297); the console notice was printed
       // where the error was thrown. The offer stays consumed by the error's own evidence, without the readback.

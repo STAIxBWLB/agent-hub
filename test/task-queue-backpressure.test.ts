@@ -506,19 +506,50 @@ test("a newly queue-blocked reviewer cannot directly approve work proposed witho
 });
 
 
-test("a separate plan gate retains a queue origin without self-scheduling until another admission wake", async () => {
-  const f = await fixture({ onlyOwner: true }); f.wire();
-  f.control.policy = { max_queued: 1, max_oldest_s: 0 }; const ids = f.enqueue("codex", 2);
-  const row = await f.tasks.propose(HUB, { title: "plan gate after queue hold", class: "implement" });
-  await settled(f.tasks); expect(row.owner).toBeNull();
-  f.control.lifecycle = "enforce";
-  for (const id of ids) f.bus.withdraw(id);
-  await settled(f.tasks);
-  expect(f.board.get(row.id)?.owner).toBeNull();
-  expect(f.board.queuePressureStallPage().rows.map(stall => stall.task)).toContain(row.id);
-  const notices = f.notices.length;
-  await new Promise<void>(resolve => setImmediate(resolve));
-  expect(f.tasks.queuePressureRechecksPending()).toBe(0); expect(f.notices.length).toBe(notices);
-  f.control.lifecycle = "off"; f.tasks.scheduleQueuePressureRecheck();
-  await owned(f, row.id, "codex");
+test("a queue origin hands off to a plan gate after one GitHub read despite unrelated queue wakes", async () => {
+  for (const unavailable of [false, true]) {
+    let reads = 0;
+    const gh: SdlcGh = async args => {
+      expect(args.join(" ")).toContain("issue(number:$number)"); reads++;
+      return unavailable ? { code: 1, stdout: "", stderr: "fixture unavailable" } : { code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 1, state: "OPEN", createdAt: "2026-10-01T00:00:00Z", lastEditedAt: "2026-10-02T00:00:00Z" } } } }), stderr: "" };
+    };
+    const f = await fixture({ onlyOwner: true, gh }); f.wire();
+    f.control.policy = { max_queued: 1, max_oldest_s: 0 }; const ids = f.enqueue("codex", 2);
+    const row = await f.tasks.propose(HUB, { title: "plan gate after queue hold", class: "implement" });
+    await settled(f.tasks); expect(row.owner).toBeNull();
+    f.board.update(row.id, HUB, "lifecycle", { sdlc: { stage: "build", repo: "fixture/project", issue: 1, planReview: { planner: "claude", planningRevision: 0, recordedAt: Date.now(), issue: { repo: "fixture/project", issue: 1, editedAt: "2026-10-01T00:00:00Z" } } } });
+    f.control.lifecycle = "enforce";
+    for (const id of ids) f.bus.withdraw(id);
+    await settled(f.tasks);
+    expect(reads).toBe(1); expect(f.board.get(row.id)?.owner).toBeNull();
+    expect(f.board.stalls().find(stall => stall.task === row.id)?.cause.code).toBe("policy");
+    expect(f.board.queuePressureStallPage().rows.map(stall => stall.task)).not.toContain(row.id);
+    const notices = f.notices.length;
+    for (let n = 0; n < 5; n++) {
+      const id = f.enqueue("kimi", 1)[0]!; f.bus.withdraw(id); await settled(f.tasks);
+    }
+    expect(reads).toBe(1); expect(f.notices.length).toBe(notices);
+    expect(f.tasks.queuePressureRechecksPending()).toBe(0);
+  }
+});
+
+test("a queue-held person reservation rechecks the WIP cap before taking a newly occupied slot", async () => {
+  const f = await fixture({ wip: 1, pullOnly: true, hold: false }); f.wire();
+  const dep = f.board.propose(USER, { title: "dependency", class: "implement" });
+  const a = await f.tasks.propose(USER, { title: "reserved A", class: "implement", after: [dep.id] });
+  await f.tasks.assignTo(a.id, "codex", USER);
+  f.control.policy = { max_queued: 1, max_oldest_s: 0 }; f.enqueue("codex", 2);
+  f.board.update(dep.id, USER, "accepted", { state: "in_progress" });
+  f.board.update(dep.id, USER, "approved", { state: "approved" });
+  await f.tasks.releaseReady(); await settled(f.tasks);
+  expect(f.tasks.wip("codex")).toBe(0);
+  expect(f.board.queuePressureStallPage().rows.map(stall => stall.task)).toContain(a.id);
+  const b = f.board.propose(USER, { title: "explicit B occupies the slot", class: "implement" });
+  await f.tasks.assignTo(b.id, "codex", USER); expect(f.tasks.wip("codex")).toBe(1);
+  f.bus.pull("codex"); await settled(f.tasks);
+  expect(f.board.get(a.id)).toMatchObject({ owner: null, reserved: "codex" });
+  expect(f.board.get(a.id)?.history.at(-1)?.event).toBe("ready held");
+  expect(f.tasks.wip("codex")).toBe(1);
+  await f.tasks.cancel(b.id, USER, { reason: "free the occupied slot" });
+  expect(f.board.get(a.id)?.owner).toBe("codex"); expect(f.tasks.wip("codex")).toBe(1);
 });
