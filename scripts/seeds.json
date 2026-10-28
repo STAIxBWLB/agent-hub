@@ -3720,6 +3720,54 @@
       "replacement": "        let evidencePrivacy: readonly TaskEvidencePrivacy[] = [];\n        const initialBoardRevision = board.statusRevision();\n        const askCurrent = () => board.statusRevision() === initialBoardRevision && !stopping",
       "testFile": "test/corpus-privacy-daemon.test.ts",
       "testName": "an unrelated task write or public history update does not invalidate a slow ask"
+    },
+    {
+      "id": "room-person-only-mutation",
+      "file": "src/hub/daemon.ts",
+      "search": "const personRoom = c.role === \"console\";",
+      "replacement": "const personRoom = true;",
+      "testFile": "test/rooms-daemon.test.ts",
+      "testName": "every room rid is answered; tools can read ids but cannot mutate, even as conductor"
+    },
+    {
+      "id": "room-pending-owner-pin",
+      "file": "src/rooms/store.ts",
+      "search": "if (invite.room !== roster.room || invite.owner !== roster.owner || invite.broker !== broker) fail(\"untrusted\");",
+      "replacement": "if (false) fail(\"untrusted\");",
+      "testFile": "test/rooms-store.test.ts",
+      "testName": "room first install requires explicit pending invitation owner pin, never broker supplied TOFU"
+    },
+    {
+      "id": "room-presence-exposure-await-fence",
+      "file": "src/rooms/link.ts",
+      "search": "if (peers.some(peer => !allowed.has(peer.id))) return;",
+      "replacement": "if (false) return;",
+      "testFile": "test/rooms-link.test.ts",
+      "testName": "a presence exposure removed while encryption waits is withheld before the socket send"
+    },
+    {
+      "id": "room-durable-counter-restore",
+      "file": "src/rooms/store.ts",
+      "search": "try { await store.validateRows(); }",
+      "replacement": "try { await Promise.resolve(); }",
+      "testFile": "test/rooms-store.test.ts",
+      "testName": "room restore rejects a zero or noncanonical durable sender counter before publishing sequence ports"
+    },
+    {
+      "id": "room-cli-fingerprint-confirmation",
+      "file": "src/cli/room.ts",
+      "search": "if (answer.trim().toLowerCase() !== \"y\") fail(\"not_confirmed\");",
+      "replacement": "if (false) fail(\"not_confirmed\");",
+      "testFile": "test/rooms-cli.test.ts",
+      "testName": "every room mutation waits for explicit confirmation and abort never sends execute"
+    },
+    {
+      "id": "room-host-fingerprint-confirmation",
+      "file": "src/hub/daemon.ts",
+      "search": "typeof msg.confirm !== \"string\" || !/^[0-9a-f]{16,64}$/.test(msg.confirm) || !ticket.preview.member.startsWith(msg.confirm)",
+      "replacement": "false",
+      "testFile": "test/rooms-daemon.test.ts",
+      "testName": "room execute requires a matching member fingerprint and burns unconfirmed tickets without installing"
     }
   ]
 }

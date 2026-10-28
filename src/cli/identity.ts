@@ -19,6 +19,7 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
   if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
   const sub = command === "recovery" ? recoveryAction(args) : args.find(arg => arg !== "--json");
   return ["task", "role", "goal", "deliverables", "source", "broker", "schedule", "intake"].includes(command)
+    || (command === "room" && !["list", "status"].includes(sub ?? ""))
     || (command === "backlog" && sub !== "list") || (command === "release" && !["list", "show"].includes(sub ?? ""))
     || (command === "memory" && sub !== "graph")
     || (command === "recovery" && (sub === "reattach" || sub === "dispose" && context.repairedFresh === true))
@@ -73,6 +74,7 @@ interface PeerReadForm {
 const publicReadDisplayFlags = ["--json", "--full", "--color=auto", "--color=always", "--color=never"] as const;
 const sdlcReadDisplayFlags = ["--json", "--color=auto", "--color=always", "--color=never"] as const;
 const peerReadForms: Readonly<Record<string, Readonly<Record<string, PeerReadForm>>>> = {
+  room: { list: { displayFlags: ["--json"] }, status: { positional: 1, displayFlags: ["--json"] } },
   queue: { list: { valueFlags: ["--peer"], displayFlags: publicReadDisplayFlags } },
   roster: { "": { displayFlags: publicReadDisplayFlags } },
   settings: { "": { displayFlags: ["--json"] }, list: { displayFlags: ["--json"] }, get: { positional: 1, minimum: 1, displayFlags: ["--json"] } },
@@ -177,6 +179,7 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   // #508: the registry's two forms are named in the audit and in a refusal, never their operands (a path or a URL can carry a secret).
   if (command === "smoke") return args[0] === "run" ? "smoke run" : "smoke";
   if (command === "broker") return args[0] === "serve" ? "broker serve" : args[0] === "room" && args[1] === "drop" ? "broker room drop" : "broker";
+  if (command === "room") return ["create", "invite", "join", "leave", "revoke", "expose", "list", "status"].includes(args[0] ?? "") ? `room ${args[0]}` : "room";
   // #335: a schedule id is config text, so the audit names the subcommand only.
   if (command === "schedule") return ["list", "run", "pause", "resume"].includes(args.find(arg => arg !== "--json") ?? "") ? `schedule ${args.find(arg => arg !== "--json")}` : "schedule";
   // #334: intake names its two subcommands in the audit and a refusal, never the request text (it can carry a secret).
