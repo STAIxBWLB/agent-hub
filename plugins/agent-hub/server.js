@@ -11489,11 +11489,79 @@ var init_claude_task_sessions = __esm(() => {
   UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 });
 
+// src/hub/claude-failure-stage.ts
+function ownData(value, key) {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
+  } catch {
+    return;
+  }
+}
+function requestId(value) {
+  return typeof value === "string" && value.length === 8 && /^[a-f0-9]{8}$/.test(value) ? value : undefined;
+}
+function instanceId(value) {
+  return typeof value === "string" && value.length === 36 && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value) ? value : undefined;
+}
+function nativeVersion(value) {
+  return typeof value === "string" && value.length <= 20 && value === value.trim() && /^(?:0|[1-9][0-9]{0,5})\.(?:0|[1-9][0-9]{0,5})\.(?:0|[1-9][0-9]{0,5})$/.test(value) ? value : undefined;
+}
+function specific(value) {
+  return value === "invalid_permission_request" || value === "wrapper_refused" || value === "manual_queue_expired";
+}
+function stage(value) {
+  return specific(value) || value === "pre_permission" ? value : "native_error";
+}
+function metadata2(value) {
+  const instance = instanceId(ownData(value, "instanceId")), version = nativeVersion(ownData(value, "nativeVersion"));
+  return { ...instance ? { instanceId: instance } : {}, ...version ? { nativeVersion: version } : {} };
+}
+function formatClaudeFailure(evidence, privateTurn) {
+  if (privateTurn !== false)
+    return WITHHELD;
+  const fields = [`stage=${stage(ownData(evidence, "stage"))}`];
+  const request = requestId(ownData(evidence, "requestId")), meta = metadata2(evidence);
+  if (request)
+    fields.push(`request=${request}`);
+  if (meta.instanceId)
+    fields.push(`instance=${meta.instanceId}`);
+  if (meta.nativeVersion)
+    fields.push(`native=${meta.nativeVersion}`);
+  return `Claude implementer turn failed (${fields.join("; ")})`;
+}
+var WITHHELD = "Claude implementer turn failed (details withheld)";
+
 // src/adapters/claude-implementer.ts
 import { randomUUID as randomUUID9 } from "crypto";
 import { lstatSync as lstatSync12, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
 import { join as join17 } from "path";
+function provenVersion(binding) {
+  return provenVersions.get(binding);
+}
+function sealFailureTrace(trace) {
+  try {
+    trace?.seal();
+  } catch {}
+}
+function discardFailureTrace(trace) {
+  try {
+    trace?.discard();
+  } catch {}
+}
+function readFailureTrace(trace) {
+  if (!trace)
+    return;
+  try {
+    return trace.take();
+  } catch {
+    discardFailureTrace(trace);
+    return;
+  }
+}
 function claudeImplementerArgs(turn, mcp, settings, prompt, model) {
   return [
     "-p",
@@ -11562,20 +11630,22 @@ async function proveClaudeImplementer(peer, command) {
       throw new Error(verdict.reason);
     if (fingerprint() !== binding)
       throw new Error("Claude implementer binary changed during proof");
-    return () => {
+    const proof = () => {
       try {
         return fingerprint() === binding;
       } catch {
         return false;
       }
     };
+    provenVersions.set(proof, verdict.version);
+    return proof;
   } finally {
     clearTimeout(timer);
     await child.stop();
     rmSync6(home, { recursive: true, force: true });
   }
 }
-var ClaudeImplementerPeer;
+var provenVersions, ClaudeImplementerPeer;
 var init_claude_implementer = __esm(() => {
   init_envelope();
   init_project();
@@ -11585,6 +11655,7 @@ var init_claude_implementer = __esm(() => {
   init_compat();
   init_claude_print_child();
   init_claude_task_sessions();
+  provenVersions = new WeakMap;
   ClaudeImplementerPeer = class ClaudeImplementerPeer extends BasePeer {
     options;
     hubNative = true;
@@ -11600,6 +11671,7 @@ var init_claude_implementer = __esm(() => {
     command;
     deliveryId;
     inputReleased = false;
+    failureTrace;
     sessions;
     stopping;
     stoppingTarget;
@@ -11673,6 +11745,8 @@ var init_claude_implementer = __esm(() => {
       this.childAbort = undefined;
       this.abort?.abort();
       this.clearWatchdog();
+      discardFailureTrace(this.failureTrace);
+      this.failureTrace = undefined;
       this.settle(this.inputReleased ? "needs_review" : "failed_safe", reason);
       if (this.owned || this.running)
         this.setState("busy");
@@ -11737,8 +11811,10 @@ var init_claude_implementer = __esm(() => {
     }
     async run(groups, generation, running) {
       const current = () => generation === this.generation && !this.abort?.signal.aborted;
+      let failureReason;
       try {
         for (let group of groups) {
+          failureReason = undefined;
           if (!current() || !this.binding?.())
             throw new Error("Claude implementer admission changed");
           group = { ...group, envs: group.envs.filter((env) => !env.private && this.options.admit(env)) };
@@ -11757,6 +11833,7 @@ var init_claude_implementer = __esm(() => {
             }
           }
           const launchId = randomUUID9(), directory = mkdtempSync5(join17(this.options.stateDir, "claude-child-")), settings = join17(directory, "settings.json");
+          let launchFailureTrace;
           this.cleanup = () => rmSync6(directory, { recursive: true, force: true });
           writeFileSync8(settings, sessionSettings(undefined, { script: this.options.factsHook, stateDir: this.options.stateDir, purpose: "permission" }), { mode: 384, flag: "wx" });
           const env = {
@@ -11790,11 +11867,19 @@ var init_claude_implementer = __esm(() => {
                 this.cancel("Claude implementer admission changed before child start", "idle").catch(() => {});
                 return;
               }
-              this.inputReleased = true;
               this.childAbort = new AbortController;
-              this.active = { permissionHook: true, launchId, generation: `${generation}:${launchId}`, sessionId: turn.sessionId, signal: this.childAbort.signal, ...group.task !== undefined ? { task: group.task } : {} };
+              const launch = Object.freeze({ permissionHook: true, launchId, generation: `${generation}:${launchId}`, sessionId: turn.sessionId, signal: this.childAbort.signal, ...group.task !== undefined ? { task: group.task } : {} });
+              this.active = launch;
+              try {
+                launchFailureTrace = this.options.failureTrace?.(Object.freeze({ ...launch }), provenVersion(this.binding));
+              } catch {
+                launchFailureTrace = undefined;
+              }
+              this.failureTrace = launchFailureTrace;
+              this.inputReleased = true;
             },
             onLeaderExit: () => {
+              sealFailureTrace(launchFailureTrace);
               this.active = undefined;
               this.childAbort?.abort();
               this.childAbort = undefined;
@@ -11829,16 +11914,33 @@ var init_claude_implementer = __esm(() => {
           } catch (error) {
             if (child.process.pid === undefined)
               this.owned = undefined;
+            if (error instanceof PrintChildCleanupError)
+              failureReason = this.failureReason(group.task, launchFailureTrace);
+            else
+              discardFailureTrace(launchFailureTrace);
+            if (this.failureTrace === launchFailureTrace)
+              this.failureTrace = undefined;
             throw error;
           }
           this.active = undefined;
           this.owned = undefined;
           this.cleanup?.();
           this.cleanup = undefined;
-          if (!current())
+          if (!current()) {
+            discardFailureTrace(launchFailureTrace);
+            if (this.failureTrace === launchFailureTrace)
+              this.failureTrace = undefined;
             return;
-          if (code !== 0 || !result || failed)
+          }
+          if (code !== 0 || !result || failed) {
+            failureReason = this.failureReason(group.task, launchFailureTrace) ?? "Claude implementer turn failed";
+            if (this.failureTrace === launchFailureTrace)
+              this.failureTrace = undefined;
             throw new Error("Claude implementer turn failed");
+          }
+          discardFailureTrace(launchFailureTrace);
+          if (this.failureTrace === launchFailureTrace)
+            this.failureTrace = undefined;
         }
         if (current()) {
           if (this.running === running)
@@ -11851,7 +11953,8 @@ var init_claude_implementer = __esm(() => {
         this.childAbort?.abort();
         this.childAbort = undefined;
         if (current()) {
-          this.settle(this.inputReleased ? "needs_review" : "failed_safe", error instanceof PrintChildCleanupError ? "Claude implementer cleanup incomplete" : "Claude implementer turn failed");
+          const reason = error instanceof PrintChildCleanupError ? failureReason === "Claude implementer turn failed (details withheld)" ? failureReason : failureReason ? `Claude implementer cleanup incomplete; ${failureReason}` : "Claude implementer cleanup incomplete" : failureReason ?? "Claude implementer turn failed";
+          this.settle(this.inputReleased ? "needs_review" : "failed_safe", reason);
           if (this.owned)
             this.setState("busy");
           else {
@@ -11863,6 +11966,22 @@ var init_claude_implementer = __esm(() => {
           }
         }
       }
+    }
+    failureReason(task, trace) {
+      if (!trace)
+        return;
+      const evidence = readFailureTrace(trace);
+      if (!evidence)
+        return;
+      let privateTurn = true;
+      try {
+        privateTurn = this.options.failurePrivate?.(task) !== false;
+      } catch {}
+      const message = formatClaudeFailure(evidence, privateTurn);
+      try {
+        this.options.failureLog?.(message);
+      } catch {}
+      return message;
     }
   };
 });
@@ -31209,11 +31328,98 @@ ${action}`;
   return Buffer.byteLength(out, "utf8") <= 4096 ? out : `Held hub deliveries: ${held.count} (metadata truncated; ask the person to inspect the queue).`;
 }
 
+// src/hub/native-permission-request.ts
+import { types as types5 } from "util";
+var NATIVE_PERMISSION_PROBE_MAX_BYTES = 4096;
+var NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH = 4;
+var MAX_DEPTH = 8;
+var MAX_NODES = 256;
+function validateNativePermissionRequest(value) {
+  try {
+    if (!value || typeof value !== "object" || types5.isProxy(value) || Array.isArray(value))
+      return false;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null)
+      return false;
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== 3 || !keys.every((key) => key === "tool_name" || key === "input" || key === "tool_use_id"))
+      return false;
+    const data = (key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
+    };
+    const tool = data("tool_name"), input = data("input"), id = data("tool_use_id");
+    return typeof tool === "string" && tool.length <= 128 && tool === tool.trim() && /^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$/.test(tool) && input !== null && typeof input === "object" && !Array.isArray(input) && typeof id === "string" && id.length > 0 && id.length <= 256;
+  } catch {
+    return false;
+  }
+}
+function buildNativePermissionProbe(request) {
+  try {
+    let nodes = 0, bytes = 0;
+    const ancestors = new Set, encoder = new TextEncoder;
+    const charge = (count) => {
+      bytes += count;
+      if (bytes > NATIVE_PERMISSION_PROBE_MAX_BYTES)
+        throw new Error;
+    };
+    const string = (value) => {
+      if (value.length > NATIVE_PERMISSION_PROBE_MAX_BYTES)
+        throw new Error;
+      charge(encoder.encode(JSON.stringify(value)).byteLength);
+      return value;
+    };
+    const clone = (value, depth) => {
+      if (++nodes > MAX_NODES || depth > MAX_DEPTH)
+        throw new Error;
+      if (typeof value === "string")
+        return string(value);
+      if (value === null || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value)) {
+        charge(value === null ? 4 : typeof value === "boolean" ? value ? 4 : 5 : String(value).length);
+        return value;
+      }
+      if (!value || typeof value !== "object" || types5.isProxy(value) || ancestors.has(value))
+        throw new Error;
+      const array = Array.isArray(value), prototype = Object.getPrototypeOf(value);
+      if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null)
+        throw new Error;
+      const keys = Reflect.ownKeys(value);
+      if (keys.length > MAX_NODES || keys.some((key) => typeof key !== "string"))
+        throw new Error;
+      ancestors.add(value);
+      try {
+        const copy = array ? Object.setPrototypeOf([], null) : Object.create(null);
+        const length = array ? Object.getOwnPropertyDescriptor(value, "length")?.value : undefined;
+        if (array && (!Number.isSafeInteger(length) || length < 0 || length > MAX_NODES || keys.length !== length + 1))
+          throw new Error;
+        const names = array ? Array.from({ length }, (_, index) => String(index)) : keys;
+        charge(2 + Math.max(0, names.length - 1) + (array ? 0 : names.length));
+        for (const key of names) {
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          if (!descriptor || !Object.hasOwn(descriptor, "value") || !descriptor.enumerable)
+            throw new Error;
+          if (!array)
+            string(key);
+          Object.defineProperty(copy, key, { value: clone(descriptor.value, depth + 1), enumerable: true, writable: true, configurable: true });
+        }
+        return copy;
+      } finally {
+        ancestors.delete(value);
+      }
+    };
+    const payload = Object.assign(Object.create(null), { t: "permission_failure_probe", request: clone(request, 0) });
+    return encoder.encode(JSON.stringify(payload)).byteLength <= NATIVE_PERMISSION_PROBE_MAX_BYTES ? payload : undefined;
+  } catch {
+    return;
+  }
+}
+
 // src/adapters/claude-channel.ts
 var stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
 var projectRoot2 = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
 var toolsMode = process.env.AGENTHUB_MODE === "tools";
 var permissionTool = toolsMode && process.env.AGENTHUB_PERMISSION_TOOL === "1";
+var invalidPermissionAttempts = 0;
 var unidentified = toolsMode && !process.env.AGENTHUB_PEER_ID;
 var peerId = process.env.AGENTHUB_PEER_ID ?? (toolsMode ? "" : "claude");
 var UNIDENTIFIED = "agent-hub tools refused: this process was not started by the hub (no AGENTHUB_PEER_ID), so it has no peer identity. Start the agent with ahub jcode (or the hub's own start) to use hub tools.";
@@ -31576,8 +31782,16 @@ async function callTool(req) {
     const deny = (message) => text5(JSON.stringify({ behavior: "deny", message }));
     if (!permissionTool || !hub)
       return deny("hub permission unavailable");
-    if (typeof args?.tool_name !== "string" || !/^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$/.test(args.tool_name) || !args.input || typeof args.input !== "object" || Array.isArray(args.input) || typeof args.tool_use_id !== "string" || !args.tool_use_id.length || args.tool_use_id.length > 256)
+    if (!validateNativePermissionRequest(args)) {
+      if (++invalidPermissionAttempts <= NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH) {
+        const probe = buildNativePermissionProbe(args);
+        if (probe)
+          try {
+            await hub.request(probe, 1000);
+          } catch {}
+      }
       return deny("invalid native permission request");
+    }
     try {
       const res = await hub.request({ t: "permission_request", tool: args?.tool_name, input: args?.input, wrapperProtocol: 1 }, 3605000);
       if (res.ok !== true || res.behavior !== "allow")
@@ -31585,7 +31799,7 @@ async function callTool(req) {
       if (res.wrapperProtocol !== undefined && res.wrapperProtocol !== 1)
         return deny("unsupported host execution response");
       const updated = res.wrapperProtocol === 1 ? res.updatedInput : undefined;
-      if (res.wrapperProtocol === 1 && (args.tool_name !== "Bash" || !updated || typeof updated !== "object" || Array.isArray(updated) || typeof updated.command !== "string"))
+      if (res.wrapperProtocol === 1 && (args?.tool_name !== "Bash" || !updated || typeof updated !== "object" || Array.isArray(updated) || typeof updated.command !== "string"))
         return deny("invalid host execution response");
       return text5(JSON.stringify({ behavior: "allow", updatedInput: updated ?? args?.input }));
     } catch {
