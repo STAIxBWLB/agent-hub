@@ -228,7 +228,10 @@ test("#483 A1-A6: pet config block validates at startup and reload, applies live
     writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, pet: { window: true, character: "boxbot" } }));
     writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ pet: { palette: "teal" }, capabilities: { codex: ["memory_read"] } }));
     expect(hubGitSync(["init", "-q"], { cwd: root, encoding: "utf8", timeout: 1000 }).status).toBe(0);
-    const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
+    // The explicit reloads below are this test's only publisher: with the file watcher on, it applies the same bytes first on a slow
+    // runner and the reload reports `applied: []`, or replaces the confirmation token between a preview and its confirm (#546).
+    // The watcher itself stays covered by test/settings-reload-daemon.test.ts.
+    const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false });
     const client = await ControlClient.connect(stateDir, { role: "console" });
     const tools = await ControlClient.connect(stateDir, { role: "tools", peer: "codex" });
     try {
@@ -303,3 +306,33 @@ test("#483 A1-A6: pet config block validates at startup and reload, applies live
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("#546 DaemonOptions.configWatch false leaves the file watcher off, so the explicit reload is the only publisher", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-546-"));
+  try {
+    init(root);
+    writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false } }));
+    writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ pet: { palette: "teal" } }));
+    expect(hubGitSync(["init", "-q"], { cwd: root, encoding: "utf8", timeout: 1000 }).status).toBe(0);
+    const stateDir = join(root, ".agenthub/state");
+    const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false });
+    const client = await ControlClient.connect(stateDir, { role: "console" });
+    try {
+      const rowOf = async () => (await client.request({ t: "settings_get" })).rows.find((item: { key: string }) => item.key === "pet.palette");
+      writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ pet: { palette: "violet" } }));
+      // The watcher polls every 100 ms and debounces 100 ms: with it on, the file would be applied well inside this window.
+      await Bun.sleep(700);
+      expect((await client.request({ t: "status" })).status.pendingRestart ?? []).toEqual([]);
+      const before = await rowOf();
+      expect(before?.value).not.toBe("violet");
+      const reply = await client.request({ t: "settings_reload" });
+      expect(reply).toMatchObject({ ok: true, rejected: [] });
+      expect(reply.applied).toContain("pet.palette");
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);

@@ -622,6 +622,12 @@ export interface DaemonOptions {
   securityScanEveryMs?: number;
   /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
   researchGraceMs?: number;
+  /**
+   * Host-only test seam (#546), never read from config or a control message: `false` leaves the config file watcher off, so an
+   * explicit `settings_reload` is the only publisher. With it on, the watcher and a reload of the same bytes race: whichever runs
+   * second reports `applied: []`, and a watcher pass between a preview and its confirm replaces the confirmation token.
+   */
+  configWatch?: boolean;
   /** Tests observe timer-driven sync without opening a remote; production uses the package sync. */
   memorySync?: typeof syncMemory;
   /** Host-only test/embedding transports. Never read from config or tool input. */
@@ -7951,7 +7957,7 @@ export async function startDaemon(opts: DaemonOptions) {
   log(`${RUN_START}${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
   ready = true;
   tasks.scheduleQueuePressureRecheck();
-  for (const name of CONFIG_SOURCE_FILES) {
+  for (const name of opts.configWatch === false ? [] : CONFIG_SOURCE_FILES) {
     const path = join(opts.cwd, ".agenthub", name);
     const listener = (current: import("node:fs").Stats, previous: import("node:fs").Stats) => {
       if (stopping || current.mtimeMs === previous.mtimeMs && current.size === previous.size && current.ino === previous.ino && current.nlink === previous.nlink) return;
