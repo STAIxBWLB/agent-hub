@@ -92,8 +92,9 @@ test("failed native output consumes the saved sealed launch trace after revoking
   });
   peer = r.peer; await peer.start(); await peer.deliver([message(17)], "trace"); await until(() => peer.state === "idle");
   expect(frozen).toBe(true); expect(sealHadAuthority).toBe(true); expect(takeAfterRevocation).toBe(true); expect(takes).toBe(1); expect(seenVersion).toBeUndefined();
-  expect(r.receipts.at(-1)).toMatchObject({ state: "needs_review", reason: `Claude implementer turn failed (stage=wrapper_refused; request=a1b2c3d4; instance=${instanceId})` });
-  expect(logs).toEqual([r.receipts.at(-1)!.reason]);
+  const reason = `Claude implementer turn failed (stage=wrapper_refused; request=a1b2c3d4; instance=${instanceId})`;
+  expect(r.receipts.at(-1)).toMatchObject({ state: "needs_review", reason });
+  expect(logs).toEqual([reason]);
 });
 
 test("PII is checked at final render and turns failure evidence into the constant stub", async () => {
