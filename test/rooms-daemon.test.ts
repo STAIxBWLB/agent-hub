@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
@@ -8,6 +8,7 @@ import { decodeBase64url } from "../src/rooms/crypto.ts";
 import { decodeInvite, decodeJoin, decodeRoster } from "../src/rooms/wire.ts";
 import { RoomPolicy } from "../src/rooms/policy.ts";
 import { runRoomCommand } from "../src/cli/room.ts";
+import { BasePeer } from "../src/hub/peers.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -16,13 +17,23 @@ async function fixture(conductor = false) {
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   expect(Bun.spawnSync(["git", "init", "-q", root]).exitCode).toBe(0);
   mkdirSync(join(root, ".agenthub"));
+  const roles = Object.fromEntries(Object.entries(DEFAULT_CONFIG.roles).map(([peer, values]) => [peer, peer === "codex" ? ["conductor"] : values.filter(role => role !== "conductor")]));
+  if (conductor) writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ roles }));
   const stateDir = join(root, "state");
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
-      ...(conductor ? { roles: Object.fromEntries(Object.entries(DEFAULT_CONFIG.roles).map(([peer, roles]) => [peer, peer === "codex" ? ["conductor"] : roles.filter(role => role !== "conductor")])) } : {}),
+      ...(conductor ? { roles } : {}),
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false },
       omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false } } });
   cleanup.push(() => daemon.stop());
+  if (conductor) {
+    class ConductorPeer extends BasePeer {
+      async start() { this.setState("idle"); }
+      async stop() { this.setState("offline"); }
+      async deliver() {}
+    }
+    const peer = new ConductorPeer("codex"); daemon.bus.add(peer); await peer.start();
+  }
   const person = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => person.close());
   return { root, stateDir, daemon, person };
 }
