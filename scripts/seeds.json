@@ -4048,6 +4048,14 @@
       "replacement": "// Omit unresolved originals from deadline retention.",
       "testFile": "test/rooms-bus.test.ts",
       "testName": "a remote uncertain retry validates its valid enqueue deadline before recording disposition"
+    },
+    {
+      "id": "room-x4-fresh-chat-capacity-fifo",
+      "file": "src/rooms/link.ts",
+      "search": "if (application?.type === \"chat\" && error instanceof RoomFreshChatCapacityError) freshChatCapacity = true;",
+      "replacement": "if (false) freshChatCapacity = true;",
+      "testFile": "test/rooms-recovery.test.ts",
+      "testName": "a fresh 201st signed chat is retired without admission so the matching receipt behind it can settle"
     }
   ]
 }
