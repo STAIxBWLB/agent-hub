@@ -46,6 +46,7 @@ test("offline until the TUI starts a thread, then idle", async () => {
   expect(peer.version).toBe("0.154.0"); // from app-server's userAgent: what split records are tagged with (#109)
   tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
   await until(() => peer.state === "idle");
+  await until(() => seen.some((m) => m.id === 2));
   expect(seen.find((m) => m.id === 2).result.thread.id).toBe("th1"); // proxy is transparent
 });
 
@@ -946,6 +947,7 @@ test("roster detach keeps the proxy available, fences native attachment, and cle
   await new Promise<void>(resolve => { returned.onopen = () => resolve(); });
   returned.send(JSON.stringify({ id: 3, method: "initialize", params: { clientInfo: { name: "returned-native-tui" } } })); await until(() => replies.some(message => message.id === 3));
   returned.send(JSON.stringify({ id: 4, method: "thread/start", params: {} })); await until(() => peer.state === "idle");
+  await until(() => replies.some(message => message.id === 4));
   expect(replies.find(message => message.id === 4).result.thread.id).toBe("th1"); expect(peer.getPermissionMode()).toBe("ask");
 });
 
