@@ -26,7 +26,8 @@ export function groupUnmetCriteria(rows: readonly LearningRow[], opts: { windowM
   for (const row of rows) {
     const profile = row.profile ?? "dev", cls = row.profileClass ?? row.class;
     for (const entry of row.history) {
-      if (!entry.unmetCriteria?.length || entry.withheld || opts.now - entry.at > opts.windowMs || entry.at > opts.now) continue;
+      // An evidence-only verdict (a code-scope reviewer that named no open finding) is not a rejection and never proposes (#852); it is not recurrence evidence later either.
+      if (!entry.unmetCriteria?.length || entry.withheld || entry.evidenceOnly || opts.now - entry.at > opts.windowMs || entry.at > opts.now) continue;
       for (const criterion of new Set(entry.unmetCriteria)) {
         const key = JSON.stringify([profile, cls, criterion]);
         let group = groups.get(key);

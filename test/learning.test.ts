@@ -45,6 +45,13 @@ test("groupUnmetCriteria counts a criterion once per review, ignores withheld, o
   expect(groupUnmetCriteria([], { windowMs: WINDOW, now: NOW })).toEqual([]);
 });
 
+test("groupUnmetCriteria ignores an evidence-only verdict, so it cannot become recurrence evidence for a later ordinary one", () => {
+  const evidence = { at: NOW - DAY, by: "codex-review", event: "changes_requested", unmetCriteria: ["AC1"], evidenceOnly: true } as HistoryEntry;
+  const ordinary = { at: NOW - DAY, by: "claude", event: "changes_requested", unmetCriteria: ["AC1"] } as HistoryEntry;
+  const rows: LearningRow[] = [{ id: 1, class: "implement", history: [evidence] }, { id: 2, class: "implement", history: [evidence] }, { id: 3, class: "implement", history: [ordinary] }];
+  expect(groupUnmetCriteria(rows, { windowMs: WINDOW, now: NOW }).map(g => [g.criterion, g.tasks])).toEqual([["AC1", [3]]]);
+});
+
 test("the override fragment and card are text: ascii, ids and counts only, nothing applied", () => {
   const group = { profile: "dev", class: "implement", criterion: "AC1", tasks: [3, 4, 9], count: 4 };
   expect(overridesDiff(group)).toEqual({ profile_overrides: { review_checklist: ["AC1: confirm this first; it was unmet on 3 implement tasks"] } });
@@ -181,6 +188,20 @@ test("a recurrence that predates this feature files nothing for a criterion the 
 test("a verdict given in a private turn files nothing", async () => {
   const r = await rig({ privateTurn: (peer: string) => peer === "claude" });
   for (const title of ["one", "two", "three"]) await r.reject(title, ["AC1"]);
+  expect(r.candidates()).toHaveLength(0);
+});
+
+test("end to end: two evidence-only verdicts and one ordinary verdict naming a criterion file no card", async () => {
+  const r = await rig();
+  for (const title of ["old one", "old two"]) {
+    const task = r.board.propose("claude", { title, class: "implement" });
+    r.board.update(task.id, USER, "accepted", { state: "in_progress", owner: "codex", reviewer: "claude" });
+    r.board.update(task.id, "codex", "done", { state: "in_review" }, "finished");
+    r.board.update(task.id, "codex-review", "changes_requested", { state: "changes_requested" }, "no open finding", { unmetCriteria: ["AC1"], evidenceOnly: true } as never);
+    r.board.update(task.id, USER, "cancelled", { state: "cancelled" });
+  }
+  expect(r.board.list().flatMap(t => t.history).filter(h => h.evidenceOnly).length).toBe(2); // the fixture really recorded them
+  await r.reject("ordinary", ["AC1"]);
   expect(r.candidates()).toHaveLength(0);
 });
 
