@@ -22463,6 +22463,7 @@ init_tools();
 init_deny();
 init_permission_mode();
 init_project();
+init_path_policy();
 init_deliverables();
 var CHUNK = 1024 * 1024;
 var NOFOLLOW = constants8.O_NOFOLLOW ?? 0;
