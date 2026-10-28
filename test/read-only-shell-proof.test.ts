@@ -155,5 +155,5 @@ test("Seatbelt file and existing guardPath body remain byte-identical to the acc
   const tools=readFileSync(new URL("../src/local/tools.ts",import.meta.url),"utf8"),spans=findSymbol(parseSource("tools.ts",tools),"guardPath");
   expect(spans).toHaveLength(1);
   const span=spans[0]!;expect(tools[span.end]).toBe("\n");
-  expect(hash(tools.slice(span.start,span.end)+"\n")).toBe("a4e8dce2a952924a2527cf37a5c3a202760abdeb8c41d2843fdeb97872cb9a91"); // #541 moved this pin on purpose: guardPath also judges the denylist and the hub-owned names on the typed name (it only adds refusals); containment, the data.readonly hardlink refusal and matchesPolicy are unchanged.
+  expect(hash(tools.slice(span.start,span.end)+"\n")).toBe("1c958f49bb0c561089f6b56f7259ba918d4367818205cc660a6963498d9db0bd"); // #541 moved this pin on purpose: guardPath also judges the denylist and the hub-owned names on the typed name (it only adds refusals); containment, the data.readonly hardlink refusal and matchesPolicy are unchanged. #555 moved it again: the typed-name checks apply only when the typed name is inside the project (insideRoot), so the guard still only adds refusals and nothing else in the body changed.
 });
