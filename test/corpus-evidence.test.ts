@@ -132,3 +132,13 @@ test("headingless notes use the top citation and body snippets require metadata 
   expect(corpusEvidence("Public Index", index, policy())[0]?.id).toBe("note:notes/intro.md#top");
   expect(corpusEvidence("lunar telemetry", index, policy())).toEqual([]);
 });
+
+
+test("heading metadata caps never fold later section bodies into an earlier citation", () => {
+  const { notes, index } = fixture();
+  const sections = Array.from({ length: 256 }, (_, n) => `# Section ${n + 1}\nordinary prose\n`).join("\n");
+  put(notes, "caps.md", `${sections}\n# Later section\naftercapneedle must not be cited as Section 256`);
+  const result = corpusEvidence("caps aftercapneedle", index, policy());
+  expect(result.length).toBeGreaterThan(0);
+  expect(result.map(item => item.text).join("\n")).not.toContain("aftercapneedle");
+});

@@ -1,5 +1,5 @@
 import { sanitize } from "./envelope.ts";
-import { CorpusIndex, MAX_CORPUS_READS, MAX_FRONTMATTER_BYTES, MAX_NOTE_BYTES, parseNote, type NoteRecord } from "./corpus.ts";
+import { CorpusIndex, MAX_CORPUS_READS, MAX_FRONTMATTER_BYTES, MAX_NOTE_BYTES, MAX_HEADINGS, parseNote, type NoteRecord } from "./corpus.ts";
 
 export const MAX_CORPUS_EVIDENCE = 6;
 export const MAX_CORPUS_EVIDENCE_ITEM_BYTES = 768;
@@ -67,7 +67,7 @@ function contentStart(lines: readonly string[]): number {
 /** Split prose using the same Markdown heading expression and fenced-code rules as parseNote. */
 function sections(text: string): Section[] {
   const lines = text.split(/\r?\n/), start = contentStart(lines), bodyLines = lines.slice(start);
-  const parsedHeadings = parseNote(text).headings;
+  let endOfSections = bodyLines.length;
   const boundaries: { line: number; text: string }[] = [];
   let fence: string | undefined;
   for (let i = 0; i < bodyLines.length; i++) {
@@ -76,8 +76,12 @@ function sections(text: string): Section[] {
     if (marker) { const mark = marker[1]![0]!; if (!fence) fence = mark; else if (fence === mark) fence = undefined; continue; }
     if (fence) continue;
     const heading = /^ {0,3}(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/.exec(line);
-    const cleanHeading = heading?.[2]?.replace(/\s+/g, " ").trim().slice(0, 200);
-    if (heading && parsedHeadings[boundaries.length]?.text === cleanHeading) boundaries.push({ line: i, text: parsedHeadings[boundaries.length]!.text });
+    const cleanHeading = heading ? parseNote(line).headings[0]?.text : undefined;
+    if (cleanHeading) {
+      // A heading beyond the metadata cap is still a section boundary, never content of the preceding citation.
+      if (boundaries.length >= MAX_HEADINGS) { endOfSections = i; break; }
+      boundaries.push({ line: i, text: cleanHeading });
+    }
   }
 
   const occupied = new Set<string>();
@@ -97,7 +101,7 @@ function sections(text: string): Section[] {
   }
   for (let i = 0; i < boundaries.length; i++) {
     const heading = boundaries[i]!;
-    const end = boundaries[i + 1]?.line ?? bodyLines.length;
+    const end = boundaries[i + 1]?.line ?? endOfSections;
     result.push({ slug: allocate(heading.text), heading: heading.text, body: bodyLines.slice(heading.line + 1, end).join("\n").trim() });
   }
   if (!result.length) result.push({ slug: "top", body: bodyLines.join("\n").trim() });
