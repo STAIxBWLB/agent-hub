@@ -2823,6 +2823,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const scheduleNow = () => opts.schedulesNow?.() ?? Date.now();
   /** The pass in flight, so a stop can wait for it before the board and the store close. */
   let schedulesPass: Promise<void> | undefined;
+  /** #335: `ahub schedule run` calls in flight. They are not the timer's pass, but `stopOnce` waits for them just the same. */
+  const manualSchedulePasses = new Set<Promise<void>>();
   const runSchedules = (): Promise<void> => {
     if (stopping || schedulesPass) return Promise.resolve();
     schedulesPass = runSchedulesOnce().finally(() => { schedulesPass = undefined; });
@@ -3236,6 +3238,22 @@ export async function startDaemon(opts: DaemonOptions) {
       case "backlog_pull":
       case "backlog_return":
         return line(await tasks.moveBacklog(by, a.id, op === "backlog_pull"));
+      // #335: the person's schedule commands. Tasks refuses any other actor; an agent shell never reaches a console op.
+      case "schedule_list":
+        if (by !== USER) throw new PreEffectToolRefusal("schedule list is a console command");
+        return JSON.stringify(scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true));
+      case "schedule_run": {
+        // The run is registered with the shutdown drain, so `stopOnce` waits for it, as for a timer pass, before the board and the store close (#335). A run that arrives
+        // once stop has begun is refused earlier still, by the control layer ("hub is stopping"); the test below holds that, so nothing here repeats it.
+        const run = tasks.runScheduleNow(by, schedulesStore, config.schedules, a.id, scheduleNow(), () => opts.schedulesHeld?.() === true);
+        const drained = run.then(() => undefined, () => undefined);
+        manualSchedulePasses.add(drained); void drained.finally(() => manualSchedulePasses.delete(drained));
+        return JSON.stringify(await run);
+      }
+      case "schedule_pause":
+      case "schedule_resume":
+        tasks.setSchedulePaused(by, schedulesStore, config.schedules, a.id, op === "schedule_pause", scheduleNow());
+        return JSON.stringify(scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true).filter(view => view.id === a.id));
       case "review_brief": {
         const task = board.get(Number(a.id));
         return task ? tasks.briefText(task) || `task #${task.id} names no commit, or is private: no brief` : `no task #${a.id}`;
@@ -5692,6 +5710,8 @@ export async function startDaemon(opts: DaemonOptions) {
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true, wipPull: true, split: true },
       releases: tasks.releaseList(USER),
+      // #335: each schedule's next run, ids and times only (a title or detail is task text). Absent when none is configured, so an older page and an unconfigured project see no change.
+      ...(config.schedules.length ? { schedules: scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true) } : {}),
       boardLegend: Object.entries(peerView).map(([id, peer]) => ({
         peer: id, state: peer.state,
         permissionMode: "permissionNote" in peer && peer.permissionNote ? "unmanaged" : permissionDisplay(id, bus.peers.get(id)),
@@ -7743,9 +7763,9 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       // A schedules pass may be inside its PII screen: `stopping` is set, so its fence refuses the write when the screen returns. Wait for it (bounded, the screen has
       // its own timeout) before the peers stop, the board closes and the store closes, so no pass runs against a closed database.
-      if (schedulesPass) {
+      if (schedulesPass || manualSchedulePasses.size) {
         let timer: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([schedulesPass.catch(() => undefined), new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); timer.unref?.(); })]);
+        await Promise.race([Promise.all([schedulesPass?.catch(() => undefined), ...manualSchedulePasses]), new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); timer.unref?.(); })]);
         clearTimeout(timer);
       }
       await Promise.all([terminalReadsStopped, codeFactsStopped, implementerShellStopped]);

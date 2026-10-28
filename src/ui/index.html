@@ -453,6 +453,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 </div>
 <div class="stack">
 <section id="projects-panel" aria-labelledby="projects-title" data-view="agents" hidden><div class="section-head"><h2 id="projects-title">Projects</h2><span id="project-count" class="meta"></span></div><div id="projects"></div></section>
+<section id="schedules-section" aria-labelledby="schedules-title" data-view="agents" hidden><div class="section-head"><h2 id="schedules-title">Schedules</h2><span id="schedule-count" class="meta"></span></div><div id="schedules"></div></section>
 <section aria-labelledby="peers-title" data-view="agents" hidden><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><div id="peers"><div class="skeleton" aria-hidden="true"><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><p class="empty">Loading peers...</p></div></section>
 <section aria-labelledby="permissions-title" data-view="agents" hidden><div class="section-head"><h2 id="permissions-title">Pending approvals</h2><span id="permission-count" class="meta"></span></div><div id="permissions"></div></section>
 <section aria-labelledby="budget-title" data-view="agents" hidden><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div>
@@ -1493,6 +1494,35 @@ function formatCounter(c, exact) {
 }
 const USAGE_LIMIT_ROWS = 20;
 const USAGE_COVERAGE_NOTE = 'Coverage: Jcode and Kimi (prior to #285) report hub-counted increments; unrecorded sources are noted as unknown.';
+/** #335: what a schedule row says about its next run. The hub classifies (scheduled, due, waiting, held, paused); the page only words it and never invents a time. */
+function scheduleNextLabel(row) {
+  const at = Number.isSafeInteger(row?.next) && row.next > 0 ? new Date(row.next).toLocaleString() : 'unknown';
+  if (row?.state === 'paused') return 'Paused (would be ' + at + ')';
+  if (row?.state === 'scheduled') return at;
+  if (row?.state === 'due') return 'Due now';
+  if (row?.state === 'waiting') return 'Due, waiting for task #' + row.task + ' to close';
+  if (row?.state === 'held') return 'Due, held (the hub is stopping or recovering)';
+  return 'unknown';
+}
+function renderSchedules(schedules) {
+  const section = $('schedules-section'), target = $('schedules');
+  const rows = Array.isArray(schedules) ? schedules : [];
+  section.dataset.empty = rows.length ? 'false' : 'true';
+  $('schedule-count').textContent = rows.length ? rows.length + (rows.length === 1 ? ' schedule' : ' schedules') : '';
+  target.replaceChildren();
+  if (!rows.length) { empty(target, 'No schedules configured.'); return; }
+  const wrap = el('div', undefined, 'usage-table-wrap'), table = el('table', undefined, 'usage-table'), head = el('tr');
+  for (const name of ['Schedule', 'Every', 'Class', 'State', 'Next run', 'Last run', 'Task']) head.append(el('th', name));
+  table.append(head);
+  for (const row of rows) {
+    const line = el('tr');
+    line.append(el('td', String(row.id)), el('td', String(row.every)), el('td', String(row.class) + ' / ' + String(row.queue)), el('td', String(row.state)),
+      el('td', scheduleNextLabel(row)), el('td', Number.isSafeInteger(row.last) ? new Date(row.last).toLocaleString() : 'never'), el('td', Number.isSafeInteger(row.task) ? '#' + row.task : '-'));
+    if (row.error) line.setAttribute('title', 'Last run failed: ' + String(row.error));
+    table.append(line);
+  }
+  wrap.append(table); target.append(wrap);
+}
 function renderUsage(usage, tasks, budget) {
   if (!usage) return;
   // A failed read is not a hidden view: replace the old figures with an explicit state so stale totals are never shown as current.
@@ -1738,6 +1768,7 @@ function render(snapshot) {
   renderMemory(snapshot.memory);
   renderSettings(snapshot.settings, snapshot.roster);
   renderUsage(snapshot.usage, snapshot.tasks, snapshot.budget);
+  renderSchedules(snapshot.schedules);
   const stream = $('stream');
   if (!eventCount) { stream.replaceChildren(); empty(stream, 'No activity yet.'); }
   for (const entry of snapshot.events || []) {
