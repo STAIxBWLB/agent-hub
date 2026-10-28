@@ -203,6 +203,8 @@ export interface TasksDeps {
   /** A cohort formed, changed or was lifted (issue #107), for the record: the benchmark's treatment check reads it. */
   recordCohort?: (cohort: { id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: PeerId[] }) => void;
   sweep?: TaskSweepConfig;
+  /** #798 D1: the project's declared submodule paths, project-relative. Absent: none are known, so no notice. */
+  submodules?: () => string[];
   /** Shutdown or coordinator work (recovery) holds task sweeps, and a guarded merge at its dispatch (#491). */
   sweepHeld?: () => boolean;
   /** Consecutive changes_requested verdicts that move a task to another peer (`tasks.escalate_after`, #488). */
@@ -3215,6 +3217,31 @@ export class Tasks {
     if (this.isPii(task) || task.refs.repo || task.sdlc?.issue || (this.d.sdlc?.config().mode ?? "off") === "off") return undefined;
     const names = qualifiedTitleRepos(task.title);
     return names.length ? `task #${task.id}: the title names ${names.join(", ")}; set refs.repo to that repository (owner/name) so its issue links and the lifecycle shows it` : undefined;
+  }
+
+  /**
+   * #798 D1: a declared path (refs, plan paths, the file part of a section anchor) inside a git submodule of this project: snapshots, facts, overlap and undo do not observe
+   * inside a submodule. A notice, never a refusal: the task stays valid. Advice only, so a PII task gets none, a path whose name matches a PII pattern is not named, and a
+   * task bound to another repository is judged against that one's layout, which this project's `.gitmodules` does not describe (its scope is not the project's).
+   */
+  submoduleNotice(task: Task): string | undefined {
+    if (this.isPii(task)) return undefined;
+    let submodules: string[];
+    try { submodules = this.d.submodules?.() ?? []; } catch { return undefined; }
+    if (!submodules.length) return undefined;
+    if (this.repositories.scope(task.refs) !== this.repositories.project) return undefined;
+    const declared = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.sections ?? []).map(anchor => anchor.split("#")[0]!).filter(Boolean)];
+    const inside = new Set<string>();
+    for (const path of declared) {
+      let local: string;
+      try { local = this.projectPath(path); } catch { continue; }
+      if (local === ".." || local.startsWith("../") || isAbsolute(local)) continue;
+      const hit = submodules.find(sub => local === sub || local.startsWith(`${sub}/`));
+      if (hit) inside.add(hit);
+    }
+    const named = [...inside].filter(this.nameable).sort();
+    if (!named.length) return inside.size ? "inside a submodule (path withheld, it matches a PII pattern): facts, overlap and undo do not observe it" : undefined;
+    return named.map(path => `inside submodule ${path}: facts, overlap and undo do not observe it`).join("\n");
   }
 
   /** #694: write the one issue the task itself names (the plan-review source) into its lifecycle receipt, once; never relinks. */

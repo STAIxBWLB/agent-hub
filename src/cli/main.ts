@@ -2237,9 +2237,14 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (why.length) fail(`refusing to undo ${id}: ${why.join("\n")}${reverted ? "\nCodex's conversation was already reverted; restore the files later with ahub undo without --context" : ""}`);
       return p;
     };
+    // #798 D3: the hub saw these submodules dirty when the turn ended and cannot see inside them: they are never restored, and never counted as "no change".
+    const unobserved = turn.unobserved ?? [];
+    const unobservedNote = unobserved.length ? `\nthese submodules were changed during the turn and their contents cannot be restored (the hub does not observe inside a submodule); undo them in the submodule itself:\n  ${unobserved.join("\n  ")}` : "";
     const first = plan();
-    if (first.undone) return console.log(`turn ${id} is already undone: its files are as they were before it started`);
-    console.log(first.restore.length ? `turn ${id} changed:\n  ${first.restore.join("\n  ")}` : `turn ${id} changed no files`);
+    if (first.undone && !unobserved.length) return console.log(`turn ${id} is already undone: its files are as they were before it started`);
+    if (first.undone) return console.log(`turn ${id}: its files are as they were before it started${unobservedNote}`);
+    // "changed no files" is true of the files the hub observes and false of the turn: with a submodule dirty it says what it can and cannot see instead.
+    console.log((first.restore.length ? `turn ${id} changed:\n  ${first.restore.join("\n  ")}` : unobserved.length ? `turn ${id} changed no files the hub can restore` : `turn ${id} changed no files`) + unobservedNote);
     console.log("(every change made in the project during the turn counts as its own, including any by Claude or by you)");
     const projections = new TextProjections({ cwd: undoCwd, stateDir, config: undoConfig.text_projection ?? {}, deny: undoConfig.local.deny, readAllow: undoConfig.local.read_allow, log: line => console.error(line) });
     const preview = projectedDiff({ repo, from: endTree, to: startTree, paths: first.restore, projections, deny: undoConfig.local.deny, privatePath: path => matchesPolicy(undoCwd, join(repo.top, path), undoConfig.pii?.paths ?? []) });
