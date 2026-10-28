@@ -3724,8 +3724,8 @@
     {
       "id": "room-person-only-mutation",
       "file": "src/hub/daemon.ts",
-      "search": "if (c.role !== \"console\") return void reply({ ok: false, error: \"room mutations are person-only\" });",
-      "replacement": "if (false) return void reply({ ok: false, error: \"room mutations are person-only\" });",
+      "search": "const personRoom = c.role === \"console\";",
+      "replacement": "const personRoom = true;",
       "testFile": "test/rooms-daemon.test.ts",
       "testName": "every room rid is answered; tools can read ids but cannot mutate, even as conductor"
     },

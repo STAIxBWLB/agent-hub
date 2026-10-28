@@ -53,6 +53,13 @@ test("room first install requires explicit pending invitation owner pin, never b
   const candidate = await createRoomEpoch({ owner: attacker, members: [member(attacker, "attacker"), member(victim.identity, "victim")] });
   await expect(victim.install({ name: "work", broker: "ws://127.0.0.1:8788/", wire: candidate.wire, expectedDigest: null })).rejects.toMatchObject({ code: "untrusted" });
   expect(victim.list()).toHaveLength(0);
+  const trusted = await generateHubIdentity();
+  const initial = await createRoomEpoch({ owner: trusted, members: [member(trusted, "trusted")] });
+  const invite = await createInvite({ owner: trusted, epoch: initial.epoch, broker: "ws://127.0.0.1:8788/", expiresAt: Date.now() + 60000 });
+  const request = await createJoin({ invite, identity: victim.identity, label: "victim", exposedPeers: [] });
+  victim.savePendingJoin("work", { invite, request });
+  await expect(victim.install({ name: "work", broker: "ws://127.0.0.1:8788/", wire: candidate.wire, expectedDigest: null })).rejects.toMatchObject({ code: "untrusted" });
+  expect(victim.list()).toHaveLength(0);
 });
 
 test("room sequence counters, adjacent grace and epoch digest pins survive restart without renewal", async () => {

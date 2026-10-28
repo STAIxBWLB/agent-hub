@@ -7490,8 +7490,9 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "room": {
         const client = sock.data;
+        const personRoom = c.role === "console";
         const roomCurrent = () => !stopping && !recoveryActive() && !bus.isRecoveryHeld
-          && sock.data === client && sock.readyState === WebSocket.OPEN && client.role === "console";
+          && sock.data === client && sock.readyState === WebSocket.OPEN && personRoom;
         const roomFailure = () => reply({ ok: false, error: "room operation refused; check room state, authority and arguments" });
         if (msg.op === "list" || msg.op === "status") {
           if (msg.input !== undefined && (!msg.input || typeof msg.input !== "object" || Array.isArray(msg.input)
@@ -7499,7 +7500,7 @@ export async function startDaemon(opts: DaemonOptions) {
           void roomCommands.rows(msg.input?.name).then(rooms => reply({ ok: true, rooms }), roomFailure);
           return;
         }
-        if (c.role !== "console") return void reply({ ok: false, error: "room mutations are person-only" });
+        if (!personRoom) return void reply({ ok: false, error: "room mutations are person-only" });
         if (!roomCurrent()) return roomFailure();
         if (msg.op === "preview") {
           roomTickets.delete(sock);

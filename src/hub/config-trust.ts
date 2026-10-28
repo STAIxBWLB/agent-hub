@@ -30,11 +30,10 @@ export const MACHINE_LOCAL = [
   "terminal.open", // the command a hub-made TUI start runs to open a terminal (#269)
   "tasks.auto_pull", // #785 P1c: lets the hub start work on its own; a committed config may not turn it on for someone else's machine
   "schedules", // #512: entries make the hub propose tasks on a timer; a committed config may not create work on someone else's machine
-  "rooms", // #446: machine-local exposure, never authority from a committed project
   "corpus.paths", // #510: folders the hub reads as evidence; a committed config may not point the hub at a folder on someone else's machine
 ] as const;
 /** Legacy exported field list stays compatible; new policies use the complete list below. */
-export const ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"] as const;
+export const ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "rooms", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"] as const;
 
 /** A known repository, including an unreadable marker, must never be mistaken for a plain directory. */
 export function configRepositoryPresent(cwd: string): boolean {
