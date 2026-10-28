@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, watch, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startBroker, type BrokerEvent, type BrokerRuntime } from "../src/broker/server.ts";
@@ -140,13 +140,11 @@ async function mesh(ackSeconds = 600, brokerQueueCap?: number): Promise<Mesh> {
       event.notify(); return proof;
     },
   });
-  // SQLite's directory events are a durable queue-ACK barrier, not a timer/poll of the broker.
-  const changes = watch(brokerRoot, event.notify); changes.unref();
   const { a, b } = await (async () => {
     const a = await hub(root, "alpha", event, control, ackSeconds);
     try { return { a, b: await hub(root, "beta", event, control, ackSeconds) }; }
     catch (error) { await a.close(); throw error; }
-  })().catch(async error => { control.gate.release(); changes.close(); await broker.stop(); rmSync(root, { recursive: true, force: true }); throw error; });
+  })().catch(async error => { control.gate.release(); await broker.stop(); rmSync(root, { recursive: true, force: true }); throw error; });
   const handles = [a, b]; let owner = "", guest = "";
   const result: Mesh = { root, broker, event, control, frames, brokerEvents, a, b, owner, guest,
     restart: async which => {
@@ -156,7 +154,7 @@ async function mesh(ackSeconds = 600, brokerQueueCap?: number): Promise<Mesh> {
     },
     close: async () => {
       for (const handle of handles.slice().reverse()) await handle.close();
-      control.hold = false; control.gate.release(); changes.close(); await broker.stop(); rmSync(root, { recursive: true, force: true });
+      control.hold = false; control.gate.release(); await broker.stop(); rmSync(root, { recursive: true, force: true });
     },
   };
   meshes.push(result);
