@@ -3,7 +3,7 @@ import { createBrokerAuth, decodeBrokerChallenge, encodeBrokerControl } from "..
 import { assertRoomCryptoReady, encodeBase64url, sha256, RoomCryptoError } from "./crypto.ts";
 import { brokerUrl, canonicalBytes, decodeFrame, decodeRoster, openFrame, roomMembers, sealFrame, verifyPublicRoster, RoomWireError, type FrameWire, type FrameOpenResult, type VerifiedPublicRoster } from "./wire.ts";
 import type { RoomRefusalReason, RoomState, RoomStore } from "./store.ts";
-import { RoomUnmatchedReceiptError, type RoomOutgoingInput } from "./store.ts";
+import { RoomUnmatchedReceiptError, RoomFreshChatCapacityError, type RoomOutgoingInput } from "./store.ts";
 import { decodeRoomMessage, encodeRoomMessage, type RoomMessage } from "./application.ts";
 
 export type RoomLinkState = "offline" | "connecting" | "online";
@@ -397,7 +397,7 @@ export class RoomLink {
     // for transport retirement. No malformed/foreign packet earns an ACK.
     const frame = decodeFrame(bytes), digest = local.current.digest;
     this.frameCurrent(session, frame);
-    let result: FrameOpenResult | undefined, refused: RoomRefusalReason | undefined, invalidPresence = false, invalidApplication = false, unmatchedReceipt = false, presenceCapacity = false;
+    let result: FrameOpenResult | undefined, refused: RoomRefusalReason | undefined, invalidPresence = false, invalidApplication = false, unmatchedReceipt = false, freshChatCapacity = false, presenceCapacity = false;
     let application: RoomMessage | undefined;
     try {
       result = await openFrame({ wire: bytes, identity: this.options.store.identity, current: local.current, ...(local.previous ? { previous: local.previous } : {}), replay: { accept: async input => {
@@ -425,12 +425,13 @@ export class RoomLink {
         try { return await this.options.store.replay.accept(input); }
         catch (error) {
           if (application?.type === "receipt" && error instanceof RoomUnmatchedReceiptError) unmatchedReceipt = true;
+          if (application?.type === "chat" && error instanceof RoomFreshChatCapacityError) freshChatCapacity = true;
           throw error;
         }
       } } });
     } catch (error) {
       if (presenceCapacity) refused = "invalid_presence";
-      else if (unmatchedReceipt) refused = "invalid_frame";
+      else if (unmatchedReceipt || freshChatCapacity) refused = "invalid_frame";
       else if (invalidApplication) refused = "invalid_frame";
       else if (invalidPresence) refused = "invalid_presence";
       else if (error instanceof RoomWireError) {

@@ -1309,6 +1309,13 @@ sending a signed receipt. Below the cap its normal handling is unchanged.
 A matching receipt with all eight reserved slots occupied remains unACKed until
 a slot frees; it is never retired as junk.
 
+At the ordinary physical cap, a fresh fully authenticated chat frame is durably
+refused with metadata-only `invalid_frame` and transport-ACKed, without a floor
+advance, admission or signed receipt. Its plaintext is not retained in the full
+inbox. The sender's application stays unsettled and expires to `needs_review`;
+matching receipts behind the refused chat can still reach the reserve. Known
+exact-duplicate and stale sequence handling precede this fresh-frame cap check.
+
 At the ordinary physical cap, a fully validated signed current-member presence
 is recorded as metadata-only `invalid_presence` and transport-ACKed. It consumes
 no reserve slot, advances no floor and produces no `onPresence` observation.

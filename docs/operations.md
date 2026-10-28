@@ -4794,6 +4794,9 @@ durable reserve so a full chat inbox can still settle outstanding deliveries.
 The normal chat cap is unchanged; unrelated receipts cannot use that reserve.
 Presence retired at the ordinary cap is re-fetched once after capacity frees,
 so that a dropped state update does not leave the remote view stale indefinitely.
+Fresh authenticated chat that reaches the full ordinary inbox is refused and
+transport-ACKed without admission or a signed receipt. The sender's application
+expires to `needs_review`; receipt traffic behind the refused chat continues.
 
 For an incoming uncertain admission, copy its frame id from room status:
 

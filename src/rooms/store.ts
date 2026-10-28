@@ -17,6 +17,10 @@ export class RoomStoreError extends Error {
 export class RoomUnmatchedReceiptError extends RoomStoreError {
   constructor() { super("limit"); this.name = "RoomUnmatchedReceiptError"; }
 }
+/** A fresh authenticated chat reached the ordinary physical cap before any replay or admission write. */
+export class RoomFreshChatCapacityError extends RoomStoreError {
+  constructor() { super("limit"); this.name = "RoomFreshChatCapacityError"; }
+}
 export class RoomApplicationLimitError extends RoomStoreError {
   constructor(readonly room: string, readonly count: number) {
     super("limit"); this.name = "RoomApplicationLimitError";
@@ -610,10 +614,10 @@ export class RoomStore {
       const size = this.db.query<{ n: number }, []>("SELECT COALESCE(SUM(length(plaintext)),0) AS n FROM inbox WHERE receipt_reserve=0").get()?.n ?? 0;
       let reserved = false;
       if (count >= ROOM_STORE_LIMITS.inboxPerRoom || size + input.plaintext.length > ROOM_STORE_LIMITS.inboxBytes) {
-        let receipt: Extract<RoomMessage, { type: "receipt" }> | undefined;
-        if (input.plaintext.length <= ROOM_STORE_LIMITS.receiptReserveBytes) {
-          try { const message = decodeRoomMessage(input.plaintext); if (message.type === "receipt") receipt = message; } catch { /* Ordinary chat/presence and invalid payloads get no receipt authority. */ }
-        }
+        let message: RoomMessage | undefined;
+        try { message = decodeRoomMessage(input.plaintext); } catch { /* Malformed or non-application payloads get no capacity retirement proof. */ }
+        if (message?.type === "chat") throw new RoomFreshChatCapacityError();
+        const receipt = input.plaintext.length <= ROOM_STORE_LIMITS.receiptReserveBytes && message?.type === "receipt" ? message : undefined;
         if (!receipt) fail("limit");
         const matched = this.db.query("SELECT 1 FROM application_outbox WHERE room=? AND digest=? AND application=? AND peer=? AND recipient=? AND state IN ('dispatching','accepted','needs_review') AND disposition IS NULL")
           .get(input.room, receipt.frame, receipt.application, receipt.peer, input.sender);

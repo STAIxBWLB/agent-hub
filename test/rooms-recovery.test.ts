@@ -149,7 +149,7 @@ test("a locally off-roster peer is not a room admission destination despite reta
 });
 
 
-async function fullPhysicalInbox(reserved: number, withPresence = false) {
+async function fullPhysicalInbox(reserved: number, withPresence = false, junkKind: "receipt" | "chat" = "receipt") {
   const root = mkdtempSync(join(tmpdir(), "ahub-room-receipt-lane-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const receiver = await RoomStore.open({ stateDir: join(root, "receiver") }), sender = await RoomStore.open({ stateDir: join(root, "sender") });
   cleanups.push(() => receiver.close(), () => sender.close());
@@ -160,6 +160,9 @@ async function fullPhysicalInbox(reserved: number, withPresence = false) {
   let liveSocket: { send(value: Uint8Array): unknown } | undefined;
   const ackWaiters = new Map<string, () => void>();
   const requested = new Promise<void>(resolve => { firstRequest = resolve; }), refreshed = new Promise<void>(resolve => { freshObserved = resolve; });
+  const junkApplication = crypto.randomUUID(), junkCanary = "fresh-capacity-chat-canary";
+  const receivedChats: string[] = [], signedReceipts: unknown[] = [];
+  let counterpartyWork = Promise.resolve();
   const acknowledgements: string[] = [], gaps: string[] = [], observed: { member: string; peers: readonly { id: string; state: string }[] }[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
     fetch(request, host) { return host.upgrade(request) ? undefined : new Response("no", { status: 400 }); },
@@ -175,22 +178,24 @@ async function fullPhysicalInbox(reserved: number, withPresence = false) {
           if (message.digest === junkDigest && junkWire) ws.send(targetWire);
           if (message.digest === targetDigest) resolveDone();
           if (message.digest === freshPresenceDigest) freshObserved();
-        } else if (message.type === "frame" && withPresence) {
+        } else if (message.type === "frame" && (withPresence || junkKind === "chat")) {
           // The authenticated counterparty consumes a forwarded ciphertext frame;
           // this is separate from the blind relay's queue/ACK fixture above.
           const wire = typeof data === "string" ? new TextEncoder().encode(data) : Uint8Array.from(data);
-          void (async () => {
+          counterpartyWork = counterpartyWork.then(async () => {
             const opened = await openFrame({ wire, identity: sender.identity, current: sender.get("work")!.current, replay: sender.replay });
             if (opened.status !== "accepted") return;
             sender.settleInbox("work", encodeBase64url(await sha256(wire)));
             const body = JSON.parse(new TextDecoder().decode(opened.plaintext)) as { type?: string; requestReply?: boolean };
+            if (body.type === "receipt") signedReceipts.push(body);
             if (body.type !== "presence" || body.requestReply !== true) return;
             requests++; firstRequest();
             if (allowFreshPresence) {
               const reply = await sealFrame({ epoch: sender.get("work")!.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }] }) });
               freshPresenceDigest = encodeBase64url(await sha256(reply)); ws.send(reply);
             }
-          })().catch(() => ws.close(4403, "fixture counterpart failed"));
+          }).catch(() => { ws.close(4403, "fixture counterpart failed"); throw new Error("fixture counterpart failed"); });
+          void counterpartyWork.catch(() => {});
         }
       }, close() { resolveClosed(); },
     },
@@ -222,13 +227,16 @@ async function fullPhysicalInbox(reserved: number, withPresence = false) {
     retiredPresenceDigest = encodeBase64url(await sha256(retiredPresence));
   }
   if (!reserved) {
-    const junk: RoomMessage = { v: 1, type: "receipt", frame: encodeBase64url(randomBytes(32)), application: crypto.randomUUID(), peer: "codex", outcome: "failed_safe", reason: "boundary_refused" };
+    const junk: RoomMessage = junkKind === "chat"
+      ? { v: 1, type: "chat", envelope: { id: junkApplication, trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", kind: "chat", priority: "status", body: junkCanary, ts: Date.now() } }
+      : { v: 1, type: "receipt", frame: encodeBase64url(randomBytes(32)), application: crypto.randomUUID(), peer: "codex", outcome: "failed_safe", reason: "boundary_refused" };
     junkWire = await sealFrame({ epoch: roster.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: encodeRoomMessage(junk) });
     junkDigest = encodeBase64url(await sha256(junkWire));
   }
   const target = pairs.at(-1)!;
   targetWire = await sealFrame({ epoch: roster.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: encodeRoomMessage(target.receipt) }); targetDigest = encodeBase64url(await sha256(targetWire));
   const link = new RoomLink({ store: receiver, name: "work", onPresence: value => { observed.push(value); }, application: { members: () => {}, stored: () => {}, online: async () => {}, gap: (_context, input) => { gaps.push(input.count); }, receive: async (context, input) => {
+    if (input.message?.type === "chat") receivedChats.push(input.message.envelope.id);
     if (input.message?.type !== "receipt" || input.digest !== targetDigest) throw new RoomApplicationDeferredError("capacity");
     context.store.applyApplicationReceipt("work", input.digest, context.current); context.store.settleInbox("work", input.digest);
   } } }); cleanups.push(() => link.stop());
@@ -237,7 +245,7 @@ async function fullPhysicalInbox(reserved: number, withPresence = false) {
     const wire = await sealFrame({ epoch: sender.get("work")!.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], requestReply: true }) });
     const digest = encodeBase64url(await sha256(wire)); liveSocket!.send(wire); return digest;
   };
-  return { receiver, sender, pairs, target, targetDigest, junkDigest, retiredPresenceDigest, link, acknowledgements, gaps, observed, sendRequest, acknowledged: (digest: string) => bounded(acknowledgements.includes(digest) ? Promise.resolve() : new Promise<void>(resolve => { ackWaiters.set(digest, resolve); }), "incoming request transport ACK"), get connections() { return connections; }, get requests() { return requests; }, allowFresh: () => { allowFreshPresence = true; }, requested: () => bounded(requested, "initial signed presence request"), refreshed: () => bounded(refreshed, "fresh signed state after capacity returns"), closed: () => bounded(closed, "full reserve closes without ACK"), done: () => bounded(done, "matching signed receipt retires") };
+  return { receiver, sender, pairs, target, targetDigest, junkDigest, junkApplication, junkCanary, receivedChats, signedReceipts, counterpartyIdle: () => counterpartyWork, retiredPresenceDigest, link, acknowledgements, gaps, observed, sendRequest, acknowledged: (digest: string) => bounded(acknowledgements.includes(digest) ? Promise.resolve() : new Promise<void>(resolve => { ackWaiters.set(digest, resolve); }), "incoming request transport ACK"), get connections() { return connections; }, get requests() { return requests; }, allowFresh: () => { allowFreshPresence = true; }, requested: () => bounded(requested, "initial signed presence request"), refreshed: () => bounded(refreshed, "fresh signed state after capacity returns"), closed: () => bounded(closed, "full reserve closes without ACK"), done: () => bounded(done, "matching signed receipt retires") };
 }
 
 test("200 retained chats do not let an unmatched receipt poison a matching receipt behind it", async () => {
@@ -248,6 +256,26 @@ test("200 retained chats do not let an unmatched receipt poison a matching recei
   expect(f.receiver.refused("work")).toContainEqual(expect.objectContaining({ digest: f.junkDigest, reason: "invalid_frame" }));
   expect(f.receiver.applicationOutbox("work").find(row => row.deliveryId === f.target.delivery)?.state).toBe("failed_safe");
   expect(f.gaps).toContain("1"); // The dropped unknown receipt never advanced the replay floor.
+}, 20_000);
+
+test("a fresh 201st signed chat is retired without admission so the matching receipt behind it can settle", async () => {
+  const f = await fullPhysicalInbox(0, false, "chat");
+  expect(f.receiver.pendingInbox("work")).toHaveLength(200);
+  await f.link.start();
+  const outcome = await Promise.race([f.done().then(() => "settled"), f.closed().then(() => "closed")]);
+  expect(outcome).toBe("settled");
+  await f.requested(); await f.counterpartyIdle();
+  expect(f.acknowledgements).toEqual([f.junkDigest, f.targetDigest]);
+  expect(f.link.status().state).toBe("online"); expect(f.connections).toBe(1);
+  expect(f.receiver.pendingInbox("work")).toHaveLength(200);
+  expect(f.receivedChats).not.toContain(f.junkApplication);
+  expect(f.receiver.applicationReceipt("work", f.junkDigest)).toBeUndefined();
+  expect(f.signedReceipts).toEqual([]);
+  expect(f.receiver.refused("work")).toContainEqual(expect.objectContaining({ digest: f.junkDigest, reason: "invalid_frame" }));
+  expect(JSON.stringify(f.receiver.refused("work"))).not.toContain(f.junkCanary);
+  expect(JSON.stringify(f.receiver.pendingInbox("work"))).not.toContain(f.junkCanary);
+  expect(f.gaps).toEqual(["1"]); // Retiring fresh ciphertext never advances its sender's floor.
+  expect(f.receiver.applicationOutbox("work").find(row => row.deliveryId === f.target.delivery)?.state).toBe("failed_safe");
 }, 20_000);
 
 test("a matching ninth reserved receipt stays unacknowledged until one real reserved receipt is settled", async () => {

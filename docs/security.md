@@ -695,6 +695,10 @@ Fully validated presence at the ordinary cap is durably refused with
 `invalid_presence` and transport-ACKed without a floor or state observation.
 Capacity recovery requests fresh presence once per transition; runtime and
 other storage errors stay unACKed.
+Fresh, fully authenticated chat at the ordinary cap is likewise durably refused
+and transport-ACKed without admission, floor advance or signed receipt. Its
+sender remains uncertain until the application ACK deadline; the refused chat
+cannot hold matching receipt traffic behind it in the broker FIFO.
 
 Permanent signed sequence floors survive all application retention/eviction.
 Application-id and trace guards retain 30 days/10,000 rows per room, settled first;
