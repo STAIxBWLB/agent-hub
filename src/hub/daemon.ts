@@ -1236,9 +1236,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const queuePolicy = () => queueBackpressurePolicy(config.tasks.queue_backpressure);
   let remotePending = (_room: string): readonly string[] => [];
   let remoteQueueChanged = () => {};
-  const bus = new Bus({ rostered: membershipAllowed, trackQueuePressure: () => { const policy = queuePolicy(); return policy.max_queued > 0 || policy.max_oldest_s > 0; }, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
+  const bus: Bus = new Bus({ rostered: membershipAllowed, trackQueuePressure: () => { const policy = queuePolicy(); return policy.max_queued > 0 || policy.max_oldest_s > 0; }, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
     remotePending: room => remotePending(room),
-    remotePrivate: env => {
+    remotePrivate: (env): boolean => {
       const task = env.refs?.task;
       if (task !== undefined) {
         if (typeof task !== "string" || !/^[1-9][0-9]*$/.test(task) || !Number.isSafeInteger(Number(task))) return true;
