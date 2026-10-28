@@ -285,3 +285,29 @@ test("a failed durable refusal write retains the broker packet without transport
     expect(f.owner.pendingInbox("test")).toEqual([]);
   } finally { f.owner.recordRefused = record; }
 });
+
+
+test("a new local epoch cannot publish ciphertext before that socket verifies the same roster", async () => {
+  const f = await fixture(), owner = linked(f.owner); await owner.link.start(); await owner.online();
+  const guest = await FakeBrokerClient.connect(f.broker.publicUrl, f.guest.get("test")!.current.room); clients.push(guest); await guest.authenticate(f.guest.identity);
+  const initial = await guest.take("frame"); await guest.ack(encodeBase64url(await sha256(initial)));
+  const before = f.owner.get("test")!;
+  await f.owner.rotate("test", roomMembers(before.current).filter(member => member.fingerprint !== f.guest.identity.public.fingerprint), before.current.digest);
+  let reserved = 0; const reserve = f.owner.sequence.reserve;
+  f.owner.sequence.reserve = async input => { reserved++; return reserve(input); };
+  try { await owner.link.publishPresence(); expect(reserved).toBe(0); }
+  finally { f.owner.sequence.reserve = reserve; }
+});
+
+test("a runtime capacity metadata failure cannot become a safe presence drop or transport ACK", async () => {
+  const f = await fixture(), owner = linked(f.owner); await owner.link.start(); await owner.online();
+  const row = f.guest.get("test")!, guest = await FakeBrokerClient.connect(f.broker.publicUrl, row.current.room); clients.push(guest); await guest.authenticate(f.guest.identity);
+  const initial = await guest.take("frame"); await guest.ack(encodeBase64url(await sha256(initial)));
+  const available = f.owner.ordinaryInboxAvailable;
+  f.owner.ordinaryInboxAvailable = () => { throw new Error("fixture metadata read failed"); };
+  try {
+    const wire = await sealFrame({ epoch: row.current, identity: f.guest.identity, recipients: [f.owner.identity.public.fingerprint], plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "kimi", state: "idle" }] }), sequence: f.guest.sequence });
+    guest.send(wire); await guest.take("stored"); await owner.offline();
+    expect(f.broker.stats().queuedFrames).toBe(1); expect(f.owner.refused("test")).toEqual([]); expect(f.owner.pendingInbox("test")).toEqual([]);
+  } finally { f.owner.ordinaryInboxAvailable = available; }
+});

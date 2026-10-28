@@ -36,6 +36,7 @@ export class RoomChat {
   private evidenceCache?: Map<string, { peer: string; roomState: string; disposition?: string; lateReceipt?: string; refusalReason?: string }>;
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = false;
+  private capacityRefreshPending = false;
   private limitKey = "";
   private peerLimiter = new Limiter(PROJECT_LIMITS);
   readonly application: RoomLinkApplication;
@@ -50,6 +51,7 @@ export class RoomChat {
         const row = context.store.markApplicationStored(context.name, input.digest, input.seq);
         if (row) this.outcome(this.bindings.get(context.name)!, row);
       },
+      capacityChanged: context => { if (context.current()) this.capacityChanged(); },
       gap: (context, input) => {
         if (context.current()) this.options.notice?.({ code: "sequence_gap", room: context.store.get(context.name)!.current.room, sender: input.sender, count: input.count });
       },
@@ -211,19 +213,20 @@ export class RoomChat {
     if (input.message?.type === "receipt") {
       const row = context.store.applyApplicationReceipt(context.name, input.digest, context.current);
       if (row) this.outcome(binding, row);
-      context.store.settleInbox(context.name, input.digest); return;
+      context.store.settleInbox(context.name, input.digest); this.capacityChanged(); return;
     }
     if (!input.message) return; // Exact unknown/stale digest never earns a fabricated application receipt.
     let incoming: Awaited<ReturnType<RoomStore["applicationIncoming"]>>;
     try { incoming = await context.store.applicationIncoming(context.name, input.digest, context.current); }
     catch (error) {
       if (error instanceof RoomApplicationLimitError) try { this.options.notice?.({ code: "application_capacity", room: error.room, count: error.count }); } catch { /* fixed metadata observation only */ }
-      if (error instanceof RoomStoreError && error.code === "invalid") { context.store.settleInbox(context.name, input.digest); return; }
+      if (error instanceof RoomStoreError && error.code === "invalid") { context.store.settleInbox(context.name, input.digest); this.capacityChanged(); return; }
       if (error instanceof RoomApplicationLimitError) throw new RoomApplicationDeferredError("capacity");
       if (error instanceof RoomStoreError && error.code === "limit") throw new RoomApplicationDeferredError("admission_limit");
       throw error;
     }
     if (!context.current() || !this.valid(binding)) throw new Error("room: state_changed");
+    this.capacityChanged(); // Registration may have settled a duplicate's retained plaintext.
     const duplicate = context.store.applicationReceipt(context.name, input.digest);
     if (duplicate) { await context.link.publishApplication(duplicate, input.sender, undefined, context.current); return; }
     if (!incoming.primary || incoming.state !== "pending") return;
@@ -253,9 +256,11 @@ export class RoomChat {
       } catch (error) {
         // Revocation removes business authority, but still permits recording uncertainty.
         context.store.quarantineApplication(context.name, input.digest);
+        this.capacityChanged();
         this.options.changed?.(); throw error;
       }
     }
+    this.capacityChanged();
     const receipt = context.store.applicationReceipt(context.name, input.digest);
     if (receipt) await context.link.publishApplication(receipt, input.sender, undefined, context.current);
     this.options.changed?.();
@@ -283,6 +288,18 @@ export class RoomChat {
     }
     void this.retryPending(); this.queueChanged();
   }
+  /** Global byte capacity can be freed by another room. This is event-coalesced, never polled. */
+  private capacityChanged(): void {
+    if (this.stopped || this.capacityRefreshPending) return;
+    this.capacityRefreshPending = true;
+    queueMicrotask(() => {
+      this.capacityRefreshPending = false;
+      if (this.stopped) return;
+      for (const binding of this.bindings.values()) try {
+        if (binding.online && this.valid(binding)) void binding.link.refreshPresenceIfCapacityFree().catch(() => undefined);
+      } catch { /* Retain the numeric pending refresh flag until another actual capacity event. */ }
+    });
+  }
   /** Explicit disposition/online opportunities only; blocked plaintext is never polled. */
   async retryPending(name?: string): Promise<void> {
     if (this.stopped) return;
@@ -290,7 +307,7 @@ export class RoomChat {
     for (const binding of this.bindings.values()) try {
       if ((name === undefined || name === binding.name) && this.valid(binding) && binding.online) retries.push(Promise.resolve().then(() => binding.link.retryPendingApplications()));
     } catch { /* A completed person disposition must not fail because another room is unavailable. */ }
-    await Promise.allSettled(retries);
+    await Promise.allSettled(retries); this.capacityChanged();
   }
   private reconcileDispositions(binding: Binding): void {
     for (const row of binding.store.applicationOutbox(binding.name, true)) if (row.state === "needs_review" && !row.disposition) {

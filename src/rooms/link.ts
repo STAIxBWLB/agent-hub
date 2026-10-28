@@ -26,6 +26,7 @@ export interface RoomLinkApplication {
   receive(context: RoomLinkContext, input: { digest: string; sender: string; message?: RoomMessage }): Promise<void>;
   online(context: RoomLinkContext): Promise<void>;
   stored(context: RoomLinkContext, input: { digest: string; seq: string }): void;
+  capacityChanged?(context: RoomLinkContext): void;
   gap?(context: RoomLinkContext, input: { sender: string; count: string }): void;
 }
 /** Host port signal: no application claim/effect occurred; the durable plaintext remains pending. */
@@ -100,6 +101,7 @@ export class RoomLink {
   private replyPresence = false;
   private inboxRetry?: Promise<void>;
   private inboxRetryDirty = false;
+  private retiredPresenceBytes = 0;
   private republish?: ReturnType<typeof setTimeout>;
   private sendTail: Promise<void> = Promise.resolve();
   constructor(private readonly options: RoomLinkOptions) {}
@@ -145,6 +147,22 @@ export class RoomLink {
   private isCurrent(session: Session, digest: string): boolean {
     try { this.current(session, digest); return true; } catch { return false; }
   }
+  private publicationCurrent(session: Session, digest: string): boolean {
+    return session.phase === "ready" && session.roster?.digest === digest && this.isCurrent(session, digest);
+  }
+  /** A dropped ephemeral observation requests one fresh signed state when its space is available. */
+  async refreshPresenceIfCapacityFree(): Promise<void> {
+    const session = this.session, bytes = this.retiredPresenceBytes;
+    if (!bytes || !session || !this.running) return;
+    const row = this.current(session);
+    if (!this.publicationCurrent(session, row.current.digest) || !this.options.store.ordinaryInboxAvailable(this.options.name, bytes)) return;
+    this.retiredPresenceBytes = 0; // Clear before any await/coalescing: no self-refresh loop.
+    session.requestPresenceReply = true; this.replyPresence = false;
+    await this.publishPresence();
+  }
+  private capacityChanged(session: Session, digest: string): void {
+    try { this.options.application?.capacityChanged?.(this.context(session, digest)); } catch { /* advisory metadata refresh grants nothing */ }
+  }
   private context(session: Session, digest: string): RoomLinkContext {
     return { store: this.options.store, name: this.options.name, link: this, current: () => this.isCurrent(session, digest) };
   }
@@ -173,6 +191,7 @@ export class RoomLink {
       // replayed after a rotation or left at the head of recovery forever.
       this.current(session, row.current.digest);
       this.options.store.settleInbox(this.options.name, entry.digest);
+      this.capacityChanged(session, row.current.digest);
     }
   }
   private async deliverApplication(session: Session, digest: string, input: Parameters<RoomLinkApplication["receive"]>[1]): Promise<void> {
@@ -185,7 +204,7 @@ export class RoomLink {
     const session = this.session;
     if (!session || session.phase !== "ready" || !this.running) return Promise.resolve();
     if (this.inboxRetry) { this.inboxRetryDirty = true; return this.inboxRetry; }
-    const work = Promise.resolve().then(() => this.restorePresence(session));
+    const work = Promise.resolve().then(async () => { await this.restorePresence(session); await this.refreshPresenceIfCapacityFree(); });
     this.inboxRetry = work;
     void work.finally(() => {
       if (this.inboxRetry !== work) return;
@@ -200,6 +219,7 @@ export class RoomLink {
     this.generation++;
     this.session = undefined;
     this.publishDirty = false; this.replyPresence = false; this.inboxRetryDirty = false;
+    this.inboxRetry = undefined; // A new ready session must never await an old generation's restore pass.
     if (this.republish) clearTimeout(this.republish);
     this.republish = undefined;
     if (session) {
@@ -359,7 +379,7 @@ export class RoomLink {
     // for transport retirement. No malformed/foreign packet earns an ACK.
     const frame = decodeFrame(bytes), digest = local.current.digest;
     this.frameCurrent(session, frame);
-    let result: FrameOpenResult | undefined, refused: RoomRefusalReason | undefined, invalidPresence = false, invalidApplication = false, unmatchedReceipt = false;
+    let result: FrameOpenResult | undefined, refused: RoomRefusalReason | undefined, invalidPresence = false, invalidApplication = false, unmatchedReceipt = false, presenceCapacity = false;
     let application: RoomMessage | undefined;
     try {
       result = await openFrame({ wire: bytes, identity: this.options.store.identity, current: local.current, ...(local.previous ? { previous: local.previous } : {}), replay: { accept: async input => {
@@ -367,8 +387,9 @@ export class RoomLink {
         if (latest.current.digest !== digest) return { status: "trust_changed" };
         const sender = roomMembers(latest.current).find(member => member.fingerprint === input.sender);
         if (!sender) return { status: "trust_changed" };
+        let validPresence = false;
         try {
-          if (packet(input.plaintext).type === "presence") presence(input.plaintext, sender.exposedPeers);
+          if (packet(input.plaintext).type === "presence") { presence(input.plaintext, sender.exposedPeers); validPresence = true; }
           else {
             invalidApplication = true;
             if (!this.options.application) fail("untrusted");
@@ -377,6 +398,12 @@ export class RoomLink {
             invalidApplication = false;
           }
         } catch (error) { if (!invalidApplication) invalidPresence = true; throw error; }
+        // This readonly metadata test stays outside the grammar catch: SQL/runtime
+        // errors cannot become safe drops. Only explicit physical-cap false qualifies.
+        if (validPresence && !this.options.store.ordinaryInboxAvailable(this.options.name, input.plaintext.byteLength)) {
+          presenceCapacity = true; this.retiredPresenceBytes = Math.max(this.retiredPresenceBytes, input.plaintext.byteLength);
+          fail("limit");
+        }
         try { return await this.options.store.replay.accept(input); }
         catch (error) {
           if (application?.type === "receipt" && error instanceof RoomUnmatchedReceiptError) unmatchedReceipt = true;
@@ -384,7 +411,8 @@ export class RoomLink {
         }
       } } });
     } catch (error) {
-      if (unmatchedReceipt) refused = "invalid_frame";
+      if (presenceCapacity) refused = "invalid_presence";
+      else if (unmatchedReceipt) refused = "invalid_frame";
       else if (invalidApplication) refused = "invalid_frame";
       else if (invalidPresence) refused = "invalid_presence";
       else if (error instanceof RoomWireError) {
@@ -408,6 +436,7 @@ export class RoomLink {
       this.options.store.recordRefused(this.options.name, acceptedDigest, refused, () => this.isFrameCurrent(session, frame));
       this.frameCurrent(session, frame);
       this.options.store.settleInbox(this.options.name, acceptedDigest);
+      if (result?.status === "accepted") this.capacityChanged(session, digest);
     } else if (result?.status === "accepted") {
       if (result.gap !== "0") try { this.options.application?.gap?.(this.context(session, digest), { sender: frame.sender, count: result.gap }); } catch { /* metadata observation cannot affect admission */ }
       const sender = roomMembers(latest.current).find(member => member.fingerprint === frame.sender);
@@ -420,6 +449,7 @@ export class RoomLink {
         try { this.options.onPresence?.({ member: frame.sender, peers }); } catch { /* validated observation only */ }
         this.current(session, digest);
         this.options.store.settleInbox(this.options.name, acceptedDigest);
+        this.capacityChanged(session, digest);
         if (packet(result.plaintext).requestReply === true) {
           this.replyPresence = true;
           void this.publishPresence().catch(() => this.retry(session));
@@ -432,6 +462,7 @@ export class RoomLink {
     // This ACK only retires ciphertext from the broker queue. A durable refusal
     // or stale drop is never a signed recipient application-completion receipt.
     this.send(session, encodeBrokerControl({ v: 1, type: "received", digest: acceptedDigest }));
+    await this.refreshPresenceIfCapacityFree().catch(() => undefined);
   }
   private async frameDigest(bytes: Uint8Array): Promise<string> {
     return encodeBase64url(await sha256(bytes));
@@ -457,7 +488,7 @@ export class RoomLink {
     const session = this.session;
     if (!session || session.phase !== "ready") fail("unavailable");
     const digest = this.current(session).current.digest;
-    const allowed = () => this.isCurrent(session, digest) && current();
+    const allowed = () => this.publicationCurrent(session, digest) && current();
     return this.serialSend(async () => {
       if (!allowed()) fail("state_changed");
       const row = this.current(session, digest);
@@ -481,16 +512,17 @@ export class RoomLink {
     this.publishing = true;
     try {
       const row = this.current(session), identity = this.options.store.identity;
+      if (!this.publicationCurrent(session, row.current.digest)) return;
       const own = roomMembers(row.current).find(member => member.fingerprint === identity.public.fingerprint);
       if (!own) fail("untrusted");
       const peers = this.currentPresence(own.exposedPeers);
       const recipients = roomMembers(row.current).map(member => member.fingerprint).filter(member => member !== identity.public.fingerprint).sort();
       if (!recipients.length) return;
       await this.serialSend(async () => {
-        this.current(session, row.current.digest);
+        if (!this.publicationCurrent(session, row.current.digest)) return;
         const requestReply = !response && session.requestPresenceReply;
         const wire = await sealFrame({ epoch: row.current, identity, recipients, plaintext: canonicalBytes({ v: 1, type: "presence", peers, ...(requestReply ? { requestReply: true } : {}) }), sequence: this.options.store.sequence });
-        this.current(session, row.current.digest);
+        if (!this.publicationCurrent(session, row.current.digest)) return;
         // Machine-local exposure can change during reserve/encryption/signing even
         // when the signed roster is unchanged. Never emit an id it now withholds.
         const allowed = new Set(this.currentPresence(own.exposedPeers).map(peer => peer.id));

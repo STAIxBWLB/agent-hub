@@ -149,14 +149,16 @@ test("a locally off-roster peer is not a room admission destination despite reta
 });
 
 
-async function fullPhysicalInbox(reserved: number) {
+async function fullPhysicalInbox(reserved: number, withPresence = false) {
   const root = mkdtempSync(join(tmpdir(), "ahub-room-receipt-lane-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const receiver = await RoomStore.open({ stateDir: join(root, "receiver") }), sender = await RoomStore.open({ stateDir: join(root, "sender") });
   cleanups.push(() => receiver.close(), () => sender.close());
   let resolveClosed!: () => void, resolveDone!: () => void;
   const closed = new Promise<void>(resolve => { resolveClosed = resolve; }), done = new Promise<void>(resolve => { resolveDone = resolve; });
-  let targetWire: Uint8Array, junkWire: Uint8Array | undefined, targetDigest = "", junkDigest = "";
-  const acknowledgements: string[] = [], gaps: string[] = [];
+  let targetWire: Uint8Array, junkWire: Uint8Array | undefined, targetDigest = "", junkDigest = "", retiredPresence: Uint8Array | undefined, retiredPresenceDigest = "", freshPresenceDigest = "";
+  let requests = 0, allowFreshPresence = false, firstRequest!: () => void, freshObserved!: () => void;
+  const requested = new Promise<void>(resolve => { firstRequest = resolve; }), refreshed = new Promise<void>(resolve => { freshObserved = resolve; });
+  const acknowledgements: string[] = [], gaps: string[] = [], observed: { member: string; peers: readonly { id: string; state: string }[] }[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
     fetch(request, host) { return host.upgrade(request) ? undefined : new Response("no", { status: 400 }); },
     websocket: {
@@ -164,11 +166,29 @@ async function fullPhysicalInbox(reserved: number) {
       message(ws, data) {
         const message = JSON.parse(String(data)) as { type: string; digest?: string }, row = receiver.get("work")!;
         if (message.type === "auth") { ws.send(row.wire); ws.send(canonicalBytes({ v: 1, type: "ready", room: row.current.room, member: receiver.identity.public.fingerprint, epoch: row.current.epoch, digest: row.current.digest })); }
-        else if (message.type === "roster_ready") ws.send(junkWire ?? targetWire);
+        else if (message.type === "roster_ready") ws.send(retiredPresence ?? junkWire ?? targetWire);
         else if (message.type === "received") {
           acknowledgements.push(message.digest!); ws.send(canonicalBytes({ v: 1, type: "queue_ack", digest: message.digest }));
+          if (message.digest === retiredPresenceDigest && retiredPresence) ws.send(junkWire ?? targetWire);
           if (message.digest === junkDigest && junkWire) ws.send(targetWire);
           if (message.digest === targetDigest) resolveDone();
+          if (message.digest === freshPresenceDigest) freshObserved();
+        } else if (message.type === "frame" && withPresence) {
+          // The authenticated counterparty consumes a forwarded ciphertext frame;
+          // this is separate from the blind relay's queue/ACK fixture above.
+          const wire = typeof data === "string" ? new TextEncoder().encode(data) : Uint8Array.from(data);
+          void (async () => {
+            const opened = await openFrame({ wire, identity: sender.identity, current: sender.get("work")!.current, replay: sender.replay });
+            if (opened.status !== "accepted") return;
+            sender.settleInbox("work", encodeBase64url(await sha256(wire)));
+            const body = JSON.parse(new TextDecoder().decode(opened.plaintext)) as { type?: string; requestReply?: boolean };
+            if (body.type !== "presence" || body.requestReply !== true) return;
+            requests++; firstRequest();
+            if (allowFreshPresence) {
+              const reply = await sealFrame({ epoch: sender.get("work")!.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }] }) });
+              freshPresenceDigest = encodeBase64url(await sha256(reply)); ws.send(reply);
+            }
+          })().catch(() => ws.close(4403, "fixture counterpart failed"));
         }
       }, close() { resolveClosed(); },
     },
@@ -195,6 +215,10 @@ async function fullPhysicalInbox(reserved: number) {
     pair.wire = await sealFrame({ epoch: roster.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: encodeRoomMessage(pair.receipt) });
     expect((await openFrame({ wire: pair.wire, identity: receiver.identity, current: roster.current, replay: receiver.replay })).status).toBe("accepted");
   }
+  if (withPresence) {
+    retiredPresence = await sealFrame({ epoch: roster.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "busy" }], requestReply: true }) });
+    retiredPresenceDigest = encodeBase64url(await sha256(retiredPresence));
+  }
   if (!reserved) {
     const junk: RoomMessage = { v: 1, type: "receipt", frame: encodeBase64url(randomBytes(32)), application: crypto.randomUUID(), peer: "codex", outcome: "failed_safe", reason: "boundary_refused" };
     junkWire = await sealFrame({ epoch: roster.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: encodeRoomMessage(junk) });
@@ -202,12 +226,12 @@ async function fullPhysicalInbox(reserved: number) {
   }
   const target = pairs.at(-1)!;
   targetWire = await sealFrame({ epoch: roster.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: encodeRoomMessage(target.receipt) }); targetDigest = encodeBase64url(await sha256(targetWire));
-  const link = new RoomLink({ store: receiver, name: "work", application: { members: () => {}, stored: () => {}, online: async () => {}, gap: (_context, input) => { gaps.push(input.count); }, receive: async (context, input) => {
+  const link = new RoomLink({ store: receiver, name: "work", onPresence: value => { observed.push(value); }, application: { members: () => {}, stored: () => {}, online: async () => {}, gap: (_context, input) => { gaps.push(input.count); }, receive: async (context, input) => {
     if (input.message?.type !== "receipt" || input.digest !== targetDigest) throw new RoomApplicationDeferredError("capacity");
     context.store.applyApplicationReceipt("work", input.digest, context.current); context.store.settleInbox("work", input.digest);
   } } }); cleanups.push(() => link.stop());
   const bounded = (promise: Promise<void>, label: string) => new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error(`receipt lane barrier timed out: ${label}`)), 5000); promise.then(() => { clearTimeout(timer); resolve(); }, error => { clearTimeout(timer); reject(error); }); });
-  return { receiver, sender, pairs, target, targetDigest, junkDigest, link, acknowledgements, gaps, closed: () => bounded(closed, "full reserve closes without ACK"), done: () => bounded(done, "matching signed receipt retires") };
+  return { receiver, sender, pairs, target, targetDigest, junkDigest, retiredPresenceDigest, link, acknowledgements, gaps, observed, get requests() { return requests; }, allowFresh: () => { allowFreshPresence = true; }, requested: () => bounded(requested, "initial signed presence request"), refreshed: () => bounded(refreshed, "fresh signed state after capacity returns"), closed: () => bounded(closed, "full reserve closes without ACK"), done: () => bounded(done, "matching signed receipt retires") };
 }
 
 test("200 retained chats do not let an unmatched receipt poison a matching receipt behind it", async () => {
@@ -230,3 +254,41 @@ test("a matching ninth reserved receipt stays unacknowledged until one real rese
   expect(f.acknowledgements).toEqual([f.targetDigest]); expect(f.receiver.pendingInbox("work")).toHaveLength(207);
   expect(f.receiver.applicationOutbox("work").find(row => row.deliveryId === f.target.delivery)?.state).toBe("failed_safe");
 }, 20_000);
+
+
+test("physical capacity retires valid presence ahead of a receipt and asks once for fresh state after space returns", async () => {
+  const f = await fullPhysicalInbox(0, true);
+  await f.link.start(); await f.done(); await f.requested();
+  expect(f.acknowledgements).toEqual([f.retiredPresenceDigest, f.junkDigest, f.targetDigest]);
+  expect(f.observed).toEqual([]); expect(f.receiver.pendingInbox("work")).toHaveLength(200);
+  expect(f.receiver.refused("work")).toContainEqual(expect.objectContaining({ digest: f.retiredPresenceDigest, reason: "invalid_presence" }));
+  expect(f.gaps).toContain("2"); // Neither capacity drop advanced the authenticated sender floor.
+  const first = f.receiver.pendingInbox("work")[0]!, before = f.requests;
+  let reserved = 0; const reserve = f.receiver.sequence.reserve;
+  f.receiver.sequence.reserve = async input => { reserved++; return reserve(input); };
+  try {
+    f.allowFresh(); f.receiver.settleInbox("work", first.digest);
+    await f.link.retryPendingApplications(); await f.refreshed();
+    await f.link.refreshPresenceIfCapacityFree(); await f.link.refreshPresenceIfCapacityFree();
+    expect(f.requests).toBe(before + 1); expect(reserved).toBe(1);
+    expect(f.observed).toEqual([{ member: f.sender.identity.public.fingerprint, peers: [{ id: "codex", state: "idle" }] }]);
+    expect(f.receiver.pendingInbox("work")).toHaveLength(199);
+  } finally { f.receiver.sequence.reserve = reserve; }
+}, 20_000);
+
+test("a real settlement asks every live room binding to refresh global capacity, without a status read", async () => {
+  const f = await recoveredIncoming(true), refreshed: string[] = [];
+  f.context.link.refreshPresenceIfCapacityFree = async () => { refreshed.push("work"); };
+  f.context.link.retryPendingApplications = async () => {};
+  const other = await createRoomEpoch({ owner: f.guest.identity, members: [{ ...f.guest.identity.public, label: "guest", exposedPeers: [] }] });
+  await f.guest.install({ name: "other", broker: "ws://127.0.0.1:1/", wire: other.wire, expectedDigest: null });
+  const second = { publishApplication: async () => "", retryPendingApplications: async () => {}, refreshPresenceIfCapacityFree: async () => { refreshed.push("other"); } } as unknown as RoomLink;
+  f.service.bind(f.guest, "other", second);
+  await f.service.application.online(f.context);
+  await f.service.application.online({ store: f.guest, name: "other", link: second, current: () => true });
+  refreshed.length = 0;
+  await f.service.application.receive(f.context, { digest: f.digest, sender: f.owner.identity.public.fingerprint, message: f.message });
+  await Promise.resolve();
+  expect(new Set(refreshed)).toEqual(new Set(["work", "other"]));
+  expect(f.guest.pendingInbox("work")).toEqual([]);
+});
