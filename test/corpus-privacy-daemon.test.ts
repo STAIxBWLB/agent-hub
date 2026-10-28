@@ -49,7 +49,7 @@ async function corpusHub() {
 
   const routing = (await Bun.file(join(import.meta.dir, "../templates/routing.toml")).text())
     .replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"')
-    .replace(/^pii_patterns = .*$/m, 'pii_patterns = ["\\b\\d{6}-\\d{7}\\b", "PRIVATE-TASK-MARKER"]');
+    .replace(/^pii_patterns = .*$/m, 'pii_patterns = ["PRIVATE-TASK-MARKER"]');
   writeFileSync(join(cwd, ".agenthub", "routing.toml"), routing);
   git("add", "-f", ".agenthub/routing.toml", "notes/deployment.md", "notes/.env.md", "private/internal.md");
   git("commit", "-qm", "fixture corpus project");

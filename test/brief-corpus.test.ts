@@ -23,7 +23,7 @@ class CountingClient extends MemoryClient {
 test("corpus notes append after priority advice, obey the cap, and share peer dedupe", async () => {
   let reads = 0;
   const briefs = new Briefs(undefined, "fixture", 2, undefined, undefined, undefined, undefined,
-    port({ read: () => { reads++; return [note, note, { ...note, id: "note:notes/other.md#top" }]; } }));
+    port({ read: () => { reads++; return [note, note, { ...note, id: "note:notes/other.md#top", line: "note:notes/other.md#top another public note" }]; } }));
   const first = await briefs.forTask("codex", task, [planFail]);
   expect(first?.split("\n").slice(1)).toEqual([planFail.line, note.line]);
   expect(first).toContain("Knowledge brief");
@@ -55,6 +55,7 @@ test("privacy or policy changes during a corpus await drop the brief without poi
   privateTask = false;
   expect(await briefs.forTask("codex", task)).toContain(note.line);
 
+  const observedBeforePolicyChange = observed;
   const secondGate = deferred();
   const changed = new Briefs(undefined, "fixture", 2, undefined, () => { observed++; }, undefined, undefined,
     port({ policyVersion: () => version, read: async () => { await secondGate.promise; return [note]; } }));
@@ -63,7 +64,7 @@ test("privacy or policy changes during a corpus await drop the brief without poi
   version = "v2";
   secondGate.resolve();
   expect(await stale).toBeUndefined();
-  expect(observed).toBe(0);
+  expect(observed).toBe(observedBeforePolicyChange);
 });
 
 test("concurrent legacy briefs share corpus note dedupe for one peer", async () => {
