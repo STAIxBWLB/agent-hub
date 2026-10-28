@@ -226,8 +226,12 @@ export class Facts {
     const typed = relative(this.root, abs);
     if (!r || r.startsWith("..") || isAbsolute(r) || this.o.repo?.shadow && (isHubWritePath(r) || !typed.startsWith("..") && isHubWritePath(typed))) return undefined;
     if (this.o.repo?.shadow) {
-      const ignored = Bun.spawnSync(this.gitArgs(["check-ignore", "--no-index", "--quiet", "--", r]), { cwd: this.root, stdout: "pipe", stderr: "pipe", env: this.gitEnv(), timeout: 3000 });
-      if (ignored.exitCode !== 1) return undefined; // ignored or unavailable policy is not readable fact evidence
+      // The shadow repository's ignore policy is name-based too, so it is asked about both names: an ignored result, or one that is unavailable (a non-1 exit, a timeout), on either refuses.
+      const insideTyped = !!typed && !typed.startsWith("..") && !isAbsolute(typed);
+      for (const name of insideTyped && typed !== r ? [r, typed] : [r]) {
+        const ignored = Bun.spawnSync(this.gitArgs(["check-ignore", "--no-index", "--quiet", "--", name]), { cwd: this.root, stdout: "pipe", stderr: "pipe", env: this.gitEnv(), timeout: 3000 });
+        if (ignored.exitCode !== 1) return undefined; // ignored or unavailable policy is not readable fact evidence
+      }
     }
     // Never git's own files, and never what the denylist keeps from every agent (the typed name counts as well when it lies inside the project).
     const named = (name: string) => /(^|\/)\.git(\/|$)/i.test(name) || isDenied(name, this.o.deny ?? []);
