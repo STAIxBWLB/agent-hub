@@ -3572,8 +3572,8 @@
     {
       "id": "broker-queue-fifo",
       "file": "src/broker/store.ts",
-      "search": "FROM queued_frames WHERE room=? ORDER BY rowid",
-      "replacement": "FROM queued_frames WHERE room=? ORDER BY created_at,sender,seq",
+      "search": "AND epoch IN (?,?) ORDER BY rowid",
+      "replacement": "AND epoch IN (?,?) ORDER BY created_at,sender,seq",
       "testFile": "test/broker-store.test.ts",
       "testName": "queued frames retain admission order when sequence numbers have different digit lengths"
     },
@@ -3616,6 +3616,22 @@
       "replacement": "if (false) {",
       "testFile": "test/broker-store.test.ts",
       "testName": "retained lower-sequence packets deduplicate after a newer floor without inventing removed history"
+    },
+    {
+      "id": "broker-owner-admission",
+      "file": "src/broker/server.ts",
+      "search": "if (owners && !owners.has(auth.member)) throw new BrokerServerError(\"owner_not_allowed\");",
+      "replacement": "if (false) throw new BrokerServerError(\"owner_not_allowed\");",
+      "testFile": "test/broker-server.test.ts",
+      "testName": "unapproved owners consume no room slots and offline drop frees a named slot"
+    },
+    {
+      "id": "broker-public-owner-required",
+      "file": "src/broker/server.ts",
+      "search": "if ((!loopback || configuredAudience?.startsWith(\"wss:\")) && !owners?.size) throw new BrokerServerError(\"owner_allowlist_required\");",
+      "replacement": "if (false) throw new BrokerServerError(\"owner_allowlist_required\");",
+      "testFile": "test/broker-server.test.ts",
+      "testName": "public audience requires an owner allowlist before state or listener effects"
     }
   ]
 }

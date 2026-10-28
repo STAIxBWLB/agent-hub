@@ -18,6 +18,8 @@ export interface BrokerOptions {
   hostname?: string;
   port?: number;
   publicUrl?: string;
+  /** Controls first-roster admission only; existing roster membership remains authoritative. */
+  owners?: readonly string[];
   limits?: Partial<BrokerLimits>;
 }
 interface Client {
@@ -79,6 +81,12 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
   if (!loopback && options.publicUrl === undefined) throw new BrokerServerError("public_url_required");
   const configuredAudience = options.publicUrl === undefined ? undefined : audience(options.publicUrl);
   if (!loopback && configuredAudience && new URL(configuredAudience).protocol !== "wss:") throw new BrokerServerError("public_url_required");
+  let owners: ReadonlySet<string> | undefined;
+  if (options.owners !== undefined) {
+    if (!Array.isArray(options.owners) || options.owners.length > 64 || options.owners.some(owner => typeof owner !== "string" || !/^[0-9a-f]{64}$/.test(owner))) throw new BrokerServerError("invalid_owner");
+    owners = new Set(options.owners);
+  }
+  if ((!loopback || configuredAudience?.startsWith("wss:")) && !owners?.size) throw new BrokerServerError("owner_allowlist_required");
   const now = () => {
     const value = (ports.clock ?? Date.now)();
     if (!Number.isSafeInteger(value) || value < 0) throw new BrokerServerError("invalid_clock");
@@ -150,7 +158,10 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
     const before = store.current(client.room)?.current;
     const auth = await verifyBrokerAuth({ wire: bytes, challenge: client.challenge, ...(before ? { roster: before } : {}) });
     if (stopping || client.phase !== "authenticating" || now() >= client.challenge.expiresAt) throw new BrokerServerError("expired");
-    if (auth.initial) store.install(auth.roster, auth.member);
+    if (auth.initial) {
+      if (owners && !owners.has(auth.member)) throw new BrokerServerError("owner_not_allowed");
+      store.install(auth.roster, auth.member);
+    }
     else if (store.current(client.room)?.current.digest !== auth.roster.digest) throw new BrokerServerError("state_changed");
     const current = store.current(client.room)?.current;
     const member = current?.members.find(row => row.fingerprint === auth.member);

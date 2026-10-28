@@ -6,6 +6,7 @@ import * as roomCrypto from "../src/rooms/crypto.ts";
 import { generateHubIdentity, encodeBase64url, RoomCryptoError, type HubIdentity } from "../src/rooms/crypto.ts";
 import { canonicalBytes, createRoomEpoch, decodeFrame, roomMembers, sealFrame, verifyPublicFrame, type VerifiedEpoch, type SequencePort } from "../src/rooms/wire.ts";
 import { createBrokerAuth, decodeBrokerChallenge } from "../src/broker/protocol.ts";
+import { BrokerStore } from "../src/broker/store.ts";
 import { startBroker, type BrokerPorts, type BrokerRuntime } from "../src/broker/server.ts";
 import { FakeBrokerClient, packetObject } from "./fakes/broker-client.ts";
 
@@ -14,9 +15,9 @@ const roots: string[] = [], servers: BrokerRuntime[] = [], clients: FakeBrokerCl
 afterEach(async () => { for (const client of clients.splice(0)) client.close(); for (const server of servers.splice(0)) await server.stop(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const member = (id: HubIdentity, label: string) => ({ ...id.public, label, exposedPeers: ["codex"] });
 const sequence = (): SequencePort => { let seq = 0; return { reserve: async () => String(++seq), isCurrent: () => true }; };
-async function setup(options: { limits?: { queuedPerRoom?: number }; ports?: BrokerPorts; stateDir?: string } = {}) {
+async function setup(options: { limits?: { queuedPerRoom?: number; rooms?: number }; ports?: BrokerPorts; stateDir?: string; owners?: readonly string[] } = {}) {
   const stateDir = options.stateDir ?? mkdtempSync(join(tmpdir(), "ahub-broker-")); if (!options.stateDir) roots.push(stateDir);
-  const server = await startBroker({ stateDir, port: 0, ...(options.limits ? { limits: options.limits } : {}) }, options.ports); servers.push(server);
+  const server = await startBroker({ stateDir, port: 0, ...(options.limits ? { limits: options.limits } : {}), ...(options.owners ? { owners: options.owners } : {}) }, options.ports); servers.push(server);
   return { server, stateDir, url: `ws://127.0.0.1:${server.port}/` };
 }
 async function connect(url: string, room: string) { const client = await FakeBrokerClient.connect(url, room); clients.push(client); return client; }
@@ -202,4 +203,40 @@ test("forged frame signatures and non-owner roster publication refuse before ret
   expect(packetObject(await guest.take("error")).code).toBe("not_owner");
   const probe = await connect(f.url, f.epoch.room);
   expect(decodeBrokerChallenge(await probe.take("challenge")).rosterDigest).toBe(f.epoch.digest);
+});
+
+
+test("public audience requires an owner allowlist before state or listener effects", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-broker-owners-")); roots.push(root);
+  const stateDir = join(root, "uncreated");
+  const attempt = startBroker({ stateDir, port: 0, publicUrl: "wss://relay.example/" }).then(server => { servers.push(server); return server; });
+  await expect(attempt).rejects.toMatchObject({ code: "owner_allowlist_required" });
+  expect(readdirSync(root)).toEqual([]);
+});
+
+test("unapproved owners consume no room slots and offline drop frees a named slot", async () => {
+  const owner = await generateHubIdentity(), attacker = await generateHubIdentity();
+  const f = await setup({ owners: [owner.public.fingerprint], limits: { rooms: 1 } });
+  for (let i = 0; i < 3; i++) {
+    const room = await createRoomEpoch({ owner: attacker, members: [member(attacker, "unapproved")] });
+    const client = await connect(f.url, room.epoch.room);
+    const challenge = decodeBrokerChallenge(await client.take("challenge"));
+    client.send(await createBrokerAuth({ challenge, identity: attacker, broker: f.url, room: room.epoch.room, initialRoster: room.wire }));
+    const refused = await Promise.race([client.take("error"), client.take("ready")]);
+    expect(packetObject(refused)).toMatchObject({ type: "error", code: "owner_not_allowed" });
+    await client.closed;
+    expect(f.server.stats().rooms).toBe(0);
+  }
+  const room = await createRoomEpoch({ owner, members: [member(owner, "approved")] });
+  const client = await connect(f.url, room.epoch.room); await client.authenticate(owner, room.wire);
+  expect(f.server.stats().rooms).toBe(1);
+  await expect(BrokerStore.open({ stateDir: f.stateDir, create: false })).rejects.toMatchObject({ code: "busy" });
+  await f.server.stop();
+  const offline = await BrokerStore.open({ stateDir: f.stateDir, create: false });
+  try { expect(offline.dropRoom(room.epoch.room)).toEqual({ removed: true }); expect(offline.stats().rooms).toBe(0); }
+  finally { offline.close(); }
+  const next = await setup({ stateDir: f.stateDir, owners: [owner.public.fingerprint], limits: { rooms: 1 } });
+  const fresh = await createRoomEpoch({ owner, members: [member(owner, "approved")] });
+  const producer = await connect(next.url, fresh.epoch.room); await producer.authenticate(owner, fresh.wire);
+  expect(next.server.stats().rooms).toBe(1);
 });

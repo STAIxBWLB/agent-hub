@@ -175,7 +175,7 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   if (command === "backlog") return ["list", "add", "pull", "pull-ready", "split", "return", "plan", "pin", "undo"].includes(args[0] ?? "") ? `backlog ${args[0]}` : "backlog";
   if (command === "board" && args[0] === "import") return "board import";
   // #508: the registry's two forms are named in the audit and in a refusal, never their operands (a path or a URL can carry a secret).
-  if (command === "broker") return args[0] === "serve" ? "broker serve" : "broker";
+  if (command === "broker") return args[0] === "serve" ? "broker serve" : args[0] === "room" && args[1] === "drop" ? "broker room drop" : "broker";
   if (command === "source") return ["add", "list"].includes(args.find(arg => arg !== "--json") ?? "") ? `source ${args.find(arg => arg !== "--json")}` : "source";
   if (command === "release") return ["new", "list", "show", "plan", "activate", "freeze", "ship", "drop"].includes(args[0] ?? "") ? `release ${args[0]}` : "release";
   if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor", "agents", "source", "broker"].includes(command)) return "unknown";

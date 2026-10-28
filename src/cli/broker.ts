@@ -1,23 +1,47 @@
 /** Person-only command; main.ts performs identity/delegation refusal before importing this module. */
 import { join, resolve } from "node:path";
-import { BrokerStoreError } from "../broker/store.ts";
-import { RoomCryptoError } from "../rooms/crypto.ts";
+import { BrokerStore, BrokerStoreError } from "../broker/store.ts";
+import { decodeBase64url, RoomCryptoError } from "../rooms/crypto.ts";
 import { startBroker, BrokerServerError, type BrokerOptions } from "../broker/server.ts";
 
-export const BROKER_USAGE = "usage: ahub broker serve [--hostname <host>] [--port <0..65535>] [--public-url <ws[s]://host/>] [--state-dir <dir>]";
+export const BROKER_USAGE = "usage: ahub broker serve [--hostname <host>] [--port <0..65535>] [--public-url <ws[s]://host/>] [--owner <fingerprint>]... [--state-dir <dir>] | broker room drop <room> --yes [--state-dir <dir>]";
 export function brokerOptions(args: readonly string[], stateDir: string): BrokerOptions {
   if (args[0] !== "serve" || (args.length - 1) % 2 !== 0) throw new Error(BROKER_USAGE);
-  const flags = new Map<string, string>();
+  const flags = new Map<string, string>(), owners: string[] = [];
   for (let i = 1; i < args.length; i += 2) {
     const key = args[i]!, value = args[i + 1];
-    if (!["--hostname", "--port", "--public-url", "--state-dir"].includes(key) || !value || value.startsWith("--") || flags.has(key)) throw new Error(BROKER_USAGE);
-    flags.set(key, value);
+    if (!["--hostname", "--port", "--public-url", "--state-dir", "--owner"].includes(key) || !value || value.startsWith("--") || (key !== "--owner" && flags.has(key))) throw new Error(BROKER_USAGE);
+    if (key === "--owner") {
+      if (!/^[0-9a-f]{64}$/.test(value) || owners.length >= 64) throw new Error(BROKER_USAGE);
+      owners.push(value);
+    } else flags.set(key, value);
   }
   const portText = flags.get("--port") ?? "8788";
   if (!/^(0|[1-9][0-9]{0,4})$/.test(portText) || Number(portText) > 65535) throw new Error(BROKER_USAGE);
-  return { stateDir: flags.has("--state-dir") ? resolve(flags.get("--state-dir")!) : join(stateDir, "broker"), hostname: flags.get("--hostname") ?? "127.0.0.1", port: Number(portText), ...(flags.has("--public-url") ? { publicUrl: flags.get("--public-url")! } : {}) };
+  return { stateDir: flags.has("--state-dir") ? resolve(flags.get("--state-dir")!) : join(stateDir, "broker"), hostname: flags.get("--hostname") ?? "127.0.0.1", port: Number(portText), ...(owners.length ? { owners: [...new Set(owners)] } : {}), ...(flags.has("--public-url") ? { publicUrl: flags.get("--public-url")! } : {}) };
+}
+export function brokerDropOptions(args: readonly string[], stateDir: string): { room: string; stateDir: string } {
+  const room = args[2];
+  if (args[0] !== "room" || args[1] !== "drop" || !room || !/^[A-Za-z0-9_-]{43}$/.test(room)) throw new Error(BROKER_USAGE);
+  try { decodeBase64url(room, 32); } catch { throw new Error(BROKER_USAGE); }
+  let yes = false, selected = join(stateDir, "broker"), hasState = false;
+  for (let i = 3; i < args.length; i++) {
+    const key = args[i];
+    if (key === "--yes" && !yes) yes = true;
+    else if (key === "--state-dir" && !hasState && args[i + 1] && !args[i + 1]!.startsWith("--")) { selected = resolve(args[++i]!); hasState = true; }
+    else throw new Error(BROKER_USAGE);
+  }
+  if (!yes) throw new Error(BROKER_USAGE);
+  return { room, stateDir: selected };
 }
 export async function runBrokerCommand(args: readonly string[], stateDir: string): Promise<void> {
+  if (args[0] === "room") {
+    const drop = brokerDropOptions(args, stateDir);
+    const store = await BrokerStore.open({ stateDir: drop.stateDir, create: false });
+    try { console.log(`broker room ${store.dropRoom(drop.room).removed ? "dropped" : "not found"}: ${drop.room}`); }
+    finally { store.close(); }
+    return;
+  }
   const options = brokerOptions(args, stateDir);
   const broker = await startBroker(options);
   console.log(`broker listening at ${broker.publicUrl} (ciphertext relay; application delivery is not acknowledged here)`);

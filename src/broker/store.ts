@@ -1,22 +1,23 @@
-import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, statSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { realPath } from "../hub/project.ts";
 import { decodeBase64url, encodeBase64url } from "../rooms/crypto.ts";
 import {
-  positiveU64, publicFrameWire, publicRosterWire, verifyPublicFrame, verifyPublicRoster,
+  decodeFrame, positiveU64, publicFrameWire, publicRosterWire, verifyPublicFrame, verifyPublicRoster,
   type VerifiedPublicFrame, type VerifiedPublicRoster,
 } from "../rooms/wire.ts";
 
 export const BROKER_LIMIT_CEILINGS = Object.freeze({
   rooms: 64, queuedPerRoom: 200, queuedGlobal: 1000, packetBytes: 32 * 1024 * 1024,
-  queueTtlMs: 24 * 60 * 60 * 1000,
+  queuedBytesPerRoom: 4 * 1024 * 1024, queueTtlMs: 24 * 60 * 60 * 1000,
 });
 export interface BrokerLimits {
   rooms: number;
   queuedPerRoom: number;
   queuedGlobal: number;
   packetBytes: number;
+  queuedBytesPerRoom: number;
   queueTtlMs: number;
 }
 export const DEFAULT_BROKER_LIMITS: Readonly<BrokerLimits> = Object.freeze({ ...BROKER_LIMIT_CEILINGS });
@@ -25,7 +26,7 @@ export class BrokerStoreError extends Error {
   constructor(readonly code: BrokerStoreCode) { super(`Broker store: ${code}`); this.name = "BrokerStoreError"; }
 }
 function fail(code: BrokerStoreCode): never { throw new BrokerStoreError(code); }
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const GRACE_MS = 60_000;
 const DB_NAME = "broker.db";
 // Exclusive ownership cannot be shared; keep accidental second starts fail-fast.
@@ -35,7 +36,7 @@ interface StoredRoom {
   room: string; owner: string; currentEpoch: string; currentDigest: string; currentWire: Uint8Array;
   previousEpoch: string | null; previousDigest: string | null; previousWire: Uint8Array | null; previousExpiresAt: number | null;
 }
-interface StoredFrame { room: string; sender: string; seq: string; digest: string; wire: Uint8Array; recipients: string; createdAt: number; expiresAt: number }
+interface StoredFrame { room: string; sender: string; seq: string; digest: string; wire: Uint8Array; recipients: string; createdAt: number; expiresAt: number; epoch: string }
 interface StoredFloor { room: string; sender: string; seq: string; digest: string }
 export interface BrokerRoomState { current: VerifiedPublicRoster; previous?: { roster: VerifiedPublicRoster; expiresAt: number } }
 export interface BrokerStoreStats { rooms: number; queuedFrames: number; queuedBytes: number }
@@ -103,14 +104,53 @@ export class BrokerStore {
     this.db = db; this.limits = limits; this.clock = clock;
   }
 
-  static async open(input: { stateDir: string; limits?: Partial<BrokerLimits>; clock?: () => number }): Promise<BrokerStore> {
-    const limits = positiveLimits(input.limits), clock = input.clock ?? Date.now;
+  private static validateSchema(db: Database, version: number): void {
+    const expected = ["rooms", "sender_floors", "queued_frames"];
+    const found = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(x => x.name).sort();
+    if (found.join(",") !== expected.slice().sort().join(",")) fail("unsupported");
+    const queuedColumns = ["room", "sender", "seq", "digest", "wire", "recipients", "created_at", "expires_at", ...(version >= 2 ? ["epoch"] : [])];
+    const columns: Record<string, string[]> = {
+      rooms: ["room", "owner", "current_epoch", "current_digest", "current_wire", "previous_epoch", "previous_digest", "previous_wire", "previous_expires_at"],
+      sender_floors: ["room", "sender", "seq", "digest"],
+      queued_frames: queuedColumns,
+    };
+    for (const [table, names] of Object.entries(columns)) {
+      const actual = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map(column => column.name);
+      if (actual.join(",") !== names.join(",")) fail("unsupported");
+    }
+    const queuedSql = db.query<{ sql: string | null }, []>("SELECT sql FROM sqlite_master WHERE type='table' AND name='queued_frames'").get()?.sql;
+    if (!queuedSql || /WITHOUT\s+ROWID/i.test(queuedSql)) fail("unsupported");
+    try { db.query<{ rowid: number }, []>("SELECT rowid FROM queued_frames LIMIT 0").all(); }
+    catch { fail("unsupported"); }
+    if (version >= 2) {
+      const indexes = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='queued_frames'").all().map(row => row.name);
+      if (!indexes.includes("queued_frames_room") || !indexes.includes("queued_frames_expiry")) fail("unsupported");
+      const roomIndex = db.query<{ name: string }, []>("PRAGMA index_info(queued_frames_room)").all().map(row => row.name);
+      const expiryIndex = db.query<{ name: string }, []>("PRAGMA index_info(queued_frames_expiry)").all().map(row => row.name);
+      if (roomIndex[0] !== "room" || expiryIndex[0] !== "expires_at") fail("unsupported");
+    }
+  }
+
+  static async open(input: { stateDir: string; limits?: Partial<BrokerLimits>; clock?: () => number; create?: boolean }): Promise<BrokerStore> {
+    const limits = positiveLimits(input.limits), clock = input.clock ?? Date.now, create = input.create ?? true;
     let dir: string;
     try {
-      mkdirSync(input.stateDir, { recursive: true, mode: 0o700 });
-      dir = realPath(input.stateDir);
-      chmodSync(dir, 0o700);
-      if ((statSync(dir).mode & 0o077) !== 0) fail("invalid");
+      if (existsSync(input.stateDir)) {
+        if (lstatSync(input.stateDir).isSymbolicLink() || !statSync(input.stateDir).isDirectory()) fail("invalid");
+        dir = realPath(input.stateDir);
+        const entries = readdirSync(dir);
+        if (entries.length > 0 && entries.some(name => ![DB_NAME, `${DB_NAME}-journal`, `${DB_NAME}-wal`, `${DB_NAME}-shm`].includes(name))) fail("invalid");
+        if (entries.length > 0 && !entries.includes(DB_NAME)) fail("corrupt");
+        if ((statSync(dir).mode & 0o777) !== 0o700) {
+          if (entries.length > 0) fail("invalid");
+          chmodSync(dir, 0o700);
+        }
+      } else {
+        if (!create) fail("invalid");
+        mkdirSync(input.stateDir, { recursive: true, mode: 0o700 });
+        dir = realPath(input.stateDir);
+        chmodSync(dir, 0o700);
+      }
     } catch (error) {
       if (error instanceof BrokerStoreError) throw error;
       fail("invalid");
@@ -122,6 +162,7 @@ export class BrokerStore {
         if (lstatSync(file).isSymbolicLink() || !statSync(file).isFile()) fail("invalid");
         chmodSync(file, 0o600);
       } else {
+        if (!create) fail("invalid");
         try {
           const descriptor = openSync(file, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
           closeSync(descriptor);
@@ -138,12 +179,12 @@ export class BrokerStore {
     }
     let db: Database | undefined;
     try {
-      db = new Database(file, { create: true, strict: true });
+      db = new Database(file, { create, strict: true });
       db.run(`PRAGMA busy_timeout = ${BROKER_DB_BUSY_TIMEOUT_MS}`);
       db.exec("PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA locking_mode=EXCLUSIVE;");
       db.exec("BEGIN EXCLUSIVE;");
       const existing = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
-      if (existing !== 0 && existing !== SCHEMA_VERSION) fail("unsupported");
+      if (![0, 1, SCHEMA_VERSION].includes(existing)) fail("unsupported");
       if (existing === 0) {
         if (!createdFile) fail("corrupt");
         const hasUserTables = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
@@ -161,29 +202,28 @@ export class BrokerStore {
           ) WITHOUT ROWID;
           CREATE TABLE queued_frames (
             room TEXT NOT NULL, sender TEXT NOT NULL, seq TEXT NOT NULL, digest TEXT NOT NULL,
-            wire BLOB NOT NULL, recipients TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+            wire BLOB NOT NULL, recipients TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, epoch TEXT NOT NULL,
             PRIMARY KEY (room, sender, seq), FOREIGN KEY (room) REFERENCES rooms(room) ON DELETE CASCADE
           );
           CREATE INDEX queued_frames_room ON queued_frames(room);
+          CREATE INDEX queued_frames_expiry ON queued_frames(expires_at);
           PRAGMA user_version=${SCHEMA_VERSION};
         `);
-      } else {
-        const expected = ["rooms", "sender_floors", "queued_frames"];
-        const found = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(x => x.name).sort();
-        if (found.join(",") !== expected.slice().sort().join(",")) fail("unsupported");
-        const columns: Record<string, string[]> = {
-          rooms: ["room", "owner", "current_epoch", "current_digest", "current_wire", "previous_epoch", "previous_digest", "previous_wire", "previous_expires_at"],
-          sender_floors: ["room", "sender", "seq", "digest"],
-          queued_frames: ["room", "sender", "seq", "digest", "wire", "recipients", "created_at", "expires_at"],
-        };
-        for (const [table, names] of Object.entries(columns)) {
-          const actual = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map(column => column.name);
-          if (actual.join(",") !== names.join(",")) fail("unsupported");
+      } else if (existing === 1) {
+        this.validateSchema(db, 1);
+        db.exec("ALTER TABLE queued_frames ADD COLUMN epoch TEXT NOT NULL DEFAULT '0';");
+        const legacy = db.query<{ room: string; sender: string; seq: string; wire: Uint8Array }, []>("SELECT room,sender,seq,wire FROM queued_frames").all();
+        for (const row of legacy) {
+          if (!(row.wire instanceof Uint8Array)) fail("corrupt");
+          let frame: ReturnType<typeof decodeFrame>;
+          try { frame = decodeFrame(row.wire); } catch { fail("corrupt"); }
+          if (frame.room !== row.room || frame.sender !== row.sender || frame.seq !== row.seq) fail("corrupt");
+          db.query("UPDATE queued_frames SET epoch=? WHERE room=? AND sender=? AND seq=?").run(frame.epoch, row.room, row.sender, row.seq);
         }
-        const queuedSql = db.query<{ sql: string | null }, []>("SELECT sql FROM sqlite_master WHERE type='table' AND name='queued_frames'").get()?.sql;
-        if (!queuedSql || /WITHOUT\s+ROWID/i.test(queuedSql)) fail("unsupported");
-        try { db.query<{ rowid: number }, []>("SELECT rowid FROM queued_frames LIMIT 0").all(); }
-        catch { fail("unsupported"); }
+        db.exec("CREATE INDEX IF NOT EXISTS queued_frames_room ON queued_frames(room); CREATE INDEX queued_frames_expiry ON queued_frames(expires_at); PRAGMA user_version=2;");
+        this.validateSchema(db, 2);
+      } else {
+        this.validateSchema(db, SCHEMA_VERSION);
       }
       if (db.query<{ quick_check: string }, []>("PRAGMA quick_check").all().some(row => row.quick_check !== "ok")) fail("corrupt");
       db.exec("COMMIT;");
@@ -241,18 +281,19 @@ export class BrokerStore {
       if (floorBySender.has(key)) fail("corrupt");
       floorBySender.set(key, floor);
     }
-    const queued = this.db.query<StoredFrame, []>("SELECT room,sender,seq,digest,wire,recipients,created_at AS createdAt,expires_at AS expiresAt FROM queued_frames").all();
+    const queued = this.db.query<StoredFrame, []>("SELECT room,sender,seq,digest,wire,recipients,created_at AS createdAt,expires_at AS expiresAt,epoch FROM queued_frames").all();
     for (const row of queued) {
       try {
         const state = this.rooms.get(row.room);
         if (!state || !(row.wire instanceof Uint8Array) || !Number.isSafeInteger(row.createdAt) || !Number.isSafeInteger(row.expiresAt) ||
             row.createdAt < 0 || row.expiresAt <= row.createdAt || row.expiresAt - row.createdAt > BROKER_LIMIT_CEILINGS.queueTtlMs) fail("corrupt");
         const frameHeader = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(row.wire)) as { epoch?: unknown };
-        const roster = frameHeader.epoch === state.current.epoch ? state.current : state.previous?.roster;
+        if (frameHeader.epoch !== row.epoch) fail("corrupt");
+        const roster = row.epoch === state.current.epoch ? state.current : state.previous?.roster;
         if (!roster) fail("corrupt");
         const proof = await verifyPublicFrame({ wire: row.wire, roster });
         const recipients = parseRecipients(row.recipients);
-        if (proof.room !== row.room || proof.sender !== row.sender || proof.seq !== row.seq || proof.digest !== row.digest ||
+        if (proof.room !== row.room || proof.epoch !== row.epoch || proof.sender !== row.sender || proof.seq !== row.seq || proof.digest !== row.digest ||
             !validDigest(row.digest) || recipients.length === 0 || recipients.some(recipient => !proof.recipients.includes(recipient))) fail("corrupt");
         try { positiveU64(row.seq); } catch { fail("corrupt"); }
         const floor = floorBySender.get(`${row.room}\0${row.sender}`);
@@ -270,9 +311,11 @@ export class BrokerStore {
   }
 
   current(room: string): BrokerRoomState | undefined {
-    this.assertOpen(); this.sweep();
+    this.assertOpen();
+    const now = this.now();
     const state = this.rooms.get(room);
-    return state ? { current: state.current, ...(state.previous ? { previous: { ...state.previous } } : {}) } : undefined;
+    const previous = state?.previous && state.previous.expiresAt > now ? state.previous : undefined;
+    return state ? { current: state.current, ...(previous ? { previous: { ...previous } } : {}) } : undefined;
   }
 
   install(proof: VerifiedPublicRoster, authorizedOwner: string): { changed: boolean; revoked: string[] } {
@@ -327,6 +370,13 @@ export class BrokerStore {
     this.transaction(() => {
       const writeNow = this.now();
       let state = this.rooms.get(proof.room);
+      this.db.query("DELETE FROM queued_frames WHERE expires_at<=?").run(writeNow);
+      if (state?.previous && state.previous.expiresAt <= writeNow) {
+        this.db.query("DELETE FROM queued_frames WHERE room=? AND epoch=?").run(proof.room, state.previous.roster.epoch);
+        this.db.query("UPDATE rooms SET previous_epoch=NULL,previous_digest=NULL,previous_wire=NULL,previous_expires_at=NULL WHERE room=?").run(proof.room);
+        expiredPrevious = true;
+        state = { current: state.current };
+      }
       const roster = this.rosterForProof(state, proof, writeNow);
       if (!state || !roster || !roster.members.some(member => member.fingerprint === proof.sender) || proof.recipients.length === 0 ||
           proof.recipients.some(recipient => !roster.members.some(member => member.fingerprint === recipient))) fail("untrusted");
@@ -334,13 +384,6 @@ export class BrokerStore {
       const proofKeys = parseMembers(roster.members);
       recipients = [...new Set(proof.recipients)].filter(recipient => currentKeys.has(recipient) && currentKeys.get(recipient) === proofKeys.get(recipient)).sort();
       if (!recipients.length) fail("untrusted");
-      if (state?.previous && state.previous.expiresAt <= writeNow) {
-        this.db.query("UPDATE rooms SET previous_epoch=NULL,previous_digest=NULL,previous_wire=NULL,previous_expires_at=NULL WHERE room=?").run(proof.room);
-        this.purgeInvalidRows(proof.room, { current: state.current }, writeNow);
-        state = { current: state.current };
-        expiredPrevious = true;
-      }
-      this.db.query("DELETE FROM queued_frames WHERE expires_at<=?").run(writeNow);
       // A retained older packet is a known accepted outcome even after a newer
       // sequence advanced the compact sender floor. Never recreate or rewrite it.
       const retained = this.db.query<{ digest: string }, [string, string, string]>("SELECT digest FROM queued_frames WHERE room=? AND sender=? AND seq=?").get(proof.room, proof.sender, proof.seq);
@@ -360,15 +403,16 @@ export class BrokerStore {
         if (order < 0n) fail("conflict");
       }
       const counts = this.db.query<{ count: number; bytes: number }, []>("SELECT COUNT(*) AS count, COALESCE(SUM(length(wire)),0) AS bytes FROM queued_frames").get();
-      const roomCount = this.countRoom(proof.room);
-      if (byteLength > this.limits.packetBytes || roomCount >= this.limits.queuedPerRoom || (counts?.count ?? 0) >= this.limits.queuedGlobal ||
+      const room = this.db.query<{ count: number; bytes: number }, [string]>("SELECT COUNT(*) AS count, COALESCE(SUM(length(wire)),0) AS bytes FROM queued_frames WHERE room=?").get(proof.room);
+      if (byteLength > this.limits.packetBytes || byteLength > this.limits.queuedBytesPerRoom || (room?.count ?? 0) >= this.limits.queuedPerRoom ||
+          (room?.bytes ?? 0) + byteLength > this.limits.queuedBytesPerRoom || (counts?.count ?? 0) >= this.limits.queuedGlobal ||
           (counts?.bytes ?? 0) + byteLength > this.limits.packetBytes) fail("full");
       const expiresAt = writeNow + this.limits.queueTtlMs;
       if (!Number.isSafeInteger(expiresAt)) fail("invalid");
       this.db.query("INSERT INTO sender_floors(room,sender,seq,digest) VALUES(?,?,?,?) ON CONFLICT(room,sender) DO UPDATE SET seq=excluded.seq,digest=excluded.digest")
         .run(proof.room, proof.sender, proof.seq, proof.digest);
-      this.db.query("INSERT INTO queued_frames(room,sender,seq,digest,wire,recipients,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)")
-        .run(proof.room, proof.sender, proof.seq, proof.digest, wire, JSON.stringify(recipients), writeNow, expiresAt);
+      this.db.query("INSERT INTO queued_frames(room,sender,seq,digest,wire,recipients,created_at,expires_at,epoch) VALUES(?,?,?,?,?,?,?,?,?)")
+        .run(proof.room, proof.sender, proof.seq, proof.digest, wire, JSON.stringify(recipients), writeNow, expiresAt, proof.epoch);
       result = { digest: proof.digest, duplicate: false };
     });
     if (expiredPrevious) {
@@ -380,45 +424,64 @@ export class BrokerStore {
   }
 
   next(room: string, recipient: string): { digest: string; wire: Uint8Array } | undefined {
-    this.assertOpen(); const now = this.now(); this.sweep();
-    const state = this.rooms.get(room);
+    this.assertOpen(); let now = 0;
+    let state = this.rooms.get(room);
+    if (!state) return undefined;
+    this.transaction(() => { now = this.now(); state = this.expireRoom(room, now); });
+    if (state) this.rooms.set(room, state);
     if (!state?.current.members.some(member => member.fingerprint === recipient)) return undefined;
-    const rows = this.db.query<StoredFrame, [string]>("SELECT room,sender,seq,digest,wire,recipients,created_at AS createdAt,expires_at AS expiresAt FROM queued_frames WHERE room=? ORDER BY rowid").all(room);
+    const previous = state.previous && state.previous.expiresAt > now ? state.previous.roster.epoch : state.current.epoch;
+    const rows = this.db.query<{ id: number; digest: string; recipients: string }, [string, number, string, string]>(
+      "SELECT rowid AS id,digest,recipients FROM queued_frames WHERE room=? AND expires_at>? AND epoch IN (?,?) ORDER BY rowid",
+    ).all(room, now, state.current.epoch, previous);
     for (const row of rows) {
-      if (row.expiresAt <= now) continue;
-      if (parseRecipients(row.recipients).includes(recipient)) return { digest: row.digest, wire: new Uint8Array(row.wire) };
+      if (!parseRecipients(row.recipients).includes(recipient)) continue;
+      const packet = this.db.query<{ wire: Uint8Array }, [number]>("SELECT wire FROM queued_frames WHERE rowid=?").get(row.id);
+      if (packet?.wire instanceof Uint8Array) return { digest: row.digest, wire: new Uint8Array(packet.wire) };
     }
     return undefined;
   }
 
   ack(room: string, recipient: string, digest: string): void {
     this.assertOpen();
-    this.sweep();
-    if (!this.rooms.get(room)?.current.members.some(member => member.fingerprint === recipient)) fail("untrusted");
+    let now = 0;
+    let state = this.rooms.get(room);
+    if (!state) fail("untrusted");
     this.transaction(() => {
-      const rows = this.db.query<StoredFrame, [string, string]>("SELECT room,sender,seq,digest,wire,recipients,created_at AS createdAt,expires_at AS expiresAt FROM queued_frames WHERE room=? AND digest=?").all(room, digest);
+      now = this.now();
+      state = this.expireRoom(room, now);
+      if (!state?.current.members.some(member => member.fingerprint === recipient)) fail("untrusted");
+      const epochs = state.previous && state.previous.expiresAt > now ? [state.current.epoch, state.previous.roster.epoch] : [state.current.epoch, state.current.epoch];
+      const rows = this.db.query<{ rowid: number; sender: string; seq: string; digest: string; recipients: string; expiresAt: number; epoch: string }, [string, string, number, string, string]>(
+        "SELECT rowid,digest,sender,seq,recipients,expires_at AS expiresAt,epoch FROM queued_frames WHERE room=? AND digest=? AND expires_at>? AND epoch IN (?,?) LIMIT 1",
+      ).all(room, digest, now, epochs[0]!, epochs[1]!);
       const row = rows[0]; if (!row) return;
       const recipients = parseRecipients(row.recipients);
       if (!recipients.includes(recipient)) return;
       const remaining = recipients.filter(id => id !== recipient);
-      if (remaining.length) this.db.query("UPDATE queued_frames SET recipients=? WHERE room=? AND sender=? AND seq=?").run(JSON.stringify(remaining), room, row.sender, row.seq);
-      else this.db.query("DELETE FROM queued_frames WHERE room=? AND sender=? AND seq=?").run(room, row.sender, row.seq);
+      if (remaining.length) this.db.query("UPDATE queued_frames SET recipients=? WHERE rowid=?").run(JSON.stringify(remaining), row.rowid);
+      else this.db.query("DELETE FROM queued_frames WHERE rowid=?").run(row.rowid);
     });
+    if (state) this.rooms.set(room, state);
   }
 
   sweep(): void {
     this.assertOpen(); const now = this.now();
+    const expired: string[] = [];
     this.transaction(() => {
       this.db.query("DELETE FROM queued_frames WHERE expires_at<=?").run(now);
       for (const [room, state] of this.rooms) {
         if (state.previous && state.previous.expiresAt <= now) {
+          this.db.query("DELETE FROM queued_frames WHERE room=? AND epoch=?").run(room, state.previous.roster.epoch);
           this.db.query("UPDATE rooms SET previous_epoch=NULL,previous_digest=NULL,previous_wire=NULL,previous_expires_at=NULL WHERE room=?").run(room);
-          this.rooms.set(room, { current: state.current });
+          expired.push(room);
         }
-        const current = this.rooms.get(room)!;
-        this.purgeInvalidRows(room, current, now);
       }
     });
+    for (const room of expired) {
+      const state = this.rooms.get(room);
+      if (state) this.rooms.set(room, { current: state.current });
+    }
   }
 
   stats(): BrokerStoreStats {
@@ -428,9 +491,35 @@ export class BrokerStore {
     return { rooms: rooms?.count ?? 0, queuedFrames: row?.count ?? 0, queuedBytes: row?.bytes ?? 0 };
   }
 
+  dropRoom(room: string): { removed: boolean } {
+    this.assertOpen();
+    try { if (encodeBase64url(decodeBase64url(room, 32)) !== room) fail("invalid"); }
+    catch (error) { if (error instanceof BrokerStoreError) throw error; fail("invalid"); }
+    let removed = false;
+    this.transaction(() => {
+      if (!this.db.query<{ room: string }, [string]>("SELECT room FROM rooms WHERE room=?").get(room)) return;
+      this.db.query("DELETE FROM queued_frames WHERE room=?").run(room);
+      this.db.query("DELETE FROM sender_floors WHERE room=?").run(room);
+      this.db.query("DELETE FROM rooms WHERE room=?").run(room);
+      removed = true;
+    });
+    this.rooms.delete(room);
+    return { removed };
+  }
+
   close(): void { if (this.closed) return; this.closed = true; this.db.close(); this.rooms.clear(); }
 
   private now(): number { const value = this.clock(); if (!Number.isSafeInteger(value) || value < 0) fail("invalid"); return value; }
+  private expireRoom(room: string, now: number): BrokerRoomState | undefined {
+    let state = this.rooms.get(room);
+    this.db.query("DELETE FROM queued_frames WHERE room=? AND expires_at<=?").run(room, now);
+    if (state?.previous && state.previous.expiresAt <= now) {
+      this.db.query("DELETE FROM queued_frames WHERE room=? AND epoch=?").run(room, state.previous.roster.epoch);
+      this.db.query("UPDATE rooms SET previous_epoch=NULL,previous_digest=NULL,previous_wire=NULL,previous_expires_at=NULL WHERE room=?").run(room);
+      state = { current: state.current };
+    }
+    return state;
+  }
   private countRoom(room: string): number { return this.db.query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM queued_frames WHERE room=?").get(room)?.count ?? 0; }
   private rosterForProof(state: BrokerRoomState | undefined, proof: VerifiedPublicFrame, now: number): VerifiedPublicRoster | undefined {
     if (!state) return undefined;
@@ -441,25 +530,19 @@ export class BrokerStore {
     return undefined;
   }
   private purgeInvalidRows(room: string, state: BrokerRoomState, now: number): void {
-    const rows = this.db.query<StoredFrame, [string]>("SELECT room,sender,seq,digest,wire,recipients,created_at AS createdAt,expires_at AS expiresAt FROM queued_frames WHERE room=?").all(room);
+    const rows = this.db.query<{ rowid: number; sender: string; recipients: string; expiresAt: number; epoch: string }, [string]>(
+      "SELECT rowid,sender,recipients,expires_at AS expiresAt,epoch FROM queued_frames WHERE room=?",
+    ).all(room);
     for (const row of rows) {
       const recipients = parseRecipients(row.recipients);
       const sender = state.current.members.find(member => member.fingerprint === row.sender);
-      let keep: string[] = [];
-      try {
-        // Queue rows contain public frame headers plus ciphertext. The verified proof is not persisted,
-        // so the authenticated header is checked through its retained digest and roster metadata at admission.
-        const frame = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(row.wire)) as { room?: unknown; epoch?: unknown; sender?: unknown; seq?: unknown; recipients?: unknown };
-        if (frame.room !== room || frame.sender !== row.sender || frame.seq !== row.seq || !Array.isArray(frame.recipients)) throw new Error();
-        const frameRecipients = frame.recipients.filter((x): x is string => typeof x === "string");
-        const oldRoster = state.current.epoch === String(frame.epoch) ? state.current : state.previous?.roster;
-        if (oldRoster && (oldRoster === state.current || (state.previous!.expiresAt > now && sameKeys(oldRoster, state.current, [row.sender]))) && sender) {
-          keep = recipients.filter(recipient => frameRecipients.includes(recipient) && state.current.members.some(member => member.fingerprint === recipient) &&
-            (oldRoster === state.current || sameKeys(oldRoster, state.current, [recipient])));
-        }
-      } catch { keep = []; }
-      if (row.expiresAt <= now || !sender || !keep.length) this.db.query("DELETE FROM queued_frames WHERE room=? AND sender=? AND seq=?").run(room, row.sender, row.seq);
-      else if (keep.length !== recipients.length) this.db.query("UPDATE queued_frames SET recipients=? WHERE room=? AND sender=? AND seq=?").run(JSON.stringify(keep), room, row.sender, row.seq);
+      const previous = state.previous && state.previous.expiresAt > now && row.epoch === state.previous.roster.epoch ? state.previous.roster : undefined;
+      const isCurrent = row.epoch === state.current.epoch;
+      const senderRetained = sender && (!previous || sameKeys(previous, state.current, [row.sender]));
+      const keep = row.expiresAt > now && senderRetained ? recipients.filter(recipient =>
+        state.current.members.some(member => member.fingerprint === recipient) && (!previous || sameKeys(previous, state.current, [recipient]))) : [];
+      if ((!isCurrent && !previous) || !keep.length) this.db.query("DELETE FROM queued_frames WHERE rowid=?").run(row.rowid);
+      else if (keep.length !== recipients.length) this.db.query("UPDATE queued_frames SET recipients=? WHERE rowid=?").run(JSON.stringify(keep), row.rowid);
     }
   }
 }

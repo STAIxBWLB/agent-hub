@@ -90,9 +90,21 @@ digest and installation + 60,000 ms grace survive restart. Removed members canno
 authenticate or receive queued traffic; awaited work rechecks membership/generation
 before effects. Exact roster replays never refresh grace.
 
+Initial roster creation is restricted by a repeatable exact owner-fingerprint
+allowlist, mandatory for WSS public audiences and non-loopback binds. Open loopback
+mode is explicitly development-only and must not be proxied publicly. Authenticated
+but unapproved throwaway owners consume no room slots. Existing membership stays
+owner-signed; the creation allowlist alone is not a revocation mechanism.
+
 Count/byte/TTL-bounded private SQLite storage holds original encrypted packets.
 Exclusive kernel ownership prevents competing writers without stale-lock takeover;
-unknown/corrupt state fails closed. Each recipient ACK affects only its own queue
+unknown/corrupt state fails closed. Populated unrelated or non-private directories
+refuse without chmod. An offline, person-only `broker room drop <room> --yes`
+reclaims one room under exclusive ownership, deleting its pins/floors/queue without
+resetting other rooms. Clients keep their own pins; remove an unwanted creator
+from the allowlist before restart. Indexed epoch/expiry maintenance avoids parsing
+all queued packets on ordinary reads, and a 4 MiB per-room byte share bounds one
+room's new admissions. Each recipient ACK affects only its own queue
 entry. Broker storage/queue ACKs never mean application completion. Logs/stats are
 fixed codes plus public ids/counts only; see the [X2 protocol and limits](specs/2026-09-19-agent-hub-design.md#encrypted-rooms-x2-blind-broker-446).
 

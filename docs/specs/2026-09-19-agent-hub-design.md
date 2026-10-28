@@ -880,7 +880,7 @@ control path before an invited hub opens its member data connection.
 ### Process and public verification
 
 The command is `ahub broker serve [--hostname <host>] [--port <0..65535>]
-[--public-url <ws[s]://host/>] [--state-dir <dir>]`. Agent markers and `--live-test`
+[--public-url <ws[s]://host/>] [--owner <fingerprint>]... [--state-dir <dir>]`. Agent markers and `--live-test`
 delegation refuse before importing the command. Help/parser/audit labels agree;
 audit labels never contain path operands. Default bind is `127.0.0.1:8788`; port 0
 asks the OS for an ephemeral fixture port. Default state is `broker/` beneath the
@@ -894,6 +894,14 @@ request/upgrade carrying any Origin header, even empty, refuses. `GET /health`
 returns fixed version/status only. Audience comes from startup config, never Host.
 No proxy, certificate or firewall is configured by this command, and fixture
 success is not a live TLS receipt.
+
+`--owner` is a repeatable exact signing-fingerprint allowlist for first-roster
+admission. Public WSS audiences (including loopback behind a proxy) and non-loopback
+binds require a nonempty allowlist before storage/listener effects. Other owners
+cannot consume a room slot or squat a room id. Existing room membership remains
+pinned and is not revoked merely by changing this creation allowlist. Loopback with
+no public audience may omit it for development; that open mode is a ceiling, not a
+public service configuration. Do not expose open mode through a proxy.
 
 `startBroker` awaits X1's minimum-Bun/capability self-test before database/listener
 effects. `verifyPublicRoster` and `verifyPublicFrame` share X1's canonical signature
@@ -953,7 +961,7 @@ wait behind an outgoing signature check without racing authentication state.
 | Pending input per socket | 8 packets, 2 MiB |
 | Pending input globally | 32 MiB |
 | Queued packets per room / globally | 200 / 1,000 |
-| Aggregate queued packet bytes | 32 MiB |
+| Queued packet bytes per room / globally | 4 MiB / 32 MiB |
 | Queue TTL | 24 hours |
 | Per-socket native backpressure limit | 1 MiB plus the final message allowance |
 | Roster ACK deadline | 30 seconds |
@@ -983,6 +991,30 @@ metadata and floors before delivery; expired grace is normal cleanup. See
 [SQLite locking mode](https://www.sqlite.org/pragma.html#pragma_locking_mode) and
 [exclusive access](https://www.sqlite.org/atomiccommit.html#exclusive_access_mode).
 Native buffering includes the [Bun final-message allowance](https://bun.com/docs/runtime/http/websockets).
+
+Schema v2 stores each queued packet's epoch as indexed metadata and has an expiry
+index. Known v1 state migrates in place, retaining pins, floors, ciphertext and
+admission order. Ordinary current lookups are pure; next/ACK use targeted metadata
+expiry and only read the selected ciphertext, while timer/admission sweeps expire
+indexed rows and bounded room pins without parsing every packet. Rotation inspects
+only the changed room's authenticated metadata. Newly admitted packets obey the
+4 MiB per-room share; existing valid larger queues are grandfathered and block new
+admission until ACK/expiry reduces them, never evicted to retrofit the share.
+
+Existing populated directories are accepted only as private recognized broker
+state; unrelated files or non-0700 mode refuse without changing contents or mode.
+Empty directories may be tightened to 0700. Offline operations require an existing
+database and never create a new store to repair a misspelled path.
+
+`ahub broker room drop <room> --yes [--state-dir <dir>]` is person-only, including
+under `--live-test`, and requires the broker stopped: the same exclusive database
+lock refuses an online attempt. It transactionally forgets only the named room's
+pins, sender floors and queued packets, freeing its slot; other rooms stay intact.
+This is an explicit broker-side room reset, not member revocation, secure erase,
+or an application-delivery receipt. Clients retain their own pins/replay state.
+Remove an unwanted owner from the creation allowlist before restarting, otherwise
+that still-approved owner may bootstrap the dropped id again. Use a fresh room
+lifecycle rather than deleting the whole database to regain capacity.
 
 Logs/stats contain fixed event/error codes, public ids, counts and byte totals.
 Canary fixtures separate the encrypting client from the broker process and inspect

@@ -2,11 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { brokerOptions } from "../src/cli/broker.ts";
+import { brokerDropOptions, brokerOptions } from "../src/cli/broker.ts";
 import { classifyPeerCommand, cliCommandLabel, liveTestRefusal } from "../src/cli/identity.ts";
 import { HELP, helpCommands } from "../src/cli/help.ts";
-import { generateHubIdentity } from "../src/rooms/crypto.ts";
+import { encodeBase64url, generateHubIdentity } from "../src/rooms/crypto.ts";
 import { acceptRoomEpoch, createRoomEpoch, openFrame, sealFrame } from "../src/rooms/wire.ts";
+import { BrokerStore } from "../src/broker/store.ts";
 import { FakeBrokerClient } from "./fakes/broker-client.ts";
 
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
@@ -29,11 +30,16 @@ test("broker serve parser and help agree, and all broker forms stay person-only 
   for (const args of [[], ["serve", "--port"], ["serve", "--port", "65536"], ["serve", "--port", "1e3"], ["serve", "--port", "1", "--port", "2"], ["status"]]) expect(() => brokerOptions(args, "/tmp/unused")).toThrow("usage:");
   expect(classifyPeerCommand("broker", ["serve"])).toBe("console");
   expect(liveTestRefusal("broker", ["serve"])).toBe(true);
+  const roomId = encodeBase64url(new Uint8Array(32));
+  expect(brokerOptions(["serve", "--owner", "1".repeat(64), "--owner", "2".repeat(64)], "/tmp/default").owners).toEqual(["1".repeat(64), "2".repeat(64)]);
+  expect(() => brokerDropOptions(["room", "drop", roomId], "/tmp/default")).toThrow("usage:");
+  expect(brokerDropOptions(["room", "drop", roomId, "--yes"], "/tmp/default")).toMatchObject({ room: roomId });
+  expect(cliCommandLabel("broker", ["room", "drop", roomId, "--yes"])).toBe("broker room drop");
   expect(cliCommandLabel("broker", ["serve", "--state-dir", "private-state"])).toBe("broker serve");
   const f = fixture();
   const markers: Record<string, string>[] = [{ CODEX_THREAD_ID: "test" }, { CLAUDECODE: "1" }, { AGENTHUB_PEER_ID: "codex" }];
-  for (const marker of markers) for (const prefix of [[], ["--live-test"]]) {
-    const child = Bun.spawn([process.execPath, CLI, ...prefix, "broker", "serve", "--port", "0", "--state-dir", f.stateDir], { cwd: f.root, env: { ...f.env, ...marker }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  for (const marker of markers) for (const prefix of [[], ["--live-test"]]) for (const action of [["serve", "--port", "0"], ["room", "drop", roomId, "--yes"]]) {
+    const child = Bun.spawn([process.execPath, CLI, ...prefix, "broker", ...action, "--state-dir", f.stateDir], { cwd: f.root, env: { ...f.env, ...marker }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     running.push(child);
     const guard = setTimeout(() => child.kill("SIGTERM"), 10_000);
     const [code, out, error] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]).finally(() => clearTimeout(guard));
@@ -76,8 +82,20 @@ test("a separate broker CLI process receives only sealed canary data and stops w
       if (opened.status === "accepted") expect(new TextDecoder().decode(opened.plaintext)).toBe(canary);
     } finally { recipient.close(); }
     for (const name of readdirSync(f.stateDir)) expect(readFileSync(join(f.stateDir, name)).includes(Buffer.from(canary))).toBe(false);
+    const busyDrop = Bun.spawn([process.execPath, CLI, "broker", "room", "drop", epoch.epoch.room, "--yes", "--state-dir", f.stateDir], { cwd: f.root, env: f.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    running.push(busyDrop);
+    const [busyCode, , busyError] = await Promise.all([busyDrop.exited, new Response(busyDrop.stdout).text(), new Response(busyDrop.stderr).text()]);
+    expect(busyCode).not.toBe(0); expect(busyError).toContain("busy");
     client.close(); child.kill("SIGTERM");
     expect(await child.exited).toBe(0);
     expect(await stdout).not.toContain(canary); expect(await stderr).not.toContain(canary);
+    const drop = Bun.spawn([process.execPath, CLI, "broker", "room", "drop", epoch.epoch.room, "--yes", "--state-dir", f.stateDir], { cwd: f.root, env: f.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    running.push(drop);
+    const [dropCode, dropOut, dropErr] = await Promise.all([drop.exited, new Response(drop.stdout).text(), new Response(drop.stderr).text()]);
+    expect({ code: dropCode, error: dropErr }).toEqual({ code: 0, error: "" });
+    expect(dropOut).toContain(`broker room dropped: ${epoch.epoch.room}`);
+    const inspect = await BrokerStore.open({ stateDir: f.stateDir, create: false });
+    try { expect(inspect.stats()).toEqual({ rooms: 0, queuedFrames: 0, queuedBytes: 0 }); }
+    finally { inspect.close(); }
   } finally { client.close(); clearTimeout(timer); }
 });
