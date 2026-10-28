@@ -122,10 +122,21 @@ test("a draft is a backlog card that nothing pulls: legacy pull, planner pull an
 
 test("a draft is not offered by the reservation auto pull and is not announced to a planner as backlog", async () => {
   const r = await rig({ planner: true });
+  const announced = (id: number) => [...r.planner.got, ...r.bus.pendingEnvelopes("claude")].filter(env => env.refs?.backlog?.includes(id));
+  // positive controls: an ordinary reserved backlog card is both announced and offered, so the draft's silence is the guard and not the fixture
+  const plain = await r.tasks.propose(USER, { title: "plain", class: "plan", backlog: true });
+  r.board.plan(plain.id, USER, { reserved: "codex" }, 0, "reserve");
   const { draft } = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
+  r.board.plan(draft.id, USER, { reserved: "codex" }, draft.planningRevision ?? 0, "reserve");
+  (r.tasks as any).knownPlanners.clear(); // a planner seen for the first time (a restart) is told every backlog card on the board
   r.tasks.flushPlannerNotices();
-  expect(r.planner.got.filter(env => env.refs?.backlog?.includes(draft.id))).toEqual([]);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(announced(plain.id)).toHaveLength(1);
+  expect(announced(draft.id)).toEqual([]);
+  expect((r.tasks as any).topReservedReady("codex", undefined, true)?.id).toBe(plain.id);
+  r.board.update(plain.id, USER, "cancelled", { state: "cancelled" });
   expect((r.tasks as any).topReservedReady("codex", undefined, true)).toBeUndefined();
+  expect(r.board.get(draft.id)).toMatchObject({ draft: true, reserved: "codex", state: "backlog" });
 });
 
 test("only the person may stage a draft: a peer's propose with draft is refused", async () => {
