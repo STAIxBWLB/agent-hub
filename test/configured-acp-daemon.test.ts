@@ -195,10 +195,11 @@ test("the bundled MCP server publishes configured targets and enforces read-only
 
     const readOnly = await session("fixture-check");
     const names = (await readOnly.listTools()).tools.map(tool => tool.name);
-    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_status"];
+    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"];
     expect(names.length).toBeGreaterThan(0);
     expect(names.every(name => allowed.includes(name))).toBe(true);
     expect(names).toContain("hub_review"); expect(names).toContain("hub_task_list");
+    expect(names).toContain("hub_source_read");
     expect(names).not.toContain("hub_task_propose"); expect(names).not.toContain("hub_peer_start");
     // Existing tools-only publication excludes inbox/delivery_done regardless of read-only status.
     expect(names).not.toContain("hub_inbox"); expect(names).not.toContain("hub_delivery_done");
