@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RoomApplicationLimitError, RoomStore, ROOM_APPLICATION_RETENTION, ROOM_STORE_LIMITS, type RoomOutgoingInput } from "../src/rooms/store.ts";
+import { RoomApplicationLimitError, RoomUnmatchedReceiptError, RoomStoreError, RoomStore, ROOM_APPLICATION_RETENTION, ROOM_STORE_LIMITS, type RoomOutgoingInput, type RoomOutgoing } from "../src/rooms/store.ts";
 import { encodeRoomMessage, type RoomChatEnvelope, type RoomMessage } from "../src/rooms/application.ts";
 import { createInvite, createJoin, createRoomEpoch, decodeFrame, openFrame, sealFrame } from "../src/rooms/wire.ts";
 import { encodeBase64url, sha256 } from "../src/rooms/crypto.ts";
@@ -59,13 +59,13 @@ async function receipt(recipient: RoomStore, sender: RoomStore, message: RoomMes
   const wire = await sealed(recipient, sender, message); expect((await receive(sender, wire)).status).toBe("accepted"); return hash(wire);
 }
 
-test("room application schema2 migrates a v1 identity, pins, counters and legacy outbox in place", async () => {
+test("room application schema3 migrates a v1 identity, pins, counters and legacy outbox in place", async () => {
   const f = await pair(), raw = await sealed(f.owner, f.guest, { v: 1, type: "chat", envelope: chat() });
   await f.owner.enqueue("work", raw);
   const state = f.owner.get("work")!, fingerprint = f.owner.identity.public.fingerprint, dir = locations.get(f.owner)!;
   f.owner.close();
   const db = new Database(join(dir, "rooms.db"));
-  db.exec("DROP TABLE application_frames; DROP TABLE applications; DROP TABLE application_outbox; PRAGMA user_version=1;"); db.close();
+  db.exec("DROP TABLE application_frames; DROP TABLE applications; DROP TABLE application_outbox; ALTER TABLE inbox DROP COLUMN receipt_reserve; PRAGMA user_version=1;"); db.close();
   const restored = await opened(f.clock, dir);
   expect(restored.identity.public.fingerprint).toBe(fingerprint);
   expect(restored.get("work")!.current.digest).toBe(state.current.digest);
@@ -396,4 +396,107 @@ test("settled chat prunes null inbox receipts without presence traffic and retai
   const final = new Database(join(directory, "rooms.db"));
   try { expect(final.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox WHERE plaintext IS NULL").get()?.n).toBe(ROOM_STORE_LIMITS.receiptsPerRoom); } finally { final.close(); }
   f.guest = await opened(f.clock, directory); expect(f.guest.pendingApplications("work")).toEqual([]);
+});
+
+
+test("schema3 migrates v2 handoff deadlines conservatively and never infers receipt reserve from legacy plaintext", async () => {
+  for (const previous of ["missing", "late", "earlier"] as const) {
+    const f = await pair(), q = await queued(f, chat(), { ackTimeoutMs: 100, ttlMs: 1000 }), fingerprint = f.owner.identity.public.fingerprint, current = f.owner.get("work")!;
+    const message: RoomMessage = { v: 1, type: "receipt", frame: q.outgoing.digest, application: q.envelope.id, peer: "claude", outcome: "completed", reason: "admitted" };
+    const wire = await sealed(f.guest, f.owner, message); expect((await receive(f.owner, wire)).status).toBe("accepted");
+    const frame = await hash(wire), directory = locations.get(f.owner)!; f.owner.close();
+    const legacy = new Database(join(directory, "rooms.db"));
+    try {
+      legacy.exec("ALTER TABLE inbox DROP COLUMN receipt_reserve; PRAGMA user_version=2;");
+      legacy.query("UPDATE application_outbox SET ack_deadline=?").run(previous === "missing" ? null : q.outgoing.createdAt + (previous === "late" ? 1000 : 50));
+    } finally { legacy.close(); }
+    const restored = await opened(f.clock, directory);
+    expect(restored.identity.public.fingerprint).toBe(fingerprint); expect(restored.get("work")?.current.digest).toBe(current.current.digest);
+    expect(restored.applicationOutbox("work")[0]).toMatchObject({ state: "needs_review", ackDeadline: q.outgoing.createdAt + (previous === "earlier" ? 50 : 100) });
+    expect(restored.pendingInbox("work").map(row => row.digest)).toContain(frame);
+    restored.close();
+    const migrated = new Database(join(directory, "rooms.db"));
+    try {
+      expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(3);
+      expect(migrated.query<{ receipt_reserve: number }, [string]>("SELECT receipt_reserve FROM inbox WHERE digest=?").get(frame)?.receipt_reserve).toBe(0);
+      expect(migrated.query<{ wire: Uint8Array }, [string]>("SELECT wire FROM outbox WHERE digest=?").get(q.outgoing.digest)?.wire).toEqual(q.wire);
+      expect(migrated.query<{ seq: string }, [string]>("SELECT seq FROM counters WHERE room=?").get(current.current.room)?.seq).toBe(decodeFrame(q.wire).seq);
+    } finally { migrated.close(); }
+  }
+});
+
+async function capturedReceiptFailure(recipient: RoomStore, wire: Uint8Array): Promise<unknown> {
+  let failure: unknown;
+  const state = recipient.get("work")!;
+  await expect(openFrame({ wire, identity: recipient.identity, current: state.current, ...(state.previous ? { previous: state.previous } : {}), replay: { accept: async input => {
+    try { return await recipient.replay.accept(input); } catch (error) { failure = error; throw error; }
+  } } })).rejects.toThrow();
+  return failure;
+}
+
+async function fillPendingChatInbox(f: Awaited<ReturnType<typeof pair>>): Promise<void> {
+  for (let n = 0; n < ROOM_STORE_LIMITS.inboxPerRoom; n++) {
+    const message: RoomMessage = { v: 1, type: "chat", envelope: { ...chat(), from: "claude", to: "codex" } };
+    const wire = await sealed(f.guest, f.owner, message); expect((await receive(f.owner, wire)).status).toBe("accepted");
+    await f.owner.applicationIncoming("work", await hash(wire));
+  }
+}
+
+test("200 pending chats cannot block a matching authenticated receipt and unmatched receipts reserve no slot or replay floor", async () => {
+  const f = await pair(), q = await queued(f); await fillPendingChatInbox(f);
+  expect(f.owner.pendingInbox("work")).toHaveLength(200);
+  const matched: Extract<RoomMessage, { type: "receipt" }> = { v: 1, type: "receipt", frame: q.outgoing.digest, application: q.envelope.id, peer: "claude", outcome: "completed", reason: "admitted" };
+  const unmatched: RoomMessage[] = [{ ...matched, frame: encodeBase64url(new Uint8Array(32)) }, { ...matched, application: crypto.randomUUID() }, { ...matched, peer: "codex" }];
+  for (const message of unmatched) {
+    const wire = await sealed(f.guest, f.owner, message);
+    expect(await capturedReceiptFailure(f.owner, wire)).toBeInstanceOf(RoomUnmatchedReceiptError);
+    expect(f.owner.pendingInbox("work")).toHaveLength(200);
+  }
+  const wrongSender = await sealed(f.owner, f.owner, matched);
+  expect(await capturedReceiptFailure(f.owner, wrongSender)).toBeInstanceOf(RoomUnmatchedReceiptError);
+  const wire = await sealed(f.guest, f.owner, matched), frame = await hash(wire);
+  expect(await receive(f.owner, wire)).toMatchObject({ status: "accepted", gap: "3" });
+  expect(f.owner.pendingInbox("work")).toHaveLength(201);
+  expect(f.owner.applyApplicationReceipt("work", frame)).toMatchObject({ state: "completed" });
+  // Crash between business settlement and inbox cleanup must not reclassify the durable reserved admission as an ordinary row.
+  const directory = locations.get(f.owner)!; f.owner.close(); f.owner = await opened(f.clock, directory);
+  expect(f.owner.pendingInbox("work")).toHaveLength(201);
+  expect(f.owner.applyApplicationReceipt("work", frame)).toMatchObject({ state: "completed" });
+  f.owner.settleInbox("work", frame);
+  expect(f.owner.pendingInbox("work")).toHaveLength(200); expect(f.owner.pendingApplications("work")).toHaveLength(200);
+});
+
+test("the receipt reserve admits eight pending matches, refuses the ninth without dropping it and frees a slot only after settlement", async () => {
+  const f = await pair(), pending: { outgoing: RoomOutgoing; message: Extract<RoomMessage, { type: "receipt" }>; wire: Uint8Array; digest: string }[] = [];
+  await fillPendingChatInbox(f);
+  for (let n = 0; n < ROOM_STORE_LIMITS.receiptReservePerRoom + 1; n++) {
+    const q = await queued(f), message: Extract<RoomMessage, { type: "receipt" }> = { v: 1, type: "receipt", frame: q.outgoing.digest, application: q.envelope.id, peer: "claude", outcome: "completed", reason: "admitted" };
+    const wire = await sealed(f.guest, f.owner, message); pending.push({ outgoing: q.outgoing, message, wire, digest: await hash(wire) });
+    if (n < ROOM_STORE_LIMITS.receiptReservePerRoom) expect((await receive(f.owner, wire)).status).toBe("accepted");
+  }
+  expect(f.owner.pendingInbox("work")).toHaveLength(208);
+  const ninth = pending[8]!, error = await capturedReceiptFailure(f.owner, ninth.wire);
+  expect(error).toBeInstanceOf(RoomStoreError); expect(error).not.toBeInstanceOf(RoomUnmatchedReceiptError); expect(error).toMatchObject({ code: "limit" });
+  expect(f.owner.pendingInbox("work")).toHaveLength(208);
+  const first = pending[0]!; f.owner.applyApplicationReceipt("work", first.digest); f.owner.settleInbox("work", first.digest);
+  expect(await receive(f.owner, ninth.wire)).toMatchObject({ status: "accepted", gap: "0" });
+  expect(f.owner.pendingInbox("work")).toHaveLength(208);
+  const directory = locations.get(f.owner)!; f.owner.close();
+  const corrupted = new Database(join(directory, "rooms.db"));
+  try { corrupted.query("UPDATE inbox SET plaintext=? WHERE digest=?").run(encodeRoomMessage(first.message), first.digest); } finally { corrupted.close(); }
+  await expect(RoomStore.open({ stateDir: directory, clock: f.clock })).rejects.toMatchObject({ code: "corrupt" });
+});
+
+
+test("matching receipts use ordinary inbox space below its cap instead of exhausting the eight-slot overflow reserve", async () => {
+  const f = await pair();
+  for (let n = 0; n < ROOM_STORE_LIMITS.receiptReservePerRoom + 1; n++) {
+    const q = await queued(f), message: RoomMessage = { v: 1, type: "receipt", frame: q.outgoing.digest, application: q.envelope.id, peer: "claude", outcome: "completed", reason: "admitted" };
+    const wire = await sealed(f.guest, f.owner, message); expect((await receive(f.owner, wire)).status).toBe("accepted");
+  }
+  expect(f.owner.pendingInbox("work")).toHaveLength(9);
+  const directory = locations.get(f.owner)!; f.owner.close();
+  const db = new Database(join(directory, "rooms.db"));
+  try { expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox WHERE receipt_reserve=1").get()?.n).toBe(0); } finally { db.close(); }
+  f.owner = await opened(f.clock, directory); expect(f.owner.pendingInbox("work")).toHaveLength(9);
 });
