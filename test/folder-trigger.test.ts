@@ -11,10 +11,9 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
-import { checkTriggerFolder, FolderStore, MAX_FOLDER_ENTRIES, MAX_HASH_FILES, readScanned, scanFolder, type FolderPolicy } from "../src/hub/folder-trigger.ts";
+import { checkTriggerFolder, FolderStore, MAX_FOLDER_ENTRIES, MAX_HASH_FILES, readScanned, registerScanned, scanFolder, type FolderPolicy } from "../src/hub/folder-trigger.ts";
 import { folderDetail, folderGlobMatches, foldersConfig, FOLDER_MARKER, type FolderEntry, type ScannedFile } from "../src/hub/schedules.ts";
-import { screenRegistration, SourceRegistry } from "../src/hub/sources.ts";
-import { matchesPolicy } from "../src/hub/path-policy.ts";
+import { SourceRegistry } from "../src/hub/sources.ts";
 
 // agent-hub #512c (hub task #336): the polled folder trigger. Spec: "Schedules and folder triggers (#512)".
 const cleanup: (() => unknown)[] = [];
@@ -247,14 +246,8 @@ function rig(options: { piiPatterns?: string[]; held?: () => boolean } = {}) {
   }, notify: () => {} });
   cleanup.push(() => { store.close(); bus.closeJournal(); board.close(); });
   const registered: ScannedFile[] = [];
-  const register = (file: ScannedFile) => {
-    registered.push(file);
-    const bytes = readScanned(file);
-    if (!bytes) throw new Error("the file changed or became unreadable before it was registered");
-    const verdict = screenRegistration({ bytes, kind: "file", path: file.real }, { piiPaths: t.policy.piiPaths, piiPatterns: options.piiPatterns ?? [], cwd: t.dir, matchesPolicy });
-    const added = registry.add({ bytes, kind: "file", origin: file.real, private: verdict.private, ...(verdict.text !== undefined ? { text: verdict.text } : {}) });
-    return { id: added.id, private: added.private };
-  };
+  // the function the daemon calls, over this rig's registry and patterns
+  const register = (file: ScannedFile) => { registered.push(file); return registerScanned(file, { registry, cwd: t.dir, piiPaths: t.policy.piiPaths, piiPatterns: () => options.piiPatterns ?? [] }); };
   const poll = (entries: readonly FolderEntry[] = [ENTRY], now = T0) => tasks.runFolderTriggers(store, entries, entry => scanFolder(entry, t.policy, (real, size, mtime) => store.known(entry.id, real, size, mtime)), register, now, options.held ?? (() => false));
   const made = () => board.list().filter(task => task.detail.startsWith(FOLDER_MARKER));
   return { ...t, board, tasks, store, registry, registered, poll, made };
@@ -546,11 +539,7 @@ test("a file whose bytes change between the scan and the registration is not reg
     if (!swapped && result.files.length) { swapped = true; writeFileSync(join(r.dir, "inbox", "a.txt"), "AFTER!"); } // same size, new content, after the hash was taken
     return result;
   };
-  const register = (file: ScannedFile) => {
-    const bytes = readScanned(file);
-    if (!bytes) throw new Error("the file changed or became unreadable before it was registered");
-    return { id: r.registry.add({ bytes, kind: "file", origin: file.real, private: false }).id, private: false };
-  };
+  const register = (file: ScannedFile) => registerScanned(file, { registry: r.registry, cwd: r.dir, piiPaths: [], piiPatterns: () => [] });
   const first = (await tasks.runFolderTriggers(store, [ENTRY], scan, register, T0))[0]!;
   expect(first).toMatchObject({ outcome: "failed" }); expect(first.reason).toContain("changed");
   expect(r.made()).toHaveLength(0); expect(r.registry.list()).toHaveLength(0);

@@ -7,7 +7,8 @@ import { checkCorpusRoot } from "./corpus.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { realPath } from "./project.ts";
 import { folderGlobMatches, MAX_NEW_PER_POLL, type FolderEntry, type FolderRunResult, type FolderScan, type ScannedFile } from "./schedules.ts";
-import { MAX_SOURCE_BYTES } from "./sources.ts";
+import { MAX_SOURCE_BYTES, screenRegistration, type SourceRegistry } from "./sources.ts";
+import { matchesPolicy } from "./path-policy.ts";
 
 // agent-hub #512c (hub task #336): the polled folder trigger. Spec: "Schedules and folder triggers (#512)". The hub polls a folder on the schedules timer and never
 // watches it. A file it has not recorded is a new file; the caller registers it as a source and proposes one task. Nothing in this file writes the board or the
@@ -128,6 +129,34 @@ export function readScanned(file: Pick<ScannedFile, "real" | "size" | "sha256">)
     while (got < bytes.length) { const n = readSync(fd, bytes, got, bytes.length - got, got); if (!n) break; got += n; }
     return got === open.size && createHash("sha256").update(bytes).digest("hex") === file.sha256 ? bytes : undefined;
   } catch { return undefined; } finally { closeSync(fd); }
+}
+
+/** What registering a scanned file needs from the host: the registry, the PII policy, the routing's patterns and the text projection. */
+export interface FolderRegistration {
+  registry: Pick<SourceRegistry, "add">;
+  cwd: string;
+  piiPaths: readonly string[];
+  /** Read at each call: the routing can be reloaded between polls. */
+  piiPatterns: () => readonly string[];
+  /** The projected text of a file's bytes by its extension, or undefined when no converter handles it. */
+  project?: (extension: string, bytes: Buffer) => string | undefined;
+}
+
+/**
+ * Register one scanned file as a source, the same two steps `ahub source add` takes: one decision about privacy, then the registry. The scan kept no bytes, so the file is
+ * read again here and refused (a throw, so the file is tried again on the next poll as what it has become) when it no longer hashes to what the scan saw. A file under
+ * `pii.paths`, or whose text matches a PII pattern, is a private source. This is the function the daemon calls; the tests call it too.
+ */
+export function registerScanned(file: ScannedFile, host: FolderRegistration): { id: string; private: boolean } {
+  const bytes = readScanned(file);
+  if (!bytes) throw new Error("the file changed or became unreadable before it was registered");
+  const extension = /\.[A-Za-z0-9]{1,16}$/.exec(file.name)?.[0]?.toLowerCase() ?? "";
+  const verdict = screenRegistration({ bytes, kind: "file", path: file.real }, {
+    piiPaths: [...host.piiPaths], piiPatterns: [...host.piiPatterns()], cwd: host.cwd, matchesPolicy,
+    ...(host.project ? { project: data => extension ? host.project!(extension, data) : undefined } : {}),
+  });
+  const added = host.registry.add({ bytes, kind: "file", origin: file.real, private: verdict.private, ...(verdict.text !== undefined ? { text: verdict.text } : {}) });
+  return { id: added.id, private: added.private };
 }
 
 export interface FolderSeenRow { trigger: string; real_path: string; size: number; mtime: number; sha256: string; task: number | null; at: number }
