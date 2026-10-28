@@ -428,7 +428,7 @@ export class Tasks {
   }
 
   /** `signals.pii_screen = "local"` where the PII constraint applies (issue #198); on without a screener, every verdict is unknown. */
-  private screenOn = (): boolean => {
+  screenOn = (): boolean => {
     const r = this.d.routing();
     return r.signals.pii_screen === "local" && r.constraints.pii === "local_only";
   };

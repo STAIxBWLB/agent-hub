@@ -2912,7 +2912,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (meta.origins.some(origin => origin.kind === "file" && matchesPolicy(opts.cwd, origin.origin, config.pii?.paths ?? []))) return false;
           try { if (looksSecret(text) || activeRouting().signals.pii_patterns.some(pattern => new RegExp(pattern).test(text))) return false; }
           catch { return false; }
-          if (activeRouting().signals.pii_screen !== "local" || activeRouting().constraints.pii !== "local_only") return true;
+          if (!tasks.screenOn()) return true;
           // Reuse the bounded host screen. Oversized/unknown is private, never an unscreened excerpt.
           const verdict = await (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text).catch(() => undefined);
           return verdict?.label === "clear";
