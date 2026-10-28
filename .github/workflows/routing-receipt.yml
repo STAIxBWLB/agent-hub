@@ -1,0 +1,29 @@
+name: routing-receipt
+
+# #637 part 1: a PR that changes templates/routing.toml needs a promotion receipt under docs/verification/ that names that exact file, the current default and the
+# frozen corpus, and whose numbers the check recomputes. No model runs: the check reads git and files. The rule is the "Routing promotion rule" in
+# docs/agent-notes/benchmarks.md; the logic and its tests are scripts/check-routing-receipt.ts and test/routing-receipt-check.test.ts.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  routing-receipt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: A routing.toml change carries a matching receipt
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bun scripts/check-routing-receipt.ts "$BASE_SHA"

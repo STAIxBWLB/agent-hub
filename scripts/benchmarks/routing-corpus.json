@@ -1,0 +1,1112 @@
+{
+  "version": 1,
+  "surface": "task-routing",
+  "hash": "1d3acc7cbf60eb3d6703c857643404cf2ba025165a5e95fa8c6baa98c7b0cc4f",
+  "defaults": {
+    "roles": {
+      "claude": [
+        "planner",
+        "reviewer"
+      ],
+      "codex": [
+        "implementer"
+      ],
+      "kimi": [
+        "implementer",
+        "verifier"
+      ],
+      "local": [
+        "implementer",
+        "verifier"
+      ],
+      "pi": [
+        "implementer",
+        "verifier"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "pref-implement-all-idle",
+      "split": "train",
+      "note": "implement goes to the first preferred-tier peer in class order (pi) when everyone is idle; the reviewer is claude.",
+      "task": {
+        "class": "implement",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "pi",
+        "reviewer": "claude"
+      }
+    },
+    {
+      "id": "pref-implement-pi-busy",
+      "split": "test",
+      "note": "an idle preferred-tier peer takes the task before a busy one.",
+      "task": {
+        "class": "implement",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "busy",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "local",
+        "reviewer": "claude"
+      }
+    },
+    {
+      "id": "pref-implement-tier-busy-cloud-idle",
+      "split": "train",
+      "note": "local and pi stay ahead of an idle cloud peer even when both are busy.",
+      "task": {
+        "class": "implement",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "busy",
+        "local": "busy"
+      },
+      "expect": {
+        "owner": "pi",
+        "reviewer": "claude"
+      }
+    },
+    {
+      "id": "pref-implement-pi-offline",
+      "split": "test",
+      "note": "an offline peer is skipped: the next preferred-tier peer takes it.",
+      "task": {
+        "class": "implement",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "offline",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "local",
+        "reviewer": "claude",
+        "refusals": [
+          "owner:pi:offline"
+        ]
+      }
+    },
+    {
+      "id": "pref-implement-tier-offline",
+      "split": "train",
+      "note": "with both preferred-tier peers offline, the next peer in class order (codex) takes it.",
+      "task": {
+        "class": "implement",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "offline",
+        "local": "offline"
+      },
+      "expect": {
+        "owner": "codex",
+        "reviewer": "claude"
+      }
+    },
+    {
+      "id": "pref-implement-tier-absent-idle-before-busy",
+      "split": "test",
+      "note": "peers that are not attached are skipped, and among the cloud peers idle goes before busy.",
+      "task": {
+        "class": "implement",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "busy",
+        "kimi": "idle"
+      },
+      "expect": {
+        "owner": "kimi",
+        "reviewer": "claude",
+        "refusals": [
+          "owner:pi:not-attached",
+          "owner:local:not-attached"
+        ]
+      }
+    },
+    {
+      "id": "pref-bulk-edit-all-idle",
+      "split": "train",
+      "note": "bulk_edit prefers pi.",
+      "task": {
+        "class": "bulk_edit",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "pi",
+        "reviewer": "claude"
+      }
+    },
+    {
+      "id": "pref-test-all-idle",
+      "split": "test",
+      "note": "the test class prefers pi.",
+      "task": {
+        "class": "test",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "pi",
+        "reviewer": "claude"
+      }
+    },
+    {
+      "id": "pref-summarize-all-idle",
+      "split": "train",
+      "note": "summarize prefers pi.",
+      "task": {
+        "class": "summarize",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "pi",
+        "reviewer": "claude"
+      }
+    },
+    {
+      "id": "pref-triage-pi-paused",
+      "split": "test",
+      "note": "a paused peer is skipped (budget_paused = skip_peer).",
+      "task": {
+        "class": "triage",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "paused",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "local",
+        "reviewer": "claude",
+        "refusals": [
+          "owner:pi:paused"
+        ]
+      }
+    },
+    {
+      "id": "judge-plan-all-idle",
+      "split": "train",
+      "note": "plan is owned by claude, and the owner never reviews its own work: codex reviews.",
+      "task": {
+        "class": "plan",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "claude",
+        "reviewer": "codex"
+      }
+    },
+    {
+      "id": "judge-plan-claude-offline",
+      "split": "test",
+      "note": "with claude offline codex plans, and no other reviewer exists, so nobody reviews and done approves directly.",
+      "task": {
+        "class": "plan",
+        "signals": []
+      },
+      "states": {
+        "claude": "offline",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "codex",
+        "reviewer": null
+      }
+    },
+    {
+      "id": "judge-review-all-idle",
+      "split": "train",
+      "note": "a review-class task is owned by claude first and has no reviewer of its own.",
+      "task": {
+        "class": "review",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "claude",
+        "reviewer": null
+      }
+    },
+    {
+      "id": "judge-review-claude-busy",
+      "split": "test",
+      "note": "idle goes before busy among the review peers.",
+      "task": {
+        "class": "review",
+        "signals": []
+      },
+      "states": {
+        "claude": "busy",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "codex",
+        "reviewer": null
+      }
+    },
+    {
+      "id": "judge-plan-no-planner-attached",
+      "split": "train",
+      "guard": "refusal",
+      "note": "judgment classes never go to pi or local: with claude and codex not attached a plan has no owner.",
+      "task": {
+        "class": "plan",
+        "signals": []
+      },
+      "states": {
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": null,
+        "refusals": [
+          "owner:claude:not-attached",
+          "owner:codex:not-attached"
+        ]
+      }
+    },
+    {
+      "id": "judge-review-no-reviewer-attached",
+      "split": "test",
+      "guard": "refusal",
+      "note": "a review-class task is never given to pi, local or kimi: with claude and codex not attached it has no owner.",
+      "task": {
+        "class": "review",
+        "signals": []
+      },
+      "states": {
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": null,
+        "refusals": [
+          "owner:claude:not-attached",
+          "owner:codex:not-attached"
+        ]
+      }
+    },
+    {
+      "id": "pii-implement-local-only",
+      "split": "train",
+      "guard": "pii",
+      "note": "a PII task is owned by local or nobody, and its reviewer is the person.",
+      "task": {
+        "class": "implement",
+        "signals": [
+          "pii"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "local",
+        "reviewer": "user",
+        "refusals": [
+          "owner:pi:pii",
+          "owner:codex:pii",
+          "owner:kimi:pii"
+        ]
+      }
+    },
+    {
+      "id": "pii-implement-local-offline",
+      "split": "test",
+      "guard": "pii",
+      "note": "with local offline a PII task has no owner: it never falls back to an off-prem peer.",
+      "task": {
+        "class": "implement",
+        "signals": [
+          "pii"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "offline"
+      },
+      "expect": {
+        "owner": null,
+        "reviewer": "user",
+        "refusals": [
+          "owner:local:offline",
+          "owner:pi:pii",
+          "owner:codex:pii",
+          "owner:kimi:pii"
+        ]
+      }
+    },
+    {
+      "id": "pii-path-summarize",
+      "split": "train",
+      "guard": "pii",
+      "note": "a pii_path signal (a declared private path) routes like pii: local only.",
+      "task": {
+        "class": "summarize",
+        "signals": [
+          "pii_path"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "local",
+        "reviewer": "user",
+        "refusals": [
+          "owner:pi:pii",
+          "owner:kimi:pii"
+        ]
+      }
+    },
+    {
+      "id": "pii-plan-nobody",
+      "split": "train",
+      "guard": "pii",
+      "note": "plan peers are claude and codex, neither on-prem: a PII plan has no owner.",
+      "task": {
+        "class": "plan",
+        "signals": [
+          "pii"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": null,
+        "reviewer": "user",
+        "refusals": [
+          "owner:claude:pii",
+          "owner:codex:pii"
+        ]
+      }
+    },
+    {
+      "id": "pii-implement-local-busy",
+      "split": "test",
+      "guard": "pii",
+      "note": "a busy local still takes a PII task: it is the only eligible owner.",
+      "task": {
+        "class": "implement",
+        "signals": [
+          "pii"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "busy"
+      },
+      "expect": {
+        "owner": "local",
+        "reviewer": "user",
+        "refusals": [
+          "owner:pi:pii"
+        ]
+      }
+    },
+    {
+      "id": "pii-bulk-edit-local-paused",
+      "split": "test",
+      "guard": "pii",
+      "note": "a paused local is skipped even for a PII task, so the task stays unowned.",
+      "task": {
+        "class": "bulk_edit",
+        "signals": [
+          "pii"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "paused"
+      },
+      "expect": {
+        "owner": null,
+        "reviewer": "user",
+        "refusals": [
+          "owner:local:paused",
+          "owner:pi:pii",
+          "owner:kimi:pii"
+        ]
+      }
+    },
+    {
+      "id": "pii-reserved-offprem-ignored",
+      "split": "train",
+      "guard": "pii",
+      "note": "a reservation for an off-prem peer is not honored on a PII task.",
+      "task": {
+        "class": "implement",
+        "signals": [
+          "pii"
+        ],
+        "reserved": "codex"
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "local",
+        "reviewer": "user",
+        "refusals": [
+          "owner:codex:pii"
+        ]
+      }
+    },
+    {
+      "id": "pii-review-class",
+      "split": "test",
+      "guard": "pii",
+      "note": "a PII review-class task has no on-prem owner among claude and codex.",
+      "task": {
+        "class": "review",
+        "signals": [
+          "pii"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": null,
+        "refusals": [
+          "owner:claude:pii",
+          "owner:codex:pii"
+        ]
+      }
+    },
+    {
+      "id": "pii-test-pi-busy",
+      "split": "test",
+      "guard": "pii",
+      "note": "pi is not on-prem for PII, whatever its state: local takes the test task.",
+      "task": {
+        "class": "test",
+        "signals": [
+          "pii"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "busy",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "local",
+        "reviewer": "user",
+        "refusals": [
+          "owner:pi:pii",
+          "owner:kimi:pii",
+          "owner:codex:pii"
+        ]
+      }
+    },
+    {
+      "id": "pii-triage-local-absent",
+      "split": "test",
+      "guard": "pii",
+      "note": "with local not attached a PII triage task has no owner.",
+      "task": {
+        "class": "triage",
+        "signals": [
+          "pii"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle"
+      },
+      "expect": {
+        "owner": null,
+        "reviewer": "user",
+        "refusals": [
+          "owner:local:not-attached",
+          "owner:pi:pii",
+          "owner:kimi:pii"
+        ]
+      }
+    },
+    {
+      "id": "long-implement-pi",
+      "split": "train",
+      "note": "pi on its dgx backend holds a 120000-token task: implement still goes to pi.",
+      "task": {
+        "class": "implement",
+        "signals": [
+          "long_context"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "pi",
+        "reviewer": "claude"
+      }
+    },
+    {
+      "id": "long-summarize-skips-pi-and-local",
+      "split": "test",
+      "guard": "refusal",
+      "note": "summarize runs pi on mlx (16000 tokens) and local skips long context, so kimi takes a long-context summary.",
+      "task": {
+        "class": "summarize",
+        "signals": [
+          "long_context"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "kimi",
+        "reviewer": "claude",
+        "refusals": [
+          "owner:pi:policy",
+          "owner:local:policy"
+        ]
+      }
+    },
+    {
+      "id": "long-triage-skips-pi-and-local",
+      "split": "train",
+      "guard": "refusal",
+      "note": "triage also runs pi on mlx, so a long-context triage skips pi and local.",
+      "task": {
+        "class": "triage",
+        "signals": [
+          "long_context"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "kimi",
+        "reviewer": "claude",
+        "refusals": [
+          "owner:pi:policy",
+          "owner:local:policy"
+        ]
+      }
+    },
+    {
+      "id": "long-bulk-edit-pi",
+      "split": "test",
+      "note": "bulk_edit runs pi on dgx, which holds the context.",
+      "task": {
+        "class": "bulk_edit",
+        "signals": [
+          "long_context"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "pi",
+        "reviewer": "claude"
+      }
+    },
+    {
+      "id": "long-implement-pi-offline",
+      "split": "train",
+      "note": "with pi offline local still skips long context, so codex takes it.",
+      "task": {
+        "class": "implement",
+        "signals": [
+          "long_context"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "offline",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "codex",
+        "reviewer": "claude",
+        "refusals": [
+          "owner:pi:offline",
+          "owner:local:policy"
+        ]
+      }
+    },
+    {
+      "id": "gate-exclude-pi",
+      "split": "train",
+      "guard": "refusal",
+      "note": "a peer that declined or was replaced is excluded.",
+      "task": {
+        "class": "implement",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "exclude": [
+        "pi"
+      ],
+      "expect": {
+        "owner": "local",
+        "reviewer": "claude",
+        "refusals": [
+          "owner:pi:excluded"
+        ]
+      }
+    },
+    {
+      "id": "gate-exclude-both-tier",
+      "split": "test",
+      "guard": "refusal",
+      "note": "with both preferred-tier peers excluded the next peer in class order takes it.",
+      "task": {
+        "class": "implement",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "exclude": [
+        "pi",
+        "local"
+      ],
+      "expect": {
+        "owner": "codex",
+        "reviewer": "claude",
+        "refusals": [
+          "owner:pi:excluded",
+          "owner:local:excluded"
+        ]
+      }
+    },
+    {
+      "id": "gate-reserved-honored",
+      "split": "train",
+      "note": "a reserved owner is offered the task first.",
+      "task": {
+        "class": "implement",
+        "signals": [],
+        "reserved": "codex"
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "codex",
+        "reviewer": "claude"
+      }
+    },
+    {
+      "id": "gate-reserved-offline",
+      "split": "test",
+      "guard": "refusal",
+      "note": "a reservation that cannot be honored is passed over and routing proceeds.",
+      "task": {
+        "class": "implement",
+        "signals": [],
+        "reserved": "pi"
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "offline",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "local",
+        "reviewer": "claude",
+        "refusals": [
+          "owner:pi:offline"
+        ]
+      }
+    },
+    {
+      "id": "gate-waits-for-dependency",
+      "split": "train",
+      "note": "a task that waits for others goes to nobody yet.",
+      "task": {
+        "class": "implement",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "waitsFor": [
+        7
+      ],
+      "expect": {
+        "owner": null,
+        "reviewer": null
+      }
+    },
+    {
+      "id": "gate-backlog-not-routed",
+      "split": "test",
+      "note": "a backlog card is not routed.",
+      "task": {
+        "class": "implement",
+        "signals": [],
+        "state": "backlog"
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": null,
+        "reviewer": null
+      }
+    },
+    {
+      "id": "gate-cancelled-not-routed",
+      "split": "train",
+      "note": "a cancelled task is closed and not routed.",
+      "task": {
+        "class": "implement",
+        "signals": [],
+        "state": "cancelled"
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": null,
+        "reviewer": null
+      }
+    },
+    {
+      "id": "gate-approved-not-routed",
+      "split": "test",
+      "note": "an approved task is closed and not routed.",
+      "task": {
+        "class": "implement",
+        "signals": [],
+        "state": "approved"
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": null,
+        "reviewer": null
+      }
+    },
+    {
+      "id": "review-claude-busy",
+      "split": "train",
+      "note": "an idle reviewer goes before a busy one.",
+      "task": {
+        "class": "implement",
+        "signals": []
+      },
+      "states": {
+        "claude": "busy",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "pi",
+        "reviewer": "codex"
+      }
+    },
+    {
+      "id": "review-claude-offline",
+      "split": "test",
+      "note": "an offline reviewer is skipped.",
+      "task": {
+        "class": "implement",
+        "signals": []
+      },
+      "states": {
+        "claude": "offline",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "pi",
+        "reviewer": "codex"
+      }
+    },
+    {
+      "id": "review-none-available",
+      "split": "train",
+      "note": "with no reviewer eligible nobody reviews and done approves directly.",
+      "task": {
+        "class": "implement",
+        "signals": []
+      },
+      "states": {
+        "claude": "offline",
+        "codex": "offline",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "pi",
+        "reviewer": null
+      }
+    },
+    {
+      "id": "review-codex-owner",
+      "split": "test",
+      "note": "only codex is attached to implement, and claude reviews it.",
+      "task": {
+        "class": "implement",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle"
+      },
+      "expect": {
+        "owner": "codex",
+        "reviewer": "claude"
+      }
+    },
+    {
+      "id": "review-plan-codex-busy",
+      "split": "train",
+      "note": "the reviewer may be busy when it is the only one left.",
+      "task": {
+        "class": "plan",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "busy",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "claude",
+        "reviewer": "codex"
+      }
+    },
+    {
+      "id": "review-summarize-pi-excluded",
+      "split": "test",
+      "note": "an excluded owner does not change who reviews.",
+      "task": {
+        "class": "summarize",
+        "signals": []
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "exclude": [
+        "pi"
+      ],
+      "expect": {
+        "owner": "local",
+        "reviewer": "claude"
+      }
+    },
+    {
+      "id": "signal-urgent-no-effect",
+      "split": "train",
+      "note": "urgent changes delivery priority, not who owns the task.",
+      "task": {
+        "class": "implement",
+        "signals": [
+          "urgent"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "pi",
+        "reviewer": "claude"
+      }
+    },
+    {
+      "id": "signal-urgent-long-context",
+      "split": "test",
+      "note": "urgent with long context still goes to pi on dgx.",
+      "task": {
+        "class": "implement",
+        "signals": [
+          "urgent",
+          "long_context"
+        ]
+      },
+      "states": {
+        "claude": "idle",
+        "codex": "idle",
+        "kimi": "idle",
+        "pi": "idle",
+        "local": "idle"
+      },
+      "expect": {
+        "owner": "pi",
+        "reviewer": "claude"
+      }
+    }
+  ]
+}
