@@ -111,3 +111,14 @@ test("check refuses replacement of the validated root, git, home, or state direc
     refuse(() => target.check());
   }
 });
+
+
+test("refuses a scratch checkout with tracked files or a remote", () => {
+  const tracked = fixture();
+  writeFileSync(join(tracked.cwd, "production.txt"), "fixture");
+  expect(hubGitSync(["-C", tracked.cwd, "add", "production.txt"], { encoding: "utf8" }).status).toBe(0);
+  refuse(() => validateSmokeTarget(tracked.input()));
+  const remote = fixture();
+  expect(hubGitSync(["-C", remote.cwd, "remote", "add", "origin", "https://example.invalid/fixture.git"], { encoding: "utf8" }).status).toBe(0);
+  refuse(() => validateSmokeTarget(remote.input()));
+});

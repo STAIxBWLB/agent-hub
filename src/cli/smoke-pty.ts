@@ -64,7 +64,7 @@ export async function runPty(argv: readonly string[], options: PtyOptions): Prom
       cwd: options.cwd,
       env: { ...options.env, TERM: "xterm-256color" },
       detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
   } catch {
     throw new Error("PTY process could not be started");

@@ -1257,7 +1257,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       try { recordCliAudit(stateDir, "user", commandLabel, "run"); }
       catch { return fail("smoke audit unavailable; nothing was executed"); }
     }
-    const output = outputOptions();
+    const options = outputOptions();
     const operands = args.filter(arg => arg !== "--json");
     const usage = "usage: ahub --live-test smoke run qwen-dual-output --project-id <id> --receipt <file.json> [--timeout-ms <100..120000>] [--json]";
     const values = new Map<string, string>();
@@ -1282,7 +1282,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     try {
       const result = await runSmoke(target, { leg: "qwen-dual-output", receipt: values.get("--receipt")!, timeoutMs: Number(values.get("--timeout-ms") ?? "60000"), signal: abort.signal });
       process.exitCode = result.outcome === "passed" ? 0 : 1;
-      if (output.json) return console.log(JSON.stringify(result));
+      if (options.json) return console.log(JSON.stringify(result));
       console.log(`smoke ${result.outcome} (${result.reason}): ${result.counts.submits} submits, ${result.counts.stops} stops; cleanup ${result.checks.cleaned ? "confirmed" : "unconfirmed"}`);
     } finally { process.removeListener("SIGINT", interrupted); process.removeListener("SIGTERM", interrupted); }
   },

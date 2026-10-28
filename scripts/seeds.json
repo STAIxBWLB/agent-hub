@@ -3656,6 +3656,22 @@
       "replacement": "\"hub_memory_graph\", \"hub_status\"]);",
       "testFile": "test/source-read.test.ts",
       "testName": "source reads are published to read-only project MCP clients without publishing mutations"
+    },
+    {
+      "id": "smoke-disposable-root",
+      "file": "src/cli/smoke-target.ts",
+      "search": "  if (dirname(root.path) !== temp.path || !basename(root.path).startsWith(\"ahub-smoke-\") || root.path === temp.path) refuse();",
+      "replacement": "  if (false) refuse();",
+      "testFile": "test/smoke-run.test.ts",
+      "testName": "refuses disabled live testing, project id mismatch, ordinary roots, and paths outside the checkout"
+    },
+    {
+      "id": "smoke-private-receipt",
+      "file": "src/cli/smoke-run.ts",
+      "search": "  receipt.timings.totalMs = Math.round(performance.now() - started);",
+      "replacement": "  (receipt as any).debug = source.OPENAI_API_KEY;\n  receipt.timings.totalMs = Math.round(performance.now() - started);",
+      "testFile": "test/smoke-qwen.test.ts",
+      "testName": "Q2 verifies two queued submits and publishes only a sanitized receipt after cleanup"
     }
   ]
 }
