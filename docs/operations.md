@@ -4672,3 +4672,37 @@ without chmod. Empty directories may be tightened. Schema v1 migrates to v2 whil
 preserving signed pins, floors and queued ciphertext. The 4 MiB per-room admission
 share prevents one room taking the whole aggregate byte budget; valid older larger
 queues stay available but block new admission until drained or expired.
+
+
+## Outbound room membership (#446 X3)
+
+Run room mutations from the person's terminal, never an agent shell or `--live-test`.
+Start a self-hosted broker as described above, then create a room with
+`ahub room create team --broker wss://broker.example/`. The owner fingerprint must
+be on a public broker's `--owner` allowlist. `room list` prints that fingerprint.
+No room joins or exposure are loaded from committed configuration.
+
+Exchange these artifacts privately out of band:
+
+1. Owner: `ahub room invite team`, send the invitation token to the joining person.
+2. Joiner: `ahub room join <token> --name team`, send the printed request back.
+3. Owner: `ahub room invite team --accept <request>`, send the printed signed roster.
+4. Joiner: `ahub room join team --roster <signed-roster>`.
+
+Both consoles print owner and member fingerprints before installing/consuming;
+compare them out of band. Only the invitation token contains its one-time secret.
+The join request/roster contain no private key or invitation secret. Keep tokens
+out of shell transcripts, shared logs and source control. A saved pending join can
+be retried with the same token/name/label; `room leave team` cancels it if needed.
+
+`room expose team codex` sets the untracked local exposure policy. On a non-owner
+it prints a signed exposure request: send it through the same owner `invite --accept`
+and joiner `join --roster` round trip. Empty exposure is the default. `room status`
+shows ids/link state only. X3 exchanges signed presence; cross-hub chat is X4.
+
+`room revoke team <fingerprint>` rotates the owner roster, giving no new key to the
+removed member. `room leave team` disconnects locally and retains replay/pin state;
+ask the owner to revoke membership as well. Hub shutdown closes links but keeps
+membership. Never delete rooms.db to repair a pin or sequence failure. Unknown or
+corrupt state disables rooms, while local hub work remains available. Real TLS,
+proxy forwarding and two-machine smoke remain unverified until the person runs X7.

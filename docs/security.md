@@ -608,3 +608,27 @@ Routing receives capability availability and its reason as pure inputs. Capabili
 ## Structured capture write screening
 
 The amem host screens the actual data that may persist, including literal keys/values and its JSON form. It decodes authoritative tool argument/result JSON once before any excerpt cap, so escaping cannot hide whitespace-matching PII, a private data path or a structured secret key/value. It does not recursively interpret arbitrary embedded encodings. Non-persisted host locators (cwd and transport/session identifiers) are kept outside text-policy content; current project/profile authority is checked separately. Ordinary events with a valid private-path policy still capture public data. Private turns remain excluded before this code runs.
+
+
+### X3 outbound room administration
+
+Room mutations require a person console and refuse agent markers and `--live-test`.
+One-use connection tickets let the CLI print both fingerprints before any room
+install or invitation consumption. Joining pins the owner from a private OOB
+invitation; a broker-provided key or roster cannot establish that pin. The
+invitation secret is sent only to the joining person, never to the broker. The
+HMAC'd request and signed roster omit it and every private key.
+
+Room identity, consumed invitations, owner/epoch pins and sequence/replay records
+are machine-local in a private SQLite store (0700 directory/0600 database), under
+exclusive process ownership. Restart never resets counters or extends the persisted
+60-second adjacent-epoch grace. Clock rollback, unknown schema and corrupt state
+refuse. This is not protection against another process running as the same user.
+Machine-local exposure policy and the signed roster must both permit a presence id.
+Status/read output has ids, epochs and link states only. Presence contains no task
+text, titles or credentials; no chat or remote tool effect is enabled by X3.
+
+Local leave retains pins and replay records; actual member revocation is the owner's
+signed epoch rotation. Broker storage ACKs never assert application completion.
+The live TLS/proxy/two-machine receipt and X4 envelope privacy boundary are separate
+obligations, not proved by the fake broker/hub integration tests.

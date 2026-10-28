@@ -169,7 +169,7 @@ export class RoomCommands {
       if (exposure) {
         const { signature, ...body } = exposure;
         const sender = roomMembers(state.current).find(m => m.fingerprint === member);
-        if (!sender || exposure.room !== state.current.room || exposure.owner !== owner || exposure.digest !== digest || !await verifyBytes(sender, exposureBytes(body), decodeBase64url(signature, 64))) refuse("untrusted");
+        if (!sender || exposure.room !== state.current.room || exposure.owner !== owner || exposure.digest !== digest || !await verifyBytes({ fingerprint: sender.fingerprint, signingKey: sender.signingKey, agreementKey: sender.agreementKey }, exposureBytes(body), decodeBase64url(signature, 64))) refuse("untrusted");
       }
       this.current(check);
       return { owner, member, commit: async () => {

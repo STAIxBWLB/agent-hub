@@ -52,7 +52,7 @@ export class RoomPolicy {
     try {
       fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
       writeFileSync(fd, bytes); fsyncSync(fd); closeSync(fd); fd = undefined;
-      if (!current() || configRefusal(this.cwd, "config.local.json")) throw new Error("room: state_changed");
+      if (!current() || configRefusal(this.cwd, "config.local.json") || JSON.stringify(this.read()) !== JSON.stringify(config)) throw new Error("room: state_changed");
       renameSync(temporary, file);
     } finally {
       if (fd !== undefined) closeSync(fd);

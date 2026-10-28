@@ -3720,6 +3720,22 @@
       "replacement": "        let evidencePrivacy: readonly TaskEvidencePrivacy[] = [];\n        const initialBoardRevision = board.statusRevision();\n        const askCurrent = () => board.statusRevision() === initialBoardRevision && !stopping",
       "testFile": "test/corpus-privacy-daemon.test.ts",
       "testName": "an unrelated task write or public history update does not invalidate a slow ask"
+    },
+    {
+      "id": "room-person-only-mutation",
+      "file": "src/hub/daemon.ts",
+      "search": "if (c.role !== \"console\") return void reply({ ok: false, error: \"room mutations are person-only\" });",
+      "replacement": "if (false) return void reply({ ok: false, error: \"room mutations are person-only\" });",
+      "testFile": "test/rooms-daemon.test.ts",
+      "testName": "every room rid is answered; tools can read ids but cannot mutate, even as conductor"
+    },
+    {
+      "id": "room-pending-owner-pin",
+      "file": "src/rooms/store.ts",
+      "search": "if (invite.room !== roster.room || invite.owner !== roster.owner || invite.broker !== broker) fail(\"untrusted\");",
+      "replacement": "if (false) fail(\"untrusted\");",
+      "testFile": "test/rooms-store.test.ts",
+      "testName": "room first install requires explicit pending invitation owner pin, never broker supplied TOFU"
     }
   ]
 }

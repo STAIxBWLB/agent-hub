@@ -1025,6 +1025,132 @@ Traffic analysis, availability attacks, malicious owners, same-user compromise,
 hosted multi-tenant accounts and forward secrecy remain frozen exclusions.
 X3/X4 integration and live TLS/account/X7 two-machine receipts remain separate.
 
+
+## Encrypted rooms: X3 outbound membership and presence (#446)
+
+X3 adds a machine-local `RoomStore`, an outbound `RoomLink` and person-only room
+administration. The broker remains the X2 blind relay. No listener, remote bus
+peer, chat egress, task sharing, permission relay or cloud/model call is added.
+X4 still owns envelope screening, remote identity delivery, signed application
+receipts and the application journal's completion/uncertainty lifecycle. X5 owns
+room dashboard integration; X7 owns the person's two-machine live receipt.
+
+### Person commands and out-of-band enrollment
+
+The person runs these commands in an ordinary terminal, with a running local hub:
+
+- `ahub room create <name> --broker <ws[s]://host/> [--label <id>]`
+- `ahub room invite <name>`
+- `ahub room join <token> [--name <name>] [--label <id>]`
+- `ahub room invite <name> --accept <request>`
+- `ahub room join <name> --roster <signed-roster>`
+- `ahub room leave <name>`
+- `ahub room revoke <name> <fingerprint>`
+- `ahub room expose <name> [<peer>...]`
+- `ahub room list [--json]` and `ahub room status [<name>] [--json]`
+
+Names, labels and exposed ids are bounded ASCII identifiers. The label defaults
+to `hub-<fp8>`, never a hostname. Broker audiences are canonical root WSS URLs;
+plain WS is allowed only for literal loopback. Read forms publish only local room
+names, room ids, owner/member fingerprints, epochs and link states. Agent shells
+may read them. All mutations refuse agent markers and `--live-test`, including
+conductor delegation. Daemon mutations require a console connection, and every
+operation, unknown or refused included, answers its `rid`.
+
+A mutation first prepares a connection-bound, one-use, 30-second ticket. The CLI
+prints both owner and member fingerprints before executing it. The ticket binds
+the captured action and arguments; execute accepts no replacement action/input.
+Socket ownership, shutdown and recovery holds are rechecked after crypto awaits
+and inside the final state transaction. Preview does not install a room or consume
+an invitation. Creating a private local identity is not room enrollment.
+
+The [X3 operand ruling](https://github.com/STAIxBWLB/agent-hub/issues/446) keeps
+pre-enrollment out of the broker:
+
+- The owner creates the room and prints an invitation with `invite <name>`. Only
+  this invitation contains the one-time secret. Share it privately out of band,
+  never with the broker, repository, shared logs or an agent.
+- The joining person runs `join <token>` and returns the printed signed/HMAC'd
+  request to the owner out of band. It contains neither the invitation secret nor
+  any private key. The pending invitation pins room, broker and owner locally.
+- The owner runs `invite <name> --accept <request>`. HMAC, signature, member keys,
+  expiry and the invitation's original digest are verified before one transaction
+  consumes it and installs the next signed roster. The committed roster is the
+  recoverable publication; the outbound link sends those same persisted bytes.
+  An identical accepted retry does not consume or rotate again. Changed requests
+  refuse. Owner expiry is exact; joiner preflight allows the X1 ten-minute skew.
+- The joining person imports the returned roster with `join <name> --roster ...`.
+  Owner authentication comes from its own pending invitation, never from the
+  broker or the offered roster itself. Exact own signing/agreement keys must be
+  included. Subsequent explicit roster imports use the retained owner/epoch pin.
+- A retry after saving a pending request returns the identical saved request when
+  token, label and exposure selection agree, including after a lost CLI reply.
+  A changed pending selection refuses. `leave` cancels a pending enrollment so the
+  person can retry without editing private state. Expired pending entries are
+  bounded and pruned on new admission.
+
+A non-owner's `expose` prints a signed exposure request, bound to its installed
+room, owner and roster digest. The member sends it out of band; the owner accepts
+it with the same `invite --accept` form and returns the next signed roster. It
+cannot change another member's exposure or be replayed after rotation. A later
+slice may fetch an already signed roster from the broker and remove the manual
+`--roster` step; this slice does not add that endpoint or trust the broker to enroll.
+
+`rooms.<name>.expose` lives only in an untracked `.agenthub/config.local.json`.
+Shared/committed configuration and generic settings cannot enable it. The live
+local policy and the verified roster are intersected before any presence is sent;
+loss of config trust removes exposure. Empty exposure is the default. Room keys,
+broker binding, pending invites and membership are private machine-local state,
+not project config or synced memory. A hub stop closes links and retains membership.
+`leave` disconnects locally and retains owner/epoch/replay pins; an owner uses
+`revoke` to remove a former member from the signed room and rekey other members.
+A person may explicitly import a pinned signed roster to reactivate a left room;
+automatic link traffic cannot reactivate it.
+
+### Durable state and outbound link
+
+`<hub-state>/rooms/rooms.db` is schema version 1, SQLite DELETE/EXTRA with exclusive
+process ownership and a 1 ms busy bound. Directory mode is 0700 and database mode
+0600. Symlinks, hardlinked files, unrelated contents, unknown schema, corrupt or
+unverifiable existing pins refuse, never initialize a new identity over old state.
+Private keys remain opaque at runtime; only X1's explicit local storage codec is
+used. This protects against other users, not a hostile same-user process.
+
+Epoch installation compares the captured current digest in a transaction, refuses
+rollback and same-epoch digest changes, and preserves only the adjacent predecessor
+for local successful install time + exactly 60,000 ms. Restart/replayed rosters do
+not extend grace. A persisted local clock high-water refuses rollback. Sequence
+reservation commits before sealing and never resets on rotation. Replay atomically
+checks current membership/keys, installed digests, local grace clock and sender
+high-water, and persists the accepted digest plus inbox before returning plaintext.
+Identical retained receipts may be duplicate; unseen lower sequences stay stale.
+Gaps are recorded. Inbox bodies are removed after validated presence observation;
+bounded digest receipts remain for duplicate handling.
+
+Limits are 64 rooms, 128 invitations, 64 pending joins, 200 pending inbox records
+per room, 16 MiB aggregate inbox bytes, 1,000 retained digest receipts per room,
+and host outbox ports capped at 200 records per room/16 MiB aggregate. Outbox broker
+storage is only `accepted`, never application `completed`. X3 presence is ephemeral
+and uses durable sequence/replay without filling the application outbox. Signed
+application completion, nack and needs-review expiry are activated with X4 delivery.
+
+Every link awaits the crypto self-test before dialing out. Authentication binds
+its configured audience, room, broker nonce and membership digest. Current
+owner/epoch pins are verified before roster ACK; an owner may republish a locally
+newer roster after offline rotation without downgrading its pin. Non-owners never
+bootstrap an empty broker room. Input is binary canonical JSON, serialized with
+at most 8 pending packets/2 MiB per link, 1 MiB packet/backpressure limits and a
+30-second handshake bound. Disconnects use jittered reconnect capped at five
+minutes and do not block local work. Stop, leave, replacement and rotation fence
+all awaited work by link generation.
+
+Presence is an encrypted, signed frame containing only exposed peer ids and closed
+idle/busy/paused/offline states. It is sent on connection and coalesced peer-state
+changes, never titles, bodies, private task context or credentials. Unknown payload
+types and unexposed ids refuse before replay commit. Broker ACKs are transport
+facts only. A failed room state or crypto initialization disables rooms and leaves
+local hub work available. Fake-hub/broker tests are not a live TLS/proxy or X7 receipt.
+
 ## Risks
 
 | Risk | Mitigation |

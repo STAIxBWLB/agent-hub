@@ -149,3 +149,10 @@ Run `ahub report --dogfood --since 7d --json` against this repository's own hub 
 - Digest and held counts describe retained journal rows created in the window. The journal prunes terminal rows, so these are not historical totals. It does not record the first delivery timestamp: `updatedAt` must not be used as delivery latency.
 - Control latency, connection timeouts, CPU/RSS history, actual snapshot exhaustion totals and the adjudicated real-blocker rate currently have no durable source and remain unknown. Snapshot budget notices count one log diagnostic per affected burst. Error classes and advise-gate matches are fixed-pattern log counts; no raw line is exported.
 - Adoption row ids are the 1-based table-row order in this document at the feature-table source commit recorded in the receipt. A matching event is evidence of that leg's use, not proof that the entire feature was enabled or correct. Rows without a dedicated observable leg stay unknown.
+
+
+Room membership and presence (#446 X3): not enabled on this repository (no person
+room enrollment or exposure configured). Metric: isolated fake-hub/broker tests
+cover OOB enrollment, MITM refusal, durable sequence/replay/grace and ids-only
+presence; exact gate/CI recorded on the implementation PR. X4 chat and X7 live
+two-machine proof remain separate and unverified.
