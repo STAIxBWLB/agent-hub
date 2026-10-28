@@ -500,3 +500,21 @@ test("matching receipts use ordinary inbox space below its cap instead of exhaus
   try { expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox WHERE receipt_reserve=1").get()?.n).toBe(0); } finally { db.close(); }
   f.owner = await opened(f.clock, directory); expect(f.owner.pendingInbox("work")).toHaveLength(9);
 });
+
+
+test("ordinary inbox capacity is a read-only metadata hint and becomes available after pending chat settlement", async () => {
+  const f = await pair();
+  expect(f.owner.ordinaryInboxAvailable("work", 0)).toBe(true); expect(f.owner.ordinaryInboxAvailable("work", 65536)).toBe(true);
+  expect(() => f.owner.ordinaryInboxAvailable("unknown", 1)).toThrow("untrusted");
+  for (const bytes of [-1, 65537, 0.5, NaN, Infinity]) expect(() => f.owner.ordinaryInboxAvailable("work", bytes)).toThrow("invalid");
+  await fillPendingChatInbox(f);
+  const before = f.owner.pendingInbox("work"), pending = f.owner.pendingApplications("work");
+  expect(f.owner.ordinaryInboxAvailable("work", 0)).toBe(false); expect(f.owner.ordinaryInboxAvailable("work", 1)).toBe(false);
+  expect(f.owner.pendingInbox("work")).toEqual(before); expect(f.owner.pendingApplications("work")).toEqual(pending);
+  f.owner.quarantineApplication("work", before[0]!.digest);
+  expect(f.owner.pendingInbox("work")).toHaveLength(199);
+  expect(f.owner.ordinaryInboxAvailable("work", 1)).toBe(true); expect(f.owner.ordinaryInboxAvailable("work", 65536)).toBe(true);
+  expect(f.owner.pendingApplications("work")).toHaveLength(199);
+  f.owner.leave("work"); expect(() => f.owner.ordinaryInboxAvailable("work", 1)).toThrow("untrusted");
+  f.owner.close(); expect(() => f.owner.ordinaryInboxAvailable("work", 1)).toThrow("closed");
+});

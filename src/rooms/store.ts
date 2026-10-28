@@ -970,6 +970,18 @@ export class RoomStore {
     const state = this.get(name); if (!state) return [];
     return this.db.query<RoomRefusal, [string]>("SELECT digest,reason,at FROM refusals WHERE room=? ORDER BY rowid").all(state.current.room);
   }
+  /** Read-only physical-cap hint for a validated host payload; no body is loaded and no replay/clock row is written. */
+  ordinaryInboxAvailable(name: string, bytes: number): boolean {
+    this.now(); named(name);
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > 65536) fail("invalid");
+    const state = this.rooms.get(name); if (!state || state.left) fail("untrusted");
+    try {
+      const pending = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM inbox WHERE room=? AND plaintext IS NOT NULL AND receipt_reserve=0").get(state.current.room);
+      const total = this.db.query<{ n: number }, []>("SELECT COALESCE(SUM(length(plaintext)),0) AS n FROM inbox WHERE receipt_reserve=0").get();
+      if (!pending || !total || !Number.isSafeInteger(pending.n) || pending.n < 0 || !Number.isSafeInteger(total.n) || total.n < 0) fail("corrupt");
+      return pending.n < ROOM_STORE_LIMITS.inboxPerRoom && total.n + bytes <= ROOM_STORE_LIMITS.inboxBytes;
+    } catch (error) { if (error instanceof RoomStoreError) throw error; throw new RoomStoreError(code(error)); }
+  }
   pendingInbox(name: string): RoomInboxEntry[] {
     const room = this.get(name); if (!room) return [];
     return this.db.query<{ sender: string; seq: string; digest: string; plaintext: Uint8Array; gap: string }, [string]>("SELECT sender,seq,digest,plaintext,gap FROM inbox WHERE room=? AND plaintext IS NOT NULL ORDER BY rowid").all(room.current.room).map(x => ({ ...x, plaintext: copy(x.plaintext) }));
