@@ -50,7 +50,9 @@ async function fixture(initial: { local?: unknown; trackedLocal?: boolean; embed
   if (initial.trackedLocal) git("add", "-f", ".agenthub/config.local.json");
   let ticks = 0;
   const daemon = await startDaemon({ cwd: dir, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    ...(initial.embedded ? { config: loadConfig(dir) } : {}), taskSweepNow: () => { ticks++; return Date.now(); }, researchGraceMs: 1 });
+    ...(initial.embedded ? { config: loadConfig(dir) } : {}), taskSweepNow: () => { ticks++; return Date.now(); }, researchGraceMs: 1,
+    // #550: the snapshots test below needs a turn's snapshot evidence; a fixed clock keeps a slow runner from spending the 250 ms budget (tests.md).
+    snapshotClock: () => 0 });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(state, { role: "console" }); cleanup.push(() => client.close());
   const pushes: Record<string, any>[] = []; client.onPush = value => pushes.push(value);
