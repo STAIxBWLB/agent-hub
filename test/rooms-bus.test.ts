@@ -407,7 +407,10 @@ for (const mode of ["valid", "expired", "missing"] as const) test(`a remote unce
   const held = journal.unresolved(remote)[0]!, before = held.revision;
   if (mode === "valid") {
     const deadline = target.deadlines.get(env.id);
-    expect(bus.snapshot(false).remoteQueueExpires?.[remote]?.[env.id]).toBe(deadline);
+    const history = journal.list;
+    journal.list = () => { throw new Error("snapshot must not read terminal history"); };
+    try { expect(bus.snapshot(false).remoteQueueExpires?.[remote]?.[env.id]).toBe(deadline); }
+    finally { journal.list = history; }
     bus.add(new Peer("local")); bus.publish(newEnvelope("user", "unrelated checkpoint", { to: ["local"] }));
     expect(journal.snapshot().bus.remoteQueueExpires?.[remote]?.[env.id]).toBe(deadline);
     bus.resolveDelivery(held.id, held.revision, "retry", "person retries before the original deadline");

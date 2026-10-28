@@ -4040,6 +4040,14 @@
       "replacement": "if (false) throw new PreEffectToolRefusal(\"remote original deadline unavailable or expired; discard it or send a new message explicitly\");",
       "testFile": "test/rooms-bus.test.ts",
       "testName": "an expired offline remote queue refuses retry without a successful person disposition"
+    },
+    {
+      "id": "room-x4-unresolved-deadline-checkpoint",
+      "file": "src/hub/bus.ts",
+      "search": "for (const row of this.journal?.unresolved(peer) ?? []) for (const env of row.originals) pending.add(env.id);",
+      "replacement": "// Omit unresolved originals from deadline retention.",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "a remote uncertain retry validates its valid enqueue deadline before recording disposition"
     }
   ]
 }
