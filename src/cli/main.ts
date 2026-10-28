@@ -30,7 +30,7 @@ import { parseSettingsEditArgs, runSettingsEdit, SETTINGS_EDIT_USAGE } from "./s
 import { petView, readPet, renderPet } from "./pet.ts";
 import { startPetWindow, closePetWindow } from "../pet/window.ts";
 import { loadPetConfig, savePetPalette } from "./pet-config.ts";
-import { profileName, projectProfile, resolveProfile } from "../hub/profiles.ts";
+import { projectProfile, resolveProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 import { attachWatch } from "./watch.ts";
 import { verifiedJcodeCommand } from "../adapters/jcode.ts";
@@ -957,8 +957,9 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   init: () => {
     const flags = takeFlags(args.filter(arg => arg !== "--dry-run" && arg !== "--json" && arg !== "--shadow" && arg !== "--release-guard"), ["--profile"], []);
-    if (flags.rest.length) fail("usage: ahub init [--profile dev|research|writing|general] [--shadow] [--release-guard] [--dry-run --json]");
-    const requestedProfile = flags.one["--profile"] === undefined ? undefined : profileName(flags.one["--profile"]);
+    if (flags.rest.length) fail("usage: ahub init [--profile dev|research|writing|general|<pack>] [--shadow] [--release-guard] [--dry-run --json]");
+    // A pack is a project file in .agenthub/roles/<name>.pack.json (#513a); init resolves the name and refuses an unknown one with the profiles and packs it knows.
+    const requestedProfile = flags.one["--profile"];
     if (args.includes("--dry-run")) {
       const plan = planInit(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"));
       return console.log(args.includes("--json") ? JSON.stringify(plan, null, 2) : plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`).join("\n") || "already up to date");

@@ -11,7 +11,7 @@ export interface CriteriaReceipt {
 /** A checklist stored under `phase` before #481 S8. Its task list is shown as ignored; board split-undo still treats it as a reference. */
 export interface LegacyPhaseReceipt extends CriteriaReceipt { tasks: { id: number; after: number[] }[]; }
 const name = (s: unknown): s is string => typeof s === "string" && /^[a-z][a-z0-9-]{0,47}$/.test(s);
-const criterionId = (s: unknown): s is string => typeof s === "string" && /^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(s);
+export const criterionId = (s: unknown): s is string => typeof s === "string" && /^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(s);
 const hash = (s: unknown): s is string => typeof s === "string" && /^[0-9a-f]{40}$/.test(s);
 const fields = (v: unknown, keys: string[], label: string): Record<string, unknown> => {
   if (!v || typeof v !== "object" || Array.isArray(v) || Object.keys(v).some(k => !keys.includes(k))) throw new Error(`${label}: invalid fields`);

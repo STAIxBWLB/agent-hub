@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { initShadow, repoOf } from "../hub/snapshots.ts";
-import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "../hub/profiles.ts";
+import { PROFILE_NAMES, profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "../hub/profiles.ts";
+import { loadPacks, packOverrides, type DomainPack } from "../hub/packs.ts";
 import { JCODE_MCP_FILE } from "./jcode-mcp.ts";
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync, renameSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -100,7 +101,17 @@ fi
   if (current !== wrapper || original && !(original.mode & 0o111)) plan.push({ action: original ? "modify" : "create", path: hook, reason: "install release authorization pre-push guard", next: wrapper, executable: true });
   return plan;
 }
-function changes(cwd: string, requested?: ProfileName, shadow = false, releaseGuard = false): PlannedWrite[] {
+/** `--profile` takes a shipped profile or a project pack (#513a): a pack selects its base profile and brings its rubric and example checks as `profile_overrides`. */
+function selection(cwd: string, requested: string | undefined): { profile?: ProfileName; pack?: DomainPack } {
+  if (requested === undefined) return {};
+  if ((PROFILE_NAMES as readonly string[]).includes(requested)) return { profile: requested as ProfileName };
+  const loaded = loadPacks(cwd), pack = loaded.packs.get(requested);
+  if (pack) return { profile: pack.profile, pack };
+  const bad = loaded.errors.filter(error => error.id === requested || error.id === "project").map(error => `${error.id}: ${error.reason}`);
+  throw new Error(`unknown profile or pack "${requested.slice(0, 48)}"; profiles: ${PROFILE_NAMES.join(", ")}; packs in .agenthub/roles: ${[...loaded.packs.keys()].join(", ") || "none"}${bad.length ? `; not loaded: ${bad.join("; ")}` : ""}`);
+}
+function changes(cwd: string, requestedName?: string, shadow = false, releaseGuard = false): PlannedWrite[] {
+  const { profile: requested, pack } = selection(cwd, requestedName);
   const originalAgents = existsSync(join(cwd, "AGENTS.md")) ? readFileSync(join(cwd, "AGENTS.md"), "utf8") : "";
   const guarded = releaseGuard || originalAgents.includes("<!-- AGENT_HUB_RELEASE_GUARD:BEGIN");
   const hooks = guarded ? releaseHookPlan(cwd) : [];
@@ -127,6 +138,12 @@ function changes(cwd: string, requested?: ProfileName, shadow = false, releaseGu
     }
   }
   if (requested !== undefined && activeProfile !== undefined && requested !== activeProfile) throw new Error("init profile differs from existing config; edit the project profile explicitly before refreshing instructions");
+  // A pack's overrides are applied once: the same pack again writes identical bytes (`write` skips it), and anything else already in profile_overrides is the project's to edit explicitly.
+  if (pack) {
+    const wanted = packOverrides(pack);
+    if (overrides !== undefined && JSON.stringify(overrides) !== JSON.stringify(wanted)) throw new Error(`project already has profile_overrides that differ from pack ${pack.name}; edit them explicitly before applying a pack`);
+    overrides = wanted;
+  }
   const profile = resolveProfile(requested ?? activeProfile, overrides);
   const changed: PlannedWrite[] = [];
   if (shadow && !repository?.shadow) changed.push({ action: "create", path: join(cwd, ".agenthub/shadow.git"), reason: "create opt-in shadow Git metadata without .git", shadow: true });
@@ -140,9 +157,14 @@ function changes(cwd: string, requested?: ProfileName, shadow = false, releaseGu
     const path = join(cwd, ".agenthub", name);
     if (!existsSync(path)) {
       const template = readFileSync(join(TEMPLATES, name), "utf8");
-      const next = name === "config.json" && profile.name !== "dev" ? JSON.stringify({ ...JSON.parse(template), profile: profile.name }, null, 2) + "\n" : template;
-      write(path, next, "create missing project defaults");
+      const withProfile = name === "config.json" && profile.name !== "dev", withPack = name === "config.json" && !!pack;
+      const next = withProfile || withPack ? JSON.stringify({ ...JSON.parse(template), ...(withProfile ? { profile: profile.name } : {}), ...(withPack ? { profile_overrides: overrides } : {}) }, null, 2) + "\n" : template;
+      write(path, next, pack && name === "config.json" ? packReason(pack, "create project defaults with") : "create missing project defaults");
     }
+  }
+  if (pack && existsSync(configPath)) {
+    const current = JSON.parse(readFileSync(configPath, "utf8"));
+    write(configPath, JSON.stringify({ ...current, profile_overrides: overrides }, null, 2) + "\n", packReason(pack, "add to the project's profile_overrides"));
   }
   const agents = join(cwd, "AGENTS.md");
   const existing = existsSync(agents) ? readFileSync(agents, "utf8") : "";
@@ -174,12 +196,15 @@ function changes(cwd: string, requested?: ProfileName, shadow = false, releaseGu
   write(ignore, lines, "ignore runtime state and machine-local configuration");
   return [...hooks, ...changed];
 }
-/** Read-only metadata, deliberately omitting project/user file contents. */
-export function planInit(cwd: string, profile?: ProfileName, shadow = false, releaseGuard = false): InitChange[] {
+/** What a pack adds, by id only: the preview names the criteria and checks, never their text. */
+const packReason = (pack: DomainPack, how: string) =>
+  `${how} pack ${pack.name} (profile ${pack.profile}): rubric ${pack.rubric.map(item => item.id).join(", ")}; checks ${pack.checks.map(check => check.id).join(", ") || "none"}; expects roles ${pack.roles.join(", ") || "none"} from the catalog`;
+/** Read-only metadata, deliberately omitting project/user file contents. `profile` is a shipped profile name or a project pack name. */
+export function planInit(cwd: string, profile?: string, shadow = false, releaseGuard = false): InitChange[] {
   return changes(cwd, profile, shadow, releaseGuard).map(({ next, shadow: _shadow, directory, executable, moveFrom, expected, ...change }) => change);
 }
 /** Returns the paths it changed, applying the same plan as the preview. */
-export function init(cwd: string, profile?: ProfileName, shadow = false, releaseGuard = false): string[] {
+export function init(cwd: string, profile?: string, shadow = false, releaseGuard = false): string[] {
   const plan = changes(cwd, profile, shadow, releaseGuard);
   // Recheck hook parents and rename identities before any project write.
   for (const change of plan.filter(change => change.executable || change.moveFrom)) {
