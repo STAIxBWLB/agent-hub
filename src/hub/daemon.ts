@@ -7965,7 +7965,8 @@ export async function startDaemon(opts: DaemonOptions) {
   if (piAutoStart() && !recoveryActive() && !piRecovered) autoStartPi();
   // #843 AC3: at hub start, after the roster and the control socket exist; never awaited, so a slow probe delays no start.
   void sweepAgentDrift();
-  return { bus, token, port: server.port as number, bandEvaluations: () => bandEvaluations, sdlcFileReads: () => sdlcFileReads, stop, stopped: new Promise<void>((r) => (onStop = r)) };
+  // #515b: the loopback ports of the two egress proxies, for a host-only test that connects to the proxy this daemon actually started. Ports only: no list, no authority.
+  return { bus, token, port: server.port as number, egressPorts: () => ({ bash: egress?.port, web: webEgress?.port }), bandEvaluations: () => bandEvaluations, sdlcFileReads: () => sdlcFileReads, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {
     if (!ready) for (const cleanup of startupCleanup.reverse()) { try { await cleanup(); } catch { /* preserve startup error */ } }
   }

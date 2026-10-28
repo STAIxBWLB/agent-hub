@@ -401,7 +401,7 @@ test("web_fetch results and URLs reach neither claude-mem capture nor the resear
 import { startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 
-async function daemonWith(web: { allow: string[] } | undefined, script: ModelScript) {
+async function daemonWith(web: { allow: string[] } | undefined, script: ModelScript, local: Record<string, unknown> = {}) {
   const prior = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "web-fixture-key";
   closers.push(() => { if (prior === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = prior; });
   const cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-web-daemon-"))), stateDir = join(cwd, "state"); dirs.push(cwd);
@@ -409,7 +409,7 @@ async function daemonWith(web: { allow: string[] } | undefined, script: ModelScr
   const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [model.url], access_hosts: [] }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
-      pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, local: { ...DEFAULT_CONFIG.local, ...(web ? { web_fetch: web } : {}) } } } as never);
+      pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, local: { ...DEFAULT_CONFIG.local, ...(web ? { web_fetch: web } : {}), ...local } } } as never);
   closers.push(() => daemon.stop());
   const client = await ControlClient.connect(stateDir, { role: "console" }); closers.push(() => client.close());
   const answers: string[] = [];
@@ -445,16 +445,32 @@ test("in a real daemon with a host listed the model is offered web_fetch, the we
   expect(r.logs().filter((line: string) => line.includes("network: refused"))).toEqual([]);
 });
 
-test("the bash proxy and the web proxy do not share a list: listing a host for web_fetch opens nothing to a shell command", async () => {
-  const bash = await proxy(["registry.npmjs.org"]);
-  const web = await proxy(["iana.org"]);
-  const connect = async (p: EgressProxy, target: string) => {
+test("in a real daemon the bash proxy and the web proxy do not share a list: listing a host for web_fetch opens nothing to a shell command, and the reverse", async () => {
+  const r = await daemonWith({ allow: ["iana.org"] }, webCall, { bash_network: true, network_allow: ["registry.npmjs.org"] });
+  const ports = r.daemon.egressPorts();
+  expect(ports.bash).toBeGreaterThan(0); expect(ports.web).toBeGreaterThan(0); expect(ports.web).not.toBe(ports.bash);
+  const connect = async (port: number, target: string) => {
     let received = "";
-    const socket = await Bun.connect({ hostname: "127.0.0.1", port: p.port, socket: { data(_s, data) { received += Buffer.from(data).toString("latin1"); }, open() {}, close() {}, error() {} } });
+    const socket = await Bun.connect({ hostname: "127.0.0.1", port, socket: { data(_s, data) { received += Buffer.from(data).toString("latin1"); }, open() {}, close() {}, error() {} } });
     socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
     await Bun.sleep(300); socket.end();
     return received;
   };
-  expect(await connect(bash.proxy, "iana.org:443")).toContain("403");           // a web host is not a bash host
-  expect(await connect(web.proxy, "registry.npmjs.org:443")).toContain("403");  // and a bash host is not a web host
+  expect(await connect(ports.bash!, "iana.org:443"), "a web host is not a bash host").toContain("403");
+  expect(await connect(ports.web!, "registry.npmjs.org:443"), "and a bash host is not a web host").toContain("403");
+  expect(await connect(ports.web!, "github.com:443"), "the web proxy has no package-registry defaults").toContain("403");
+});
+
+test("with no host listed the daemon starts no web proxy, and with bash_network off it starts no bash proxy either", async () => {
+  const none = await daemonWith(undefined, webCall);
+  expect(none.daemon.egressPorts()).toEqual({ bash: undefined, web: undefined });
+  const webOnly = await daemonWith({ allow: ["iana.org"] }, webCall);
+  expect(webOnly.daemon.egressPorts().bash).toBeUndefined(); expect(webOnly.daemon.egressPorts().web).toBeGreaterThan(0);
+});
+
+test("stopping the daemon closes the web proxy", async () => {
+  const r = await daemonWith({ allow: ["iana.org"] }, webCall);
+  const port = r.daemon.egressPorts().web!;
+  await r.daemon.stop();
+  await expect(Bun.connect({ hostname: "127.0.0.1", port, socket: { data() {}, open() {}, close() {}, error() {} } })).rejects.toBeDefined();
 });
