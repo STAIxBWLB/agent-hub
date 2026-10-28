@@ -286,9 +286,11 @@ export interface RegisterPolicy {
  * One decision, one place: whether a registration is private and what its text is. A path under `pii.paths` is private; so is bytes whose projected
  * (or, for a plain text file, decoded) text matches a configured PII pattern. A pattern that cannot be evaluated counts as flagged, never as clear.
  */
-export function screenRegistration(input: { bytes: Buffer; kind: SourceKind; path?: string }, policy: RegisterPolicy): { private: boolean; reasons: PrivateReason[]; text?: string } {
+export function screenRegistration(input: { bytes: Buffer; kind: SourceKind; path?: string; typedPath?: string }, policy: RegisterPolicy): { private: boolean; reasons: PrivateReason[]; text?: string } {
   const reasons: PrivateReason[] = [];
-  if (input.kind === "file" && input.path !== undefined && policy.matchesPolicy(policy.cwd, input.path, [...policy.piiPaths])) reasons.push("path under pii.paths");
+  // `path` is the resolved name and `typedPath` the one the person gave (#552, the #541 class): Bun's realpath can name another hardlink of the same file, so a name under pii.paths counts on either.
+  const named = [input.path, input.typedPath].filter((name): name is string => name !== undefined);
+  if (input.kind === "file" && named.some(name => policy.matchesPolicy(policy.cwd, name, [...policy.piiPaths]))) reasons.push("path under pii.paths");
   let text: string | undefined;
   try { text = policy.project?.(input.bytes); } catch { text = undefined; }
   // A plain text file is its own text when no converter handles it and it is valid UTF-8 without NUL bytes; anything else has no text to screen.

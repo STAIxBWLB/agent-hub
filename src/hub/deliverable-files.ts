@@ -1,10 +1,12 @@
 import { constants, lstatSync, type Stats } from "node:fs";
 import { open } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { relative } from "node:path";
+import { relative, resolve } from "node:path";
 import { guardPath } from "../local/tools.ts";
+import { isDenied } from "../local/deny.ts";
 import { isHubWritePath } from "./permission-mode.ts";
 import { realPath } from "./project.ts";
+import { insideRoot } from "./path-policy.ts";
 import { DELIVERABLE_LIMITS, deliverableId, type DeliverableClaim, type DeliverableRecord, type DeliverableState } from "./deliverables.ts";
 
 /**
@@ -49,7 +51,11 @@ function locate(path: string, ports: DeliverablePorts): Located {
   // git file ever reaches a record (a hash of a low-entropy file confirms guesses). Compared on the resolved path, folded like the write guard.
   let root: string;
   try { root = realPath(ports.cwd); } catch { return refuse(path, "the project root cannot be resolved"); }
-  if (isHubWritePath(relative(root, real))) return refuse(path, "the hub's own state is not a deliverable");
+  // Judged on the resolved name and on the name the caller gave (#552, the #541 class): Bun's realpath can name another hardlink of the same file.
+  const typed = relative(root, resolve(root, path));
+  const inside = insideRoot(typed);
+  if (isHubWritePath(relative(root, real)) || inside && isHubWritePath(typed)) return refuse(path, "the hub's own state is not a deliverable");
+  if (inside && isDenied(typed, [...ports.deny])) return refuse(path, "the path is on the secrets denylist");
   let stat: Stats;
   try { stat = lstatSync(real); }
   catch (error) { return refuse(path, (error as NodeJS.ErrnoException).code === "ENOENT" ? "the file does not exist" : "the file cannot be read"); }

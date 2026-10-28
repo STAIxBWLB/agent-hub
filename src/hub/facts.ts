@@ -7,6 +7,7 @@ import { sanitize, type PeerId } from "./envelope.ts";
 import { isDenied } from "../local/deny.ts";
 import { hubGitArgv, hubGitEnv } from "./git.ts";
 import { realPath } from "./project.ts";
+import { insideRoot } from "./path-policy.ts";
 
 /**
  * Turn-free facts (issue #108): what changed in an owner's files since it last acknowledged them, as a diff with who
@@ -221,13 +222,22 @@ export class Facts {
       }
     }
     const r = relative(this.root, real);
-    if (!r || r.startsWith("..") || isAbsolute(r) || this.o.repo?.shadow && isHubWritePath(r)) return undefined;
+    // Never trust the resolved name alone (#552, the #541 class): Bun's realpath can name another hardlink of the same file, so the name the
+    // caller gave is judged too. A refusal on either name stands.
+    const typed = relative(this.root, abs);
+    // The resolved name keeps main's original (stricter) test: a directory named `..x` is refused there, as before. Only the typed name this change adds uses the exact segment test.
+    if (!r || r.startsWith("..") || isAbsolute(r) || this.o.repo?.shadow && (isHubWritePath(r) || insideRoot(typed) && isHubWritePath(typed))) return undefined;
     if (this.o.repo?.shadow) {
-      const ignored = Bun.spawnSync(this.gitArgs(["check-ignore", "--no-index", "--quiet", "--", r]), { cwd: this.root, stdout: "pipe", stderr: "pipe", env: this.gitEnv(), timeout: 3000 });
-      if (ignored.exitCode !== 1) return undefined; // ignored or unavailable policy is not readable fact evidence
+      // The shadow repository's ignore policy is name-based too, so it is asked about both names: an ignored result, or one that is unavailable (a non-1 exit, a timeout), on either refuses.
+      const insideTyped = !!typed && insideRoot(typed);
+      for (const name of insideTyped && typed !== r ? [r, typed] : [r]) {
+        const ignored = Bun.spawnSync(this.gitArgs(["check-ignore", "--no-index", "--quiet", "--", name]), { cwd: this.root, stdout: "pipe", stderr: "pipe", env: this.gitEnv(), timeout: 3000 });
+        if (ignored.exitCode !== 1) return undefined; // ignored or unavailable policy is not readable fact evidence
+      }
     }
-    // Never git's own files, and never what the denylist keeps from every agent.
-    return /(^|\/)\.git(\/|$)/i.test(r) || isDenied(r, this.o.deny ?? []) ? undefined : r;
+    // Never git's own files, and never what the denylist keeps from every agent (the typed name counts as well when it lies inside the project).
+    const named = (name: string) => /(^|\/)\.git(\/|$)/i.test(name) || isDenied(name, this.o.deny ?? []);
+    return named(r) || insideRoot(typed) && named(typed) ? undefined : r;
   }
 
   /**

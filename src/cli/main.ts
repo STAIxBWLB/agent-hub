@@ -1343,7 +1343,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     } catch (error) { return fail(`cannot register ${isUrl ? "that URL" : target}: ${(error as Error).message}`); }
     const projections = new TextProjections({ cwd, stateDir, config: config.text_projection ?? {}, deny: config.local.deny, readAllow: config.local.read_allow, log: line => console.error(line) });
     const extension = /\.[A-Za-z0-9]{1,16}$/.exec(isUrl ? new URL(origin).pathname : origin)?.[0] ?? "";
-    const verdict = screenRegistration({ bytes, kind, ...(absolute ? { path: absolute } : {}) }, {
+    const verdict = screenRegistration({ bytes, kind, ...(absolute ? { path: absolute, typedPath: resolve(cwd, target) } : {}) }, {
       piiPaths: config.pii?.paths ?? [], piiPatterns: currentRouting(cwd).signals.pii_patterns, cwd, matchesPolicy,
       project: data => extension ? projections.projectBytes(join(cwd, `source${extension.toLowerCase()}`), data)?.text : undefined,
     });
