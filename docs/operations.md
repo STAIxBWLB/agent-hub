@@ -226,7 +226,7 @@ meter keeps a fixed column at the right edge. In Usage, LAST RESET is the column
 
 | Panel | Columns |
 |---|---|
-| Peers | PEER STATE MODE LINK Q ! WIP REVIEW PAUSE QUOTA MODEL |
+| Peers | PEER STATE MODE LINK Q ! WIP REVIEW PAUSE QUOTA MODEL DOING |
 | Approvals | ID PEER LEFT TITLE |
 | Tasks | ID STATE OWNER REVIEWER CLASS AGE TITLE STAGE |
 | Tasks, backlog view (`b`) | ID PRI RESERVED DEPS CLASS AGE TITLE |
@@ -262,6 +262,20 @@ Peers' WIP column shows planner work in progress as `wip/limit` from `taskWip`,
 including `0/2`; a peer without an entry reads `-`. At or above the limit, the
 cell uses the attention tone. At narrow widths WIP gives way before PEER, STATE
 and QUOTA, whether or not MODE is present.
+
+DOING (#878) is what a peer is working on, from signals the hub already receives:
+a Claude session's title (its transcript's latest `ai-title` row) and the
+in-progress item of its `TodoWrite` list or the task `TaskUpdate` put in
+progress; a Codex thread's name and its plan's in-progress step; an ACP agent's
+plan entry in progress. The current item wins over the title, cut to 120
+characters. A peer with no such source, or one that is offline, shows nothing,
+and the column appears only when some peer has a value; it is the first column
+to give way on a narrow terminal. The value is a `[private]` stub while the peer
+owns or reviews a PII task or is in a private turn, when it was observed then,
+or when the public metadata screen refuses it or fails. `ahub status`, the
+dashboard's peer rows and the conductor's `hub_status` show the same value; it
+lives in the daemon's memory only, never in `status.json`, a log, an event or
+memory capture. Board WIP is unchanged.
 
 In Peers, select a row and press `w` to edit `tasks.wip_limits.<peer>`, prefilled
 with its current limit. The editor stays on Peers and uses the existing Settings

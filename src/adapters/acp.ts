@@ -359,6 +359,7 @@ export class AcpPeer extends BasePeer {
         throw new Error("Configured ACP did not provide a valid native session identity");
       }
       this.sessionId = session.sessionId;
+      this.onDoing?.("reset");
       const modes: unknown = session.modes?.availableModes;
       this.availableModes = new Set(Array.isArray(modes) ? modes.flatMap((mode) => typeof mode?.id === "string" ? [mode.id] : []) : []);
       // A recovered session can retain a previous runtime opt-in. An advertised non-default mode
@@ -708,6 +709,8 @@ export class AcpPeer extends BasePeer {
         for (const map of [this.toolInputs, this.toolText, this.toolTitles]) while (map.size > TOOL_INPUT_CAP) map.delete(map.keys().next().value as string);
       }
       else if (u?.sessionUpdate === "usage_update") this.observeUsage(u, "usage_update");
+      // #878: the plan's in-progress entry, for the hub's DOING column only.
+      else if (u?.sessionUpdate === "plan") this.onDoing?.("todo", Array.isArray(u.entries) ? u.entries.find((e: any) => e?.status === "in_progress")?.content : undefined);
     } else if (msg.method === "session/request_permission") {
       if (this.cancelWait || this.state === "offline") { this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "cancelled" } } }); return; }
       if (this.state === "busy" && (!msg.params?.sessionId || msg.params.sessionId === this.sessionId)) this.promptActivity = true;

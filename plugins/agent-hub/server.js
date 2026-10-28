@@ -1323,6 +1323,7 @@ class BasePeer {
   onState;
   onFailed;
   onDelivery;
+  onDoing;
   _state = "offline";
   timer;
   nextWatchdogMs;
@@ -3129,6 +3130,7 @@ var init_acp = __esm(() => {
           throw new Error("Configured ACP did not provide a valid native session identity");
         }
         this.sessionId = session.sessionId;
+        this.onDoing?.("reset");
         const modes = session.modes?.availableModes;
         this.availableModes = new Set(Array.isArray(modes) ? modes.flatMap((mode) => typeof mode?.id === "string" ? [mode.id] : []) : []);
         const resetResumed = this.opts.resumeSessionId && typeof session.modes?.currentModeId === "string" && session.modes.currentModeId !== KIMI_MODE_IDS.ask;
@@ -3548,6 +3550,8 @@ ${renderDigest(envs, false)}` }] });
               map.delete(map.keys().next().value);
         } else if (u?.sessionUpdate === "usage_update")
           this.observeUsage(u, "usage_update");
+        else if (u?.sessionUpdate === "plan")
+          this.onDoing?.("todo", Array.isArray(u.entries) ? u.entries.find((e) => e?.status === "in_progress")?.content : undefined);
       } else if (msg.method === "session/request_permission") {
         if (this.cancelWait || this.state === "offline") {
           this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "cancelled" } } });
@@ -4130,6 +4134,7 @@ ${renderDigest(envs, false)}`;
       this.link = undefined;
       this.restoringApprovals.clear();
       this.threadId = "";
+      this.onDoing?.("reset");
       this.contextEpoch++;
       this.deliveryEpoch++;
       this.retiredTurns.clear();
@@ -4415,6 +4420,7 @@ ${renderDigest(envs, false)}`;
       this.freshThread = fresh;
       this.link = link;
       this.threadId = threadId;
+      this.onDoing?.("reset");
       this.contextEpoch++;
       this.deliveryEpoch++;
       this.retiredTurns.clear();
@@ -4462,6 +4468,10 @@ ${renderDigest(envs, false)}`;
       }
       if (link !== this.link || params.threadId !== this.threadId)
         return;
+      if (method === "thread/name/updated")
+        return void this.onDoing?.("title", params.threadName);
+      if (method === "turn/plan/updated")
+        return void this.onDoing?.("todo", Array.isArray(params.plan) ? params.plan.find((s) => s?.status === "inProgress")?.step : undefined);
       const nativeId = method === "turn/started" || method === "turn/completed" ? params.turn?.id : params.turnId;
       if (typeof nativeId === "string" && this.retiredTurns.has(nativeId)) {
         if (method === "turn/completed")
@@ -22106,6 +22116,10 @@ var GROOM_FYI_WINDOW_MS = 10 * 60000;
 
 // src/hub/conductor.ts
 init_tool_refusal();
+
+// src/hub/peer-doing.ts
+var TITLE_READ_MAX = 1024 * 1024;
+var TITLE_LINE_MAX = 64 * 1024;
 // src/hub/instances.ts
 import { types as types4 } from "util";
 init_project();

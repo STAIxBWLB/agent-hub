@@ -145,6 +145,7 @@ import { codeGroup } from "./task-code-group.ts";
 import { DAEMON_FEATURES, PROTOCOL, readControl, stateDirFor } from "./control-client.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type FrontendProxyPort, type PeerAdapter } from "./peers.ts";
+import { ClaudeTodoSource, DoingTracker, readAiTitle, type DoingKind, type PeerDoing, type TitleCursor } from "./peer-doing.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { appendRecords, taskRecords } from "./research.ts";
@@ -1194,6 +1195,7 @@ export async function startDaemon(opts: DaemonOptions) {
   if (staleOff()) log("experiment: stale notices are delivered as before 0.12.4 (the issue #106 ablation)");
   const requestedPeerStops = new Set<string>();
   const bus = new Bus({ rostered: membershipAllowed, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
+    doing: (peer, kind, text) => observeDoing(peer, kind, text),
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (isWsPeer(p)) p.notifyQueued(counts); } });
   startupCleanup.push(() => bus.closeJournal());
   const claudeLaunchProof = createClaudeLaunchProof({ stateDir: opts.stateDir, cwd: opts.cwd, instanceId, definitionOf, peer: peer => bus.peers.get(peer) });
@@ -2139,6 +2141,42 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const activityRings: Record<string, ActivityRing> = Object.fromEntries(SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.capabilities?.watch).map(peer => [peer, new ActivityRing()]));
   const contextPii = (peer: PeerId) => !!turns.get(peer)?.private || board.list().some(t => !isClosedTaskState(t.state) && (t.owner === peer || t.reviewer === peer) && tasks.isPii(t));
+  // #878: what each peer is doing. Daemon memory only: never persisted (status.json leaves it out), logged, captured or relayed.
+  const doings = new Map<PeerId, DoingTracker>();
+  const observeDoing = (peer: PeerId, kind: DoingKind, text?: unknown, learnedPrivate = false) => {
+    if (kind === "reset") { doings.delete(peer); claudeDoing.delete(peer); return; }
+    let tracker = doings.get(peer);
+    if (!tracker) doings.set(peer, tracker = new DoingTracker());
+    // Private when learned or observed in a PII context or refused by the public metadata screen; a throw is private too.
+    tracker.observe(kind, text, value => learnedPrivate || contextPii(peer) || !tasks.publicMetadataText(value));
+  };
+  /** Shown only for an attached peer; a stub while it owns or reviews a PII task or is in a private turn. */
+  const doingRows = (ids: string[]): Record<string, PeerDoing> => {
+    const live = ids.filter(id => doings.has(id) && bus.stateOf(id) !== "offline");
+    if (!live.length) return {};
+    const pii = board.list().filter(t => !isClosedTaskState(t.state) && tasks.isPii(t));
+    return Object.fromEntries(live.flatMap(id => {
+      const view = doings.get(id)!.view(!!turns.get(id)?.private || pii.some(t => t.owner === id || t.reviewer === id));
+      return view ? [[id, view]] : [];
+    }));
+  };
+  // A Claude session's title, read from its transcript where the last read stopped; its current item from PreToolUse input.
+  const claudeDoing = new Map<PeerId, { session: string; cursor: TitleCursor; todos: ClaudeTodoSource }>();
+  const observeClaudeDoing = (peer: PeerId, session: string, transcript: string | undefined, tool: string, input: Record<string, unknown>) => {
+    let source = claudeDoing.get(peer);
+    if (source?.session !== session) {
+      observeDoing(peer, "reset");
+      claudeDoing.set(peer, source = { session, cursor: { path: "", offset: 0, skip: false }, todos: new ClaudeTodoSource() });
+    }
+    if (transcript) {
+      // ponytail: one bounded read per hook call, so a long transcript first seen mid-session catches up over several calls.
+      if (source.cursor.path !== transcript) source.cursor = { path: transcript, offset: 0, skip: false };
+      const title = readAiTitle(source.cursor);
+      if (title !== undefined) observeDoing(peer, "title", title);
+    }
+    const item = tool ? source.todos.item(tool, input, subject => contextPii(peer) || !tasks.publicMetadataText(subject)) : undefined;
+    if (item !== undefined) observeDoing(peer, "todo", item?.text, item?.private === true);
+  };
   const requestCheckpoint = (peer: PeerId, reason: "quota" | "context"): Promise<string | undefined> => {
     // One outstanding request per peer. A quota transition may proceed without a summary rather than steal a context waiter.
     if (checkpointWaits.has(peer) || recoveryActive() || stopping) return Promise.resolve(undefined);
@@ -3543,7 +3581,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return checkoutInTick.branch;
   };
-  const status = (includeAttentionItems = false, includeAttentionInput = false) => {
+  const status = (includeAttentionItems = false, includeAttentionInput = false, includeDoing = false) => {
     const taskNeeds = board.statusTasks();
     const taskStalls = tasks.stalled();
     const pendingTaskOffers = tasks.pendingOffers().filter(offer => offer.pullOnly === true);
@@ -3609,6 +3647,8 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(bus.storageError ? { deliveryError: bus.storageError } : {}),
     ...(recoveryOperationId ? { recovery: { operationId: recoveryOperationId, phase: recoveryPhase, ready: recoveryReady() } } : {}),
     };
+    // #878: live readers only (the status reply, the dashboard); writeStatus never asks, so status.json never holds it.
+    if (includeDoing) for (const [id, doing] of Object.entries(doingRows(peerIds))) Object.assign(view.peers[id]!, { doing });
     const peerNeeds: Record<string, NonNullable<NeedsInput["peers"]>[string]> = Object.fromEntries(Object.entries(view.peers).map(([peer, row]) => [peer, { state: row.state, attached: row.attached, needsReview: row.needsReview, heldBy: row.heldBy }]));
     // Lazy legacy peer lists need not contain a persisted owner that is now offline.
     for (const task of taskNeeds) if (task.owner && task.owner !== USER && task.owner !== HUB && !Object.hasOwn(peerNeeds, task.owner)) {
@@ -5292,11 +5332,12 @@ export async function startDaemon(opts: DaemonOptions) {
     status: () => {
       const quota = budget.status();
       const ids = [...new Set([...bus.knownPeers(), ...Object.keys(quota), ...conductorHolds.list().map(h => h.peer)])];
+      const doing = doingRows(ids);
       return {
         peers: ids.map(peer => {
           const summary = bus.queueSummary(peer);
           return { peer, state: bus.stateOf(peer), attached: !!bus.peers.get(peer) && bus.peers.get(peer)!.state !== "offline", queued: bus.queued(peer), needsReview: summary.needsReview,
-            manualHeld: manualPaused.has(peer), hold: conductorHolds.get(peer), budgetPause: quota[accountOf(peer)]?.paused ?? null,
+            manualHeld: manualPaused.has(peer), hold: conductorHolds.get(peer), budgetPause: quota[accountOf(peer)]?.paused ?? null, doing: doing[peer] ?? null,
             ...(quota[accountOf(peer)] ? { windows: quota[accountOf(peer)]!.windows.map(w => ({ id: w.id, ...(w.stale || (w.resetsAt !== undefined && w.resetsAt <= Date.now()) ? {} : { used: w.used }), resetsAt: w.resetsAt, at: w.at, source: w.source, kind: w.kind, ...(w.superseded ? { superseded: true } : {}) })) } : {}) };
         }),
         taskCounts: board.counts(), approvals: [...permissions.values()].map(p => ({ peer: p.peer, tool: p.tool, at: p.createdAt })),
@@ -5532,7 +5573,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return ta && tb && CONFLICT_STATES.includes(ta.state) && CONFLICT_STATES.includes(tb.state) ? [{ kind: "conflict" as const, tasks: conflict.tasks, peers: conflict.peers }] : [];
       }),
     ];
-    const attentionStatus = status(false, true);
+    const attentionStatus = status(false, true, true);
     let pet; try { const config = loadPetConfig(opts.cwd); pet = { enabled: config.enabled, character: config.character ?? "stai", blink: config.blink }; } catch { pet = { enabled: false }; }
     const peerView = Object.fromEntries(Object.entries(attentionStatus.peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])), boardTasks = board.list();
     const usageView = (open: boolean) => {
@@ -7034,13 +7075,13 @@ export async function startDaemon(opts: DaemonOptions) {
             const actionClasses = phase === "pre" && typeof msg.tool === "string" ? claudeActionClasses(actionBudgets, msg.tool, msg.input, root) : [];
             return void reply({ t: "facts", ok: true, ...(phase === "pre" ? { permission: mode === "ask-when-needed" && blocked ? "ask" : mode, projectRoot: root, protectInstructionFiles: config.protect_instruction_files, ...(actionClasses.length ? { actionClasses } : {}) } : {}) });
           }
-          let nativeClaude = false;
+          let nativeClaude = false, nativeTranscript: string | undefined;
           if (definitionOf(peer)?.transport === "claude-channel" && sessionId && msg.nativeInstanceId === instanceId) {
             const expectedLaunch = claudeLaunchProof.expectedLaunch(peer);
             const current = claudeSession(peer);
             if ((phase === "stop" || phase === "post") && current.sessionId && current.sessionId !== sessionId) return void reply({ t: "facts", ok: false });
             if (!expectedLaunch || msg.nativeLaunchId === expectedLaunch) {
-              const transcript = claudeTranscript(sessionId, msg.transcriptPath, peer);
+              const transcript = nativeTranscript = claudeTranscript(sessionId, msg.transcriptPath, peer);
               const launchId = typeof msg.nativeLaunchId === "string" ? msg.nativeLaunchId : undefined;
               const file = join(opts.stateDir, claudeStateFile("claude-session", peer));
               writeFileSync(`${file}.hook.tmp`, JSON.stringify({ at: Date.now(), instanceId, sessionId, ...(launchId ? { launchId } : {}), ...(transcript ? { transcriptPath: transcript } : {}) }), { mode: 0o600 });
@@ -7050,6 +7091,9 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!nativeClaude) return void reply({ t: "facts", ok: false });
           }
           if (definitionOf(peer)?.transport === "claude-channel" && msg.nativeInstanceId !== undefined && msg.nativeInstanceId !== instanceId) return void reply({ t: "facts", ok: false });
+          if (nativeClaude && (phase === "pre" || phase === "stop")) {
+            try { observeClaudeDoing(peer, sessionId!, nativeTranscript, phase === "pre" ? tool : "", input); } catch { /* #878: a display value never costs the hook its answer */ }
+          }
           const nativePeer = nativeClaude ? claudeLaunchProof.owner(peer) : undefined;
           const permissionLaunch = definitionOf(peer)?.transport === "claude-channel" ? claudeLaunchProof.permissionLaunch(peer) : undefined;
           const writeRoot = declarations[peer]?.worktree ? ownerWriteRoot(peer) : executionRoot(peer);
@@ -7335,7 +7379,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       }
       case "status":
-        return void reply({ t: "status", status: status(c.role === "console") });
+        return void reply({ t: "status", status: status(c.role === "console", false, true) });
       case "cli_audit_ack": {
         if (c.role !== "console") return void reply({ ok: false, error: "cli_audit_ack is a console command" });
         if (typeof msg.auditId !== "string" || !/^[a-f0-9-]{36}$/.test(msg.auditId)) return void reply({ ok: false, error: "invalid audit id" });

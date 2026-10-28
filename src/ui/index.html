@@ -1669,6 +1669,8 @@ function render(snapshot) {
       // Summary row (#469 R4): name, state, current task and queue. The diagnostic lines below fold into one disclosure.
       const current = (snapshot.boardLegend || []).find(item => item.peer === id)?.activeTasks, summary = el('p', undefined, 'peer-summary');
       summary.append(el('span', peer.queued + ' queued' + (peer.queuedImportant ? ' (' + peer.queuedImportant + ' important)' : ''), 'meta'), el('span', Array.isArray(current) && current.length ? 'Working on ' + current.map(task => '#' + task).join(', ') : 'No active task', 'meta'));
+      // #878: the session title or current plan item the hub observed, already screened (a stub while private).
+      if (typeof peer.doing?.text === 'string' && peer.doing.text) summary.append(el('span', 'Doing: ' + peer.doing.text, 'meta'));
       row.append(head, summary);
       // A status notice asks a person to act (for example, reattach a native session): it stays visible, never folded away.
       if (typeof peer.statusNotice?.message === 'string' && peer.statusNotice.message) row.append(el('p', peer.statusNotice.message, 'meta notice-warn'));

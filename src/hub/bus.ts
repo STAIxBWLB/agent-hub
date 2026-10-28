@@ -1,5 +1,6 @@
 import { appendNote, DIGEST, frame, HUB, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
+import type { DoingKind } from "./peer-doing.ts";
 import { DeliveryJournal, MAX_ENVELOPE_BODY, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
 import { DELIVERY_RETRY_WARNING } from "./delivery-hints.ts";
 import { MAX_DEFERRED_HUB, RecoveryDeferredHubError, validateDeferredHub } from "./deferred-hub.ts";
@@ -59,6 +60,8 @@ export interface BusOptions {
    * dequeued, steered or journaled for it, and the queue still waits for `Bus.pull`; a throw is swallowed.
    */
   onImportantQueued?: (peer: PeerId, counts: { queued: number; important: number }) => void;
+  /** Optional (#878): an attached adapter observed its session title or current plan item. Never published, journaled or tapped. */
+  doing?: (peer: PeerId, kind: DoingKind, text?: unknown) => void;
 }
 
 /** Serializable delivery state used by the controlled restart coordinator. Bodies stay in the private daemon file. */
@@ -194,6 +197,8 @@ export class Bus {
     this.peers.set(peer.id, peer);
     if (!this.queues.has(peer.id)) this.queues.set(peer.id, []);
     peer.onDelivery = (receipt) => this.deliveryReceipt(peer.id, receipt);
+    peer.onDoing = (kind, text) => { if (!this.closed && this.peers.get(peer.id) === peer) this.opts.doing?.(peer.id, kind, text); };
+    this.opts.doing?.(peer.id, "reset"); // a new adapter never shows what the one it replaces was doing
     peer.onMessage = (text, opts) => {
       if (!this.isRostered(peer.id)) return `off roster: ${peer.id}`;
       const { priority, body } = parseMarker(text);

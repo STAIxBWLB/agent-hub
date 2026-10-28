@@ -1,6 +1,7 @@
 import type { Envelope, EnvelopeOpts, PeerId, PeerState } from "./envelope.ts";
 import type { PermissionMode } from "./permission-mode.ts";
 import type { StartForm } from "../adapters/registry-types.ts";
+import type { DoingKind } from "./peer-doing.ts";
 
 export interface DeliveryReceipt {
   id: string;
@@ -79,6 +80,8 @@ export interface PeerAdapter {
   onFailed?: (envs: Envelope[], failure?: { quota?: true }) => void;
   /** Correlated durable-delivery lifecycle, emitted only when the bus supplied an id. */
   onDelivery?: (receipt: DeliveryReceipt) => void;
+  /** Set by the bus (#878): a native session title or current plan item the adapter observed; `reset` on a new session. */
+  onDoing?: (kind: DoingKind, text?: unknown) => void;
   /** Safe restart metadata only: ids and launch parameters, never prompt/message text. */
   recoveryMetadata?(): Record<string, unknown>;
   /** Current native TUI ownership, correlated to one launcher. A start acknowledgement is never evidence. */
@@ -94,6 +97,7 @@ export abstract class BasePeer implements PeerAdapter {
   onState?: (state: PeerState) => void;
   onFailed?: (envs: Envelope[], failure?: { quota?: true }) => void;
   onDelivery?: (receipt: DeliveryReceipt) => void;
+  onDoing?: (kind: DoingKind, text?: unknown) => void;
   private _state: PeerState = "offline";
   private timer: ReturnType<typeof setTimeout> | undefined;
   private nextWatchdogMs: number | undefined;
