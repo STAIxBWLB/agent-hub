@@ -72,7 +72,7 @@ test("restored authenticated chat rechecks current sender exposure before local 
   expect(f.bus.queued("codex")).toBe(0); expect(f.peer.effects).toBe(0);
   expect(f.guest.incomingApplication("work", f.digest)).toMatchObject({ state: "failed_safe", sender: f.owner.identity.public.fingerprint });
   expect(f.guest.applicationReceipt("work", f.digest)).toEqual({ v: 1, type: "receipt", frame: f.digest, application: f.message.type === "chat" ? f.message.envelope.id : "", peer: "codex", outcome: "failed_safe", reason: "not_exposed" });
-  expect(f.sent).toEqual([{ recipient: f.owner.identity.public.fingerprint, message: f.guest.applicationReceipt("work", f.digest) }]);
+  expect(f.sent).toEqual([{ recipient: f.owner.identity.public.fingerprint, message: f.guest.applicationReceipt("work", f.digest)! }]);
   expect(f.guest.pendingInbox("work")).toEqual([]);
 });
 
