@@ -1278,6 +1278,8 @@ Unknown legacy deadlines fail closed to `needs_review`. Machine-local
 24 (1..168). A single deadline-driven host timer handles ack/queue expiry. No
 uncertain work is silently retried. Explicit terminal-history retries without
 recipient proof refuse; the person can author a fresh message deliberately.
+An expired or missing original enqueue deadline also refuses a person retry
+before any disposition is recorded; a retry never invents a fresh TTL.
 
 The ACK deadline starts at durable application handoff, before a broker `stored`
 reply, and is never extended by that reply. An unstored frame therefore becomes

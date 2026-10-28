@@ -4780,6 +4780,8 @@ replayed automatically. A late signed receipt is visible as evidence in queue
 inspection; the person's disposition is still required. Old text cannot be
 retried to a replacement fingerprint reusing a label. An unproved terminal retry
 refuses and requires a deliberately authored new message.
+An expired or missing original enqueue deadline likewise refuses retry without
+recording a successful disposition. Send a new message deliberately instead.
 
 The ACK timeout starts when the application is handed to the room link, even if
 the broker never confirms storage. A reconnect or restart requests fresh signed
