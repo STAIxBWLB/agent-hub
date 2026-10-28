@@ -26,6 +26,15 @@ export const budgetNow = (budget: SnapshotBudget): number => budget.now ? budget
 export class SnapshotBudgetExceeded extends Error {
   constructor() { super("snapshot burst budget exhausted; boundary evidence is unknown"); }
 }
+const SNAPSHOT_TIMEOUT_MS = 10_000;
+/**
+ * The wall-clock timeout of one git child. Production (no `budget.now`): the remaining budget, between 1 ms and the 10 s ceiling, so a child is killed at the budget.
+ * ponytail: a host-held clock (`budget.now`, only the host-only snapshotClock seam sets it) holds the deadline, so the child's timeout is the 10 s ceiling, not the remaining budget:
+ * with the clock fixed the remaining budget never shrinks, and 250 ms of real time per child timed a slow git out under load (#554). Production never sets `now`, so its child is still killed
+ * at the budget. A child past the 10 s ceiling still reports ETIMEDOUT and the evidence stays unknown. Upgrade path: a fake spawn seam, if a held clock ever needs to model a slow child.
+ */
+export const childTimeoutMs = (budget?: SnapshotBudget): number =>
+  budget?.now ? SNAPSHOT_TIMEOUT_MS : Math.max(1, Math.min(SNAPSHOT_TIMEOUT_MS, Math.floor(budget ? budget.deadline - budgetNow(budget) : SNAPSHOT_TIMEOUT_MS)));
 const git = (top: string | Repo, args: string[], env: Record<string, string> = {}, budget?: SnapshotBudget, maxBuffer?: number, input?: string | Buffer) => {
   const argv = repoGitArgs(top, args);
   const remaining = budget ? budget.deadline - budgetNow(budget) : SNAPSHOT_TIMEOUT_MS;
@@ -33,15 +42,11 @@ const git = (top: string | Repo, args: string[], env: Record<string, string> = {
   const result = hubGitSync(argv, {
     encoding: "utf8", env: { ...repoGitEnv(top), ...env }, ...(maxBuffer === undefined ? {} : { maxBuffer }),
     ...(input === undefined ? {} : { input }),
-    // ponytail: a host-held clock (`budget.now`, only the host-only snapshotClock seam sets it) holds the deadline, so the child's wall-clock timeout is the 10 s ceiling, not the remaining budget:
-    // with the clock fixed the remaining budget never shrinks, and 250 ms of real time per child timed a slow git out under load (#554). Production never sets `now`, so its child is still killed at the budget.
-    // A child past the 10 s ceiling still reports ETIMEDOUT below and the evidence stays unknown. Upgrade path: a fake spawn seam, if a held clock ever needs to model a slow child.
-    timeout: budget?.now ? SNAPSHOT_TIMEOUT_MS : Math.max(1, Math.min(SNAPSHOT_TIMEOUT_MS, Math.floor(remaining))),
+    timeout: childTimeoutMs(budget),
   });
   if (budget && (budgetNow(budget) >= budget.deadline || (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")) throw new SnapshotBudgetExceeded();
   return result;
 };
-const SNAPSHOT_TIMEOUT_MS = 10_000;
 
 /** A repository and where the project sits in it: `prefix` is "" at the top level, else "sub/dir/". */
 export interface Repo {

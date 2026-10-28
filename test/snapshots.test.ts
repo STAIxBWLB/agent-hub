@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { changedPaths, dirtySubmodules, knownChangedPaths, parseDirtySubmodules, planUndo, repoOf, restore, snapshot, SnapshotBudgetExceeded, Turns, type Repo } from "../src/hub/snapshots.ts";
+import { changedPaths, childTimeoutMs, dirtySubmodules, knownChangedPaths, parseDirtySubmodules, planUndo, repoOf, restore, snapshot, SnapshotBudgetExceeded, Turns, type Repo } from "../src/hub/snapshots.ts";
 
 // issue #33: per-turn snapshots as git trees, and undo that refuses to destroy work it should keep.
 const cleanup: (() => void)[] = [];
@@ -423,4 +423,17 @@ test("a held clock that jumps past the deadline exhausts the budget before any g
   slow.reset(); now = 1000;
   expect(() => snapshot(r, jumping)).toThrow(SnapshotBudgetExceeded);
   expect(slow.calls()).toBe(0);
+});
+
+test("childTimeoutMs (pure): a production budget gets min(10000, remaining), the held-clock seam gets the 10 s ceiling (#554)", () => {
+  // production budgets read performance.now: build them from the real clock and bound the remaining time, since it only shrinks
+  const production = { deadline: performance.now() + 250 };
+  expect(childTimeoutMs(production)).toBeGreaterThan(0); expect(childTimeoutMs(production)).toBeLessThanOrEqual(250);
+  expect(childTimeoutMs({ deadline: performance.now() + 60_000 })).toBe(10_000); // capped at the ceiling
+  expect(childTimeoutMs({ deadline: performance.now() + 0.4 })).toBeGreaterThanOrEqual(1); // never below 1 ms
+  expect(childTimeoutMs(undefined)).toBe(10_000); // no budget at all: the ceiling, as before
+  // the seam: a held clock, whatever the remaining budget says
+  expect(childTimeoutMs({ deadline: 250, now: () => 0 })).toBe(10_000);
+  expect(childTimeoutMs({ deadline: 250, now: () => 249 })).toBe(10_000);
+  expect(childTimeoutMs({ deadline: 1, now: () => 0 })).toBe(10_000);
 });
