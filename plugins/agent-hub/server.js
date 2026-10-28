@@ -10383,7 +10383,7 @@ var init_hub_tools = __esm(() => {
     tool("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str2 }, ["peer"])
   ];
   CONDUCTOR_TOOL_NAMES = new Set(CONDUCTOR_TOOLS.map((t) => t.name));
-  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_status"]);
+  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
   ROLE_TEXT = {
     conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses.",
     planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.",
