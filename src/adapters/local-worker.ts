@@ -10,7 +10,8 @@ import { BasePeer } from "../hub/peers.ts";
 import type { PublishResult } from "../hub/bus.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import type { DocReadPort } from "../local/doc-read.ts";
-import { DOC_READ_SCHEMA, runTool, toolResultFailed, TOOL_SCHEMAS, touchedPaths, ApprovalWaitStop, type ToolApproval, type ApprovalProvenance, type ToolContext } from "../local/tools.ts";
+import type { WebFetchPort } from "../local/web-fetch.ts";
+import { DOC_READ_SCHEMA, WEB_FETCH_SCHEMA, runTool, toolResultFailed, TOOL_SCHEMAS, touchedPaths, ApprovalWaitStop, type ToolApproval, type ApprovalProvenance, type ToolContext } from "../local/tools.ts";
 import type { Capture } from "../memory/capture.ts";
 import type { ChatMessage, ChatResult, OmniRoute, ToolCall } from "../omniroute/client.ts";
 import { safeModelLabel } from "../omniroute/usage.ts";
@@ -37,7 +38,7 @@ export interface LocalOptions {
   turnId?: () => string | undefined;
   onApprovalStop?: (reason: string) => void;
   onTool?: (observation: ToolObservation, task?: string) => void;
-  tools: { docRead?: DocReadPort; deny: string[]; permit: ToolContext["permit"]; shellExecutionCheck?: ToolContext["shellExecutionCheck"]; bashNetwork?: SandboxNetwork; readAllow?: string[]; readOnly?: string[] };
+  tools: { docRead?: DocReadPort; webFetch?: WebFetchPort; deny: string[]; permit: ToolContext["permit"]; shellExecutionCheck?: ToolContext["shellExecutionCheck"]; bashNetwork?: SandboxNetwork; readAllow?: string[]; readOnly?: string[] };
   capture?: Capture;
   /** Runs a hub task tool (hub_task_*, hub_review, hub_remember) as this peer. Absent = the tools are not offered. */
   taskTool?: (name: string, args: Record<string, unknown>, turn: { pii: boolean }) => Promise<string>;
@@ -285,7 +286,8 @@ export class LocalPeer extends BasePeer {
           this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
           // Hub tool arguments/results are not capture evidence; Tasks owns its screened memory writes.
           // doc_read text is converted document content (a converter can surface hidden text), never memory evidence: not captured, whatever the turn.
-          if (name !== "hub_send" && name !== "doc_read" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name)) capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
+          // web_fetch text is a third party's page and its URL is the model's own request: neither is memory evidence either (#515b).
+          if (name !== "hub_send" && name !== "doc_read" && name !== "web_fetch" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name)) capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
         }
       } finally { if (results.length) this.routes.observeResults(res.routeDecision, res.message, results); }
     }
@@ -293,13 +295,14 @@ export class LocalPeer extends BasePeer {
     return `(stopped after ${maxSteps} steps) ${progress.last}`.trim();
   }
 
-  /** The base tools, plus `doc_read` only when the project opted in (`local.doc_read`, off by default). */
-  private toolSchemas() { return this.opts.tools.docRead ? [...TOOL_SCHEMAS, DOC_READ_SCHEMA] : TOOL_SCHEMAS; }
+  /** The base tools, plus `doc_read` and `web_fetch` only when the project opted in (`local.doc_read`, `local.web_fetch.allow`; both off by default). */
+  private toolSchemas() { const extra = [...(this.opts.tools.docRead ? [DOC_READ_SCHEMA] : []), ...(this.opts.tools.webFetch ? [WEB_FETCH_SCHEMA] : [])]; return extra.length ? [...TOOL_SCHEMAS, ...extra] : TOOL_SCHEMAS; }
 
   private toolContext(envs: Envelope[], turnSignal: AbortSignal, pii: boolean, reply: EnvelopeOpts): ToolContext {
     const executionGeneration=this.turn;
     return {
       ...(this.opts.tools.docRead ? { docRead: { ...this.opts.tools.docRead, pii } } : {}),
+      ...(this.opts.tools.webFetch ? { webFetch: { ...this.opts.tools.webFetch, pii } } : {}),
       cwd: this.opts.cwd,
       deny: this.opts.tools.deny,
       readOnly: this.opts.tools.readOnly,
@@ -452,7 +455,7 @@ export class LocalPeer extends BasePeer {
   }
 
   private observeTool(call: ToolCall, output: string, policy: { pii: boolean; task?: string } | undefined, nativeTurn: string): void {
-    if (policy?.pii || call.function.name === "doc_read") return; // doc_read output is document text: no research observation carries it
+    if (policy?.pii || call.function.name === "doc_read" || call.function.name === "web_fetch") return; // document and web text: no research observation carries it
     try {
       const command = safeParse(call.function.arguments).command;
       this.opts.onTool?.({ name: call.function.name, ...(typeof command === "string" ? { command } : {}), resultText: output, isError: toolResultFailed(call.function.name, output), source: "local", turn: nativeTurn }, policy?.task);

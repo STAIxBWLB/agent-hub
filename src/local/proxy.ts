@@ -81,7 +81,7 @@ const hostOf = (target: string) => {
   }
 };
 
-export function startEgressProxy(opts: { allow: string[]; log: (line: string) => void }): Promise<EgressProxy> {
+export function startEgressProxy(opts: { allow: string[]; log: (line: string) => void; /** Read at each CONNECT instead of `allow`, so a reloaded allowlist applies to the next request (the `web_fetch` proxy uses it). */ allowFn?: () => readonly string[] }): Promise<EgressProxy> {
   const sockets = new Set<Socket>();
   // Half-open on both sides: a client that sends its request and shuts its write side still gets the answer.
   const server: Server = createServer({ allowHalfOpen: true }, (client) => {
@@ -119,7 +119,7 @@ export function startEgressProxy(opts: { allow: string[]; log: (line: string) =>
     const host = m?.[1]!.replace(/^\[|\]$/g, "") ?? "";
     if (!m || !(isIP(host) || /^[a-z0-9.-]+$/i.test(host))) return refuse(client, 400, "bad CONNECT target", "a CONNECT request");
     const port = Number(m[2]);
-    if (!allowed(opts.allow, host, port)) return refuse(client, 403, `${host}:${port} is not in local.network_allow`, `${host}:${port}`);
+    if (!allowed([...(opts.allowFn ? opts.allowFn() : opts.allow)], host, port)) return refuse(client, 403, `${host}:${port} is not in local.network_allow`, `${host}:${port}`);
     let address = host;
     if (!isIP(host)) {
       try {
