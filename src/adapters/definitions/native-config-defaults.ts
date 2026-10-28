@@ -9,7 +9,7 @@ export function nativeConfigurationDefaults(ctx: { home: string; env: Readonly<R
     commands: { kimi_cmd: ["kimi", "acp"], qwen_cmd: ["qwen", "--acp"], jcode_cmd: ["jcode"], jcode_home: ctx.env.JCODE_HOME ?? join(ctx.home, ".jcode"), jcode_provider_profile: "" },
     proxy: { codex_bin: "codex" },
     rpc: { pi: { enabled: false, auto_start: false, cmd: ["pi"], backend: "auto" as const, dgx_coding: "coding", dgx_fast: "fast", max_steps: 30 } },
-    sandbox: { local: { deny: [] as string[], bash_network: false, network_allow: ctx.networkAllow, max_steps: 30, read_allow: [] as string[], doc_read: false } },
+    sandbox: { local: { deny: [] as string[], bash_network: false, network_allow: ctx.networkAllow, max_steps: 30, read_allow: [] as string[], doc_read: false, web_fetch: { allow: [] as string[] } } },
   };
 }
 export function mergeNativeConfiguration(file: Record<string, any>, defaults: HubConfig): Pick<HubConfig, "local" | "pi"> {

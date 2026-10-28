@@ -104,6 +104,7 @@ import { processSignature } from "../pi/process-signature.ts";
 import { PiSessionBookmarkMismatch, PiSessionUnresumable, recordPiReplacement, validatePiSession } from "../pi/session.ts";
 import { profile, proxyEnv, sandboxAvailable, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
+import { webFetchAllow } from "../local/web-fetch-config.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolApproval, type ApprovalObserver, type ToolContext, type ShellPermitPolicy } from "../local/tools.ts";
 import { proveReadOnlyShell, ShellExecutionProofs } from "./read-only-shell-proof.ts";
 import { createHostShellWrapper, type HostShellWrapper } from "./claude-shell-wrapper.ts";
@@ -227,7 +228,7 @@ export interface HubConfig {
   pi: { enabled: boolean; auto_start: boolean; cmd: string[]; backend: "auto" | "dgx" | "mlx"; dgx_coding: string; dgx_fast: string; max_steps: number };
   mlx: { enabled: boolean } & Pick<MlxOptions, "provider" | "host" | "runtimeDir" | "modelPath" | "port" | "model" | "sourceModel" | "contextWindow" | "maxInputTokens" | "maxTokens" | "maxConcurrency">;
   /** `bash_network`: true is network through the egress proxy to `network_allow` (#65); "direct" is everything, until 0.13.0 (#83). */
-  local: { deny: string[]; bash_network: boolean | "direct"; network_allow: string[]; max_steps: number; read_allow: string[]; /** #515: offer the local worker `doc_read` (PDF, DOCX, HWPX through `text_projection`); off by default, machine-local. */ doc_read: boolean };
+  local: { deny: string[]; bash_network: boolean | "direct"; network_allow: string[]; max_steps: number; read_allow: string[]; /** #515: offer the local worker `doc_read` (PDF, DOCX, HWPX through `text_projection`); off by default, machine-local. */ doc_read: boolean; /** #515b: the hosts the local worker's `web_fetch` may read; empty (the default) means the tool does not exist. Machine-local. */ web_fetch: { allow: string[] } };
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
@@ -1161,6 +1162,15 @@ export async function startDaemon(opts: DaemonOptions) {
     log(`network: egress proxy on 127.0.0.1:${egress.port}, ${allow.length} allowed host(s) (local.network_allow)`);
   }
   const sandboxNetwork: SandboxNetwork = config.local.bash_network === "direct" ? true : egress ? { proxyPort: egress.port } : false;
+  // #515b: `web_fetch` has its own egress proxy, whose allowlist is `local.web_fetch.allow` and nothing else. It never shares the bash proxy (whose list is `network_allow`: package
+  // registries and code hosts), so listing a host for the model to read opens nothing to a shell command, and the reverse. Started only when the project listed a host.
+  const webAllow = () => webFetchAllow(config.local.web_fetch?.allow);
+  let webEgress: EgressProxy | undefined;
+  if (webAllow().length) {
+    webEgress = await startEgressProxy({ allow: webAllow(), log, allowFn: webAllow });
+    startupCleanup.push(() => void webEgress?.close());
+    log(`network: web_fetch egress proxy on 127.0.0.1:${webEgress.port}, ${webAllow().length} allowed host(s) (local.web_fetch.allow)`);
+  }
   const admit = (env: Envelope, parent?: string): string | undefined => {
     // [FYI] is recorded and costs nobody a turn: nothing to limit.
     if (env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi") return undefined;
@@ -5257,6 +5267,8 @@ export async function startDaemon(opts: DaemonOptions) {
         fixedModel: args.model ?? routing.local.fixed_model,
         tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, readOnly: config.data?.readonly, permit, shellExecutionCheck: input => shellProofs.check(input),
           // #515: `doc_read` exists only when the project opted in. The projections are this worker's execution root's (the hub's own facts and review use the same ones).
+          // #515b: `web_fetch` exists only when the project listed a host. A PII turn is refused inside the tool, so the port carries no PII logic of its own.
+          ...(webEgress ? { webFetch: { allow: webAllow, proxyUrl: () => webEgress?.url } } : {}),
           ...(config.local.doc_read === true ? { docRead: { projections: () => projectionsFor(peer), piiPaths: () => config.pii?.paths ?? [], piiPatterns: () => activeRouting().signals.pii_patterns } } : {}) },
         onApprovalStop: reason => notify(reason),
         ...(capture ? { capture } : {}),
@@ -7862,6 +7874,7 @@ export async function startDaemon(opts: DaemonOptions) {
       await runnerStopped;
       await Promise.all([...modelRelays.values()].map(relay => relay.close()));
       await egress?.close();
+      await webEgress?.close();
       await Promise.all([...piReceiptLedgers.values()].map(ledger => ledger.close()));
       collectClaudeUsage();
       for (const id of [...researchPending.keys()]) writeResearch(id); // the peers have stopped, so their turns have ended
@@ -7952,7 +7965,8 @@ export async function startDaemon(opts: DaemonOptions) {
   if (piAutoStart() && !recoveryActive() && !piRecovered) autoStartPi();
   // #843 AC3: at hub start, after the roster and the control socket exist; never awaited, so a slow probe delays no start.
   void sweepAgentDrift();
-  return { bus, token, port: server.port as number, bandEvaluations: () => bandEvaluations, sdlcFileReads: () => sdlcFileReads, stop, stopped: new Promise<void>((r) => (onStop = r)) };
+  // #515b: the loopback ports of the two egress proxies, for a host-only test that connects to the proxy this daemon actually started. Ports only: no list, no authority.
+  return { bus, token, port: server.port as number, egressPorts: () => ({ bash: egress?.port, web: webEgress?.port }), bandEvaluations: () => bandEvaluations, sdlcFileReads: () => sdlcFileReads, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {
     if (!ready) for (const cleanup of startupCleanup.reverse()) { try { await cleanup(); } catch { /* preserve startup error */ } }
   }

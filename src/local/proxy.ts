@@ -31,17 +31,8 @@ export interface EgressProxy {
   close(): Promise<void>;
 }
 
-/** `host` or `host:port`; a name also matches its subdomains, an address only itself. Port 443 unless named. */
-export function allowed(list: string[], host: string, port: number): boolean {
-  const h = host.toLowerCase().replace(/\.$/, "");
-  return list.some((raw) => {
-    const entry = raw.trim().toLowerCase();
-    const at = entry.lastIndexOf(":");
-    const [name, p] = at > 0 && !entry.includes("]") && /^\d+$/.test(entry.slice(at + 1)) ? [entry.slice(0, at), Number(entry.slice(at + 1))] : [entry, 443];
-    if (!name || p !== port) return false;
-    return h === name || (!isIP(name) && h.endsWith(`.${name}`));
-  });
-}
+import { allowed } from "./web-fetch-config.ts";
+export { allowed };
 
 // Parsed, not prefix-matched: an IPv4-mapped IPv6 address in any spelling (`::ffff:7f00:1`) checks as its IPv4 address.
 const INTERNAL = new BlockList();
@@ -81,7 +72,7 @@ const hostOf = (target: string) => {
   }
 };
 
-export function startEgressProxy(opts: { allow: string[]; log: (line: string) => void }): Promise<EgressProxy> {
+export function startEgressProxy(opts: { allow: string[]; log: (line: string) => void; /** Read at each CONNECT instead of `allow`, so a reloaded allowlist applies to the next request (the `web_fetch` proxy uses it). */ allowFn?: () => readonly string[] }): Promise<EgressProxy> {
   const sockets = new Set<Socket>();
   // Half-open on both sides: a client that sends its request and shuts its write side still gets the answer.
   const server: Server = createServer({ allowHalfOpen: true }, (client) => {
@@ -119,7 +110,7 @@ export function startEgressProxy(opts: { allow: string[]; log: (line: string) =>
     const host = m?.[1]!.replace(/^\[|\]$/g, "") ?? "";
     if (!m || !(isIP(host) || /^[a-z0-9.-]+$/i.test(host))) return refuse(client, 400, "bad CONNECT target", "a CONNECT request");
     const port = Number(m[2]);
-    if (!allowed(opts.allow, host, port)) return refuse(client, 403, `${host}:${port} is not in local.network_allow`, `${host}:${port}`);
+    if (!allowed([...(opts.allowFn ? opts.allowFn() : opts.allow)], host, port)) return refuse(client, 403, `${host}:${port} is not in local.network_allow`, `${host}:${port}`);
     let address = host;
     if (!isIP(host)) {
       try {

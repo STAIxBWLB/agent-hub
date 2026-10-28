@@ -5,6 +5,7 @@ import { isHubWritePath } from "../hub/permission-mode.ts";
 import { matchesPolicy } from "../hub/path-policy.ts";
 import { isDenied } from "./deny.ts";
 import { docRead, type DocReadContext, type DocReadPort } from "./doc-read.ts";
+import { webFetch, type WebFetchContext, type WebFetchPort } from "./web-fetch.ts";
 import { OUTPUT_CAP, sandboxedExec } from "./sandbox.ts";
 
 export { isDenied };
@@ -37,6 +38,8 @@ export interface ToolContext {
   shellExecutionCheck?: (input: unknown) => ShellExecutionCheck;
   /** #515: present only when the project opted in (`local.doc_read`), so `doc_read` exists for this worker and nothing else gets it. `pii`: this turn is a PII task turn. */
   docRead?: DocReadPort & { pii: boolean };
+  /** #515b: present only when the project opted in (`local.web_fetch.allow` names a host), so `web_fetch` exists for this worker and nothing else gets it. `pii`: this turn is a PII task turn, for which it is refused. */
+  webFetch?: WebFetchPort & { pii: boolean };
   /** Trusted process status, independent of what its stdout says. */
   onProcessExit?: (code: number | null) => void;
   /** Publish a message to other peers mid-turn. Returns a one-line receipt. */
@@ -120,6 +123,13 @@ export const TOOL_SCHEMAS = [
  */
 export const DOC_READ_SCHEMA = fn("doc_read", "Read a PDF, DOCX or HWPX document inside the project as plain text, through the converters the project configured. Returns numbered lines, bounded; read again with offset for more. Read-only.", { path: str, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } }, ["path"]);
 export type { DocReadContext, DocReadPort };
+
+/**
+ * #515b: offered only to a worker whose project listed at least one host in `local.web_fetch.allow` (off by default), never part of TOOL_SCHEMAS. The model names a URL and a line
+ * window and nothing else: no method, header or body. It is refused for the whole turn of a PII task, and otherwise runs only through the egress proxy, to listed hosts.
+ */
+export const WEB_FETCH_SCHEMA = fn("web_fetch", "Read one web page as plain text. https only, and only for hosts the project listed in local.web_fetch.allow; refused in a PII task. A plain GET with no headers or body of yours. Returns numbered lines, bounded; read again with offset for more. Never put anything private or from the task into the URL.", { url: str, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } }, ["url"]);
+export type { WebFetchContext, WebFetchPort };
 
 /** Every path-like argument of a call, for the memory capture filter. */
 export function touchedPaths(name: string, args: Record<string, unknown>): string[] {
@@ -227,6 +237,11 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         if (!ctx.docRead) return "error: doc_read is not enabled for this project (local.doc_read in .agenthub/config.local.json)";
         const file = guardPath(ctx, String(a.path), "read");
         return docRead(file, String(a.path), a, ctx.docRead, ctx.cwd);
+      }
+      case "web_fetch": {
+        // The refusal for a PII turn is the first thing this tool does, before the URL is read (see `webFetch`); the opt-in check only says whether the tool exists.
+        if (!ctx.webFetch) return "error: web_fetch is not enabled for this project (local.web_fetch.allow in .agenthub/config.local.json)";
+        return webFetch(String(a.url ?? ""), a, ctx.webFetch, ctx.signal);
       }
       case "hub_send":
         return a.text ? ctx.send(String(a.text), Array.isArray(a.to) ? a.to.map(String) : undefined) : "error: text is required";

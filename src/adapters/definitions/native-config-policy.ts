@@ -1,12 +1,13 @@
 import type { NativeConfigCheck, NativeConfigValidators } from "../registry-types.ts";
 import type { SettingDef } from "../../hub/settings.ts";
+import { webFetchAllow } from "../../local/web-fetch-config.ts";
 
 /** Native config uses the host's checked schema vocabulary, retaining its shape/path introspection. */
 export function piConfigSchema(v: NativeConfigValidators): Record<string, NativeConfigCheck> {
   return { pi: v.block({ enabled: v.bool, auto_start: v.bool, cmd: v.argv, backend: v.words(["auto", "dgx", "mlx"]), dgx_coding: v.text, dgx_fast: v.text, max_steps: v.number(1, 1_000_000, true) }) };
 }
 export function localConfigSchema(v: NativeConfigValidators): Record<string, NativeConfigCheck> {
-  return { local: v.block({ deny: v.strings, bash_network: (value, key) => { if (value !== "direct") v.bool(value, key); }, network_allow: v.strings, max_steps: v.number(1, 1_000_000, true), read_allow: v.strings, doc_read: v.bool }) };
+  return { local: v.block({ deny: v.strings, bash_network: (value, key) => { if (value !== "direct") v.bool(value, key); }, network_allow: v.strings, max_steps: v.number(1, 1_000_000, true), read_allow: v.strings, doc_read: v.bool, web_fetch: v.block({ allow: (value, key) => { webFetchAllow(value); void key; } }) }) };
 }
 export function piRoutingSchema(v: NativeConfigValidators): Record<string, NativeConfigCheck> {
   return { pi: v.block({ dgx_max_context_tokens: v.number(), mlx_max_context_tokens: v.number(), efficient_wait_ms: v.number(0, 119999) }) };
@@ -24,7 +25,7 @@ export const PI_RESTART_REASONS: Readonly<Record<string, string>> = {
 };
 export const LOCAL_RESTART_REASONS: Readonly<Record<string, string>> = {
   "local.deny": "Existing native sessions retain their sandbox deny policy", "local.read_allow": "Existing native sessions retain their sandbox read grants",
-  "local.bash_network": "Existing sandbox and egress proxy contracts require a new instance", "local.network_allow": "Existing egress proxy ownership requires a new instance", "local.doc_read": "The worker's tool list is bound when its session starts",
+  "local.bash_network": "Existing sandbox and egress proxy contracts require a new instance", "local.network_allow": "Existing egress proxy ownership requires a new instance", "local.doc_read": "The worker's tool list is bound when its session starts", "local.web_fetch": "The worker's tool list and its web egress proxy are bound when the hub starts",
 };
 export function piEffectiveConfig(raw: Record<string, unknown>, fail: (key: string, reason: string) => never): void {
   const object = (value: unknown, key: string): Record<string, unknown> => {

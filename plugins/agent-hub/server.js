@@ -6355,6 +6355,274 @@ var init_doc_read = __esm(() => {
   init_sandbox();
 });
 
+// src/local/web-fetch-config.ts
+import { isIP } from "net";
+function allowed(list, host, port) {
+  const h = host.toLowerCase().replace(/\.$/, "");
+  return list.some((raw) => {
+    const entry = raw.trim().toLowerCase();
+    const at = entry.lastIndexOf(":");
+    const [name, p] = at > 0 && !entry.includes("]") && /^\d+$/.test(entry.slice(at + 1)) ? [entry.slice(0, at), Number(entry.slice(at + 1))] : [entry, 443];
+    if (!name || p !== port)
+      return false;
+    return h === name || !isIP(name) && h.endsWith(`.${name}`);
+  });
+}
+function webHostProblem(value) {
+  if (typeof value !== "string" || !value || value.length > 253 + 6)
+    return "a host is a non-empty name of at most 253 characters";
+  const match = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+)(?::([0-9]{1,5}))?$/.exec(value);
+  if (!match)
+    return "a host is a name such as docs.example.org or docs.example.org:8443: no scheme, path, wildcard, spaces or bare top-level name";
+  if (isIP(match[1]))
+    return "a host is a name, never an address";
+  if (match[2] !== undefined && (Number(match[2]) < 1 || Number(match[2]) > 65535))
+    return "a port is 1 to 65535";
+  return;
+}
+function webFetchAllow(input) {
+  if (input === undefined)
+    return [];
+  if (!Array.isArray(input) || input.length > MAX_WEB_HOSTS)
+    throw new Error(`local.web_fetch.allow takes a list of at most ${MAX_WEB_HOSTS} hosts`);
+  const seen = new Set, out = [];
+  input.forEach((host, index) => {
+    const problem = webHostProblem(host);
+    if (problem)
+      throw new Error(`local.web_fetch.allow[${index}]: ${problem}`);
+    const key = host.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(key);
+    }
+  });
+  return out;
+}
+var MAX_WEB_HOSTS = 64;
+var init_web_fetch_config = () => {};
+
+// src/local/web-fetch.ts
+import { isIP as isIP2 } from "net";
+function checkWebUrl(raw, allow) {
+  if (typeof raw !== "string" || !raw.trim() || raw.length > WEB_FETCH_MAX_URL || /[\x00-\x20\x7f]/.test(raw))
+    return { ok: false, reason: "url must be one https URL of at most 2000 characters with no spaces or control characters" };
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, reason: "url is not a valid URL" };
+  }
+  if (url.protocol !== "https:")
+    return { ok: false, reason: "only https URLs are fetched" };
+  if (url.username || url.password)
+    return { ok: false, reason: "a URL with a user name or password is not fetched" };
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (isIP2(host))
+    return { ok: false, reason: "an address is not a host: name the site, and the person lists it in local.web_fetch.allow" };
+  const port = url.port ? Number(url.port) : 443;
+  if (!allowed([...allow], host, port))
+    return { ok: false, reason: `${host}:${port} is not in local.web_fetch.allow` };
+  url.hash = "";
+  return { ok: true, url };
+}
+async function readBounded(res) {
+  const reader = res.body?.getReader();
+  if (!reader)
+    return { text: "", cut: false };
+  const chunks = [];
+  let total = 0, cut = false;
+  for (;; ) {
+    const { done, value } = await reader.read();
+    if (done)
+      break;
+    if (total + value.length > WEB_FETCH_MAX_BYTES) {
+      chunks.push(value.subarray(0, WEB_FETCH_MAX_BYTES - total));
+      total = WEB_FETCH_MAX_BYTES;
+      cut = true;
+      reader.cancel().catch(() => {
+        return;
+      });
+      break;
+    }
+    chunks.push(value);
+    total += value.length;
+  }
+  return { text: new TextDecoder("utf-8", { fatal: false }).decode(Buffer.concat(chunks)), cut };
+}
+function htmlText(html) {
+  const out = [];
+  const closerMissing = new Set;
+  const n = html.length;
+  let i = 0, text = 0;
+  const flush = (to) => {
+    if (to > text)
+      out.push(html.slice(text, to));
+  };
+  while (i < n) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1)
+      break;
+    const next = html.charCodeAt(lt + 1);
+    if (html.startsWith("<!--", lt)) {
+      flush(lt);
+      const end = html.indexOf("-->", lt + 4);
+      if (end === -1) {
+        text = i = n;
+        break;
+      }
+      out.push(" ");
+      text = i = end + 3;
+      continue;
+    }
+    const closing = next === 47;
+    if (!(isAsciiLetter(next) || closing && isAsciiLetter(html.charCodeAt(lt + 2)) || next === 33 || next === 63)) {
+      i = lt + 1;
+      continue;
+    }
+    flush(lt);
+    const gt = html.indexOf(">", lt + 1);
+    if (gt === -1) {
+      text = i = n;
+      break;
+    }
+    let nameStart = lt + (closing ? 2 : 1), nameEnd = nameStart;
+    while (nameEnd < gt && isNameCode(html.charCodeAt(nameEnd)))
+      nameEnd++;
+    const name = html.slice(nameStart, nameEnd).toLowerCase(), rest = html.slice(nameEnd, gt).trim();
+    i = text = gt + 1;
+    if (closing) {
+      out.push(BLOCK_CLOSERS.has(name) && rest === "" ? `
+` : " ");
+      continue;
+    }
+    if (name === "br" && (rest === "" || rest === "/")) {
+      out.push(`
+`);
+      continue;
+    }
+    out.push(" ");
+    if (SKIPPED_ELEMENTS.has(name) && !rest.endsWith("/")) {
+      if (closerMissing.has(name))
+        continue;
+      const closer = new RegExp(`</${name}\\s*>`, "gi");
+      closer.lastIndex = i;
+      const found = closer.exec(html);
+      if (found) {
+        i = text = found.index + found[0].length;
+      } else {
+        closerMissing.add(name);
+        if (RAW_TEXT_ELEMENTS.has(name))
+          i = text = n;
+      }
+    }
+  }
+  flush(n);
+  return out.join("").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, "&").replace(/[ \t\f\v]+/g, " ").replace(/ *\n */g, `
+`).replace(/\n{3,}/g, `
+
+`).trim();
+}
+async function webFetch(url, args, port, signal) {
+  if (port.pii)
+    return WEB_FETCH_PII;
+  const proxy = port.proxyUrl();
+  let current = checkWebUrl(url, port.allow());
+  if (!current.ok)
+    return `error: ${current.reason}`;
+  if (!proxy)
+    return "error: web_fetch has no egress proxy right now, so nothing was requested";
+  const doFetch = port.fetch ?? ((target, init) => fetch(target, init));
+  let response;
+  try {
+    for (let hop = 0;; hop++) {
+      const abort = AbortSignal.any([AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS), ...signal ? [signal] : []]);
+      response = await doFetch(current.url.toString(), { method: "GET", proxy, redirect: "manual", signal: abort, headers: { accept: "text/html, text/plain, application/json;q=0.9, */*;q=0.1", "user-agent": "agent-hub-web-fetch" } });
+      if (response.status < 300 || response.status >= 400)
+        break;
+      const location = response.headers.get("location");
+      response.body?.cancel().catch(() => {
+        return;
+      });
+      if (!location)
+        return `error: the server answered ${response.status} with no location`;
+      if (hop >= WEB_FETCH_MAX_REDIRECTS)
+        return `error: more than ${WEB_FETCH_MAX_REDIRECTS} redirects`;
+      let next;
+      try {
+        next = new URL(location, current.url).toString();
+      } catch {
+        return "error: the server sent a redirect that is not a URL";
+      }
+      const checked = checkWebUrl(next, port.allow());
+      if (!checked.ok)
+        return `error: the page redirects to a URL that is not allowed (${checked.reason})`;
+      current = checked;
+    }
+  } catch (error) {
+    if (signal?.aborted)
+      return "error: turn cancelled before the page was read";
+    const name = error?.name, code = error?.code;
+    if (name === "TimeoutError" || name === "AbortError")
+      return `error: the page did not answer within ${WEB_FETCH_TIMEOUT_MS / 1000} seconds`;
+    return `error: the page could not be fetched${typeof code === "string" && /^[A-Z_]{3,40}$/.test(code) ? ` (${code})` : ""}`;
+  }
+  if (!response.ok) {
+    response.body?.cancel().catch(() => {
+      return;
+    });
+    return `error: the server answered ${response.status}`;
+  }
+  const type = response.headers.get("content-type") ?? "";
+  if (!TEXT_TYPE.test(type)) {
+    response.body?.cancel().catch(() => {
+      return;
+    });
+    return `error: ${type.split(";")[0] || "an unknown type"} is not text: only text, JSON and XML pages are read`;
+  }
+  let body;
+  try {
+    body = await readBounded(response);
+  } catch {
+    return "error: the page could not be read to the end";
+  }
+  const isHtml = /^text\/html|^application\/xhtml\+xml/i.test(type);
+  const text = sanitize((isHtml ? htmlText(body.text) : body.text).replace(/\0/g, ""));
+  const lines = text.split(/\r?\n/);
+  const from = Math.max(1, Math.floor(Number(args.offset)) || 1), limit = Math.max(1, Math.floor(Number(args.limit)) || DEFAULT_WEB_LINES);
+  if (from > lines.length)
+    return `error: offset ${from} is past the end (${lines.length} lines)`;
+  let out = "", shownTo = from - 1;
+  for (let i = from - 1;i < Math.min(lines.length, from - 1 + limit); i++) {
+    const row = `${i + 1}	${lines[i]}
+`;
+    if (out.length + row.length > OUTPUT_CAP) {
+      if (!out)
+        out = row.slice(0, OUTPUT_CAP);
+      break;
+    }
+    out += row;
+    shownTo = i + 1;
+  }
+  if (!shownTo || shownTo < from)
+    shownTo = from;
+  out = out.replace(/\n$/, "");
+  const more = shownTo < lines.length ? `(lines ${from}-${shownTo} of ${lines.length}; read again with offset=${shownTo + 1})` : body.cut ? `(the page was cut at ${WEB_FETCH_MAX_BYTES / 1024} KiB)` : "";
+  return more ? `${out}
+${more}` : out;
+}
+var WEB_FETCH_PII = "error: web_fetch is not available in a PII task turn, whatever the host: the URL or a query could carry PII to the web. Use doc_read or read for what the project already holds", WEB_FETCH_TIMEOUT_MS = 15000, WEB_FETCH_MAX_BYTES, WEB_FETCH_MAX_URL = 2000, WEB_FETCH_MAX_REDIRECTS = 3, DEFAULT_WEB_LINES = 2000, TEXT_TYPE, SKIPPED_ELEMENTS, RAW_TEXT_ELEMENTS, BLOCK_CLOSERS, isAsciiLetter = (code) => code >= 65 && code <= 90 || code >= 97 && code <= 122, isNameCode = (code) => isAsciiLetter(code) || code >= 48 && code <= 57 || code === 45;
+var init_web_fetch = __esm(() => {
+  init_envelope();
+  init_sandbox();
+  init_web_fetch_config();
+  init_web_fetch_config();
+  WEB_FETCH_MAX_BYTES = 512 * 1024;
+  TEXT_TYPE = /^(?:text\/[a-z0-9.+-]+|application\/(?:json|xml|xhtml\+xml|[a-z0-9.+-]+\+(?:json|xml)))(?:\s*;.*)?$/i;
+  SKIPPED_ELEMENTS = new Set(["script", "style", "noscript", "template", "svg", "head"]);
+  RAW_TEXT_ELEMENTS = new Set(["script", "style"]);
+  BLOCK_CLOSERS = new Set(["p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "br", "pre", "blockquote", "table"]);
+});
+
 // src/local/tools.ts
 import { lstatSync as lstatSync10, mkdirSync as mkdirSync8, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname10, join as join13, relative as relative4, resolve as resolve10 } from "path";
@@ -6536,6 +6804,11 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
         const file = guardPath(ctx, String(a.path), "read");
         return docRead(file, String(a.path), a, ctx.docRead, ctx.cwd);
       }
+      case "web_fetch": {
+        if (!ctx.webFetch)
+          return "error: web_fetch is not enabled for this project (local.web_fetch.allow in .agenthub/config.local.json)";
+        return webFetch(String(a.url ?? ""), a, ctx.webFetch, ctx.signal);
+      }
       case "hub_send":
         return a.text ? ctx.send(String(a.text), Array.isArray(a.to) ? a.to.map(String) : undefined) : "error: text is required";
       default:
@@ -6556,13 +6829,14 @@ var APPROVAL_EXPIRED_TEXT = "error: approval expired: no person answered; do not
 ... (${text.length - n} more chars)` : text, GIT_READ, GIT_WRITE, str, fn = (name, description, properties, required) => ({
   type: "function",
   function: { name, description, parameters: { type: "object", properties, required, additionalProperties: false } }
-}), TOOL_SCHEMAS, DOC_READ_SCHEMA;
+}), TOOL_SCHEMAS, DOC_READ_SCHEMA, WEB_FETCH_SCHEMA;
 var init_tools = __esm(() => {
   init_project();
   init_permission_mode();
   init_path_policy();
   init_deny();
   init_doc_read();
+  init_web_fetch();
   init_sandbox();
   ApprovalWaitStop = class ApprovalWaitStop extends Error {
   };
@@ -6578,6 +6852,7 @@ var init_tools = __esm(() => {
     fn("hub_send", "Send a message to the other agents now, before your turn ends. Conclusions only. Your final answer is shared anyway; use this for something that cannot wait.", { text: str, to: { type: "array", items: str } }, ["text"])
   ];
   DOC_READ_SCHEMA = fn("doc_read", "Read a PDF, DOCX or HWPX document inside the project as plain text, through the converters the project configured. Returns numbered lines, bounded; read again with offset for more. Read-only.", { path: str, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } }, ["path"]);
+  WEB_FETCH_SCHEMA = fn("web_fetch", "Read one web page as plain text. https only, and only for hosts the project listed in local.web_fetch.allow; refused in a PII task. A plain GET with no headers or body of yours. Returns numbered lines, bounded; read again with offset for more. Never put anything private or from the task into the URL.", { url: str, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } }, ["url"]);
 });
 
 // src/pi/ceiling.ts
@@ -10789,7 +11064,7 @@ var init_local_worker = __esm(() => {
               throw new ApprovalWaitStop(this.approvalStopReason);
             }
             this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
-            if (name !== "hub_send" && name !== "doc_read" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name))
+            if (name !== "hub_send" && name !== "doc_read" && name !== "web_fetch" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name))
               capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
           }
         } finally {
@@ -10802,12 +11077,14 @@ var init_local_worker = __esm(() => {
       return `(stopped after ${maxSteps} steps) ${progress.last}`.trim();
     }
     toolSchemas() {
-      return this.opts.tools.docRead ? [...TOOL_SCHEMAS, DOC_READ_SCHEMA] : TOOL_SCHEMAS;
+      const extra = [...this.opts.tools.docRead ? [DOC_READ_SCHEMA] : [], ...this.opts.tools.webFetch ? [WEB_FETCH_SCHEMA] : []];
+      return extra.length ? [...TOOL_SCHEMAS, ...extra] : TOOL_SCHEMAS;
     }
     toolContext(envs, turnSignal, pii, reply) {
       const executionGeneration = this.turn;
       return {
         ...this.opts.tools.docRead ? { docRead: { ...this.opts.tools.docRead, pii } } : {},
+        ...this.opts.tools.webFetch ? { webFetch: { ...this.opts.tools.webFetch, pii } } : {},
         cwd: this.opts.cwd,
         deny: this.opts.tools.deny,
         readOnly: this.opts.tools.readOnly,
@@ -10985,7 +11262,7 @@ var init_local_worker = __esm(() => {
       return step + 1 < maxSteps ? undefined : `(review requested changes; step limit reached) ${answer}`;
     }
     observeTool(call, output, policy, nativeTurn) {
-      if (policy?.pii || call.function.name === "doc_read")
+      if (policy?.pii || call.function.name === "doc_read" || call.function.name === "web_fetch")
         return;
       try {
         const command = safeParse(call.function.arguments).command;
@@ -12605,7 +12882,9 @@ function localConfigSchema(v) {
   return { local: v.block({ deny: v.strings, bash_network: (value, key) => {
     if (value !== "direct")
       v.bool(value, key);
-  }, network_allow: v.strings, max_steps: v.number(1, 1e6, true), read_allow: v.strings, doc_read: v.bool }) };
+  }, network_allow: v.strings, max_steps: v.number(1, 1e6, true), read_allow: v.strings, doc_read: v.bool, web_fetch: v.block({ allow: (value, key) => {
+    webFetchAllow(value);
+  } }) }) };
 }
 function piRoutingSchema(v) {
   return { pi: v.block({ dgx_max_context_tokens: v.number(), mlx_max_context_tokens: v.number(), efficient_wait_ms: v.number(0, 119999) }) };
@@ -12624,6 +12903,7 @@ function piEffectiveConfig(raw, fail) {
 }
 var PI_SETTINGS, PI_RESTART_REASONS, LOCAL_RESTART_REASONS;
 var init_native_config_policy = __esm(() => {
+  init_web_fetch_config();
   PI_SETTINGS = [
     { key: "pi.auto_start", group: "Start", label: "Start Pi with the hub", type: "boolean", store: "config", applies: "next use", risk: "raises", floor: false, path: ["pi", "auto_start"] }
   ];
@@ -12637,7 +12917,8 @@ var init_native_config_policy = __esm(() => {
     "local.read_allow": "Existing native sessions retain their sandbox read grants",
     "local.bash_network": "Existing sandbox and egress proxy contracts require a new instance",
     "local.network_allow": "Existing egress proxy ownership requires a new instance",
-    "local.doc_read": "The worker's tool list is bound when its session starts"
+    "local.doc_read": "The worker's tool list is bound when its session starts",
+    "local.web_fetch": "The worker's tool list and its web egress proxy are bound when the hub starts"
   };
 });
 
@@ -21503,6 +21784,7 @@ var MACHINE_LOCAL = [
   "local.bash_network",
   "local.network_allow",
   "local.doc_read",
+  "local.web_fetch",
   "terminal.open",
   "tasks.auto_pull",
   "folder_triggers",
