@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { shellQuote } from "./shell-quote.ts";
 import type { ChildProcess } from "node:child_process";
 import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
@@ -28,7 +29,6 @@ export interface PtyResult {
 type Outcome = PtyResult["outcome"];
 type Winner = { outcome: Outcome };
 
-const shellQuote = (value: string): string => "'" + value.replace(/'/g, "'\\''") + "'";
 
 function commandFor(argv: readonly string[]): string[] {
   const command = process.platform === "darwin"

@@ -2087,7 +2087,7 @@ ahub --project "$scratch" init
 ahub --project "$scratch" projects --json
 ```
 
-Take the fixture's `p_...` id from that last result. Configure `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OPENAI_MODEL` through the normal account setup; do not paste credentials into the command or a receipt. The endpoint must be HTTPS, or HTTP on loopback for test fakes. Then run:
+Take the fixture's `p_...` id from that last result. Configure `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OPENAI_MODEL` through the normal account setup; do not paste credentials into the command or a receipt. The runner uses the configured HTTP or HTTPS OpenAI-compatible endpoint. Then run:
 
 ```sh
 ahub --project "$scratch" --live-test smoke run qwen-dual-output --project-id <fixture-id> --receipt receipt.json --timeout-ms 60000 --json

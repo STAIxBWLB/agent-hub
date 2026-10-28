@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realPath } from "../src/hub/project.ts";
@@ -20,11 +20,11 @@ function fixture(prefix = "ahub-smoke-") {
   writeFileSync(qwen, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(join(import.meta.dir, "fakes/smoke-qwen.ts"))} "$@"\n`); chmodSync(qwen, 0o700);
   return { cwd, home, state, bin, project };
 }
-async function cli(f: ReturnType<typeof fixture>, args: string[]) {
+async function cli(f: ReturnType<typeof fixture>, args: string[], selector = f.cwd) {
   const env = { ...process.env };
   for (const key of ["AGENTHUB_PEER_ID", "AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AMEM_HOME"]) delete env[key];
   Object.assign(env, { AGENTHUB_HOME: f.home, PATH: `${f.bin}:${process.env.PATH}`, OPENAI_API_KEY: "cli-credential-canary", OPENAI_BASE_URL: "http://127.0.0.1:1/v1", OPENAI_MODEL: "fake-model" });
-  const child = Bun.spawn([process.execPath, CLI, "--project", f.cwd, ...args], { cwd: f.cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([process.execPath, CLI, "--project", selector, ...args], { cwd: f.cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   return { stdout, stderr, code };
 }
@@ -47,4 +47,14 @@ test("CLI Q2 fake leg prints its sanitized receipt and keeps a body-free audit",
   const audit = readdirSync(join(f.state, "cli-audit")).filter(name => name.endsWith(".json")).map(name => JSON.parse(readFileSync(join(f.state, "cli-audit", name), "utf8")));
   expect(audit.some(row => row.command === "smoke run" && row.outcome === "run")).toBe(true);
   for (const text of [result.stdout, result.stderr, JSON.stringify(audit)]) for (const value of ["cli-credential-canary", "session-private-id", "prompt-private-body", "AHUB_SMOKE_FIRST"]) expect(text).not.toContain(value);
+});
+
+
+test("CLI preserves symlink selector spelling for disposable refusal", async () => {
+  const f = fixture(), alias = join(f.cwd, "alias");
+  symlinkSync(f.cwd, alias);
+  const result = await cli(f, ["--live-test", "smoke", "run", "qwen-dual-output", "--project-id", f.project.id, "--receipt", "receipt.json", "--json"], alias);
+  expect(result.code).not.toBe(0);
+  expect(result.stderr).toContain("smoke target refused");
+  expect(readdirSync(f.cwd)).not.toContain("receipt.json");
 });

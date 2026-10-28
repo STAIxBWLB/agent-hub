@@ -34,7 +34,7 @@ export async function runSmoke(target: SmokeTarget, options: SmokeOptions, ports
   if (!source.OPENAI_API_KEY?.trim() || !source.OPENAI_BASE_URL?.trim() || !source.OPENAI_MODEL?.trim()) throw new Error("smoke prerequisites unavailable");
   let endpoint: URL;
   try { endpoint = new URL(source.OPENAI_BASE_URL); } catch { throw new Error("smoke prerequisites unavailable"); }
-  if (endpoint.username || endpoint.password || endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname))) throw new Error("smoke prerequisites unavailable");
+  if (endpoint.username || endpoint.password || !["https:", "http:"].includes(endpoint.protocol)) throw new Error("smoke prerequisites unavailable");
   const command = ports.command ?? [Bun.which("qwen", { PATH: source.PATH }) ?? ""];
   if (!command.length || !command[0]) throw new Error("smoke prerequisites unavailable");
   const started = performance.now();
@@ -93,11 +93,12 @@ export async function runSmoke(target: SmokeTarget, options: SmokeOptions, ports
                 if (event.message?.stop_reason === "tool_use" || !text.includes(receipt.counts.stops === 0 ? FIRST : SECOND) || receipt.counts.users !== receipt.counts.stops + 1 || assistant) throw protocolError();
                 assistant = true; receipt.counts.assistants++;
               } else if (event.type === "stream_event") {
+                if (!event.event || typeof event.event.type !== "string") throw protocolError();
                 if (event.event?.type === "message_stop") {
                   if (!assistant || receipt.counts.stops === 0 && !queued) throw protocolError();
                   assistant = false; receipt.counts.stops++;
                   if (receipt.counts.stops === 2) { receipt.checks.protocol = true; receipt.checks.queued = queued; return; }
-                } else if (receipt.counts.users === 1 && !queued) {
+                } else if (receipt.counts.users === 1 && !queued && ["message_start", "content_block_start", "content_block_delta"].includes(event.event.type)) {
                   // Submit while the first streamed turn is observed running; the second user event must follow its stop.
                   submit(SECOND_PROMPT); queued = true;
                 }

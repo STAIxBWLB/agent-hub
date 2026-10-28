@@ -1274,7 +1274,9 @@ const commands: Record<string, () => Promise<void> | void> = {
     const { runSmoke } = await import("./smoke-run.ts");
     const project = registeredProjects(home).find(project => project.root === cwd && project.stateDir === stateDir);
     if (!project) return fail("smoke target refused");
-    const checked = validateSmokeTarget({ cwd, hubHome: home, project, expectedProjectId: values.get("--project-id")!, liveTest });
+    // Keep path spelling for the guard: project selection above canonicalizes symlinks for ordinary CLI commands.
+    const smokeCwd = selector && selector !== project.id ? resolve(invokedFrom, selector) : cwd;
+    const checked = validateSmokeTarget({ cwd: smokeCwd, hubHome: home, project, expectedProjectId: values.get("--project-id")!, liveTest });
     const target = { ...checked, check: () => { checked.check(); assertDelegatedAuditConsumer(); } };
     const abort = new AbortController();
     const interrupted = () => abort.abort();
