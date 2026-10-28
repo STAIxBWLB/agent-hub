@@ -128,8 +128,8 @@ the same retirement decision.
 9. One hub daemon per project directory, with a local bus. Amended by #446:
     opt-in encrypted rooms may connect hubs through an untrusted broker; the room
     boundary does not federate their boards, roles, approvals or memory. X1 defines
-    crypto and wire primitives only; transport and delivery integration remain later
-    phases. Memory replication through git (#258) remains a separate mechanism.
+    crypto and wire primitives only. X2 supplies a standalone broker; the hub link
+    and local delivery integration remain X3/X4. Memory replication through git (#258) remains a separate mechanism.
 10. Shared memory reuses claude-mem as the single store; the hub never runs its own
     memory database. (Amended in #258: the hub owns a long-term store and its graph,
     `docs/memory.md`; claude-mem stays the optional capture and session-recall source.) Native capture stays where it exists (Claude hooks, Codex plugin,
@@ -866,6 +866,164 @@ and refused state ports. Memory fake ports prove API ordering only, not durabili
 or restart safety. Full gate and exact-head CI are separate from native/account or
 two-machine receipts. No room transport, real invite, remote delivery, production
 storage permission, crash-restart replay or X7 receipt is verified by this slice.
+
+## Encrypted rooms: X2 blind broker (#446)
+
+The frozen O1 is self-hosted, zero-dependency `ahub broker serve`. X2 adds a separate
+Bun HTTP/WebSocket process. The hub daemon, local bus, board, roles, approvals and
+memory are untouched. X3 supplies the hub link, person-only room operations and
+one-time enrollment; X4 supplies framing/privacy/priority enforcement. X2 auth
+proves a hub signing identity against membership, not a remote person's consent.
+There is no invitation-secret or pre-enrollment endpoint here: X3 must supply that
+control path before an invited hub opens its member data connection.
+
+### Process and public verification
+
+The command is `ahub broker serve [--hostname <host>] [--port <0..65535>]
+[--public-url <ws[s]://host/>] [--owner <fingerprint>]... [--state-dir <dir>]`. Agent markers and `--live-test`
+delegation refuse before importing the command. Help/parser/audit labels agree;
+audit labels never contain path operands. Default bind is `127.0.0.1:8788`; port 0
+asks the OS for an ephemeral fixture port. Default state is `broker/` beneath the
+selected hub state directory, with an explicit machine-local override available.
+
+The reference listener uses HTTP/WS behind operator-managed TLS termination.
+Public audience is a canonical root URL without credentials, query or fragment;
+`ws:` is loopback-only, and a non-loopback bind requires an explicit WSS audience.
+Proxy `/v1/rooms/<room>` as binary WebSocket and preserve `Origin`. Every HTTP
+request/upgrade carrying any Origin header, even empty, refuses. `GET /health`
+returns fixed version/status only. Audience comes from startup config, never Host.
+No proxy, certificate or firewall is configured by this command, and fixture
+success is not a live TLS receipt.
+
+`--owner` is a repeatable exact signing-fingerprint allowlist for first-roster
+admission. Public WSS audiences (including loopback behind a proxy) and non-loopback
+binds require a nonempty allowlist before storage/listener effects. Other owners
+cannot consume a room slot or squat a room id. Existing room membership remains
+pinned and is not revoked merely by changing this creation allowlist. Loopback with
+no public audience may omit it for development; that open mode is a ceiling, not a
+public service configuration. Do not expose open mode through a proxy.
+
+`startBroker` awaits X1's minimum-Bun/capability self-test before database/listener
+effects. `verifyPublicRoster` and `verifyPublicFrame` share X1's canonical signature
+and pin checks. Their immutable WeakMap-issued products contain public ids, keys,
+epoch/digest metadata only; byte accessors copy their storage, Buffer included.
+They carry no epoch root, private identity, plaintext labels/exposures or body.
+The broker never unwraps a key or opens ciphertext.
+
+### Socket protocol
+
+Input is binary canonical UTF-8 JSON: control cap 1 MiB, challenge cap 8 KiB, with
+X1's smaller roster/frame caps still enforced. Unknown fields, alternate encoding,
+text messages and invalid signatures refuse with fixed codes, no reflected input.
+
+1. `/v1/rooms/<room>` emits `{v:1,type:"challenge",room,broker,nonce,expiresAt,rosterDigest}`.
+   Nonce is 32 random bytes; deadline is local issue time + 10 seconds. Digest is
+   current pinned roster digest, or null for a new room.
+2. The hub replies `{v:1,type:"auth",member,roster,signature}`. New rooms require
+   base64url owner-signed roster bytes and the owner's private-key proof. Existing
+   rooms require `roster:null` and a signer in the current pinned membership.
+   A non-owner cannot bootstrap a former member's old roster into a fresh room.
+3. The Ed25519 transcript is canonical bytes of
+   `["agent-hub.rooms.broker.v1","auth",challenge,member,initialRosterDigestOrNull]`.
+   The existing digest is already in the challenge; the final array item is null
+   for existing rooms. The client builder requires trusted expected broker URL and
+   room. Thus audience, room, socket nonce, deadline, digest and member are bound.
+   The server consumes its one-use challenge before await, then rechecks expiry,
+   current membership/digest and socket generation before effects.
+4. The broker sends current signed roster bytes and
+   `{v:1,type:"ready",room,member,epoch,digest}`. The client verifies the roster and
+   sends `{v:1,type:"roster_ready",digest}` before queue delivery. This ACK is flow
+   control, not proof of epoch-key possession. New rosters require a fresh ACK;
+   stale ACKs cannot restore authorization. One socket per room/hub is current;
+   replacement closes the older socket and fences its awaited work.
+
+Only an authenticated owner publishes newer X1 rosters. Owner fingerprint stays
+pinned; older epochs and same-epoch digest changes refuse. Exact replays are
+idempotent. An adjacent predecessor alone has grace: persisted successful local
+installation time + 60,000 ms. Epoch gaps get no predecessor grace. Replays and
+restart never extend the deadline. Removed/key-changed members disconnect; their
+sender floors and inappropriate queued recipients are purged. During grace only
+still-current sender/receiver keys authorize old frames.
+
+### Bounded ciphertext queue
+
+A raw X1 frame must match its authenticated socket's sender. After signature awaits,
+the latest socket generation/current membership is rechecked. Store admission
+again checks selected current/previous digest, grace clock, replay floor and caps
+inside a synchronous transaction before writes. No unauthenticated frame persists
+or fans out. Control and frame processing is serialized per socket, so ACKs may
+wait behind an outgoing signature check without racing authentication state.
+
+| V1 ceiling | Value |
+| --- | --- |
+| Rooms | 64 |
+| Open sockets / concurrent handlers | 128 / 16 |
+| Pending input per socket | 8 packets, 2 MiB |
+| Pending input globally | 32 MiB |
+| Queued packets per room / globally | 200 / 1,000 |
+| Queued packet bytes per room / globally | 4 MiB / 32 MiB |
+| Queue TTL | 24 hours |
+| Per-socket native backpressure limit | 1 MiB plus the final message allowance |
+| Roster ACK deadline | 30 seconds |
+
+Storage holds original sealed wire bytes plus public recipient fingerprints. It
+commits before `{type:"stored",digest,seq,duplicate}`. Sender sequence/digest floors
+survive queue ACKs/restart: the last accepted digest or an identical retained older
+packet is idempotent without requeueing; conflicting or
+unknown lower sequences refuse. FIFO uses SQLite admission row order, never lexical
+sequence strings or clock ties. Full queues refuse new packets without evicting
+accepted ones. Prior-epoch grace may expire a packet before its ordinary TTL.
+
+One packet per recipient socket is in flight. `{v:1,type:"received",digest}` removes
+only that identity from the packet's remaining recipients, then returns
+`{type:"queue_ack",digest}` and pumps the next packet. Unknown ACKs change nothing.
+These are transport/storage ACKs, not D5's signed recipient application receipt;
+X3 must handle completion and uncertainty in its journal. Disconnect/backpressure
+retains only bounded ciphertext. Revocation, replacement, expiry and shutdown fence
+pending work before storage or fan-out.
+
+The versioned built-in SQLite store uses DELETE journal and EXTRA synchronous
+commits, a private 0700 directory and 0600 database. Exclusive mode retains kernel
+ownership until close; second processes fail closed, and crash releases ownership
+without stale-lock unlink. Existing empty, malformed or unsupported state refuses,
+never silently initializes new pins. Restore validates signed rosters/frames,
+metadata and floors before delivery; expired grace is normal cleanup. See
+[SQLite locking mode](https://www.sqlite.org/pragma.html#pragma_locking_mode) and
+[exclusive access](https://www.sqlite.org/atomiccommit.html#exclusive_access_mode).
+Native buffering includes the [Bun final-message allowance](https://bun.com/docs/runtime/http/websockets).
+
+Schema v2 stores each queued packet's epoch as indexed metadata and has an expiry
+index. Known v1 state migrates in place, retaining pins, floors, ciphertext and
+admission order. Ordinary current lookups are pure; next/ACK use targeted metadata
+expiry and only read the selected ciphertext, while timer/admission sweeps expire
+indexed rows and bounded room pins without parsing every packet. Rotation inspects
+only the changed room's authenticated metadata. Newly admitted packets obey the
+4 MiB per-room share; existing valid larger queues are grandfathered and block new
+admission until ACK/expiry reduces them, never evicted to retrofit the share.
+
+Existing populated directories are accepted only as private recognized broker
+state; unrelated files or non-0700 mode refuse without changing contents or mode.
+Empty directories may be tightened to 0700. Offline operations require an existing
+database and never create a new store to repair a misspelled path.
+
+`ahub broker room drop <room> --yes [--state-dir <dir>]` is person-only, including
+under `--live-test`, and requires the broker stopped: the same exclusive database
+lock refuses an online attempt. It transactionally forgets only the named room's
+pins, sender floors and queued packets, freeing its slot; other rooms stay intact.
+This is an explicit broker-side room reset, not member revocation, secure erase,
+or an application-delivery receipt. Clients retain their own pins/replay state.
+Remove an unwanted owner from the creation allowlist before restarting, otherwise
+that still-approved owner may bootstrap the dropped id again. Use a fresh room
+lifecycle rather than deleting the whole database to regain capacity.
+
+Logs/stats contain fixed event/error codes, public ids, counts and byte totals.
+Canary fixtures separate the encrypting client from the broker process and inspect
+transmitted bytes, retained ciphertext, database and logs. Only clients open the
+body. This is an input/retained-state invariant, not a full runtime heap-dump
+receipt or a claim that malicious input cannot deliberately contain plaintext.
+Traffic analysis, availability attacks, malicious owners, same-user compromise,
+hosted multi-tenant accounts and forward secrecy remain frozen exclusions.
+X3/X4 integration and live TLS/account/X7 two-machine receipts remain separate.
 
 ## Risks
 

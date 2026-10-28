@@ -74,6 +74,49 @@ must hold before decrypted bytes reach the local bus; crypto alone grants no too
 board, task, approval or memory authority. Native and two-machine use remain
 unverified until their named person legs are run.
 
+## Standalone blind broker (#446 X2)
+
+`ahub broker serve` is a separate person-started process, default loopback, with an
+explicit WSS audience behind operator TLS termination. Agent markers and
+`--live-test` delegation refuse before startup. No daemon listener, remote local
+peer, board/role authority or local room delivery is added by this slice.
+
+The broker receives public owner-signed rosters, challenge signatures and sealed
+X1 frames, never epoch roots, private hub keys or OOB invite secrets. It neither
+unwraps keys nor opens bodies. Immutable public proof products defensively copy
+bytes, Buffer included. One-use socket challenges bind broker audience, room,
+expiry, member and roster digest. Any Origin header refuses. Pinned owner/epoch/
+digest and installation + 60,000 ms grace survive restart. Removed members cannot
+authenticate or receive queued traffic; awaited work rechecks membership/generation
+before effects. Exact roster replays never refresh grace.
+
+Initial roster creation is restricted by a repeatable exact owner-fingerprint
+allowlist, mandatory for WSS public audiences and non-loopback binds. Open loopback
+mode is explicitly development-only and must not be proxied publicly. Authenticated
+but unapproved throwaway owners consume no room slots. Existing membership stays
+owner-signed; the creation allowlist alone is not a revocation mechanism.
+
+Count/byte/TTL-bounded private SQLite storage holds original encrypted packets.
+Exclusive kernel ownership prevents competing writers without stale-lock takeover;
+unknown/corrupt state fails closed. Populated unrelated or non-private directories
+refuse without chmod. An offline, person-only `broker room drop <room> --yes`
+reclaims one room under exclusive ownership, deleting its pins/floors/queue without
+resetting other rooms. Clients keep their own pins; remove an unwanted creator
+from the allowlist before restart. Indexed epoch/expiry maintenance avoids parsing
+all queued packets on ordinary reads, and a 4 MiB per-room byte share bounds one
+room's new admissions. Each recipient ACK affects only its own queue
+entry. Broker storage/queue ACKs never mean application completion. Logs/stats are
+fixed codes plus public ids/counts only; see the [X2 protocol and limits](specs/2026-09-19-agent-hub-design.md#encrypted-rooms-x2-blind-broker-446).
+
+Fixtures keep the encrypting client in a different process and check the broker's
+inputs, persisted data and logs for a unique plaintext canary. They do not establish
+live TLS, full heap forensics or two-machine delivery. A malicious peer can send
+its own plaintext; rejected networking bytes do not cease to exist in buffers.
+The confidentiality claim covers the sealed-client path. X3 host authorization/
+enrollment and X4 privacy/framing/role boundaries remain integration obligations;
+traffic metadata, availability, malicious owners and same-user compromise remain
+outside the encryption boundary.
+
 ## What is not defended
 
 - **A malicious local process running as you.** It can read the control token, `hub.db`, the project and your home directory without the hub's help. The token keeps web pages and other users out, not your own processes.

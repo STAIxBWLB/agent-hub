@@ -3544,6 +3544,94 @@
       "replacement": "void join.member;",
       "testFile": "test/rooms-wire.test.ts",
       "testName": "enrollment refuses a correctly authenticated low-order agreement key before consuming the invite"
+    },
+    {
+      "id": "broker-origin",
+      "file": "src/broker/server.ts",
+      "search": "if (req.headers.has(\"origin\")) return new Response(\"forbidden\", { status: 403 });",
+      "replacement": "if (false) return new Response(\"forbidden\", { status: 403 });",
+      "testFile": "test/broker-server.test.ts",
+      "testName": "HTTP and WebSocket browser Origin requests refuse before roster admission"
+    },
+    {
+      "id": "broker-auth-signature",
+      "file": "src/broker/protocol.ts",
+      "search": "if (!await verifyBytes(member, challengeBytes(challenge, auth.member, signedRosterDigest), signature)) fail(\"authentication_failed\");",
+      "replacement": "if (false) fail(\"authentication_failed\");",
+      "testFile": "test/broker-protocol.test.ts",
+      "testName": "broker auth binds the room, broker, nonce and roster context"
+    },
+    {
+      "id": "broker-frame-generation",
+      "file": "src/broker/server.ts",
+      "search": "active(client);\n      const result = store.enqueue(proof, client.member!);",
+      "replacement": "void client;\n      const result = store.enqueue(proof, client.member!);",
+      "testFile": "test/broker-server.test.ts",
+      "testName": "socket replacement and shutdown fence a verified packet waiting before store effects"
+    },
+    {
+      "id": "broker-queue-fifo",
+      "file": "src/broker/store.ts",
+      "search": "AND epoch IN (?,?) ORDER BY rowid",
+      "replacement": "AND epoch IN (?,?) ORDER BY created_at,sender,seq",
+      "testFile": "test/broker-store.test.ts",
+      "testName": "queued frames retain admission order when sequence numbers have different digit lengths"
+    },
+    {
+      "id": "broker-store-exclusive",
+      "file": "src/broker/store.ts",
+      "search": "PRAGMA locking_mode=EXCLUSIVE;",
+      "replacement": "PRAGMA locking_mode=NORMAL;",
+      "testFile": "test/broker-store.test.ts",
+      "testName": "exclusive database ownership releases on close"
+    },
+    {
+      "id": "broker-crypto-startup",
+      "file": "src/broker/server.ts",
+      "search": "await assertRoomCryptoReady();",
+      "replacement": "void assertRoomCryptoReady;",
+      "testFile": "test/broker-server.test.ts",
+      "testName": "startup crypto refusal precedes broker database and listener effects"
+    },
+    {
+      "id": "broker-roster-buffer-copy",
+      "file": "src/rooms/wire.ts",
+      "search": "async function verifyPinnedRosterEnvelope(input: { wire: Uint8Array; pin: OwnerPin }): Promise<{\n  wire: Uint8Array; roster: RosterWire; rosterDigest: string;\n}> {\n  if (!(input.wire instanceof Uint8Array)) fail();\n  const wire = Uint8Array.from(input.wire);\n",
+      "replacement": "async function verifyPinnedRosterEnvelope(input: { wire: Uint8Array; pin: OwnerPin }): Promise<{\n  wire: Uint8Array; roster: RosterWire; rosterDigest: string;\n}> {\n  if (!(input.wire instanceof Uint8Array)) fail();\n  const wire = input.wire.slice();\n",
+      "testFile": "test/broker-protocol.test.ts",
+      "testName": "Buffer-backed public proofs retain verified bytes across input and output mutation"
+    },
+    {
+      "id": "broker-frame-buffer-copy",
+      "file": "src/rooms/wire.ts",
+      "search": "export async function verifyPublicFrame(input: { wire: Uint8Array; roster: VerifiedPublicRoster }): Promise<VerifiedPublicFrame> {\n  if (!(input.wire instanceof Uint8Array)) fail();\n  const wire = Uint8Array.from(input.wire);\n",
+      "replacement": "export async function verifyPublicFrame(input: { wire: Uint8Array; roster: VerifiedPublicRoster }): Promise<VerifiedPublicFrame> {\n  if (!(input.wire instanceof Uint8Array)) fail();\n  const wire = input.wire.slice();\n",
+      "testFile": "test/broker-protocol.test.ts",
+      "testName": "Buffer-backed public proofs retain verified bytes across input and output mutation"
+    },
+    {
+      "id": "broker-retained-duplicate",
+      "file": "src/broker/store.ts",
+      "search": "if (retained) {",
+      "replacement": "if (false) {",
+      "testFile": "test/broker-store.test.ts",
+      "testName": "retained lower-sequence packets deduplicate after a newer floor without inventing removed history"
+    },
+    {
+      "id": "broker-owner-admission",
+      "file": "src/broker/server.ts",
+      "search": "if (owners && !owners.has(auth.member)) throw new BrokerServerError(\"owner_not_allowed\");",
+      "replacement": "if (false) throw new BrokerServerError(\"owner_not_allowed\");",
+      "testFile": "test/broker-server.test.ts",
+      "testName": "unapproved owners consume no room slots and offline drop frees a named slot"
+    },
+    {
+      "id": "broker-public-owner-required",
+      "file": "src/broker/server.ts",
+      "search": "if ((!loopback || configuredAudience?.startsWith(\"wss:\")) && !owners?.size) throw new BrokerServerError(\"owner_allowlist_required\");",
+      "replacement": "if (false) throw new BrokerServerError(\"owner_allowlist_required\");",
+      "testFile": "test/broker-server.test.ts",
+      "testName": "public audience requires an owner allowlist before state or listener effects"
     }
   ]
 }

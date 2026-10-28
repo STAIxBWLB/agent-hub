@@ -118,7 +118,7 @@ function parseRoster(x: unknown): RosterWire {
   if (!members.some(m => m.fingerprint === owner) || wraps.length !== members.length || wraps.some((w, i) => w.owner !== owner || w.recipient !== members[i]!.fingerprint)) fail();
   return { v: 1, type: "roster", room: b64(o.room, 32), epoch: positiveU64(o.epoch), owner, members, wraps, privateNonce: b64(o.privateNonce, 12), privateCiphertext: ciphertext(o.privateCiphertext, 524288), signature: b64(o.signature, 64) };
 }
-function brokerUrl(x: unknown): string {
+export function brokerUrl(x: unknown): string {
   const s = text(x); if (s.length > 2048 || !/^[\x21-\x7e]+$/.test(s)) fail();
   let u: URL; try { u = new URL(s); } catch { fail(); }
   if (u.username || u.password || u.hash || !u.hostname || (u.protocol !== "wss:" && !(u.protocol === "ws:" && (u.hostname === "127.0.0.1" || u.hostname === "[::1]")))) fail();
@@ -152,6 +152,14 @@ async function authenticateIdentity(identity: PublicHubIdentity): Promise<void> 
   const hash = await sha256(decodeBase64url(identity.signingKey, 32));
   if (Array.from(hash, b => b.toString(16).padStart(2, "0")).join("") !== identity.fingerprint) fail("untrusted");
 }
+async function verifyRosterSignature(roster: RosterWire): Promise<void> {
+  const owner = roster.members.find(m => m.fingerprint === roster.owner);
+  if (!owner) fail("untrusted");
+  if (!await verifyBytes(owner, domain("roster-signature", unsigned(roster)), decodeBase64url(roster.signature, 64))) fail("authentication_failed");
+}
+async function verifyFrameSignature(frame: FrameWire, sender: PublicHubIdentity): Promise<void> {
+  if (!await verifyBytes(sender, domain("frame-signature", unsigned(frame)), decodeBase64url(frame.signature, 64))) fail("authentication_failed");
+}
 
 /** Only instances minted by verification carry an epoch key. */
 export interface VerifiedEpoch { readonly room: string; readonly epoch: string; readonly digest: string }
@@ -168,17 +176,90 @@ function rosterContext(roster: Pick<RosterWire, "room" | "epoch" | "owner" | "me
 }
 /** minEpoch="0" is initial enrollment only; an installed epoch requires its digest. */
 export interface OwnerPin { room: string; owner: string; minEpoch: string; digest?: string }
-export async function acceptRoomEpoch(input: { wire: Uint8Array; identity: HubIdentity; pin: OwnerPin }): Promise<VerifiedEpoch> {
+
+async function verifyPinnedRosterEnvelope(input: { wire: Uint8Array; pin: OwnerPin }): Promise<{
+  wire: Uint8Array; roster: RosterWire; rosterDigest: string;
+}> {
+  if (!(input.wire instanceof Uint8Array)) fail();
+  const wire = Uint8Array.from(input.wire);
   await assertRoomCryptoReady();
-  const roster = decodeRoster(input.wire), pin = input.pin;
+  const roster = decodeRoster(wire), pin = input.pin;
   if (roster.room !== pin.room || roster.owner !== pin.owner) fail("untrusted");
   const min = pin.minEpoch === "0" ? "0" : positiveU64(pin.minEpoch);
   const rosterDigest = await digest(canonicalBytes(roster));
   if (BigInt(roster.epoch) < BigInt(min)) fail("wrong_epoch");
   if (roster.epoch === min && (pin.digest === undefined || rosterDigest !== pin.digest)) fail("untrusted");
   for (const member of roster.members) await authenticateIdentity(member);
+  await verifyRosterSignature(roster);
+  return { wire, roster, rosterDigest };
+}
+
+/** Public proof products intentionally contain no epoch key, wrap, or private metadata. */
+export interface VerifiedPublicRoster {
+  readonly room: string;
+  readonly epoch: string;
+  readonly owner: string;
+  readonly digest: string;
+  readonly members: readonly Readonly<PublicHubIdentity>[];
+}
+interface PublicRosterState { wire: Uint8Array; members: readonly Readonly<PublicHubIdentity>[] }
+const publicRosters = new WeakMap<VerifiedPublicRoster, PublicRosterState>();
+function publicRosterState(proof: VerifiedPublicRoster): PublicRosterState {
+  const state = publicRosters.get(proof);
+  if (!state) fail("untrusted");
+  return state;
+}
+export function publicRosterWire(proof: VerifiedPublicRoster): Uint8Array {
+  return Uint8Array.from(publicRosterState(proof).wire);
+}
+export async function verifyPublicRoster(input: { wire: Uint8Array; pin: OwnerPin }): Promise<VerifiedPublicRoster> {
+  const { wire, roster, rosterDigest } = await verifyPinnedRosterEnvelope(input);
+  const members = Object.freeze(roster.members.map(member => Object.freeze({ ...member })));
+  const proof = Object.freeze({ room: roster.room, epoch: roster.epoch, owner: roster.owner, digest: rosterDigest, members });
+  publicRosters.set(proof, { wire, members });
+  return proof;
+}
+
+export interface VerifiedPublicFrame {
+  readonly room: string;
+  readonly epoch: string;
+  readonly sender: string;
+  readonly seq: string;
+  readonly digest: string;
+  readonly rosterDigest: string;
+  readonly recipients: readonly string[];
+}
+interface PublicFrameState { wire: Uint8Array }
+const publicFrames = new WeakMap<VerifiedPublicFrame, PublicFrameState>();
+function publicFrameState(proof: VerifiedPublicFrame): PublicFrameState {
+  const state = publicFrames.get(proof);
+  if (!state) fail("untrusted");
+  return state;
+}
+export function publicFrameWire(proof: VerifiedPublicFrame): Uint8Array {
+  return Uint8Array.from(publicFrameState(proof).wire);
+}
+export async function verifyPublicFrame(input: { wire: Uint8Array; roster: VerifiedPublicRoster }): Promise<VerifiedPublicFrame> {
+  if (!(input.wire instanceof Uint8Array)) fail();
+  const wire = Uint8Array.from(input.wire);
+  await assertRoomCryptoReady();
+  const roster = input.roster;
+  publicRosterState(roster);
+  const frame = decodeFrame(wire);
+  if (frame.room !== roster.room || frame.epoch !== roster.epoch) fail("wrong_epoch");
+  const sender = roster.members.find(member => member.fingerprint === frame.sender);
+  if (!sender || frame.recipients.some(recipient => !roster.members.some(member => member.fingerprint === recipient))) fail("untrusted");
+  await verifyFrameSignature(frame, sender);
+  const frameDigest = await digest(canonicalBytes(frame));
+  const proof = Object.freeze({ room: frame.room, epoch: frame.epoch, sender: frame.sender, seq: frame.seq,
+    digest: frameDigest, rosterDigest: roster.digest, recipients: Object.freeze([...frame.recipients]) });
+  publicFrames.set(proof, { wire });
+  return proof;
+}
+
+export async function acceptRoomEpoch(input: { wire: Uint8Array; identity: HubIdentity; pin: OwnerPin }): Promise<VerifiedEpoch> {
+  const { roster, rosterDigest } = await verifyPinnedRosterEnvelope(input);
   const owner = roster.members.find(m => m.fingerprint === roster.owner)!;
-  if (!await verifyBytes(owner, domain("roster-signature", unsigned(roster)), decodeBase64url(roster.signature, 64))) fail("authentication_failed");
   const own = roster.members.find(m => m.fingerprint === input.identity.public.fingerprint);
   if (!own || own.signingKey !== input.identity.public.signingKey || own.agreementKey !== input.identity.public.agreementKey) fail("untrusted");
   const context = rosterContext(roster);
@@ -298,7 +379,7 @@ export async function openFrame(input: {
   }
   const selectedState = state(selected);
   if (frame.recipients.some(fp => !selectedState.roster.members.some(m => m.fingerprint === fp))) fail("untrusted");
-  if (!await verifyBytes(sender, domain("frame-signature", unsigned(frame)), decodeBase64url(frame.signature, 64))) fail("authentication_failed");
+  await verifyFrameSignature(frame, sender);
   const nonce = decodeBase64url(frame.nonce, 12);
   const plaintext = await decryptEpoch({ key: selectedState.key, purpose: "frame", context: frameContext(selected, frame.sender), aad: frameAad(frame), nonce, ciphertext: decodeBase64url(frame.ciphertext) });
   if (plaintext.length > ROOM_WIRE_LIMITS.plaintext) fail("limit");
