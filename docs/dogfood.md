@@ -110,6 +110,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | PII routing | on | PII tasks and where they ran |
 | External module-kind instances (#754) | off here: no person-pinned module with an explicit headless-instance opt-in is configured | fake mixed builtin/module starts, current-owner and MCP refusal counters, retained stopped bindings and no-import source/target fences (`test/external-instance-*.test.ts`); native/account receipts remain unmeasured |
 | Multiple Jcode instances (#685) | pending | turns per instance |
+| Jcode usage and context readings (#801) | source/fixture coverage and one isolated live probe of 0.99.1 against a fake gateway (docs/verification/2026-10-28-jcode-0.99.1-usage.md); a real account and provider remain unverified; no native quota reader (Jcode gives no window length) | `ahub status` and the dashboard show `jcode_usage_update` occupancy, `ahub usage` and `ahub report` rows for source `jcode_acp`, and `ahub budget` still says `no reading` for Jcode |
 
 ## Operations
 

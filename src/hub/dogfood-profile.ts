@@ -26,7 +26,7 @@ const criterion = (s: unknown): s is string => typeof s === "string" && /^[A-Za-
 
 // Exhaustive maps make producer union changes a compile-time review point.
 const taskStates: Record<TaskState,true> = {backlog:true,proposed:true,in_progress:true,in_review:true,approved:true,changes_requested:true,cancelled:true};
-const usageSources: Record<Extract<StampedEvent,{type:"usage"}>["source"],true> = {omniroute:true,claude_transcript:true,claude_result:true,codex_appserver:true,kimi_wire:true};
+const usageSources: Record<Extract<StampedEvent,{type:"usage"}>["source"],true> = {omniroute:true,claude_transcript:true,claude_result:true,codex_appserver:true,kimi_wire:true,jcode_acp:true};
 const attributions: Record<Attribution,true> = {delivery:true,single_open:true,unattributed:true};
 const screenItems: Record<ScreenItem,true> = {task:true,summary:true,"review note":true,handoff:true,note:true};
 const screenMisses: Record<ScreenMiss,true> = {"too long":true,"off campus":true,timeout:true,unreadable:true,failed:true};

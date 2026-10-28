@@ -9,7 +9,7 @@ export function readNativeContext(definition: AdapterDefinition | undefined, val
 
 /** Native active-context occupancy, separate from accumulated billable usage (#185). */
 export interface ContextReading {
-  source: "claude_statusline" | "codex_token_usage" | "acp_usage_update";
+  source: "claude_statusline" | "codex_token_usage" | "acp_usage_update" | "jcode_usage_update";
   sessionId: string;
   measuredAt: number;
   tokens: number | null;

@@ -2676,6 +2676,12 @@ function acpContextValue(value, sessionId, measuredAt) {
   const raw = object4(value);
   return acpContext({ used: raw.used, size: raw.size }, sessionId, measuredAt);
 }
+function jcodeContextValue(value, sessionId, measuredAt) {
+  const raw = object4(value);
+  const okay = Number.isSafeInteger(raw.used) && raw.used >= 0 && Number.isSafeInteger(raw.size) && raw.size > 0;
+  const tokens = okay ? raw.used : null, window = okay ? raw.size : null;
+  return { source: "jcode_usage_update", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
+}
 var nonnegative = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0, positive = (n) => nonnegative(n) && n > 0, record = (v) => v !== null && typeof v === "object" && !Array.isArray(v), object4 = (v) => record(v) ? v : {};
 
 // src/hub/context-window.ts
@@ -2897,6 +2903,18 @@ var init_acp_owned_group = __esm(() => {
 import { spawn as spawn5 } from "child_process";
 import { createInterface } from "readline";
 import { randomUUID as randomUUID3 } from "crypto";
+function acpTurnUsage(result) {
+  if (!result || typeof result !== "object" || Array.isArray(result))
+    return;
+  const usage = result.usage;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage))
+    return;
+  const u = usage;
+  const count = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+  if (!count(u.inputTokens) || !count(u.outputTokens))
+    return;
+  return { inputTokens: u.inputTokens, outputTokens: u.outputTokens, ...count(u.cachedReadTokens) ? { cacheReadTokens: u.cachedReadTokens } : {}, ...count(u.cachedWriteTokens) ? { cacheWriteTokens: u.cachedWriteTokens } : {} };
+}
 function normalizeACPUsage(value, source = "usage_update") {
   const unknown = { source, availability: "unsupported", shape: "none" };
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -2916,7 +2934,7 @@ function normalizeACPUsage(value, source = "usage_update") {
     const a = f[input], b = f[output];
     return valid(a) && valid(b) && Number.isFinite(a + b) ? { source, availability: "known", shape: "input-output", total: a + b } : { source, availability: "invalid", shape: "input-output" };
   }
-  if (f.used !== undefined) {
+  if (f.used !== undefined || f.size !== undefined) {
     if (!valid(f.used) || !valid(f.size) || !Number.isSafeInteger(f.used) || !Number.isSafeInteger(f.size) || f.size <= 0)
       return { source, availability: "invalid", shape: "context-used" };
     return { source, availability: "unsupported", shape: "context-used", contextUsed: f.used, contextCapacity: f.size };
@@ -3316,6 +3334,11 @@ ${renderDigest(envs, false)}` }] });
           this.activeLegacy = undefined;
         this.endActivity(typeof result?.stopReason === "string" ? result.stopReason : "unknown", result?.stopReason === "cancelled");
         this.observeUsage(result, "prompt_result");
+        const turnUsage = acpTurnUsage(result);
+        if (turnUsage)
+          try {
+            this.opts.onTurnUsage?.(turnUsage, this.sessionId);
+          } catch {}
         this.primed = true;
         const body = this.chunks.join("").trim();
         const answering = this.turnEnvs.length ? this.turnEnvs : envs;
@@ -13638,7 +13661,7 @@ var init_builtin_metadata = __esm(() => {
       } },
       session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan },
       turnEnd: "adapter",
-      budget: { account: "jcode" },
+      budget: { account: "jcode", context: { source: "jcode_usage_update", read: jcodeContextValue } },
       cli: { command: "jcode", entry: { lifecycleAdmission: true, execute: runJcodeEntry }, preview: previewJcode, usage: [["ahub jcode [--mode tui|headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>] [--print-command]", "optional Jcode (roster.jcode, default off): its TUI on the hub-owned ACP session, opened once that session is saved; --mode headless for ACP only; native policy unmanaged, no hub sandbox"]], authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: (mode) => ["jcode", "--mode", mode] },
       display: JCODE_DISPLAY,
       hooks: { recallPlatform: "jcode" }

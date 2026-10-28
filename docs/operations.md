@@ -1336,7 +1336,7 @@ rescans the whole file on each call.
 for the history it already spent. A task with no link, and a record with no task, are `unattributed`.
 
 Every number names its source: `native` (the provider's own counter), `hub count` (the hub's own `tokens` increments, which cover peers that
-report no usage record, such as Jcode), or `unknown`. Kimi's rows are `native`: the hub reads Kimi's own per-request counters from its session wire log and records them as `kimi_wire` usage records (#285 phase 2). Unknown is never shown as 0. `TOTAL` includes cache reads and `WITHOUT CACHE`
+report no usage record), or `unknown`. Jcode's rows are `native` from 0.99.1 on: the hub records the per-turn buckets of its ACP prompt result as `jcode_acp` usage records (#801). Kimi's rows are `native`: the hub reads Kimi's own per-request counters from its session wire log and records them as `kimi_wire` usage records (#285 phase 2). Unknown is never shown as 0. `TOTAL` includes cache reads and `WITHOUT CACHE`
 removes them; Claude's total is the sum of its four reported counters because its transcript carries none (`ahub report` still shows it as unknown), and a source whose input already
 contains the cached part (Codex, the gateway) gets no derived total. A lifetime total that mixes a native and a hub-counted peer is labelled
 `hub count`. When a peer is unknown the overall figure is `partial, at least`: a lower bound that leaves the named peers out, never a sum that counts them
@@ -3573,6 +3573,7 @@ own 5 h and weekly ratios stay unknown. Not yet verified live against Kimi's `/u
 update whenever it names the current session, because 2.1.1's source text
 emits it after the turn settles (read from the source, not yet observed live
 through the hub; docs/smoke.md), so the peer may already be idle.
+Jcode's context occupancy comes from its ACP `usage_update` (`{used, size}`, source `jcode_usage_update`, bound to the adapter's own session id) on the verified 0.99.1 shape; its consumption is one `usage` event per prompt (source `jcode_acp`: the prompt result's `inputTokens`, `outputTokens`, `cachedReadTokens` and `cachedWriteTokens` as the hub's buckets, never Jcode's `totalTokens`, which counts the cached read twice for OpenAI-style providers) and never a `tokens` event or a window. Jcode has no native quota reader: `jcode usage --json` carries a free-text limit name and no window length, so `ahub budget` keeps `no reading` for it and `ahub budget set` stays the way in (receipt: `docs/verification/2026-10-28-jcode-0.99.1-usage.md`).
 Pi, Qwen (until a native source is verified, #625) and other unsupported surfaces show unknown.
 A stale or disconnected reading is unknown, not 0%. Codex's accumulated session
 usage is never used as context occupancy. In the tail (`ahub tail` and the
