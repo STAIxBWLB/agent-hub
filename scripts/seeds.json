@@ -3706,6 +3706,14 @@
       "replacement": "model: this.d.fixedModel(), messages, max_tokens: maxTokens",
       "testFile": "test/ask-corpus.test.ts",
       "testName": "a PII task requires an on-campus call and pins the selected host model before gateway probing"
+    },
+    {
+      "id": "ask-gathered-privacy-not-global-board",
+      "file": "src/hub/daemon.ts",
+      "search": "        let evidencePrivacy: readonly TaskEvidencePrivacy[] = [];\n        const askCurrent = () => !stopping",
+      "replacement": "        let evidencePrivacy: readonly TaskEvidencePrivacy[] = [];\n        const initialBoardRevision = board.statusRevision();\n        const askCurrent = () => board.statusRevision() === initialBoardRevision && !stopping",
+      "testFile": "test/corpus-privacy-daemon.test.ts",
+      "testName": "an unrelated task write or public history update does not invalidate a slow ask"
     }
   ]
 }

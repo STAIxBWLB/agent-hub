@@ -146,29 +146,41 @@ test("daemon corpus reads stay public, honor pii.paths and deny paths, and refus
   expect(JSON.stringify(afterVault)).not.toContain("PUBLIC_CORPUS_CANARY");
 });
 
-async function duringSlowAsk(f: Awaited<ReturnType<typeof corpusHub>>, change: () => Promise<void>) {
+async function duringSlowAsk(f: Awaited<ReturnType<typeof corpusHub>>, change: (ids: readonly string[]) => Promise<void>) {
   const { Inference } = await import("../src/hub/inference.ts");
   const original = Inference.prototype.complete;
   let entered!: () => void, release!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });
   const resume = new Promise<void>(resolve => { release = resolve; });
-  Inference.prototype.complete = async () => {
+  let suppliedIds: string[] = [];
+  Inference.prototype.complete = async (_system, user) => {
+    suppliedIds = JSON.parse(user).evidence.map((row: {id: string}) => row.id);
     entered(); await resume;
     return "The deployment plan is on the board [task #1].";
   };
   const pending = f.console_.request({ t: "ask", question: "deployment release plan" });
   try {
     await Promise.race([started, Bun.sleep(2000).then(() => { throw new Error("ask did not enter fake inference"); })]);
-    await change(); release();
+    await change(suppliedIds); release();
     return await pending;
   } finally { release(); Inference.prototype.complete = original; }
 }
 
 test("an unrelated task write or public history update does not invalidate a slow ask", async () => {
-  for (const mode of ["new-task", "public-history"] as const) {
+  for (const mode of ["new-task", "public-history", "unrelated-existing"] as const) {
     const f = await corpusHub();
     expect((await f.console_.request({ t: "task", op: "hub_task_propose", args: { title: "deployment release plan", class: "implement" } })).ok).toBe(true);
-    const result = await duringSlowAsk(f, async () => {
+    if (mode === "unrelated-existing") {
+      const { Board } = await import("../src/hub/board.ts");
+      const board = new Board(join(f.stateDir, "hub.db"));
+      const realNow = Date.now; let tick = realNow();
+      try {
+        // Advance only synchronous fixture timestamps, so row2 is deterministically outside the25-task cap.
+        Date.now = () => ++tick;
+        for (let n = 2; n <= 28; n++) board.propose("user", { title: `ordinary work ${n}`, class: "implement" });
+      } finally { Date.now = realNow; board.close(); }
+    }
+    const result = await duringSlowAsk(f, async ids => {
       if (mode === "new-task") {
         // Created after evidence gathering, so this row was never supplied to the model.
         expect((await f.console_.request({ t: "task", op: "hub_task_propose", args: { title: "unrelated work", class: "implement" } })).ok).toBe(true);
@@ -176,7 +188,11 @@ test("an unrelated task write or public history update does not invalidate a slo
         // Host fixture simulates another writer. Production writes still go through Tasks.
         const { Board } = await import("../src/hub/board.ts");
         const board = new Board(join(f.stateDir, "hub.db"));
-        try { board.update(1, "hub", "progress", {}, "ordinary public progress"); } finally { board.close(); }
+        try {
+          const changed = mode === "unrelated-existing" ? 2 : 1;
+          if (mode === "unrelated-existing") expect(ids).not.toContain("task #2");
+          board.update(changed, "hub", "progress", {}, "ordinary public progress");
+        } finally { board.close(); }
       }
     });
     expect(result).toMatchObject({ ok: true, found: true, answer: "The deployment plan is on the board [task #1].", pii: false });
