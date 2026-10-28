@@ -450,6 +450,12 @@ export class Board {
   }
   forgetAgentDriftNotice(marker: string): void { this.db.query("DELETE FROM agent_drift_notices WHERE marker=?").run(marker); }
   clearStall(task: number): void { this.taskWrite(() => this.db.query("DELETE FROM task_stalls WHERE task=?").run(task)); }
+  /** One bounded primary-key metadata read for a retry's saved replacement cause. */
+  stall(task: number): TaskStall | undefined {
+    if (!Number.isSafeInteger(task) || task < 1) return undefined;
+    const saved = this.db.query<{ payload: string | null }, [number]>("SELECT CASE WHEN length(CAST(payload AS BLOB)) <= 65536 THEN payload END AS payload FROM task_stalls WHERE task=?").get(task);
+    return saved?.payload == null ? undefined : parseStall(saved.payload, task);
+  }
   stalls(): TaskStall[] {
     return (this.db.query("SELECT task,payload FROM task_stalls ORDER BY task").all() as { task: number; payload: string }[]).flatMap(row => {
       const value = parseStall(row.payload, row.task); return value ? [value] : [];

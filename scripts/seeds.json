@@ -4056,6 +4056,22 @@
       "replacement": "if (false) freshChatCapacity = true;",
       "testFile": "test/rooms-recovery.test.ts",
       "testName": "a fresh 201st signed chat is retired without admission so the matching receipt behind it can settle"
+    },
+    {
+      "id": "queue-pressure-post-await-origin",
+      "file": "src/hub/tasks.ts",
+      "search": "if (transient) {",
+      "replacement": "if (false) {",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "a queue origin survives offline or detached eligibility after an awaited normal plan read"
+    },
+    {
+      "id": "queue-pressure-post-await-policy-handoff",
+      "file": "src/hub/tasks.ts",
+      "search": "const transient = replacing && (replacing.cause.kind === \"no-eligible-peer\" || replacing.cause.kind === \"reservation\") && replacing.cause.code !== \"policy\" && (refusal === \"offline\" || refusal === \"not-attached\");",
+      "replacement": "const transient = !!replacing;",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "a plan policy refusal still replaces a queue origin when its peer goes offline during the same await"
     }
   ]
 }
