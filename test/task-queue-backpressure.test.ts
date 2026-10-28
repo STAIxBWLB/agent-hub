@@ -10,7 +10,7 @@ import { BasePeer } from "../src/hub/peers.ts";
 import { HUB, newEnvelope, USER, type Envelope } from "../src/hub/envelope.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { parseRouting } from "../src/hub/routing.ts";
-import { sdlcConfig } from "../src/hub/sdlc.ts";
+import { sdlcConfig, type SdlcGh } from "../src/hub/sdlc.ts";
 import type { QueueBackpressurePolicy } from "../src/hub/queue-backpressure.ts";
 
 class QueuePeer extends BasePeer {
@@ -22,7 +22,7 @@ class QueuePeer extends BasePeer {
 }
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
-async function fixture(options: { roles?: Record<string, string[]>; onlyOwner?: boolean; wip?: number; tracking?: boolean; pullOnly?: boolean; hold?: boolean; journal?: boolean } = {}) {
+async function fixture(options: { roles?: Record<string, string[]>; onlyOwner?: boolean; wip?: number; tracking?: boolean; pullOnly?: boolean; hold?: boolean; journal?: boolean; gh?: SdlcGh; requiredChecks?: readonly string[]; ciWatch?: { deadlineMs: number; pollMs: number } } = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-task-pressure-"));
   let board = new Board(join(cwd, "hub.db"));
   const control: { policy: QueueBackpressurePolicy; now?: number; tracking: boolean; hold: boolean; lifecycle: "off" | "advise" } = { policy: { max_queued: 0, max_oldest_s: 0 }, tracking: options.tracking ?? true, hold: options.hold ?? true, lifecycle: "off" };
@@ -34,7 +34,8 @@ async function fixture(options: { roles?: Record<string, string[]>; onlyOwner?: 
   const routing = parseRouting(`[local]\nfixed_model="fixture"\n[classes.implement]\npeers=${options.onlyOwner ? '["codex"]' : '["codex","kimi"]'}\n[classes.review]\npeers=["claude"]\n`);
   const roles = options.roles ?? {}, notices: string[] = [];
   const makeTasks = () => new Tasks({ board, bus, routing: () => routing, cwd, project: "pressure", roles, wipLimit: () => options.wip ?? 10,
-    queueBackpressure: () => control.policy, now: () => control.now ?? Date.now(), notify: text => notices.push(text), sdlc: { config: () => ({ ...sdlcConfig(undefined), mode: control.lifecycle }) } });
+    queueBackpressure: () => control.policy, now: () => control.now ?? Date.now(), notify: text => notices.push(text), ...(options.ciWatch ? { ciWatch: options.ciWatch } : {}),
+    sdlc: { config: () => ({ ...sdlcConfig(undefined), mode: control.lifecycle, requiredChecks: [...(options.requiredChecks ?? [])] }), ...(options.gh ? { gh: options.gh } : {}) } });
   let tasks = makeTasks();
   cleanup.push(() => { tasks.stopQueuePressureRechecks(); tasks.stopCiWatchers(); bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
   const enqueue = (peer: string, count: number) => {
@@ -342,4 +343,58 @@ test("queue retry indexes ignore malformed and row-mismatched legacy stall paylo
   expect(skipped.rows).toEqual([]); expect(skipped.afterTask).toBe(999);
   f.bus.pull("codex"); await owned(f, held.id, "codex");
   expect(f.board.get(legacy.id)?.owner).toBeNull();
+});
+
+
+test("a queue-held review moving to its new reviewer keeps the pending CI notification alive", async () => {
+  const head = "e".repeat(40), names = ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"];
+  const state = { conclusion: "IN_PROGRESS" };
+  const pendingRead = deferred(), releaseRead = deferred(), readFinished = deferred();
+  const checks = () => names.map(name => ({ name, status: state.conclusion === "IN_PROGRESS" ? "IN_PROGRESS" : "COMPLETED", conclusion: state.conclusion === "IN_PROGRESS" ? "" : state.conclusion }));
+  const gh: SdlcGh = async args => {
+    if (args[0] === "pr" && args.includes("headRefOid,state,statusCheckRollup")) {
+      pendingRead.resolve();
+      // Hold a real watcher read while queue admission assigns the reviewer.
+      await releaseRead.promise;
+      const reply = { code: 0, stdout: JSON.stringify({ headRefOid: head, state: "OPEN", statusCheckRollup: checks() }) };
+      readFinished.resolve(); return reply;
+    }
+    if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ headRefOid: head, state: "OPEN", statusCheckRollup: checks(), reviewRequests: [], files: [], changedFiles: 0 }) };
+    return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: head, state: "OPEN",
+      commits: { nodes: [{ commit: { oid: head, tree: { oid: "f".repeat(40) }, statusCheckRollup: { contexts: { nodes: checks(), pageInfo: { hasNextPage: false } } } } }] },
+      reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) };
+  };
+  const f = await fixture({ onlyOwner: true, pullOnly: true, hold: false, gh, requiredChecks: names, ciWatch: { deadlineMs: 5000, pollMs: 10 } }); f.wire();
+  const row = f.board.propose(USER, { title: "pending CI and reviewer pressure", class: "implement" });
+  f.board.update(row.id, USER, "accepted", { owner: "codex", reviewer: "claude", state: "in_progress", refs: { commit: head }, sdlc: { stage: "build", repo: "fixture/project", issue: 1, pr: 1, head, localHead: head, localResult: "passed" } });
+  f.control.policy = { max_queued: 1, max_oldest_s: 0 }; f.control.lifecycle = "advise"; f.enqueue("claude", 2);
+  const notices: Envelope[] = [], reviews: Envelope[] = [];
+  f.bus.tap(event => {
+    if (event.t !== "envelope" || event.env.from !== HUB || event.env.refs?.task !== String(row.id)) return;
+    if (event.env.body.startsWith("ci_completed:")) notices.push(event.env);
+    if (event.env.kind === "review") reviews.push(event.env);
+  });
+  try {
+    const done = await f.tasks.done("codex", row.id, "ready while CI runs");
+    expect(done).toMatchObject({ state: "in_review", reviewer: USER });
+    expect(done.history.at(-1)?.queueReviewHeld).toBe(true);
+    await bounded(pendingRead.promise); await settled(f.tasks);
+    expect(notices).toEqual([]);
+    f.bus.pull("claude");
+    const deadline = performance.now() + 5000;
+    while (f.board.get(row.id)?.reviewer !== "claude" && performance.now() < deadline) await new Promise<void>(resolve => setImmediate(resolve));
+    expect(f.board.get(row.id)?.reviewer).toBe("claude"); await settled(f.tasks);
+    expect(reviews).toHaveLength(1); expect(notices).toEqual([]);
+    state.conclusion = "SUCCESS"; releaseRead.resolve();
+    await bounded(readFinished.promise);
+    // Consume the completed fake-GitHub response and all its promise continuations.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const marker = `ci_completed: #${row.id} head ${head.slice(0, 12)} passed`;
+    expect(notices).toHaveLength(2);
+    expect(notices.flatMap(env => env.to ?? []).sort()).toEqual(["claude", "codex"]);
+    expect(notices.every(env => env.body.startsWith(marker) && env.priority === "status")).toBe(true);
+    expect(f.bus.pull("codex")?.some(env => env.body.includes(marker))).toBe(true);
+    expect(f.bus.pull("claude")?.some(env => env.body.includes(marker))).toBe(true);
+    expect(reviews).toHaveLength(1); // Advise-mode CI completion does not duplicate its already offered review.
+  } finally { releaseRead.resolve(); }
 });

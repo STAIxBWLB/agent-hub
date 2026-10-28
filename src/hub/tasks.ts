@@ -3012,7 +3012,8 @@ export class Tasks {
       if (!reviewer || reviewer === USER || selection.reviewBlocked) return undefined;
       valid();
       const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, this.assignmentNote("queue pressure cleared", selection), this.reviewMetadata(selection), task.history.length);
-      this.heldReviews.delete(next.id); this.ciWatchers.cancel(next.id);
+      this.heldReviews.delete(next.id);
+      // The current head is unchanged; its watcher reads the live reviewer at completion.
       this.releaseNotice(`task #${next.id}: queued review request unavailable`, () => this.sendReview(next, reviewer, "", admission));
       return reviewer;
     } catch { return undefined; }

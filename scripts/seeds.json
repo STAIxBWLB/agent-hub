@@ -3800,6 +3800,14 @@
       "replacement": "if (true) return;",
       "testFile": "test/task-queue-backpressure.test.ts",
       "testName": "a pull-only peer draining its queue without a state change reoffers only the queue-held automatic proposal"
+    },
+    {
+      "id": "queue-pressure-ci-notice-continuity",
+      "file": "src/hub/tasks.ts",
+      "search": "this.heldReviews.delete(next.id);\n      // The current head is unchanged; its watcher reads the live reviewer at completion.",
+      "replacement": "this.heldReviews.delete(next.id); this.ciWatchers.cancel(next.id);\n      // The current head is unchanged; its watcher reads the live reviewer at completion.",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "a queue-held review moving to its new reviewer keeps the pending CI notification alive"
     }
   ]
 }
