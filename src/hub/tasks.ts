@@ -198,7 +198,7 @@ export interface TasksDeps {
   /** A cohort formed, changed or was lifted (issue #107), for the record: the benchmark's treatment check reads it. */
   recordCohort?: (cohort: { id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: PeerId[] }) => void;
   sweep?: TaskSweepConfig;
-  /** Shutdown or coordinator work holds task sweeps too. */
+  /** Shutdown or coordinator work (recovery) holds task sweeps, and a guarded merge at its dispatch (#491). */
   sweepHeld?: () => boolean;
   /** Consecutive changes_requested verdicts that move a task to another peer (`tasks.escalate_after`, #488). */
   escalateAfter?: () => number;
@@ -3519,6 +3519,17 @@ export class Tasks {
     return this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
   }
 
+  /**
+   * The links `readMergeQueue` can have read for one subject (#491): the subject and every task holding a PR in the subject's repository (repository names compare
+   * without case, as the queue does; the open set decides which holders it used and is not known here, so all of them). A dependency reaches the queue only through
+   * its receipt in that repository, which makes it a holder; one without such a receipt refuses the merge before this fence is ever read. Any other task cannot
+   * change what the queue saw: a proposal, a plan, a finding or a receipt elsewhere.
+   */
+  private queueLinks(links: DeliveryTask[], subject: DeliveryTask): DeliveryTask[] {
+    const repo = subject.receipt?.repo?.toLowerCase();
+    return links.filter(link => link.id === subject.id || (repo !== undefined && link.receipt?.repo?.toLowerCase() === repo && link.receipt.pr !== undefined));
+  }
+
   async deliveryQueue(repo: string) {
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     const before = workflowHash(this.d.board.list().map(t => ({ id: t.id, state: t.state, after: t.deps, sdlc: t.sdlc, history: t.history.length })));
@@ -3583,14 +3594,16 @@ export class Tasks {
     this.mergesInFlight.add(task.id);
     try {
       const links = this.deliveryLinks(config), subject = links.find(link => link.id === task.id)!;
-      const queueIdentity = workflowHash({ config, links });
+      const queueIdentity = workflowHash({ config, links: this.queueLinks(links, subject) });
       const outcome = await guardedMerge({ mode, subject, state: task.state, taskState: n => this.d.board.get(n)?.state, config, tasks: links, run: this.d.sdlc?.gh ?? sdlcGh, readableMetadata: this.publicMetadataText,
         recordMerge: record=>this.recordMergeResult(task.id,by,record,artifactCurrent),
         beforeMerge: () => {
           if (!this.mergeAuthority(by)) return "merge authority changed during the merge check: nothing was run";
-          // The queue used every link, not only the subject. A changed dependency artifact or ordering edge invalidates that remote evidence.
+          // The queue used the subject, its dependencies and the holders of PRs in its repository (and theirs), not every board link: a change to one of those
+          // (a dependency artifact, an ordering edge, a relink) invalidates that remote evidence, and an unrelated task's change does not.
           const currentConfig = this.d.sdlc?.config() ?? sdlcConfig(undefined);
-          return workflowHash({ config: currentConfig, links: this.deliveryLinks(currentConfig) }) === queueIdentity
+          const currentLinks = this.deliveryLinks(currentConfig), currentSubject = currentLinks.find(link => link.id === task.id);
+          return currentSubject && workflowHash({ config: currentConfig, links: this.queueLinks(currentLinks, currentSubject) }) === queueIdentity
             ? undefined : "merge queue inputs changed during the merge check: nothing was run";
         },
         // Read synchronously at dispatch, after the last PR read: the task (state, receipt, privacy, dependencies, findings), the configuration and mode in force, and whether
@@ -3598,7 +3611,7 @@ export class Tasks {
         fresh: () => {
           const now = this.d.board.get(task.id), cfg = this.d.sdlc?.config() ?? sdlcConfig(undefined);
           const current = now && this.deliveryLinks(cfg).find(link => link.id === now.id);
-          return now && current ? { subject: current, state: now.state, config: cfg, mode: opts.dryRun ? "dry-run" : mergeModeFor(cfg, now.sdlc?.repo), allowed: this.mergeAuthority(by) && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError } : undefined;
+          return now && current ? { subject: current, state: now.state, config: cfg, mode: opts.dryRun ? "dry-run" : mergeModeFor(cfg, now.sdlc?.repo), allowed: this.mergeAuthority(by) && !this.d.sweepHeld?.() && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError } : undefined;
         } });
       if(mode==="on" && !outcome.ran && "refused" in outcome.decision)this.recordMergeRefusal(task.id,by,outcome.decision.refused);
       if(outcome.result?.state==="merged") {
