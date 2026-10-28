@@ -210,11 +210,13 @@ test("the output is bounded: a long page is cut at the output cap with how to co
   const huge = rig({ script: { [URL1]: page("y".repeat(OUTPUT_CAP * 3), "text/plain") } });
   expect((await call(huge.ctx, { url: URL1 })).length).toBeLessThanOrEqual(OUTPUT_CAP + 20);
   let pulled = 0;
-  const endless = new Response(new ReadableStream({ pull(controller) { pulled += 64 * 1024; controller.enqueue(new Uint8Array(64 * 1024).fill(97)); } }), { status: 200, headers: { "content-type": "text/plain" } });
-  const stream = rig({ script: { [URL1]: () => endless } });
+  // a body of 40 MiB: without a bound the tool would read all of it, with one it abandons the stream a chunk or two past the cap
+  const big = () => new Response(new ReadableStream({ pull(controller) { pulled += 64 * 1024; if (pulled > 40 * 1024 * 1024) { controller.close(); return; } controller.enqueue(new Uint8Array(64 * 1024).fill(97)); } }), { status: 200, headers: { "content-type": "text/plain" } });
+  const stream = rig({ script: { [URL1]: big } });
   const out = await call(stream.ctx, { url: URL1 });
-  expect(out).toContain("1\t");
-  expect(pulled, "an endless body is abandoned at the byte cap").toBeLessThanOrEqual(WEB_FETCH_MAX_BYTES + 3 * 64 * 1024);
+  expect(out).toContain("1\t"); expect(out).toContain("(the page was cut at 512 KiB)");
+  expect(pulled, "the body is abandoned at the byte cap, not drained").toBeLessThanOrEqual(WEB_FETCH_MAX_BYTES + 3 * 64 * 1024);
+  expect(pulled).toBeGreaterThanOrEqual(WEB_FETCH_MAX_BYTES);
   expect(await call(ctx, { url: URL1, offset: 99999 })).toContain("is past the end");
 });
 
