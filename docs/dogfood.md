@@ -83,6 +83,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | `ahub ask` | on | answers with cited ids |
 | Source registry, `ahub source add\|list` (#508 AC1, AC2, AC5 CLI) | on after release; person-only and local (no daemon needed); the model PII screen, `hub_source_read`, plan validation and the dashboard list are later slices | `ahub source list` rows (id, size, private, origins); `sources/` under the hub state dir; a refusal in the CLI audit for an agent shell |
 | Machine-local schedules (#512 AC1, AC3) | on after release for a person who adds `schedules` to `config.local.json` (`every` `<n>m\|h\|d`, 15 minute minimum); nothing runs without it, and a committed config cannot set it | `ahub status` shows one `schedule <id>` line (next run, last run, task, skipped runs); the backlog cards the hub proposed; no second card while the first is open |
+| Jcode peers told their hub tools are deferred MCP tools (#912) | on after release for every Jcode peer; nothing to configure | the first prompt of a Jcode session starts with the guidance; a fresh Jcode v0.99.x peer asked to reply with `hub_send` finds and calls it in its first turn (AC1, a live leg the conductor runs with the person after merge) |
 | Code structure in the memory graph (#684) | pending | stale anchors, briefs with related notes |
 
 ## Models, budget and safety

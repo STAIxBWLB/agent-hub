@@ -78,6 +78,17 @@ export const STANDING_INSTRUCTION =
   "with [IMPORTANT] only when the recipient must see it before finishing what it is doing. Unmarked messages are batched. " +
   HUB_MESSAGE_INSTRUCTION;
 
+/**
+ * #912: Jcode defers MCP tools. Only its built-in tools are listed, and an MCP tool appears once the model searches for it, so a Jcode peer with no hint
+ * concludes it has no `hub_*` tools and answers in its final message instead of calling `hub_send`, `hub_task_accept`, `hub_task_done` or `hub_review`.
+ * This is the ONE place the guidance is written: `JcodePeer` puts it in front of the session's role contract (sent once, with the first prompt of a session),
+ * and no other peer's prompt, the AGENTS block or a profile template repeats it. The server name is `JCODE_MCP_NAME` (`src/cli/jcode-mcp.ts`); a test pins them equal.
+ */
+export const JCODE_DEFERRED_TOOLS_INSTRUCTION =
+  "[agent-hub] Your hub tools (hub_send, hub_inbox, hub_task_accept, hub_task_done, hub_review and the rest) are deferred MCP tools from the agent-hub-jcode server: " +
+  "they are not in your visible tool list until you load them. Before you conclude a hub tool is missing, search for it by name with your tool search and load it, " +
+  "then call it. Never report the hub as unavailable without having searched. Answer a hub message with hub_send, not only in your final message.";
+
 const MARKER = /^\s*\[(IMPORTANT|STATUS|FYI)\]\s*/i;
 
 /** A leading [IMPORTANT] / [STATUS] / [FYI] sets the priority and is stripped from the body. */
