@@ -341,6 +341,39 @@ test("an approval that lands while the hub's split is inside its screening await
   expect(r.board.get(draft.id)!.deps ?? []).toEqual([]);
 });
 
+test("each layer holds on its own: Tasks refuses a HUB intake split of a parent that is no longer a draft before the board is asked, and the board refuses when Tasks is bypassed", async () => {
+  const r = await rig({ answer: JSON.stringify(GOOD) });
+  const { draft } = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
+  await r.tasks.approveIntake(USER, draft.id);
+  const revision = r.board.get(draft.id)!.planningRevision ?? 0;
+  const asked: boolean[] = [];
+  const original = r.board.splitBacklog.bind(r.board);
+  r.board.splitBacklog = ((...args: Parameters<typeof original>) => { asked.push(true); return original(...args); }) as typeof original;
+  // Tasks layer: refused before any board call, so nothing reaches the transaction
+  await expect(r.tasks.splitBacklog("hub", { id: draft.id, revision, parts: GOOD.parts, reason: "x" }, { intake: true })).rejects.toThrow("split changed, pinned or already started");
+  expect(asked, "Tasks refused it before the board was asked").toEqual([]);
+  // board layer: the flag Tasks sets for exactly the hub's intake write is honoured by the transaction
+  r.board.requireDraftForNextSplit = true;
+  expect(() => r.board.splitBacklog(draft.id, "hub", revision, GOOD.parts as never, "x")).toThrow("split changed or invalid");
+  // and Tasks sets it: a live draft's intake split through Tasks reaches the board with the requirement on
+  const fresh = (await r.tasks.intake(USER, { text: "another request" })).draft;
+  const seen: boolean[] = [];
+  r.board.splitBacklog = ((...args: Parameters<typeof original>) => { seen.push(r.board.requireDraftForNextSplit); return original(...args); }) as typeof original;
+  await r.tasks.splitBacklog("hub", { id: fresh.id, revision: r.board.get(fresh.id)!.planningRevision ?? 0, parts: GOOD.parts, reason: "x" }, { intake: true });
+  expect(seen, "Tasks turned the requirement on for the hub's intake write").toEqual([true]);
+  // a planner's split of an ordinary card does not turn it on
+  const plain = r.board.propose(USER, { title: "plain", class: "plan", backlog: true });
+  seen.length = 0;
+  await r.tasks.splitBacklog("hub", { id: plain.id, revision: 0, parts: GOOD.parts, reason: "x" }, { intake: true }).catch(() => undefined);
+  const viaPlanner = await rig({ planner: true });
+  const card = viaPlanner.board.propose(USER, { title: "plain", class: "plan", backlog: true });
+  const flags: boolean[] = [];
+  const orig2 = viaPlanner.board.splitBacklog.bind(viaPlanner.board);
+  viaPlanner.board.splitBacklog = ((...args: Parameters<typeof orig2>) => { flags.push(viaPlanner.board.requireDraftForNextSplit); return orig2(...args); }) as typeof orig2;
+  await viaPlanner.tasks.splitBacklog("claude", { id: card.id, revision: 0, parts: GOOD.parts, reason: "x" });
+  expect(flags).toEqual([false]);
+});
+
 test("the board refuses an intake split of a parent that is no longer a draft, whatever the planning revision says", async () => {
   const r = await rig();
   const { draft } = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
