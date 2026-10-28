@@ -51,7 +51,8 @@ async function recoveredIncoming(senderStillExposed: boolean) {
   await guest.install({ name: "work", broker: rotated.broker, wire: rotated.wire, expectedDigest: before.current.digest });
   expect(roomMembers(guest.get("work")!.current).some(member => member.fingerprint === owner.identity.public.fingerprint)).toBe(true);
   const journal = new DeliveryJournal({ file: join(root, "delivery.db"), projectRoot: root, projectId: "room-recovery", instanceId: crypto.randomUUID() });
-  const bus = new Bus({ journal, batchMs: 0, deliveryHeld: () => true }); cleanups.push(() => bus.closeJournal());
+  const roster = { codex: true };
+  const bus = new Bus({ journal, batchMs: 0, deliveryHeld: () => true, rostered: id => id === "codex" && roster.codex }); cleanups.push(() => bus.closeJournal());
   const peer = new HeldLocalPeer(); bus.add(peer); await peer.start();
   const sent: { message: RoomMessage; recipient: string }[] = [];
   const link = { publishApplication: async (receipt: RoomMessage, recipient: string, _outgoing: unknown, current: () => boolean) => {
@@ -63,7 +64,7 @@ async function recoveredIncoming(senderStillExposed: boolean) {
   cleanups.push(() => service.stop());
   service.bind(guest, "work", link);
   const context: RoomLinkContext = { store: guest, name: "work", link, current: () => guest.get("work")?.current.digest === rotated.current.digest };
-  return { owner, guest, service, context, message, digest, bus, peer, sent };
+  return { owner, guest, service, context, message, digest, bus, peer, sent, roster };
 }
 
 test("restored authenticated chat rechecks current sender exposure before local Bus admission", async () => {
@@ -137,4 +138,12 @@ test("real room-link recovery quarantines a pending application from a revoked s
   expect(owner.incomingApplication("work", digest)).toMatchObject({ state: "disposed", disposition: "discard", disposedBy: "user" });
   expect(owner.applicationStatus("work")).toMatchObject({ pending: 0, needsReview: 0 });
   expect(bus.queued("codex")).toBe(0); expect(receives).toBe(0); expect(broker.stats().queuedFrames).toBe(0);
+});
+
+
+test("a locally off-roster peer is not a room admission destination despite retained exposure", async () => {
+  const f = await recoveredIncoming(true); f.roster.codex = false;
+  await f.service.application.receive(f.context, { digest: f.digest, sender: f.owner.identity.public.fingerprint, message: f.message });
+  expect(f.bus.queued("codex")).toBe(0); expect(f.peer.effects).toBe(0);
+  expect(f.guest.applicationReceipt("work", f.digest)).toMatchObject({ outcome: "failed_safe", reason: "not_exposed" });
 });

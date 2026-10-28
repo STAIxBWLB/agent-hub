@@ -3856,6 +3856,86 @@
       "replacement": "if (task.reserved) await this.assignOwner(task, HUB, { current, ...retry });",
       "testFile": "test/task-queue-backpressure.test.ts",
       "testName": "a queue-held person reservation rechecks the WIP cap before taking a newly occupied slot"
+    },
+    {
+      "id": "room-x4-no-implicit-broadcast",
+      "file": "src/hub/bus.ts",
+      "search": "    return (env.to ?? [...this.peers.keys()]).filter((id) => id !== env.from && (known.has(id) || !this.isRostered(id)) && (env.to !== undefined || this.isRostered(id)) && (env.to !== undefined || !remoteId(id)));",
+      "replacement": "    return (env.to ?? [...this.peers.keys()]).filter((id) => id !== env.from && (known.has(id) || !this.isRostered(id)) && (env.to !== undefined || this.isRostered(id)));",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "room peers never join a broadcast and malformed or unknown explicit remote targets refuse before effects"
+    },
+    {
+      "id": "room-x4-private-envelope-boundary",
+      "file": "src/rooms/boundary.ts",
+      "search": "    if (env.kind !== \"chat\" && env.kind !== \"status\" || env.private === true) return refused(\"boundary_refused\");",
+      "replacement": "    if (env.kind !== \"chat\" && env.kind !== \"status\") return refused(\"boundary_refused\");",
+      "testFile": "test/rooms-boundary.test.ts",
+      "testName": "forbidden classes, hub/digest/remote senders, private flags and implicit broadcasts never reach the model"
+    },
+    {
+      "id": "room-x4-unknown-screen-withholds",
+      "file": "src/rooms/boundary.ts",
+      "search": "withheld = verdict?.label !== \"clear\";",
+      "replacement": "withheld = verdict?.label === \"pii\";",
+      "testFile": "test/rooms-boundary.test.ts",
+      "testName": "model pii, unknown, throws and absent ports fail closed without reflecting diagnostics"
+    },
+    {
+      "id": "room-x4-proof-dispatch-fence",
+      "file": "src/rooms/boundary.ts",
+      "search": "try { return state.current() === true ? { ...state.envelope } : undefined; }",
+      "replacement": "try { return { ...state.envelope }; }",
+      "testFile": "test/rooms-boundary.test.ts",
+      "testName": "outbound proofs are opaque, copy-only and become unreadable when their captured authority changes"
+    },
+    {
+      "id": "room-x4-restored-sender-exposure",
+      "file": "src/rooms/service.ts",
+      "search": "    else if (chat.from !== USER && !member.exposedPeers.includes(chat.from)) refusal = \"not_exposed\";",
+      "replacement": "    else if (false) refusal = \"not_exposed\";",
+      "testFile": "test/rooms-recovery.test.ts",
+      "testName": "restored authenticated chat rechecks current sender exposure before local Bus admission"
+    },
+    {
+      "id": "room-x4-uncertain-recipient-binding",
+      "file": "src/hub/bus.ts",
+      "search": "return Object.fromEntries([...values].filter(([peer]) => this.hasRemoteWork(peer, pending)));",
+      "replacement": "return Object.fromEntries([...values].filter(([peer]) => (this.queues.get(peer)?.length ?? 0) > 0));",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "remote identity survives dispatch restart and refuses foreign re-enrollment, a new send and person retry"
+    },
+    {
+      "id": "room-x4-one-remote-pre-effect",
+      "file": "src/hub/bus.ts",
+      "search": "    if (targets.length > 1) throw new PreEffectToolRefusal(`remote targets ${targets.slice(0, 64).join(\", \")}${targets.length > 64 ? ` and ${targets.length - 64} more` : \"\"}: send to each remote peer separately`);",
+      "replacement": "    if (false) throw new PreEffectToolRefusal(`remote targets ${targets.slice(0, 64).join(\", \")}${targets.length > 64 ? ` and ${targets.length - 64} more` : \"\"}: send to each remote peer separately`);",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "two remote targets refuse before limiter, telemetry or local fanout, while one remote plus locals works"
+    },
+    {
+      "id": "room-x4-routing-no-local-role",
+      "file": "src/hub/routing.ts",
+      "search": "if (isRemotePeerId(peer)) return deny(\"policy\", \"remote peers cannot hold local roles\");",
+      "replacement": "if (false) return deny(\"policy\", \"remote peers cannot hold local roles\");",
+      "testFile": "test/rooms-tasks.test.ts",
+      "testName": "remote namespace cannot acquire local owner, reviewer or planner authority from routing data"
+    },
+    {
+      "id": "room-x4-late-proof-evidence-only",
+      "file": "src/hub/bus.ts",
+      "search": "if (row.reason !== reason) this.journal.transition(row.id, \"needs_review\", reason, row.revision);",
+      "replacement": "if (row.reason !== reason) this.journal.transition(row.id, \"completed\", reason, row.revision);",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "late signed evidence for a known recipient never auto-completes needs_review"
+    },
+    {
+      "id": "room-x4-observer-body-stub",
+      "file": "src/hub/bus.ts",
+      "search": "      e = { ...e, env: { ...env, body: \"[remote room message withheld]\", ...(env.to ? { to: env.to.filter(id => /^[a-z][a-z0-9-]{0,31}$/.test(id) || !!parseRemotePeerId(id)) } : {}) }, ...(\"reason\" in e ? { reason: \"remote room delivery\" } : {}) };",
+      "replacement": "      e = { ...e, env: { ...env, body: env.body, ...(env.to ? { to: env.to.filter(id => /^[a-z][a-z0-9-]{0,31}$/.test(id) || !!parseRemotePeerId(id)) } : {}) }, ...(\"reason\" in e ? { reason: \"remote room delivery\" } : {}) };",
+      "testFile": "test/rooms-bus.test.ts",
+      "testName": "remote-origin mixed local batches bypass condensation and memory while telemetry gets only stubs"
     }
   ]
 }

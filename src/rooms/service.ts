@@ -139,7 +139,7 @@ export class RoomChat {
   }
   private exposed(binding: Binding, peer: string): boolean {
     const state = binding.store.get(binding.name);
-    return this.valid(binding) && !!state && this.options.bus.peers.has(peer) && !peer.includes("@")
+    return this.valid(binding) && !!state && this.options.bus.peers.has(peer) && this.options.bus.isRostered(peer) && !peer.includes("@")
       && this.policy.get(binding.name).includes(peer)
       && roomMembers(state.current).some(member => member.fingerprint === binding.store.identity.public.fingerprint && member.exposedPeers.includes(peer));
   }

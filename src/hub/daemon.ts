@@ -3493,7 +3493,7 @@ export async function startDaemon(opts: DaemonOptions) {
   remotePending = room => roomChat.pendingIds(room);
   remoteQueueChanged = () => roomChat.queueChanged();
   const roomCommands = new RoomCommands({ stateDir: opts.stateDir, cwd: opts.cwd,
-    presence: () => [...bus.peers].filter(([id]) => !id.includes("@")).map(([id, peer]) => ({ id, state: peer.state })), chat: roomChat,
+    presence: () => [...bus.peers].filter(([id]) => !id.includes("@") && membershipAllowed(id)).map(([id, peer]) => ({ id, state: peer.state })), chat: roomChat,
   });
   // Room crypto/state failure disables only this optional outbound service, never local work.
   void roomCommands.start().catch(() => log("rooms unavailable"));
