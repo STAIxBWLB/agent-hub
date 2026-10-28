@@ -18,6 +18,8 @@ export const MAX_HEADINGS = 256;
 export const MAX_LINKS = 512;
 export const MAX_TAGS = 64;
 export const MAX_FRONTMATTER_BYTES = 8 * 1024;
+/** A single evidence request may open at most this many freshly checked notes. */
+export const MAX_CORPUS_READS = 32;
 const NOTE_EXT = /\.(md|markdown)$/i;
 /** The one source of the sentence that names where a vault is read, so the refusal and its tests cannot drift. */
 export const VAULT_REASON = "is, lies in or contains an Obsidian vault (a .obsidian/ folder); the hub never reads a vault from disk. Reach it through the Obsidian MCP tools (mcp__obsidian__*) instead";
@@ -179,6 +181,7 @@ export interface CorpusRootReport {
   skipped: { protected: number; links: number; large: number; unreadable: number; pii: number; overCap: number };
 }
 export interface CorpusRefresh { roots: CorpusRootReport[]; notes: number; parsed: number; reused: number; removed: number }
+export interface CorpusRead { record: NoteRecord; text: string; path: string }
 
 const sizeKey = (st: { size: number; mtimeMs: number; ctimeMs: number; ino: number; dev: number }) => `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
 
@@ -207,6 +210,64 @@ export class CorpusIndex {
 
   notes(): NoteRecord[] { return [...this.byId.values()].sort((a, b) => a.id.localeCompare(b.id)); }
   get(id: string): NoteRecord | undefined { return this.byId.get(id); }
+
+  /** Read one indexed note from disk after rebuilding the bounded index and rechecking current policy. Text is never cached. */
+  read(id: string): CorpusRead | undefined { return this.readMany([id])[0]; }
+
+  /**
+   * Freshly read a bounded batch. One full refresh revalidates every configured root and its vault-safe walk; each selected file then gets current lexical policy,
+   * path, inode, size, content-hash and PII checks immediately before any text is returned. A cache hit is metadata only and never supplies old text.
+   */
+  readMany(ids: readonly string[]): CorpusRead[] {
+    if (ids.length === 0) return [];
+    this.refresh();
+    const selected = [...new Set(ids.slice(0, MAX_CORPUS_READS))];
+    const roots = new Map(this.refreshReports().filter((item): item is CorpusRootReport & { label: string; real: string } => !!item.label && !!item.real).map(item => [item.label, item]));
+    const checkedRoots = new Map<string, string>();
+    for (const root of new Set(selected.map(id => this.byId.get(id)?.root).filter((label): label is string => !!label))) {
+      const report = roots.get(root);
+      if (!report) continue;
+      const checked = checkCorpusRoot(report.configured, this.ctx);
+      if (checked.ok && checked.real === report.real) checkedRoots.set(root, checked.real);
+    }
+    const output: CorpusRead[] = [];
+    for (const id of selected) {
+      const record = this.byId.get(id);
+      if (!record) continue;
+      const root = roots.get(record.root);
+      const checkedReal = checkedRoots.get(record.root);
+      if (!root || !checkedReal) continue;
+      const abs = resolve(checkedReal, record.path);
+      const rel = relative(checkedReal, abs);
+      if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel) || !NOTE_EXT.test(abs)) continue;
+      const pii = [...(this.ctx.piiPaths ?? [])], deny = [...(this.ctx.deny ?? [])];
+      if (isDenied(abs, deny) || (pii.length > 0 && (matchesPolicyLexically(this.ctx.cwd, abs, pii) || matchesPolicy(this.ctx.cwd, abs, pii)))) continue;
+      try {
+        let parent = checkedReal;
+        const segments = record.path.split("/");
+        if (!segments.length || segments.some(part => !part || part === "." || part === "..")) continue;
+        for (const segment of segments.slice(0, -1)) {
+          parent = join(parent, segment);
+          const parentStat = lstatSync(parent);
+          if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) { parent = ""; break; }
+        }
+        if (!parent) continue;
+        const st = lstatSync(abs);
+        if (!st.isFile() || st.nlink !== 1 || st.size > MAX_NOTE_BYTES || st.size !== record.bytes) continue;
+        // Each root-relative parent is checked with lstat; an in-root symlink is not an approved notes path either.
+        const bytes = readNote(abs, st);
+        if (bytes.includes(0)) continue;
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        if (createHash("sha256").update(bytes).digest("hex") !== record.sha256 || this.piiFlagged(text)) continue;
+        output.push({ record, text, path: abs });
+      } catch { /* A disappeared, replaced, unreadable or invalid note is not evidence. */ }
+    }
+    return output;
+  }
+
+  private refreshReports(): CorpusRootReport[] { return this.lastReports; }
+
+  private lastReports: CorpusRootReport[] = [];
 
   /** The notes a wikilink target names, in the same root as `fromId`: by path (with or without the extension) or by file name, case and spelling folded. */
   resolveLink(fromId: string, target: string): NoteRecord[] {
@@ -257,6 +318,7 @@ export class CorpusIndex {
     let removed = 0;
     for (const path of [...this.cache.keys()]) if (!seen.has(path)) { this.cache.delete(path); removed++; }
     this.byId = nextById;
+    this.lastReports = reports;
     return { roots: reports, notes: nextById.size, parsed, reused, removed };
   }
 

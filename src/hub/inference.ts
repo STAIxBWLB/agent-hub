@@ -47,15 +47,18 @@ export class Inference {
    * `interactive`: a person is waiting for this one answer (`ahub ask`). It gets its own, longer clock and neither obeys
    * nor trips the backoff that protects the delivery path, so a slow answer cannot switch off triage and digests.
    */
-  async complete(system: string, user: string, maxTokens: number, opts: { interactive?: boolean; timeoutMs?: number } = {}): Promise<string | undefined> {
-    if (!this.cfg.enabled || (!opts.interactive && Date.now() < this.offUntil)) return undefined;
+  async complete(system: string, user: string, maxTokens: number, opts: { interactive?: boolean; timeoutMs?: number; onCampusOnly?: boolean; allowed?: () => boolean } = {}): Promise<string | undefined> {
+    if (!this.cfg.enabled || (!opts.interactive && Date.now() < this.offUntil) || opts.allowed?.() === false) return undefined;
+    // Pin the host-selected on-prem fixed model before any gateway await.
+    let pinnedModel: string | undefined;
+    try { pinnedModel = opts.onCampusOnly ? this.d.fixedModel() : undefined; } catch { return undefined; }
     const abort = new AbortController();
     const limit = opts.timeoutMs ?? this.d.timeoutMs ?? TIMEOUT_MS;
     const quiet = !!opts.interactive;
     let timer: ReturnType<typeof setTimeout> | undefined;
     // One clock over everything, the gateway probe included, not only the model call.
     const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => (abort.abort(), resolve("timeout")), limit)));
-    const result = await Promise.race([this.run(system, user, maxTokens, abort.signal, quiet), timeout]);
+    const result = await Promise.race([this.run(system, user, maxTokens, abort.signal, quiet, opts.onCampusOnly, pinnedModel, opts.allowed), timeout]);
     clearTimeout(timer);
     if (result === "timeout") return quiet ? undefined : this.backOff(`no answer within ${limit / 1000} s`);
     return result;
@@ -68,14 +71,16 @@ export class Inference {
     return undefined;
   }
 
-  private async run(system: string, user: string, maxTokens: number, signal: AbortSignal, quiet = false): Promise<string | undefined> {
+  private async run(system: string, user: string, maxTokens: number, signal: AbortSignal, quiet = false, onCampusOnly = false, pinnedModel?: string, allowed?: () => boolean): Promise<string | undefined> {
     try {
       // No gateway configured is the normal state of a fresh install; one that is configured but unreachable costs a
       // probe every time, so both back off.
       if (!(await this.d.omni.base())) return this.backOff("no gateway configured or reachable", quiet);
+      if (signal.aborted || allowed?.() === false) return undefined;
       const messages = [{ role: "system" as const, content: system }, { role: "user" as const, content: user }];
-      const body = { model: this.d.fixedModel(), messages, max_tokens: maxTokens };
-      const res = await this.d.omni.chat(body, { signal });
+      const body = { model: pinnedModel ?? this.d.fixedModel(), messages, max_tokens: maxTokens };
+      const res = await this.d.omni.chat(body, { signal, ...(onCampusOnly ? { onCampusOnly: true } : {}) });
+      if (allowed?.() === false) return undefined;
       return res.message.content?.trim() || undefined;
     } catch (e) {
       return signal.aborted ? undefined : this.backOff((e as Error).message, quiet);
