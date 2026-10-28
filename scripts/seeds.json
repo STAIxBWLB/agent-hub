@@ -3768,6 +3768,38 @@
       "replacement": "false",
       "testFile": "test/rooms-daemon.test.ts",
       "testName": "room execute requires a matching member fingerprint and burns unconfirmed tickets without installing"
+    },
+    {
+      "id": "queue-pressure-count-admission",
+      "file": "src/hub/queue-backpressure.ts",
+      "search": "if (policy.max_queued > 0 && queue.queued > policy.max_queued) return refuse(\"queue-count\", `queued ${queue.queued} exceeds max ${policy.max_queued}`);",
+      "replacement": "if (false) return refuse(\"queue-count\", `queued ${queue.queued} exceeds max ${policy.max_queued}`);",
+      "testFile": "test/queue-backpressure.test.ts",
+      "testName": "pure queue count admission allows below and equal, and holds only above its threshold"
+    },
+    {
+      "id": "queue-pressure-unknown-age",
+      "file": "src/hub/queue-backpressure.ts",
+      "search": "if (queue.queued === 0 || typeof oldest !== \"number\" || !Number.isSafeInteger(oldest) || oldest < 0 || !Number.isSafeInteger(now) || now < oldest) return refuse(\"queue-age-unknown\", \"oldest queued age unknown\");",
+      "replacement": "if (false) return refuse(\"queue-age-unknown\", \"oldest queued age unknown\");",
+      "testFile": "test/queue-backpressure.test.ts",
+      "testName": "pure oldest-age admission distinguishes threshold equality, verified empty and unknown age"
+    },
+    {
+      "id": "queue-pressure-revision-provenance",
+      "file": "src/hub/delivery-journal.ts",
+      "search": "if (!row || !Number.isSafeInteger(row.revision) || row.revision < 0 || row.metadata_revision !== row.revision) return undefined;",
+      "replacement": "if (!row || !Number.isSafeInteger(row.revision) || row.revision < 0) return undefined;",
+      "testFile": "test/queue-pressure-metadata.test.ts",
+      "testName": "a legacy writer revision invalidates queue summaries instead of making an old queue appear fresh"
+    },
+    {
+      "id": "queue-pressure-drain-reoffer",
+      "file": "src/hub/tasks.ts",
+      "search": "if (this.queuePressureStopped || this.queuePressureKnown === false) return;",
+      "replacement": "if (true) return;",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "a pull-only peer draining its queue without a state change reoffers only the queue-held automatic proposal"
     }
   ]
 }
