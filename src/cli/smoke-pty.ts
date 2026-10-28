@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { shellQuote } from "./shell-quote.ts";
 import type { ChildProcess } from "node:child_process";
@@ -32,7 +33,7 @@ type Winner = { outcome: Outcome };
 
 function commandFor(argv: readonly string[]): string[] {
   const command = process.platform === "darwin"
-    ? [SCRIPT, "-q", "/dev/null", "/bin/sh", "-c", PTY_COMMAND, "ahub-pty", ...argv]
+    ? [process.execPath, join(import.meta.dir, "smoke-pty-bridge.ts"), ...argv]
     : [SCRIPT, "-q", "-e", "-f", "-c", ["/bin/sh", "-c", PTY_COMMAND, "ahub-pty", ...argv].map(shellQuote).join(" "), "/dev/null"];
   return command;
 }
@@ -60,7 +61,8 @@ export async function runPty(argv: readonly string[], options: PtyOptions): Prom
 
   let proc: ChildProcess;
   try {
-    proc = spawn(SCRIPT, commandFor(argv).slice(1), {
+    const command = commandFor(argv);
+    proc = spawn(command[0]!, command.slice(1), {
       cwd: options.cwd,
       env: { ...options.env, TERM: "xterm-256color" },
       detached: true,

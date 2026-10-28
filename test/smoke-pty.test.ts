@@ -104,3 +104,13 @@ test("an abort signal stops the owned process group", async () => {
   expect(result.outcome).toBe("aborted");
   expect(result.cleaned).toBe(true);
 });
+
+test("PTY gives the child a real fixed-size terminal and preserves a nonzero exit code", async () => {
+  const cwd = temp(), chunks: Buffer[] = [];
+  const code = "console.log(JSON.stringify({tty:!!process.stdin.isTTY&&!!process.stdout.isTTY,cols:process.stdout.columns,rows:process.stdout.rows}));process.exit(7)";
+  const result = await runPty([process.execPath, "-e", code], options(cwd, { onOutput: chunk => chunks.push(Buffer.from(chunk)) }));
+  expect(result.outcome).toBe("exited");
+  expect(result.exitCode).toBe(7);
+  expect(result.cleaned).toBe(true);
+  expect(JSON.parse(Buffer.concat(chunks).toString().trim())).toEqual({ tty: true, cols: 120, rows: 40 });
+});
