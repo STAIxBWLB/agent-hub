@@ -4759,7 +4759,10 @@ one explicitly:
 ahub say @codex@hub-guest "Please inspect the public example"
 ```
 
-A local exposed agent can use `hub_send` with that exact address. One remote plus
+A local exposed agent can use `hub_send` with that exact address. Native peers
+can exchange round-trips. Console sends are one-way until X5 supplies a durable
+person inbox: a reply to `user@label` returns signed `failed_safe` with
+"person inbox not supported yet (X5)", rather than being admitted or lost. One remote plus
 local recipients is supported. X4 refuses multiple remote recipients before any
 delivery: send separately. Ordinary broadcasts stay local. Unknown or ambiguous
 addresses refuse. Private turns, PII task references and private envelopes do not

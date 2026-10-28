@@ -8,7 +8,7 @@ import { roomMembers } from "./wire.ts";
 import { RoomStore, RoomStoreError, RoomApplicationLimitError, type RoomOutgoing } from "./store.ts";
 import { RoomPolicy } from "./policy.ts";
 import { RemotePeer } from "./remote-peer.ts";
-import { parseRemotePeerId, type RoomMessage, type RoomReceiptReason } from "./application.ts";
+import { parseRemotePeerId, roomReceiptReasonText, type RoomMessage, type RoomReceiptReason } from "./application.ts";
 import type { RoomLink, RoomLinkApplication, RoomLinkContext, RoomLinkState, RoomPresencePeer } from "./link.ts";
 
 export interface RoomChatOptions {
@@ -21,7 +21,7 @@ export interface RoomChatOptions {
   roster?: (ids: readonly string[]) => void;
   changed?: () => void;
   limits?: () => LimitsConfig;
-  notice?: (value: { code: "application_capacity"; room: string; count: number }) => void;
+  notice?: (value: { code: "application_capacity"; room: string; count: number } | { code: "sequence_gap"; room: string; sender: string; count: string }) => void;
 }
 interface Binding { store: RoomStore; name: string; link: RoomLink; digest: string; online: boolean; states: Map<string, PeerState> }
 interface Target { binding: Binding; member: string; peer: string }
@@ -33,7 +33,7 @@ export class RoomChat {
   private readonly targets = new Map<string, Target>();
   private readonly remotes = new Map<string, RemotePeer>();
   private readonly outgoing = new Map<string, { binding: Binding; row: RoomOutgoing }>();
-  private evidenceCache?: Map<string, { peer: string; roomState: string; disposition?: string; lateReceipt?: string }>;
+  private evidenceCache?: Map<string, { peer: string; roomState: string; disposition?: string; lateReceipt?: string; refusalReason?: string }>;
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = false;
   private limitKey = "";
@@ -49,6 +49,9 @@ export class RoomChat {
         if (!context.current()) return;
         const row = context.store.markApplicationStored(context.name, input.digest, input.seq);
         if (row) this.outcome(this.bindings.get(context.name)!, row);
+      },
+      gap: (context, input) => {
+        if (context.current()) this.options.notice?.({ code: "sequence_gap", room: context.store.get(context.name)!.current.room, sender: input.sender, count: input.count });
       },
     };
   }
@@ -72,9 +75,8 @@ export class RoomChat {
       if (!this.valid(binding) || !state) continue;
       for (const member of roomMembers(state.current)) {
         if (member.fingerprint === binding.store.identity.public.fingerprint) continue;
-        for (const peer of member.exposedPeers) {
-          // USER is a sender identity, not a native peer with a durable local queue.
-          if (peer === USER) continue;
+        for (const peer of new Set([...member.exposedPeers, USER])) {
+          // USER routes only to the remote hub's signed unsupported-inbox refusal, never a human queue.
           const id = `${peer}@${member.label}`;
           if (!parseRemotePeerId(id)) continue;
           const rows = candidates.get(id) ?? []; rows.push({ binding, member: member.fingerprint, peer }); candidates.set(id, rows);
@@ -131,7 +133,7 @@ export class RoomChat {
     }
     for (const [id, remote] of this.remotes) {
       const target = this.targets.get(id);
-      remote.presence(target?.binding.states.get(id) ?? "offline", target?.binding.online === true);
+      remote.presence(target?.peer === USER ? "idle" : target?.binding.states.get(id) ?? "offline", target?.binding.online === true);
     }
     this.options.roster?.([...this.targets.keys()]);
   }
@@ -174,7 +176,7 @@ export class RoomChat {
   private outcome(binding: Binding, row: RoomOutgoing): void {
     const remote = this.remotes.get(row.remotePeer);
     if (row.lateReceipt) this.options.bus.noteLateRemoteReceipt(row.remotePeer, row.deliveryId, row.lateReceipt.outcome);
-    else if (!row.disposition) remote?.receipt({ id: row.deliveryId, state: row.state === "dispatching" ? "needs_review" : row.state, reason: row.state === "completed" ? "room completed (admitted)" : row.state === "failed_safe" ? `room: ${row.reason}` : row.state === "accepted" ? "room broker accepted ciphertext" : "room acknowledgement expired or outcome uncertain" });
+    else if (!row.disposition) remote?.receipt({ id: row.deliveryId, state: row.state === "dispatching" ? "needs_review" : row.state, reason: row.state === "completed" ? "room completed (admitted)" : row.state === "failed_safe" ? roomReceiptReasonText(row.reason ?? "invalid_message") : row.state === "accepted" ? "room broker accepted ciphertext" : "room acknowledgement expired or outcome uncertain" });
     this.refreshOutgoing(binding); this.queueChanged(); this.options.changed?.();
   }
   private rate(from: string, member: string, target: string, body: string): boolean {
@@ -219,7 +221,8 @@ export class RoomChat {
     let refusal: RoomReceiptReason | undefined;
     if (!member || !parseRemotePeerId(from) || !this.sourceUnambiguous(binding, incoming.sender, member.label)) refusal = "not_exposed";
     else if (chat.from !== USER && !member.exposedPeers.includes(chat.from)) refusal = "not_exposed";
-    else if (!this.exposed(binding, chat.to) || chat.to === USER) refusal = "not_exposed";
+    else if (chat.to === USER) refusal = "person_inbox_unsupported";
+    else if (!this.exposed(binding, chat.to)) refusal = "not_exposed";
     else if (chat.priority === "fyi") refusal = "boundary_refused";
     else if (chat.hop > MAX_HOP || chat.hop < (context.store.applicationTraceHop(chat.trace) ?? 0)) refusal = "hop";
     else if (!this.rate(from, incoming.sender, chat.to, chat.body)) refusal = "rate_limited";
@@ -271,14 +274,15 @@ export class RoomChat {
     }
     this.refreshTargets(); this.queueChanged();
   }
-  evidence(peer: string, deliveryId: string): { roomState: string; disposition?: string; lateReceipt?: string } | undefined {
+  evidence(peer: string, deliveryId: string): { roomState: string; disposition?: string; lateReceipt?: string; refusalReason?: string } | undefined {
     if (!peer.includes("@")) return undefined;
     if (!this.evidenceCache) {
-      const cache = new Map<string, { peer: string; roomState: string; disposition?: string; lateReceipt?: string }>();
+      const cache = new Map<string, { peer: string; roomState: string; disposition?: string; lateReceipt?: string; refusalReason?: string }>();
       for (const binding of this.bindings.values()) for (const row of binding.store.applicationOutbox(binding.name)) cache.set(row.deliveryId, {
         peer: row.remotePeer, roomState: row.state === "completed" ? "completed (admitted)" : row.state,
         ...(row.disposition ? { disposition: row.disposition } : {}),
         ...(row.lateReceipt ? { lateReceipt: row.lateReceipt.outcome === "completed" ? "completed (admitted)" : "failed_safe" } : {}),
+        ...(row.reason && row.reason !== "admitted" || row.lateReceipt?.reason && row.lateReceipt.reason !== "admitted" ? { refusalReason: roomReceiptReasonText(row.reason ?? row.lateReceipt!.reason) } : {}),
       });
       this.evidenceCache = cache;
       queueMicrotask(() => { if (this.evidenceCache === cache) this.evidenceCache = undefined; });
@@ -294,12 +298,12 @@ export class RoomChat {
       if (action) this.disposition(row.remotePeer, row.deliveryId, action);
     }
     const incoming = binding.store.applicationStatus(name);
-    return [...binding.store.applicationOutbox(name).sort((a, b) => Number(!ACTIVE.has(a.state) || !!a.disposition) - Number(!ACTIVE.has(b.state) || !!b.disposition) || b.createdAt - a.createdAt).slice(0, 200).map(row => ({ direction: "outbound", id: row.deliveryId, application: row.application, peer: row.remotePeer, state: row.state === "completed" ? "completed (admitted)" : row.state, ...(row.disposition ? { disposition: row.disposition } : {}), ...(row.lateReceipt ? { lateReceipt: row.lateReceipt.outcome === "completed" ? "completed (admitted)" : "failed_safe" } : {}) })),
+    return [...binding.store.applicationOutbox(name).sort((a, b) => Number(!ACTIVE.has(a.state) || !!a.disposition) - Number(!ACTIVE.has(b.state) || !!b.disposition) || b.createdAt - a.createdAt).slice(0, 200).map(row => ({ direction: "outbound", id: row.deliveryId, application: row.application, peer: row.remotePeer, state: row.state === "completed" ? "completed (admitted)" : row.state, ...(row.disposition ? { disposition: row.disposition } : {}), ...(row.lateReceipt ? { lateReceipt: row.lateReceipt.outcome === "completed" ? "completed (admitted)" : "failed_safe" } : {}), ...(row.reason && row.reason !== "admitted" || row.lateReceipt?.reason && row.lateReceipt.reason !== "admitted" ? { refusalReason: row.reason ?? row.lateReceipt!.reason } : {}) })),
       ...incoming.rows.map(row => ({ direction: "inbound", id: row.digest, application: row.application, state: row.state === "disposed" ? `disposed (${row.disposition}, by person)` : row.state, peer: row.peer, ...(row.disposedAt ? { disposedAt: row.disposedAt } : {}) })),
       { direction: "inbound", pending: incoming.pending, needsReview: incoming.needsReview, truncated: incoming.truncated }];
   }
   peers(name: string): { id: string; state: PeerState }[] {
-    return [...this.targets].filter(([, target]) => target.binding.name === name).map(([id]) => ({ id, state: this.remotes.get(id)?.state ?? "offline" })).sort((a, b) => a.id.localeCompare(b.id));
+    return [...this.targets].filter(([, target]) => target.binding.name === name && target.peer !== USER).map(([id]) => ({ id, state: this.remotes.get(id)?.state ?? "offline" })).sort((a, b) => a.id.localeCompare(b.id));
   }
   stop(): void {
     if (this.stopped) return; this.stopped = true;

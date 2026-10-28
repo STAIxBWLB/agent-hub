@@ -143,6 +143,12 @@ test("only the expected recipient's authenticated inbox receipt settles the exac
   expect(f.owner.outbox("work")).toEqual([]);
   expect(f.owner.applicationOutbox("work", true)).toEqual([]);
   expect(f.owner.applicationOutbox("work")).toHaveLength(1);
+  const person = { ...chat(), to: "user" }, wire = await sealed(f.owner, f.guest, { v: 1, type: "chat", envelope: person });
+  const unsupported = await f.owner.queueApplication("work", wire, { ...q.input, deliveryId: crypto.randomUUID(), application: person.id, remotePeer: "user@guest", peer: "user" });
+  const nack = await receipt(f.guest, f.owner, { v: 1, type: "receipt", frame: unsupported.digest, application: person.id, peer: "user", outcome: "failed_safe", reason: "person_inbox_unsupported" });
+  expect(f.owner.applyApplicationReceipt("work", nack)).toMatchObject({ state: "failed_safe", reason: "person_inbox_unsupported" });
+  expect(f.owner.applicationOutbox("work").find(row => row.digest === unsupported.digest)?.state).toBe("failed_safe");
+  expect(f.owner.outbox("work")).toEqual([]); // Signed refusal retires ciphertext; it never claims person queue admission.
 });
 
 test("ack timeout and queue TTL become needs_review; a late signed receipt remains evidence only", async () => {

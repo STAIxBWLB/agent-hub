@@ -1,4 +1,5 @@
 import { decodeBase64url } from "../rooms/crypto.ts";
+import { roomReceiptReasonText, type RoomReceiptReason } from "../rooms/application.ts";
 /** Room mutations are person-only; main.ts refuses agent and live-test calls before importing this module. */
 export const ROOM_USAGE = "usage: ahub room create <name> --broker <url> [--label <id>] | invite <name> [--accept <request>] | join <token> [--name <name>] [--label <id>] | join <name> --roster <signed-roster> | leave <name> | revoke <name> <fingerprint> | expose <name> [<peer>...] | resolve <name> --frame <digest> --action accept|discard (mutations require TTY y/N or --confirm <member-fingerprint-prefix>, 16..64 lowercase hex) | list [--json] | status [<name>] [--json]";
 
@@ -124,12 +125,13 @@ async function confirmMember(member: string, explicit: string | undefined, io: R
 }
 
 type DeliveryState = "pending" | "dispatching" | "accepted" | "completed" | "completed (admitted)" | "failed_safe" | "needs_review" | "disposed" | "disposed (accept, by person)" | "disposed (discard, by person)";
-interface DeliveryRow { direction: "inbound" | "outbound"; id: string; application: string; peer: string; state: DeliveryState; disposition?: "accept" | "completed" | "retry" | "discard"; lateReceipt?: "completed (admitted)" | "failed_safe" }
+interface DeliveryRow { direction: "inbound" | "outbound"; id: string; application: string; peer: string; state: DeliveryState; disposition?: "accept" | "completed" | "retry" | "discard"; lateReceipt?: "completed (admitted)" | "failed_safe"; refusalReason?: RoomReceiptReason }
 interface DeliverySummary { direction: "inbound"; pending: number; needsReview: number; truncated: boolean }
 interface RemotePeerRow { id: string; state: "idle" | "busy" | "paused" | "offline" }
 interface RoomRow { name: string; room: string; owner: string; member: string; epoch: string; state: string; deliveries?: (DeliveryRow | DeliverySummary)[]; remotePeers?: RemotePeerRow[] }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REMOTE_ID = /^[a-z][a-z0-9-]{0,31}@[a-z][a-z0-9-]{0,31}$/;
+const REFUSAL_REASONS: readonly RoomReceiptReason[] = ["admitted", "not_exposed", "boundary_refused", "invalid_message", "rate_limited", "hop", "person_inbox_unsupported"];
 const DELIVERY_STATES: readonly string[] = ["pending", "dispatching", "accepted", "completed", "completed (admitted)", "failed_safe", "needs_review", "disposed", "disposed (accept, by person)", "disposed (discard, by person)"];
 function digestId(value: unknown): value is string {
   if (typeof value !== "string" || value.length !== 43) return false;
@@ -151,10 +153,11 @@ function deliveryRows(value: unknown): (DeliveryRow | DeliverySummary)[] {
       || typeof row.state !== "string" || !DELIVERY_STATES.includes(row.state)) return fail("invalid_reply");
     if (row.disposition !== undefined && (typeof row.disposition !== "string" || (row.direction === "inbound" ? !["accept", "discard"].includes(row.disposition) : !["completed", "retry", "discard"].includes(row.disposition)))) return fail("invalid_reply");
     if (row.lateReceipt !== undefined && row.lateReceipt !== "completed (admitted)" && row.lateReceipt !== "failed_safe") return fail("invalid_reply");
+    if (row.refusalReason !== undefined && (typeof row.refusalReason !== "string" || !REFUSAL_REASONS.includes(row.refusalReason as RoomReceiptReason))) return fail("invalid_reply");
     if (row.direction === "outbound" && row.state.startsWith("disposed")) return fail("invalid_reply");
     const state = row.state === "completed" ? "completed (admitted)" : row.state === "disposed" && row.disposition !== undefined ? `disposed (${row.disposition}, by person)` as DeliveryState : row.state as DeliveryState;
     return { direction: row.direction, id: row.id, application: row.application, peer: row.peer, state,
-      ...(row.disposition !== undefined ? { disposition: row.disposition as DeliveryRow["disposition"] } : {}), ...(row.lateReceipt !== undefined ? { lateReceipt: row.lateReceipt as DeliveryRow["lateReceipt"] } : {}) };
+      ...(row.disposition !== undefined ? { disposition: row.disposition as DeliveryRow["disposition"] } : {}), ...(row.lateReceipt !== undefined ? { lateReceipt: row.lateReceipt as DeliveryRow["lateReceipt"] } : {}), ...(row.refusalReason !== undefined ? { refusalReason: row.refusalReason as RoomReceiptReason } : {}) };
   });
 }
 function remotePeerRows(value: unknown): RemotePeerRow[] {
@@ -200,7 +203,7 @@ export async function runRoomCommand(args: readonly string[], request: RoomReque
       for (const peer of row.remotePeers ?? []) console.log(`  peer ${peer.id}: ${peer.state}`);
       for (const delivery of row.deliveries ?? []) {
         if (!("id" in delivery)) console.log(`  inbound: pending ${delivery.pending}, needs_review ${delivery.needsReview}${delivery.truncated ? "; truncated" : ""}`);
-        else console.log(`  ${delivery.direction} ${delivery.id}: ${delivery.state}; application ${delivery.application}; peer ${delivery.peer}${delivery.disposition ? `; person disposition ${delivery.disposition}` : ""}${delivery.lateReceipt ? `; late receipt evidence ${delivery.lateReceipt}` : ""}`);
+        else console.log(`  ${delivery.direction} ${delivery.id}: ${delivery.state}; application ${delivery.application}; peer ${delivery.peer}${delivery.disposition ? `; person disposition ${delivery.disposition}` : ""}${delivery.lateReceipt ? `; late receipt evidence ${delivery.lateReceipt}` : ""}${delivery.refusalReason ? `; refusal ${roomReceiptReasonText(delivery.refusalReason)}` : ""}`);
       }
     }
     return;

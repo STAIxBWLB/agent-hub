@@ -649,6 +649,19 @@ export class Bus {
     this.trackingQueuePressure();
     const id = receipt.id;
     const before = this.journal.get(id);
+    if (this.peers.get(peer)?.remoteRoom !== undefined && receipt.state === "failed_safe") {
+      // A signed recipient NACK is a terminal known refusal, not a failed native
+      // turn eligible for poison retries. It records no recipient read evidence.
+      this.journal.transition(id, "failed", receipt.reason ?? "remote recipient refused safely");
+      this.activeDeliveries.delete(id); this.remoteTransport.delete(id);
+      for (const env of before?.originals ?? []) { this.attempts.delete(`${peer}:${env.id}`); this.remoteQueueExpires.get(peer)?.delete(env.id); }
+      const last = this.lastDelivery.get(peer);
+      if (before && last && last.out.length === before.out.length && last.out.every((env, index) => env.id === before.out[index]!.id)) this.lastDelivery.delete(peer);
+      this.refreshRecoveryHold(peer);
+      this.onQueues?.();
+      void this.drain(peer);
+      return;
+    }
     const state: JournalDeliveryState = receipt.state === "accepted" ? "accepted" : receipt.state === "completed" ? "completed" : receipt.state === "failed_safe" ? "failed" : "needs_review";
     if (state === "failed" || state === "needs_review") this.deliveryFailed(peer);
     if (state === "completed") this.journal.completeDelivered(id, peer, "adapter", receipt.reason);

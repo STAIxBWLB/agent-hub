@@ -26,6 +26,7 @@ export interface RoomLinkApplication {
   receive(context: RoomLinkContext, input: { digest: string; sender: string; message?: RoomMessage }): Promise<void>;
   online(context: RoomLinkContext): Promise<void>;
   stored(context: RoomLinkContext, input: { digest: string; seq: string }): void;
+  gap?(context: RoomLinkContext, input: { sender: string; count: string }): void;
 }
 export class RoomLinkError extends Error {
   constructor(readonly code: "unavailable" | "invalid_wire" | "state_changed" | "untrusted" | "limit") {
@@ -363,6 +364,7 @@ export class RoomLink {
       this.frameCurrent(session, frame);
       this.options.store.settleInbox(this.options.name, acceptedDigest);
     } else if (result?.status === "accepted") {
+      if (result.gap !== "0") try { this.options.application?.gap?.(this.context(session, digest), { sender: frame.sender, count: result.gap }); } catch { /* metadata observation cannot affect admission */ }
       const sender = roomMembers(latest.current).find(member => member.fingerprint === frame.sender);
       if (!sender) fail("untrusted");
       if (application && this.options.application) {

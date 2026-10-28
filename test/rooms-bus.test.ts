@@ -331,3 +331,35 @@ test("a legacy uncertain journal original without recipient provenance cannot bo
   bus.resolveDelivery(row.id, row.revision, "discard", "person explicitly disposes unknown provenance");
   expect(() => bus.add(target)).not.toThrow();
 });
+
+
+test("a signed remote failed_safe NACK is terminal without native poison retries or read evidence", async () => {
+  const { bus, journal } = fixture(), target = new Peer("user@hub-a", room);
+  let delivered = 0, failed = 0, memory = 0;
+  bus.onDelivered = () => { delivered++; }; bus.onDeliveryFailed = () => { failed++; }; bus.onMemoryDelivery = () => { memory++; };
+  target.accepted = async (_envs, id) => {
+    target.set("busy");
+    target.onDelivery?.({ id: id!, state: "failed_safe", reason: "remote user inbox is not supported" });
+    target.set("idle");
+  };
+  bus.add(target);
+  const env = newEnvelope("user", "unsupported recipient", { to: [target.id] }); bus.publish(env);
+  await target.start(); await until(() => target.batches.length > 0 && !bus.hasInFlight(target.id));
+  expect(target.batches).toHaveLength(1); expect(bus.queueIds(target.id)).toEqual([]); expect(bus.attemptState()).toEqual({});
+  expect(journal.list(target.id)).toEqual([expect.objectContaining({ state: "failed", reason: "remote user inbox is not supported", originals: [env] })]);
+  expect(journal.unresolved(target.id)).toEqual([]); expect(bus.failingPeers()).toEqual({});
+  expect(delivered).toBe(0); expect(failed).toBe(0); expect(memory).toBe(0);
+});
+
+test("a native failed_safe receipt still retains its original for the existing retry path", async () => {
+  const { bus, journal } = fixture(), target = new Peer("native"); let failed = 0;
+  bus.onDeliveryFailed = () => { failed++; };
+  target.accepted = async (_envs, id) => { target.set("busy"); target.onDelivery?.({ id: id!, state: "failed_safe", reason: "native safe failure" }); };
+  bus.add(target);
+  const env = newEnvelope("user", "native retry control", { to: [target.id] }); bus.publish(env);
+  await target.start(); await until(() => target.batches.length === 1 && bus.queueIds(target.id).includes(env.id));
+  expect(bus.queueIds(target.id)).toEqual([env.id]); expect(bus.attemptState()).toEqual({ [`${target.id}:${env.id}`]: 1 });
+  expect(journal.list(target.id).some(row => row.state === "failed" && row.reason === "native safe failure")).toBe(true);
+  expect(failed).toBe(1);
+  await target.stop();
+});

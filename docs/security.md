@@ -681,3 +681,7 @@ All-unsettled capacity refuses with ids/counts, and person disposition releases
 settled capacity. This state protects against other users, not hostile code
 running as the same user with access to the private room keys. Native/account,
 live TLS/proxy forwarding and X7 two-machine behavior remain unverified here.
+
+The console is a one-way room sender in X4. Replies to `user@label` receive an
+authenticated unsupported-person-inbox NACK, retained as a known terminal
+`failed_safe` outcome, never silently retried or claimed as person admission.

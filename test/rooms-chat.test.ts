@@ -11,6 +11,7 @@ import { parseRouting } from "../src/hub/routing.ts";
 import { Board } from "../src/hub/board.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { RoomCommands } from "../src/rooms/commands.ts";
+import { runRoomCommand } from "../src/cli/room.ts";
 import { RoomChat } from "../src/rooms/service.ts";
 import type { PiiVerdict } from "../src/hub/inference.ts";
 
@@ -206,4 +207,55 @@ test("leaving and rejoining the same room rebinds an existing remote target befo
   expect(f.b.peer.got.filter(row => row.id === first.id)).toHaveLength(1);
   expect(f.b.peer.got.filter(row => row.id === second.id)).toHaveLength(1);
   expect((await deliveries(f.a)).filter(row => row.application === second.id).map(row => row.state)).toEqual(["completed (admitted)"]);
+});
+
+
+test("a real native message to user@label receives a signed unsupported-person-inbox refusal and never enters a human queue", async () => {
+  const f = await mesh(), direct = newEnvelope("codex", "message for remote person", { to: ["user@beta"], priority: "status" });
+  expect(f.a.chat.peers("work").map(row => row.id)).not.toContain("user@beta");
+  expect(f.a.bus.publish(direct)).toEqual(["user@beta"]);
+  await f.wait(async () => (await deliveries(f.a)).some(row => row.application === direct.id && row.state === "failed_safe"), "signed person inbox unsupported receipt");
+  const denied = (await deliveries(f.a)).find(row => row.application === direct.id)!;
+  expect(denied.refusalReason).toBe("person_inbox_unsupported");
+  expect(f.b.peer.got).toEqual([]); expect(f.b.peer.running).toBe(0); expect(f.b.bus.queued("user")).toBe(0);
+  expect(f.a.bus.queueShow(String(denied.id))).toMatchObject({ peer: "user@beta", state: "failed" });
+  expect(f.a.bus.queued("user@beta")).toBe(0); expect(f.a.bus.queueSummary("user@beta").needsReview).toBe(0);
+  const human: string[] = [], original = console.log;
+  console.log = (...values: unknown[]) => { human.push(values.map(String).join(" ")); };
+  try { await runRoomCommand(["status", "work"], async () => ({ ok: true, rooms: await f.a.commands.rows("work") })); }
+  finally { console.log = original; }
+  expect(human.join("\n")).toContain("person inbox not supported yet (X5)");
+  const json: string[] = [];
+  console.log = (...values: unknown[]) => { json.push(values.map(String).join(" ")); };
+  try { await runRoomCommand(["status", "work", "--json"], async () => ({ ok: true, rooms: await f.a.commands.rows("work") })); }
+  finally { console.log = original; }
+  expect(JSON.parse(json.join("\n"))[0].deliveries.find((row: Record<string, unknown>) => row.application === direct.id).refusalReason).toBe("person_inbox_unsupported");
+  expect((await deliveries(f.a)).filter(row => row.application === direct.id).some(row => row.state === "completed (admitted)")).toBe(false);
+
+  // A person may ask a remote native peer; that native peer's addressed reply must not disappear or claim admission into a person inbox.
+  const question = newEnvelope("user", "question for the remote coding peer", { to: ["codex@beta"], priority: "status" });
+  expect(f.a.bus.publish(question)).toEqual(["codex@beta"]);
+  await f.wait(() => f.b.peer.got.some(row => row.id === question.id), "one-way person question admitted to remote native peer");
+  const received = f.b.peer.got.find(row => row.id === question.id)!;
+  expect(received.from).toBe("user@alpha");
+  const answer = newEnvelope("codex", "reply to the remote person", { inReplyTo: received, priority: "status" });
+  expect(answer.to).toEqual(["user@alpha"]); expect(f.b.bus.publish(answer)).toEqual(["user@alpha"]);
+  await f.wait(async () => (await deliveries(f.b)).some(row => row.application === answer.id && row.state === "failed_safe"), "signed refusal for the addressed native reply");
+  const failedReply = (await deliveries(f.b)).find(row => row.application === answer.id)!;
+  expect(failedReply.refusalReason).toBe("person_inbox_unsupported");
+  expect(f.a.peer.got).toEqual([]); expect(f.a.bus.queued("user")).toBe(0); expect(f.b.peer.got.filter(row => row.id === question.id)).toHaveLength(1);
+  expect(f.b.bus.queueShow(String(failedReply.id))).toMatchObject({ peer: "user@alpha", state: "failed" });
+  expect(f.b.bus.queued("user@alpha")).toBe(0);
+  expect((await deliveries(f.b)).filter(row => row.application === answer.id).some(row => row.state === "completed (admitted)")).toBe(false);
+});
+
+
+test("room delivery refusal rendering rejects an unknown reason instead of printing diagnostic text", async () => {
+  const lines: string[] = [], original = console.log;
+  console.log = (...values: unknown[]) => { lines.push(values.map(String).join(" ")); };
+  try {
+    await expect(runRoomCommand(["status", "work"], async () => ({ ok: true, rooms: [{ name: "work", room: "A".repeat(43), owner: "1".repeat(64), member: "2".repeat(64), epoch: "1", state: "online",
+      deliveries: [{ direction: "outbound", id: crypto.randomUUID(), application: crypto.randomUUID(), peer: "user@beta", state: "failed_safe", refusalReason: "PRIVATE_DIAGNOSTIC_CANARY" }] }] }))).rejects.toThrow("invalid control reply");
+    expect(lines).toEqual([]);
+  } finally { console.log = original; }
 });

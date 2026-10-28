@@ -1204,14 +1204,17 @@ addresses across rooms are inert. Queue recipient bindings survive active and
 uncertain journal rows; neither a restart nor a person retry may substitute a
 new fingerprint reusing the label. Unknown legacy bindings become uncertainty,
 not newly inferred identity. A current exposed local native peer must be the
-incoming destination. The native console is a sender identity, not such a queue.
+incoming destination. The native console is a one-way sender identity in X4. A reply to `user@label`
+receives a signed `failed_safe/person_inbox_unsupported` NACK with the fixed
+reason "person inbox not supported yet (X5)"; no person queue or admission is
+invented. Remote replies to people need the separate X5 durable person inbox.
 
 ### Encrypted application wire
 
 X1 frames carry canonical version-1 `chat` or `receipt` payloads. Chat carries
 id, trace, hop, local from/to ids, chat/status kind, capped priority, body and the
 sender-claimed timestamp. Receipt carries the exact original frame digest,
-application id, destination peer, closed outcome and fixed reason. Unknown
+application id, destination peer, closed outcome and fixed reason (including the explicit unsupported-person-inbox NACK). Unknown
 fields or kinds refuse. Only the expected recipient hub's authenticated receipt
 can settle an outgoing application. Receipt frames produce no application
 receipt of their own. Incoming ids are fully validated before framing, bodies
@@ -1250,7 +1253,8 @@ per room, settled rows evicted first); outside it there is no historical trace
 claim, and MAX_HOP 3 still bounds every trace. Before local admission a hop below
 the retained maximum for that trace refuses; equal or higher hops remain allowed.
 There is no second trace ledger. Sender timestamps do not order messages or
-supply host expiry provenance; gaps are accepted and reported, never waited on.
+supply host expiry provenance; gaps are accepted and reported as signed frame
+sequence counts, never waited on. They do not prove which chat bodies were lost.
 
 Offline Bus queues count toward the 200-per-room ceiling before transport starts;
 `hub_send` refuses beyond it. Original host deadlines survive handoff and restart.

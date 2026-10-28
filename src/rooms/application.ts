@@ -8,7 +8,7 @@ export interface RoomChatEnvelope {
   id: string; trace: string; hop: number; from: string; to: string;
   kind: "chat" | "status"; priority: Priority; body: string; ts: number;
 }
-export type RoomReceiptReason = "admitted" | "not_exposed" | "boundary_refused" | "invalid_message" | "rate_limited" | "hop";
+export type RoomReceiptReason = "admitted" | "not_exposed" | "boundary_refused" | "invalid_message" | "rate_limited" | "hop" | "person_inbox_unsupported";
 export type RoomMessage =
   | { v: 1; type: "chat"; envelope: RoomChatEnvelope }
   | { v: 1; type: "receipt"; frame: string; application: string; peer: string; outcome: "completed" | "failed_safe"; reason: RoomReceiptReason };
@@ -19,7 +19,16 @@ function fail(code: "invalid_message" | "limit" = "invalid_message"): never { th
 const LOCAL_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const REMOTE_ID = /^([a-z][a-z0-9-]{0,31})@([a-z][a-z0-9-]{0,31})$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const REASONS: readonly RoomReceiptReason[] = ["admitted", "not_exposed", "boundary_refused", "invalid_message", "rate_limited", "hop"];
+const REASON_TEXT: Readonly<Record<RoomReceiptReason, string>> = Object.freeze({
+  admitted: "admitted", not_exposed: "peer not exposed", boundary_refused: "room boundary refused",
+  invalid_message: "invalid room message", rate_limited: "room rate limit", hop: "hop limit",
+  person_inbox_unsupported: "person inbox not supported yet (X5)",
+});
+const REASONS: readonly RoomReceiptReason[] = ["admitted", "not_exposed", "boundary_refused", "invalid_message", "rate_limited", "hop", "person_inbox_unsupported"];
+/** Fixed operator text only; a diagnostic or remote field can never become a rendered reason. */
+export function roomReceiptReasonText(reason: RoomReceiptReason): string {
+  return Object.hasOwn(REASON_TEXT, reason) ? REASON_TEXT[reason] : "room receipt unavailable";
+}
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const encoder = new TextEncoder();
 

@@ -3486,7 +3486,7 @@ export async function startDaemon(opts: DaemonOptions) {
     screen: opts.piiScreen ?? (text => screenPii(text, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })),
     policyVersion: () => configRevision,
     limits: () => config.limits,
-    notice: value => notify(`room ${value.room}: application capacity reached (${value.count}); resolve incoming uncertainty with ahub room resolve`),
+    notice: value => notify(value.code === "application_capacity" ? `room ${value.room}: application capacity reached (${value.count}); resolve incoming uncertainty with ahub room resolve` : `room ${value.room}: signed frame sequence gap ${value.count} from ${value.sender}`),
     roster: ids => { remoteRoster.clear(); for (const id of ids) remoteRoster.add(id); },
     changed: () => { if (ready && !stopping) writeStatus(); },
   });
