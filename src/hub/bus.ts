@@ -587,6 +587,8 @@ export class Bus {
     if (action === "retry" && remoteId(record.peer)) {
       const peer = this.peers.get(record.peer), room = this.remoteQueueRooms.get(record.peer), member = this.remoteQueueMembers.get(record.peer);
       if (record.state !== "needs_review" || record.originals.length !== 1 || !room || !remoteFingerprint(member) || peer?.remoteRoom !== room || peer.remoteMember !== member) throw new Error("remote original identity unavailable or changed; discard it or send a new message explicitly");
+      const deadline = this.remoteQueueExpires.get(record.peer)?.get(record.originals[0]!.id);
+      if (!Number.isSafeInteger(deadline) || deadline! <= Date.now()) throw new PreEffectToolRefusal("remote original deadline unavailable or expired; discard it or send a new message explicitly");
       this.checkRemotePublication(record.originals[0]!);
     }
     const recipientConsent = actor === `peer:${record.peer}` && action === "retry" && record.state === "needs_review";
