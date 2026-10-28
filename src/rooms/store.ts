@@ -13,6 +13,7 @@ export class RoomStoreError extends Error {
 }
 function fail(code: RoomStoreCode): never { throw new RoomStoreError(code); }
 const DB_NAME = "rooms.db", SCHEMA = 1, GRACE_MS = 60_000;
+const ROOM_DB_BUSY_TIMEOUT_MS = 1;
 // ponytail: keep at most 256 historical sender floors per room; refuse new senders at the ceiling until versioned archival preserves replay proofs.
 const NAME = /^[a-z][a-z0-9-]{0,31}$/;
 interface Row { name: string; room: string; broker: string; owner: string; epoch: string; digest: string; wire: Uint8Array; previous_wire: Uint8Array | null; previous_digest: string | null; previous_epoch: string | null; previous_expires: number | null; left: number }
@@ -78,7 +79,8 @@ export class RoomStore {
       const st = lstatSync(file);
       if (!st.isFile() || st.isSymbolicLink() || st.nlink !== 1 || (st.mode & 0o777) !== 0o600) fail("invalid");
       db = new Database(file, { strict: true });
-      db.exec("PRAGMA busy_timeout=1; PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE;");
+      db.run(`PRAGMA busy_timeout = ${ROOM_DB_BUSY_TIMEOUT_MS}`);
+      db.exec("PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE;");
       const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
       if (version !== 0 && version !== SCHEMA) fail("unsupported");
       if (version === 0) {
