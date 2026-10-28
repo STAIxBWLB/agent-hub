@@ -33,6 +33,9 @@ const git = (top: string | Repo, args: string[], env: Record<string, string> = {
   const result = hubGitSync(argv, {
     encoding: "utf8", env: { ...repoGitEnv(top), ...env }, ...(maxBuffer === undefined ? {} : { maxBuffer }),
     ...(input === undefined ? {} : { input }),
+    // ponytail: a host-held clock (`budget.now`, only the host-only snapshotClock seam sets it) holds the deadline, so the child's wall-clock timeout is the 10 s ceiling, not the remaining budget:
+    // with the clock fixed the remaining budget never shrinks, and 250 ms of real time per child timed a slow git out under load (#554). Production never sets `now`, so its child is still killed at the budget.
+    // A child past the 10 s ceiling still reports ETIMEDOUT below and the evidence stays unknown. Upgrade path: a fake spawn seam, if a held clock ever needs to model a slow child.
     timeout: budget?.now ? SNAPSHOT_TIMEOUT_MS : Math.max(1, Math.min(SNAPSHOT_TIMEOUT_MS, Math.floor(remaining))),
   });
   if (budget && (budgetNow(budget) >= budget.deadline || (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")) throw new SnapshotBudgetExceeded();
