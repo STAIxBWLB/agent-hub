@@ -552,10 +552,16 @@ export class Board {
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
   }
 
+  /** #334: set by `Tasks` for exactly the next `splitBacklog` and cleared by it, so the hub's own intake split requires its parent to still be a draft. */
+  requireDraftForNextSplit = false;
   splitBacklog(id: number, by: PeerId, revision: number, parts: (Parameters<Board["propose"]>[1] & { fields?: PlanningFields; afterParts?: number[]; screeningNote?: string })[], note: string, withheld = false): { parent: Task; children: Task[] } {
+    const requireDraft = this.requireDraftForNextSplit; this.requireDraftForNextSplit = false;
     return this.atomic(() => {
       const parent = this.get(id);
       if (!parent || parent.state !== "backlog" || parent.owner || taskHasStarted(parent) || (parent.planningRevision ?? 0) !== revision || parts.length < 2 || parts.length > 8) throw new Error("split changed or invalid");
+      // #334: the hub's own intake split is only ever for a draft. An approval clears the mark without moving the planning revision, so the revision alone cannot tell the
+      // person approved the card while the model answered; checked here, in the same transaction as the write, nothing can slip between this and the children.
+      if (requireDraft && !parent.draft) throw new Error("split changed or invalid");
       const children: Task[] = [];
       for (const part of parts) {
         const inherited = part.afterParts?.length ? (part.deps ?? []).filter(dep => !parent.deps?.includes(dep)) : part.deps ?? [];

@@ -36,15 +36,17 @@ class Planner extends BasePeer {
 const close: (() => void)[] = [];
 afterEach(() => { for (const fn of close.splice(0).reverse()) fn(); });
 
-interface Options { planner?: boolean; answer?: string | (() => string | undefined | Promise<string | undefined>); pii?: boolean; onCampus?: boolean; noModel?: boolean; sources?: string[] }
+interface Options { screen?: () => Promise<unknown>; planner?: boolean; answer?: string | (() => string | undefined | Promise<string | undefined>); pii?: boolean; onCampus?: boolean; noModel?: boolean; sources?: string[] }
 async function rig(options: Options = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-intake-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   const calls: { system: string; user: string; campusOnly: boolean }[] = [];
   const roles: Record<string, string[]> = options.planner ? { claude: ["planner"], codex: ["implementer"] } : { codex: ["implementer"] };
   const deps: TasksDeps = { cwd, board, bus, roles, project: "fixture", routing: () => {
     const routing = loadRouting(cwd);
-    return options.pii ? { ...routing, signals: { ...routing.signals, pii_patterns: ["SECRET-STUDENT"] } } : routing;
+    const patterned = options.pii ? { ...routing, signals: { ...routing.signals, pii_patterns: ["SECRET-STUDENT"] } } : routing;
+    return options.screen ? { ...patterned, signals: { ...patterned.signals, pii_screen: "local" as const }, constraints: { ...patterned.constraints, pii: "local_only" as const } } : patterned;
   }, notify: () => {},
+  ...(options.screen ? { piiScreen: async () => { await options.screen!(); return { label: "clear" as const, ms: 0 }; } } : {}),
   triage: { classify: async () => undefined, onCampus: async () => options.onCampus ?? false },
   ...(options.noModel ? {} : { intake: { split: async (system, user, opts) => { calls.push({ system, user, campusOnly: opts.campusOnly }); const a = options.answer; return typeof a === "function" ? a() : a; }, partsSchema: () => PARTS_SCHEMA, sourceKnown: id => (options.sources ?? [SRC]).includes(id) } }) };
   const tasks = new Tasks(deps);
@@ -319,6 +321,41 @@ test("Inference.split asks transport to refuse the Access endpoint only for a pr
 });
 
 // ---- approve and discard
+
+test("an approval that lands while the hub's split is inside its screening await wins: no child is created, and none is left undrafted", async () => {
+  const releases: (() => void)[] = []; let calls = 0;
+  // the first screen call is the request's own (at propose) and passes; every later one is the split's screen of a part or of its reason, and is held
+  const r = await rig({ answer: JSON.stringify(GOOD), screen: () => ++calls === 1 ? Promise.resolve() : new Promise<void>(resolve => { releases.push(resolve); }) });
+  const running = r.tasks.intake(USER, { text: "prepare the Q3 report" });
+  const waitFor = async (condition: () => boolean, label: string) => { const end = Date.now() + 3000; while (!condition() && Date.now() < end) await Bun.sleep(5); expect(condition(), label).toBe(true); };
+  await waitFor(() => releases.length >= 3, "the hub's split is inside its screening await (two parts and its reason)");
+  const draft = r.board.list().find(task => task.draft)!;
+  const approved = await r.tasks.approveIntake(USER, draft.id); // the person approves the one card they saw
+  expect(approved.map(task => task.id)).toEqual([draft.id]);
+  for (const release of releases) release();
+  const result = await running;
+  expect(result.split).toBe("unsplit"); expect(result.children).toEqual([]);
+  expect(result.reason).toContain("refused");
+  expect(r.board.list(), "no child was created").toHaveLength(1);
+  expect(r.board.get(draft.id)).toMatchObject({ state: "backlog" }); expect(r.board.get(draft.id)!.draft).toBeUndefined();
+  expect(r.board.get(draft.id)!.deps ?? []).toEqual([]);
+});
+
+test("the board refuses an intake split of a parent that is no longer a draft, whatever the planning revision says", async () => {
+  const r = await rig();
+  const { draft } = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
+  await r.tasks.approveIntake(USER, draft.id);
+  const revision = r.board.get(draft.id)!.planningRevision ?? 0;
+  expect(revision, "an approval does not move the planning revision").toBe(draft.planningRevision ?? 0);
+  const parts = GOOD.parts.map(part => ({ ...part, afterParts: undefined }));
+  r.board.requireDraftForNextSplit = true;
+  expect(() => r.board.splitBacklog(draft.id, "hub", revision, parts as never, "x")).toThrow("split changed or invalid");
+  expect(r.board.requireDraftForNextSplit, "the flag is spent by the call").toBe(false);
+  expect(r.board.get(draft.id)!.deps ?? []).toEqual([]);
+  // an ordinary split by a planner is unaffected
+  r.board.requireDraftForNextSplit = false;
+  expect(r.board.splitBacklog(draft.id, "hub", revision, parts as never, "x").children).toHaveLength(2);
+});
 
 test("a planner that splits an intake child again leaves no grandchild behind: approve and discard take the whole tree", async () => {
   for (const op of ["approve", "discard"] as const) {

@@ -1602,6 +1602,8 @@ export class Tasks {
       const release = parent.release == null ? undefined : this.d.board.release(parent.release);
       if (parent.release != null && (!release || ["shipped", "dropped"].includes(release.state) || by !== USER && release.state === "frozen")) throw new PreEffectToolRefusal("split release scope is frozen or final");
       authority(parent);
+      // #334: the hub writes a split only into a draft that is still a draft. Both validations run (before and after the awaited screen), and the board asks again in its transaction.
+      if (opts.intake && by === HUB && !parent.draft) throw new PreEffectToolRefusal("split changed, pinned or already started");
       const profile = parent.profile ?? "dev";
       const drafts = rows.map((part, index) => {
         if (!part || typeof part !== "object" || Array.isArray(part) || Object.keys(part).some(key => !["title", "detail", "class", "refs", "plan", "after", "afterParts"].includes(key)) || typeof part.title !== "string" || !part.title.trim() || part.title.length > 300 || part.detail !== undefined && (typeof part.detail !== "string" || part.detail.length > 8000) || part.class !== undefined && typeof part.class !== "string") throw new PreEffectToolRefusal("invalid split part");
@@ -1644,6 +1646,8 @@ export class Tasks {
     const inherited = current.drafts.map((_part, index) => (initialParentPrivate || this.isPii(current.parent)) && !deterministicPrivate[index]);
     const drafts = current.drafts.map((part, index) => ({ ...part, ...(screening ? { screeningNote: inherited[index] ? "pii: inherited" : this.screenNote(verdicts[index]) } : {}), signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...finalSignals[index]!, ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
     for (const draft of drafts) this.warmRepository(draft);
+    // #334: the hub's intake split is only for a draft; the board asks for it again inside its transaction (a flag set for exactly this write, never left on).
+    this.d.board.requireDraftForNextSplit = opts.intake === true && by === HUB;
     const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld || initialReasonPrivate || this.isPii(current.parent) || !this.nameable(reason));
     if (this.d.coordination) {
       const mode = this.d.coordination();
