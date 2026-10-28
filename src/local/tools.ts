@@ -72,10 +72,13 @@ export function guardPath(ctx: Pick<ToolContext, "cwd" | "deny" | "readOnly">, p
   const real = join(realExisting, relative(existing, abs));
   const rel = relative(root, real);
   if (rel.startsWith("..") || resolve(root, rel) !== real) throw new Error(`${path} is outside the project directory`);
-  if (isDenied(rel, ctx.deny)) throw new Error(`${path} is on the secrets denylist`);
+  // Never trust the resolved name alone (#541): on a hardlinked file Bun's realpath sometimes names another link of the same inode, so the
+  // name the caller typed is judged too. A refusal on either name stands; the typed name only ever adds refusals.
+  const typed = relative(root, abs);
+  if (isDenied(rel, ctx.deny) || isDenied(typed, ctx.deny)) throw new Error(`${path} is on the secrets denylist`);
   // Not secret, but writing .git or .agenthub changes what runs outside the worker's control. Names are compared
   // folded: a new `.GIT/config` is `.git/config` to a case-insensitive disk, and git then runs what it names.
-  if (mode === "write" && isHubWritePath(rel)) throw new Error(`${path} is not writable by the local worker`);
+  if (mode === "write" && (isHubWritePath(rel) || isHubWritePath(typed))) throw new Error(`${path} is not writable by the local worker`);
   // Identity refusal is stable even when realPath names a protected hardlink alias.
   if (mode === "write" && ctx.readOnly?.length && (lstatSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) throw new Error("hardlinked write target cannot be verified with data.readonly");
   if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? [])) throw new Error("target is protected by data.readonly");

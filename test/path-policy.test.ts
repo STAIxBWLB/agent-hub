@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { policyPaths, matchesPolicy } from "../src/hub/path-policy.ts";
@@ -55,7 +55,8 @@ test("read-only managed writes refuse before/after approval, permit reads and re
   expect(approvals).toBe(0); expect(readFileSync(join(dir, "data/raw/input.json"), "utf8")).toBe("original");
   linkSync(join(dir, "data/raw/input.json"), join(dir, "hardlink.json"));
   expect(() => guardPath(ctx, "hardlink.json", "write")).toThrow("hardlinked");
-  expect(guardPath({ cwd: dir, deny: [] }, "hardlink.json", "write")).toBe(join(dir, "hardlink.json"));
+  // Bun's realpath may name either link of a hardlinked file (#541), so the permitted path is judged by the file it names, not its spelling.
+  expect(statSync(guardPath({ cwd: dir, deny: [] }, "hardlink.json", "write")).ino).toBe(statSync(join(dir, "hardlink.json")).ino);
   writeFileSync(join(dir, "output.json"), "output");
   const swapped = { ...ctx, permit: async () => { rmSync(join(dir, "output.json")); symlinkSync("data/raw/input.json", join(dir, "output.json")); return true as const; } };
   expect(await runTool("write", JSON.stringify({ path: "output.json", content: "mutated" }), swapped)).toContain("data.readonly");
@@ -163,4 +164,60 @@ test("glob policies match decomposed, compatibility and long-s spellings of prot
   // A future alias target outside the configured tree needs beneath's lowercase leg, not a glob-prefix fallback.
   const aliasDir = root(); mkdirSync(join(aliasDir, "alias-root")); symlinkSync("../İ̸", join(aliasDir, "alias-root/link"));
   for (const policy of ["alias-root", "alias-root/**"]) expect(matchesPolicy(aliasDir, "i̸̇/new.csv", [policy])).toBe(true);
+});
+
+// #541: Bun's realpath sometimes names ANOTHER link of a hardlinked file (about 1 call in 100 on macOS APFS; the system realpath never does).
+// guardPath judges the name the caller typed as well, so a denied name is refused and a hub-owned name is not writable whichever link realpath picks.
+// Each leg runs enough iterations that an unfixed guard fails with overwhelming probability (1 percent per call: 5000 calls miss it with probability e^-50).
+const ITERATIONS = 5000;
+function hardlinkLoop(layout: (dir: string) => { original: string; link: string }, attempt: (dir: string, link: string) => void): void {
+  const base = root();
+  for (let i = 0; i < ITERATIONS; i++) {
+    const dir = join(base, `d${i}`); mkdirSync(join(dir, "data/raw"), { recursive: true }); mkdirSync(join(dir, "secrets"), { recursive: true });
+    const { original, link } = layout(dir);
+    writeFileSync(join(dir, original), "k=v"); linkSync(join(dir, original), join(dir, link));
+    attempt(dir, link);
+  }
+}
+test("a denied name that is a hardlink of an innocent file is refused on every call, whichever link realpath names (#541)", () => {
+  let permitted = 0;
+  for (const [original, link] of [["data/raw/input.json", ".env"], ["data/raw/input.json", "secrets/.env"], ["notes.txt", "secrets/id_rsa"]] as const) {
+    hardlinkLoop(() => ({ original, link }), (dir, name) => { try { guardPath({ cwd: dir, deny: [] }, name, "read"); permitted++; } catch { /* refused, as required */ } });
+  }
+  expect(permitted).toBe(0);
+}, 20_000);
+test("the denied original of an innocent alias is refused by its own name on every call (#541)", () => {
+  // The reverse layout: the denied file was created first and the innocent name is the later link. The alias itself carries no denied name, so no guard that
+  // sees one name can refuse it reliably (it is refused whenever realpath names the original: fail closed, never required); the denied name itself must never pass.
+  let permitted = 0;
+  hardlinkLoop(() => ({ original: "secrets/.env", link: "notes.txt" }), (dir) => { try { guardPath({ cwd: dir, deny: [] }, "secrets/.env", "read"); permitted++; } catch { /* refused, as required */ } });
+  expect(permitted).toBe(0);
+}, 20_000);
+test("a hub-owned name that is the later hardlink of an innocent file stays unwritable on every call (#541)", () => {
+  // The hub-owned name must be the LATER link: Bun's realpath flips from the later link to the earlier one, so a typed `.agenthub/...` can resolve to an innocent name.
+  let permitted = 0;
+  hardlinkLoop(() => ({ original: "data/raw/input.json", link: "data/raw/hardlink.json" }), (dir) => {
+    mkdirSync(join(dir, ".agenthub"), { recursive: true }); linkSync(join(dir, "data/raw/input.json"), join(dir, ".agenthub/hub.json"));
+    try { guardPath({ cwd: dir, deny: [] }, ".agenthub/hub.json", "write"); permitted++; } catch { /* refused, as required */ }
+  });
+  expect(permitted).toBe(0);
+}, 20_000);
+test("the write-side hardlink refusal and the permitted write of an ordinary file are unchanged on every call (#541)", () => {
+  hardlinkLoop(() => ({ original: "data/raw/input.json", link: "data/raw/hardlink.json" }), (dir, name) => {
+    expect(() => guardPath({ cwd: dir, deny: [], readOnly: ["data/raw"] }, name, "write")).toThrow("hardlinked");
+    expect(statSync(guardPath({ cwd: dir, deny: [] }, name, "write")).ino).toBe(statSync(join(dir, name)).ino);
+  });
+}, 20_000);
+test("a symlink to a denied file is refused by the name it resolves to, and a hub-owned symlink target is not writable (#541)", () => {
+  // The resolved name still counts: the typed name alone would pass these.
+  const dir = root(); mkdirSync(join(dir, "secrets"), { recursive: true }); mkdirSync(join(dir, ".agenthub"), { recursive: true });
+  writeFileSync(join(dir, "secrets/.env"), "k=v"); symlinkSync("secrets/.env", join(dir, "notes.txt"));
+  writeFileSync(join(dir, ".agenthub/hub.json"), "{}"); symlinkSync(".agenthub/hub.json", join(dir, "plain.json"));
+  expect(() => guardPath({ cwd: dir, deny: [] }, "notes.txt", "read")).toThrow("denylist");
+  expect(() => guardPath({ cwd: dir, deny: [] }, "plain.json", "write")).toThrow("not writable");
+});
+test("the typed name is judged relative to the project, so a project under a denied-looking parent still works (#541)", () => {
+  const dir = join(root(), ".agenthub/archive/project"); mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, "ok.txt"), "fine");
+  expect(guardPath({ cwd: dir, deny: [] }, "ok.txt", "read")).toBe(join(realPath(dir), "ok.txt"));
+  expect(guardPath({ cwd: dir, deny: [] }, "ok.txt", "write")).toBe(join(realPath(dir), "ok.txt"));
 });
