@@ -173,7 +173,8 @@ import { looksSecret, DEFAULT_LEASE_MS, memoryHome, SUGGESTED, taskKey, type Can
 import { memoryProjectKey } from "@staix/agent-mem";
 import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, memoryProjectFor, openProfileMemory, openProfileCandidates, MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 import { syncMemory, createIntentBriefSource, createStandalonePolicy } from "@staix/agent-mem";
-import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead } from "./read-tools.ts";
+import { SourceRegistry } from "./sources.ts";
+import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead, sourceRead, validateSourceRead } from "./read-tools.ts";
 import { nativeRecall } from "../memory/recall.ts";
 import { promotionScreen, withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 
@@ -304,7 +305,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_status"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -2817,13 +2818,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const id = Number.isSafeInteger(proposed) && proposed! > 0 ? proposed : admittedId;
         auditConduct({ kind: "conduct", actor: by, action: op.slice(4), ...(id === undefined ? {} : { task: id }) });
       }
-      const hint = args[3] ? ownHeldHint(by) : "";
+      const hint = args[3] && op !== "hub_source_read" ? ownHeldHint(by) : "";
       return hint ? `${text}\n\n${hint}` : text;
     } catch (error) {
       if (reviewTool && traceId !== undefined) reviewerToolObservers.get(by)?.(traceId, reviewTool, error instanceof Error ? error.message : "review tool refused");
       if (nativeTurn && effectful && !(error instanceof PreEffectToolRefusal) && turns.get(by) === nativeTurn) nativeTurn.taskEffect = true;
       // Keep proven pre-effect refusal identity/code for native receipts; only add body-free metadata.
-      const hint = args[3] ? ownHeldHint(by) : "";
+      const hint = args[3] && op !== "hub_source_read" ? ownHeldHint(by) : "";
       if (hint && error instanceof Error) error.message += `\n\n${hint}`;
       throw error;
     } finally {
@@ -2843,6 +2844,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!id || !PEER_ID.test(id)) throw new PreEffectToolRefusal(`${name} must be a peer id, not ${JSON.stringify(v).slice(0, 60)}`);
     return id;
   };
+  const sourceRegistry = new SourceRegistry(opts.stateDir);
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
     if (BOUNDED_TASK_TOOLS.has(op)) {
       const keys = op === "hub_task_spec" ? ["id"] : op === "hub_check_start" ? ["id", "check", "files"] : ["run"];
@@ -2882,6 +2884,35 @@ export async function startDaemon(opts: DaemonOptions) {
       a = { ...a, owner: peerArg(a.owner, "owner") };
       need("propose", "propose tasks");
       if (a.owner && a.owner !== by) need("assign", "hand tasks to other peers");
+    }
+    if (op === "hub_source_read") {
+      validateSourceRead(a);
+      const owner = bus.peers.get(by), generation = connectionGeneration(by);
+      const authority = childToolAuthority.getStore();
+      const routing = activeRouting(), policyKey = JSON.stringify({ signals: routing.signals, constraints: routing.constraints, paths: config.pii?.paths ?? [], mlx: config.mlx, model: routing.local.fixed_model });
+      const valid = () => !stopping && bus.peers.get(by) === owner && connectionGeneration(by) === generation
+        && (!authority || authority.by === by && authority.current())
+        && (!inProcess || !piiTurn || holdsPii(by))
+        && policyKey === JSON.stringify({ signals: activeRouting().signals, constraints: activeRouting().constraints, paths: config.pii?.paths ?? [], mlx: config.mlx, model: activeRouting().local.fixed_model });
+      return JSON.stringify(await sourceRead(sourceRegistry, a, {
+        valid,
+        canReadPrivate: async () => {
+          const eligible = () => valid() && inProcess && piiTurn && holdsPii(by)
+            && isFixedBuiltinDefinition(definitionOf(by)) && definitionOf(by)?.trust.onPrem === true;
+          if (!eligible()) return false;
+          const campus = await onCampus().catch(() => false);
+          return campus && eligible();
+        },
+        screen: async (text, meta) => {
+          if (meta.origins.some(origin => origin.kind === "file" && matchesPolicy(opts.cwd, origin.origin, config.pii?.paths ?? []))) return false;
+          try { if (looksSecret(text) || activeRouting().signals.pii_patterns.some(pattern => new RegExp(pattern).test(text))) return false; }
+          catch { return false; }
+          if (activeRouting().signals.pii_screen !== "local" || activeRouting().constraints.pii !== "local_only") return true;
+          // Reuse the bounded host screen. Oversized/unknown is private, never an unscreened excerpt.
+          const verdict = await (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text).catch(() => undefined);
+          return verdict?.label === "clear";
+        },
+      }));
     }
     if (MEMORY_READ_TOOLS.has(op)) {
       validateMemoryRead(op, a);

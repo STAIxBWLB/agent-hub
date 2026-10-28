@@ -143,3 +143,5 @@ export function memoryRead(store: MemoryStore | undefined, project: string, scre
     return finish(out);
   } catch { return JSON.stringify({ error: REFUSAL }); }
 }
+
+export { sourceRead, validateSourceRead } from "./source-read.ts";

@@ -458,7 +458,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
 }
 
 // Inbox results still show fresh counts, without telling a held or refused reader to retry in a loop.
-server.setRequestHandler(CallToolRequestSchema, async (req) => withPendingHint(await callTool(req), req.params.name !== "hub_inbox"));
+server.setRequestHandler(CallToolRequestSchema, async (req) => withPendingHint(await callTool(req), req.params.name !== "hub_inbox" && req.params.name !== "hub_source_read"));
 
 await server.connect(new StdioServerTransport());
 // The host (Claude Code, Codex, Kimi) talks over stdin; once it is gone nothing can use this server, and a leftover would keep reconnecting.
