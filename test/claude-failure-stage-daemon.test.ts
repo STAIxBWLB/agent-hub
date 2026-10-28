@@ -43,7 +43,7 @@ async function fixture(piiTransition = false) {
     if (piiTransition) writeFileSync(routingFile, routing("off"));
     writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify({ instances: { [peer]: { kind: "claude", roles: ["implementer"], start_mode: "headless", worktree: `.worktrees/${peer}`, permission_mode: "ask-when-needed" } }, roles: { [peer]: ["implementer"] }, roster: { [peer]: true }, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false }, task_sweep: { enabled: false }, batch_ms: 0 }));
     const config = loadConfig(root); config.action_policy = { enabled: false, always_ask: [], budgets: { publish: 1, destroy: 3, install: 2, "external-write": 5 } };
-    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: 5000, snapshotClock: () => 0, config, shellDefaultBranchProbe: async () => "main" });
+    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: 5000, configWatch: false, snapshotClock: () => 0, config, shellDefaultBranchProbe: async () => "main" });
     const console_ = await ControlClient.connect(stateDir, { role: "console", projectRoot: root }); clients.push(console_);
     const instanceId = (await console_.request({ t: "status" })).status.instanceId;
     expect(await console_.request({ t: "start", peer })).toMatchObject({ ok: true, executionCwd: tree });
