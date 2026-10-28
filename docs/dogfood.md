@@ -12,6 +12,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | --- | --- | --- |
 | Encrypted rooms (#446 X1) | off; source-only crypto/wire, with no broker, room link, invitation CLI or delivery enabled | real WebCrypto vectors and negative wire fixtures; atomic memory fake ports establish ordering only; durable X3 state and the X7 two-machine person receipt remain unverified |
 | Blind room broker (#446 X2) | off; standalone source/fixture work, no public TLS service or hub room link configured here | fake-client auth/fan-out/revocation/restart, ciphertext-only child-process canary, owner admission/offline room reset, queue caps/TTL/FIFO/migration, safe directory modes, and person-only CLI tests; live proxy/account/X7 receipts remain unverified |
+| Room membership and presence (#446 X3) | off; no person room enrollment or exposure configured here | isolated fake-hub/broker tests for OOB enrollment, MITM refusal, durable sequence/replay/grace, exposure revocation and ids-only presence; room list/status for ids and link state; X4 chat and X7 two-machine live receipt remain separate and unverified |
 | Message bus, digests, priorities | on | `ahub report`: messages, digests, overflow, undeliverable; delivery latency from events |
 | Compact board (#724) | on | `ahub board` at 80, 120 and 200 columns: one line per task (test/board-compact.test.ts) |
 | Backlog list table (#399) | on | `ahub backlog list` at a terminal width: one line per card by rank with the reserved owner and dependencies, and the count by owner (test/backlog-list-output.test.ts); `--json` for scripts |
@@ -149,10 +150,3 @@ Run `ahub report --dogfood --since 7d --json` against this repository's own hub 
 - Digest and held counts describe retained journal rows created in the window. The journal prunes terminal rows, so these are not historical totals. It does not record the first delivery timestamp: `updatedAt` must not be used as delivery latency.
 - Control latency, connection timeouts, CPU/RSS history, actual snapshot exhaustion totals and the adjudicated real-blocker rate currently have no durable source and remain unknown. Snapshot budget notices count one log diagnostic per affected burst. Error classes and advise-gate matches are fixed-pattern log counts; no raw line is exported.
 - Adoption row ids are the 1-based table-row order in this document at the feature-table source commit recorded in the receipt. A matching event is evidence of that leg's use, not proof that the entire feature was enabled or correct. Rows without a dedicated observable leg stay unknown.
-
-
-Room membership and presence (#446 X3): not enabled on this repository (no person
-room enrollment or exposure configured). Metric: isolated fake-hub/broker tests
-cover OOB enrollment, MITM refusal, durable sequence/replay/grace and ids-only
-presence; exact gate/CI recorded on the implementation PR. X4 chat and X7 live
-two-machine proof remain separate and unverified.
