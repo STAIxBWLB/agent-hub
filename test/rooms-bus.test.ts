@@ -313,6 +313,7 @@ test("two remote targets refuse before limiter, telemetry or local fanout, while
   for (const peer of [sender, local, a, b]) bus.add(peer);
   const events: BusEvent[] = []; bus.tap(event => events.push(event));
   const refusal = sender.onMessage?.("mixed fanout", { to: [local.id, a.id, b.id] });
+  expect(typeof refusal).toBe("string");
   expect(refusal).toContain(a.id); expect(refusal).toContain(b.id); expect(refusal).toContain("send to each remote peer separately");
   expect(bus.snapshot(false).prefaces[sender.id]?.body).toContain("your message was not delivered");
   expect(admitted).toBe(0); expect(events).toEqual([]); expect(bus.snapshot(false).seen).toEqual([]);
