@@ -292,7 +292,8 @@ test("a new local epoch cannot publish ciphertext before that socket verifies th
   const guest = await FakeBrokerClient.connect(f.broker.publicUrl, f.guest.get("test")!.current.room); clients.push(guest); await guest.authenticate(f.guest.identity);
   const initial = await guest.take("frame"); await guest.ack(encodeBase64url(await sha256(initial)));
   const before = f.owner.get("test")!;
-  await f.owner.rotate("test", roomMembers(before.current).filter(member => member.fingerprint !== f.guest.identity.public.fingerprint), before.current.digest);
+  // Keep the guest so an unfenced publisher has a real recipient and would reserve/send.
+  await f.owner.rotate("test", roomMembers(before.current), before.current.digest);
   let reserved = 0; const reserve = f.owner.sequence.reserve;
   f.owner.sequence.reserve = async input => { reserved++; return reserve(input); };
   try { await owner.link.publishPresence(); expect(reserved).toBe(0); }

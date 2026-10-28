@@ -4016,6 +4016,14 @@
       "replacement": "        if (false || bytes + input.plaintext.length > ROOM_STORE_LIMITS.rooms * ROOM_STORE_LIMITS.receiptReservePerRoom * ROOM_STORE_LIMITS.receiptReserveBytes) fail(\"limit\");",
       "testFile": "test/rooms-application-store.test.ts",
       "testName": "the receipt reserve admits eight pending matches, refuses the ninth without dropping it and frees a slot only after settlement"
+    },
+    {
+      "id": "room-x4-ready-roster-publication",
+      "file": "src/rooms/link.ts",
+      "search": "return session.phase === \"ready\" && session.roster?.digest === digest && this.isCurrent(session, digest);",
+      "replacement": "return session.phase === \"ready\" && this.isCurrent(session, digest);",
+      "testFile": "test/rooms-link.test.ts",
+      "testName": "a new local epoch cannot publish ciphertext before that socket verifies the same roster"
     }
   ]
 }
