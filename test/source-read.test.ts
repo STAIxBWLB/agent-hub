@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { projectToolList, profileTaskTools } from "../src/hub/hub-tools.ts";
 import { sanitize } from "../src/hub/envelope.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import { MAX_SOURCE_READ_BYTES, sourceRead, validateSourceRead } from "../src/hub/source-read.ts";
@@ -142,4 +143,11 @@ test("markPrivate is monotonic at the origin cap and public re-add does not lowe
     expect(registry.get(first.id)?.private).toBe(true);
     expect(registry.get(first.id)?.origins).toEqual(before.origins);
   } finally { rmSync(stateDir, { recursive: true, force: true }); }
+});
+
+
+test("source reads are published to read-only project MCP clients without publishing mutations", () => {
+  const tools = projectToolList(profileTaskTools(), true).map(tool => tool.name);
+  expect(tools).toContain("hub_source_read");
+  expect(tools).not.toContain("hub_task_propose");
 });
