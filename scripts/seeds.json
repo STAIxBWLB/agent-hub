@@ -1924,7 +1924,7 @@
     {
       "id": "planner-pull-person-reservation",
       "file": "src/hub/tasks.ts",
-      "search": "const assignment = this.plannerAssignment(task, !!task.reserved);",
+      "search": "const assignment = this.plannerAssignment(task, !!task.reserved, this.d.routing(), queueAssignment ? \"owner\" : undefined);",
       "replacement": "const assignment = this.plannerAssignment({ ...task, reserved: null });",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner pull preserves person P0 order and unavailable person reservations (#263)"
@@ -3768,6 +3768,94 @@
       "replacement": "false",
       "testFile": "test/rooms-daemon.test.ts",
       "testName": "room execute requires a matching member fingerprint and burns unconfirmed tickets without installing"
+    },
+    {
+      "id": "queue-pressure-count-admission",
+      "file": "src/hub/queue-backpressure.ts",
+      "search": "if (policy.max_queued > 0 && queue.queued > policy.max_queued) return refuse(\"queue-count\", `queued ${queue.queued} exceeds max ${policy.max_queued}`);",
+      "replacement": "if (false) return refuse(\"queue-count\", `queued ${queue.queued} exceeds max ${policy.max_queued}`);",
+      "testFile": "test/queue-backpressure.test.ts",
+      "testName": "pure queue count admission allows below and equal, and holds only above its threshold"
+    },
+    {
+      "id": "queue-pressure-unknown-age",
+      "file": "src/hub/queue-backpressure.ts",
+      "search": "if (queue.queued === 0 || typeof oldest !== \"number\" || !Number.isSafeInteger(oldest) || oldest < 0 || !Number.isSafeInteger(now) || now < oldest) return refuse(\"queue-age-unknown\", \"oldest queued age unknown\");",
+      "replacement": "if (false) return refuse(\"queue-age-unknown\", \"oldest queued age unknown\");",
+      "testFile": "test/queue-backpressure.test.ts",
+      "testName": "pure oldest-age admission distinguishes threshold equality, verified empty and unknown age"
+    },
+    {
+      "id": "queue-pressure-revision-provenance",
+      "file": "src/hub/delivery-journal.ts",
+      "search": "if (!row || !Number.isSafeInteger(row.revision) || row.revision < 0 || row.metadata_revision !== row.revision) return undefined;",
+      "replacement": "if (!row || !Number.isSafeInteger(row.revision) || row.revision < 0) return undefined;",
+      "testFile": "test/queue-pressure-metadata.test.ts",
+      "testName": "a legacy writer revision invalidates queue summaries instead of making an old queue appear fresh"
+    },
+    {
+      "id": "queue-pressure-drain-reoffer",
+      "file": "src/hub/tasks.ts",
+      "search": "if (this.queuePressureStopped || this.queuePressureKnown === false) return;",
+      "replacement": "if (true) return;",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "a pull-only peer draining its queue without a state change reoffers only the queue-held automatic proposal"
+    },
+    {
+      "id": "queue-pressure-ci-notice-continuity",
+      "file": "src/hub/tasks.ts",
+      "search": "this.heldReviews.delete(next.id);\n      // The current head is unchanged; its watcher reads the live reviewer at completion.",
+      "replacement": "this.heldReviews.delete(next.id); this.ciWatchers.cancel(next.id);\n      // The current head is unchanged; its watcher reads the live reviewer at completion.",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "a queue-held review moving to its new reviewer keeps the pending CI notification alive"
+    },
+    {
+      "id": "queue-pressure-legacy-stall-diagnostics",
+      "file": "src/hub/tasks.ts",
+      "search": "if (!admission.owner) {\n        // A diagnostic legacy pass is not evidence that an automatic proposal was attempted.",
+      "replacement": "if (false) {\n        // A diagnostic legacy pass is not evidence that an automatic proposal was attempted.",
+      "testFile": "test/task-cancel-core.test.ts",
+      "testName": "stall planner advice is a once-per-cause preface, never an ordinary queued turn"
+    },
+    {
+      "id": "queue-pressure-decline-retry",
+      "file": "src/hub/tasks.ts",
+      "search": "task = this.d.board.update(task.id, by, \"unassigned\", { owner: null });",
+      "replacement": "return this.d.board.update(task.id, by, \"unassigned\", { owner: null });",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "a declined automatic offer retains its queue origin across replanning and resumes after drain"
+    },
+    {
+      "id": "queue-pressure-claim-no-offer",
+      "file": "src/hub/tasks.ts",
+      "search": "...(opts.queueOverride || opts.claim ? { queueOverride: opts.queueOverride ?? \"owner\" as const } : {})",
+      "replacement": "...(opts.queueOverride ? { queueOverride: opts.queueOverride } : {})",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "self claims bypass only owner queue admission and named proposals resume only to their target"
+    },
+    {
+      "id": "queue-pressure-review-admission-only",
+      "file": "src/hub/tasks.ts",
+      "search": "return selection.reviewSelection || queueRefused || newlyBlocked || heldSelection ? selection : undefined;",
+      "replacement": "return selection.reviewSelection || weights.queueBackpressure || heldSelection ? selection : undefined;",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "enabled pressure preserves a continuing reviewer below thresholds despite a busier state"
+    },
+    {
+      "id": "queue-pressure-plan-gate-handoff",
+      "file": "src/hub/tasks.ts",
+      "search": "const origin = this.d.board.queuePressureStallPage(task.id - 1, 1).rows.find(row => row.task === task.id);",
+      "replacement": "const origin = stall;",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "a queue origin hands off to a plan gate after one GitHub read despite unrelated queue wakes"
+    },
+    {
+      "id": "queue-pressure-ready-wip-admission",
+      "file": "src/hub/tasks.ts",
+      "search": "if (task.reserved) await this.offerReady(task, \"queue pressure cleared\", current);",
+      "replacement": "if (task.reserved) await this.assignOwner(task, HUB, { current, ...retry });",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "a queue-held person reservation rechecks the WIP cap before taking a newly occupied slot"
     }
   ]
 }

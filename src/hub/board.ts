@@ -20,9 +20,25 @@ export type TaskState = "backlog" | "proposed" | "in_progress" | "in_review" | "
 export const isClosedTaskState = (state: string): boolean => state === "approved" || state === "cancelled";
 export interface TaskOffer { envelopeId: string; owner: PeerId; assignmentFlowRevision: number; pullOnly?: boolean }
 export interface TaskCancellation { reason: string; supersededBy?: string; flowRevision: number; withheld?: true }
-export const TASK_STALL_CODES = ["tests", "spec", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "no-writes"] as const;
+export const TASK_STALL_CODES = ["tests", "spec", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "no-writes", "queue-count", "queue-age", "queue-age-unknown"] as const;
 export type TaskStallCode = (typeof TASK_STALL_CODES)[number];
 export interface TaskStall { task: number; signature: string; replanRevision: number; cause: { kind: "reservation" | "no-eligible-peer" | "cancelled-dependency" | "no-writes"; peer?: string; dependency?: number; code: TaskStallCode; turns?: number; acceptance?: number; refusals?: { peer: string; code: TaskStallCode }[] }; at: number }
+
+const QUEUE_PRESSURE_STALL = "CASE WHEN length(CAST(payload AS BLOB)) <= 65536 THEN CASE WHEN json_valid(payload) THEN json_extract(payload,'$.cause.kind')='no-eligible-peer' AND json_extract(payload,'$.cause.code') IN ('queue-count','queue-age','queue-age-unknown') ELSE 0 END ELSE 0 END";
+export interface QueuePressureStallPage { rows: TaskStall[]; afterTask: number; done: boolean }
+function parseStall(payload: string, task?: number): TaskStall | undefined {
+  try {
+    const value = JSON.parse(payload) as TaskStall, cause = value.cause;
+    const peer = (id: unknown) => typeof id === "string" && /^[a-z][a-z0-9_-]{0,63}$/i.test(id);
+    if (task !== undefined && value.task !== task || Object.keys(value).some(key => !["task", "signature", "replanRevision", "cause", "at"].includes(key)) || !Number.isSafeInteger(value.task) || value.task < 1 || !Number.isSafeInteger(value.replanRevision) || value.replanRevision < 0 || !Number.isFinite(value.at)
+      || !cause || !["reservation", "no-eligible-peer", "cancelled-dependency", "no-writes"].includes(cause.kind) || !TASK_STALL_CODES.includes(cause.code)
+      || cause.kind === "no-writes" && (cause.code !== "no-writes" || !peer(cause.peer) || !Number.isSafeInteger(cause.turns) || cause.turns! < 1 || !Number.isSafeInteger(cause.acceptance) || cause.acceptance! < 0)
+      || cause.peer !== undefined && !peer(cause.peer) || cause.dependency !== undefined && (!Number.isSafeInteger(cause.dependency) || cause.dependency < 1)
+      || cause.refusals !== undefined && (!Array.isArray(cause.refusals) || cause.refusals.length > 64 || cause.refusals.some(row => Object.keys(row).some(key => !["peer", "code"].includes(key)) || !peer(row.peer) || !TASK_STALL_CODES.includes(row.code)))
+      || Object.keys(cause).some(key => !["kind", "peer", "dependency", "code", "refusals", ...(cause.kind === "no-writes" ? ["turns", "acceptance"] : [])].includes(key)) || value.signature !== JSON.stringify(cause)) return undefined;
+    return value;
+  } catch { return undefined; }
+}
 
 export interface TaskRefs {
   repo?: string;
@@ -94,6 +110,10 @@ export interface HistoryEntry {
   reviewerFamily?: string;
   reviewerReason?: ReviewerPoolReason;
   reviewBlocked?: true;
+  /** Host-only temporary automatic review hold caused by queue admission, never a reviewer failure. */
+  queueReviewHeld?: true;
+  /** Opaque artifact identity captured by the host at the queue-held role write. */
+  queueReviewBinding?: string;
   reviewerFailure?: { peer: string; head?: string; cause: "start_failed" | "quota" | "no_verdict" };
   planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields; pull?: true; split?: { children: { id: number; revision: number; history: number }[] } };
 }
@@ -102,13 +122,14 @@ function criterionIdList(value: unknown): string[] {
   if (!Array.isArray(value) || value.length > 32 || value.some(id => typeof id !== "string" || !/^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(id)) || new Set(value).size !== value.length) throw new Error("unmet criteria: expected up to 32 distinct criterion ids");
   return [...value] as string[];
 }
-export type ReviewerHistory = Pick<HistoryEntry, "reviewerFamily" | "reviewerReason" | "reviewBlocked" | "reviewerFailure">;
+export type ReviewerHistory = Pick<HistoryEntry, "reviewerFamily" | "reviewerReason" | "reviewBlocked" | "queueReviewHeld" | "queueReviewBinding" | "reviewerFailure">;
 function reviewerHistory(extra: ReviewerHistory): ReviewerHistory {
   const id = (value: unknown) => typeof value === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(value);
-  if (extra.reviewerFamily !== undefined && !id(extra.reviewerFamily) || extra.reviewerReason !== undefined && !["rotation", "implementer skip", "unavailable skip", "same-family fallback"].includes(extra.reviewerReason) || extra.reviewBlocked !== undefined && extra.reviewBlocked !== true) throw new Error("invalid reviewer metadata");
+  if (extra.reviewerFamily !== undefined && !id(extra.reviewerFamily) || extra.reviewerReason !== undefined && !["rotation", "implementer skip", "unavailable skip", "same-family fallback"].includes(extra.reviewerReason) || extra.reviewBlocked !== undefined && extra.reviewBlocked !== true || extra.queueReviewHeld !== undefined && extra.queueReviewHeld !== true) throw new Error("invalid reviewer metadata");
+  if (extra.queueReviewHeld && (typeof extra.queueReviewBinding !== "string" || !/^[0-9a-f]{64}$/.test(extra.queueReviewBinding)) || extra.queueReviewBinding !== undefined && extra.queueReviewHeld !== true) throw new Error("invalid queue-held review binding");
   const failure = extra.reviewerFailure;
   if (failure && (!id(failure.peer) || !["start_failed", "quota", "no_verdict"].includes(failure.cause) || failure.head !== undefined && (typeof failure.head !== "string" || !failure.head.trim() || failure.head.length > 300 || Buffer.byteLength(failure.head) > 1200 || /\p{Cc}/u.test(failure.head)))) throw new Error("invalid reviewer failure metadata");
-  return { ...(extra.reviewerFamily ? { reviewerFamily: extra.reviewerFamily } : {}), ...(extra.reviewerReason ? { reviewerReason: extra.reviewerReason } : {}), ...(extra.reviewBlocked ? { reviewBlocked: true } : {}), ...(failure ? { reviewerFailure: { peer: failure.peer, cause: failure.cause, ...(failure.head ? { head: failure.head } : {}) } } : {}) };
+  return { ...(extra.reviewerFamily ? { reviewerFamily: extra.reviewerFamily } : {}), ...(extra.reviewerReason ? { reviewerReason: extra.reviewerReason } : {}), ...(extra.reviewBlocked ? { reviewBlocked: true } : {}), ...(extra.queueReviewHeld ? { queueReviewHeld: true, ...(extra.queueReviewBinding !== undefined ? { queueReviewBinding: extra.queueReviewBinding } : {}) } : {}), ...(failure ? { reviewerFailure: { peer: failure.peer, cause: failure.cause, ...(failure.head ? { head: failure.head } : {}) } } : {}) };
 }
 export interface PlannerBinding { planner: PeerId | null; plannerReason: PlannerReason }
 function plannerValue(value: unknown): PeerId | null {
@@ -263,6 +284,8 @@ export class Board {
     // And from before issue #207: existing rows reserve nobody.
     for (const col of ["offer", "cancelled"]) if (!have.has(col)) this.db.run(`ALTER TABLE tasks ADD COLUMN ${col} TEXT`);
     this.db.run("CREATE TABLE IF NOT EXISTS task_stalls (task INTEGER PRIMARY KEY, payload TEXT NOT NULL)");
+    this.db.run(`CREATE INDEX IF NOT EXISTS task_stalls_queue_pressure ON task_stalls(task) WHERE ${QUEUE_PRESSURE_STALL}`);
+    this.db.run("CREATE INDEX IF NOT EXISTS tasks_human_reviews ON tasks(id) WHERE state='in_review' AND reviewer='user'");
     // #481 S7: one row per log-tier band breach episode already announced, so a restart never repeats the notice.
     this.db.run("CREATE TABLE IF NOT EXISTS band_notices (marker TEXT PRIMARY KEY, at INTEGER NOT NULL)");
     // #481 S7: one row per scheduled security scan. Counts only (no alert text); `total` is null when a named source could not be read completely.
@@ -402,19 +425,20 @@ export class Board {
   forgetAgentDriftNotice(marker: string): void { this.db.query("DELETE FROM agent_drift_notices WHERE marker=?").run(marker); }
   clearStall(task: number): void { this.taskWrite(() => this.db.query("DELETE FROM task_stalls WHERE task=?").run(task)); }
   stalls(): TaskStall[] {
-    return (this.db.query("SELECT payload FROM task_stalls ORDER BY task").all() as { payload: string }[]).flatMap(row => {
-      try {
-        const value = JSON.parse(row.payload) as TaskStall, cause = value.cause;
-        const peer = (id: unknown) => typeof id === "string" && /^[a-z][a-z0-9_-]{0,63}$/i.test(id);
-        if (Object.keys(value).some(key => !["task", "signature", "replanRevision", "cause", "at"].includes(key)) || !Number.isSafeInteger(value.task) || value.task < 1 || !Number.isSafeInteger(value.replanRevision) || value.replanRevision < 0 || !Number.isFinite(value.at)
-          || !cause || !["reservation", "no-eligible-peer", "cancelled-dependency", "no-writes"].includes(cause.kind) || !TASK_STALL_CODES.includes(cause.code)
-          || cause.kind === "no-writes" && (cause.code !== "no-writes" || !peer(cause.peer) || !Number.isSafeInteger(cause.turns) || cause.turns! < 1 || !Number.isSafeInteger(cause.acceptance) || cause.acceptance! < 0)
-          || cause.peer !== undefined && !peer(cause.peer) || cause.dependency !== undefined && (!Number.isSafeInteger(cause.dependency) || cause.dependency < 1)
-          || cause.refusals !== undefined && (!Array.isArray(cause.refusals) || cause.refusals.length > 64 || cause.refusals.some(row => Object.keys(row).some(key => !["peer", "code"].includes(key)) || !peer(row.peer) || !TASK_STALL_CODES.includes(row.code)))
-          || Object.keys(cause).some(key => !["kind", "peer", "dependency", "code", "refusals", ...(cause.kind === "no-writes" ? ["turns", "acceptance"] : [])].includes(key)) || value.signature !== JSON.stringify(cause)) return [];
-        return [value];
-      } catch { return []; }
+    return (this.db.query("SELECT task,payload FROM task_stalls ORDER BY task").all() as { task: number; payload: string }[]).flatMap(row => {
+      const value = parseStall(row.payload, row.task); return value ? [value] : [];
     });
+  }
+  /** Bounded ids/hold metadata only; a corrupt skipped payload still advances the cursor. */
+  queuePressureStallPage(afterTask = 0, limit = 64): QueuePressureStallPage {
+    if (!Number.isSafeInteger(afterTask) || afterTask < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 64) throw new Error("invalid queue pressure stall page");
+    const saved = this.db.query<{ task: number; payload: string }, [number, number]>(`SELECT task,payload FROM task_stalls WHERE task>? AND ${QUEUE_PRESSURE_STALL} ORDER BY task LIMIT ?`).all(afterTask, limit);
+    return { rows: saved.flatMap(row => { const value = parseStall(row.payload, row.task); return value ? [value] : []; }), afterTask: saved.at(-1)?.task ?? afterTask, done: saved.length < limit };
+  }
+  /** Current human-review candidates, by indexed state/role/id metadata without opening task history. */
+  humanReviewPage(afterId = 0, limit = 64): number[] {
+    if (!Number.isSafeInteger(afterId) || afterId < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 64) throw new Error("invalid human review page");
+    return this.db.query<{ id: number }, [number, number]>("SELECT id FROM tasks WHERE id>? AND state='in_review' AND reviewer='user' ORDER BY id LIMIT ?").all(afterId, limit).map(row => row.id);
   }
 
   /** Tasks per state, without parsing a single row: `status.json` is rewritten on every bus event and the board only grows. */

@@ -1,6 +1,7 @@
 import { appendNote, DIGEST, frame, HUB, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
 import type { DoingKind } from "./peer-doing.ts";
+import type { QueuePressure } from "./queue-backpressure.ts";
 import { DeliveryJournal, MAX_ENVELOPE_BODY, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
 import { DELIVERY_RETRY_WARNING } from "./delivery-hints.ts";
 import { MAX_DEFERRED_HUB, RecoveryDeferredHubError, validateDeferredHub } from "./deferred-hub.ts";
@@ -38,6 +39,8 @@ export interface BusOptions {
   /** Optional: rewrite a delivery before it goes out (M6 digest condensation). Must return its input on any failure. */
   condense?: (envs: Envelope[]) => Promise<Envelope[]>;
   journal?: DeliveryJournal;
+  /** Host-owned opt-in; no delivery body or timestamp is a routing-policy authority. */
+  trackQueuePressure?: () => boolean;
   /**
    * Optional: may an agent send this envelope now (issue #38)? `parent` is the id of what it answers. A reason refuses
    * it, and the sender hears it on its next delivery.
@@ -73,6 +76,8 @@ export interface BusSnapshot {
   attempts: Record<string, number>;
   withdrawn: string[];
   manualPaused?: string[];
+  /** Host enqueue provenance only. null means an age lost to a legacy/restored writer. */
+  queuedAt?: Record<string, Record<string, number | null>>;
   /** Hub notices accepted during recovery, durable but outside the carried delivery queues. */
   deferredHub?: Envelope[];
   journal?: ReturnType<DeliveryJournal["snapshot"]>;
@@ -103,6 +108,9 @@ function resolveTo(to: PeerId[], originals: Envelope[] | undefined): PeerId[] {
 
 const SEEN_CAP = 2048;
 const MAX_ATTEMPTS = 3;
+// ponytail: provenance is capped at 2048 ids/peer, 4096 peers, 100000 ids total and 256 KiB per snapshot.
+// Omitted metadata means unknown age only; use a measured per-envelope store if larger queues need provenance.
+const QUEUE_TIME_CAP = 2048, QUEUE_TIME_PEERS_CAP = 4096, QUEUE_TIME_TOTAL_CAP = 100_000, QUEUE_TIME_SNAPSHOT_BYTES = 256 * 1024;
 // ponytail: one digest carries at most ten originals; larger supervision windows split into bounded deliveries.
 // Revisit this ceiling after measuring native supervision cost, rather than bypassing the delivery limit.
 const DIGEST_MAX = 10;
@@ -121,6 +129,9 @@ export class Bus {
   private readonly opts: BusOptions;
   private readonly journal?: DeliveryJournal;
   private readonly queues = new Map<PeerId, Envelope[]>();
+  private readonly queueTimes = new Map<PeerId, Map<string, number | null>>();
+  private queueTimeEntries = 0;
+  private queuePressureWasTracked = false;
   private readonly prefaces = new Map<PeerId, Envelope>();
   private readonly paused = new Set<PeerId>();
   private readonly manualPaused = new Set<PeerId>();
@@ -171,6 +182,7 @@ export class Bus {
     this.opts = { ...DEFAULT_BUS, ...opts };
     this.onDeliver = opts.onDeliver;
     this.journal = opts.journal;
+    this.trackingQueuePressure();
     if (this.journal) {
       const state = this.journal.snapshot();
       const bus = state.bus as BusSnapshot;
@@ -272,10 +284,11 @@ export class Bus {
 
   private persist(): void {
     if (!this.journal) return;
+    const tracking = this.trackingQueuePressure();
     try {
       this.journal.transaction(() => {
         for (const outcome of this.pendingOutcomes) this.journal!.createDelivery(outcome);
-        this.journal!.persistBus(this.snapshotWithoutJournal(), [...this.manualPaused]);
+        this.journal!.persistBus(this.snapshotWithoutJournal(), [...this.manualPaused], tracking);
       });
       this.pendingOutcomes.length = 0;
       this.storageError = undefined;
@@ -286,7 +299,7 @@ export class Bus {
   private durableHandoff(peer: PeerId, deliveryId: string, originals: Envelope[], out: Envelope[], observe = true): void {
     if (!this.journal) return;
     const delivery = { id: deliveryId, peer, state: "dispatching" as const, createdAt: Date.now(), originals, out };
-    this.journal.checkpointDelivery(this.snapshotWithoutJournal(), delivery);
+    this.journal.checkpointDelivery(this.snapshotWithoutJournal(), delivery, this.trackingQueuePressure());
     if (observe) this.memoryDelivery(peer, deliveryId, out, "rendered", originals);
   }
 
@@ -390,6 +403,23 @@ export class Bus {
       manualPaused: [...this.manualPaused],
       ...(this.deferredHub.size ? { deferredHub: structuredClone([...this.deferredHub.values()]) } : {}),
     };
+    if (this.trackingQueuePressure()) {
+      // Metadata is advisory: omit capped or unknown entries rather than enlarge a delivery without bound.
+      const queuedAt = Object.create(null) as NonNullable<BusSnapshot["queuedAt"]>;
+      let bytes = 32;
+      for (const [peer, queue] of this.queues) {
+        const times = Object.create(null) as Record<string, number>;
+        const peerBytes = Buffer.byteLength(JSON.stringify(peer)) + 4;
+        for (const env of queue) {
+          const at = this.queueTimes.get(peer)?.get(env.id);
+          const entryBytes = Buffer.byteLength(JSON.stringify(env.id)) + 20;
+          if (typeof at !== "number" || bytes + peerBytes + entryBytes > QUEUE_TIME_SNAPSHOT_BYTES) continue;
+          times[env.id] = at; bytes += entryBytes;
+        }
+        if (Object.keys(times).length) { queuedAt[peer] = times; bytes += peerBytes; }
+      }
+      if (Object.keys(queuedAt).length) out.queuedAt = queuedAt;
+    }
     if (includeJournal && this.journal) out.journal = this.journal.snapshot();
     return out;
   }
@@ -400,7 +430,7 @@ export class Bus {
     if (_operationId && this.journal) {
       const current = this.journal.snapshot();
       if (current.revision === 0) {
-        this.journal.importSnapshot(snapshot.journal ?? { schemaVersion: 1, revision: 1, instanceId: this.journal.instanceId, bus: snapshot, deliveries: [], manualPaused: snapshot.manualPaused ?? [] }, _operationId);
+        this.journal.importSnapshot(snapshot.journal ?? { schemaVersion: 1, revision: 1, instanceId: this.journal.instanceId, bus: snapshot, deliveries: [], manualPaused: snapshot.manualPaused ?? [] }, _operationId, this.trackingQueuePressure());
       }
       const committedQueues = snapshot.queues;
       snapshot = this.journal.snapshot().bus;
@@ -422,6 +452,15 @@ export class Bus {
     for (const env of deferred) this.deferredHub.set(env.id, structuredClone(env));
     this.queues.clear();
     for (const [id, queue] of Object.entries(snapshot.queues ?? {})) this.queues.set(id, queue.map((e) => ({ ...e, ...(e.to ? { to: [...e.to] } : {}) })));
+    this.queueTimes.clear(); this.queueTimeEntries = 0;
+    if (this.trackingQueuePressure()) for (const [peer, queue] of this.queues) {
+      const provenance = snapshot.queuedAt;
+      const times = provenance && typeof provenance === "object" && !Array.isArray(provenance) && Object.hasOwn(provenance, peer) ? provenance[peer] : undefined;
+      for (const env of queue) {
+        const at = times && typeof times === "object" && !Array.isArray(times) && Object.hasOwn(times, env.id) ? times[env.id] : null;
+        this.recordQueueTime(peer, env.id, typeof at === "number" && Number.isSafeInteger(at) && at > 0 ? at : null);
+      }
+    }
     this.prefaces.clear();
     for (const [id, e] of Object.entries(snapshot.prefaces ?? {})) this.prefaces.set(id, { ...e, body: uniqueMemoryLines(e.body), ...(e.to ? { to: [...e.to] } : {}) });
     this.seen.clear();
@@ -479,6 +518,7 @@ export class Bus {
 
   resolveDelivery(id: string, revision: number, action: "completed" | "retry" | "discard", reason: string, actor: string = "user"): void {
     if (!this.journal || this.storageError) throw new Error("delivery journal unavailable");
+    this.trackingQueuePressure();
     const record = this.queueShow(id);
     if (!record) throw new Error("unknown delivery");
     const previous = this.journal.resolution(id);
@@ -554,6 +594,7 @@ export class Bus {
     if (this.closed) return;
     const owner = this.activeDeliveries.get(receipt.id);
     if (!owner || owner !== peer || !this.journal) return;
+    this.trackingQueuePressure();
     const id = receipt.id;
     const before = this.journal.get(id);
     const state: JournalDeliveryState = receipt.state === "accepted" ? "accepted" : receipt.state === "completed" ? "completed" : receipt.state === "failed_safe" ? "failed" : "needs_review";
@@ -583,6 +624,7 @@ export class Bus {
 
   completeReply(peer: PeerId, envelopeId: string): void {
     if (!this.journal) return;
+    this.trackingQueuePressure();
     for (const [id, owner] of this.activeDeliveries) {
       if (owner !== peer) continue;
       const row = this.journal.get(id);
@@ -692,6 +734,7 @@ export class Bus {
    */
   discardDeferredHub(reason: string): string[] {
     if (this.peers.size || this.flushingHub || this.replayingHub || !this.journal || this.storageError) throw new Error("deferred reset requires a stopped, readable delivery journal");
+    this.trackingQueuePressure();
     const pending = [...this.deferredHub];
     const settled: string[] = [];
     try {
@@ -901,6 +944,54 @@ export class Bus {
     return this.queues.get(id)?.length ?? 0;
   }
 
+  /** New automatic offers use only bounded pending metadata, never queue/history bodies. */
+  assignmentQueue(peer: PeerId): QueuePressure {
+    const queued = this.queued(peer), tracking = this.trackingQueuePressure();
+    if (this.storageError) return { queued };
+    if (queued === 0) return { queued: 0, oldestQueuedAt: null };
+    if (!tracking) return { queued };
+    // A durable summary cannot revive provenance that this host discarded while tracking was off.
+    const times = this.queueTimes.get(peer);
+    let oldest: number | undefined;
+    for (const env of this.queues.get(peer) ?? []) {
+      const at = times?.get(env.id);
+      if (typeof at !== "number" || !Number.isSafeInteger(at) || at <= 0) return { queued };
+      oldest = oldest === undefined ? at : Math.min(oldest, at);
+    }
+    if (this.journal) {
+      try {
+        const saved = this.journal.pendingQueueMetadata(peer);
+        return saved?.queued === queued ? saved : { queued };
+      } catch { return { queued }; }
+    }
+    return oldest === undefined ? { queued } : { queued, oldestQueuedAt: oldest };
+  }
+
+  private trackingQueuePressure(): boolean {
+    let tracking = false;
+    try { tracking = this.opts.trackQueuePressure?.() === true; } catch { /* unknown policy is not enabled */ }
+    if (!tracking && this.queuePressureWasTracked) { this.queueTimes.clear(); this.queueTimeEntries = 0; }
+    this.queuePressureWasTracked = tracking;
+    this.journal?.setQueueMetadataTracking(tracking);
+    return tracking;
+  }
+
+  private recordQueueTime(peer: PeerId, id: string, at: number | null): void {
+    if (!this.trackingQueuePressure()) return;
+    let times = this.queueTimes.get(peer);
+    if (!times) {
+      if (this.queueTimes.size >= QUEUE_TIME_PEERS_CAP) this.dropQueueTimes(this.queueTimes.keys().next().value!);
+      this.queueTimes.set(peer, times = new Map());
+    }
+    if (!times.has(id)) { times.set(id, at); this.queueTimeEntries++; }
+    while (times.size > QUEUE_TIME_CAP) { times.delete(times.keys().next().value!); this.queueTimeEntries--; }
+    while (this.queueTimeEntries > QUEUE_TIME_TOTAL_CAP) this.dropQueueTimes(this.queueTimes.keys().next().value!);
+  }
+  private dropQueueTimes(peer: PeerId): void {
+    this.queueTimeEntries -= this.queueTimes.get(peer)?.size ?? 0;
+    this.queueTimes.delete(peer);
+  }
+
   /**
    * Queued envelopes that skip the batch window (issue #41: `queued 3` hid which ones the peer still waits out).
    * An `important` envelope that is in a queue is one that could not be steered, so it does not interrupt a
@@ -935,8 +1026,14 @@ export class Bus {
     const replace = !front && key ? queue.findIndex((old) => old.from === HUB && old.refs?.supervision && old.refs.supervisionKey === key && !this.attempts.has(`${id}:${old.id}`)) : -1;
     const preparing = !front && key ? this.preparing.get(id)?.find((old) => old.from === HUB && old.refs?.supervision && old.refs.supervisionKey === key && !this.attempts.has(`${id}:${old.id}`) && !this.withdrawn.has(old.id)) : undefined;
     let queuedEnv = preparing ? { ...env, ts: Math.min(preparing.ts, env.ts) } : env;
+    const clock = this.trackingQueuePressure() ? Date.now() : 0;
+    let enteredAt = this.queueTimes.get(id)?.has(env.id) ? this.queueTimes.get(id)!.get(env.id)!
+      : front || this.flushingHub || !Number.isSafeInteger(clock) || clock <= 0 ? null : clock;
+    if (this.trackingQueuePressure() && !this.queueTimes.get(id)?.has(env.id) && queue.some(old => old.id === env.id)) enteredAt = null;
+    if (preparing) enteredAt = this.queueTimes.get(id)?.get(preparing.id) ?? null;
     if (replace >= 0) {
       const old = queue[replace]!;
+      enteredAt = this.queueTimes.get(id)?.get(old.id) ?? null;
       // Keep the first milestone's deadline, so continuous updates cannot create another batching window.
       queuedEnv = { ...queuedEnv, ts: Math.min(old.ts, queuedEnv.ts) };
       queue[replace] = queuedEnv;
@@ -944,6 +1041,7 @@ export class Bus {
       this.discardQueued(id, old, "superseded supervision milestone");
     } else if (front) queue.unshift(queuedEnv);
     else queue.push(queuedEnv);
+    this.recordQueueTime(id, queuedEnv.id, enteredAt);
     if (preparing && !this.withdrawn.has(preparing.id)) {
       this.markWithdrawn(preparing.id);
       this.discardQueued(id, preparing, "superseded supervision milestone during preparation");

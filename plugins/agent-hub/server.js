@@ -10775,6 +10775,13 @@ function safeModelLabel(value) {
   const label = value.trim();
   return label.length > 0 && label.length <= 160 && /^[A-Za-z0-9][A-Za-z0-9._:/+@-]*$/.test(label) ? label : undefined;
 }
+
+// src/hub/queue-backpressure.ts
+var QUEUE_BACKPRESSURE_LIMITS, DEFAULT_POLICY;
+var init_queue_backpressure = __esm(() => {
+  QUEUE_BACKPRESSURE_LIMITS = Object.freeze({ max_queued: 1e4, max_oldest_s: 604800 });
+  DEFAULT_POLICY = Object.freeze({ max_queued: 0, max_oldest_s: 0 });
+});
 // src/hub/tool-refusal.ts
 var init_tool_refusal = () => {};
 
@@ -10803,6 +10810,7 @@ function effectiveLocalRoute(defaultRoute, classRoute, classFixedModel) {
 }
 var TEMPLATE, cache;
 var init_routing = __esm(() => {
+  init_queue_backpressure();
   init_registry();
   init_board();
   init_spec_read();
@@ -21791,7 +21799,7 @@ var MACHINE_LOCAL = [
   "schedules",
   "corpus.paths"
 ];
-var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "rooms", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"];
+var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "rooms", "tasks.queue_backpressure", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"];
 function configRefusal(cwd, name) {
   const tracked = configTracked(cwd, name);
   return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;
@@ -22030,6 +22038,9 @@ class ControlClient {
 init_registry();
 init_hub_tools();
 init_envelope();
+
+// src/hub/tasks.ts
+init_queue_backpressure();
 
 // src/hub/memory-symbols.ts
 init_deny();

@@ -4709,3 +4709,36 @@ ask the owner to revoke membership as well. Hub shutdown closes links but keeps
 membership. Never delete rooms.db to repair a pin or sequence failure. Unknown or
 corrupt state disables rooms, while local hub work remains available. Real TLS,
 proxy forwarding and two-machine smoke remain unverified until the person runs X7.
+
+## Queue backpressure on automatic task offers (#800)
+
+WIP and a peer's waiting messages measure different constraints. Backpressure is
+off by default. A person may opt in through untracked local settings:
+
+```sh
+ahub settings set tasks.queue_backpressure.max_queued 20
+ahub settings set tasks.queue_backpressure.max_oldest_s 600
+```
+
+The bounds are 10,000 messages and seven days; zero disables that threshold.
+Values strictly above a threshold hold new automatic owner/reviewer offers.
+`ahub route explain <task>` uses the actual assignment rule. `ahub status` shows
+queued count, oldest age and a fixed hold reason separately from active,
+review-wait and reserved WIP. Unknown age is shown as unknown and holds an offer
+when the age threshold is on. Existing queued work still drains normally.
+
+After enabling age policy, old or recovered entries can lack host arrival proof;
+resaving/restarting does not make them fresh. Drain them or explicitly assign the
+particular task as the person/conductor. That override applies only to the named
+role, not other automatic choices, and does not waive privacy/independence/runtime
+admission. Automatic reserved planner pulls are still guarded.
+
+Queue-origin holds are retried after committed queue/state/policy changes, without
+routing work a person explicitly unassigned. Automatic decline/budget reroutes
+retain their retry intent across planning updates; a named proposal keeps its
+target. A person reservation waits under pressure rather than moving to another
+peer. Self-claims enqueue no owner request and skip only that queue guard.
+Continuing reviewers remain bound unless their own queue refuses the new offer.
+Setting both values to zero returns
+to ordinary automatic assignment. This PR changes no live repository setting or
+routing template; real-use adoption metrics remain separate from fixture checks.

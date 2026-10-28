@@ -1,3 +1,4 @@
+import { queueBackpressure, type QueueBackpressureCode, type QueueBackpressurePolicy, type QueuePressure } from "./queue-backpressure.ts";
 import { selectReviewerPool, type ReviewerPoolSelection } from "./reviewer-pool.ts";
 import { ADAPTERS, definitionOf, kindOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { readFileSync, statSync } from "node:fs";
@@ -119,6 +120,13 @@ export interface InstanceRoutingOptions {
   instances?: Readonly<Record<string, { kind: string }>>;
   wip?: Record<string, number>;
   load?: Record<string, number>;
+  /** Separate from WIP and sibling load: bounded pending delivery metadata for new automatic offers. */
+  queues?: Readonly<Record<string, QueuePressure>>;
+  queueBackpressure?: QueueBackpressurePolicy;
+  /** Host-only explicit person/conductor nomination; a name or reservation alone grants no bypass. */
+  queueOverride?: "owner" | "reviewer" | "both";
+  /** Host-proven person reservation: queue pressure holds this exact target instead of rerouting it. No bypass is granted. */
+  queueReservedHold?: PeerId;
   /** Positive host verification of the live extra runtime's noncanonical execution root. */
   ownerIsolation?: Readonly<Record<string, boolean>>;
 }
@@ -297,7 +305,7 @@ export function detectSignals(task: Pick<Task, "title" | "detail" | "refs">, rou
 /** A peer's entry in a peer-indexed map: own keys only, so a peer named `constructor` is never an inherited Object member. */
 export const peerEntry = <T>(map: Readonly<Record<string, T>> | undefined, peer: string): T | undefined => (map && Object.hasOwn(map, peer) ? map[peer] : undefined);
 
-export type RoutingRefusalCode = "instance" | "family" | "tests" | "spec" | "roster" | "pull-only" | "not-attached" | "excluded" | "owner-admission" | "offline" | "paused" | "failing" | "pii" | "policy";
+export type RoutingRefusalCode = QueueBackpressureCode | "instance" | "family" | "tests" | "spec" | "roster" | "pull-only" | "not-attached" | "excluded" | "owner-admission" | "offline" | "paused" | "failing" | "pii" | "policy";
 export interface RoutingRefusal { peer: PeerId; role: "owner" | "reviewer"; code: RoutingRefusalCode; reason: string }
 export interface Assignment {
   reviewSelection?: ReviewerPoolSelection;
@@ -498,10 +506,13 @@ export function assign(
       if (routing.signals.long_context_tokens > limit) return deny("policy", `${nativeRouting.backendLabel} ${backend} capability limit ${limit} tokens`);
     }
     if (nativeRouting?.longContext === "skip-owner" && role === "owner" && task.signals.includes("long_context") && routing.constraints.long_context === "skip_local") return deny("policy", "long_context: skip local");
-    // I-2 (#525-3): a peer that implemented this task never reviews it, whoever holds it now, a named reviewer included. It is the LAST check,
-    // so it only ever removes a candidate that was otherwise eligible: a former implementer that is offline, paused, failing or off roster is
-    // refused for that real reason and leaves the outcome exactly as it was before I-2 (a task with no other reviewer still approves directly).
+    // I-2 (#525-3) is the last capability/independence gate, before queue-capacity admission. A former implementer never reviews its task,
+    // including a named reviewer. Earlier offline, paused, failing and roster refusals retain their existing reason and outcome.
     if (role === "reviewer" && former.has(peer)) return deny("policy", "implemented this task");
+    if (opts.queueOverride !== role && opts.queueOverride !== "both") {
+      const pressure = queueBackpressure(peer, opts.queueBackpressure, peerEntry(opts.queues, peer), opts.now ?? NaN);
+      if (pressure) return deny(pressure.code, pressure.reason);
+    }
     return undefined;
   };
   /** Quota that resets soonest gets used first: headroom per hour left in the window, at least 15 min (a task assigned that close to a reset mostly runs after it). */
@@ -556,12 +567,15 @@ export function assign(
     return ranked.find((p) => states[p] === "idle") ?? ranked[0];
   };
 
-  // The PII constraint, capability limits, exclusions and peer states still apply: when they pass it over, routing proceeds.
+  // Safety/state refusals still permit the existing reservation fallback. Queue pressure holds a host-proven person reservation instead.
   const unreserved = reserved ? blocked(reserved, "owner") : undefined;
-  if (reserved) trace.push(`reserved owner ${reserved}: ${unreserved ? `not honored, ${unreserved}; routing proceeds` : "honored"}`);
+  const reservedRefusal = reserved ? refusals.get(`owner:${reserved}`) : undefined;
+  const queueReservedHeld = reserved === opts.queueReservedHold && reservedRefusal !== undefined
+    && ["queue-count", "queue-age", "queue-age-unknown"].includes(reservedRefusal.code);
+  if (reserved) trace.push(`reserved owner ${reserved}: ${queueReservedHeld ? `held, ${unreserved}; reservation retained` : unreserved ? `not honored, ${unreserved}; routing proceeds` : "honored"}`);
   // Never the task's current owner by default: a decline or an escalation has to reach the next peer in the list.
   const automaticOwner = !(reserved && !unreserved) && opts.candidates === undefined && !(instanceMode && opts.namedOwner !== undefined);
-  const wanted = reserved && !unreserved ? [reserved] : opts.candidates ?? (instanceMode && opts.namedOwner !== undefined ? [opts.namedOwner] : expandClassPeers(policy?.peers ?? [], states, opts));
+  const wanted = queueReservedHeld ? [] : reserved && !unreserved ? [reserved] : opts.candidates ?? (instanceMode && opts.namedOwner !== undefined ? [opts.namedOwner] : expandClassPeers(policy?.peers ?? [], states, opts));
   const owner = pick(wanted, "owner", undefined, automaticOwner);
   trace.push(owner ? `owner: ${owner}` : "owner: none available, task stays proposed (ahub task assign <id> <peer>)");
   const ownerHold = owner ? peerEntry(opts.held, owner) : undefined;
@@ -679,6 +693,12 @@ export function assign(
         reviewer = "user";
         reviewBlocked = true;
         trace.push("  every eligible reviewer implemented this task: the person reviews");
+      }
+      // Queue pressure holds a new review offer; it must never turn review exhaustion into direct approval.
+      if (!reviewer && [...refusals.values()].some(row => row.role === "reviewer" && (row.code === "queue-count" || row.code === "queue-age" || row.code === "queue-age-unknown"))) {
+        reviewer = "user";
+        reviewBlocked = true;
+        trace.push("  reviewer queue backpressure: automatic review held; the person may override");
       }
       trace.push(reviewer ? `reviewer: ${reviewer}` : "reviewer: none, done will approve directly");
       const reviewerHold = reviewer ? peerEntry(opts.held, reviewer) : undefined;

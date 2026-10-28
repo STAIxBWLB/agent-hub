@@ -1,3 +1,4 @@
+import { QUEUE_BACKPRESSURE_LIMITS } from "./queue-backpressure.ts";
 import { operationalRosterSetting, operationalSetting } from "./operational-authority.ts";
 import { ACTION_CLASSES } from "./action-class.ts";
 import { definitionOf, type KindMap, type ProjectAdapterCatalog, ADAPTERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
@@ -58,6 +59,8 @@ export const SETTINGS: readonly SettingDef[] = [
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `tasks.wip_limits.${peer}`, group: "Routing", label: `${peer}: planner WIP limit`, type: "integer", min: 0, max: 32, store: "config", applies: "live", risk: "raises", floor: 0, path: ["tasks", "wip_limits", peer] })),
   { key: "tasks.escalate_after", group: "Routing", label: "Escalate after N consecutive changes_requested", type: "integer", min: 1, max: 10, store: "config", applies: "live", risk: "raises", path: ["tasks", "escalate_after"] },
   { key: "tasks.auto_pull", group: "Switches", label: "Auto-pull the top reserved ready card when a planner slot frees", type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["tasks", "auto_pull"] },
+  { key: "tasks.queue_backpressure.max_queued", group: "Routing", label: "Automatic offers: max queued envelopes (0 disables)", type: "integer", min: 0, max: QUEUE_BACKPRESSURE_LIMITS.max_queued, store: "config", applies: "live", risk: "raises", path: ["tasks", "queue_backpressure", "max_queued"] },
+  { key: "tasks.queue_backpressure.max_oldest_s", group: "Routing", label: "Automatic offers: max oldest queued age in seconds (0 disables)", type: "integer", min: 0, max: QUEUE_BACKPRESSURE_LIMITS.max_oldest_s, store: "config", applies: "live", risk: "raises", path: ["tasks", "queue_backpressure", "max_oldest_s"] },
   { key: "planner", group: "Roles", label: "Planners (task-local selection)", type: "peers", values: PLANNER_PEERS, store: "config", applies: "live", risk: "raises", path: ["planner"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `catalog_roles.${peer}`, group: "Roles", label: `${peer}: catalog guidance`, type: "roles", store: "config", applies: "next use", risk: "safe", path: ["catalog_roles", peer] })),
   { key: "scoped_grants.protect_instructions", group: "Permissions", label: "Ask before writing instruction files", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["protect_instruction_files"] },

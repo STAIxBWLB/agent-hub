@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
 import type { BusSnapshot } from "./bus.ts";
+import type { QueuePressure } from "./queue-backpressure.ts";
 import { HUB, USER, type Envelope, type Kind } from "./envelope.ts";
 import { heldDeliveryHints } from "./delivery-hints.ts";
 import { processLiveness } from "../pi/process-signature.ts";
@@ -241,6 +242,8 @@ export class DeliveryJournal {
   readonly instanceId: string;
   private readonly db: Database;
   private closed = false;
+  private queueMetadataTracking = false;
+  private queueMetadataInvalidated = false;
   private readonly operationId?: string;
   constructor(options: DeliveryJournalOptions) {
     this.file = options.file;
@@ -323,6 +326,8 @@ export class DeliveryJournal {
     this.db.run(
       `CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, peer TEXT NOT NULL, state TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, originals TEXT NOT NULL, out_json TEXT NOT NULL, reason TEXT, attempt INTEGER, previous_id TEXT)`,
     );
+    this.db.run("CREATE TABLE IF NOT EXISTS delivery_queue_meta_state (project_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)");
+    this.db.run("CREATE TABLE IF NOT EXISTS delivery_queue_meta (project_id TEXT NOT NULL, peer TEXT NOT NULL, queued INTEGER NOT NULL, oldest_at INTEGER, unknown_age INTEGER NOT NULL, PRIMARY KEY(project_id,peer))");
     this.db.run("CREATE TABLE IF NOT EXISTS task_offer_reads (project_id TEXT NOT NULL, peer TEXT NOT NULL, envelope_id TEXT NOT NULL, delivery_id TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('adapter','reply','pull')), offer_revision INTEGER NOT NULL CHECK(offer_revision >= 1), PRIMARY KEY(project_id,peer,envelope_id))");
     this.db.run(
       `CREATE TABLE IF NOT EXISTS resolution_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, delivery_id TEXT NOT NULL, observed_revision INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, result_revision INTEGER NOT NULL, result_state TEXT NOT NULL, UNIQUE(project_id, delivery_id, observed_revision, action, reason))`,
@@ -474,11 +479,71 @@ export class DeliveryJournal {
       ) !== 1
     )
       throw new Error("delivery journal instance fence lost");
+    // New writers carry unchanged summary provenance across non-queue revisions.
+    // An older writer does not, so its next revision makes these rows unknown.
+    if (this.queueMetadataTracking) this.db.query("UPDATE delivery_queue_meta_state SET revision=? WHERE project_id=? AND revision=?")
+      .run(revision, this.projectId, revision - 1);
     return revision;
+  }
+
+  /** Atomically accompanies the bus snapshot, never extracts body JSON on a periodic path. */
+  private writeQueueMetadata(bus: BusSnapshot, revision: number, tracking: boolean): void {
+    if (!tracking) {
+      // Invalidate once per disabled period; ordinary revisions already stale old summaries.
+      if (!this.queueMetadataInvalidated) {
+        this.db.query("UPDATE delivery_queue_meta_state SET revision=-1 WHERE project_id=? AND revision>=0").run(this.projectId);
+        this.queueMetadataInvalidated = true;
+      }
+      return;
+    }
+    this.db.query("DELETE FROM delivery_queue_meta WHERE project_id=?").run(this.projectId);
+    const put = this.db.query("INSERT INTO delivery_queue_meta(project_id,peer,queued,oldest_at,unknown_age) VALUES(?,?,?,?,?)");
+    for (const [peer, queue] of Object.entries(bus.queues)) {
+      const provenance = bus.queuedAt;
+      const times = provenance && typeof provenance === "object" && !Array.isArray(provenance) && Object.hasOwn(provenance, peer) ? provenance[peer] : undefined;
+      let oldest: number | undefined, unknown = false;
+      for (const env of queue) {
+        const at = times && typeof times === "object" && !Array.isArray(times) && Object.hasOwn(times, env.id) ? times[env.id] : null;
+        if (typeof at !== "number" || !Number.isSafeInteger(at) || at <= 0) unknown = true;
+        else oldest = oldest === undefined ? at : Math.min(oldest, at);
+      }
+      put.run(this.projectId, peer, queue.length, oldest ?? null, unknown ? 1 : 0);
+    }
+    this.db.query("INSERT INTO delivery_queue_meta_state(project_id,revision) VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET revision=excluded.revision")
+      .run(this.projectId, revision);
+    this.queueMetadataInvalidated = false;
+  }
+
+  /** Host policy only, refreshed before receipt/reply mutations as well as snapshot writes. No SQL. */
+  setQueueMetadataTracking(tracking: boolean): void { this.queueMetadataTracking = tracking === true; }
+
+  private queueMetadataTransaction<T>(tracking: boolean, fn: () => T): T {
+    return this.transaction(() => { this.setQueueMetadataTracking(tracking); return fn(); });
+  }
+  private queueMetadataSnapshot(bus: BusSnapshot, tracking: boolean): BusSnapshot {
+    if (tracking || bus.queuedAt === undefined) return bus;
+    const legacy = { ...bus }; delete legacy.queuedAt;
+    return legacy;
+  }
+
+  /** Indexed per-peer pending counts/age only, independent of delivery history and payload columns. */
+  pendingQueueMetadata(peer: string): QueuePressure | undefined {
+    this.ensureOpen();
+    const row = this.db.query("SELECT m.revision,s.revision AS metadata_revision,q.peer AS metadata_peer,q.queued,q.oldest_at,q.unknown_age FROM delivery_meta m LEFT JOIN delivery_queue_meta_state s ON s.project_id=m.project_id LEFT JOIN delivery_queue_meta q ON q.project_id=m.project_id AND q.peer=? WHERE m.project_id=?")
+      .get(peer, this.projectId) as { revision: number; metadata_revision: number | null; metadata_peer: string | null; queued: number | null; oldest_at: number | null; unknown_age: number | null } | null;
+    if (!row || !Number.isSafeInteger(row.revision) || row.revision < 0 || row.metadata_revision !== row.revision) return undefined;
+    if (row.metadata_peer === null) return { queued: 0, oldestQueuedAt: null };
+    if (typeof row.queued !== "number" || !Number.isSafeInteger(row.queued) || row.queued < 0 || row.queued > 2048 || ![0, 1].includes(row.unknown_age!)) return undefined;
+    if (row.queued === 0) return row.oldest_at === null && row.unknown_age === 0 ? { queued: 0, oldestQueuedAt: null } : undefined;
+    if (row.unknown_age === 1) return { queued: row.queued };
+    if (!Number.isSafeInteger(row.oldest_at) || row.oldest_at! <= 0) return undefined;
+    return { queued: row.queued, oldestQueuedAt: row.oldest_at! };
   }
   transaction<T>(fn: () => T): T {
     this.ensureOpen();
-    return this.db.transaction(fn)();
+    const invalidated = this.queueMetadataInvalidated;
+    try { return this.db.transaction(fn)(); }
+    catch (error) { this.queueMetadataInvalidated = invalidated; throw error; }
   }
   snapshot(): JournalSnapshot {
     this.ensureOpen();
@@ -513,26 +578,34 @@ export class DeliveryJournal {
     validateJournalSnapshot(result);
     return result;
   }
-  persistBus(bus: unknown, manualPaused: string[]): number {
+  persistBus(bus: unknown, manualPaused: string[], trackQueuePressure = false): number {
     this.ensureOpen();
-    validateBus(bus);
+    let checkedBus = this.queueMetadataSnapshot(validateBus(bus), trackQueuePressure);
+    let encodedBus: string;
+    try { encodedBus = JSON.stringify(checkedJSON(checkedBus, "bus")); }
+    catch (error) {
+      if (checkedBus.queuedAt === undefined || !(error instanceof Error) || error.message !== "invalid delivery journal: bus is too large") throw error;
+      checkedBus = { ...checkedBus }; delete checkedBus.queuedAt;
+      encodedBus = JSON.stringify(checkedJSON(checkedBus, "bus"));
+    }
     list(manualPaused, "manualPaused", 4096).forEach((id) =>
       text(id, "manualPaused[]", 256),
     );
-    return this.db.transaction(() => {
+    return this.queueMetadataTransaction(trackQueuePressure, () => {
       const revision = this.bump();
       this.db
         .query(
           "UPDATE delivery_meta SET bus_snapshot = ?, manual_paused = ? WHERE project_id = ?",
         )
         .run(
-          JSON.stringify(checkedJSON(bus, "bus")),
+          encodedBus,
           JSON.stringify([...new Set(manualPaused)].sort()),
           this.projectId,
         );
+      this.writeQueueMetadata(checkedBus, revision, trackQueuePressure);
       this.harden();
       return revision;
-    })();
+    });
   }
   /** Atomically persist a bus snapshot and any fan-out rows created for that snapshot. */
   persistBusAndDeliveries(
@@ -541,9 +614,10 @@ export class DeliveryJournal {
     deliveries: Array<
       Omit<JournalDelivery, "revision" | "updatedAt"> & { updatedAt?: number }
     >,
+    trackQueuePressure = false,
   ): number {
     this.ensureOpen();
-    validateBus(bus);
+    bus = this.queueMetadataSnapshot(validateBus(bus), trackQueuePressure);
     list(manualPaused, "manualPaused", 4096).forEach((id) =>
       text(id, "manualPaused[]", 256),
     );
@@ -554,7 +628,7 @@ export class DeliveryJournal {
         updatedAt: d.updatedAt ?? d.createdAt,
       }),
     );
-    return this.db.transaction(() => {
+    return this.queueMetadataTransaction(trackQueuePressure, () => {
       const revision = this.bump();
       this.db
         .query(
@@ -565,6 +639,7 @@ export class DeliveryJournal {
           JSON.stringify([...new Set(manualPaused)].sort()),
           this.projectId,
         );
+      this.writeQueueMetadata(bus, revision, trackQueuePressure);
       for (const d of deliveries)
         this.db
           .query(
@@ -586,21 +661,22 @@ export class DeliveryJournal {
           );
       this.harden();
       return revision;
-    })();
+    });
   }
   checkpointDelivery(
     bus: BusSnapshot,
     delivery: Omit<JournalDelivery, "revision" | "updatedAt"> & {
       state: "dispatching";
     },
+    trackQueuePressure = false,
   ): JournalDelivery {
-    validateBus(bus);
+    bus = this.queueMetadataSnapshot(validateBus(bus), trackQueuePressure);
     validateDelivery({
       ...delivery,
       revision: 0,
       updatedAt: delivery.createdAt,
     });
-    return this.db.transaction(() => {
+    return this.queueMetadataTransaction(trackQueuePressure, () => {
       const evidence = this.retryEvidence(delivery.peer, delivery.originals);
       if (evidence === "used") {
         // Inheritance commits with the handoff, before safe failure or pruning can erase a grouped parent.
@@ -627,6 +703,7 @@ export class DeliveryJournal {
           JSON.stringify(bus.manualPaused ?? []),
           this.projectId,
         );
+      this.writeQueueMetadata(bus, revision, trackQueuePressure);
       this.db
         .query(
           "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -647,7 +724,7 @@ export class DeliveryJournal {
         );
       this.harden();
       return { ...delivery, revision, updatedAt: now };
-    })();
+    });
   }
   createDelivery(
     input: Omit<JournalDelivery, "revision" | "updatedAt"> & {
@@ -944,9 +1021,10 @@ export class DeliveryJournal {
       )
       .run(this.projectId, count - TERMINAL_CAP);
   }
-  importSnapshot(snapshot: JournalSnapshot, operationId: string): boolean {
+  importSnapshot(snapshot: JournalSnapshot, operationId: string, trackQueuePressure = false): boolean {
     this.ensureOpen();
     validateJournalSnapshot(snapshot);
+    const bus = this.queueMetadataSnapshot(snapshot.bus, trackQueuePressure);
     text(operationId, "operationId", 256);
     if (this.operationId !== undefined && this.operationId !== operationId)
       throw new Error("recovery operation does not own delivery journal");
@@ -963,18 +1041,19 @@ export class DeliveryJournal {
       Object.keys(storedBus).length !== 0
     )
       return false;
-    return this.db.transaction(() => {
+    return this.queueMetadataTransaction(trackQueuePressure, () => {
       this.db
         .query(
           "UPDATE delivery_meta SET revision = ?, bus_snapshot = ?, manual_paused = ?, operation_id = ? WHERE project_id = ?",
         )
         .run(
           snapshot.revision,
-          JSON.stringify(snapshot.bus),
+          JSON.stringify(bus),
           JSON.stringify(snapshot.manualPaused),
           operationId,
           this.projectId,
         );
+      this.writeQueueMetadata(bus, snapshot.revision, trackQueuePressure);
       for (const row of snapshot.deliveries)
         this.db
           .query(
@@ -995,9 +1074,9 @@ export class DeliveryJournal {
             row.previousId ?? null,
           );
       // Snapshots deliberately omit resolution history; only these imported originals have unknown retry rights.
-      this.markRetryUnknown(snapshot.deliveries, snapshot.bus);
+      this.markRetryUnknown(snapshot.deliveries, bus);
       return true;
-    })();
+    });
   }
   close(): void {
     if (!this.closed) {
