@@ -55,11 +55,11 @@ export async function runSmoke(target: SmokeTarget, options: SmokeOptions, ports
     const fd = openSync(events, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const inputFd = openSync(input, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
     const decoder = new TextDecoder();
-    let position = 0, partial = "", announced = false, assistant = false, queued = false;
+    let position = 0, partial = "", announced = false, assistant = false, queued = false, queueCandidate = false;
     const protocolStop = new AbortController();
     const protocolStarted = performance.now();
     const deadline = protocolStarted + options.timeoutMs;
-    const submit = (text: string) => { target.check(); if (!fstatSync(inputFd).isFile() || fstatSync(inputFd).nlink !== 1) throw protocolError(); writeSync(inputFd, JSON.stringify({ type: "submit", text }) + "\n"); receipt.counts.submits++; };
+    const submit = (text: string, window?: () => boolean) => { target.check(); if (window && !window()) return false; if (!fstatSync(inputFd).isFile() || fstatSync(inputFd).nlink !== 1) throw protocolError(); writeSync(inputFd, JSON.stringify({ type: "submit", text }) + "\n"); receipt.counts.submits++; return true; };
     try {
       target.check(); cleaned = false; receipt.checks.cleaned = false;
       const result = await runPty([...command, "--input-file", input, "--json-file", events, "--mcp-config", mcp, "--approval-mode", "default", "--auth-type", "openai", "--model", source.OPENAI_MODEL], { cwd, env, timeoutMs: options.timeoutMs, signal: options.signal, ready: async () => {
@@ -102,10 +102,14 @@ export async function runSmoke(target: SmokeTarget, options: SmokeOptions, ports
                     assistant = false; receipt.counts.stops++;
                     if (receipt.counts.stops === 2) { receipt.checks.protocol = true; receipt.checks.queued = queued; return; }
                   } else if (receipt.counts.users === 1 && !queued && ["message_start", "content_block_start", "content_block_delta"].includes(event.event.type)) {
-                    // Submit while the first streamed turn is observed running; the second user event must follow its stop.
-                    submit(SECOND_PROMPT); queued = true;
+                    queueCandidate = true;
                   }
                 }
+              }
+              // Consume everything already published before calling a still-running turn queued.
+              if (position < info.size) continue;
+              if (queueCandidate && !queued && partial.length === 0) {
+                if (submit(SECOND_PROMPT, () => fstatSync(fd).size === position)) { queued = true; queueCandidate = false; }
               }
             }
             await Bun.sleep(20);

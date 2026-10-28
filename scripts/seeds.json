@@ -3672,6 +3672,14 @@
       "replacement": "  (receipt as any).debug = source.OPENAI_API_KEY;\n  receipt.timings.totalMs = Math.round(performance.now() - started);",
       "testFile": "test/smoke-qwen.test.ts",
       "testName": "Q2 verifies two queued submits and publishes only a sanitized receipt after cleanup"
+    },
+    {
+      "id": "smoke-queued-window",
+      "file": "src/cli/smoke-run.ts",
+      "search": "                    queueCandidate = true;",
+      "replacement": "                    submit(SECOND_PROMPT); queued = true;",
+      "testFile": "test/smoke-qwen.test.ts",
+      "testName": "completed first turns cannot prove queued input"
     }
   ]
 }
