@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Facts } from "../src/hub/facts.ts";
 import { DeliverableRefusal, vetDeliverables } from "../src/hub/deliverable-files.ts";
-import { matchesPolicy } from "../src/hub/path-policy.ts";
+import { insideRoot, matchesPolicy } from "../src/hub/path-policy.ts";
 import { screenRegistration } from "../src/hub/sources.ts";
 import { realPath } from "../src/hub/project.ts";
 import { initShadow, repoOf } from "../src/hub/snapshots.ts";
@@ -20,7 +20,7 @@ function loop(layout: { original: string; link: string }, attempt: (dir: string,
   const base = realPath(mkdtempSync(join(tmpdir(), "ahub-realpath-name-"))); dirs.push(base);
   for (let i = 0; i < ITERATIONS; i++) {
     const dir = join(base, `d${i}`);
-    for (const sub of ["data/raw", "secrets", ".agenthub", "private", "docs"]) mkdirSync(join(dir, sub), { recursive: true });
+    for (const sub of ["data/raw", "secrets", ".agenthub", "private", "docs", "..d"]) mkdirSync(join(dir, sub), { recursive: true });
     writeFileSync(join(dir, layout.original), "k=v"); linkSync(join(dir, layout.original), join(dir, layout.link));
     attempt(dir, layout.link);
   }
@@ -112,6 +112,93 @@ for (const part of PARTS) test(`Facts.rel in a shadow repository never names a f
   }
   expect(named).toBe(0);
 }, 20_000);
+
+// The loops above find the bug only when Bun's realpath actually names the other link, which is stochastic (about 1 call in 100 when this was found, far rarer on a quiet machine
+// later: 0 of 3000 idle, about 1 of 3000 under load). A symlink makes the typed name differ from the resolved name EVERY time, so these tests pin the same decisions deterministically:
+// a name that is itself denied, hub-owned or ignored is refused even when the file it points to is innocent. (Before this change such a symlink was named by its target.)
+function symlinkProject(link: string) {
+  const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-realpath-symlink-"))); dirs.push(dir);
+  mkdirSync(join(dir, "docs")); writeFileSync(join(dir, "docs/public.txt"), "ok");
+  const at = join(dir, link); mkdirSync(join(at, ".."), { recursive: true }); symlinkSync(join(dir, "docs/public.txt"), at);
+  return dir;
+}
+const plainFacts = (dir: string) => new Facts({ root: dir, tmp: join(dir, ".facts"), instance: "i", scope: () => ({ paths: [], plans: [] }), peers: () => [], nameable: () => true });
+const vets = (dir: string, path: string, deny: string[] = []) => { try { vetDeliverables([{ path, format: "txt" }], { cwd: dir, deny, private: () => false }); return true; } catch (error) { if (!(error instanceof DeliverableRefusal)) throw error; return false; } };
+
+test("Facts.rel refuses a symlink whose own name is denied, whatever directory holds it, even though its target is innocent", () => {
+  for (const link of [".env", "sub/.env", "..d/.env", "..d/sub/id_rsa", "notes.pem"]) {
+    const dir = symlinkProject(link);
+    expect(plainFacts(dir).rel(link), link).toBeUndefined();
+    expect(plainFacts(dir).rel("docs/public.txt"), `${link}: the target itself`).toBe("docs/public.txt");
+  }
+});
+
+test("Facts.rel in a shadow repository refuses a symlink whose own name is hub-owned or ignored, even in a directory called ..d or ..ignored", () => {
+  const cases: [string, string | undefined][] = [[".agenthub/link.txt", undefined], ["..d/.agenthub/link.txt", undefined], ["..d/.git/link.txt", undefined], ["..ignored/link.txt", "..ignored/\n"], ["ignored/link.txt", "ignored/\n"]];
+  for (const [link, ignore] of cases) {
+    const { base, facts } = shadowFacts(ignore);
+    mkdirSync(join(base, "docs")); writeFileSync(join(base, "docs/public.txt"), "ok");
+    mkdirSync(join(base, link, ".."), { recursive: true }); symlinkSync(join(base, "docs/public.txt"), join(base, link));
+    expect(facts.rel(link), link).toBeUndefined();
+    expect(facts.rel("docs/public.txt"), `${link}: the target itself`).toBe("docs/public.txt");
+  }
+});
+
+test("a deliverable that is a symlink with a denied, hub-owned or local.deny name is refused although its target is innocent, in a directory called ..d too", () => {
+  for (const link of [".env", "..d/.env", ".agenthub/state.txt", "..d/.agenthub/state.txt", "secrets/report.txt", "..d/secrets/report.txt"]) {
+    const dir = symlinkProject(link);
+    expect(vets(dir, link, ["secrets/"]), link).toBe(false);
+    expect(vets(dir, "docs/public.txt", ["secrets/"]), `${link}: the target itself`).toBe(true);
+  }
+  // The same name without a deny entry is accepted: the refusal comes from local.deny, not from the name alone.
+  expect(vets(symlinkProject("secrets/report.txt"), "secrets/report.txt", [])).toBe(true);
+});
+
+test("insideRoot is a segment test, not a string prefix: `..x/f` is inside, `..` and `../f` and an absolute path are not", () => {
+  for (const inside of ["", "a.txt", "a/b", "..x", "..ignored/f.txt", "...", ".../x", "a/../b"]) expect(insideRoot(inside), inside).toBe(true);
+  for (const outside of ["..", "../x", "../../x", "/abs"]) expect(insideRoot(outside), outside).toBe(false);
+});
+
+// A directory NAMED with a leading `..` is a valid name inside the project. The first version of the typed-name checks skipped it with a string-prefix test (found in review), so a policy
+// on that directory (the ignore file, a denied name, a hub-owned name) was never asked when realpath named its public hardlink. These loops use exactly that layout.
+for (const part of PARTS) test(`Facts.rel in a shadow repository never names a file in a directory called ..ignored that is the later hardlink of a public one (part ${part} of 5)`, () => {
+  const { base, facts } = shadowFacts("..ignored/\n");
+  let named = 0;
+  for (let i = 0; i < ITERATIONS; i++) {
+    mkdirSync(join(base, `pub${i}`), { recursive: true }); mkdirSync(join(base, `..ignored/d${i}`), { recursive: true });
+    writeFileSync(join(base, `pub${i}/f.txt`), "k=v"); linkSync(join(base, `pub${i}/f.txt`), join(base, `..ignored/d${i}/g.txt`));
+    if (facts.rel(`..ignored/d${i}/g.txt`) !== undefined) named++;
+  }
+  expect(named).toBe(0);
+}, 20_000);
+
+for (const part of PARTS) test(`Facts.rel never names a denied file in a directory called ..d that is the later hardlink of an innocent one (part ${part} of 5)`, () => {
+  let named = 0;
+  loop({ original: "data/raw/input.json", link: "..d/.env" }, (dir, typed) => {
+    const facts = new Facts({ root: dir, tmp: join(dir, ".facts"), instance: "i", scope: () => ({ paths: [], plans: [] }), peers: () => [], nameable: () => true });
+    if (facts.rel(typed) !== undefined) named++;
+  });
+  expect(named).toBe(0);
+}, 20_000);
+
+for (const part of PARTS) test(`a deliverable in a directory called ..d is refused when its name is denied or hub-owned and it is the later hardlink of an innocent file (part ${part} of 5)`, () => {
+  let accepted = 0;
+  const vet = (dir: string, path: string) => { try { vetDeliverables([{ path, format: "json" }], { cwd: dir, deny: [], private: () => false }); return true; } catch (error) { if (!(error instanceof DeliverableRefusal)) throw error; return false; } };
+  loop({ original: "data/raw/input.json", link: "..d/.env" }, (dir, typed) => { if (vet(dir, typed)) accepted++; });
+  expect(accepted).toBe(0);
+}, 20_000);
+
+test("a file in a directory called ..d is still named, and still refused when the directory is ignored, in a shadow repository and outside one", () => {
+  const plain = realPath(mkdtempSync(join(tmpdir(), "ahub-realpath-dots-"))); dirs.push(plain);
+  mkdirSync(join(plain, "..d")); writeFileSync(join(plain, "..d/ok.txt"), "ok"); writeFileSync(join(plain, "..d/.env"), "k=v");
+  const facts = new Facts({ root: plain, tmp: join(plain, ".facts"), instance: "i", scope: () => ({ paths: [], plans: [] }), peers: () => [], nameable: () => true });
+  // The resolved name keeps main's original test (a leading `..` is refused there), so a file named only through such a directory is not named: fail closed, as on main.
+  expect(facts.rel("..d/.env")).toBeUndefined();
+  const { base, facts: shadow } = shadowFacts("..ignored/\n");
+  mkdirSync(join(base, "pub")); mkdirSync(join(base, "..ignored")); writeFileSync(join(base, "pub/a.txt"), "a"); writeFileSync(join(base, "..ignored/b.txt"), "b");
+  expect(shadow.rel("pub/a.txt")).toBe("pub/a.txt");
+  expect(shadow.rel("..ignored/b.txt")).toBeUndefined();
+});
 
 test("in a shadow repository an ordinary file is still named, an ignored file and an ignored symlink target are not, and a hardlinked ordinary file is named", () => {
   const { base, facts } = shadowFacts("ignored/\n");

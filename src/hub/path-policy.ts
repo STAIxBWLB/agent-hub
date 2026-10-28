@@ -2,6 +2,13 @@ import { accessSync, constants, lstatSync, opendirSync, readlinkSync, statSync }
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { realPath } from "./project.ts";
 import { foldSegment } from "./permission-mode.ts";
+/**
+ * Whether `rel`, the result of `relative(root, path)`, names something inside the root: not `..`, not a path that starts with a `..` SEGMENT, and not absolute.
+ * A string prefix test is wrong here: `..ignored/f.txt` is a valid directory named `..ignored` inside the project (#552), while `../f.txt` leaves it.
+ * An empty `rel` is the root itself, which is inside; callers that need a file name check for it themselves.
+ */
+export const insideRoot = (rel: string): boolean => rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+
 /** Bounded project-relative exact paths/subtrees or *, ? and whole-segment ** globs. */
 export function policyPaths(raw: unknown, field: string): string[] {
   if (raw === undefined) return [];
