@@ -22,7 +22,16 @@ afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 
 test("#489 every operational row has an independent legacy default pin and an operational H0 source", () => {
   expect(GROOM_FYI_WINDOW_MS).toBe(600_000);
-  const pins: Record<string, { legacy: number; scale: number }> = { [key]: { legacy: GROOM_FYI_WINDOW_MS, scale: 60_000 } };
+  // Independent literals: what each constant was before it became a setting, never imported from the module under test (H2 values: #489 group 1).
+  const pins: Record<string, { legacy: number; scale: number }> = {
+    [key]: { legacy: GROOM_FYI_WINDOW_MS, scale: 60_000 },
+    "tasks.demote_at": { legacy: 1.5, scale: 1 },
+    "tasks.demotion_half_life_h": { legacy: 86_400_000, scale: 3_600_000 },
+    "tasks.contradiction_window_days": { legacy: 604_800_000, scale: 86_400_000 },
+    "tasks.rescreen_max": { legacy: 10, scale: 1 },
+    "tasks.split_min_observations": { legacy: 5, scale: 1 },
+    "tasks.split_max_failure_share": { legacy: 0.3, scale: 1 },
+  };
   const inventory = readFileSync(join(import.meta.dir, "../docs/verification/2026-10-24-hardcoded-values.md"), "utf8").split("\n");
   const docs = readFileSync(join(import.meta.dir, "../docs/operations.md"), "utf8");
   for (const def of OPERATIONAL_NUMBERS) {

@@ -1955,6 +1955,12 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Routing | `tasks.wip_limits.<peer>` | `config.local.json` | live |
 | Routing | `tasks.escalate_after` (1-10, default 3: consecutive `changes_requested` before a task moves to the next `escalate_to` peer) | `config.local.json` | live; the next verdict uses it |
 | Routing | `tasks.groom_fyi_window_min` (1-1440 minutes, default 10) | `config.local.json` | live; the next planner-notice flush uses it; planning-change task notices are unchanged |
+| Routing | `tasks.demote_at` (0.5-20 decayed recent failures, default 1.5) | `config.local.json` | live; the next demotion read (routing, `ahub route explain`) uses it |
+| Routing | `tasks.demotion_half_life_h` (1-168 hours, default 24) | `config.local.json` | live; the next demotion read uses it |
+| Routing | `tasks.contradiction_window_days` (1-90 days, default 7) | `config.local.json` | live; the next changes_requested verdict uses it |
+| Routing | `tasks.rescreen_max` (1-100 attempts, default 10) | `config.local.json` | live; the next release-timer re-screen uses it |
+| Routing | `tasks.split_min_observations` (3-100 measured tasks, default 5) | `config.local.json` | live; the next shadow split prediction uses it |
+| Routing | `tasks.split_max_failure_share` (0-1, default 0.3) | `config.local.json` | live; the next shadow split prediction uses it |
 | Switches | `tasks.auto_pull` (default off: pull the top explicitly reserved ready card when a planner slot frees) | `config.local.json` | live; the next freed planner slot uses it |
 | Routing | `tasks.queue_backpressure.max_queued` (0-10000), `.max_oldest_s` (0-604800); 0, the default, disables each ([backpressure](#queue-backpressure-on-automatic-task-offers-800)) | `config.local.json` | live |
 | Roles | `planner` (one or up to eight planner holders) | `config.local.json` | at once |
@@ -1986,6 +1992,34 @@ permit tightening only, tested for that floor; UI `floor` metadata alone does
 not enforce a safety ceiling. This H1 example changes no safety floor, protocol,
 wire format or storage contract. The remaining H0 conversions belong to later
 area PRs.
+
+#### Tasks and routing conversions (#489 H2)
+
+Six more operational numbers use the same fixed rows, all `live`, `risk: raises`, config store, with the
+default equal to the constant it replaces (each pinned by a literal in `test/operational-settings.test.ts`):
+`tasks.demote_at` (DEMOTE_AT), `tasks.demotion_half_life_h` (DEMOTION_HALF_LIFE_MS),
+`tasks.contradiction_window_days` (CONTRADICTION_WINDOW_MS), `tasks.rescreen_max` (RESCREEN_MAX),
+`tasks.split_min_observations` (SPLIT_MIN) and `tasks.split_max_failure_share` (SPLIT_FAILURE_SHARE). Each is
+read where its constant was used, so a change applies at the next demotion read, verdict, re-screen or
+prediction without a restart. The split thresholds only feed the shadow prediction, which never changes
+assignment. None grants conductor authority.
+
+The H0 operational items of `tasks.ts`, `routing.ts` and `task-sweep.ts` that stay as they are (42 listed, 6 converted here, 1 in H1):
+
+- Already settings, so nothing to add: `task_sweep.interval_s`, `unaccepted_min`, `idle_min`, `review_min`, `ready_min`
+  (both uses), `ladder_min` and `no_writes_turns` (the H0 rows are the defaults of the existing keys), `tasks.escalate_after`
+  (ESCALATE_AFTER), `tasks.wip_limits` (the default of 1) and `tasks.groom_fyi_window_min` (H1).
+- Already `routing.toml` keys, not config-store: `pi.dgx_max_context_tokens`, `pi.mlx_max_context_tokens`, the
+  `pi.efficient_wait_ms` bound and `long_context_tokens`. H1 reaches the config store only, and
+  `routing.local.toml` may not hold them (`checkOverlay`), so converting them would need a different mechanism.
+- Resource bounds, not tunables: the 256-entry plan caches (`observedPlans`, `planReads`), the 1024-entry conditional
+  map, the 500-task and 256-item grooming limits (`GROOMING_TASK_LIMIT`, `GROOMING_ITEM_LIMIT`, the digest's 500
+  slices), and the 8, 16 and 32 read counts and 16-id lists of the digest, cost report and release cut. Raising any of
+  them raises memory or work per call, so each would need a tighten-only schema bound and a test per floor
+  (acceptance criterion 3), which this group does not add.
+- Host deadlines for the `gh` reads (1_000, 4_000 and 20_000 ms in five places) and the 5 000 ms release-window
+  freshness check. They bound a whole call, a refusal of a stale host window protects the release, and none is
+  independently tunable without changing what a partial result means.
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
   the machine-local files (`ahub init` ignores both in git). The shared
