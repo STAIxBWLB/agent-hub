@@ -84,9 +84,9 @@ test("a live half that is wrong is refused: an alias as the served id, a served 
   const bad = async (mutate: (l: LiveEvidence) => void) => { const l: LiveEvidence = JSON.parse(JSON.stringify(good)); mutate(l); return reason(await checkModelReceipt(input(ALIAS, [await receiptFor(BASE, ALIAS, l)]))); };
   expect(await bad(l => { l.served_models.coding = ["coding"]; })).toContain("is the alias itself");
   expect(await bad(l => { delete l.served_models.fast; })).toContain("no served model id is recorded for alias fast");
-  expect(await bad(l => { l.cases[0]!.candidate = { alias: "fast", error: "HTTP 503" }; })).toContain("has no answer");
+  expect(await bad(l => { l.cases[0]!.candidate = { request: l.cases[0]!.candidate.request, alias: "fast", error: "HTTP 503" }; })).toContain("has no answer");
   const judge = corpus.cases.find((c): c is JudgeCase => c.kind === "judge" && c.guard === "injection")!;
-  expect(await bad(l => { l.cases.find(c => c.id === judge.id)!.candidate = { alias: "fast", verdict: "approve" }; })).toContain("blocks this change on the judge cases");
+  expect(await bad(l => { l.cases.find(c => c.id === judge.id)!.candidate = { request: l.cases.find(c => c.id === judge.id)!.candidate.request, alias: "fast", verdict: "approve" }; })).toContain("blocks this change on the judge cases");
 });
 test("a receipt that hides the live half behind served_models, or whose served_models differs from its live block, is refused", async () => {
   const good = await live(BASE, ALIAS);
@@ -130,6 +130,7 @@ test("a receipt edited by hand to say pass is caught: the check recomputes the n
 const TAMPER: [string, (r: Record<string, any>) => void, RegExp][] = [
   ["the base configuration", r => { r.base.config.stay_switch = "off"; }, /base differs/],
   ["the candidate configuration", r => { r.candidate.config.local.route = "hub/plan"; }, /candidate differs/],
+  ["the overall verdict", r => { r.overall = { verdict: "blocked", reasons: ["invented"] }; }, /overall differs/],
   ["the changed keys", r => { r.changed_keys = []; }, /changed_keys differs/],
   ["the live_required flag", r => { r.live_required = true; }, /live_required differs/],
   ["one case's outcome", r => { r.evidence.cases[0].candidate = { route: "x", model: "y" }; }, /cases differs/],

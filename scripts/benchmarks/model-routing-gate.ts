@@ -5,11 +5,10 @@ import { join, resolve } from "node:path";
 import type { ChatMessage } from "../../src/omniroute/client.ts";
 import { OmniRoute } from "../../src/omniroute/client.ts";
 import { parseRouting, type Routing } from "../../src/hub/routing.ts";
-import { normalizeConversation } from "../../src/models/route/normalize.ts";
-import { advisorJudgeRequest, escalationJudgeRequest, decodeAdvisorReply, decodeEscalationReply } from "../../src/models/route/judge.ts";
+import { decodeAdvisorReply, decodeEscalationReply } from "../../src/models/route/judge.ts";
 import { sha256 } from "./routing-corpus.ts";
 import { changedModelKeys, compare, freezeModelCorpus, liveRequired, loadModelCorpus, modelRoutingSummary, type JudgeCase, type ModelRoutingCorpus, type Split } from "./model-routing-corpus.ts";
-import { buildModelReceipt, compareLive, judgeAlias, liveProblem, renderModelReceipt, type LiveCase, type LiveEvidence, type LiveOutcome } from "./model-routing-receipt.ts";
+import { buildModelReceipt, judgeRequestFor, liveProblem, renderModelReceipt, type LiveCase, type LiveEvidence, type LiveOutcome } from "./model-routing-receipt.ts";
 
 // agent-hub #637 part 2 (hub task #324): the model-routing promotion gate.
 //   bun scripts/benchmarks/model-routing-gate.ts                    the current default against itself on the test split: prints the numbers (no model is called)
@@ -46,19 +45,18 @@ export async function runLive(corpus: ModelRoutingCorpus, base: Routing, candida
   const judges = corpus.cases.filter((c): c is JudgeCase => c.kind === "judge" && c.split === split);
   const served = new Map<string, Set<string>>();
   const ask = async (routing: Routing, c: JudgeCase): Promise<LiveOutcome> => {
-    const alias = judgeAlias(routing, c);
-    if (alias === undefined) throw new Error(`the policy has no route ${c.route}`);
-    const conversation = normalizeConversation(c.messages);
-    const request = c.judge === "advisor" ? advisorJudgeRequest(conversation, c.latest) : escalationJudgeRequest(conversation, c.turn ?? 1);
+    const built = judgeRequestFor(routing, c);
+    if (!built) throw new Error(`the policy has no route ${c.route}`);
+    const { alias, request, digest } = built;
     let answer: { content: string; servedModel?: string };
     try { answer = await chat(alias, [{ role: "system", content: request.systemPrompt }, ...request.messages], request.maxOutputTokens); }
-    catch (error) { return { alias, error: `the call failed: ${(error as Error).message}`.slice(0, 200) }; }
-    if (!answer.servedModel) return { alias, error: "the gateway reported no served model for this call" };
-    if (answer.servedModel === alias) return { alias, error: "the gateway reported the alias as the served model" };
+    catch (error) { return { request: digest, alias, error: `the call failed: ${(error as Error).message}`.slice(0, 200) }; }
+    if (!answer.servedModel) return { request: digest, alias, error: "the gateway reported no served model for this call" };
+    if (answer.servedModel === alias) return { request: digest, alias, error: "the gateway reported the alias as the served model" };
     (served.get(alias) ?? served.set(alias, new Set()).get(alias)!).add(answer.servedModel);
-    if (c.judge === "advisor") return { alias, verdict: decodeAdvisorReply(answer.content)?.kind ?? "unparsed" };
+    if (c.judge === "advisor") return { request: digest, alias, verdict: decodeAdvisorReply(answer.content)?.kind ?? "unparsed" };
     const verdict = decodeEscalationReply(answer.content);
-    return { alias, escalate: verdict ? verdict.escalate : "unparsed" };
+    return { request: digest, alias, escalate: verdict ? verdict.escalate : "unparsed" };
   };
   const cases: LiveCase[] = [];
   for (const c of judges) cases.push({ id: c.id, ...(c.guard ? { guard: c.guard } : {}), base: await ask(base, c), candidate: await ask(candidate, c) });
@@ -114,8 +112,7 @@ export async function main(options: GateOptions): Promise<number> {
   if (existsSync(out) && !args.includes("--force")) { console.error(`${out} exists; pass --force to replace it`); return 2; }
   writeFileSync(out, renderModelReceipt(receipt, corpus));
   console.log(`receipt: ${out}`);
-  const liveVerdict = live ? compareLive(corpus, live, split) : undefined;
-  const reasons = [...comparison.reasons, ...(liveVerdict?.reasons ?? [])];
+  const reasons = receipt.overall.reasons;
   console.log(`verdict ${reasons.length ? "blocked" : "pass"}: ${comparison.primary.metric} ${(comparison.primary.base * 100).toFixed(1)}% -> ${(comparison.primary.candidate * 100).toFixed(1)}%${reasons.length ? `; ${reasons.join("; ")}` : ""}`);
   if (needsLive && !live) console.log("note: this change moves an alias or a judge, so CI will want the live half: rerun with --live (needs a gateway and key)");
   return reasons.length ? 1 : 0;

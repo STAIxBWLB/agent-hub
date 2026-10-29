@@ -2,6 +2,7 @@
 
 Surface: model-routing. Corpus 3366190f8e7e, split `test` (21 deterministic cases). Generated 2026-10-29.
 Verdict: **pass**.
+Deterministic cases: **pass**. Live judge cases: live-not-run.
 
 - Current default (`origin/main`): model-routing keys sha256 `b152ddb9bb8da9e943fae62f00f7ab82f65cfe161d90228a1b1b49169fa6e52a`, template sha256 `f0bb8ad0b4b544df2a5287103578235fa92aec80fa8cb8773ddec87c91e71b29`
 - Candidate (`templates/routing.toml`): model-routing keys sha256 `b152ddb9bb8da9e943fae62f00f7ab82f65cfe161d90228a1b1b49169fa6e52a`, template sha256 `f0bb8ad0b4b544df2a5287103578235fa92aec80fa8cb8773ddec87c91e71b29`
@@ -164,6 +165,10 @@ Regressions: none. PII or hard-override regressions: none. Improvements: none.
   "changed_keys": [],
   "live_required": false,
   "served_models": "live-not-run",
+  "overall": {
+    "verdict": "pass",
+    "reasons": []
+  },
   "evidence": {
     "split": "test",
     "n": 21,

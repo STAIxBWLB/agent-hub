@@ -81,7 +81,7 @@ async function decide(input: CheckInput): Promise<CheckResult> {
     const expected = buildModelReceipt(corpus, again, base, candidate, { baseRef: receipt.base.ref, baseTemplateSha, candidateTemplateSha: headTemplateSha, generated: receipt.generated, changedKeys: changed, liveRequired: needsLive }, claimsLive ? receipt.live : undefined);
     if (canonicalJson(receipt) !== canonicalJson(expected)) {
       const field = ["verdict", "primary", "secondary", "regressions", "guardRegressions", "improvements", "cases", "n", "reasons"].find(key => canonicalJson((receipt.evidence as unknown as Record<string, unknown>)?.[key]) !== canonicalJson((expected.evidence as unknown as Record<string, unknown>)[key]))
-        ?? ["base", "candidate", "changed_keys", "live_required", "served_models", "surface", "kind", "version", "split"].find(key => canonicalJson((receipt as unknown as Record<string, unknown>)[key]) !== canonicalJson((expected as unknown as Record<string, unknown>)[key])) ?? "a field";
+        ?? ["base", "candidate", "changed_keys", "live_required", "overall", "served_models", "surface", "kind", "version", "split"].find(key => canonicalJson((receipt as unknown as Record<string, unknown>)[key]) !== canonicalJson((expected as unknown as Record<string, unknown>)[key])) ?? "a field";
       problems.push(`${here}it is not what the corpus gives for these two files: ${field} differs (it says ${receipt.evidence?.verdict}, ${receipt.evidence?.primary?.candidateCorrect}/${receipt.evidence?.n}; recomputed ${again.verdict}, ${again.primary.candidateCorrect}/${again.n}). Regenerate it with model-routing-gate.ts --receipt.`);
       continue;
     }

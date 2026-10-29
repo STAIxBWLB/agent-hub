@@ -1,3 +1,6 @@
+import { canonicalJson, sha256 } from "./routing-corpus.ts";
+import { advisorJudgeRequest, escalationJudgeRequest, type JudgeRequest } from "../../src/models/route/judge.ts";
+import { normalizeConversation } from "../../src/models/route/normalize.ts";
 import { modelRoutingSha, modelRoutingSummary, type Comparison, type JudgeCase, type ModelRoutingCorpus, type Split } from "./model-routing-corpus.ts";
 import type { Routing } from "../../src/hub/routing.ts";
 import { safeModelLabel } from "../../src/omniroute/usage.ts";
@@ -7,7 +10,8 @@ import { safeModelLabel } from "../../src/omniroute/usage.ts";
 // shape and its consistency (the scores are recomputed from the recorded verdicts, the aliases from the two templates, the served ids must be real model ids). See docs/agent-notes/benchmarks.md.
 
 export const LIVE_NOT_RUN = "live-not-run" as const;
-export type LiveOutcome = { alias: string; verdict: "approve" | "redo" | "unparsed" } | { alias: string; escalate: boolean | "unparsed" } | { alias: string; error: string };
+/** `request` is the sha256 of the judge request this policy builds for the case (see `judgeRequestFor`): what was measured, not just who answered. */
+export type LiveOutcome = { request: string; alias: string } & ({ verdict: "approve" | "redo" | "unparsed" } | { escalate: boolean | "unparsed" } | { error: string });
 export interface LiveCase { id: string; guard?: string; base: LiveOutcome; candidate: LiveOutcome }
 export interface LiveEvidence {
   /** Every distinct served id the gateway reported for each alias asked. Never the alias itself: an alias is what was requested, not what answered. */
@@ -23,6 +27,8 @@ export interface ModelReceipt {
   live_required: boolean;
   served_models: typeof LIVE_NOT_RUN | Record<string, string[]>;
   live?: LiveEvidence;
+  /** The promotion verdict over the deterministic cases AND the live judge cases when they were run. `evidence.verdict` is the deterministic part only. */
+  overall: { verdict: "pass" | "blocked"; reasons: string[] };
   evidence: Comparison;
   generated: string;
 }
@@ -32,6 +38,18 @@ export function judgeAlias(routing: Routing, c: JudgeCase): string | undefined {
   const config = routing.hub_routes?.[c.route];
   if (!config) return undefined;
   return config.judge ?? config.capable ?? "coding";
+}
+/**
+ * The judge request a policy builds for a judge case, with the route's own configuration: the advisor passes the route's `transcript_max_chars` exactly as `HubRouteRuntime.review` does, the escalation
+ * judge takes no route option there. `--live` sends this request and CI recomputes its digest from the corpus and each policy, so a receipt cannot claim a changed request it never asked.
+ */
+export function judgeRequestFor(routing: Routing, c: JudgeCase): { alias: string; request: JudgeRequest; digest: string } | undefined {
+  const config = routing.hub_routes?.[c.route];
+  if (!config) return undefined;
+  const alias = judgeAlias(routing, c)!;
+  const conversation = normalizeConversation(c.messages);
+  const request = c.judge === "advisor" ? advisorJudgeRequest(conversation, c.latest, config.transcript_max_chars) : escalationJudgeRequest(conversation, c.turn ?? 1);
+  return { alias, request, digest: sha256(canonicalJson({ alias, systemPrompt: request.systemPrompt, messages: request.messages, maxOutputTokens: request.maxOutputTokens })) };
 }
 export function scoreLive(c: JudgeCase, outcome: LiveOutcome): boolean {
   if ("error" in outcome) return false;
@@ -70,9 +88,11 @@ export function liveProblem(corpus: ModelRoutingCorpus, base: Routing, candidate
   for (const [i, c] of judges.entries()) {
     const row = cases[i]!;
     for (const [side, routing, outcome] of [["base", base, row.base], ["candidate", candidate, row.candidate]] as const) {
-      const alias = judgeAlias(routing, c);
-      if (alias === undefined) return `${c.id}: the ${side} policy has no route ${c.route}`;
+      const built = judgeRequestFor(routing, c);
+      if (!built) return `${c.id}: the ${side} policy has no route ${c.route}`;
+      const alias = built.alias;
       if (!outcome || typeof outcome !== "object" || outcome.alias !== alias) return `${c.id}: the ${side} outcome must name the judge alias the ${side} policy asks (${alias})`;
+      if (outcome.request !== built.digest) return `${c.id}: the ${side} outcome's request digest is not the judge request this policy builds for the case (a changed transcript_max_chars changes it): the receipt measured a different request`;
       const kinds = ["verdict" in outcome, "escalate" in outcome, "error" in outcome].filter(Boolean).length;
       if (kinds !== 1) return `${c.id}: the ${side} outcome is one of a verdict, an escalate flag or an error`;
       if ("verdict" in outcome && !["approve", "redo", "unparsed"].includes(outcome.verdict)) return `${c.id}: the ${side} verdict is approve, redo or unparsed`;
@@ -96,6 +116,11 @@ export function liveProblem(corpus: ModelRoutingCorpus, base: Routing, candidate
   return undefined;
 }
 
+/** Deterministic and live results together: a blocked live comparison blocks the receipt even when every deterministic case passes. */
+export function overallVerdict(corpus: ModelRoutingCorpus, comparison: Comparison, live?: LiveEvidence): ModelReceipt["overall"] {
+  const reasons = [...comparison.reasons, ...(live ? compareLive(corpus, live, comparison.split).reasons : [])];
+  return { verdict: reasons.length ? "blocked" : "pass", reasons };
+}
 export interface ReceiptMeta { baseRef: string; baseTemplateSha: string; candidateTemplateSha: string; generated: string; changedKeys: string[]; liveRequired: boolean }
 export function buildModelReceipt(corpus: ModelRoutingCorpus, comparison: Comparison, base: Routing, candidate: Routing, meta: ReceiptMeta, live?: LiveEvidence): ModelReceipt {
   return {
@@ -103,7 +128,7 @@ export function buildModelReceipt(corpus: ModelRoutingCorpus, comparison: Compar
     base: { ref: meta.baseRef, sha256: modelRoutingSha(base), template_sha256: meta.baseTemplateSha, config: modelRoutingSummary(base) },
     candidate: { sha256: modelRoutingSha(candidate), template_sha256: meta.candidateTemplateSha, config: modelRoutingSummary(candidate) },
     changed_keys: meta.changedKeys, live_required: meta.liveRequired,
-    served_models: live ? live.served_models : LIVE_NOT_RUN, ...(live ? { live } : {}), evidence: comparison, generated: meta.generated,
+    served_models: live ? live.served_models : LIVE_NOT_RUN, ...(live ? { live } : {}), overall: overallVerdict(corpus, comparison, live), evidence: comparison, generated: meta.generated,
   };
 }
 
@@ -117,14 +142,15 @@ const show = (result: unknown): string => {
 const outcomeText = (o: LiveOutcome): string => ("error" in o ? `error` : "verdict" in o ? o.verdict : `escalate ${o.escalate}`);
 
 /** The document: a summary, one machine block the CI check rebuilds, and the per-case tables. */
-export function renderModelReceipt(receipt: ModelReceipt, corpus?: ModelRoutingCorpus): string {
+export function renderModelReceipt(receipt: ModelReceipt, corpus: ModelRoutingCorpus): string {
   const e = receipt.evidence;
   const served = receipt.served_models === LIVE_NOT_RUN ? LIVE_NOT_RUN : Object.entries(receipt.served_models).map(([alias, ids]) => `${alias} -> ${ids.join(", ")}`).join("; ");
   const lines = [
     `# Model-routing promotion receipt: ${receipt.candidate.sha256.slice(0, 8)}`,
     "",
     `Surface: ${receipt.surface}. Corpus ${receipt.corpus_hash.slice(0, 12)}, split \`${receipt.split}\` (${e.n} deterministic cases). Generated ${receipt.generated}.`,
-    `Verdict: **${e.verdict}**${e.reasons.length ? ` (${e.reasons.join("; ")})` : ""}.`,
+    `Verdict: **${receipt.overall.verdict}**${receipt.overall.reasons.length ? ` (${receipt.overall.reasons.join("; ")})` : ""}${receipt.live_required && !receipt.live ? ". Incomplete: this change moves an alias or a judge and the live half was not run" : ""}.`,
+    `Deterministic cases: **${e.verdict}**. Live judge cases: ${receipt.live ? `**${compareLive(corpus!, receipt.live, receipt.split).verdict}**` : LIVE_NOT_RUN}.`,
     "",
     `- Current default (\`${receipt.base.ref}\`): model-routing keys sha256 \`${receipt.base.sha256}\`, template sha256 \`${receipt.base.template_sha256}\``,
     `- Candidate (\`templates/routing.toml\`): model-routing keys sha256 \`${receipt.candidate.sha256}\`, template sha256 \`${receipt.candidate.template_sha256}\``,
@@ -144,7 +170,7 @@ export function renderModelReceipt(receipt: ModelReceipt, corpus?: ModelRoutingC
     ...e.cases.map(row => `| ${row.id} | ${row.guard ?? ""} | ${show(row.base)} ${row.basePass ? "ok" : "FAIL"} | ${show(row.candidate)} ${row.candidatePass ? "ok" : "FAIL"} |`),
     "",
   ];
-  if (receipt.live && corpus) {
+  if (receipt.live) {
     const judges = corpus.cases.filter((c): c is JudgeCase => c.kind === "judge" && c.split === receipt.split);
     const live = compareLive(corpus, receipt.live, receipt.split);
     lines.push(`## Live judge cases (produced by hand, not checked by CI beyond shape and scores)`, "",
