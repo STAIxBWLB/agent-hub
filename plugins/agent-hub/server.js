@@ -803,6 +803,8 @@ var init_agy_mcp = __esm(() => {
 function childEnv(source = process.env) {
   const env = { ...source };
   delete env.AGENTHUB_RECOVERY_OPERATION;
+  delete env.AGENTHUB_RECOVERY_CONDUCTOR;
+  delete env.AGENTHUB_RECOVERY_CONTINUATION;
   delete env.AGENTHUB_DELIVERY_ONLY;
   return env;
 }

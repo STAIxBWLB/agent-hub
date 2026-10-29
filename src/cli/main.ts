@@ -725,6 +725,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   if (kind === "upgrade") console.error("ahub: Kimi now defaults to its own TUI (pull-only) in projects without peers.kimi.start_mode. To keep ACP: ahub settings set peers.kimi.start_mode headless");
   if (interactive) return onTerminal((io) => planScreen(upgradeHost(kind, to ?? VERSION), io), display.options);
   const plan = await makeUpgradePlan(kind, to ?? VERSION, kind === "restart" ? cwd : undefined, undefined, conductorPeer);
+  if (conductorPeer) await preflightConductorRecovery(plan, conductorPeer);
   const jsonApply = display.json && yes && !dry;
   // #814: a person reading a pipe or a dry run gets the plan screen's rows, with every blocker, reconnect-only session and
   // fresh start in them. `--json` keeps the document and the stderr lines (#206) exactly as they were.
@@ -736,7 +737,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   const blockers = [...plan.blockers, ...plan.projects.flatMap((p) => p.blockers.map((b) => `${p.project.id}: ${b}`))];
   if (display.json) for (const blocker of blockers) console.error(`ahub: blocker: ${blocker}`);
   if (dry) return;
-  if (blockers.length) { if (jsonApply) console.log(JSON.stringify(plan, null, 2)); fail("plan has blockers; no runtime was changed"); }
+  if (blockers.length) { if (jsonApply) console.log(JSON.stringify(plan, null, 2)); fail(conductorPeer ? "conductor recovery cannot prove this plan; no runtime was changed; the person runs it in ahub console or a terminal" : "plan has blockers; no runtime was changed"); }
   assertLifecycleAvailable();
   if (!yes) {
     if (!process.stdin.isTTY) fail("review --dry-run and use --yes in non-interactive sessions");
