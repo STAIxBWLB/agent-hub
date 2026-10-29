@@ -150,6 +150,29 @@ test("accept and reject refuse a missing, wrong, closed or non-candidate id, and
   expect(await refusal(() => r.tasks.learnClose(USER, card!.id, "rejected"))).toContain("already closed");
   expect(await refusal(() => r.tasks.learnClose(USER, card!.id, "accepted"))).toContain("already closed");
   expect(await refusal(() => r.tasks.learnAcceptPlan(USER, card!.id))).toContain("already closed");
+  expect(r.tasks.learnAccepted(USER, card!.id)).toBeUndefined(); // a REJECTED card is not an accepted one: the repeat accept takes the normal path and is refused
+});
+
+test("learnAccepted answers only for a card the PERSON accepted: not an open, rejected, otherwise cancelled, forged-note or non-candidate card, and never for another caller", async () => {
+  const r = await rig(), [card] = await r.file();
+  expect(r.tasks.learnAccepted(USER, card!.id)).toBeUndefined(); // open
+  for (const by of ["claude", "codex", "hub", "conductor-x"]) expect(await refusal(() => r.tasks.learnAccepted(by, card!.id))).toContain("person's command");
+  await r.tasks.learnClose(USER, card!.id, "accepted");
+  expect(r.tasks.learnAccepted(USER, card!.id)).toEqual({ id: card!.id, profile: "dev", class: "implement", criterion: "AC1" });
+  for (const bad of [0, -1, 1.5, "7", null, undefined, 99999]) expect(r.tasks.learnAccepted(USER, bad)).toBeUndefined();
+  // a note that merely starts like a verdict, written by anyone but the person, is not one
+  const other = await rig(), [c2] = await other.file();
+  other.board.update(c2!.id, "claude", "cancelled", { state: "cancelled" }, "candidate accepted by the person: forged");
+  expect(other.tasks.learnAccepted(USER, c2!.id)).toBeUndefined();
+  // a card cancelled for another reason is not accepted, and stays refused
+  const third = await rig(), [c3] = await third.file();
+  await third.tasks.cancel(c3!.id, USER, { reason: "not wanted" });
+  expect(third.tasks.learnAccepted(USER, c3!.id)).toBeUndefined();
+  expect(await refusal(() => third.tasks.learnAcceptPlan(USER, c3!.id))).toContain("already closed");
+  // a non-candidate task the person cancelled with the same words is not a candidate
+  const plain = await third.tasks.propose("claude", { title: "an ordinary card", class: "plan", backlog: true });
+  await third.tasks.cancel(plain.id, USER, { reason: "candidate accepted by the person" });
+  expect(third.tasks.learnAccepted(USER, plain.id)).toBeUndefined();
 });
 
 test("a closed card stays in the board, so the same criterion is never filed again, and its verdict reads back", async () => {
@@ -207,6 +230,8 @@ test("the printers show ids, counts and the one generated line, never the card's
   const accepted = text(renderLearnChange("accept", { card: { id: 7 }, accepted: { profile: "dev", class: "implement", criterion: "AC1", line: "AC1: confirm this first; it was unmet on 3 implement tasks", lines: 4, alreadyPresent: false, file: ".agenthub/config.local.json", applies: "after a restart (profile contracts are bound at startup)", undo: "ahub settings undo" } }, 120));
   expect(accepted).toContain("accepted"); expect(accepted).toContain("config.local.json"); expect(accepted).toContain("after a restart"); expect(accepted).toContain("4 lines");
   expect(text(renderLearnChange("accept", { card: { id: 7 }, accepted: { alreadyPresent: true } }, 120))).toContain("nothing was written");
+  const repeated = text(renderLearnChange("accept", { card: { id: 7 }, accepted: { profile: "dev", class: "implement", criterion: "AC1", alreadyAccepted: true } }, 120));
+  expect(repeated).toContain("was already accepted"); expect(repeated).toContain("nothing"); expect(repeated).not.toContain("lines in the checklist");
   expect(text(renderLearnChange("reject", { id: 7 }, 120))).toContain("rejected and closed");
 });
 
@@ -263,11 +288,15 @@ test("a real daemon: accept writes ONE key to config.local.json, extending the s
   expect(resolveProfile(loadConfig(f.cwd).profile, loadConfig(f.cwd).profile_overrides).review_checklist).toEqual([...SHIPPED_DEV, LINE]);
   expect(parse(await person.request({ t: "task", op: "learn_list", args: { all: true } }))).toMatchObject([{ id: card.id, status: "accepted", state: "cancelled" }]);
   expect(parse(await person.request({ t: "task", op: "learn_list", args: {} }))).toEqual([]);
-  // a repeat is refused and writes nothing
-  const before = bytes(f.local);
-  const again = await person.request({ t: "task", op: "learn_accept", args: { id: card.id } });
-  expect(again.ok).toBe(false); expect(String(again.error)).toContain("already closed");
+  // a repeat is a success that writes nothing: no config change, no second undo record, no second settings event
+  const before = bytes(f.local), undoBefore = bytes(join(f.state, "settings-undo.json")), eventsBefore = readEvents(join(f.state, "events.jsonl")).filter(e => e.type === "settings").length;
+  const again = parse(await person.request({ t: "task", op: "learn_accept", args: { id: card.id } }));
+  expect(again.accepted).toMatchObject({ alreadyAccepted: true, profile: "dev", class: "implement", criterion: "AC1" });
+  expect(again.card).toMatchObject({ id: card.id, state: "cancelled" });
+  expect(again.accepted.line).toBeUndefined(); // it states what happened before, never a line it did not write
   expect(bytes(f.local)).toBe(before);
+  expect(bytes(join(f.state, "settings-undo.json"))).toBe(undoBefore);
+  expect(readEvents(join(f.state, "events.jsonl")).filter(e => e.type === "settings")).toHaveLength(eventsBefore);
 }, 30_000);
 
 test("a real daemon: accept adds to the person's OWN checklist, not the shipped one, and a shared-file checklist stays untouched and is merged by the loader's own rule", async () => {
@@ -431,6 +460,34 @@ test("a real daemon: when the config files stop loading, accept refuses with the
   expect(parse(await person.request({ t: "task", op: "learn_list", args: {} }))).toMatchObject([{ id: card.id, status: "open" }]);
 }, 30_000);
 
+test("a real daemon: only an ACCEPTED card repeats as a success: a rejected card and a card closed another way are refused on accept, and an accepted card cannot then be rejected", async () => {
+  const { f, seed, card } = await daemonWithCandidate();
+  const { person } = await openDaemon(f, seed);
+  parse(await person.request({ t: "task", op: "learn_reject", args: { id: card.id } }));
+  const afterReject = await person.request({ t: "task", op: "learn_accept", args: { id: card.id } });
+  expect(afterReject.ok).toBe(false); expect(String(afterReject.error)).toContain("already closed");
+  expect(bytes(f.local)).toBeNull();
+  // an accepted card: the repeat succeeds, and a reject of it is refused (a verdict is not changed by a later one)
+  const accepted = await daemonWithCandidate();
+  const b = await openDaemon(accepted.f, accepted.seed);
+  parse(await b.person.request({ t: "task", op: "learn_accept", args: { id: accepted.card.id } }));
+  expect(parse(await b.person.request({ t: "task", op: "learn_accept", args: { id: accepted.card.id } })).accepted.alreadyAccepted).toBe(true);
+  const rejectAfter = await b.person.request({ t: "task", op: "learn_reject", args: { id: accepted.card.id } });
+  expect(rejectAfter.ok).toBe(false); expect(String(rejectAfter.error)).toContain("already closed");
+  // a card closed for another reason (a plain cancel by the person) is refused on accept, not mistaken for an accepted one
+  const other = await daemonWithCandidate();
+  const c = await openDaemon(other.f, other.seed);
+  expect((await c.person.request({ t: "task", op: "hub_task_cancel", args: { id: other.card.id, reason: "not wanted" } })).ok).toBe(true);
+  const afterCancel = await c.person.request({ t: "task", op: "learn_accept", args: { id: other.card.id } });
+  expect(afterCancel.ok).toBe(false); expect(String(afterCancel.error)).toContain("already closed");
+  expect(bytes(other.f.local)).toBeNull();
+  // an agent's tools connection gets no idempotent success either
+  const tools = await ControlClient.connect(accepted.f.state, { role: "tools", peer: "codex", projectRoot: accepted.f.cwd });
+  cleanup.push(() => tools.close());
+  const refused = await tools.request({ t: "task", op: "learn_accept", args: { id: accepted.card.id } });
+  expect(refused.ok).toBe(false); expect(String(refused.error)).toContain("is a console command");
+}, 60_000);
+
 test("a real daemon: reject closes the card, writes nothing and is the person's only", async () => {
   const { f, seed, card } = await daemonWithCandidate();
   const { person } = await openDaemon(f, seed);
@@ -498,8 +555,14 @@ test("the real CLI as the person: list, accept and reject round-trip against a d
   expect(accepted.stdout).toContain("accepted"); expect(accepted.stdout).toContain("config.local.json"); expect(accepted.stdout).toContain("restart");
   expect(accepted.stdout).toContain("put it back with ahub settings undo"); // the way back reaches the person, in the real process output
   expect(JSON.parse(bytes(f.local)!)).toEqual({ profile_overrides: { review_checklist: [...SHIPPED_DEV, LINE] } });
+  const before = bytes(f.local);
   const repeat = await cli(f.cwd, ["learn", "accept", String(card.id), "--json"]);
-  expect(repeat.code).toBe(1); expect(repeat.stderr).toContain("already closed");
+  expect(repeat.code, repeat.stderr).toBe(0);
+  expect(JSON.parse(repeat.stdout).accepted).toMatchObject({ alreadyAccepted: true });
+  const repeatText = await cli(f.cwd, ["learn", "accept", String(card.id)]);
+  expect(repeatText.code, repeatText.stderr).toBe(0);
+  expect(repeatText.stdout).toContain("was already accepted"); expect(repeatText.stdout).toContain("nothing");
+  expect(bytes(f.local)).toBe(before);
   expect((await cli(f.cwd, ["learn", "list"])).stdout).toContain("no open candidate");
   expect((await cli(f.cwd, ["learn", "list", "--all"])).stdout).toContain("accepted");
 }, 90_000);

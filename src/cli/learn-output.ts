@@ -29,6 +29,7 @@ export function renderLearnChange(op: "accept" | "reject", result: unknown, colu
   const out: Span[][] = [...heading(op === "accept" ? `Candidate #${dash(card?.id)} accepted` : `Candidate #${dash(card?.id)} rejected and closed`, columns)];
   if (op === "reject") return [...out, ...pair("written", "nothing", columns, 8, "muted")];
   const a = r.accepted ?? {};
+  if (a.alreadyAccepted) return [...heading(`Candidate #${dash(card?.id)} was already accepted`, columns), ...pair("profile", `${dash(a.profile)}/${dash(a.class)}`, columns, 8), ...pair("criterion", a.criterion, columns, 8), ...pair("written", "nothing: it was accepted before (ahub settings undo still puts back that write if it is the latest)", columns, 8, "muted")];
   out.push(...pair("profile", `${dash(a.profile)}/${dash(a.class)}`, columns, 8), ...pair("criterion", a.criterion, columns, 8), ...pair("line", a.line, columns, 8),
     ...pair("file", `${dash(a.file)} (this machine only; the shared config is untouched)`, columns, 8), ...pair("now", a.alreadyPresent ? `the checklist already had this line: nothing was written` : `${dash(a.lines)} lines in the checklist`, columns, 8),
     ...pair("applies", dash(a.applies), columns, 8, "attention"));

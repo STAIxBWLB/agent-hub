@@ -3440,6 +3440,9 @@ export async function startDaemon(opts: DaemonOptions) {
       case "learn_reject":
         return JSON.stringify(tasks.publicView(await tasks.learnClose(by, a.id, "rejected")));
       case "learn_accept": {
+        // A card the person already accepted answers with a success that writes nothing: no config, no undo record, no event. A rejected or otherwise closed card falls through and is refused.
+        const decided = tasks.learnAccepted(by, a.id);
+        if (decided) return JSON.stringify({ card: tasks.publicView(board.get(decided.id)!), accepted: { profile: decided.profile, class: decided.class, criterion: decided.criterion, alreadyAccepted: true, file: ".agenthub/config.local.json" } });
         const plan = tasks.learnAcceptPlan(by, a.id);
         const stored = storedConfig();
         if (!stored) throw new PreEffectToolRefusal("the config files do not load; fix them in your editor first: nothing was written");
