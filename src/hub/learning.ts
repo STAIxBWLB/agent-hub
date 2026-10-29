@@ -78,7 +78,7 @@ export function candidateCard(group: CriterionGroup, windowDays: number, workUni
     detail: [
       criterionKey(group),
       `Criterion ${group.criterion} was named unmet ${group.count} time(s) on ${group.tasks.length} ${group.profile}/${group.class} task(s) in the last ${windowDays} days (${workUnits} separate piece(s) of work): ${group.tasks.slice(0, 8).map(id => `#${id}`).join(", ")}.`,
-      "This is a candidate for a person to review. Nothing was applied, and nothing in the hub writes it. profile_overrides is not machine-local: it is read from the shared .agenthub/config.json (tracked, so a change there reaches every checkout) and from .agenthub/config.local.json (this machine only), and the layers merge. Put it where you want it to apply. If you agree, add the line below to profile_overrides.review_checklist; that list replaces as a unit, so add it to your current checklist, do not paste it over it:",
+      "This is a candidate for a person to review. Nothing was applied: the hub writes it only when the person runs ahub learn accept <id> (to .agenthub/config.local.json, this machine only, added to your current checklist; ahub settings undo puts it back), or ahub learn reject <id> to close this card. By hand: profile_overrides is not machine-local: it is read from the shared .agenthub/config.json (tracked, so a change there reaches every checkout) and from .agenthub/config.local.json (this machine only), and the layers merge. Put it where you want it to apply. If you agree, add the line below to profile_overrides.review_checklist; that list replaces as a unit, so add it to your current checklist, do not paste it over it:",
       JSON.stringify(diff, null, 2),
     ].join("\n"),
   };

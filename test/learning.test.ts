@@ -59,7 +59,8 @@ test("the override fragment and card are text: ascii, ids and counts only, nothi
   expect(card.title).toBe("Review checklist candidate for dev/implement criterion AC1");
   expect(card.detail.split("\n")[0]).toBe(criterionKey(group));
   expect(card.detail).toContain("named unmet 4 time(s) on 3 dev/implement task(s) in the last 30 days (3 separate piece(s) of work): #3, #4, #9.");
-  expect(card.detail).toContain("Nothing was applied, and nothing in the hub writes it.");
+  expect(card.detail).toContain("Nothing was applied: the hub writes it only when the person runs ahub learn accept <id>");
+  expect(card.detail).toContain("ahub learn reject <id> to close this card");
   expect(card.detail).toContain("not machine-local");
   expect(card.detail).toContain('"review_checklist": [');
   expect(card.detail).toContain("replaces as a unit");
