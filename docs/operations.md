@@ -2033,7 +2033,7 @@ reload path. Unset defaults equal `MAX_ATTEMPTS`, `DIGEST_MAX`, `PULL_BUDGET_BYT
 `NOTES_KEPT` and `TERMINAL_CAP`. Only `bus.max_attempts` may rise; the other four
 can only tighten today's ceilings. A reload does not trim/reorder queues or
 prefaces, reset attempts, re-arm batch deadlines, prune history, or change a pause
-or in-flight delivery. Terminal history is a target: protected retry parents may
+or in-flight delivery. Terminal history is a target: protected retry parents and the current mutation receipt may
 keep the count above it. The settings add no conductor authority.
 
 The [H3 H0 ledger](verification/2026-10-30-bus-delivery-operational-settings.md)

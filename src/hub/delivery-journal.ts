@@ -789,7 +789,7 @@ export class DeliveryJournal {
           input.attempt ?? null,
           input.previousId ?? null,
         );
-      this.pruneTerminal();
+      this.pruneTerminal(input.state, input.id);
       return { ...input, revision, updatedAt };
     })();
   }
@@ -838,7 +838,7 @@ export class DeliveryJournal {
           "UPDATE deliveries SET state = ?, revision = ?, updated_at = ?, reason = ? WHERE id = ? AND project_id = ?",
         )
         .run(state, revision, Date.now(), reason ?? null, id, this.projectId);
-      this.pruneTerminal();
+      this.pruneTerminal(state, id);
       return this.get(id)!;
     })();
   }
@@ -1027,7 +1027,7 @@ export class DeliveryJournal {
           JSON.stringify(retryOriginals(current.originals).map(env => env.id)),
         );
       if (action === "retry") this.recordRetryEvidence(current.peer, current.originals, id, actor === `peer:${current.peer}`);
-      this.pruneTerminal();
+      this.pruneTerminal(result.state, result.id);
       return result;
     })();
   }
@@ -1035,8 +1035,12 @@ export class DeliveryJournal {
     const row = this.db.query("SELECT action,reason,observed_revision,actor FROM resolution_history WHERE project_id=? AND delivery_id=? ORDER BY id DESC LIMIT 1").get(this.projectId, id) as { action: JournalResolution; reason: string; observed_revision: number; actor: string } | null;
     return row ? { action: row.action, reason: row.reason, observedRevision: row.observed_revision, actor: row.actor } : undefined;
   }
-  private pruneTerminal(): void {
-    const terminalCap = this.terminalHistoryLimit?.() ?? TERMINAL_CAP;
+  private pruneTerminal(state: JournalDeliveryState, currentId: string): void {
+    const terminal = state === "completed" || state === "discarded" || state === "failed";
+    const terminalCap = terminal ? this.terminalHistoryLimit?.() ?? TERMINAL_CAP : TERMINAL_CAP;
+    // A tighter target must not delete the receipt this mutation/resolve is still using.
+    // Empty ids are invalid, so the legacy target keeps its exact previous eligible set.
+    const retainedId = terminalCap < TERMINAL_CAP ? currentId : "";
     const count = Number(
       (
         this.db
@@ -1049,9 +1053,9 @@ export class DeliveryJournal {
     if (count <= terminalCap) return;
     this.db
       .query(
-        "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded','failed') AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
+        "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded','failed') AND d.id != ? AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
       )
-      .run(this.projectId, count - terminalCap);
+      .run(this.projectId, retainedId, count - terminalCap);
   }
   importSnapshot(snapshot: JournalSnapshot, operationId: string, trackQueuePressure = false): boolean {
     this.ensureOpen();

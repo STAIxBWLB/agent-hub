@@ -71,7 +71,7 @@ Implemented scope: five operational controls through the H1 fixed descriptor mec
 ## Runtime boundaries and verification
 
 - The five values follow the existing accepted configuration and H1 publication path. Each is read at its documented next operation; reload itself does not replay work, re-arm deadlines, trim queues, mutate attempts or rewrite prefaces.
-- Journal retention is read in the existing `pruneTerminal` path. The `previous_id` protection and separate consumed-retry proof are unchanged, so protected rows can keep history above the configured target.
+- Journal retention is read in the existing `pruneTerminal` path. The `previous_id` protection and separate consumed-retry proof are unchanged, so protected parents and the current mutation receipt can keep history above the configured target.
 - Existing limits retain separate no-project-off and configured-project defaults. This conversion adds no limits UI rows or duplicate controls, and leaves `configureScheduling` and `configureWatchdog` timing unchanged.
 - No safety floor, wire/storage constant, imported-state bound, sanitizer limit, unknown/PII gate, receipt rule or remote queue contract changes.
 - Tests cover independent legacy pins, schema/row/apply parity, next-operation configuration reads, poison-alone and paused-quota retries, oversized first-pull progress, and history protection. Their execution result belongs to the exact-head PR receipt; live console/dashboard editing and native delivery performance remain unverified.

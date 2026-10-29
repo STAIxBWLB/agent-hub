@@ -167,10 +167,19 @@ test("#489 terminal history reload prunes only at settlement and preserves unres
   const before = journal.snapshot();
   config = { bus: { terminal_history_limit: 1 } };
   expect(journal.snapshot()).toEqual(before);
+  journal.createDelivery({ id: "pending", peer: "claude", state: "queued", createdAt: env.ts, originals: [env], out: [env] });
+  journal.transition("pending", "needs_review");
+  expect(journal.list().filter(row => row.state === "completed")).toHaveLength(3);
   terminal("c");
   expect(journal.get("protected")?.state).toBe("completed");
   expect(journal.get("held")?.state).toBe("needs_review");
-  expect(journal.list().filter(row => row.state === "completed")).toHaveLength(1);
+  expect(journal.get("c")?.state).toBe("completed");
+  expect(journal.list().filter(row => row.state === "completed")).toHaveLength(2); // protected parent plus current receipt
+  const held = journal.get("held")!;
+  expect(journal.resolve(held.id, held.revision, "discard", "verified unnecessary").state).toBe("discarded");
+  expect(journal.get("held")?.state).toBe("discarded");
+  expect(journal.get("protected")?.state).toBe("completed");
+  expect(journal.get("pending")?.state).toBe("needs_review");
 });
 
 test("#489 five real daemon settings rows write, inherit and undo through the existing local file", async () => {
