@@ -8055,6 +8055,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       case "task":
         if (c.role === "tools" && msg.op === "task_unassign") {
+          if (conductorPeer(config.roles) !== c.peer) return void reply({ t: "task", ok: false, error: "task_unassign is a console command" });
           try {
             const current = admitOperational(sock, "task unassign");
             void childToolAuthority.run({ by: c.peer!, current: () => { current(); return true; } },

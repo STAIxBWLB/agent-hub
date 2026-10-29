@@ -415,10 +415,12 @@ export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
   return dest;
 }
 
+const unboundRecoveryInspection = inspectRecovery;
+
 export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: string, clock?: Pick<RecoveryDriver, "now" | "sleep">, conductorPeer?: string): RecoveryDriver {
   let authorizedOperation: RecoveryOperation | undefined;
   const recoveryCurrent = async () => { if (conductorPeer) { if (!authorizedOperation) throw new FinalRefusal("conductor recovery authority unavailable"); await authorizeConductorOperation(authorizedOperation, conductorPeer); } };
-  const inspect = (project: Project, features?: readonly string[], purpose?: "cleanup") => inspectRecovery(project, features, purpose, conductorPeer);
+  const inspectRecovery = (project: Project, features?: readonly string[], purpose?: "cleanup") => unboundRecoveryInspection(project, features, purpose, conductorPeer);
   const now = clock?.now ?? (() => Date.now());
   const sleep = clock?.sleep ?? ((ms: number) => Bun.sleep(ms));
   /** `only`: one binding's native profile, for a command run once per profile (#450 I3: Claude instances may differ). */
@@ -467,7 +469,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     }
     const idle = await waitForIdle(exact ? saved : current, 120_000, options);
     if (!idle.satisfied) throw nativeFailure(planned, saved.peer, "terminal_unverified", `${saved.peer}: terminal is not idle; manual-required`, { handle: saved.handle });
-    const observed = await inspect(planned.project);
+    const observed = await inspectRecovery(planned.project);
     if (observed.instanceId !== progress.instanceId) throw nativeFailure(planned, saved.peer, "target_unavailable", `${saved.peer}: daemon instance changed during terminal revalidation`, { handle: saved.handle, targetState: observed.state });
     const peer = observed.peers.find((item) => item.id === saved.peer);
     const session = observedSession(saved.peer, peer, saved.projectRoot);
@@ -489,7 +491,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
    */
   const peerEvidence = async (planned: PlannedProject, progress: ProjectProgress, peer: TerminalBinding["peer"]):
       Promise<{ state: "live"; session?: string; handle?: string; attached?: true; terminal?: Pick<TerminalBinding, "handle" | "incarnationId" | "worktreeId"> } | { state: "gone"; terminal?: Pick<TerminalBinding, "handle" | "incarnationId" | "worktreeId"> } | { state: "unknown"; why: string; step?: string; idless?: true }> => {
-    const target = await inspect(planned.project);
+    const target = await inspectRecovery(planned.project);
     if (target.state !== "running" || target.instanceId !== progress.instanceId) {
       // Only a hub that may still answer is waited for; a stopped, missing or other one is settled by the runner's list.
       const settled = ["running", "stopped", "missing"].includes(target.state);
@@ -535,7 +537,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       terminal: terminal.state === "missing" || terminal.state === "orphaned" ? "gone" : terminal.state === "present" ? "present" : terminal.state === "changed" ? "changed" : "unknown",
     });
     if (decision.action !== "reattach") return;
-    const current = await inspect(planned.project);
+    const current = await inspectRecovery(planned.project);
     if (current.state !== "running" || current.instanceId !== progress.instanceId || current.version !== op.plan.version || current.recovery?.operationId !== op.id ||
       (await peerEvidence(planned, progress, binding.peer)).state !== "gone") return;
     const existing = progress.reattachments?.[binding.peer];
@@ -589,7 +591,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     try {
     let live: Inspection;
     for (;;) {
-      live = await inspect(planned.project);
+      live = await inspectRecovery(planned.project);
       if (live.state !== "running") throw nativeFailure(planned, binding.peer, "target_unavailable", `${binding.peer}: target hub reads as ${live.state} while awaiting attachment; saved terminal retained`, { handle: binding.handle, targetState: live.state });
       if (live.instanceId !== progress.instanceId || live.version !== op.plan.version || live.recovery?.operationId !== op.id) throw nativeFailure(planned, binding.peer, "target_unavailable", `${binding.peer}: target identity changed while awaiting attachment`, { handle: binding.handle, targetState: live.state });
       const peer = live.peers.find((p) => p.id === binding.peer && p.state !== "offline");
@@ -668,7 +670,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
   return {
     ...(liveTestPeer === undefined ? {} : { liveTestPeer }),
     ...(conductorPeer ? { conductorPeer, authorize: async (op: RecoveryOperation) => { await authorizeConductorOperation(op, conductorPeer); authorizedOperation = op; } } : {}),
-    now, sleep, inspect,
+    now, sleep, inspect: inspectRecovery,
     recordedSessionState: async (binding, kind) => nativeRecordedSessionState(binding, kind),
     stage: async (op) => {
       if (packageDigest(op.sourceRoot, { ownDependencies: true }) !== op.plan.sourceDigest) throw new FinalRefusal("preserved source changed");
@@ -749,7 +751,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         // A peer whose TUI already exited left nothing to close: the source reports it
         // detached, and inventory silence is the same proof the pending-reconcile path
         // accepts. No mutation is issued for a terminal that no longer exists (#21).
-        const sourceNow = await inspect(planned.project);
+        const sourceNow = await inspectRecovery(planned.project);
         const attached = sourceNow.peers.find((item) => item.id === binding.peer);
         if (attached?.state === "offline") {
           const seen = await listed(binding);
@@ -764,7 +766,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         }
         const idle = await waitForIdle(binding, 600_000, terminalOptions(run));
         if (!idle.satisfied) throw new Error(`${binding.peer}: terminal is not verified idle; source retained; finish or cancel its turn first`);
-        const source = await inspect(planned.project);
+        const source = await inspectRecovery(planned.project);
         if (source.instanceId !== planned.source.instanceId || source.recovery?.operationId !== op.id || !source.recovery.ready) {
           throw new Error(`source preparation expired or changed while waiting for the terminal; no terminal was closed`);
         }
@@ -789,7 +791,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       await command(op, ["up"], p);
     },
     restore: async (planned, progress, op, group, save, onlyPeer) => {
-      const live = await inspect(planned.project);
+      const live = await inspectRecovery(planned.project);
       if (live.instanceId !== progress.instanceId) throw new Error("target daemon changed before peer restore");
       if (group === "native" && !onlyPeer) {
         for (const peer of planned.source.peers.filter(p => projectDefinition(p.id, planned.project.root)?.session.restoreArgs && p.state !== "offline" && !(projectDefinition(p.id, planned.project.root)?.session.launchRecord && p.args?.mode === "tui"))) {
@@ -1027,7 +1029,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (group !== "native" && !onlyPeer) for (const id of planned.reconnectOnly ?? []) {
         // #206: nothing is launched for an unmanaged session; its plugin reconnects by itself, within a bound.
         const deadline = now() + UNMANAGED_RECONNECT_WAIT_MS;
-        while (!(await inspect(planned.project)).peers.some((p) => p.id === id && p.state !== "offline")) {
+        while (!(await inspectRecovery(planned.project)).peers.some((p) => p.id === id && p.state !== "offline")) {
           if (now() >= deadline) throw nativeFailure(planned, id, "attachment_timeout", `${id}: the unmanaged session did not reconnect within ${UNMANAGED_RECONNECT_WAIT_MS / 1000} s; if that Claude session was closed, start Claude in the project again (its plugin reconnects) first`, { timeoutMs: UNMANAGED_RECONNECT_WAIT_MS });
           await sleep(1000);
         }
@@ -1085,7 +1087,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     },
     refreshManager: async (op) => { if (conductorPeer && op.plan.kind === "restart") return; await refreshManager({ home: hubHome(), cli: join(op.targetRoot!, "src/cli/main.ts") }); },
     verify: async (planned, progress, op, save) => {
-      const live = await inspect(planned.project);
+      const live = await inspectRecovery(planned.project);
       if (live.instanceId !== progress.instanceId || live.version !== op.plan.version || live.recovery?.operationId !== op.id) throw new Error("target identity verification failed");
       for (const old of planned.source.peers.filter((p) => p.state !== "offline")) {
         const peer = live.peers.find((p) => p.id === old.id);
