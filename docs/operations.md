@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.20.0 and control protocol 16. Live verification
+This guide describes ahub 0.21.0 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -67,7 +67,7 @@ smoke ledger; the presence of this option proves no outstanding #273 live leg.
 `status --all` uses the projects table. `queue show`, `models status` and `budget execution status` show labelled fields; add `--json` for the raw fetched document.
 `report --by task` keeps the attribution and coverage sentences with section headings and aligned counters.
 Use `--json` for scripts; it returns the fetched data without color, and `status --json` keeps its existing document.
-`sdlc status`, `sdlc explain`, `sdlc queue`, `sdlc release`, `sdlc metrics`, `sdlc costs` and `sdlc authorize-release` print readable output by default (#814: aligned columns, wrapped text, readable times, `--color=auto|always|never`). A script that parsed their JSON must pass `--json`, which prints exactly the document they printed before. `sdlc export` is a data format and stays JSON, as do `export`, `research export` and `bench export`.
+`sdlc status`, `sdlc explain`, `sdlc queue`, `sdlc release`, `sdlc metrics`, `sdlc costs`, `sdlc merge` and `sdlc authorize-release` print readable output by default (#814, #899: aligned columns, wrapped text, readable times, `--color=auto|always|never`). A script that parsed their JSON must pass `--json`, which prints exactly the document they printed before. `sdlc export` is a data format and stays JSON, as do `export`, `research export` and `bench export`.
 `restart` and `upgrade` off an interactive terminal (a pipe, `--dry-run`), `recovery status` and the results of `recovery reattach`, `resume`, `abort` and `dispose`, `models setup` and `start`, `queue resolve`, and `budget execution configure` and `disable` print readable text by default (#814); a script that parsed their JSON must pass `--json`, which prints exactly the document they printed before, including `restart --json --yes`. A readable plan lists each project, each peer with how it runs and what happens to it, every blocker, every reconnect-only session and every fresh start, and says nothing was changed; `--json` keeps those as stderr lines. A pipe wraps at `COLUMNS` when it is set, else at 80 columns.
 `task show`, `task cancel`, `backlog groom`, `backlog return|plan|pin|split|undo|pull-ready` and the `release` commands (`list`, `show`, `new`, `plan`, `activate|freeze|ship|drop`) print a readable block by default (#814): the task or release as the hub holds it, a table for lists, every identifier whole, long text wrapped to the terminal. A script that parsed their JSON must pass `--json`, which prints the hub tool's text exactly as before. A private task arrives from the hub as its stub and is shown as that stub. Because these commands also take free text, `--json` and `--color=` count as flags only at the start or the end of the arguments: `--json` in the middle of a reason is part of the reason, and a value flag's value (`task cancel --reason --json`) is never a flag. A reason that ends in a bare `--json` loses it to the flag. `backlog add|pull`, `task escalate|assign|unassign` already answered one sentence and are unchanged.
 In `projects --json` and `status --all --json`, an unavailable hub that explicitly refuses an inspection for SQLite contention also carries `failure: { "code": "database_busy" }`; it is additive metadata alongside the neutral `error` sentence.
@@ -219,7 +219,7 @@ the stream; only the header is tab-flattened before tokenizing. Body lines retai
 the previous rendering and stay plain, as does command output; colour never changes
 what the panel's text says.
 
-Peers, Approvals, Tasks, Queue, Settings and Usage are tables with a header row. A column is as
+Peers, Approvals, Tasks, Queue, Settings, Usage and Rooms are tables with a header row. A column is as
 wide as its widest cell, up to a third of the terminal; the last column takes
 the rest and is cut with `...`. In Tasks, TITLE takes the rest and the STAGE
 meter keeps a fixed column at the right edge. In Usage, LAST RESET is the column that gives way on a narrow terminal.
@@ -233,6 +233,7 @@ meter keeps a fixed column at the right edge. In Usage, LAST RESET is the column
 | Queue | ID PEER STATE REV AGE |
 | Settings | GROUP KEY VALUE SOURCE APPLIES |
 | Usage | PEER TODAY 7D LIFETIME PAUSE QUOTA LAST RESET |
+| Rooms | ROOM LINK MEMBERS REMOTE |
 
 In Tasks, `b` toggles open work and backlog. The backlog heading counts its rows;
 rows sort by rank, then id. PRI shows priority/rank, RESERVED the reserved peer,
@@ -385,8 +386,8 @@ the time); `dispatching` and `accepted` deliveries stay refused, and `retry` kee
 `stale revision`, `unknown delivery`, `already resolved`, `queued delivery is already scheduled`, `recipient queue is full`, `delivery journal unavailable`), never one
 generic sentence (#713).
 
-`ahub queue discard --peer <id> --reason <text> [--state queued|needs_review] [--yes] [--json]` clears one peer's backlog and is for the person only (an agent identity is
-refused). Without `--yes` it only says how many deliveries it would discard; with `--yes` it discards each queued (default) or `needs_review` delivery of that peer through the
+`ahub queue discard --peer <id> --reason <text> [--state queued|needs_review] [--yes] [--json]` clears one peer's backlog and is for the person or the configured conductor (any other agent identity is
+refused, and a remote `peer@label` queue is the person's only). Without `--yes` it only says how many deliveries it would discard; with `--yes` it discards each queued (default) or `needs_review` delivery of that peer through the
 same resolution as `queue resolve --action discard`, each recorded with the reason, and prints `discarded N of M` with the causes of any it could not discard. Only the
 named peer's queue is read, so other peers are untouched; it is refused while recovery or shutdown holds queue mutations. In the console Queue panel, `D` on a row opens
 the same command for that row's peer, asks for a reason, then a `y` that names the count. No task is cancelled and no native turn is stopped.
@@ -569,6 +570,9 @@ and so is every help entry the gate has no class for yet;
 | `ahub recovery status [<op-id>] [--json]` | Allowed | reads a preflight operation; the bare interactive screen and `reattach` stay Console |
 | `ahub upgrade ... --dry-run` (no `--yes`) | Allowed | reviews the upgrade plan and applies nothing; apply is a separate person or conductor operation |
 | `ahub restart --dry-run [--json]` (no `--yes`) | Allowed | reviews the restart plan and applies nothing |
+| `ahub task cancel\|label\|role <id> ...` | Allowed | the daemon decides per task (#933): `label` and `role` only on a task the caller owns, `role` not while it is in review, and `cancel` by the `hub_task_cancel` rule (the planner's own unaccepted backlog or proposed work) |
+| `ahub deliverables [--task <id>] [--approved] [--check] [--json]` | Allowed | only the rows `hub_task_show` would show the caller, through the same public screening (#933) |
+| `ahub room list [--json]`, `ahub room status [<name>] [--json]` | Allowed | room metadata only; every other `room` form, the inbox included, stays Console |
 
 `backlog list`, `release list` and `sdlc costs|metrics` retain their existing
 planner/person policy. Their CLI forms stay Console for ordinary agents; a
@@ -611,8 +615,11 @@ cause an otherwise unassigned owner to claim duplicate work.
 The person answers approvals in the console, resolves `needs_review` deliveries
 with `ahub queue resolve`, stops a headless peer with `ahub stop`, and handles
 budget overrides and hub lifecycle.
-Running these commands from an agent shell is refused; the CLI retains the
-agent's identity even when invoked through a shell tool.
+The configured conductor may itself run `queue resolve`, `stop <peer>` and the
+other forms in [the operational command table](#conductor-operations-812-t2-933-900);
+approvals and budget overrides stay the person's. From any other agent shell these
+commands are refused; the CLI retains the agent's identity even when invoked
+through a shell tool.
 
 `conductor.feed` is `own` by default, `all` for all tasks, or `off`. Ordinary
 milestones share the existing digest window and collapse repeated queued
@@ -1459,6 +1466,13 @@ ahub undo <turn> --yes --context  # Codex's latest turn: also drop it from Codex
   Nothing is restored then. It plans again right before restoring and stops if
   anything moved meanwhile. A turn that is already undone says so.
 - A file the turn created is deleted; a file it deleted comes back.
+- The hub does not observe inside a git submodule (#798). A submodule the turn
+  left dirty is listed as `<path> (changed, contents unobserved)` in `ahub turns`
+  (`unobserved` in `--json`), and `ahub undo` says its contents cannot be restored:
+  undo them in the submodule itself. A task that declares a path inside a submodule
+  gets a notice at propose and accept, never a refusal. Without `.gitmodules` no git
+  call is added; with one, each turn end adds one bounded `git status` probe, and a
+  probe that cannot answer records unknown, never none.
 - When HEAD moves during a turn, the hub reads the appended HEAD reflog (bounded to 64 moves and 128 KiB). The turn's own commits, amends, cherry-picks and rebase picks still count as its changes. Files brought in by a pull, merge, rebase start, branch checkout or fast-forward reset are left out, unless they are still dirty at the turn's end. An unreadable or ambiguous reflog, a rewinding reset, or a file touched by both kinds of move makes the turn's files unknown (#576).
 - `--context` asks Codex (`thread/revert`) to drop the turn, and every later one,
   from its thread's saved history before the files are restored; Codex receives
@@ -1829,7 +1843,8 @@ ahub settings set roster.kimi false --preview
 ahub settings set roster.kimi false --yes
 ```
 
-These are person's commands and use the same settings preview, write and undo as
+These are the person's commands (`roster add|remove` also the configured conductor's,
+see [the operational command table](#conductor-operations-812-t2-933-900)) and use the same settings preview, write and undo as
 the dashboard's Roster settings. An ordinary dashboard session may remove a peer;
 adding requires `ahub ui --settings` or a person's terminal. Removal requires the
 peer id as confirmation. Without `--now`, a busy peer is refused. A conductor
@@ -1930,6 +1945,7 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Routing | `tasks.wip_limits.<peer>` | `config.local.json` | live |
 | Routing | `tasks.escalate_after` (1-10, default 3: consecutive `changes_requested` before a task moves to the next `escalate_to` peer) | `config.local.json` | live; the next verdict uses it |
 | Switches | `tasks.auto_pull` (default off: pull the top explicitly reserved ready card when a planner slot frees) | `config.local.json` | live; the next freed planner slot uses it |
+| Routing | `tasks.queue_backpressure.max_queued` (0-10000), `.max_oldest_s` (0-604800); 0, the default, disables each ([backpressure](#queue-backpressure-on-automatic-task-offers-800)) | `config.local.json` | live |
 | Roles | `planner` (one or up to eight planner holders) | `config.local.json` | at once |
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
@@ -1982,7 +1998,8 @@ Pi relay model aliases (`pi.dgx_coding`, `pi.dgx_fast`) and `routing.pi` retain 
   limit to 0, turns `task_sweep.enabled` or `.auto_reassign` off and changes
   the other Switches. Everything
   else needs `ahub ui --settings`, whose session may raise for 15 minutes, or
-  `ahub settings` in a terminal. `never-ask` needs the peer id typed in the
+  `ahub settings` in a terminal; the configured conductor may set only the
+  thirteen keys in [the operational command table](#conductor-operations-812-t2-933-900). `never-ask` needs the peer id typed in the
   dashboard, or `--yes` in the terminal, and a stored never-ask default still
   waits for `y` in `ahub console` at each hub start. Tool approvals stay
   deny-only for Pi and local in every session.
@@ -2006,7 +2023,7 @@ Instances, the review and approval blocks and the lifecycle can be edited withou
    - `mode` and `required_checks` in `.agenthub/sdlc.toml`. Only those two lines change: comments and every other table stay as written, and a layout the editor cannot change faithfully (a key repeated, or one inside a multi-line string) is refused with its own reason.
 
    `roster.*`, `tasks.wip_limits.*`, `permission_modes`, `peers` and the rest of the registry keep their own `ahub settings set` path.
-3. **Executable and secret-locating keys** are console only: the rest of `NEVER_EDITABLE` (`kimi_cmd`, `jcode_cmd`, `codex_bin`, `pi.cmd`, `checks`, `mlx`, `omniroute`, `terminal`, `adapters`, `adapter_modules` and the like) and the Jcode instance fields `jcode_home`, `provider`, `model` and `provider_profile`. The console shows "this runs code with the daemon's rights, or chooses where secrets are read from" and writes only when the key's exact name is typed, one key at a time; `--yes` never confirms one. The dashboard lists each of them with the console command that changes it and nothing else: no value, no path, no input. A forged dashboard request for one is refused by the hub.
+3. **Executable and secret-locating keys** are console only: the rest of `NEVER_EDITABLE` (`kimi_cmd`, `jcode_cmd`, `codex_bin`, `pi.cmd`, `checks`, `mlx`, `omniroute`, `terminal`, `schedules`, `folder_triggers`, `corpus`, `rooms`, `local.doc_read`, `local.web_fetch`, `adapters`, `adapter_modules` and the like) and the Jcode instance fields `jcode_home`, `provider`, `model` and `provider_profile`. The console shows "this runs code with the daemon's rights, or chooses where secrets are read from" and writes only when the key's exact name is typed, one key at a time; `--yes` never confirms one. The dashboard lists each of them with the console command that changes it and nothing else: no value, no path, no input. A forged dashboard request for one is refused by the hub.
 
 In the console (`ahub console`, Settings tab `6`): `c` asks what to edit (`1` an instance, `2` the lifecycle, `3` another key), asks each field, shows the hub's diff or its loader reason, asks for a reason, then `y`. Esc cancels at any step, and pasted text never confirms. `R` appears while a restart is pending and prefills `restart`; the command still asks its own `y`. In the dashboard, open `ahub ui --settings`: the Structure group has the same forms; outside a settings session it is read only.
 
@@ -2024,7 +2041,7 @@ Rules:
 - A whole instance that holds a native home, account or model (`jcode_home`, `provider`, `model`, `provider_profile`) is tier 3 to remove or replace, so a dashboard can neither see nor delete those values; an existing instance changes leaf by leaf (`instances.<id>.<field>`), and `clear` removes one field. A preview or write shows a tier 3 value only as `(set)`, and a write changes exactly one tier 3 key, counting the keys the file adds (removing two Jcode instances is two writes, each confirmed by its own typed name). The audit record gives a tier 3 key no value hash at all, because a model or provider name is easy to recover from an unsalted hash; the file revisions bind the change instead. An instance already in `config.local.json` is changed leaf by leaf even before a restart has started it. If `.agenthub` or `config.local.json` is a symlink, the Settings view reports its revision as `unavailable` and no edit is planned. An edit of `sdlc.toml` keeps the file's own line endings.
 - Every write records a `config_edit` event: the file, each key path with a short hash of its value before and after (never a value), the file revisions before and after, the tier, the source (`dashboard` or `terminal`) and `by: person`. The notice and `hub.log` name key paths only.
 - A changed instance declaration is restart-bound: it is listed as `pending restart` (`instances`) and takes effect at the next hub start. A changed `sdlc.toml` is read once at start and is listed as `sdlc.mode` or `sdlc.required_checks` until the running hub holds the same value. `review`, `snapshots`, `approvals` and `context.gate` publish through the one reload path, one key at a time.
-- Person only: an agent shell or a hub tool is refused (`ahub settings` is a console command in the identity gate, and the three control requests answer only the console role). Recovery or shutdown holds every edit.
+- Person only: an agent shell or a hub tool is refused (`ahub settings edit` is a console command in the identity gate, and the three control requests answer only the console role). Recovery or shutdown holds every edit.
 - The hub must run this release: an older hub answers `unknown message` and the command says to upgrade and restart it.
 
 ## Start modes: TUI by default, headless as opt-in
@@ -2348,6 +2365,8 @@ ahub tail
 ahub kill
 ```
 
+`ahub down` is the same verified stop as `ahub kill`, named as the counterpart of
+`ahub up` (#957); both are the person's, refused from an agent shell.
 The daemon waits for shutdown work that must survive termination. Afterward,
 run `ahub status` or `ahub up` and read the project state before restarting
 peers. A stopped daemon does not delete task records or the durable journal.
@@ -2432,10 +2451,12 @@ the top card explicitly reserved for the peer whose slot just freed.
 
 When `hub_task_done` leaves a review whose exact-head CI is not yet green (the
 lifecycle must be on, the task linked to a PR and not private), the hub starts one watcher
-for that head (#785): one `gh pr view` a minute, ended by the CI result, by a
+for that head (#785): one `gh pr view` a minute, ended by a passed CI result, by a
 45 minute deadline, by a newer head, a verdict or a cancellation, or by hub
 shutdown; a restart does not restore it, and the next `hub_task_done` starts a new
-one. On the result the owner and the reviewer each get one
+one. A failed or incomplete result is told once and the watcher keeps reading for a
+rerun of the same head: the first pending read after a newly told result renews the
+deadline once, and a deadline after a told result ends silently (#540). On the result the owner and the reviewer each get one
 `ci_completed: #<id> head <sha12> passed|failed|incomplete` task notice (ids only, the
 head cut to 12 characters; a person reviewer gets a console line instead), and
 unless CI failed, a review the hub held as premature for that head is offered
@@ -2607,7 +2628,7 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.20.0), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.21.0), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
@@ -2621,7 +2642,7 @@ bunx --package @staix/agent-hub@0.12.43 ahub upgrade --to 0.12.43 --yes
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.20.0 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.21.0 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -3739,8 +3760,9 @@ request and does not apply to model-origin bash calls.
 
 `ahub stop kimi`, `ahub stop pi` (headless mode), or `ahub stop local` stops
 that hub-owned runtime through its adapter and prints `<peer>: offline`.
-The hub and its other peers keep running. The command is human-only;
-agent shells and tools-role connections cannot use the `peer_stop` request.
+The hub and its other peers keep running. The command is the person's or the
+configured conductor's (an audited operational admission); other agent shells and
+tools-role connections are refused at the `peer_stop` request.
 An older hub that does not know the request needs an upgrade before this
 command is available.
 
@@ -3806,7 +3828,7 @@ that the file is untracked; a dropped value is reported by the settings result.
 
 ## SDLC artifact receipts and gates
 
-The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. A person accepts a spec issue with `ahub sdlc accept <task> --issue <n>` (S1). The planner records plan reviews with review and CI scope (`hub_plan_review`, `ahub sdlc plan-review`) and grooms with `ahub backlog groom`; `ahub backlog return <task> <revision> <reason>` returns accepted, untouched work (S9). `ahub sdlc costs [owner/repo]` reports review rounds and CI runs of merged PRs without writing the board (S10). `ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>]` (the planner tool `hub_sdlc_metrics`, planner or person, read-only) reports lead times, first-pass approval and check rates, rework rounds, stale-head re-reviews and open stalls from board history, with `unknown` counted and never 0; optional `[bands.<metric>]` in `sdlc.toml` add control bands that the daemon checks every five minutes in advise or enforce, writing a hub notice (`log`), a read-only `triage` backlog task (`diagnose`) or a `plan` backlog card (`propose`), one per breach episode and never a GitHub issue (S7, see [metrics](sdlc.md#sdlc-metrics-and-control-bands-481-s7)). With the lifecycle on, a task's issue identity is linked when it is proposed or accepted, from the one issue it names (an imported GitHub issue, or a `#N`, `owner/repo#N` or issue URL in its title); a title that names a sibling repository (`agent-mem#13`) links only when `refs.repo` names it, and without `refs.repo` the propose result says to set it. `ahub backlog groom` also backfills up to 32 links per call, within 1 s (#723). S11 release trains ship in 0.12.37 (see [release scheduling](#planner-release-scheduling)). S3 structured review findings (an open Important finding blocks approval in enforce; `max_nits` in `sdlc.toml` caps nits) and S2 literal-path plan conformance with the person-only `ahub sdlc accept-departure <task> <head> <reason...>` are in source; see [findings](sdlc.md#structured-review-findings-481-s3) and [plan conformance](sdlc.md#plan-conformance-481-s2). S4 [test integrity](sdlc.md#test-integrity-481-s4) and S6 [release authorization](#release-approval-and-optional-tag-guard) are in source too. S5 continuous evals, release metrics and bands, and a full live advise/release cycle remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged.
+The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. A person accepts a spec issue with `ahub sdlc accept <task> --issue <n>` (S1). The planner records plan reviews with review and CI scope (`hub_plan_review`, `ahub sdlc plan-review`) and grooms with `ahub backlog groom`; `ahub backlog return <task> <revision> <reason>` returns accepted, untouched work (S9). `ahub sdlc costs [owner/repo]` reports review rounds and CI runs of merged PRs without writing the board (S10). `ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>]` (the planner tool `hub_sdlc_metrics`, planner or person, read-only) reports lead times, first-pass approval and check rates, rework rounds, stale-head re-reviews and open stalls from board history, with `unknown` counted and never 0; optional `[bands.<metric>]` in `sdlc.toml` add control bands that the daemon checks every five minutes in advise or enforce, writing a hub notice (`log`), a read-only `triage` backlog task (`diagnose`) or a `plan` backlog card (`propose`), one per breach episode and never a GitHub issue (S7, see [metrics](sdlc.md#sdlc-metrics-and-control-bands-481-s7)). With the lifecycle on, a task's issue identity is linked when it is proposed or accepted, from the one issue it names (an imported GitHub issue, or a `#N`, `owner/repo#N` or issue URL in its title); a title that names a sibling repository (`agent-mem#13`) links only when `refs.repo` names it, and without `refs.repo` the propose result says to set it. `ahub backlog groom` also backfills up to 32 links per call, within 1 s (#723). S11 release trains ship in 0.12.37 (see [release scheduling](#planner-release-scheduling)). S3 structured review findings (an open Important finding blocks approval in enforce; `max_nits` in `sdlc.toml` caps nits) and S2 literal-path plan conformance with the person-only `ahub sdlc accept-departure <task> <head> <reason...>` are in source; see [findings](sdlc.md#structured-review-findings-481-s3) and [plan conformance](sdlc.md#plan-conformance-481-s2). S4 [test integrity](sdlc.md#test-integrity-481-s4) and S6 [release authorization](#release-approval-and-optional-tag-guard) are in source too. S5 is in source as an [eval gate mechanism](sdlc.md#eval-gate-for-agent-configuration-481-s5) with no suite chosen, and S7 adds merge-time readback, [release metrics](sdlc.md#release-metrics-481-ac12) and an opt-in security baseline; a full live advise/release cycle and the per-release gates-run record remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged.
 ## Optional Qwen Code peer
 
 Select Qwen per project with `ahub roster add qwen`; it defaults off and is absent
@@ -3916,7 +3938,7 @@ Configured kinds are cloud peers and never receive PII work. Quota and context a
 
 ## External adapter modules (#451 A4)
 
-A bundled adapter module is authorized by the person with `adapter_modules` (at most 16 rows of `path` and `sha256`) in an untracked `.agenthub/config.local.json`; in `config.json` or a tracked file it is ignored with a notice, and settings never edit it. Only daemon startup imports a module: settings, reload, previews and CLI reads never do, so a change needs a restart. The module must be a single self-contained ESM file inside the project (no symlinked, world-writable or oversized file) whose bytes match the pin, and it may import only Node/Bun builtins and `@staix/agent-hub/adapter`; the scanner also refuses any `require`, `eval` or `Function` word token. Each import must settle within 2 s. A module that fails any check is refused on its own, with a bounded reason in the status reply, while startup and the other adapters continue; its roster row stays inert. A loaded kind is headless, cloud (never PII), off roster until `ahub roster add <kind>`, and has no controlled recovery: stop it and start it again with its recorded session id. While modules are declared, the upgrade or restart source and target must advertise `external_adapter_modules`. Bundling, the accepted definition subset and the conformance kit (`@staix/agent-hub/conformance`, for module CI only) are in [Adding an AI tool](adding-an-ai-tool.md#5-external-adapter-modules-451-a4). A pin authorizes code that runs with the daemon's rights; it is not a sandbox ([security](security.md)).
+A bundled adapter module is authorized by the person with `adapter_modules` (at most 16 rows of `path` and `sha256`) in an untracked `.agenthub/config.local.json`; in `config.json` or a tracked file it is ignored with a notice, and settings never edit it. Only daemon startup imports a module: settings, reload, previews and CLI reads never do, so a change needs a restart. The module must be a single self-contained ESM file inside the project (no symlinked, world-writable or oversized file) whose bytes match the pin, and it may import only Node/Bun builtins and `@staix/agent-hub/adapter`; the scanner also refuses any `require`, `eval` or `Function` word token. Each import must settle within 2 s. A module that fails any check is refused on its own, with a bounded reason in the status reply, while startup and the other adapters continue; its roster row stays inert. A loaded kind is headless, cloud (never PII), off roster until `ahub roster add <kind>`, and has no controlled recovery: stop it and start it again with its recorded session id. While modules are declared, the upgrade or restart source and target must advertise `external_adapter_modules`. Extra `instances` of a module kind (#754) exist only when the module opts in with `headlessInstances` (headless; implementer, verifier or continuing reviewer) and the person declares them in `config.local.json`; each needs its own worktree, is bound to what startup verified, and needs `external_adapter_instances` on both sides of a restart or upgrade ([security](security.md)). Bundling, the accepted definition subset and the conformance kit (`@staix/agent-hub/conformance`, for module CI only) are in [Adding an AI tool](adding-an-ai-tool.md#5-external-adapter-modules-451-a4). A pin authorizes code that runs with the daemon's rights; it is not a sandbox ([security](security.md)).
 
 # Headless ACP watch (#286)
 
@@ -3943,7 +3965,7 @@ A bundled adapter module is authorized by the person with `adapter_modules` (at 
 
 # Project profiles (#259)
 
-- Initialize new projects with `ahub init --profile research|writing|general`; default dev retains its existing templates and contracts. Profile aliases map to the existing base flow and are displayed beside it.
+- Initialize new projects with `ahub init --profile research|writing|general`; default dev retains its existing templates and contracts. Profile aliases map to the existing base flow and are displayed beside it. `--profile <pack>` applies a domain pack (`.agenthub/roles/<name>.pack.json` or a shipped one) as review-checklist and example-check overrides; `--dry-run` previews ids only, and a pack is data, never a command ([domain packs](profiles.md#domain-packs-513a), #513a).
 - Non-dev plans declare paths, section anchors, source ids and claims. Configure completion checks explicitly in machine-local config; selecting a profile never starts a check or study. Schema, examples and pending converter/policy slices: [profiles](profiles.md).
 
 # Private and read-only data paths (#259)
@@ -3963,7 +3985,7 @@ A bundled adapter module is authorized by the person with `adapter_modules` (at 
 # Person catalog-role assignment (#295)
 
 - Use `ahub role assign <peer> <id>` or `ahub role clear <peer> [<id>]`, or the dashboard Roles settings group. The selection is bounded to two compatible catalog ids, writes only machine-local settings and applies at the next peer start. Inherit and explicit no roles are distinct.
-- Change an open task's guidance with `ahub task role <id> <role|none>`. Agent shells and peer/tools control clients cannot use these mutation commands. Details and unconfirmed native consumption: [roles](roles.md).
+- Change an open task's guidance with `ahub task role <id> <role|none>`. Agent shells and peer/tools control clients cannot use `role assign|clear`; an agent may run `task role` on a task it owns while it is not in review, and a child, read-only or private-context connection is refused (#933). Details and unconfirmed native consumption: [roles](roles.md).
 
 # Document projection review and undo
 
@@ -4152,7 +4174,7 @@ The manager allows split screening, the bounded database wait and forwarding mar
 ## One-way GitHub intake (#263)
 
 `ahub board import github --label <label> [--milestone <milestone>]
-[--repo <owner/repo>]` is person-only. Omitted repo is resolved by gh in the
+[--repo <owner/repo>]` is the person's or the configured conductor's (#933; the conductor is recorded as the actor). Omitted repo is resolved by gh in the
 project directory. The command reads open issues with fixed bounded argv and
 stages up to 32 into unoffered Backlog, retaining canonical repo/issue identity
 across restarts. Repeating intake does not refresh or overwrite existing cards.

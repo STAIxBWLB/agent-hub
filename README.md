@@ -94,7 +94,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-10-27-0.20.0.md) and the
+[release verification report](docs/verification/2026-10-29-0.21.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation
