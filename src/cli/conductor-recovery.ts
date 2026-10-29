@@ -29,19 +29,21 @@ export function conductorRecoveryBinding(op: RecoveryOperation, project: Project
     sourceInstanceId: planned.source.instanceId, targetRoot: op.targetRoot, targetDigest: op.targetDigest, planFingerprint: op.plan.fingerprint, ...policy };
 }
 export async function conductorRecoveryRequest(project: Project, peer: string, message: Record<string, unknown>): Promise<any> {
-  const descriptor = readControl(project.stateDir);
-  if (!descriptor?.instanceId || !descriptor.features?.includes("conductor_recovery")) unavailable();
-  const client = await ControlClient.connect(project.stateDir, { role: "tools", peer, projectId: project.id, projectRoot: project.root, instanceId: descriptor.instanceId });
+  let client: ControlClient | undefined;
   try {
+    const descriptor = readControl(project.stateDir);
+    if (!descriptor?.instanceId || !descriptor.features?.includes("conductor_recovery")) unavailable();
+    client = await ControlClient.connect(project.stateDir, { role: "tools", peer, projectId: project.id, projectRoot: project.root, instanceId: descriptor.instanceId });
     if (!client.features.includes("conductor_recovery")) unavailable();
     const result = await client.request(message, 30_000);
     if (result.ok !== true) unavailable();
     return result;
-  } finally { client.close(); }
+  } catch { unavailable(); }
+  finally { client?.close(); }
 }
 /** No hold, lock, staging or package effect precedes proof in every affected project. */
 export async function preflightConductorRecovery(plan: Pick<UpgradePlan, "projects" | "kind">, peer: string): Promise<void> {
-  if (!plan.projects.length || plan.projects.some(row => row.terminals.length > 0)) unavailable();
+  if (!Array.isArray(plan.projects) || !plan.projects.length || plan.projects.some(row => !Array.isArray(row.terminals) || row.terminals.length > 0)) unavailable();
   for (const row of plan.projects) {
     const result = await conductorRecoveryRequest(row.project, peer, { t: "recovery_authority", op: "authorize", command: plan.kind });
     if (row.source.instanceId && result.instanceId !== row.source.instanceId) unavailable();
@@ -57,11 +59,13 @@ export async function issueConductorOperation(op: RecoveryOperation, peer: strin
   }
 }
 function localAuthority(op: RecoveryOperation, project: Project, peer: string) {
+  try {
   const expected = conductorRecoveryBinding(op, project, peer);
   if (packageDigest(op.sourceRoot, { ownDependencies: true }) !== op.plan.sourceDigest || packageDigest(expected.targetRoot, { ownDependencies: true }) !== expected.targetDigest) unavailable();
   return authorizeConductorRecovery(project.stateDir, expected, () => {
     try { return JSON.stringify(conductorRecoveryBinding(op, project, peer)) === JSON.stringify(expected); } catch { return false; }
   });
+  } catch { unavailable(); }
 }
 /** Synchronous fence for the already authenticated private bootstrap's local effect boundaries. */
 export function assertConductorOperationLocal(op: RecoveryOperation, peer: string): void {
@@ -94,8 +98,10 @@ export async function requireOwnedConductorTarget(op: RecoveryOperation, project
   if (result.target !== true || result.operationId !== op.id || !["restored", "released"].includes(result.phase)) unavailable();
 }
 export function requireConductorCheckpoint(op: RecoveryOperation, project: Project): void {
-  const snapshot = readRestartSnapshot(project.stateDir, { projectRoot: project.root, projectId: project.id, operationId: op.id });
-  if (!snapshot || snapshot.operationId !== op.id || snapshot.sourceInstanceId !== op.plan.projects.find(row => row.project.id === project.id)?.source.instanceId) unavailable();
+  try {
+    const snapshot = readRestartSnapshot(project.stateDir, { projectRoot: project.root, projectId: project.id, operationId: op.id });
+    if (!snapshot || snapshot.operationId !== op.id || snapshot.sourceInstanceId !== op.plan.projects.find(row => row.project.id === project.id)?.source.instanceId) unavailable();
+  } catch { unavailable(); }
 }
 export function retireConductorOperation(op: RecoveryOperation, peer: string): void {
   if (op.phase !== "completed" && op.phase !== "cancelled") unavailable();

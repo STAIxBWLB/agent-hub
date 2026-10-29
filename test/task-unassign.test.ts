@@ -114,12 +114,21 @@ test("unassign rechecks current conductor before the write, and assignment reche
   try { await expect(f.tasks.unassign(task.id, "claude", true)).rejects.toThrow("configured conductor"); }
   finally { f.board.get = original; }
   expect(f.board.get(task.id)).toEqual(before); f.roles.claude = ["conductor"];
-  f.advise(); f.board.update(task.id, USER, "lifecycle", { sdlc: { planReview: {} } as unknown as NonNullable<Task["sdlc"]> });
-  const snapshot = f.board.get(task.id); let enter!: () => void, release!: () => void;
+  f.advise();
+  const planReview = { planner: "claude", planningRevision: 0, recordedAt: Date.now() };
+  f.board.update(task.id, USER, "lifecycle", { sdlc: { stage: "build", planReview } });
+  const snapshot = f.board.get(task.id); expect(snapshot?.sdlc?.planReview).toEqual(planReview);
+  let enter!: () => void, release!: () => void;
   const entered = new Promise<void>(resolve => { enter = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
   f.tasks.planReviewGap = async () => { enter(); await held; return undefined; };
-  const pending = f.tasks.assignTo(task.id, "codex", "claude", true); const rejected = expect(pending).rejects.toThrow("configured conductor");
-  await entered; f.roles.claude = []; release(); await rejected;
+  const pending = f.tasks.assignTo(task.id, "codex", "claude", true).then(value => ({ value }), error => ({ error }));
+  try {
+    await Promise.race([entered, pending.then(() => { throw new Error("assignment settled before its admission barrier"); })]);
+    f.roles.claude = [];
+  } finally { release(); }
+  const result = await pending;
+  expect("error" in result ? result.error : undefined).toBeInstanceOf(PreEffectToolRefusal);
+  expect("error" in result && result.error instanceof Error ? result.error.message : "not refused").toContain("configured conductor");
   expect(f.board.get(task.id)).toEqual(snapshot);
 });
 

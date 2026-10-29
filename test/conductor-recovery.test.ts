@@ -252,7 +252,7 @@ test("real source commit permits only its stopping verification and a replacemen
       model: "WIRE_MODEL_CANARY", sessionId: "WIRE_SESSION_CANARY", args: { model: "WIRE_MODEL_CANARY", sessionId: "WIRE_SESSION_CANARY" }, launch: { model: "WIRE_MODEL_CANARY" } });
     expect(restored.ok).toBe(true); expect(starts).toHaveLength(1);
     expect(starts[0]!.launch).toMatchObject({ kind: "local", model: "saved-recovery-model" });
-    expect(starts[0]!.sessionId).toMatch(/^[a-f0-9-]{36}$/);
+    expect(starts[0]!.sessionId).toMatch(/^agent-hub-local-[a-f0-9-]{36}$/);
     // Local intentionally rebuilds a fresh worker; this does not claim native
     // session persistence, only refusal to accept a wire-selected session.
     expect(starts[0]!.sessionId).not.toBe(savedSession); expect(starts[0]!.sessionId).not.toBe("WIRE_SESSION_CANARY");
@@ -265,4 +265,19 @@ test("real source commit permits only its stopping verification and a replacemen
     for (const client of targetClients) client.close(); await target?.stop();
     start.mockRestore(); inventory.mockRestore(); chat.mockRestore(); await f.close();
   }
+}, 20_000);
+
+test("a source-issued grant cannot prepare an unrelated replacement daemon", async () => {
+  const f = await fixture(); let replacement: Awaited<ReturnType<typeof startDaemon>> | undefined, lead: ControlClient | undefined;
+  try {
+    const { binding, plan } = await f.authority();
+    expect((await f.lead.request({ t: "recovery_authority", op: "issue", binding, plan })).ok).toBe(true);
+    await f.daemon.stop(); await f.daemon.stopped;
+    replacement = await startDaemon({ cwd: f.root, stateDir: f.stateDir, projectId: binding.projectId, instanceId: crypto.randomUUID(),
+      controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: loadConfig(f.root), snapshotClock: () => 0, configWatch: false, boundedTools: emulatedBoundedTools() });
+    lead = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex", projectRoot: f.root });
+    expect((await lead.request({ t: "recovery", op: "prepare", operationId: binding.operationId, expectedInstanceId: lead.instanceId, authority: binding, targetFeatures: DAEMON_FEATURES })).ok).toBe(false);
+    expect(replacement.bus.isRecoveryHeld).toBe(false);
+    expect(existsSync(join(f.stateDir, "restart.json"))).toBe(false);
+  } finally { lead?.close(); await replacement?.stop(); await f.close(); }
 }, 20_000);
