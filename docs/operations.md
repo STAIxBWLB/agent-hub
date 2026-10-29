@@ -1266,6 +1266,16 @@ ahub say @claude "[STATUS] the test run is complete"
 ahub say @kimi "[FYI] the result is recorded"
 ```
 
+The `hub_send` tool declares `to` as an array of peer ids (#963). The control `send`
+boundary also accepts one nonempty string as a single recipient; it never
+turns that string into a broadcast. Without `reply_to`, omitting `to` or sending
+an empty array keeps the broadcast meaning. A reply without recipients inherits
+the sender it answers. Other recipient shapes, including `null`, empty strings
+and arrays containing a non-string or empty item, are refused before publication.
+The tool reports `not sent: to must be an array of peer ids` (the control reply's
+error is `to must be an array of peer ids`). Valid arrays still deduplicate
+recipients and pass through the existing unknown-peer, roster and privacy gates.
+
 What agents send is limited per sender (`limits` in `.agenthub/config.json`; a
 project config gets the values below unless it sets others, `0` turns one off):
 

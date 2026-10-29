@@ -7490,7 +7490,11 @@ export async function startDaemon(opts: DaemonOptions) {
         // A human at the console should not wait out the batch window; agents default to status.
         const { priority, body } = parseMarker(String(msg.body ?? ""), c.peer ? "status" : "important");
         if (!body) return void reply({ t: "sent", ok: false, error: "empty body" });
-        const to: PeerId[] | undefined = Array.isArray(msg.to) && msg.to.length ? [...new Set<string>(msg.to.map(String))] : undefined;
+        const recipients = typeof msg.to === "string" && msg.to.length ? [msg.to] : msg.to;
+        if (Object.hasOwn(msg, "to") && (!Array.isArray(recipients) || recipients.some(id => typeof id !== "string" || !id.length))) {
+          return void reply({ t: "sent", ok: false, error: "to must be an array of peer ids" });
+        }
+        const to: PeerId[] | undefined = Array.isArray(recipients) && recipients.length ? [...new Set<string>(recipients)] : undefined;
         const unknown = to?.filter((id) => !bus.knownPeers().includes(id) && membershipAllowed(id)) ?? [];
         if (unknown.length) return void reply({ t: "sent", ok: false, error: `unknown peer: ${unknown.join(", ")}` });
         const inReplyTo = msg.reply_to ? bus.get(String(msg.reply_to)) : undefined;
