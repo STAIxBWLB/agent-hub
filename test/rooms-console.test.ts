@@ -100,3 +100,21 @@ test("room relay counters stay unknown rather than becoming zero", () => {
   expect(text).toContain("out handoff"); expect(text).toContain("unknown");
   expect(text).not.toContain("out handoff 0"); expect(text).not.toContain("in admitted 0"); expect(text).not.toContain("withheld 0");
 });
+
+
+test("an open Rooms detail follows current status by room identity across reorder and unavailable readings", () => {
+  const before = projectRoomStatus([row("work", { members: 2, remotePeers: [{ id: "codex@hub-b", state: "idle" }], relays: { since: NOW, outbound: 0, inbound: 0, withheld: 0 } })]);
+  const opened = reduceConsole(reduceConsole({ ...initialConsoleState(true), rooms: before }, "8", NOW).state, "\r", NOW).state;
+  const after = projectRoomStatus([row("other", { state: "online", members: 1 }), row("work", { state: "left", members: 2,
+    remotePeers: [{ id: "codex@hub-b", state: "offline" }], relays: { since: NOW, outbound: 5, inbound: 4, withheld: 1 } })]);
+  for (const columns of [80, 120]) {
+    const text = renderConsole({ ...opened, rooms: after }, columns, 40, NOW).join("\n");
+    expect(text).toMatch(/link state +left/); expect(text).toContain("codex@hub-b (offline)");
+    expect(text).toMatch(/out handoff +5/); expect(text).toMatch(/in admitted +4/); expect(text).toMatch(/withheld +1/);
+    expect(text).not.toContain("online"); expect(text).not.toContain("(idle)"); expect(text).not.toContain("other");
+    for (const rooms of [null, projectRoomStatus([row("other")])]) {
+      const missing = renderConsole({ ...opened, rooms }, columns, 40, NOW).join("\n");
+      expect(missing).toContain("unavailable"); expect(missing).not.toContain("online"); expect(missing).not.toContain("codex@hub-b");
+    }
+  }
+});

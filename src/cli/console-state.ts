@@ -813,7 +813,8 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     if (s.panel === 3 || s.panel === 4) effects.push({ type: "show", panel: s.panel, id: String(row.id) });
     else if (s.panel === 2) { s.requestDetail = row.id; s.detailOffset = 0; } // the row is the selected request
     else if (s.panel === 7) { s.detail = { usagePeer: row.id }; s.detailOffset = 0; } // rendered live from s.usage, so a refresh updates it
-    else { s.detail = s.panel === 5 ? String(row.text) : s.panel === 1 ? peerDetailRow(s, row) : s.panel === 8 ? roomDetail(row) : { ...row }; s.detailOffset = 0; }
+    else if (s.panel === 8) { s.roomSelection = row.name; s.detail = { roomName: row.name }; s.detailOffset = 0; }
+    else { s.detail = s.panel === 5 ? String(row.text) : s.panel === 1 ? peerDetailRow(s, row) : { ...row }; s.detailOffset = 0; }
     return done();
   }
   if (s.mode === "panels" && item !== undefined && item !== null) {
@@ -1188,7 +1189,10 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled || !!s.petChoices?.length, !!s.petChoices?.length, roomsVisible(s)));
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
     const usagePeer = s.panel === 7 && s.detail && typeof s.detail === "object" ? (s.detail as { usagePeer?: unknown }).usagePeer : undefined;
+    const roomName = s.panel === 8 && s.detail && typeof s.detail === "object" ? (s.detail as { roomName?: unknown }).roomName : undefined;
+    const room = typeof roomName === "string" && Array.isArray(s.rooms) ? s.rooms.find(row => row.name === roomName) : undefined;
       const detail = typeof usagePeer === "string" ? fieldLines(Object.entries(usageDetail(s.usage, usagePeer, s.budget[usagePeer], at => relative(at, now))), columns, now).flat()
+      : typeof roomName === "string" ? detailLines(room ? roomDetail(room) : { room: roomName, status: "unavailable" }, columns, now)
       : s.detail !== undefined ? detailLines(s.detail, columns, now, s.panel === 3) : fieldLines(approvalFields(permission!), columns, now).flat();
     lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - height))));
   }

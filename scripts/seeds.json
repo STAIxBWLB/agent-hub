@@ -4102,6 +4102,14 @@
       "replacement": "if (false) {",
       "testFile": "test/rooms-chat.test.ts",
       "testName": "ambiguous exposed remote ids remain inert and show unknown rather than empty membership"
+    },
+    {
+      "id": "room-x5-live-detail",
+      "file": "src/cli/console-state.ts",
+      "search": "    else if (s.panel === 8) { s.roomSelection = row.name; s.detail = { roomName: row.name }; s.detailOffset = 0; }",
+      "replacement": "    else if (s.panel === 8) { s.roomSelection = row.name; s.detail = roomDetail(row); s.detailOffset = 0; }",
+      "testFile": "test/rooms-console.test.ts",
+      "testName": "an open Rooms detail follows current status by room identity across reorder and unavailable readings"
     }
   ]
 }
