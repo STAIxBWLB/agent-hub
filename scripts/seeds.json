@@ -4072,6 +4072,8 @@
       "replacement": "const transient = !!replacing;",
       "testFile": "test/task-queue-backpressure.test.ts",
       "testName": "a plan policy refusal still replaces a queue origin when its peer goes offline during the same await"
+    },
+    {
       "id": "room-x5-status-allowlist",
       "file": "src/rooms/status.ts",
       "search": "        name, room, owner, member, epoch,",
