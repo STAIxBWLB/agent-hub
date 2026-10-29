@@ -164,6 +164,9 @@ test("reconnect-only handling does not relax another peer's native identity comp
     expect((await f.issue(f.plan)).ok).toBe(true); f.noEffects();
     ordinary!.sessionId = "foreign-ordinary-session";
     expect((await f.issue(plan)).ok).toBe(false); f.noEffects();
+    delete ordinary!.sessionId;
+    ordinary!.observation = { kind: "local", attached: true, sessionId: "ordinary-local-session" };
+    expect((await f.issue(plan)).ok).toBe(false); f.noEffects();
   } finally { await f.close(); }
 }, 20_000);
 

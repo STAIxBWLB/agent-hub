@@ -7413,7 +7413,7 @@ export async function startDaemon(opts: DaemonOptions) {
             const normalize = (row: { id: string; state: string; observation?: { kind: string; attached: boolean; sessionId?: string }; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
               const launch = row.args ?? row.launch ?? {};
               const observed = reconnect.get(row.id);
-              return { id: row.id, active: row.state !== "offline", threadId: row.threadId, sessionId: row.sessionId ?? row.observation?.sessionId,
+              return { id: row.id, active: row.state !== "offline", threadId: row.threadId, sessionId: row.sessionId ?? (observed ? row.observation?.sessionId : undefined),
                 ...(observed ? { kind: row.observation?.kind ?? definitionOf(row.id)?.kind, attached: row.observation?.attached ?? (isWsPeer(bus.peers.get(row.id)) && (bus.peers.get(row.id) as import("../adapters/channel-peer.ts").WsPeer).attached) } : {}),
                 sessionFile: row.sessionFile ?? (typeof launch.sessionFile === "string" ? launch.sessionFile : undefined),
                 args: Object.fromEntries(Object.entries(launch).filter(([key, value]) => ["model", "route", "sessionFile", "mode", "backend"].includes(key) && typeof value === "string").sort(([a], [b]) => a.localeCompare(b))) };
