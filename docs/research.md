@@ -95,7 +95,7 @@ They are computed each time from the records; nothing derived is stored. `ahub r
 [--since] [--all]` writes the records for outside analysis; the CSV columns are, in order: project, task, class, pii,
 outcome, createdAt, startedAt, approvedAt, wallMs, activeMs, owners, reviewer, reviewRounds, changesRequested, checkPassed,
 checkFailed, dones, reassignments, firstPass, stuck, overlaps, conflicts, testsPass, testsFail, tokens, turns,
-filesChanged, models, label, writerVersion, writerSource. The CSV is a flat subset; JSONL carries every field.
+filesChanged, models, label, labelBy, writerVersion, writerSource. The CSV is a flat subset; JSONL carries every field.
 Another project's measures: `ahub --project <dir> research`.
 
 ## Add-ons (#248)

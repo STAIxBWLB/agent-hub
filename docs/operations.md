@@ -1417,7 +1417,7 @@ task's commit, so never enable it in a project you work in. The project must be 
 nothing tracked under `.agenthub/`, and the suite file lives outside its tree ([suite format and store](bench.md)).
 
 ```bash
-ahub bench run ../suites/suite.json --arm baseline --repeat 5   # a person's: resets the tree, proposes the tasks
+ahub bench run ../suites/suite.json --arm baseline --repeat 5   # the person's or the conductor's: resets the tree, proposes the tasks
 ahub bench status                                     # the run in progress
 ahub bench compare baseline ripwire-on                # arms side by side, inconclusive below 5 attempts each
 ahub bench export --format csv
