@@ -138,10 +138,11 @@ function runGate(env: Record<string, string>, ...args: string[]) {
     writeFileSync(join(repo, "scripts/test-timings.json"), JSON.stringify({ version: 1, files: {} }));
     for (const name of ["check-docs.mjs", "check-package.mjs", "check-owned-processes.mjs"]) writeFileSync(join(repo, "scripts", name), `import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(log)}, ${JSON.stringify(`${name}\n`)});\n`);
     writeFileSync(join(repo, "scripts/record-test-process.mjs"), "");
+    writeFileSync(join(bin, "warm-git"), `#!/bin/sh\necho "warm-git $*" >> ${JSON.stringify(log)}\nexit ${env.WARM_GIT_EXIT ?? "0"}\n`, { mode: 0o755 });
     // the fake bun: logs `bun <args>`; a `test` run prints one result line on stderr, which check.sh routes through its progress filter
     writeFileSync(join(bin, "bun"), `#!/bin/sh\necho "bun $*" >> ${JSON.stringify(log)}\ncase "$1" in test) echo "(pass) fake [1ms]" >&2 ;; esac\nexit 0\n`, { mode: 0o755 });
     expect(Bun.spawnSync(["git", "init", "-q"], { cwd: repo }).exitCode).toBe(0);
-    const run = Bun.spawnSync(["bash", "scripts/check.sh", ...args], { cwd: repo, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, AHUB_CHECK_LOCK_WAIT_S: "0", AHUB_CHECK_SHARD: "", AHUB_CHECK_HANG_S: "60", ...env } });
+    const run = Bun.spawnSync(["bash", "scripts/check.sh", ...args], { cwd: repo, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, AHUB_CHECK_LOCK_WAIT_S: "0", AHUB_CHECK_SHARD: "", AHUB_CHECK_HANG_S: "60", AHUB_CHECK_WARM_GIT: join(bin, "warm-git"), ...env } });
     const steps = (() => { try { return readFileSync(log, "utf8").split("\n").filter(Boolean); } catch { return [] as string[]; } })();
     return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString(), steps };
   } finally { rmSync(repo, { recursive: true, force: true }); }
@@ -160,7 +161,7 @@ test("#548 shard 1 runs the once-only steps and its slice of the suite on the co
   const run = runGate({ AHUB_CHECK_SHARD: "1/4" });
   expect(run.code).toBe(0);
   const steps = run.steps.filter(step => !step.startsWith("check-owned"));
-  expect(steps).toEqual(["check-docs.mjs", "bun install --frozen-lockfile", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/build.mjs --check", "check-package.mjs", "bun test --timeout 20000 --shard=1/4 --timings=scripts/test-timings.json"]);
+  expect(steps).toEqual(["check-docs.mjs", "bun install --frozen-lockfile", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/build.mjs --check", "check-package.mjs", "warm-git --version", "bun test --timeout 20000 --shard=1/4 --timings=scripts/test-timings.json"]);
   expect(run.out.trim().split("\n").at(-1)).toBe("check: OK (shard 1/4)");
 });
 
@@ -168,7 +169,7 @@ for (const index of [2, 3, 4]) test(`#548 shard ${index} installs and tests its 
   const run = runGate({ AHUB_CHECK_SHARD: `${index}/4` });
   expect(run.code).toBe(0);
   const steps = run.steps.filter(step => !step.startsWith("check-owned"));
-  expect(steps).toEqual(["bun install --frozen-lockfile", `bun test --timeout 20000 --shard=${index}/4 --timings=scripts/test-timings.json`]);
+  expect(steps).toEqual(["bun install --frozen-lockfile", "warm-git --version", `bun test --timeout 20000 --shard=${index}/4 --timings=scripts/test-timings.json`]);
   for (const once of ONCE) expect(steps).not.toContain(once);
   expect(run.out.trim().split("\n").at(-1)).toBe(`check: OK (shard ${index}/4)`);
 });
@@ -177,3 +178,21 @@ test("#548 across the four shards each once-only step runs exactly once", () => 
   const all = [1, 2, 3, 4].flatMap(index => runGate({ AHUB_CHECK_SHARD: `${index}/4` }).steps);
   for (const once of ONCE) expect(all.filter(step => step === once), once).toHaveLength(1);
 });
+
+// A shard starts the suite cold: on a fresh hosted macOS runner the first execs of the system git exceed the 1000 ms timeout several tests give it (hosted shards 3 and 4 of PR #954),
+// so one unbounded exec of it runs before the tests. It is an advice, never a gate: its failure or absence does not fail the shard, and an unsharded gate does not run it.
+test("#548 a shard warms the system git once before its tests, and a failing or absent warm-up never fails the shard; an unsharded gate does not warm", () => {
+  for (const index of [1, 3]) { // the first (which also runs the once-only steps) and one other; shards 2 to 4 share a path and test/macos-shard.test.ts runs them all above
+    const run = runGate({ AHUB_CHECK_SHARD: `${index}/4` });
+    const steps = run.steps.filter(step => !step.startsWith("check-owned"));
+    expect(steps.filter(step => step === "warm-git --version"), `shard ${index}`).toHaveLength(1);
+    expect(steps.indexOf("warm-git --version")).toBe(steps.findIndex(step => step.startsWith("bun test")) - 1); // immediately before the tests
+  }
+  const failing = runGate({ AHUB_CHECK_SHARD: "2/4", WARM_GIT_EXIT: "7" });
+  expect(failing.code).toBe(0);
+  expect(failing.out.trim().split("\n").at(-1)).toBe("check: OK (shard 2/4)");
+  const absent = runGate({ AHUB_CHECK_SHARD: "2/4", AHUB_CHECK_WARM_GIT: "/nonexistent/git" });
+  expect(absent.code).toBe(0);
+  expect(absent.steps.filter(step => step.startsWith("warm-git"))).toHaveLength(0);
+  expect(runGate({}).steps.filter(step => step.startsWith("warm-git"))).toHaveLength(0);
+}, 20_000); // five real check.sh runs against stubs: the gate's own limit (scripts/check.sh --timeout 20000), not Bun's 5 s default

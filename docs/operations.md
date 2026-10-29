@@ -3531,7 +3531,7 @@ every test file in exactly one shard and balances them by the recorded per-file 
 package contents, so each of those runs once per gate, and the others install and test. Each shard runs under the same 1500 s backstop as Linux inside a 25-minute job
 limit, and its last line is `check: OK (shard i/n)`. The required check `check (macos-latest)` is an aggregator job that passes only when every shard passed (or an
 identical-tree full proof was reused), so branch protection and the reuse proof read the same names as before. `AHUB_CHECK_SHARD` is the full suite only: it cannot be
-combined with `--changed`. `scripts/test-timings.json` is advice for balance, never a list of tests: a file missing from it still runs (Bun gives it the median time).
+combined with `--changed`. A shard execs the system git once before its tests (`AHUB_CHECK_WARM_GIT`, default `/usr/bin/git`; a failure of it is ignored), because the first execs of `/usr/bin/git` on a fresh hosted macOS runner outlast the 1000 ms some tests give it. `scripts/test-timings.json` is advice for balance, never a list of tests: a file missing from it still runs (Bun gives it the median time).
 Regenerate it from a green macOS leg when the shards drift apart: `gh api --allow-escape-sequences repos/<owner>/<repo>/actions/jobs/<macOS shard job id>/logs`
 for each shard, or from one unsharded leg's log, then `bun scripts/make-test-timings.ts <log>`.
 The `closing-refs` workflow fails a PR whose title, body or commit messages would make

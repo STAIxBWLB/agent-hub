@@ -68,6 +68,12 @@ fi
 if [ -n "$shard" ]; then
   test_args=("--shard=$shard" "--timings=scripts/test-timings.json")
   echo "check: shard $shard of the full suite (scripts/test-timings.json)" >&2
+  # #548: a shard starts the suite cold. Several tests run the system git (PATH=/usr/bin:/bin) with a 1000 ms timeout; on a fresh hosted macOS runner the first execs of /usr/bin/git
+  # (the Xcode shim, then the real binary) take over a second, and each is killed at the timeout before it can finish, so the first tests that use it fail (hosted shards 3 and 4 of PR #954:
+  # 8 tests, all at the 1000 ms timeout, where the same tests take about 140 ms in an unsharded leg that has run git earlier). One unbounded exec warms it. Failure to warm is not a failure.
+  # ponytail: the warm-up covers git only; the upgrade path is raising the 1000 ms test timeouts if another cold executable shows up.
+  warm_git=${AHUB_CHECK_WARM_GIT:-/usr/bin/git}
+  if [ -x "$warm_git" ]; then "$warm_git" --version >/dev/null 2>&1 || true; fi
 fi
 
 tests=0
