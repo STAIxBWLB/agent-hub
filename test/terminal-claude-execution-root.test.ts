@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, loadConfig } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { realPath } from "../src/hub/project.ts";
 import { hubGitSync } from "../src/hub/git.ts";
+import { Board } from "../src/hub/board.ts";
 import { readClaudeLaunchProof } from "../src/hub/claude-launch-proof.ts";
 import { assign, parseRouting } from "../src/hub/routing.ts";
 import { createProjectAdapterCatalog } from "../src/adapters/registry.ts";
@@ -19,7 +20,13 @@ async function fixture(role: "implementer" | "verifier" = "implementer") {
   }
   const instances = { [peer]: { kind: "claude", roles: [role], worktree: `.worktrees/${peer}` } };
   writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify({ instances, roles: { [peer]: [role] }, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false }, task_sweep: { enabled: false }, batch_ms: 0 }));
-  const daemon = await startDaemon({ cwd: root, stateDir, config: loadConfig(root), controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
+  writeFileSync(join(root, ".agenthub", "routing.toml"), `[local]\nfixed_model="fixture"\n[classes.implement]\npeers=[${JSON.stringify(peer)}]\n[classes.summarize]\npeers=[${JSON.stringify(peer)}]\n`);
+  const workspaceGitCalls: string[][] = [];
+  const instanceExecutionGit = ((args: string[], options: Parameters<typeof hubGitSync>[1]) => {
+    workspaceGitCalls.push([...args]); return hubGitSync(args, options as never);
+  }) as typeof hubGitSync;
+  const daemon = await startDaemon({ cwd: root, stateDir, config: loadConfig(root), controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    configWatch: false, agentDrift: false, snapshotClock: () => 0, checkoutBranch: () => ({ branch: "fixture", defaultBranch: "main" }), instanceExecutionGit });
   const console_ = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
   const status = async () => (await console_.request({ t: "status" })).status;
   const instanceId = (await status()).instanceId;
@@ -35,7 +42,12 @@ async function fixture(role: "implementer" | "verifier" = "implementer") {
     expect(daemon.bus.stateOf(peer)).toBe("idle"); return c;
   };
   const owner = (isolation: boolean) => assign({ class: "implement", signals: [] }, { [peer]: "idle" }, parseRouting(`[local]\nfixed_model="fixture"\n[classes.implement]\npeers=["${peer}"]`), { instances: instances as never, adapterCatalog: createProjectAdapterCatalog(), roles: { [peer]: ["implementer"] }, candidates: [peer], namedOwner: peer, ownerIsolation: { [peer]: isolation } });
-  return { root, peer, executionCwd, stateDir, daemon, console_, instanceId, launchFile, record, attach, status, owner, async close() { for (const c of clients) c.close(); console_.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); } };
+  const facts = async () => {
+    const tools = await ControlClient.connect(stateDir, { role: "tools", peer, projectRoot: root });
+    try { return await tools.request({ t: "facts", phase: "pre", native: true, nativeLaunchId: "launch-one", nativeInstanceId: instanceId, sessionId: "fixture-session", tool: "Edit", input: { file_path: join(executionCwd, "source.ts") } }); }
+    finally { tools.close(); }
+  };
+  return { root, peer, executionCwd, stateDir, daemon, console_, instanceId, launchFile, record, attach, status, owner, facts, workspaceGitCalls, async close() { for (const c of clients) c.close(); console_.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); } };
 }
 
 test("#525-5 terminal Claude owns write work only after all execution-root evidence matches; facts use that root", async () => {
@@ -49,6 +61,10 @@ test("#525-5 terminal Claude owns write work only after all execution-root evide
       expect(facts.projectRoot).toBe(f.executionCwd);
     } finally { tools.close(); }
     f.record({ launchId: "replacement" });
+    expect((await f.facts()).projectRoot).toBeUndefined(); // The old hook is refused before a permission-root reply.
+    // Routing checks the retained binding itself, independent of the rejected hook's launch id.
+    const admission = await f.console_.request({ t: "task", op: "route_explain", args: { title: "launch proof fixture", class: "summarize" } });
+    expect(admission.ok).toBe(true); expect(admission.text).toContain("verified isolated execution root");
     expect((await f.status()).ownerIsolation[f.peer]).toBe(false);
   } finally { await f.close(); }
 }, 20_000);
@@ -83,6 +99,10 @@ test("#525-5 a replacement or detached socket cannot retain another launch's exe
     f.record(); await f.attach({ launchId: "launch-one", cwd: f.executionCwd });
     expect((await f.status()).ownerIsolation[f.peer]).toBe(true);
     expect(hubGitSync(["-C", f.executionCwd, "checkout", "--detach", "-q"], { encoding: "utf8" }).status).toBe(0);
+    expect((await f.status()).ownerIsolation[f.peer]).toBe(true); // Last verified display is not admission authority.
+    f.workspaceGitCalls.length = 0;
+    expect((await f.facts()).projectRoot).toBeUndefined();
+    expect(f.workspaceGitCalls.length).toBeGreaterThan(0);
     const status = await f.status(); expect(status.ownerIsolation[f.peer]).toBe(false);
     expect(f.owner(status.ownerIsolation[f.peer]).owner).toBeUndefined();
   } finally { await f.close(); }
@@ -155,4 +175,60 @@ test("#525-5 verifier-only worktree never receives canonical permission fallback
       const missing = await facts(); expect(missing.permission).toBeUndefined(); expect(missing.projectRoot).toBeUndefined();
     } finally { tools.close(); }
   } finally { await f.close(); }
+}, 20_000);
+
+
+test("#525-5 repeated status writes use cached isolation, including ordinary and reserved stalled work", async () => {
+  const f = await fixture();
+  let board: Board | undefined;
+  try {
+    f.record(); await f.attach({ launchId: "launch-one", cwd: f.executionCwd });
+    expect((await f.status()).ownerIsolation[f.peer]).toBe(true);
+    expect(f.workspaceGitCalls.length).toBeGreaterThan(0); // The counter observes real initial admission.
+    board = new Board(join(f.stateDir, "hub.db"));
+    const ordinary = board.propose("user", { title: "ordinary display fixture", class: "summarize" });
+    const backlog = board.propose("user", { title: "reserved display fixture", class: "summarize", backlog: true });
+    const reserved = board.pullPlanned(backlog.id, "user", f.peer, 0, "fixture reservation");
+    for (const row of [ordinary, reserved]) {
+      // A human hold prevents unrelated release timers from routing the fixture while status is inspected.
+      const held = board.update(row.id, "user", "unassigned", { owner: null });
+      board.recordStall({ task: held.id, signature: `display-${held.id}`, replanRevision: held.planningRevision ?? 0,
+        cause: { kind: "no-eligible-peer", code: "unavailable" }, at: Date.now() });
+    }
+    f.workspaceGitCalls.length = 0;
+    for (let n = 0; n < 5; n++) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect((await f.console_.request({ t: "send", to: [f.peer], body: `[FYI] status projection ${n}` })).ok).toBe(true);
+      const status = await f.status();
+      expect(status.tasks.proposed).toBe(2);
+      expect(status.ownerIsolation[f.peer]).toBe(true);
+      expect(status.peers[f.peer].ownerIsolation).toBe(true);
+      expect(status.ownerIsolationNotes[f.peer]).toBeUndefined();
+      const saved = JSON.parse(readFileSync(join(f.stateDir, "status.json"), "utf8"));
+      expect(saved.ownerIsolation[f.peer]).toBe(true);
+    }
+    expect(f.workspaceGitCalls).toEqual([]);
+    expect(board.get(ordinary.id)?.owner).toBeNull(); expect(board.get(reserved.id)?.owner).toBeNull();
+  } finally { board?.close(); await f.close(); }
+}, 20_000);
+
+test("#525-5 actual owner admission revalidates and rejects drift despite a positive display cache", async () => {
+  const f = await fixture();
+  let board: Board | undefined;
+  try {
+    f.record(); await f.attach({ launchId: "launch-one", cwd: f.executionCwd });
+    board = new Board(join(f.stateDir, "hub.db"));
+    const row = board.propose("user", { title: "root admission fixture", class: "summarize" });
+    board.update(row.id, "user", "unassigned", { owner: null });
+    expect(hubGitSync(["-C", f.executionCwd, "checkout", "--detach", "-q"], { encoding: "utf8" }).status).toBe(0);
+    f.workspaceGitCalls.length = 0;
+    expect((await f.status()).ownerIsolation[f.peer]).toBe(true);
+    expect(f.workspaceGitCalls).toEqual([]);
+    const result = await f.console_.request({ t: "task", op: "task_assign", args: { id: row.id, peer: f.peer } });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("verified isolated execution root");
+    expect(f.workspaceGitCalls.length).toBeGreaterThan(0);
+    expect(board.get(row.id)?.owner).toBeNull();
+    expect((await f.status()).ownerIsolation[f.peer]).toBe(false);
+  } finally { board?.close(); await f.close(); }
 }, 20_000);
