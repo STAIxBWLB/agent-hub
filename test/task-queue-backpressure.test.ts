@@ -342,6 +342,7 @@ test("queue retry indexes ignore malformed and row-mismatched legacy stall paylo
   expect(f.board.queuePressureStallPage().rows.map(row => row.task)).toEqual([held.id]);
   const first = f.board.queuePressureStallPage(0, 1), skipped = f.board.queuePressureStallPage(first.afterTask, 1);
   expect(skipped.rows).toEqual([]); expect(skipped.afterTask).toBe(999);
+  expect(f.board.stall(999)).toBeUndefined();
   f.bus.pull("codex"); await owned(f, held.id, "codex");
   expect(f.board.get(legacy.id)?.owner).toBeNull();
 });
@@ -566,4 +567,68 @@ test("a queue origin survives an offline peer during drain and resumes on reatta
   expect(f.board.queuePressureStallPage().rows.map(stall => stall.task)).toContain(row.id);
   await f.peers.codex!.start(); f.tasks.scheduleQueuePressureRecheck();
   await owned(f, row.id, "codex");
+});
+
+
+test("a queue origin survives offline or detached eligibility after an awaited normal plan read", async () => {
+  for (const move of ["offline", "not-attached"]) {
+    const entered = deferred(), release = deferred(); let reads = 0;
+    const gh: SdlcGh = async args => {
+      expect(args.join(" ")).toContain("issue(number:$number)"); reads++;
+      if (reads === 1) { entered.resolve(); await release.promise; }
+      return { code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 1, state: "OPEN", createdAt: "2026-10-01T00:00:00Z", lastEditedAt: "2026-10-01T00:00:00Z" } } } }), stderr: "" };
+    };
+    const f = await fixture({ onlyOwner: true, gh }); f.wire();
+    f.control.policy = { max_queued: 1, max_oldest_s: 0 }; const ids = f.enqueue("codex", 2);
+    const row = await f.tasks.propose(HUB, { title: "transient after plan await", class: "implement" }); await settled(f.tasks);
+    expect(row.owner).toBeNull();
+    f.board.update(row.id, HUB, "lifecycle", { sdlc: { stage: "build", repo: "fixture/project", issue: 1, planReview: { planner: "claude", planningRevision: 0, recordedAt: Date.now(), issue: { repo: "fixture/project", issue: 1, state: "OPEN", editedAt: "2026-10-01T00:00:00Z" } } } });
+    f.control.lifecycle = "enforce";
+    for (const id of ids) f.bus.withdraw(id);
+    try {
+      await bounded(entered.promise);
+      if (move === "offline") await f.peers.codex!.stop();
+      else f.bus.peers.delete("codex");
+    } finally { release.resolve(); }
+    await settled(f.tasks);
+    expect(reads).toBe(1); expect(f.board.get(row.id)?.owner).toBeNull();
+    expect(f.board.stall(row.id)?.cause.code).toBe("queue-count");
+    expect(f.board.queuePressureStallPage().rows.map(stall => stall.task)).toContain(row.id);
+    // Further queue wakes do not repeat external admission while the peer is absent.
+    const unrelated = f.enqueue("kimi", 1)[0]!; f.bus.withdraw(unrelated); await settled(f.tasks);
+    expect(reads).toBe(1);
+    if (move === "not-attached") f.bus.add(f.peers.codex!);
+    await f.peers.codex!.start(); f.tasks.scheduleQueuePressureRecheck();
+    await owned(f, row.id, "codex");
+    expect(reads).toBe(2);
+    expect(f.board.get(row.id)?.history.filter(entry => entry.event === "assigned")).toHaveLength(1);
+    expect(f.board.queuePressureStallPage().rows.map(stall => stall.task)).not.toContain(row.id);
+  }
+});
+
+test("a plan policy refusal still replaces a queue origin when its peer goes offline during the same await", async () => {
+  for (const unavailable of [false, true]) {
+    const entered = deferred(), release = deferred(); let reads = 0;
+    const gh: SdlcGh = async args => {
+      expect(args.join(" ")).toContain("issue(number:$number)"); reads++;
+      entered.resolve(); await release.promise;
+      return unavailable ? { code: 1, stdout: "", stderr: "fixture unavailable" } : { code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 1, state: "OPEN", createdAt: "2026-10-01T00:00:00Z", lastEditedAt: "2026-10-02T00:00:00Z" } } } }), stderr: "" };
+    };
+    const f = await fixture({ onlyOwner: true, gh }); f.wire();
+    f.control.policy = { max_queued: 1, max_oldest_s: 0 }; const ids = f.enqueue("codex", 2);
+    const row = await f.tasks.propose(HUB, { title: "policy and offline race", class: "implement" }); await settled(f.tasks);
+    f.board.update(row.id, HUB, "lifecycle", { sdlc: { stage: "build", repo: "fixture/project", issue: 1, planReview: { planner: "claude", planningRevision: 0, recordedAt: Date.now(), issue: { repo: "fixture/project", issue: 1, state: "OPEN", editedAt: "2026-10-01T00:00:00Z" } } } });
+    f.control.lifecycle = "enforce";
+    for (const id of ids) f.bus.withdraw(id);
+    try { await bounded(entered.promise); await f.peers.codex!.stop(); } finally { release.resolve(); }
+    await settled(f.tasks);
+    expect(reads).toBe(1); expect(f.board.get(row.id)?.owner).toBeNull();
+    expect(f.board.stall(row.id)?.cause.code).toBe("policy");
+    expect(f.board.queuePressureStallPage().rows.map(stall => stall.task)).not.toContain(row.id);
+    await f.peers.codex!.start(); f.tasks.scheduleQueuePressureRecheck();
+    for (let n = 0; n < 3; n++) {
+      const unrelated = f.enqueue("kimi", 1)[0]!; f.bus.withdraw(unrelated); await settled(f.tasks);
+    }
+    expect(reads).toBe(1); expect(f.board.stall(row.id)?.cause.code).toBe("policy");
+  }
 });

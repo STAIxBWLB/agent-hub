@@ -3019,7 +3019,17 @@ export class Tasks {
           else if (origin) {
             this.d.board.recordStall({ ...origin, replanRevision: latest.planningRevision ?? 0 });
             pass.retained = true;
-          } // A plan/policy refusal replaced the origin; preserve that stall and stop queue-driven retries.
+          } else {
+            const replacing = this.d.board.stall(task.id);
+            const selected = choice.owner;
+            const refusal = replacing && selected ? replacing.cause.peer === selected ? replacing.cause.code : replacing.cause.refusals?.find(row => row.peer === selected)?.code : undefined;
+            const transient = replacing && (replacing.cause.kind === "no-eligible-peer" || replacing.cause.kind === "reservation") && replacing.cause.code !== "policy" && (refusal === "offline" || refusal === "not-attached");
+            if (transient) {
+              // The initially eligible owner vanished during admission; a policy gate never reaches this restore.
+              this.d.board.recordStall({ ...stall, replanRevision: latest.planningRevision ?? 0 });
+              pass.retained = true;
+            }
+          } // Other replacing gates keep their stall and own any later retry.
         } else this.d.board.clearStall(task.id);
       }
     }
