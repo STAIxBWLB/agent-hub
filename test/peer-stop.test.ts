@@ -168,11 +168,14 @@ test("Pi auto_start never restarts a requested idle stop; manual start takes que
   const queued = newEnvelope("user", "queued manual Pi restart", { to: ["pi"] }); h.daemon.bus.publish(queued);
   const replacement = await h.start("pi");
   await until(() => replacement.state === "busy", "manual Pi restart receives queued work");
+  // busy precedes model selection and native prompt acknowledgement; settlement must follow acceptance.
+  const delivery = () => h.daemon.bus.queueList("pi").find(row => row.originals.some(env => env.id === queued.id));
+  await until(() => delivery()?.state === "accepted", "manual Pi restart acknowledges the queued prompt");
   const post = bridge(replacement as PiPeer);
   await post("/event", { type: "agent_start", generation: 1 });
   await post("/event", { type: "agent_end", generation: 1, text: "manual restart answered" });
   await post("/event", { type: "agent_settled", generation: 1 });
-  await until(() => h.answers.length === 1 && replacement.state === "idle", "manual restart completes queued work");
+  await until(() => h.answers.length === 1 && replacement.state === "idle" && delivery()?.state === "completed", "manual restart completes queued work");
   expect(h.answers[0]!.body).toBe("manual restart answered");
   expect(h.daemon.bus.queueList("pi").find(row => row.originals.some(env => env.id === queued.id))!.state).toBe("completed");
 }, 30_000);
