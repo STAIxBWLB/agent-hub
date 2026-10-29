@@ -6185,6 +6185,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const raw = valueAt(next, path.split("."));
         const winning = [...sources.trustLayers].reverse().find(source => source.name.endsWith(name.endsWith(".toml") ? ".toml" : ".json") && valueAt(source.raw, path.split(".")) !== undefined);
         if (raw !== undefined && winning?.name !== name) continue; // a shadowed edit was never authorized by its no-op effective value
+        if (raw === undefined && valueAt(layer.raw, path.split(".")) === undefined) continue;
         putConfig(layer.raw, path, raw);
       }
     }

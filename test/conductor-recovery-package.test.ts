@@ -23,12 +23,13 @@ function fixture() {
   writeFileSync(join(memory, "src/index.ts"), "export const fixture = true;\n");
   writeFileSync(join(memory, "bin/amem.js"), "// fixture CLI\n");
   for (const name of ["README.md", "LICENSE"]) writeFileSync(join(memory, name), "fixture\n");
-  const stage = () => stageRelease(version, integrity, async (_args, options) => {
-    if (!options?.cwd) throw new Error("fixture requires the staged install root");
-    app(join(options.cwd, "node_modules/@staix/agent-hub"));
+  const stage = () => stageRelease(version, integrity, async (args) => {
+    const installRoot = args[args.indexOf("--cwd") + 1];
+    if (!args.includes("--cwd") || !installRoot) throw new Error("fixture requires the staged install root");
+    app(join(installRoot, "node_modules/@staix/agent-hub"));
     // Copy only this small first-party fixture package, never an installed dependency tree.
-    preserveRuntimeDependencies(source, options.cwd);
-    writeFileSync(join(options.cwd, "bun.lock"), JSON.stringify({ packages: { "@staix/agent-hub": [integrity] } }));
+    preserveRuntimeDependencies(source, installRoot);
+    writeFileSync(join(installRoot, "bun.lock"), JSON.stringify({ packages: { "@staix/agent-hub": [integrity] } }));
     return { code: 0, stdout: "", stderr: "" };
   }, home);
   return { root, source, home, memory, stage };
