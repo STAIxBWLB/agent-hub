@@ -3525,7 +3525,15 @@ output through unchanged and appends one byte to a progress file for each of tho
 the watchdog polls that file's size. On a stop it prints where the run is and the process
 table below it first. `AHUB_CHECK_HANG_S` (960 by default) is only the backstop for a run
 that keeps printing results while hung; hosted CI sets 1500 on Linux inside a 35-minute
-job limit and 1800 on macOS inside a 40-minute one (#378, #593, #752, task 516).
+job limit (#378, #593, #752, task 516). The macOS leg runs as four shards (#548): `AHUB_CHECK_SHARD=i/n`
+makes `scripts/check.sh` run slice `i` of the full suite through `bun test --shard=i/n --timings=scripts/test-timings.json`, which puts
+every test file in exactly one shard and balances them by the recorded per-file times; shard 1 also runs the docs check, typecheck, role check, bundle freshness and
+package contents, so each of those runs once per gate, and the others install and test. Each shard runs under the same 1500 s backstop as Linux inside a 25-minute job
+limit, and its last line is `check: OK (shard i/n)`. The required check `check (macos-latest)` is an aggregator job that passes only when every shard passed (or an
+identical-tree full proof was reused), so branch protection and the reuse proof read the same names as before. `AHUB_CHECK_SHARD` is the full suite only: it cannot be
+combined with `--changed`. A shard execs the system git once before its tests (`AHUB_CHECK_WARM_GIT`, default `/usr/bin/git`; a failure of it is ignored), because the first execs of `/usr/bin/git` on a fresh hosted macOS runner outlast the 1000 ms some tests give it. `scripts/test-timings.json` is advice for balance, never a list of tests: a file missing from it still runs (Bun gives it the median time).
+Regenerate it from a green macOS leg when the shards drift apart: `gh api --allow-escape-sequences repos/<owner>/<repo>/actions/jobs/<macOS shard job id>/logs`
+for each shard, or from one unsharded leg's log, then `bun scripts/make-test-timings.ts <log>`.
 The `closing-refs` workflow fails a PR whose title, body or commit messages would make
 GitHub close an issue the text only mentions (`Refs #N`, a negated or qualified keyword);
 an issue linked only in the sidebar passes (#760).

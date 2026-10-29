@@ -9,6 +9,19 @@ changed=0
 changed_base=""
 if [ "${1:-}" = "--changed" ]; then changed=1; changed_base=${2:-}; fi
 
+# #548: `AHUB_CHECK_SHARD=i/n` runs one slice of the full suite, balanced by the recorded per-file times in scripts/test-timings.json (bun test --shard --timings:
+# every file runs in exactly one shard). Shard 1 also runs the steps that must happen once per gate (docs, typecheck, roles, bundle, package); the others only install and test.
+# CI runs the macOS leg as shards; without the variable this is the whole gate, as before. It is the full suite's slice, never a changed-file selection.
+shard="${AHUB_CHECK_SHARD:-}"
+if [ -n "$shard" ]; then
+  case "$shard" in
+    [1-9]/[1-9]|[1-9]/[1-9][0-9]|[1-9][0-9]/[1-9][0-9]) ;;
+    *) echo "check: AHUB_CHECK_SHARD must be i/n, such as 2/4 (got '$shard')" >&2; exit 2 ;;
+  esac
+  if [ "${shard%%/*}" -lt 1 ] || [ "${shard%%/*}" -gt "${shard##*/}" ]; then echo "check: AHUB_CHECK_SHARD $shard: i must be between 1 and n" >&2; exit 2; fi
+  if [ "$changed" -eq 1 ]; then echo "check: AHUB_CHECK_SHARD and --changed cannot be combined" >&2; exit 2; fi
+fi
+
 # One heavy job per repo (#398): every worktree shares the git common dir, so a second gate waits here instead of
 # depending on a chat message being read in time. AHUB_CHECK_LOCK_WAIT_S bounds the wait (0 fails at once).
 # ponytail: liveness is `kill -0`, so a reused pid keeps a crashed holder's slot until its directory is removed by
@@ -32,12 +45,14 @@ if common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); 
   trap release_heavy EXIT
 fi
 
-node scripts/check-docs.mjs
+if [ -z "$shard" ] || [ "${shard%%/*}" = "1" ]; then node scripts/check-docs.mjs; fi
 bun install --frozen-lockfile >/dev/null
-bun x tsc --noEmit
-bun scripts/check-roles.ts
-bun scripts/build.mjs --check
-node scripts/check-package.mjs # includes the standalone pet host, JXA and HTML assets
+if [ -z "$shard" ] || [ "${shard%%/*}" = "1" ]; then
+  bun x tsc --noEmit
+  bun scripts/check-roles.ts
+  bun scripts/build.mjs --check
+  node scripts/check-package.mjs # includes the standalone pet host, JXA and HTML assets
+fi
 
 test_args=()
 if [ "$changed" -eq 1 ]; then
@@ -49,6 +64,20 @@ if [ "$changed" -eq 1 ]; then
     echo "check: --changed runs ${#test_args[@]} test files" >&2
   fi
 fi
+
+if [ -n "$shard" ]; then
+  test_args=("--shard=$shard" "--timings=scripts/test-timings.json")
+  echo "check: shard $shard of the full suite (scripts/test-timings.json)" >&2
+  # #548: a shard starts the suite cold. Several tests run the system git (PATH=/usr/bin:/bin) with a 1000 ms timeout; on a fresh hosted macOS runner the first execs of /usr/bin/git
+  # (the Xcode shim, then the real binary) take over a second, and each is killed at the timeout before it can finish, so the first tests that use it fail (hosted shards 3 and 4 of PR #954:
+  # 8 tests, all at the 1000 ms timeout, where the same tests take about 140 ms in an unsharded leg that has run git earlier). One unbounded exec warms it. Failure to warm is not a failure.
+  # ponytail: the warm-up covers git only; the upgrade path is raising the 1000 ms test timeouts if another cold executable shows up.
+  warm_git=${AHUB_CHECK_WARM_GIT:-/usr/bin/git}
+  if [ -x "$warm_git" ]; then "$warm_git" --version >/dev/null 2>&1 || true; fi
+fi
+# The shard is this script's own business and is already in $shard and test_args: the test runner and everything it spawns must not inherit it. A test that runs a scratch check.sh
+# (test/check-lock.test.ts copies process.env) would otherwise skip the shard-1-only steps it expects, and fail in any shard but 1 (a rebalance of the timings would turn the macOS gate red).
+unset AHUB_CHECK_SHARD
 
 tests=0
 # #610: the temp root is the OS per-user temp dir, never an inherited TMPDIR that may sit inside an agent's home.
@@ -134,4 +163,5 @@ if [ "$tests" -ne 0 ] || [ "$leaks" -ne 0 ]; then
   exit "$tests"
 fi
 preserve_tmp=0
-if [ "$changed" -eq 1 ] && [ ${#test_args[@]} -gt 0 ]; then echo "check: OK (changed)"; else echo "check: OK"; fi
+if [ -n "$shard" ]; then echo "check: OK (shard $shard)"
+elif [ "$changed" -eq 1 ] && [ ${#test_args[@]} -gt 0 ]; then echo "check: OK (changed)"; else echo "check: OK"; fi

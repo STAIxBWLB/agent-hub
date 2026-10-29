@@ -91,6 +91,43 @@ test("API admission distinguishes launched gate jobs from serialized pending con
   }
 });
 
+// #548: the macOS leg is shards named `check (macos-latest) shard i/N` under an aggregator named `check (macos-latest)` that waits for them. In the window where Linux and the seeded
+// shards are done and only macOS shards still run, no required-name job is in progress: the shard names must count as gate jobs, or the run reads as scope unknown and every same-tree
+// rerun is refused (unknown is fail-closed).
+test("API admission treats running macOS shards as a launched full gate, in every mid-run window (#548)", async () => {
+  const fn = (gates as Record<string, unknown>).readFullGateAdmission as Function;
+  const done = (name: string) => ({ name, status: "completed", conclusion: "success" });
+  const windows: Record<string, { name: string; status: string; conclusion: string | null }[]> = {
+    "ubuntu and seeded done, macOS shards running": [done("decision"), done("check (ubuntu-latest)"), ...[1, 2, 3, 4].map(i => done(`seeded-shard (${i})`)), done("seeded guards"),
+      ...[1, 2, 3, 4].map(i => ({ name: `check (macos-latest) shard ${i}/4`, status: "in_progress", conclusion: null })), { name: "check (macos-latest)", status: "queued", conclusion: null }],
+    "everything done but one macOS shard still running": [done("decision"), done("check (ubuntu-latest)"), ...[1, 2, 3, 4].map(i => done(`seeded-shard (${i})`)), done("seeded guards"),
+      ...[1, 2, 3].map(i => done(`check (macos-latest) shard ${i}/4`)), { name: "check (macos-latest) shard 4/4", status: "in_progress", conclusion: null }, { name: "check (macos-latest)", status: "queued", conclusion: null }],
+    "only queued macOS shards after the decision": [done("decision"), done("check (ubuntu-latest)"), ...[1, 2, 3, 4].map(i => ({ name: `check (macos-latest) shard ${i}/4`, status: "queued", conclusion: null }))],
+    "a wider shard count is still a gate job": [done("decision"), done("check (ubuntu-latest)"), { name: "check (macos-latest) shard 11/12", status: "in_progress", conclusion: null }],
+  };
+  for (const [window, jobs] of Object.entries(windows)) for (const tree of ["expected", "different"]) {
+    const api = async (path: string) => {
+      if (path.startsWith("actions/workflows/")) {
+        const visible = path.includes("status=in_progress");
+        return { total_count: visible ? 1 : 0, workflow_runs: visible ? [{ id: 1, head_sha: "one", event: "pull_request", status: "in_progress" }] : [] };
+      }
+      if (path.startsWith("git/")) return { tree: { sha: tree } };
+      return { total_count: jobs.length, jobs };
+    };
+    // the same tree is a duplicate of a launched full gate; another tree is not our business and may run. Never "unknown".
+    expect(await fn(api, "expected", { currentRunId: 99 }), `${window} (${tree} tree)`).toMatchObject({ kind: tree === "expected" ? "duplicate" : "run" });
+  }
+  // a name that only looks like a shard is not a gate job: with nothing else launched it admits nothing yet, as before
+  for (const name of ["check (macos-latest) shard x/4", "check (macos-latest) shard 1/4 extra", "prefix check (macos-latest) shard 1/4", "check (ubuntu-latest) shard 1/4", "check (macos-latest) shard 0/4", "check (macos-latest) shard 1/", "check (macos-latest) shard 123/4"]) {
+    const lookalike = async (path: string) => {
+      if (path.startsWith("actions/workflows/")) return { total_count: path.includes("status=in_progress") ? 1 : 0, workflow_runs: path.includes("status=in_progress") ? [{ id: 1, head_sha: "one", event: "pull_request", status: "in_progress" }] : [] };
+      if (path.startsWith("git/")) return { tree: { sha: "expected" } };
+      return { total_count: 2, jobs: [done("decision"), { name, status: "in_progress", conclusion: null }] };
+    };
+    expect(await fn(lookalike, "expected", { currentRunId: 99 }), name).toMatchObject({ kind: "unknown" });
+  }
+});
+
 test("API admission reuses full success without querying running work and refuses truncated active coverage", async () => {
   const fn = (gates as Record<string, unknown>).readFullGateAdmission as Function;
   const api = async (path: string) => {
