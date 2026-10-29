@@ -211,9 +211,9 @@ test("every inbox form stays person-only including metadata lists and live-test 
   expect(cliCommandLabel("room", ["inbox", "show", "--json"])).toBe("room inbox list");
   expect(cliCommandLabel("room", ["inbox", "show", id])).toBe("room inbox show");
   const childEnv = { ...process.env, HOME: root, CLAUDE_CONFIG_DIR: join(root, "claude"), CODEX_HOME: join(root, "codex"), AGENTHUB_HOME: join(root, "home") };
-  for (const key of ["AGENTHUB_PEER_ID", "AGENTHUB_ROLE", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_LIVE_TEST"]) delete (childEnv as Record<string,string|undefined>)[key];
+  for (const key of ["AGENTHUB_PEER_ID", "AGENTHUB_ROLE", "AGENTHUB_PROJECT_DIR", "AGENTHUB_STATE_DIR", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID", "AGENTHUB_DELIVERY_ONLY", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_LIVE_TEST"]) delete (childEnv as Record<string,string|undefined>)[key];
   for (const delegated of [false, true]) {
-    const child = Bun.spawn([process.execPath, CLI, "room", "inbox", ...(delegated ? ["--live-test"] : [])], { cwd: root, env: { ...childEnv, ...(delegated ? {} : { AGENTHUB_PEER_ID: "codex" }) }, stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn([process.execPath, CLI, ...(delegated ? ["--live-test"] : []), "room", "inbox"], { cwd: root, env: { ...childEnv, ...(delegated ? {} : { AGENTHUB_PEER_ID: "codex" }) }, stdout: "pipe", stderr: "pipe" });
     const output = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect(output[2]).not.toBe(0);
     expect(String(output[0]) + String(output[1])).toMatch(/person|console|live-test/);

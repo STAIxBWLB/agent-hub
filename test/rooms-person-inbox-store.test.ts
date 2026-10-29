@@ -149,8 +149,8 @@ test("post-admission expiry purges locally, retains an ids-only stub and never c
   expect(f.guest.readPersonInbox(result.id!, () => true)?.body).toBeUndefined();
   const raw = dbOf(f.guest).query<{ reason: string; state: string }, [string]>("SELECT state,reason FROM applications WHERE primary_digest=?").get(item.digest);
   expect(raw).toEqual({ state: "completed", reason: "inbox_admitted" });
-  // Receipt retention may expire independently; it never changes to failed_safe or signs a fresh outcome.
-  expect(f.guest.applicationReceipt("work", item.digest)).toBeUndefined(); expect(receipt).toMatchObject({ outcome: "completed", reason: "inbox_admitted" });
+  // The retained expiry stub keeps its original admission proof, never a replacement outcome.
+  expect(f.guest.applicationReceipt("work", item.digest)).toEqual(receipt); expect(receipt).toMatchObject({ outcome: "completed", reason: "inbox_admitted" });
   f.advance(ROOM_PERSON_INBOX_LIMITS.ttlMs); f.guest.expirePersonInbox(); expect(f.guest.listPersonInbox()).toEqual([]);
 });
 
@@ -238,4 +238,31 @@ test("an idle person expiry tick changes neither rows nor the durable clock", as
   f.advance(1); f.guest.expirePersonInbox();
   expect(db.query<{ value: string }, []>("SELECT value FROM meta WHERE key='clock'").get()!.value).toBe(before);
   expect(db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n).toBe(writes);
+});
+
+
+for (const disposition of ["done", "expired"] as const) test(`a ${disposition} person stub retains its own horizon and admission proof past the original application TTL`, async () => {
+  const f = await pair(), original = await incoming(f), result = f.guest.admitPersonInbox("work", original.digest);
+  const receipt = f.guest.applicationReceipt("work", original.digest), day = 24 * 60 * 60 * 1000;
+  if (disposition === "done") { f.advance(29 * day); f.guest.disposePersonInbox(result.id!, "done", () => true); f.advance(day + 1); }
+  else { f.advance(30 * day); f.guest.expirePersonInbox(); f.advance(1); }
+  // A different message invokes ordinary application expiration, not cap eviction.
+  const native = await incoming(f, chat("unrelated native admission", { to: "codex" }));
+  expect(f.guest.claimApplication("work", native.digest)).toBe(true); f.guest.finishApplication("work", native.digest, "completed", "admitted");
+  expect(f.guest.readPersonInbox(result.id!, () => true)).toMatchObject({ state: disposition });
+  expect(f.guest.readPersonInbox(result.id!, () => true)?.body).toBeUndefined();
+  expect(f.guest.applicationReceipt("work", original.digest)).toEqual(receipt);
+  // Simulate only the existing bounded NULL-crypto-inbox prune: retained aliases
+  // must independently prove the exact old ciphertext without advancing a floor.
+  dbOf(f.guest).query("DELETE FROM inbox WHERE digest=? AND plaintext IS NULL").run(original.digest);
+  expect((await openFrame({ wire: original.wire, identity: f.guest.identity, current: f.guest.get("work")!.current, replay: f.guest.replay })).status).toBe("duplicate");
+  const alias = await incoming(f, original.envelope);
+  expect(f.guest.admitPersonInbox("work", alias.digest)).toEqual({ state: "duplicate", reason: "inbox_admitted", id: result.id });
+  expect(f.guest.applicationReceipt("work", alias.digest)).toMatchObject({ frame: alias.digest, outcome: "completed", reason: "inbox_admitted" });
+  expect(f.guest.listPersonInbox("work")).toHaveLength(1);
+  const directory = directories.get(f.guest)!; f.guest.close(); const restored = await open(f.clock, directory);
+  expect(restored.readPersonInbox(result.id!, () => true)?.state).toBe(disposition);
+  expect(restored.applicationReceipt("work", original.digest)).toEqual(receipt);
+  f.advance(30 * day); restored.expirePersonInbox();
+  expect(restored.listPersonInbox("work")).toEqual([]);
 });

@@ -679,7 +679,7 @@ export class RoomStore {
       if (known) return { status: known.digest === input.frameDigest ? "duplicate" : "conflict" };
       // An application alias was committed only after crypto replay accepted these exact bytes.
       // Keep its duplicate proof after bounded inbox pruning, without advancing the sender floor.
-      const alias = this.db.query("SELECT 1 FROM application_frames f JOIN applications a ON a.room=f.room AND a.sender=f.sender AND a.application=f.application WHERE f.room=? AND f.sender=? AND f.digest=? AND (a.state NOT IN ('completed','failed_safe','disposed') OR a.settled_at>?)")
+      const alias = this.db.query("SELECT 1 FROM application_frames f JOIN applications a ON a.room=f.room AND a.sender=f.sender AND a.application=f.application WHERE f.room=? AND f.sender=? AND f.digest=? AND (a.state NOT IN ('completed','failed_safe','disposed') OR a.settled_at>? OR EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=a.room AND p.sender=a.sender AND p.application=a.application))")
         .get(input.room, input.sender, input.frameDigest, now - ROOM_APPLICATION_RETENTION.settledMs);
       if (alias) return { status: "duplicate" };
       const floor = this.db.query<{ seq: string; digest: string }, [string, string]>("SELECT seq,digest FROM floors WHERE room=? AND sender=?").get(input.room, input.sender);
@@ -868,6 +868,9 @@ export class RoomStore {
   private applicationFor(room: string, digestValue: string): ApplicationRow | undefined {
     return this.db.query<ApplicationRow, [string, string]>("SELECT a.* FROM applications a JOIN application_frames f ON f.room=a.room AND f.sender=a.sender AND f.application=a.application WHERE f.room=? AND f.digest=?").get(room, digestValue) ?? undefined;
   }
+  private personIdentityRetained(row: Pick<ApplicationRow, "room" | "sender" | "application">): boolean {
+    return !!this.db.query("SELECT 1 FROM person_inbox WHERE room=? AND sender=? AND application=?").get(row.room, row.sender, row.application);
+  }
   private deleteSettledApplication(row: ApplicationRow): void {
     if (this.db.query("SELECT 1 FROM person_inbox WHERE room=? AND sender=? AND application=? AND state='unread'").get(row.room, row.sender, row.application)) return;
     this.db.query("DELETE FROM person_inbox WHERE room=? AND sender=? AND application=?").run(row.room, row.sender, row.application);
@@ -878,7 +881,9 @@ export class RoomStore {
   }
   private applicationCapacity(room: string, now: number, freshIdentity: boolean, retained?: Pick<ApplicationRow, "sender" | "application">): void {
     this.prunePersonInbox(now);
-    const expired = this.db.query<ApplicationRow, [string, number, string, string]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND settled_at<=? AND NOT (sender=? AND application=?) AND NOT EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application AND p.state='unread')").all(room, now - ROOM_APPLICATION_RETENTION.settledMs, retained?.sender ?? "", retained?.application ?? "");
+    // Person stubs have their own disposition/expiry horizon. Only the cap walk
+    // below may evict a settled stub early; unread identities are never candidates.
+    const expired = this.db.query<ApplicationRow, [string, number, string, string]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND settled_at<=? AND NOT (sender=? AND application=?) AND NOT EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application)").all(room, now - ROOM_APPLICATION_RETENTION.settledMs, retained?.sender ?? "", retained?.application ?? "");
     for (const row of expired) this.deleteSettledApplication(row);
     for (;;) {
       const identities = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM applications WHERE room=?").get(room)?.n ?? 0;
@@ -907,7 +912,7 @@ export class RoomStore {
       let saved = this.db.query<ApplicationRow, [string, string, string]>("SELECT * FROM applications WHERE room=? AND sender=? AND application=?").get(...key);
       if (saved && saved.settled_at !== null && saved.settled_at <= now - ROOM_APPLICATION_RETENTION.settledMs && isSettledApplication(saved.state)) {
         this.prunePersonInbox(now);
-        if (!this.db.query("SELECT 1 FROM person_inbox WHERE room=? AND sender=? AND application=? AND state='unread'").get(saved.room, saved.sender, saved.application)) { this.deleteSettledApplication(saved); saved = null; }
+        if (!this.db.query("SELECT 1 FROM person_inbox WHERE room=? AND sender=? AND application=?").get(saved.room, saved.sender, saved.application)) { this.deleteSettledApplication(saved); saved = null; }
       }
       if (saved && (saved.content_hash !== contentHash || saved.peer !== chat.to)) fail("invalid");
       const alias = this.applicationFor(state.current.room, digestValue);
@@ -1069,7 +1074,7 @@ export class RoomStore {
   }
   applicationReceipt(name: string, digestValue: string): RoomMessage | undefined {
     const state = this.applicationRoom(name), row = this.applicationFor(state.current.room, digestValue);
-    if (!row || !isTerminal(row.state) || !validOutcome(row.state, row.reason, row.peer) || row.settled_at === null || row.settled_at <= this.now() - ROOM_APPLICATION_RETENTION.settledMs) return undefined;
+    if (!row || !isTerminal(row.state) || !validOutcome(row.state, row.reason, row.peer) || row.settled_at === null || row.settled_at <= this.now() - ROOM_APPLICATION_RETENTION.settledMs && !this.personIdentityRetained(row)) return undefined;
     return { v: 1, type: "receipt", frame: digestValue, application: row.application, peer: row.peer, outcome: row.state as "completed" | "failed_safe", reason: row.reason! };
   }
   pendingApplications(name: string): { digest: string }[] {
@@ -1092,7 +1097,7 @@ export class RoomStore {
     const state = this.get(name); if (!state) return undefined;
     if (!validDigest(digestValue)) fail("invalid");
     const row = this.applicationFor(state.current.room, digestValue);
-    if (!row || isSettledApplication(row.state) && row.settled_at! <= this.now() - ROOM_APPLICATION_RETENTION.settledMs) return undefined;
+    if (!row || isSettledApplication(row.state) && row.settled_at! <= this.now() - ROOM_APPLICATION_RETENTION.settledMs && !this.personIdentityRetained(row)) return undefined;
     return incomingMetadata(row, digestValue);
   }
   /** A person disposes uncertainty locally; accept is not Bus admission or signed remote completion. */
@@ -1128,7 +1133,7 @@ export class RoomStore {
   applicationTraceHop(trace: string): number | undefined {
     if (!validUuid(trace)) fail("invalid");
     const now = this.now();
-    const row = this.db.query<{ hop: number | null }, [string, number]>("SELECT MAX(hop) AS hop FROM applications WHERE trace=? AND (state NOT IN ('completed','failed_safe','disposed') OR settled_at>?)").get(trace, now - ROOM_APPLICATION_RETENTION.settledMs);
+    const row = this.db.query<{ hop: number | null }, [string, number]>("SELECT MAX(hop) AS hop FROM applications WHERE trace=? AND (state NOT IN ('completed','failed_safe','disposed') OR settled_at>? OR EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application))").get(trace, now - ROOM_APPLICATION_RETENTION.settledMs);
     if (row?.hop === null || row === null) return undefined;
     if (!Number.isSafeInteger(row.hop) || row.hop! < 0 || row.hop! > MAX_HOP) fail("corrupt");
     return row.hop!;
