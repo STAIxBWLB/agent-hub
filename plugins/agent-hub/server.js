@@ -5996,7 +5996,7 @@ function matchesPolicy(cwd, path, paths, includeParents = false) {
     return true;
   }
 }
-var within = (path, root) => path === root || path.startsWith(root.endsWith(sep2) ? root : root + sep2), beneath = (path, root) => within(path.toLowerCase(), root.toLowerCase()) || within(foldSegment(path), foldSegment(root)), lowerBeneath = (path, root) => within(path.toLowerCase(), root.toLowerCase());
+var insideRoot = (rel) => rel !== ".." && !rel.startsWith(`..${sep2}`) && !isAbsolute5(rel), within = (path, root) => path === root || path.startsWith(root.endsWith(sep2) ? root : root + sep2), beneath = (path, root) => within(path.toLowerCase(), root.toLowerCase()) || within(foldSegment(path), foldSegment(root)), lowerBeneath = (path, root) => within(path.toLowerCase(), root.toLowerCase());
 var init_path_policy = __esm(() => {
   init_project();
   init_permission_mode();
@@ -6665,10 +6665,10 @@ function guardPath(ctx, path, mode) {
   const rel = relative4(root, real);
   if (rel.startsWith("..") || resolve10(root, rel) !== real)
     throw new Error(`${path} is outside the project directory`);
-  const typed = relative4(root, abs);
-  if (isDenied(rel, ctx.deny) || isDenied(typed, ctx.deny))
+  const typed = relative4(root, abs), inside = insideRoot(typed);
+  if (isDenied(rel, ctx.deny) || inside && isDenied(typed, ctx.deny))
     throw new Error(`${path} is on the secrets denylist`);
-  if (mode === "write" && (isHubWritePath(rel) || isHubWritePath(typed)))
+  if (mode === "write" && (isHubWritePath(rel) || inside && isHubWritePath(typed)))
     throw new Error(`${path} is not writable by the local worker`);
   if (mode === "write" && ctx.readOnly?.length && (lstatSync10(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
     throw new Error("hardlinked write target cannot be verified with data.readonly");
