@@ -40,7 +40,8 @@ test("#964 malformed identities and potentially truncated inventories are unknow
 
 async function cli(input: string) {
   const proc = Bun.spawn([process.execPath, SCRIPT], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  proc.stdin.end(input);
+  proc.stdin.write(input);
+  proc.stdin.end();
   const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   return { code, stdout, stderr };
 }
