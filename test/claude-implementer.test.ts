@@ -7,6 +7,7 @@ import { Bus } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
+import { createClaudeFailureTrace, type ClaudeFailureTrace } from "../src/hub/claude-failure-stage.ts";
 import { stopOwnedProcess } from "../src/hub/child-process.ts";
 import { completeJsonLines } from "./fakes/jsonl.ts";
 import type { DeliveryReceipt } from "../src/hub/peers.ts";
@@ -70,6 +71,108 @@ test("result usage is emitted once; an error result fails the delivery", async (
   }
 });
 
+test("failed native output consumes the saved sealed launch trace after revoking tools and renders a fixed public reason", async () => {
+  let peer!: ClaudeImplementerPeer, launchId = "", frozen = false, sealHadAuthority = false, takeAfterRevocation = false, takes = 0, seenVersion: string | undefined;
+  const logs: string[] = [], instanceId = crypto.randomUUID();
+  const r = rig("error", {
+    failureTrace: (launch, nativeVersion) => {
+      launchId = launch.launchId; frozen = Object.isFrozen(launch);
+      seenVersion = nativeVersion;
+      const trace = createClaudeFailureTrace({ instanceId, ...(nativeVersion ? { nativeVersion } : {}), current: () => peer.ownedTools(launch.launchId) !== undefined });
+      trace.permissionObserved("a1b2c3d4"); trace.record("wrapper_refused", "a1b2c3d4");
+      return {
+        permissionObserved: trace.permissionObserved.bind(trace), record: trace.record.bind(trace),
+        seal: () => { sealHadAuthority = peer.ownedTools(launch.launchId) !== undefined; trace.seal(); },
+        take: () => { takes++; takeAfterRevocation = peer.ownedTools(launch.launchId) === undefined; return trace.take(); },
+        discard: trace.discard.bind(trace),
+      };
+    },
+    failurePrivate: task => { expect(task).toBe(17); expect(peer.ownedTools(launchId)).toBeUndefined(); return false; },
+    failureLog: message => logs.push(message),
+  });
+  peer = r.peer; await peer.start(); await peer.deliver([message(17)], "trace"); await until(() => peer.state === "idle");
+  expect(frozen).toBe(true); expect(sealHadAuthority).toBe(true); expect(takeAfterRevocation).toBe(true); expect(takes).toBe(1); expect(seenVersion).toBeUndefined();
+  const reason = `Claude implementer turn failed (stage=wrapper_refused; request=a1b2c3d4; instance=${instanceId})`;
+  expect(r.receipts.at(-1)).toMatchObject({ state: "needs_review", reason });
+  expect(logs).toEqual([reason]);
+});
+
+test("PII is checked at final render and turns failure evidence into the constant stub", async () => {
+  let peer!: ClaudeImplementerPeer, privateNow = false, trace: ClaudeFailureTrace | undefined;
+  const logs: string[] = [];
+  const r = rig("error", {
+    failureTrace: launch => {
+      trace = createClaudeFailureTrace({ current: () => peer.ownedTools(launch.launchId) !== undefined });
+      trace.permissionObserved("a1b2c3d4"); trace.record("manual_queue_expired", "a1b2c3d4"); return trace;
+    },
+    onUsage: () => { privateNow = true; },
+    failurePrivate: () => privateNow,
+    failureLog: message => logs.push(message),
+  });
+  peer = r.peer; await peer.start(); await peer.deliver([message(18)], "private-trace"); await until(() => peer.state === "idle");
+  expect(trace).toBeDefined(); expect(r.receipts.at(-1)?.reason).toBe("Claude implementer turn failed (details withheld)");
+  expect(logs).toEqual(["Claude implementer turn failed (details withheld)"]);
+});
+
+test("observer failures cannot change a failed-turn settlement and absent trace keeps the generic fixed reason", async () => {
+  const absent = rig("error"); await absent.peer.start(); await absent.peer.deliver([message(19)], "no-trace"); await until(() => absent.peer.state === "idle");
+  expect(absent.receipts.at(-1)).toMatchObject({ state: "needs_review", reason: "Claude implementer turn failed" });
+
+  let peer!: ClaudeImplementerPeer;
+  const observed = rig("error", {
+    failureTrace: () => ({ permissionObserved() { throw new Error("observer text"); }, record() { throw new Error("observer text"); }, seal() { throw new Error("observer text"); }, take() { throw new Error("observer text"); }, discard() { throw new Error("observer text"); } }),
+    failurePrivate: () => { throw new Error("privacy observer text"); },
+    failureLog: () => { throw new Error("log observer text"); },
+  });
+  peer = observed.peer; await peer.start(); await peer.deliver([message(20)], "observer-errors"); await until(() => peer.state === "idle");
+  expect(observed.receipts.at(-1)).toMatchObject({ state: "needs_review", reason: "Claude implementer turn failed" });
+
+  let privatePeer!: ClaudeImplementerPeer;
+  const privacyObserver = rig("error", {
+    failureTrace: launch => {
+      const trace = createClaudeFailureTrace({ current: () => privatePeer.ownedTools(launch.launchId) !== undefined });
+      trace.permissionObserved("aabbccdd"); trace.record("invalid_permission_request", "aabbccdd"); return trace;
+    },
+    failurePrivate: () => { throw new Error("privacy observer text"); },
+    failureLog: () => { throw new Error("log observer text"); },
+  });
+  privatePeer = privacyObserver.peer; await privatePeer.start(); await privatePeer.deliver([message(21)], "private-observers"); await until(() => privatePeer.state === "idle");
+  expect(privacyObserver.receipts.at(-1)).toMatchObject({ state: "needs_review", reason: "Claude implementer turn failed (details withheld)" });
+});
+
+test("success discards its trace; a later task group gets only its own evidence", async () => {
+  let peer!: ClaudeImplementerPeer, r!: ReturnType<typeof rig>;
+  const traces: ClaudeFailureTrace[] = [], tasks: number[] = [];
+  r = rig("success", {
+    failureTrace: launch => {
+      tasks.push(launch.task ?? 0);
+      const trace = createClaudeFailureTrace({ current: () => peer.ownedTools(launch.launchId) !== undefined });
+      if (launch.task === 73) { trace.permissionObserved("11223344"); trace.record("manual_queue_expired", "11223344"); }
+      traces.push(trace); return trace;
+    },
+    onUsage: (_usage, task) => { if (task === 72) r.command[3] = "error"; },
+    failurePrivate: () => false,
+  });
+  peer = r.peer; await peer.start(); await peer.deliver([message(72), message(73)], "two-groups"); await until(() => peer.state === "idle");
+  expect(tasks).toEqual([72, 73]); expect(traces).toHaveLength(2);
+  expect(traces[0]!.record("wrapper_refused")).toBe(false);
+  expect(r.receipts.at(-1)).toMatchObject({ state: "needs_review", reason: "Claude implementer turn failed (stage=manual_queue_expired; request=11223344)" });
+});
+
+test("cancel discards an open failure trace and retains the existing stop outcome", async () => {
+  let peer!: ClaudeImplementerPeer, trace: ClaudeFailureTrace | undefined;
+  const r = rig("hang", {
+    failureTrace: launch => {
+      trace = createClaudeFailureTrace({ current: () => peer.ownedTools(launch.launchId) !== undefined });
+      trace.permissionObserved("11223344"); return trace;
+    },
+  });
+  peer = r.peer; await peer.start(); await peer.deliver([message(74)], "cancel-trace"); await until(() => r.calls().length === 1);
+  await peer.stop();
+  expect(trace).toBeDefined(); expect(trace!.record("wrapper_refused", "11223344")).toBe(false);
+  expect(r.receipts.at(-1)).toMatchObject({ state: "needs_review", reason: "Claude implementer stopped before settlement" });
+});
+
 test("a spawn error without a PID is failed_safe and idle, with no stale authority", async () => {
   const r = rig("success", { command: ["/does-not-exist/claude"] }); await r.peer.start();
   await r.peer.deliver([message(1)], "absent"); await until(() => r.receipts.at(-1)?.state === "failed_safe");
@@ -102,11 +205,19 @@ test("watchdog ends the turn with cleanup, keeps the task session and returns id
 });
 
 test("cleanup failure retains busy handle and refuses restart until a verified retry succeeds", async () => {
-  let first = true;
-  const r = rig("success", { stopChild: async child => { if (first) { first = false; throw new Error("fixture cleanup incomplete"); } await stopOwnedProcess(child, { group: true }); } });
-  await r.peer.start(); await r.peer.deliver([message(1)], "cleanup"); await until(() => r.receipts.at(-1)?.state === "needs_review");
-  expect(r.peer.state).toBe("busy"); expect(r.peer.sessionGeneration).toBeUndefined(); await expect(r.peer.start()).rejects.toThrow("cleanup");
-  await r.peer.stop(); expect(r.peer.state).toBe("offline");
+  for (const privateTurn of [false, true]) {
+    let first = true, peer!: ClaudeImplementerPeer;
+    const r = rig("success", {
+      stopChild: async child => { if (first) { first = false; throw new Error("fixture cleanup incomplete"); } await stopOwnedProcess(child, { group: true }); },
+      failureTrace: launch => createClaudeFailureTrace({ current: () => peer.ownedTools(launch.launchId) !== undefined }), failurePrivate: () => privateTurn,
+    });
+    peer = r.peer;
+    await r.peer.start(); await r.peer.deliver([message(1)], "cleanup"); await until(() => r.receipts.at(-1)?.state === "needs_review");
+    expect(r.peer.state).toBe("busy"); expect(r.peer.sessionGeneration).toBeUndefined();
+    expect(r.receipts.at(-1)?.reason).toBe(privateTurn ? "Claude implementer cleanup incomplete; details withheld" : "Claude implementer cleanup incomplete; Claude implementer turn failed (stage=pre_permission)");
+    await expect(r.peer.start()).rejects.toThrow("cleanup");
+    await r.peer.stop(); expect(r.peer.state).toBe("offline");
+  }
 });
 
 test("host permission mode supports ask variants and refuses never-ask", async () => {
@@ -139,7 +250,8 @@ test("admission changed before spawn never receives framed prompt or child autho
 
 
 test("production proof pins the actual turn executable when an earlier PATH entry appears", async () => {
-  const r = rig("success", { command: ["claude"], prove: undefined }), oldPath = process.env.PATH, oldHome = process.env.HOME, oldConfig = process.env.CLAUDE_CONFIG_DIR;
+  const versions: (string | undefined)[] = [];
+  const r = rig("success", { command: ["claude"], prove: undefined, failureTrace: (_launch, version) => { versions.push(version); return createClaudeFailureTrace({ current: () => true }); } }), oldPath = process.env.PATH, oldHome = process.env.HOME, oldConfig = process.env.CLAUDE_CONFIG_DIR;
   const authKey = (key: string) => /^(ANTHROPIC_|CLAUDE_CODE_|AWS_|GOOGLE_|GCLOUD_|AZURE_|CLOUDSDK_)/.test(key);
   const auth = new Map(Object.keys(process.env).filter(authKey).map(key => [key, process.env[key]] as const));
   for (const key of auth.keys()) delete process.env[key];
@@ -157,6 +269,7 @@ test("production proof pins the actual turn executable when an earlier PATH entr
     await r.peer.deliver([message(41)], "pinned-binary"); await until(() => r.peer.state === "idle");
     expect(existsSync(marker)).toBe(true);
     expect(readFileSync(marker, "utf8")).toBe("verified");
+    expect(versions).toEqual(["2.1.309"]);
     expect(r.receipts.at(-1)?.state).toBe("completed");
   } finally { await r.peer.stop(); if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome; if (oldConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = oldConfig; for (const [key, value] of auth) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
 });

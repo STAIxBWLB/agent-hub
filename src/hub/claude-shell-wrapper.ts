@@ -16,6 +16,8 @@ export interface ShellGrant {
   peer: string; task: number; generation: string; root: string; branch: string;
   executable: string; argv: readonly string[]; env: Readonly<Record<string, string>>;
   signal: AbortSignal; timeoutMs: number; current(): boolean; activity?: () => void;
+  /** Host-only observation of a matched redemption refusal; it proves no execution outcome. */
+  onRefused?: () => void;
   sandbox?: { profile: string; readOnlyData: boolean };
 }
 type Stamp = { path: string; identity: string };
@@ -83,7 +85,8 @@ function snapshot(source: ShellGrant): Readonly<ShellGrant> | undefined {
       || !Array.isArray(source.argv) || source.argv.length > 256 || source.argv.some(a => typeof a !== "string" || a.includes("\0") || a.length > 64 * 1024)
       || !source.env || typeof source.env !== "object" || Array.isArray(source.env) || !(source.signal instanceof AbortSignal) || source.signal.aborted
       || !Number.isSafeInteger(source.timeoutMs) || source.timeoutMs < 1 || source.timeoutMs > WIRE.maximumMs || typeof source.current !== "function"
-      || source.activity !== undefined && typeof source.activity !== "function") return;
+      || source.activity !== undefined && typeof source.activity !== "function"
+      || source.onRefused !== undefined && typeof source.onRefused !== "function") return;
     if (source.sandbox !== undefined && (!source.sandbox || typeof source.sandbox !== "object" || Array.isArray(source.sandbox)
       || Object.keys(source.sandbox).sort().join(",") !== "profile,readOnlyData" || typeof source.sandbox.profile !== "string" || !source.sandbox.profile
       || source.sandbox.profile.includes("\0") || Buffer.byteLength(source.sandbox.profile) > 128 * 1024 || typeof source.sandbox.readOnlyData !== "boolean"
@@ -99,7 +102,7 @@ function unchanged(ticket: Ticket): boolean {
   const a = ticket.source, b = ticket.grant;
   try {
     return a.peer === b.peer && a.task === b.task && a.generation === b.generation && a.root === b.root && a.branch === b.branch
-      && a.executable === b.executable && a.signal === b.signal && a.timeoutMs === b.timeoutMs && a.current === b.current && a.activity === b.activity
+      && a.executable === b.executable && a.signal === b.signal && a.timeoutMs === b.timeoutMs && a.current === b.current && a.activity === b.activity && a.onRefused === b.onRefused
       && a.argv.length === b.argv.length && a.argv.every((v, i) => v === b.argv[i])
       && (a.sandbox === undefined ? b.sandbox === undefined : b.sandbox !== undefined && Object.keys(a.sandbox).sort().join(",") === "profile,readOnlyData"
         && a.sandbox.profile === b.sandbox.profile && a.sandbox.readOnlyData === b.sandbox.readOnlyData)
@@ -181,7 +184,10 @@ export class HostShellWrapper {
     } catch { return; }
   }
 
-  private refuse(response: ServerResponse): void {
+  private refuse(response: ServerResponse, ticket?: Ticket): void {
+    // Only the issued immutable callback may observe a matched ticket. It grants
+    // nothing and must not change refusal, cleanup or target-exit classification.
+    try { ticket?.grant.onRefused?.(); } catch { /* An observer is never authority. */ }
     if (response.destroyed || response.writableEnded) return;
     if (!response.headersSent) { response.statusCode = 403; response.setHeader("connection", "close"); response.end(`${WIRE.refusal}\n`); }
     else response.destroy();
@@ -204,7 +210,7 @@ export class HostShellWrapper {
     const ticket = this.tickets.get(body.ticket);
     if (!ticket) return this.refuse(response);
     this.forget(body.ticket, ticket); // Consume before schema, expiry, authority or metadata validation.
-    if (Object.keys(body).length !== 1 || ticket.expires <= Date.now()) return this.refuse(response);
+    if (Object.keys(body).length !== 1 || ticket.expires <= Date.now()) return this.refuse(response, ticket);
     const execution: Execution = { ticket, response, cancelled: false, failedCleanup: false, done: Promise.resolve(), cancel: async () => { execution.cancelled = true; await this.stop(execution); } };
     this.active.add(execution);
     execution.done = this.execute(execution);
@@ -307,7 +313,7 @@ export class HostShellWrapper {
     } catch {
       execution.cancelled = true;
       try { await this.stop(execution); } catch { execution.failedCleanup = true; }
-      this.refuse(response);
+      this.refuse(response, execution.proc === undefined ? ticket : undefined);
     } finally {
       clearTimeout(timer); clearInterval(heartbeat); grant.signal.removeEventListener("abort", abort); response.off("close", disconnected); response.off("error", abort);
       if (!execution.failedCleanup && temporary) { try { removeOwned(temporary); execution.temporary = undefined; } catch { execution.failedCleanup = true; } }
