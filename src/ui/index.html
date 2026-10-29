@@ -194,6 +194,8 @@ progress.critical::-moz-progress-bar{background:var(--red)}
 .peer-fold>summary{padding:var(--space-1) 0;color:var(--muted);font-weight:500;font-size:var(--text-xs)}
 .peer-more{padding:var(--space-1) 0 0 var(--space-3);border-left:2px solid var(--line)}
 .notice-warn{color:var(--amber)}
+#rooms-section[data-empty="true"]{display:none}
+.room-metadata{overflow-wrap:anywhere}
 /* Stream: aligned rows. The filter chips and Follow latest sit in the section head, outside the scrolling list, so they stay in view while it scrolls. */
 .stream{padding:0}
 .event{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--space-1);align-items:baseline}
@@ -454,6 +456,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <div class="stack">
 <section id="projects-panel" aria-labelledby="projects-title" data-view="agents" hidden><div class="section-head"><h2 id="projects-title">Projects</h2><span id="project-count" class="meta"></span></div><div id="projects"></div></section>
 <section id="schedules-section" aria-labelledby="schedules-title" data-view="agents" hidden><div class="section-head"><h2 id="schedules-title">Schedules</h2><span id="schedule-count" class="meta"></span></div><div id="schedules"></div></section>
+<section id="rooms-section" aria-labelledby="rooms-title" data-view="agents" data-empty="true" hidden><div class="section-head"><h2 id="rooms-title">Rooms</h2><span id="room-count" class="meta"></span></div><div id="rooms"></div></section>
 <section aria-labelledby="peers-title" data-view="agents" hidden><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><div id="peers"><div class="skeleton" aria-hidden="true"><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><p class="empty">Loading peers...</p></div></section>
 <section aria-labelledby="permissions-title" data-view="agents" hidden><div class="section-head"><h2 id="permissions-title">Pending approvals</h2><span id="permission-count" class="meta"></span></div><div id="permissions"></div></section>
 <section aria-labelledby="budget-title" data-view="agents" hidden><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div>
@@ -1523,6 +1526,46 @@ function renderSchedules(schedules) {
   }
   wrap.append(table); target.append(wrap);
 }
+function roomMetadataText(value, pattern, limit) {
+  if (typeof value !== 'string' || value.length > limit) return 'unknown';
+  const match = pattern.exec(value);
+  return match && match[0] === value ? value : 'unknown';
+}
+function roomMetadataCount(value) { return Number.isSafeInteger(value) && value >= 0 ? String(value) : 'unknown'; }
+function renderRooms(rooms) {
+  const section = $('rooms-section'), target = $('rooms');
+  const rows = Array.isArray(rooms) ? rooms : [], unavailable = rooms !== undefined && !Array.isArray(rooms);
+  section.dataset.empty = !unavailable && !rows.length ? 'true' : 'false';
+  $('room-count').textContent = rows.length ? rows.length + (rows.length === 1 ? ' room' : ' rooms') : '';
+  target.replaceChildren();
+  if (unavailable) { empty(target, 'Room metadata unavailable.'); return; }
+  for (const room of rows) {
+    const row = el('div', undefined, 'row room-metadata'), head = el('div', undefined, 'row-head');
+    const name = roomMetadataText(room.name, /^[a-z][a-z0-9-]{0,31}$/, 32);
+    const link = ['online', 'connecting', 'offline', 'left'].includes(room.link) ? room.link : 'unknown';
+    head.append(el('span', name, 'label'), badge(link, link === 'online' ? 'ok' : ''));
+    row.append(head, el('p', 'Room: ' + roomMetadataText(room.room, /^[A-Za-z0-9_-]{43}$/, 43) + ' / epoch ' + roomMetadataText(room.epoch, /^[1-9][0-9]{0,19}$/, 20), 'meta'));
+    row.append(el('p', 'Owner fingerprint: ' + roomMetadataText(room.owner, /^[a-f0-9]{64}$/, 64), 'meta'));
+    row.append(el('p', 'Self fingerprint: ' + roomMetadataText(room.member, /^[a-f0-9]{64}$/, 64) + ' / members: ' + roomMetadataCount(room.memberCount), 'meta'));
+    if (!Array.isArray(room.remotePeers)) row.append(el('p', 'Remote peers: unknown', 'meta'));
+    else if (!room.remotePeers.length) row.append(el('p', 'No exposed remote peers.', 'meta'));
+    else {
+      const peers = el('div', undefined, 'peer-summary');
+      for (const peer of room.remotePeers) {
+        const id = roomMetadataText(peer.id, /^[a-z][a-z0-9-]{0,31}@[a-z][a-z0-9-]{0,31}$/, 65);
+        const state = ['idle', 'busy', 'paused', 'offline'].includes(peer.state) ? peer.state : 'unknown';
+        peers.append(el('span', id + ': ' + state, 'meta'));
+      }
+      row.append(peers);
+    }
+    const stats = room.relays, since = Number.isSafeInteger(stats?.since) && stats.since > 0 ? new Date(stats.since) : undefined;
+    const start = since && Number.isFinite(since.getTime()) ? since.toISOString() : 'unknown';
+    row.append(el('p', 'Relay counters since daemon boot (start: ' + start + ')', 'meta'));
+    const counters = el('div', undefined, 'peer-summary');
+    counters.append(el('span', 'Outbound handoffs: ' + roomMetadataCount(stats?.outbound), 'meta'), el('span', 'Inbound admitted: ' + roomMetadataCount(stats?.inbound), 'meta'), el('span', 'Withheld outbound (subset): ' + roomMetadataCount(stats?.withheld), 'meta'));
+    row.append(counters); target.append(row);
+  }
+}
 function renderUsage(usage, tasks, budget) {
   if (!usage) return;
   // A failed read is not a hidden view: replace the old figures with an explicit state so stale totals are never shown as current.
@@ -1769,6 +1812,7 @@ function render(snapshot) {
   renderSettings(snapshot.settings, snapshot.roster);
   renderUsage(snapshot.usage, snapshot.tasks, snapshot.budget);
   renderSchedules(snapshot.schedules);
+  renderRooms(snapshot.rooms);
   const stream = $('stream');
   if (!eventCount) { stream.replaceChildren(); empty(stream, 'No activity yet.'); }
   for (const entry of snapshot.events || []) {
