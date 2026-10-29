@@ -7392,6 +7392,7 @@ export async function startDaemon(opts: DaemonOptions) {
             }
             const selected = plan.projects.find(row => row.project.id === projectId)!;
             const reconnect = new Map<string, import("../cli/upgrade.ts").RecoveryPeer["observation"]>();
+            const reconnectCurrent: Array<() => boolean> = [];
             if (selected.reconnectOnly !== undefined) {
               if (!Array.isArray(selected.reconnectOnly) || new Set(selected.reconnectOnly).size !== selected.reconnectOnly.length) throw new RecoveryAuthorityError();
               for (const id of selected.reconnectOnly) {
@@ -7403,13 +7404,16 @@ export async function startDaemon(opts: DaemonOptions) {
                 const generation = owner.sessionGeneration;
                 const launcher = await launcherOf(id, opts.cwd, { stateDir: opts.stateDir, instanceId }); current();
                 if (launcher && launcher.state !== "gone" || bus.peers.get(id) !== owner || owner.sessionGeneration !== generation || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)) throw new RecoveryAuthorityError();
+                reconnectCurrent.push(() => bus.peers.get(id) === owner && owner.sessionGeneration === generation && owner.attached && !owner.managedLaunchId && !claudeLaunchProof.verified(id)
+                  && definitionOf(id)?.kind === row.observation!.kind && owner.attached === row.observation!.attached && claudeSession(id).sessionId === row.observation!.sessionId);
                 reconnect.set(id, row.observation);
               }
             }
+            if (reconnectCurrent.some(check => !check())) throw new RecoveryAuthorityError();
             const normalize = (row: { id: string; state: string; observation?: { kind: string; attached: boolean; sessionId?: string }; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
               const launch = row.args ?? row.launch ?? {};
               const observed = reconnect.get(row.id);
-              return { id: row.id, active: row.state !== "offline", threadId: row.threadId, sessionId: row.sessionId ?? observed?.sessionId,
+              return { id: row.id, active: row.state !== "offline", threadId: row.threadId, sessionId: row.sessionId ?? row.observation?.sessionId,
                 ...(observed ? { kind: row.observation?.kind ?? definitionOf(row.id)?.kind, attached: row.observation?.attached ?? (isWsPeer(bus.peers.get(row.id)) && (bus.peers.get(row.id) as import("../adapters/channel-peer.ts").WsPeer).attached) } : {}),
                 sessionFile: row.sessionFile ?? (typeof launch.sessionFile === "string" ? launch.sessionFile : undefined),
                 args: Object.fromEntries(Object.entries(launch).filter(([key, value]) => ["model", "route", "sessionFile", "mode", "backend"].includes(key) && typeof value === "string").sort(([a], [b]) => a.localeCompare(b))) };

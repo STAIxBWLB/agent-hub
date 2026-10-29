@@ -166,3 +166,29 @@ test("reconnect-only handling does not relax another peer's native identity comp
     expect((await f.issue(plan)).ok).toBe(false); f.noEffects();
   } finally { await f.close(); }
 }, 20_000);
+
+
+test("reconnect-only authority rechecks an observation that disappears across the launcher await", async () => {
+  const f = await reconnectFixture();
+  const owner = f.daemon.bus.peers.get("claude")!;
+  const previous = Object.getOwnPropertyDescriptor(owner, "sessionGeneration"), generation = owner.sessionGeneration;
+  let reads = 0, removed = false;
+  try {
+    expect(f.plan.projects[0]!.source.peers.find(peer => peer.id === "claude")!.observation?.sessionId).toBe(f.sessionId);
+    Object.defineProperty(owner, "sessionGeneration", { configurable: true, get() {
+      // The first read captures the current owner before launcherOf; the second is its post-await fence.
+      if (++reads === 2) { rmSync(join(f.stateDir, "claude-session.json")); removed = true; }
+      return generation;
+    } });
+    expect((await f.issue(f.plan)).ok).toBe(false);
+    expect(removed).toBe(true); expect(reads).toBeGreaterThanOrEqual(2);
+    expect(owner.sessionGeneration).toBe(generation);
+    expect((owner as { attached?: boolean }).attached).toBe(true);
+    expect(existsSync(join(f.stateDir, "claude-session.json"))).toBe(false);
+    expect(existsSync(join(f.stateDir, "conductor-recovery.key"))).toBe(false);
+    f.noEffects();
+  } finally {
+    if (previous) Object.defineProperty(owner, "sessionGeneration", previous); else Reflect.deleteProperty(owner, "sessionGeneration");
+    await f.close();
+  }
+}, 20_000);
