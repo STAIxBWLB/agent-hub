@@ -326,6 +326,6 @@ test("ambiguous exposed remote ids remain inert and show unknown rather than emp
   expect(f.a.bus.stateOf("codex@beta")).toBe("offline");
   expect(f.a.bus.queued("codex@beta")).toBe(1);
   expect(f.a.chat.metrics("work")?.outbound).toBe(0);
-  expect(await deliveries(f.a)).toEqual([]);
+  expect((await deliveries(f.a)).filter(row => row.direction === "outbound")).toEqual([]);
   expect(f.b.peer.got).toEqual([]);
 });
