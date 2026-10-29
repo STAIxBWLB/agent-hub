@@ -146,7 +146,11 @@ export function assertRecoverySourceInputs(accepted: readonly { name: string; ra
     const actual: { name: string; raw: Record<string, unknown> }[] = [...candidate.layers];
     for (const name of ["routing.toml", "routing.local.toml"] as const) {
       const text = candidate.texts?.[name];
-      if (text != null) actual.push({ name, raw: Bun.TOML.parse(text) });
+      if (text != null) {
+        const raw = Bun.TOML.parse(text);
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) refuse();
+        actual.push({ name, raw: raw as Record<string, unknown> });
+      }
     }
     const projection = (rows: readonly { name: string; raw: Record<string, unknown> }[]) => Object.fromEntries(rows.filter(row => Object.keys(row.raw).length > 0).map(row => [row.name, row.raw]));
     if (canonical(projection(accepted)) !== canonical(projection(actual))) refuse();
