@@ -4176,6 +4176,102 @@
       "replacement": "? failureReason",
       "testFile": "test/claude-implementer.test.ts",
       "testName": "cleanup failure retains busy handle and refuses restart until a verified retry succeeds"
+    },
+    {
+      "id": "room-person-inbox-authority",
+      "file": "src/hub/daemon.ts",
+      "search": "        const personRoom = c.role === \"console\";",
+      "replacement": "        const personRoom = true;",
+      "testFile": "test/rooms-daemon.test.ts",
+      "testName": "person inbox operations answer every rid and refuse a tools conductor before body access"
+    },
+    {
+      "id": "room-person-inbox-metadata",
+      "file": "src/rooms/store.ts",
+      "search": "    return { id: row.id, name: state.name, room: row.room, sender: row.sender, from: row.from_peer,",
+      "replacement": "    return { ...row, id: row.id, name: state.name, room: row.room, sender: row.sender, from: row.from_peer,",
+      "testFile": "test/rooms-person-inbox-store.test.ts",
+      "testName": "person admission commits body and immutable inbox receipt together, with metadata-only listing"
+    },
+    {
+      "id": "room-person-inbox-cap",
+      "file": "src/rooms/store.ts",
+      "search": "        if (unread >= ROOM_PERSON_INBOX_LIMITS.unreadPerRoom || retained + entry.plaintext.byteLength > ROOM_PERSON_INBOX_LIMITS.globalBytes) reason = \"inbox_full\";",
+      "replacement": "        if (false) reason = \"inbox_full\";",
+      "testFile": "test/rooms-person-inbox-store.test.ts",
+      "testName": "100 unread entries refuse the next admission and disposition frees space without changing its old receipt"
+    },
+    {
+      "id": "room-person-inbox-ttl",
+      "file": "src/rooms/store.ts",
+      "search": "      else if (received + ROOM_PERSON_INBOX_LIMITS.ttlMs <= now) reason = \"inbox_expired\";",
+      "replacement": "      else if (false) reason = \"inbox_expired\";",
+      "testFile": "test/rooms-person-inbox-store.test.ts",
+      "testName": "TTL uses first local crypto receipt, not sender timestamp or delayed application registration"
+    },
+    {
+      "id": "room-person-inbox-purge",
+      "file": "src/rooms/store.ts",
+      "search": "      this.db.query(\"UPDATE person_inbox SET body=NULL,state=?,settled_at=? WHERE id=?\").run(next, now, id);",
+      "replacement": "      this.db.query(\"UPDATE person_inbox SET body=body,state=?,settled_at=? WHERE id=?\").run(next, now, id);",
+      "testFile": "test/rooms-person-inbox-store.test.ts",
+      "testName": "same-content aliases dedupe across inbox disposition without admitting a second body"
+    },
+    {
+      "id": "room-person-inbox-expiry-receipt",
+      "file": "src/rooms/store.ts",
+      "search": "    const expired = this.db.query(\"UPDATE person_inbox SET body=NULL,state='expired',settled_at=expires_at WHERE state='unread' AND expires_at<=?\").run(now).changes;",
+      "replacement": "    const expired = this.db.query(\"UPDATE person_inbox SET body=NULL,state='expired',settled_at=expires_at WHERE state='unread' AND expires_at<=?\").run(now).changes;\n    this.db.query(\"UPDATE applications SET state='failed_safe',reason='inbox_expired' WHERE reason='inbox_admitted' AND EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application AND p.state='expired')\").run();",
+      "testFile": "test/rooms-person-inbox-store.test.ts",
+      "testName": "post-admission expiry purges locally, retains an ids-only stub and never changes the signed outcome"
+    },
+    {
+      "id": "room-person-inbox-post-ack-retry",
+      "file": "src/rooms/commands.ts",
+      "search": "    this.current(check); return item;\n  }\n  /** Host calls this after replying to a committed person disposition. */",
+      "replacement": "    if (item) await this.options.chat?.retryPending();\n    this.current(check); return item;\n  }\n  /** Host calls this after replying to a committed person disposition. */",
+      "testFile": "test/rooms-daemon.test.ts",
+      "testName": "person inbox disposition replies before a blocked network retry and a later socket drop cannot change success"
+    },
+    {
+      "id": "room-person-inbox-expiry-wake",
+      "file": "src/rooms/commands.ts",
+      "search": "    if (this.stopped || !this.store?.expirePersonInbox()) return;",
+      "replacement": "    if (this.stopped) return;",
+      "testFile": "test/rooms-daemon.test.ts",
+      "testName": "person inbox expiry schedules a retry only after an actual purge and coalesces idle ticks"
+    },
+    {
+      "id": "room-person-inbox-indirect-purge-wake",
+      "file": "src/rooms/store.ts",
+      "search": "    if (expired > 0 || removed > 0) this.pendingPersonPurge = true;",
+      "replacement": "    if (false) this.pendingPersonPurge = true;",
+      "testFile": "test/rooms-person-inbox-store.test.ts",
+      "testName": "a show-induced TTL purge leaves one pending host wake without another write"
+    },
+    {
+      "id": "room-person-inbox-stored-history-cap",
+      "file": "src/rooms/store.ts",
+      "search": "        const retained = this.db.query<{ n: number }, []>(\"SELECT COALESCE(SUM(length(body)),0) AS n FROM person_inbox WHERE body IS NOT NULL\").get()?.n ?? 0;",
+      "replacement": "        const retained = this.db.query<{ n: number }, []>(\"SELECT COALESCE(SUM(bytes),0) AS n FROM person_inbox WHERE body IS NOT NULL\").get()?.n ?? 0;",
+      "testFile": "test/rooms-person-inbox-store.test.ts",
+      "testName": "the 4MiB person cap counts stored canonical bytes globally before decoded body or room limits"
+    },
+    {
+      "id": "room-person-inbox-stored-new-cap",
+      "file": "src/rooms/store.ts",
+      "search": "        if (unread >= ROOM_PERSON_INBOX_LIMITS.unreadPerRoom || retained + entry.plaintext.byteLength > ROOM_PERSON_INBOX_LIMITS.globalBytes) reason = \"inbox_full\";",
+      "replacement": "        if (unread >= ROOM_PERSON_INBOX_LIMITS.unreadPerRoom || retained + bytes > ROOM_PERSON_INBOX_LIMITS.globalBytes) reason = \"inbox_full\";",
+      "testFile": "test/rooms-person-inbox-store.test.ts",
+      "testName": "the 4MiB person cap counts stored canonical bytes globally before decoded body or room limits"
+    },
+    {
+      "id": "room-person-inbox-stored-restore-cap",
+      "file": "src/rooms/store.ts",
+      "search": "    const bytes = this.db.query<{ n: number }, []>(\"SELECT COALESCE(SUM(length(body)),0) AS n FROM person_inbox WHERE body IS NOT NULL\").get()?.n ?? 0;",
+      "replacement": "    const bytes = this.db.query<{ n: number }, []>(\"SELECT COALESCE(SUM(bytes),0) AS n FROM person_inbox WHERE body IS NOT NULL\").get()?.n ?? 0;",
+      "testFile": "test/rooms-person-inbox-store.test.ts",
+      "testName": "restore rejects stored canonical inbox bytes above4MiB even when decoded body bytes stay below it"
     }
   ]
 }
