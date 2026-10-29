@@ -6,6 +6,7 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { types } from "node:util";
 import { defaultPeerRoles, definitionOf } from "../adapters/registry.ts";
 import type { HubConfig } from "./daemon.ts";
 import { conductorPeer } from "./conductor.ts";
@@ -19,6 +20,8 @@ import { parseOverlay, parseRouting, type Routing } from "./routing.ts";
 
 export interface RecoveryPolicyProject { root: string; id: string; stateDir: string }
 export interface RecoveryPolicyCapture { policyDigest: string; boardDigest: string }
+/** Host-captured inputs, shared with loadConfig before any module evaluation. */
+export interface RecoveryPolicyInputs { layers: InstanceConfigLayer[]; routing: Routing }
 const MAX_POLICY_BYTES = 1024 * 1024;
 const MAX_ACTOR_TASKS = 4096;
 const MAX_SIGNALS_BYTES = 65536;
@@ -61,7 +64,18 @@ function canonical(value: unknown, depth = 0): string {
   if (depth > 32) refuse();
   if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
   if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(v => canonical(v, depth + 1)).join(",")}]`;
+  if (types.isProxy(value)) refuse();
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype || value.length > MAX_POLICY_BYTES) refuse();
+    const fields = Object.getOwnPropertyDescriptors(value);
+    if (Reflect.ownKeys(value).length !== value.length + 1 || Object.values(fields).some(field => !Object.hasOwn(field, "value"))) refuse();
+    const parts: string[] = [];
+    for (let index = 0; index < value.length; index++) {
+      const field = fields[String(index)]; if (!field) refuse();
+      parts.push(canonical(field.value, depth + 1));
+    }
+    return `[${parts.join(",")}]`;
+  }
   if (!value || typeof value !== "object" || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) refuse();
   const fields = Object.getOwnPropertyDescriptors(value);
   if (Reflect.ownKeys(value).some(key => typeof key !== "string") || Object.values(fields).some(field => !Object.hasOwn(field, "value"))) refuse();
@@ -111,18 +125,50 @@ function publicActorBoard(stateDir: string, peer: string, routing: Routing): str
   } finally { db.close(); }
 }
 
-/** The third argument is a fresh host loadConfig result, never request JSON or retained metadata. */
-export function captureRecoveryPolicy(project: RecoveryPolicyProject, peer: string, currentConfig: HubConfig): RecoveryPolicyCapture {
+/** A protected pending edit is not authorization to apply it through a restart. */
+export function assertRecoveryConfiguration(accepted: HubConfig, candidate: HubConfig): void {
   try {
-    if (!project.id || !isAbsolute(project.root) || !isAbsolute(project.stateDir) || realPath(project.root) !== project.root || realPath(project.stateDir) !== project.stateDir) refuse();
+    const previous = canonical(accepted), next = canonical(candidate);
+    if (Buffer.byteLength(previous) > 8 * MAX_POLICY_BYTES || Buffer.byteLength(next) > 8 * MAX_POLICY_BYTES || previous !== next) refuse();
+  } catch { return refuse(); }
+}
+
+export function assertRecoveryRouting(accepted: Routing, candidate: Routing): void {
+  try { if (canonical(accepted) !== canonical(candidate)) refuse(); }
+  catch { refuse(); }
+}
+
+/** One bounded source capture feeds both loadConfig and the recovery proof. No module is evaluated. */
+export function readRecoveryPolicyInputs(root: string): RecoveryPolicyInputs {
+  try {
+    if (!isAbsolute(root) || realPath(root) !== root) refuse();
     const layers: InstanceConfigLayer[] = [];
     for (const name of ["config.json", "config.local.json"] as const) {
-      const text = boundedText(join(project.root, ".agenthub", name), true);
+      const text = boundedText(join(root, ".agenthub", name), true);
       if (text === undefined) continue;
       const raw: unknown = JSON.parse(text);
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) refuse();
       layers.push({ name, raw: raw as Record<string, unknown> });
     }
+    const main = boundedText(join(root, ".agenthub", "routing.toml"), true)
+      ?? boundedText(resolve(import.meta.dir, "..", "..", "templates", "routing.toml"))!;
+    const overlay = boundedText(join(root, ".agenthub", "routing.local.toml"), true);
+    return { layers, routing: parseRouting(main, overlay === undefined ? undefined : parseOverlay(overlay)) };
+  } catch { return refuse(); }
+}
+
+/** currentConfig must be host-loaded from these exact inputs and compared with the running accepted config.
+ * Supplied inputs are never reread from raw config/routing files. Board privacy is always fresh.
+ */
+export function captureRecoveryPolicy(project: RecoveryPolicyProject, peer: string, currentConfig: HubConfig, inputs?: RecoveryPolicyInputs): RecoveryPolicyCapture {
+  try {
+    if (!project.id || !isAbsolute(project.root) || !isAbsolute(project.stateDir) || realPath(project.root) !== project.root || realPath(project.stateDir) !== project.stateDir) refuse();
+    const snapshot = canonical(inputs ?? readRecoveryPolicyInputs(project.root));
+    if (Buffer.byteLength(snapshot) > 8 * MAX_POLICY_BYTES) refuse();
+    // Copy host own-data fields once, so proof evaluation cannot run callbacks or observe mutation mid-capture.
+    const { layers, routing } = JSON.parse(snapshot) as RecoveryPolicyInputs;
+    if (!Array.isArray(layers) || layers.length > 2 || new Set(layers.map(layer => layer.name)).size !== layers.length
+      || layers.some(layer => !["config.json", "config.local.json"].includes(layer.name) || !layer.raw || typeof layer.raw !== "object" || Array.isArray(layer.raw))) refuse();
     // Explicit empty runtime definitions: never import a module or trust a retained display catalog.
     const scope = readInstanceConfig(project.root, layers, []);
     if (scope.adapter_modules?.length || scope.declaredExternalInstances?.length || currentConfig.adapter_modules?.length) refuse();
@@ -134,10 +180,6 @@ export function captureRecoveryPolicy(project: RecoveryPolicyProject, peer: stri
     const rawRoster = Object.assign({}, ...layers.map(layer => layer.raw.roster ?? {}));
     const roster = peerRosterConfig(rawRoster, scope.instances, scope.catalog);
     if (canonical(roster) !== canonical(currentConfig.roster) || !rosterAllows(roster, peer, currentConfig.pi.enabled, scope.instances, scope.catalog)) refuse();
-    const main = boundedText(join(project.root, ".agenthub", "routing.toml"), true)
-      ?? boundedText(resolve(import.meta.dir, "..", "..", "templates", "routing.toml"))!;
-    const overlay = boundedText(join(project.root, ".agenthub", "routing.local.toml"), true);
-    const routing = parseRouting(main, overlay === undefined ? undefined : parseOverlay(overlay));
     // ponytail: at most 2 MiB config, 2 MiB routing and 4096 actor-bound open rows (1 MiB signals).
     // A larger board fails closed; the upgrade path is an indexed durable per-actor privacy generation.
     const policy = canonical({ schema: 1, project: { root: project.root, id: project.id, stateDir: project.stateDir }, peer, roles, roster, instances: scope.instances ?? {},

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/hub/daemon.ts";
-import { captureRecoveryPolicy } from "../src/hub/recovery-policy.ts";
+import { assertRecoveryConfiguration, captureRecoveryPolicy, readRecoveryPolicyInputs } from "../src/hub/recovery-policy.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "../src/hub/db-timeout.ts";
 import { realPath } from "../src/hub/project.ts";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -114,5 +114,57 @@ test("conductor recovery policy fingerprints fresh routing and bounded config wi
     const config = loadConfig(f.root);
     writeFileSync(join(f.root, ".agenthub", "config.local.json"), " ".repeat(1024 * 1024 + 1));
     expect(() => captureRecoveryPolicy(f.project, "codex", config)).toThrow(refused);
+  } finally { f.close(); }
+});
+
+
+test("conductor recovery cannot apply pending permission, role or command edits", () => {
+  const f = fixture();
+  try {
+    const accepted = loadConfig(f.root);
+    for (const change of [
+      { permission_modes: { codex: "never-ask" } },
+      { roles: { codex: ["conductor", "implementer", "reviewer"] } },
+      { codex_bin: "/fixture/changed-codex" },
+    ]) {
+      f.write({ roles: { codex: ["conductor", "implementer"] }, ...change });
+      const inputs = readRecoveryPolicyInputs(f.root);
+      const candidate = loadConfig(f.root, inputs.layers, inputs.routing.retired ?? [], []);
+      expect(() => assertRecoveryConfiguration(accepted, candidate)).toThrow(refused);
+    }
+    expect(() => assertRecoveryConfiguration(accepted, { ...accepted, instances: undefined })).not.toThrow();
+  } finally { f.close(); }
+});
+
+test("conductor recovery uses one supplied policy snapshot while always rereading actor privacy", () => {
+  const f = fixture();
+  try {
+    const inputs = readRecoveryPolicyInputs(f.root);
+    const accepted = loadConfig(f.root, inputs.layers, inputs.routing.retired ?? [], []);
+    assertRecoveryConfiguration(accepted, accepted);
+    const original = captureRecoveryPolicy(f.project, "codex", accepted, inputs);
+    f.write({ roles: { codex: ["implementer"] }, permission_modes: { codex: "never-ask" } });
+    writeFileSync(join(f.root, ".agenthub", "routing.local.toml"), 'not valid toml = [');
+    // This proof and loadConfig see exactly the same captured inputs, not a second policy read.
+    expect(captureRecoveryPolicy(f.project, "codex", accepted, inputs)).toEqual(original);
+    expect(() => readRecoveryPolicyInputs(f.root)).toThrow(refused);
+    expect(() => captureRecoveryPolicy(f.project, "codex", accepted)).toThrow(refused);
+    f.task(1, "codex", ["pii_path"]);
+    expect(() => captureRecoveryPolicy(f.project, "codex", accepted, inputs)).toThrow(refused);
+  } finally { f.close(); }
+});
+
+test("conductor recovery semantic configuration comparison never invokes config callbacks", () => {
+  const f = fixture();
+  try {
+    const accepted = loadConfig(f.root);
+    let callbacks = 0;
+    const candidate = { ...accepted };
+    Object.defineProperty(candidate, "roles", { enumerable: true, get() { callbacks++; return accepted.roles; } });
+    expect(() => assertRecoveryConfiguration(accepted, candidate)).toThrow(refused);
+    const copied = structuredClone(accepted);
+    Object.defineProperty(copied.local.deny, "0", { enumerable: true, get() { callbacks++; return "private"; } });
+    expect(() => assertRecoveryConfiguration(accepted, copied)).toThrow(refused);
+    expect(callbacks).toBe(0);
   } finally { f.close(); }
 });

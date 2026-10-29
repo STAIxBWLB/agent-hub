@@ -1066,7 +1066,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   up: async () => {
     const unattended = unattendedEnv || args.includes("--unattended");
     if (unattended) console.error(UNATTENDED_WARNING);
-    const status = await startProject(registeredProject(), { unattended, liveTest, ...(recoveryLauncherCurrent ? { current: recoveryLauncherCurrent, env: { ...personEnv(process.env), AGENTHUB_RECOVERY_OPERATION: continuationId } } : {}) });
+    const status = await startProject(registeredProject(), { unattended, liveTest, ...(recoveryLauncherCurrent ? { current: recoveryLauncherCurrent, env: { ...personEnv(process.env), AGENTHUB_RECOVERY_OPERATION: continuationId, AGENTHUB_PEER_ID: continuationPeer, AGENTHUB_RECOVERY_CONDUCTOR: continuationPeer, AGENTHUB_RECOVERY_CONTINUATION: continuationId } } : {}) });
     console.log(`ahub up (ws://127.0.0.1:${status.controlPort}), state in ${stateDir}`);
     if (recoveryLauncherCurrent) { recoveryLauncherCurrent(); return; }
     try { if (loadPetConfig(cwd).window) console.log(await startPetWindow(stateDir, cwd)); }

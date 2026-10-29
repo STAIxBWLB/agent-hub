@@ -4416,6 +4416,30 @@
       "replacement": "if (false) return \"target lacks conductor_recovery; open conductor manual-assignment intent cannot be preserved\";",
       "testFile": "test/conductor-recovery.test.ts",
       "testName": "person recovery also preserves open conductor manual intent across target versions"
+    },
+    {
+      "id": "conductor-recovery-accepted-config",
+      "file": "src/hub/daemon.ts",
+      "search": "assertRecoveryConfiguration(config, candidate);",
+      "replacement": "void candidate;",
+      "testFile": "test/conductor-recovery-config.test.ts",
+      "testName": "pending protected instructions config cannot mint or use source recovery authority"
+    },
+    {
+      "id": "conductor-recovery-accepted-routing",
+      "file": "src/hub/daemon.ts",
+      "search": "assertRecoveryRouting(activeRouting(), inputs.routing);",
+      "replacement": "void inputs.routing;",
+      "testFile": "test/conductor-recovery-config.test.ts",
+      "testName": "pending routing cannot replace the source's accepted runtime routing under an existing grant"
+    },
+    {
+      "id": "conductor-recovery-startup-policy",
+      "file": "src/hub/daemon.ts",
+      "search": "if (recoveryInitiator !== undefined) {",
+      "replacement": "if (false) {",
+      "testFile": "test/conductor-recovery-config.test.ts",
+      "testName": "conductor target startup rejects pending permission config before importing code"
     }
   ]
 }

@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ControlClient, readControl } from "../hub/control-client.ts";
-import { loadConfig } from "../hub/daemon.ts";
-import { captureRecoveryPolicy } from "../hub/recovery-policy.ts";
+import { loadConfig, type HubConfig } from "../hub/daemon.ts";
+import { captureRecoveryPolicy, readRecoveryPolicyInputs, type RecoveryPolicyInputs } from "../hub/recovery-policy.ts";
 import { authorizeConductorRecovery, assertConductorRecovery, retireConductorRecovery, RecoveryAuthorityError, type ConductorRecoveryBinding } from "../hub/recovery-authority.ts";
 import { operationPath } from "../hub/recovery-store.ts";
 import { readRestartSnapshot } from "../hub/restart.ts";
@@ -20,11 +20,14 @@ function validateConductorOperation(op: RecoveryOperation): void {
       || op.plan.projects.length > 128 || new Set(op.plan.projects.map(row => row.project.id)).size !== op.plan.projects.length) unavailable();
   } catch { unavailable(); }
 }
-export function conductorRecoveryBinding(op: RecoveryOperation, project: Project, peer: string): ConductorRecoveryBinding {
+export function conductorRecoveryBinding(op: RecoveryOperation, project: Pick<Project, "root" | "id" | "stateDir">, peer: string,
+  captured?: { config: HubConfig; inputs: RecoveryPolicyInputs }): ConductorRecoveryBinding {
   validateConductorOperation(op);
   const planned = op.plan.projects.find(row => row.project.id === project.id);
   if (!planned?.source.instanceId || op.plan.projects.some(row => row.terminals.length > 0) || !op.targetRoot || !op.targetDigest || !op.targetFeatures?.includes("conductor_recovery") || op.disposition || op.audit?.length || op.freshOverride) unavailable();
-  const policy = captureRecoveryPolicy(project, peer, loadConfig(project.root));
+  const inputs = captured?.inputs ?? readRecoveryPolicyInputs(project.root);
+  const candidate = captured?.config ?? loadConfig(project.root, inputs.layers, inputs.routing.retired ?? [], []);
+  const policy = captureRecoveryPolicy(project, peer, candidate, inputs);
   return { schema: 1, operationId: op.id, peer, kind: op.plan.kind, projectId: project.id, projectRoot: project.root, stateDir: project.stateDir,
     sourceInstanceId: planned.source.instanceId, targetRoot: op.targetRoot, targetDigest: op.targetDigest, planFingerprint: op.plan.fingerprint, ...policy };
 }
@@ -116,7 +119,7 @@ export async function authorizeConductorLaunch(op: RecoveryOperation, peer: stri
   if (!op.targetRoot || realPath(targetRoot) !== realPath(op.targetRoot)) unavailable();
   const planned = op.plan.projects.find(row => row.project.root === root);
   if (!planned) unavailable();
-  if (command === "up" && args.length === 0) {
+  if ((command === "up" || command === "daemon") && args.length === 0) {
     const descriptor = readControl(planned.project.stateDir);
     if (descriptor && processLiveness(descriptor.pid, descriptor.pidSignature) !== "gone") unavailable();
     const claim = registeredProjects().find(row => row.id === planned.project.id);

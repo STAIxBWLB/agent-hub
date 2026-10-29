@@ -89,10 +89,11 @@ import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, v
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
 import { issueConductorRecoveryAuthority, authorizeConductorRecovery, assertConductorRecovery, RecoveryAuthorityError, type ConductorRecoveryBinding } from "./recovery-authority.ts";
-import { captureRecoveryPolicy, readRecoveryTargetFeatures } from "./recovery-policy.ts";
-import { operationPath, recoveryLock } from "./recovery-store.ts";
+import { captureRecoveryPolicy, readRecoveryPolicyInputs, assertRecoveryConfiguration, assertRecoveryRouting, readRecoveryTargetFeatures } from "./recovery-policy.ts";
+import { operationPath, recoveryLock, readOperation } from "./recovery-store.ts";
 import { packageDigest, verifyPackage, exactVersion } from "../cli/recovery-package.ts";
 import { planFingerprint, registeredProjects, type UpgradePlan } from "../cli/upgrade.ts";
+import { conductorRecoveryBinding } from "../cli/conductor-recovery.ts";
 import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
 import { eventLog, readEvents, type RoleIdentity } from "./events.ts";
@@ -707,16 +708,40 @@ export async function startDaemon(opts: DaemonOptions) {
   let ready = false;
   try {
   let startupLayers: ReturnType<typeof readInstanceConfigLayers>;
-  try { startupLayers = readInstanceConfigLayers(opts.cwd); }
-  catch (error) { if (!opts.config) throw error; startupLayers = []; } // Explicit embeddings may ignore unreadable file config; no code is loaded from it.
+  let recoveryConfiguration: HubConfig | undefined, recoveryRouting: Routing | undefined;
+  const recoveryInitiator = process.env.AGENTHUB_RECOVERY_CONDUCTOR;
+  if (recoveryInitiator !== undefined) {
+    // Before module imports or factories: the exact startup snapshot must match the source-issued policy.
+    try {
+      const operationId = process.env.AGENTHUB_RECOVERY_OPERATION;
+      if (!operationId) throw new RecoveryAuthorityError();
+      const operation = readOperation<import("../cli/upgrade.ts").RecoveryOperation>(operationId);
+      if (!operation || operation.id !== operationId) throw new RecoveryAuthorityError();
+      const snapshot = readRestartSnapshot(opts.stateDir, { projectRoot: opts.cwd, projectId, operationId });
+      if (!snapshot) throw new RecoveryAuthorityError();
+      const inputs = readRecoveryPolicyInputs(opts.cwd);
+      const candidate = loadConfig(opts.cwd, inputs.layers, inputs.routing.retired ?? [], []);
+      const expected = conductorRecoveryBinding(operation, { root: opts.cwd, id: projectId, stateDir: opts.stateDir }, recoveryInitiator, { config: candidate, inputs });
+      if (expected.sourceInstanceId !== snapshot.sourceInstanceId || expected.targetRoot !== resolve(import.meta.dir, "../..") || expected.targetDigest !== sourcePackageDigest) throw new RecoveryAuthorityError();
+      const proof = authorizeConductorRecovery(opts.stateDir, expected, () => { const value = captureRecoveryPolicy({ root: opts.cwd, id: projectId, stateDir: opts.stateDir }, recoveryInitiator, candidate, inputs); return value.policyDigest === expected.policyDigest && value.boardDigest === expected.boardDigest; });
+      assertConductorRecovery(proof);
+      startupLayers = inputs.layers; recoveryConfiguration = candidate; recoveryRouting = inputs.routing;
+    } catch { throw new RecoveryAuthorityError(); }
+    delete process.env.AGENTHUB_RECOVERY_CONDUCTOR;
+    delete process.env.AGENTHUB_RECOVERY_CONTINUATION;
+    if (process.env.AGENTHUB_PEER_ID === recoveryInitiator) delete process.env.AGENTHUB_PEER_ID;
+  } else {
+    try { startupLayers = readInstanceConfigLayers(opts.cwd); }
+    catch (error) { if (!opts.config) throw error; startupLayers = []; }
+  } // Explicit embeddings may ignore unreadable file config; no code is loaded from it.
   const externalAdapterRefusals: import("../adapters/external-modules.ts").ExternalAdapterRefusalRecord[] = [];
   const externalDefinitions = await loadExternalAdapterDefinitions(opts.cwd, startupLayers, refusal => externalAdapterRefusals.push(refusal));
   const externalAdapters = externalDefinitions.map(({ kind, displayName }) => ({ kind, displayName }));
   const externalIds = new Set(externalAdapters.map(item => item.kind));
   const moduleDeclarations = readAdapterModuleDeclarations(opts.cwd, startupLayers).modules;
   const startupDeclarationRows = readInstanceConfig(opts.cwd, startupLayers, externalDefinitions).declaredExternalInstances ?? [];
-  const loadedConfig = opts.config ? { ...opts.config, adapter_modules: moduleDeclarations.length ? moduleDeclarations : undefined }
-    : loadConfig(opts.cwd, startupLayers, undefined, externalDefinitions);
+  const loadedConfig = recoveryConfiguration ?? (opts.config ? { ...opts.config, adapter_modules: moduleDeclarations.length ? moduleDeclarations : undefined }
+    : loadConfig(opts.cwd, startupLayers, undefined, externalDefinitions));
   reviewerPoolConfig(loadedConfig.review, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS);
   const lifecycleConfig = loadSdlc(opts.cwd, VERSION);
   // Preserve embedding-owned policy references, but never publish reloads into shared defaults.
@@ -905,7 +930,7 @@ export async function startDaemon(opts: DaemonOptions) {
     let publicLine:string|undefined,view:ReturnType<typeof operationalView>|undefined;
     for(const [sock,current] of operationalLogSubscribers)try {current();if(sock.getBufferedAmount()>64*1024)throw new Error("slow log consumer");view??=publicOperationalView();publicLine??=view.line(text);sock.send(JSON.stringify({t:"operational_log",line:publicLine,complete:view.complete,...(!view.complete?{incompleteReason:view.incompleteReason}:{})}));}catch{operationalLogSubscribers.delete(sock);try{sock.close(4403,"operational log authority ended");}catch{/* The subscription is already gone. */}}
   };
-  let runningRouting = currentRouting(opts.cwd, log);
+  let runningRouting = recoveryRouting ?? currentRouting(opts.cwd, log);
   let acceptedSources = parseConfigSources(configSourceTexts(opts.cwd), runningRouting, opts.cwd, externalAdapters, externalDefinitions);
   const startupSources = structuredClone(acceptedSources.trustLayers);
   const embeddedConfig = structuredClone(config);
@@ -5813,6 +5838,13 @@ export async function startDaemon(opts: DaemonOptions) {
       catch {throw new OperationalAuthorityError("this operation requires the explicit conductor role","conductor");}
     };
   }
+  function currentRecoveryPolicy(peer: string) {
+    const inputs = readRecoveryPolicyInputs(opts.cwd);
+    const candidate = loadConfig(opts.cwd, inputs.layers, inputs.routing.retired ?? [], []);
+    assertRecoveryConfiguration(config, candidate);
+    assertRecoveryRouting(activeRouting(), inputs.routing);
+    return captureRecoveryPolicy({ root: opts.cwd, id: projectId, stateDir: opts.stateDir }, peer, candidate, inputs);
+  }
   function admitOperational(sock:Sock,command:string):()=>void {
     const current=operationalCurrent(sock);current();
     if(!event({type:"agent_cli",peer:sock.data.peer!,command,refused:false}))throw new Error("CLI audit event was not retained");
@@ -7308,7 +7340,7 @@ export async function startDaemon(opts: DaemonOptions) {
             || !restored || restored.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId
             || recoveryPhase !== "restored" || recoveryOperationId !== raw.operationId || instanceId === raw.sourceInstanceId
             || packageDigest(resolve(import.meta.dir, "../.."), { ownDependencies: true }) !== raw.targetDigest) throw new RecoveryAuthorityError();
-          const proof = authorizeConductorRecovery(opts.stateDir, raw, () => { current(); const value = captureRecoveryPolicy({ root: opts.cwd, id: projectId, stateDir: opts.stateDir }, c.peer!, loadConfig(opts.cwd)); return value.policyDigest === raw.policyDigest && value.boardDigest === raw.boardDigest; });
+          const proof = authorizeConductorRecovery(opts.stateDir, raw, () => { current(); const value = currentRecoveryPolicy(c.peer!); return value.policyDigest === raw.policyDigest && value.boardDigest === raw.boardDigest; });
           const fence = () => { current(); assertConductorRecovery(proof); if (recoveryPhase !== "restored" || recoveryOperationId !== raw.operationId) throw new RecoveryAuthorityError(); };
           const saved = restored.peers.find(row => row.id === msg.peer);
           if (!saved || saved.state === "offline" || saved.launch?.mode === "tui" || definitionOf(saved.id)?.transport === "claude-channel" || !definitionOf(saved.id)?.session.restoreArgs) throw new RecoveryAuthorityError();
@@ -7328,13 +7360,13 @@ export async function startDaemon(opts: DaemonOptions) {
         void (async () => { try {
           const settlingSource = msg.op === "verify" && recoveryCommitted && msg.binding?.operationId === recoveryOperationId && msg.binding?.sourceInstanceId === instanceId;
           const current = operationalCurrent(sock, false, settlingSource); current();
-          if (msg.op === "authorize" && ["restart", "upgrade"].includes(msg.command)) return void reply({ ok: true, instanceId });
+          if (msg.op === "authorize" && ["restart", "upgrade"].includes(msg.command)) { currentRecoveryPolicy(c.peer!); current(); return void reply({ ok: true, instanceId }); }
           if (!["issue", "verify"].includes(msg.op)) throw new RecoveryAuthorityError();
           const raw = msg.binding as ConductorRecoveryBinding;
           if (!raw || raw.peer !== c.peer || raw.projectRoot !== opts.cwd || raw.projectId !== projectId || raw.stateDir !== opts.stateDir) throw new RecoveryAuthorityError();
           const project = { root: opts.cwd, id: projectId, stateDir: opts.stateDir };
-          const expected = { ...raw, ...captureRecoveryPolicy(project, c.peer!, loadConfig(opts.cwd)) };
-          const fresh = () => { current(); return JSON.stringify(captureRecoveryPolicy(project, c.peer!, loadConfig(opts.cwd))) === JSON.stringify({ policyDigest: raw.policyDigest, boardDigest: raw.boardDigest }); };
+          const expected = { ...raw, ...currentRecoveryPolicy(c.peer!) };
+          const fresh = () => { current(); return JSON.stringify(currentRecoveryPolicy(c.peer!)) === JSON.stringify({ policyDigest: raw.policyDigest, boardDigest: raw.boardDigest }); };
           if (msg.op === "issue") {
             const plan = msg.plan as UpgradePlan;
             const { fingerprint, ...body } = plan ?? {} as UpgradePlan;
@@ -7393,7 +7425,7 @@ export async function startDaemon(opts: DaemonOptions) {
               const raw = msg.authority as ConductorRecoveryBinding;
               if (!raw || raw.peer !== c.peer || raw.operationId !== msg.operationId || raw.projectRoot !== opts.cwd || raw.projectId !== projectId || raw.stateDir !== opts.stateDir) throw new RecoveryAuthorityError();
               if (instanceId !== raw.sourceInstanceId && (restored?.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId || packageDigest(resolve(import.meta.dir, "../.."), { ownDependencies: true }) !== raw.targetDigest)) throw new RecoveryAuthorityError();
-              const proof = authorizeConductorRecovery(opts.stateDir, raw, () => { current(); const value = captureRecoveryPolicy({ root: opts.cwd, id: projectId, stateDir: opts.stateDir }, c.peer!, loadConfig(opts.cwd)); return value.policyDigest === raw.policyDigest && value.boardDigest === raw.boardDigest; });
+              const proof = authorizeConductorRecovery(opts.stateDir, raw, () => { current(); const value = currentRecoveryPolicy(c.peer!); return value.policyDigest === raw.policyDigest && value.boardDigest === raw.boardDigest; });
               recoveryCurrent = () => { current(); assertConductorRecovery(proof); if (packageDigest(raw.targetRoot, { ownDependencies: true }) !== raw.targetDigest) throw new RecoveryAuthorityError(); };
               recoveryCurrent();
               recoveryMessage = { ...msg, targetFeatures: readRecoveryTargetFeatures(raw.targetRoot) };
