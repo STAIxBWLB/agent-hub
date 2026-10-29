@@ -1,6 +1,6 @@
 name: routing-receipt
 
-# #637 part 1: a PR that changes templates/routing.toml needs a promotion receipt under docs/verification/ that names that exact file, the current default and the
+# #637 parts 1 and 2: a PR that changes templates/routing.toml needs a promotion receipt under docs/verification/ that names that exact file, the current default and the
 # frozen corpus, and whose numbers the check recomputes. No model runs: the check reads git and files. The rule is the "Routing promotion rule" in
 # docs/agent-notes/benchmarks.md; the logic and its tests are scripts/check-routing-receipt.ts and test/routing-receipt-check.test.ts.
 #
@@ -36,3 +36,9 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: bun scripts/check-routing-receipt.ts "$BASE_SHA" --publish
+      # #637 part 2: the same for the MODEL-ROUTING keys of that file (hub_routes, local, fixed_model, stay_switch, the pi windows). It rebuilds the deterministic comparison and checks the by-hand
+      # live half (served model ids) only for shape and consistency: no gateway, key or secret is ever available to this job. Rule: "Model-routing promotion rule" in docs/agent-notes/benchmarks.md.
+      - name: A model-routing change carries a matching receipt
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bun scripts/check-model-routing-receipt.ts "$BASE_SHA"
