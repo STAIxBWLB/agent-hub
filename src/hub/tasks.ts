@@ -3667,7 +3667,8 @@ export class Tasks {
     this.schedulesRunning = true;
     try {
       store.ensure(entry.id, now);
-      const result = await this.runSchedule(store, entry, now, extraHold, true);
+      // #933: the board-write fence asks the hold again after the PII screen, so a conductor whose role or connection ended meanwhile writes nothing.
+      const result = await this.runSchedule(store, entry, now, () => extraHold() || !this.personOrConductor(by), true);
       const reason = result.outcome === "failed" ? store.get(entry.id)?.last_error ?? undefined : undefined;
       return reason ? { ...result, reason } : result;
     } finally { this.schedulesRunning = false; }

@@ -235,6 +235,21 @@ test("person commands and unverifiable operational commands refuse promptly with
   } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
 }, 20_000);
 
+test("#933: an agent's task label never names an earlier task with --created, before any control connection", async () => {
+  const root = project(), stateDir = join(root, ".agenthub/state");
+  mkdirSync(stateDir);
+  let connections = 0;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (_req, server) => { connections++; if (server.upgrade(_req)) return; return new Response("unexpected"); }, websocket: { message() {} } });
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, protocol: PROTOCOL }));
+  writeFileSync(join(stateDir, "control-token"), "fixture-token");
+  try {
+    const result = await cli(root, ["task", "label", "1", "ok", "--created", "2026-10-01T00:00:00.000Z"], { AGENTHUB_PEER_ID: "codex" });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("only the person labels it");
+    expect(connections).toBe(0);
+  } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
 test("native shell CLI messages and board history retain the actor while plain terminals keep human authority", async () => {
   const root = project(), stateDir = join(root, ".agenthub/state");
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } } });

@@ -1688,6 +1688,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       const { one, rest: positional } = takeFlags(rest, ["--created"], []);
       const id = Number(positional[0]), label = positional[1] as Label;
       if (positional.length !== 2 || !/^[1-9]\d*$/.test(positional[0]!) || !Number.isSafeInteger(id) || !(LABELS as readonly string[]).includes(label)) fail(`usage: ahub task label <id> ${LABELS.join("|")} [--created <time from ahub research export>]`);
+      // #933: the daemon checks the current board row only, so an agent never names an earlier task with this id from before a reset.
+      if (identity.role === "tools" && one["--created"] !== undefined) fail("--created names an earlier task with this id; only the person labels it (ahub console or a terminal)");
       const project = researchProject();
       // #933: an agent labels only its own task, which the daemon checks by role; its record names it, so it never reads as the person's verdict.
       if (identity.role === "tools") await taskOp("task_label_check", { id });
