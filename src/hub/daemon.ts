@@ -89,7 +89,7 @@ import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, v
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
 import { issueConductorRecoveryAuthority, authorizeConductorRecovery, assertConductorRecovery, RecoveryAuthorityError, type ConductorRecoveryBinding } from "./recovery-authority.ts";
-import { captureRecoveryPolicy } from "./recovery-policy.ts";
+import { captureRecoveryPolicy, readRecoveryTargetFeatures } from "./recovery-policy.ts";
 import { operationPath, recoveryLock } from "./recovery-store.ts";
 import { packageDigest } from "../cli/recovery-package.ts";
 import { planFingerprint, registeredProjects, type UpgradePlan } from "../cli/upgrade.ts";
@@ -7347,7 +7347,8 @@ export async function startDaemon(opts: DaemonOptions) {
             };
             const ordered = (rows: Parameters<typeof normalize>[0][]) => rows.map(normalize).sort((a, b) => a.id.localeCompare(b.id));
             if (JSON.stringify(ordered(selected.source.peers)) !== JSON.stringify(ordered(Object.values(recoveryPeers())))) throw new RecoveryAuthorityError();
-            if (packageDigest(raw.targetRoot, { ownDependencies: true }) !== raw.targetDigest || !readFileSync(join(raw.targetRoot, "src/hub/control-client.ts"), "utf8").includes('"conductor_recovery"')) throw new RecoveryAuthorityError();
+            if (packageDigest(raw.targetRoot, { ownDependencies: true }) !== raw.targetDigest) throw new RecoveryAuthorityError();
+            readRecoveryTargetFeatures(raw.targetRoot);
             if (raw.kind === "restart") {
               if (raw.targetDigest !== packageDigest(resolve(import.meta.dir, "../.."))) throw new RecoveryAuthorityError();
             } else {
@@ -7369,6 +7370,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       }
       case "recovery": {
+        let recoveryMessage = msg;
         let recoveryCurrent: () => void = () => {};
         if (c.role !== "console") {
           try {
@@ -7379,12 +7381,14 @@ export async function startDaemon(opts: DaemonOptions) {
               if (!raw || raw.peer !== c.peer || raw.operationId !== msg.operationId || raw.projectRoot !== opts.cwd || raw.projectId !== projectId || raw.stateDir !== opts.stateDir) throw new RecoveryAuthorityError();
               if (instanceId !== raw.sourceInstanceId && (restored?.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId || packageDigest(resolve(import.meta.dir, "../.."), { ownDependencies: true }) !== raw.targetDigest)) throw new RecoveryAuthorityError();
               const proof = authorizeConductorRecovery(opts.stateDir, raw, () => { current(); const value = captureRecoveryPolicy({ root: opts.cwd, id: projectId, stateDir: opts.stateDir }, c.peer!, loadConfig(opts.cwd)); return value.policyDigest === raw.policyDigest && value.boardDigest === raw.boardDigest; });
-              recoveryCurrent = () => { current(); assertConductorRecovery(proof); };
+              recoveryCurrent = () => { current(); assertConductorRecovery(proof); if (packageDigest(raw.targetRoot, { ownDependencies: true }) !== raw.targetDigest) throw new RecoveryAuthorityError(); };
+              recoveryCurrent();
+              recoveryMessage = { ...msg, targetFeatures: readRecoveryTargetFeatures(raw.targetRoot) };
             } else recoveryCurrent = current;
             recoveryCurrent();
           } catch { return void reply(recoveryError("conductor recovery authority unavailable; the person runs it in ahub console or a terminal")); }
         }
-        void recoveryOp(msg, recoveryCurrent).then(reply, (error) => {
+        void recoveryOp(recoveryMessage, recoveryCurrent).then(reply, (error) => {
           if (isDatabaseBusy(error)) {
             try { log(`recovery ${sanitize(String(msg.op))} database contention: ${databaseBusySite(error).join("\n")}`); } catch { /* the reply still settles its rid */ }
             const busy = new RecoveryDatabaseBusy();

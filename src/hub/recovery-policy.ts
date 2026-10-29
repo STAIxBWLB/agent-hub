@@ -42,6 +42,20 @@ function boundedText(file: string, optional = false): string | undefined {
   } finally { closeSync(fd); }
 }
 
+/** Derive compatibility from the verified target bytes, never the caller's mutable feature claim. */
+export function readRecoveryTargetFeatures(targetRoot: string): readonly string[] {
+  try {
+    const source = boundedText(join(targetRoot, "src/hub/control-client.ts"))!;
+    // ponytail: one literal array, at most 128 fixed labels. A computed export needs a versioned target manifest.
+    const declarations = [...source.matchAll(/export const DAEMON_FEATURES\s*=\s*(\[[^\]]*\])(?:\s+as const)?\s*;/g)];
+    if (declarations.length !== 1) refuse();
+    const values: unknown = JSON.parse(declarations[0]![1]!);
+    if (!Array.isArray(values) || !values.length || values.length > 128 || values.some(value => typeof value !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(value))
+      || new Set(values).size !== values.length || !values.includes("conductor_recovery")) refuse();
+    return Object.freeze([...values]);
+  } catch { return refuse(); }
+}
+
 /** Stable semantic encoding; never evaluate config accessors or serialize runtime objects. */
 function canonical(value: unknown, depth = 0): string {
   if (depth > 32) refuse();

@@ -394,9 +394,15 @@ key, separate from public recovery JSON and actor/audit fields. It binds the
 initiating peer, operation, canonical project root/id, source instance, target
 root and package digest, plan fingerprint, and current authority/privacy
 digests. The source and target must both advertise `conductor_recovery`; an old,
-missing, mismatched or unsupported coordinator refuses before a hold, staging
-or other operation effect. A target requiring a newer-coordinator handoff is
-person-only.
+missing, mismatched or unsupported newer coordinator refuses before a hold,
+staging or other operation effect. In particular, upgrade handoff to a newer
+coordinator is person-only until that coordinator is known to support this
+contract.
+
+Target compatibility labels are read from the sealed target bytes; a tools request or public receipt cannot waive a target feature floor. Computed or unreadable feature metadata remains person-only.
+
+Captured TUI terminal restoration remains person-only: a delayed native launcher cannot re-prove the conductor at its eventual spawn. Conductor plans containing captured terminal launches refuse before staging or runtime holds; headless restoration uses the target-owned snapshot through a tools connection.
+
 
 Before each effect and after awaits, the host rechecks the same initiating
 conductor's current role, roster membership, project and writable-instance

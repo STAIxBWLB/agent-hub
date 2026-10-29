@@ -4392,6 +4392,14 @@
       "replacement": "    validateReceipt(id, op);\n    if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, \"run\");\n    if (op.phase === \"completed\" || op.phase === \"cancelled\") {\n      if (recoveryLock(home) === id) releaseRecoveryLock(id, home);\n      releaseRunner();\n      return op;\n    }",
       "testFile": "test/conductor-recovery-driver.test.ts",
       "testName": "a concurrent terminal receipt releases the contender lock before checking a retired grant"
+    },
+    {
+      "id": "conductor-recovery-target-features",
+      "file": "src/hub/daemon.ts",
+      "search": "recoveryMessage = { ...msg, targetFeatures: readRecoveryTargetFeatures(raw.targetRoot) };",
+      "replacement": "recoveryMessage = msg;",
+      "testFile": "test/conductor-recovery.test.ts",
+      "testName": "shared upgrade issuance requires every live or uncertain registered project before creating a grant"
     }
   ]
 }

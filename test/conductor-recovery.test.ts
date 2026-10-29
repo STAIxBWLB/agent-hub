@@ -335,6 +335,11 @@ test("shared upgrade issuance requires every live or uncertain registered projec
     body.projects = [...body.projects, { project: { ...other, instanceId: otherInstance, pid: process.pid }, source: { state: "running", instanceId: otherInstance, version: VERSION, protocol: PROTOCOL, peers: [], blockers: [] }, terminals: [], blockers: [] }];
     plan = { ...body, fingerprint: planFingerprint(body) }; binding = { ...binding, planFingerprint: plan.fingerprint };
     expect((await f.lead.request({ t: "recovery_authority", op: "issue", binding, plan })).ok).toBe(true);
+    const board = new Board(join(f.stateDir, "hub.db"));
+    try { const row = board.propose("user", { title: "cancelled compatibility fixture", class: "plan" }); board.update(row.id, "user", "cancelled", { state: "cancelled" }); }
+    finally { board.close(); }
+    const refused = await f.request(binding, "prepare", { targetFeatures: DAEMON_FEATURES });
+    expect(refused.ok).toBe(false); expect(refused.error).toContain("target lacks task_cancel");
     f.noEffects();
   } finally { registry.close(); await f.close(); }
 }, 20_000);
