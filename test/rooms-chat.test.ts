@@ -313,7 +313,9 @@ test("ambiguous exposed remote ids remain inert and show unknown rather than emp
   const request = await command(f.b, "join", { name: "other", token: token.artifact, label: "beta" });
   const roster = await command(f.a, "invite", { name: "other", request: request.artifact });
   await command(f.b, "join", { name: "other", roster: roster.artifact });
-  await f.wait(() => f.a.chat.peersForStatus("work") === null && f.a.chat.peersForStatus("other") === null, "ambiguous room metadata refreshed");
+  await f.wait(() => f.a.chat.peers("work").length === 0 && f.a.chat.peers("other").length === 0, "ambiguous routes stay inert");
+  expect(f.a.chat.peersForStatus("work")).toBeNull();
+  expect(f.a.chat.peersForStatus("other")).toBeNull();
   expect(f.a.chat.peers("work")).toEqual([]);
   expect(f.a.chat.peers("other")).toEqual([]);
   for (const row of f.a.commands.statusView()!) expect(row.remotePeers).toBeNull();
