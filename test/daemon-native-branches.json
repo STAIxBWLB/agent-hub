@@ -92,8 +92,20 @@
   {
     "predicate": "isWsPeer",
     "function": "src/hub/daemon.ts:startDaemon.onMessage",
-    "count": 6,
-    "reason": "Intentional authenticated channel hello/receipts/inbox, native-facts socket ownership and Kimi admission. Channel permission/native-turn proof now uses host ClaudeLaunchProof.owner."
+    "count": 7,
+    "reason": "Intentional authenticated channel hello/receipts/inbox, native-facts socket ownership and Kimi admission. Channel permission/native-turn proof uses host ClaudeLaunchProof.owner. Conductor recovery additionally verifies an actual daemon-owned WsPeer before treating its socket generation and unmanaged-launch evidence as reconnect-only proof (#900)."
+  },
+  {
+    "predicate": "isWsPeer",
+    "function": "src/hub/daemon.ts:startDaemon.onMessage.normalize",
+    "count": 1,
+    "reason": "Conductor recovery compares attachment only for already host-verified reconnect-only channel rows. Read it from the actual WsPeer socket, never an ordinary adapter's activity state or caller-supplied observation (#900)."
+  },
+  {
+    "predicate": "isWsPeer",
+    "function": "src/hub/daemon.ts:startDaemon.recoveryView",
+    "count": 1,
+    "reason": "The source recovery DTO separates observed channel kind, live socket attachment and session fingerprint from restoration metadata. Only an actual daemon-owned WsPeer may provide that host-channel observation (#900)."
   },
   {
     "predicate": "isPiPeer",
