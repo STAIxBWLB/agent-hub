@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Board } from "../src/hub/board.ts";
@@ -9,6 +9,7 @@ import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { captureRecoveryPolicy } from "../src/hub/recovery-policy.ts";
 import type { ConductorRecoveryBinding } from "../src/hub/recovery-authority.ts";
 import { realPath } from "../src/hub/project.ts";
+import { Registry } from "../src/hub/registry.ts";
 import { planFingerprint, type Inspection, type RecoveryPeer, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { packageDigest } from "../src/cli/recovery-package.ts";
 import { preserveSource } from "../src/cli/upgrade-runtime.ts";
@@ -58,7 +59,8 @@ async function fixture() {
     const runtime = await import(join(runtimeRoot, "src/hub/daemon.ts")) as typeof import("../src/hub/daemon.ts");
     const runtimeLocal = await import(join(runtimeRoot, "src/adapters/local-worker.ts")) as typeof import("../src/adapters/local-worker.ts");
     const runtimeOmni = await import(join(runtimeRoot, "src/omniroute/client.ts")) as typeof import("../src/omniroute/client.ts");
-    daemon = await runtime.startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    const registry = new Registry(), registered = registry.register(root, stateDir); registry.close();
+    daemon = await runtime.startDaemon({ cwd: root, stateDir, projectId: registered.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
       config: loadConfig(root), snapshotClock: () => 0, configWatch: false, boundedTools: emulatedBoundedTools() });
     const connect = async (peer?: string) => {
       const client = await ControlClient.connect(stateDir, peer ? { role: "tools", peer, projectRoot: root } : { role: "console", projectRoot: root });
@@ -311,10 +313,10 @@ test("shared upgrade issuance requires every live or uncertain registered projec
   const { processSignature } = await import("../src/pi/process-signature.ts");
   const registry = new Registry();
   try {
-    registry.register(f.root, f.stateDir); registry.claim(f.project.id, f.project.instanceId, process.pid, processSignature(process.pid));
+    expect(registry.register(f.root, f.stateDir).id).toBe(f.project.id); expect(registry.claim(f.project.id, f.project.instanceId, process.pid, processSignature(process.pid))).toBe(true);
     const otherRoot = join(f.root, "other-project"), otherState = join(otherRoot, ".agenthub", "state"); mkdirSync(otherState, { recursive: true });
     const other = registry.register(otherRoot, otherState), otherInstance = crypto.randomUUID();
-    registry.claim(other.id, otherInstance, process.pid, processSignature(process.pid));
+    expect(other.id).not.toBe(f.project.id); expect(registry.claim(other.id, otherInstance, process.pid, processSignature(process.pid))).toBe(true);
     const { binding: original, plan: originalPlan } = await f.authority();
     const staged = join(process.env.AGENTHUB_HOME!, "releases", VERSION), targetRoot = join(staged, "node_modules", "@staix", "agent-hub");
     for (const directory of ["src/hub", "src/cli", "plugins/agent-hub/.claude-plugin", "templates", ".claude-plugin"]) mkdirSync(join(targetRoot, directory), { recursive: true });
@@ -335,4 +337,32 @@ test("shared upgrade issuance requires every live or uncertain registered projec
     expect((await f.lead.request({ t: "recovery_authority", op: "issue", binding, plan })).ok).toBe(true);
     f.noEffects();
   } finally { registry.close(); await f.close(); }
+}, 20_000);
+
+test("missing control metadata cannot bootstrap while the signed source claim is still live", async () => {
+  const f = await fixture(), stopping = new Deferred(), releaseStop = new Deferred();
+  const { Registry } = await import("../src/hub/registry.ts"), { processSignature } = await import("../src/pi/process-signature.ts");
+  const registry = new Registry(), fake = new SnapshotLocal(crypto.randomUUID(), stopping, releaseStop);
+  const token = join(f.stateDir, "control-token"), hidden = join(f.stateDir, "fixture-hidden-token");
+  let tokenHidden = false;
+  try {
+    expect(registry.register(f.root, f.stateDir).id).toBe(f.project.id); expect(registry.claim(f.project.id, f.project.instanceId, process.pid, processSignature(process.pid))).toBe(true);
+    f.daemon.bus.add(fake); await fake.start();
+    expect((await f.person.request({ t: "pause", peer: "local" })).ok).toBe(true);
+    const { binding, plan } = await f.authority();
+    expect((await f.lead.request({ t: "recovery_authority", op: "issue", binding, plan })).ok).toBe(true);
+    expect((await f.request(binding, "prepare")).ok).toBe(true);
+    expect((await f.request(binding, "commit")).ok).toBe(true); await stopping.promise;
+    const operation: import("../src/cli/upgrade.ts").RecoveryOperation = { schema: 1, id: binding.operationId, plan,
+      sourceRoot: f.runtimeRoot, targetRoot: f.runtimeRoot, targetDigest: binding.targetDigest, targetFeatures: DAEMON_FEATURES,
+      createdAt: 1, updatedAt: 1, phase: "running", step: "wait-source", projects: [{ id: binding.projectId, phase: "prepared", terminals: {} }] };
+    renameSync(token, hidden); tokenHidden = true;
+    const { authorizeConductorLaunch } = await import("../src/cli/conductor-recovery.ts");
+    await expect(authorizeConductorLaunch(operation, "codex", f.root, f.runtimeRoot, "up", [])).rejects.toThrow("conductor recovery authority unavailable");
+    expect(registry.get(f.project.id)?.instanceId).toBe(f.project.instanceId);
+    expect(registry.get(f.project.id)?.pid).toBe(process.pid);
+  } finally {
+    if (tokenHidden && existsSync(hidden)) renameSync(hidden, token);
+    releaseStop.resolve(); await f.daemon.stop(); registry.release(f.project.id, f.project.instanceId); registry.close(); await f.close();
+  }
 }, 20_000);

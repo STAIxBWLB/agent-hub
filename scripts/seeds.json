@@ -4376,6 +4376,14 @@
       "replacement": "if (false) throw new RecoveryAuthorityError();",
       "testFile": "test/conductor-recovery.test.ts",
       "testName": "shared upgrade issuance requires every live or uncertain registered project before creating a grant"
+    },
+    {
+      "id": "conductor-recovery-source-retired",
+      "file": "src/cli/conductor-recovery.ts",
+      "search": "    if (!claim || claim.root !== root || claim.stateDir !== planned.project.stateDir\n      || claim.pid !== null && processLiveness(claim.pid, claim.pidSignature) !== \"gone\"\n      || claim.pid === null && claim.instanceId !== null) unavailable();",
+      "replacement": "    if (false) unavailable();",
+      "testFile": "test/conductor-recovery.test.ts",
+      "testName": "missing control metadata cannot bootstrap while the signed source claim is still live"
     }
   ]
 }
