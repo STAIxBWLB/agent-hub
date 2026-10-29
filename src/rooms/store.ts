@@ -889,7 +889,8 @@ export class RoomStore {
       const identities = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM applications WHERE room=?").get(room)?.n ?? 0;
       const aliases = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM application_frames WHERE room=?").get(room)?.n ?? 0;
       if ((!freshIdentity || identities < ROOM_APPLICATION_RETENTION.identitiesPerRoom) && aliases < ROOM_APPLICATION_RETENTION.aliasesPerRoom) return;
-      const settled = this.db.query<ApplicationRow, [string, string, string]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND NOT (sender=? AND application=?) AND NOT EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application AND p.state='unread') ORDER BY settled_at,created_at,sender,application LIMIT 1").get(room, retained?.sender ?? "", retained?.application ?? "");
+      // A person identity becomes settled at done/discard/expiry, not at its earlier admission.
+      const settled = this.db.query<ApplicationRow, [string, string, string]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND NOT (sender=? AND application=?) AND NOT EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application AND p.state='unread') ORDER BY COALESCE((SELECT p.settled_at FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application),settled_at),created_at,sender,application LIMIT 1").get(room, retained?.sender ?? "", retained?.application ?? "");
       if (!settled) throw new RoomApplicationLimitError(room, Math.max(identities, aliases));
       this.deleteSettledApplication(settled);
     }

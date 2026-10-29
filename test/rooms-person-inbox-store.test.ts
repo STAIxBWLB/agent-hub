@@ -266,3 +266,26 @@ for (const disposition of ["done", "expired"] as const) test(`a ${disposition} p
   f.advance(30 * day); restored.expirePersonInbox();
   expect(restored.listPersonInbox("work")).toEqual([]);
 });
+
+test("shared identity pressure evicts older settled native work before a newly done person stub", async () => {
+  const f = await pair(), day = 24 * 60 * 60 * 1000;
+  const human = await incoming(f), admitted = f.guest.admitPersonInbox("work", human.digest);
+  f.advance(day);
+  const native = await incoming(f, chat("native settled day1", { to: "codex" }));
+  expect(f.guest.claimApplication("work", native.digest)).toBe(true); f.guest.finishApplication("work", native.digest, "completed", "admitted");
+  const db = dbOf(f.guest), room = f.guest.get("work")!.current.room;
+  const app = db.query("INSERT INTO applications(room,sender,application,content_hash,primary_digest,peer,trace,hop,state,created_at) VALUES(?,?,?,?,?,?,?,0,'needs_review',?)");
+  const alias = db.query("INSERT INTO application_frames(room,digest,sender,application) VALUES(?,?,?,?)");
+  // Fill only metadata uncertainty. The two eligible candidates above came from real authenticated frames.
+  db.transaction(() => { for (let n = 2; n < ROOM_APPLICATION_RETENTION.identitiesPerRoom; n++) {
+    const id = crypto.randomUUID(), digest = encodeBase64url(randomBytes(32));
+    app.run(room, f.owner.identity.public.fingerprint, id, digest, digest, "codex", crypto.randomUUID(), f.now()); alias.run(room, digest, f.owner.identity.public.fingerprint, id);
+  } })();
+  f.advance(28 * day); f.guest.disposePersonInbox(admitted.id!, "done", () => true);
+  expect(f.guest.listPersonInbox("work")).toHaveLength(1); // Far below the separate1000-stub ceiling.
+  const next = await incoming(f, chat("new native work day29", { to: "codex" }));
+  expect(f.guest.incomingApplication("work", next.digest)).toMatchObject({ state: "pending" });
+  expect(f.guest.incomingApplication("work", native.digest)).toBeUndefined();
+  expect(f.guest.readPersonInbox(admitted.id!, () => true)).toMatchObject({ state: "done" });
+  expect(f.guest.applicationReceipt("work", human.digest)).toMatchObject({ outcome: "completed", reason: "inbox_admitted" });
+});
