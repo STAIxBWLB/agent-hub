@@ -4673,6 +4673,8 @@ Captured TUI terminal restoration remains person-only: a delayed native
 launcher cannot re-prove the conductor at its eventual spawn. Headless
 restoration uses the target-owned snapshot through a tools connection.
 
+An unmanaged reconnect-only Claude channel may reattach itself without a native launch. The source keeps its observed session identity separate from restoration metadata and verifies the exact peer, kind and attachment against the live channel. This exception requires no terminal or restoration arguments, no managed launch proof, and an absent or confirmed-ended launcher; unknown launcher evidence refuses. Other peer identities still compare exactly.
+
 
 Only the conductor that created the restart or authorized upgrade may run
 `recovery resume|abort` for that operation. A different conductor cannot take

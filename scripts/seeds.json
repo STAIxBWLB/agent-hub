@@ -4440,6 +4440,22 @@
       "replacement": "if (false) {",
       "testFile": "test/conductor-recovery-config.test.ts",
       "testName": "conductor target startup rejects pending permission config before importing code"
+    },
+    {
+      "id": "conductor-recovery-reconnect-unmanaged",
+      "file": "src/hub/daemon.ts",
+      "search": "                reconnect.set(id, row.observation);",
+      "replacement": "                throw new RecoveryAuthorityError();",
+      "testFile": "test/conductor-recovery-reconnect.test.ts",
+      "testName": "a real unmanaged reconnect-only plan retains source observation and issues authority without restoration identity"
+    },
+    {
+      "id": "conductor-recovery-reconnect-no-restoration",
+      "file": "src/hub/daemon.ts",
+      "search": "Object.keys(row).some(key => ![\"id\", \"state\", \"observation\"].includes(key))",
+      "replacement": "false",
+      "testFile": "test/conductor-recovery-reconnect.test.ts",
+      "testName": "reconnect-only source authority refuses changed restore-session after a fresh plan fingerprint"
     }
   ]
 }

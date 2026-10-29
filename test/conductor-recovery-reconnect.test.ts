@@ -14,7 +14,7 @@ import { planFingerprint, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { VERSION } from "../src/version.ts";
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 
-async function reconnectFixture() {
+async function reconnectFixture(includeOrdinary = false) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-conductor-reconnect-"))), stateDir = join(root, ".agenthub", "state"), home = join(root, "home");
   const overrides = Object.keys(process.env).filter(key => key.startsWith("OMNIROUTE_") || key.startsWith("CF_ACCESS_"));
   const keys = ["HOME", "PATH", "AGENTHUB_HOME", "AGENTHUB_PEER_ID", "AMEM_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "KIMI_CODE_HOME", "JCODE_HOME", ...overrides];
@@ -53,6 +53,17 @@ async function reconnectFixture() {
     expect(registry.claim(registered.id, status.instanceId, process.pid, processSignature(process.pid))).toBe(true);
     const project = registry.get(registered.id)!;
     const claude = await ControlClient.connect(stateDir, { role: "peer", peer: "claude", channel: true, projectRoot: root }); clients.push(claude);
+    if (includeOrdinary) {
+      const { BasePeer } = await import(join(runtimeRoot, "src/hub/peers.ts")) as typeof import("../src/hub/peers.ts");
+      class OrdinaryLocal extends BasePeer {
+        constructor() { super("local"); }
+        async start() { this.setState("idle"); }
+        async stop() { this.clearWatchdog(); this.setState("offline"); }
+        async deliver() { throw new Error("ordinary recovery fixture never delivers model work"); }
+        recoveryMetadata(): Record<string, unknown> { return { sessionId: "ordinary-local-session", launch: { kind: "local", model: "fixture-model" } }; }
+      }
+      const ordinary = new OrdinaryLocal(); daemon.bus.add(ordinary); await ordinary.start();
+    }
     const sessionId = "observed-unmanaged-session", launchId = "observed-ended-launch";
     writeFileSync(join(stateDir, "claude-session.json"), JSON.stringify({ instanceId: status.instanceId, sessionId }), { mode: 0o600 });
     const terminalCalls: string[][] = [];
@@ -146,10 +157,12 @@ test("a reconnect-only plan cannot waive a current managed socket attachment", a
 }, 20_000);
 
 test("reconnect-only handling does not relax another peer's native identity comparison", async () => {
-  const f = await reconnectFixture();
+  const f = await reconnectFixture(true);
   try {
-    const plan = structuredClone(f.plan), ordinary = plan.projects[0]!.source.peers.find(peer => peer.id === "codex");
-    expect(ordinary).toBeDefined(); ordinary!.threadId = "foreign-ordinary-thread";
+    const plan = structuredClone(f.plan), ordinary = plan.projects[0]!.source.peers.find(peer => peer.id === "local");
+    expect(ordinary).toBeDefined(); expect(ordinary!.sessionId).toBe("ordinary-local-session");
+    expect((await f.issue(f.plan)).ok).toBe(true); f.noEffects();
+    ordinary!.sessionId = "foreign-ordinary-session";
     expect((await f.issue(plan)).ok).toBe(false); f.noEffects();
   } finally { await f.close(); }
 }, 20_000);
