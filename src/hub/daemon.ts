@@ -6555,7 +6555,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (def.type === "roles") { prepareRoleSelection(def.path[1]!); event({ type: "role", peer: def.path[1]!, actor: "user", stage: "assigned", roles: selectedRoles(def.path[1]!, config.roles, roleAssignments, catalog).map(roleIdentity) }); }
       const timing = def.applies === "live" ? "in force now" : def.applies === "restart" ? "pending restart"
         : ["permission_modes", "catalog_roles", "peers"].includes(def.path[0]!) ? "applies at the peer's next start" : def.key === "coordination" ? "applies to new tasks" : "applies at next use";
-      return { ok: true, text: `${def.key}: ${settingText(to)} (${timing})` };
+      return { ok: true, text: `${def.key}: ${settingText(shown(to))} (${timing})` };
     } catch (error) {
       return { ok: false, error: sanitize((error as Error).message), ...(error instanceof OperationalAuthorityError ? { authorityRefused: true, authorityScope: error.scope } : {}), ...(saved ? { saved: true } : {}) };
     }
@@ -6585,9 +6585,11 @@ export async function startDaemon(opts: DaemonOptions) {
       undoSetting(opts.cwd, opts.stateDir, scratch => configWriteCheck(scratch, authority, def.path.join(".")), (_routing, overlay) => routingWriteCheck(authority, overlay, def.key), identity);
       const result = await reloadConfig(authority, def.store === "routing" ? def.key : def.path.join("."));
       if (result.ok !== true) return { ...result, saved: true };
-      recordSetting(def.key, from, read(), settingSource(authority), true, reason);
+      // A managed checklist is the person's own profile text: the event, the notice and the reply carry its line count, never the lines (the same form as the write).
+      const shown = (v: SettingValue): SettingValue => def.managed ? (Array.isArray(v) ? `${v.length} line(s)` : v === null ? "(not set)" : v) : v;
+      recordSetting(def.key, shown(from), shown(read()), settingSource(authority), true, reason);
       if (def.type === "roles") { prepareRoleSelection(def.path[1]!); event({ type: "role", peer: def.path[1]!, actor: "user", stage: "assigned", roles: selectedRoles(def.path[1]!, config.roles, roleAssignments, catalog).map(roleIdentity) }); }
-      return { ok: true, text: `${def.key}: put back to ${settingText(read())}` };
+      return { ok: true, text: `${def.key}: put back to ${settingText(shown(read()))}` };
     } catch (error) {
       return { ok: false, error: (error as Error).message };
     }

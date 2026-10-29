@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board, type HistoryEntry } from "../src/hub/board.ts";
@@ -14,6 +14,7 @@ import { candidateCard, CHECKLIST_MAX_LINES, overridesDiff, parseCandidateCard, 
 import { checkSettingValue, LEARN_CHECKLIST, SETTINGS, settingDef, undoableDef, writeConfigSetting } from "../src/hub/settings.ts";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { readEvents } from "../src/hub/events.ts";
 import { classifyPeerCommand, cliCommandLabel } from "../src/cli/identity.ts";
 import { realPath } from "../src/hub/project.ts";
 import { resolveProfile } from "../src/hub/profiles.ts";
@@ -356,15 +357,79 @@ test("a real daemon: accept refuses a card for another profile, a failing config
   expect(bytes(plain.f.local)).toBeNull();
 }, 60_000);
 
-test("a real daemon: when the settings write fails the card stays open and nothing is half done", async () => {
+test("a real daemon: when the settings write fails the card stays open, the reply says so, and nothing about the checklist is half done", async () => {
   const { f, seed, card } = await daemonWithCandidate();
-  writeFileSync(f.local, "{ this is not json");
-  const { person } = await openDaemon(f, seed).catch(() => ({ person: undefined as never }));
-  if (!person) return; // a hub that cannot load its own config does not start: nothing to write through
+  const { person } = await openDaemon(f, seed);
+  // the daemon is up and its config loaded; now the project's .agenthub directory stops accepting writes, so the real settings writer fails
+  chmodSync(join(f.cwd, ".agenthub"), 0o500);
+  cleanup.push(() => chmodSync(join(f.cwd, ".agenthub"), 0o700));
+  const reply = await person.request({ t: "task", op: "learn_accept", args: { id: card.id } });
+  chmodSync(join(f.cwd, ".agenthub"), 0o700);
+  expect(reply.ok).toBe(false);
+  expect(String(reply.error)).toContain("the candidate stays open");
+  expect(parse(await person.request({ t: "task", op: "learn_list", args: {} }))).toMatchObject([{ id: card.id, status: "open" }]); // the card was NOT closed
+  expect(bytes(f.local) === null || !JSON.stringify(JSON.parse(bytes(f.local)!)).includes(LINE)).toBe(true); // and the line is not in the file
+  // the failed write is not recorded as a setting change, and it left no undo record that a person could mistake for one
+  const retried = parse(await person.request({ t: "task", op: "learn_accept", args: { id: card.id } }));
+  expect(retried.accepted).toMatchObject({ alreadyPresent: false });
+  expect(JSON.parse(bytes(f.local)!)).toEqual({ profile_overrides: { review_checklist: [...SHIPPED_DEV, LINE] } });
+}, 30_000);
+
+test("a real daemon: the settings event, the notice and the undo reply for a managed write carry the line COUNT, never the person's checklist text", async () => {
+  const secretLine = "Check the units, then the secret rubric 7731.";
+  const { f, seed, card } = await daemonWithCandidate({ ...BASE, profile_overrides: { review_checklist: [secretLine] } });
+  const { person } = await openDaemon(f, seed);
+  parse(await person.request({ t: "task", op: "learn_accept", args: { id: card.id } }));
+  const events = readEvents(join(f.state, "events.jsonl")).filter(e => e.type === "settings");
+  expect(events).toHaveLength(1);
+  const reply = parse(await person.request({ t: "task", op: "learn_list", args: { all: true } }));
+  expect(JSON.stringify(reply)).not.toContain("7731"); // the list names ids and the one generated line, never the person's own lines
+  expect(events[0]).toMatchObject({ key: "profile_overrides.review_checklist", from: "1 line(s)", to: "2 line(s)", source: "terminal" });
+  expect(JSON.stringify(events)).not.toContain("7731");
+  expect(JSON.stringify(events)).not.toContain("confirm this first");
+  const undone = await person.request({ t: "settings_undo" });
+  expect(undone.ok, String(undone.error)).toBe(true);
+  expect(String(undone.text)).toContain("put back to");
+  expect(String(undone.text)).not.toContain("7731");
+  const after = readEvents(join(f.state, "events.jsonl")).filter(e => e.type === "settings");
+  expect(after.at(-1)).toMatchObject({ undo: true, key: "profile_overrides.review_checklist" });
+  expect(JSON.stringify(after)).not.toContain("7731");
+}, 30_000);
+
+test("a real daemon: a dashboard session, ordinary or settings, can neither set nor undo the managed key", async () => {
+  const { f, seed, card } = await daemonWithCandidate();
+  const { daemon, person } = await openDaemon(f, seed);
+  parse(await person.request({ t: "task", op: "learn_accept", args: { id: card.id } }));
+  const written = bytes(f.local);
+  const page = async (settings: boolean) => {
+    const url = new URL((await person.request({ t: "ui", ...(settings ? { settings: true } : {}) })).url);
+    const post = (path: string, body: unknown, cookie?: string) => fetch(`${url.origin}${path}`, { method: "POST", headers: { origin: url.origin, "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
+    const cookie = (await post("/session", { ticket: url.hash.slice(1) })).headers.get("set-cookie")!.split(";")[0]!;
+    return { act: async (body: Record<string, unknown>) => (await post("/action", body, cookie)).json() as Promise<Record<string, any>> };
+  };
+  for (const session of [await page(false), await page(true)]) {
+    const set = await session.act({ action: "setting", key: "profile_overrides.review_checklist", value: ["pwned"] });
+    expect(set.ok).toBe(false); expect(String(set.error)).toContain("unknown setting");
+    const undo = await session.act({ action: "setting_undo" });
+    expect(undo.ok).toBe(false);
+    expect(String(undo.error)).toMatch(/ahub ui --settings|put it back with ahub settings undo in a terminal/);
+  }
+  expect(bytes(f.local)).toBe(written); // nothing a dashboard did changed the file the learn accept wrote
+  void daemon;
+}, 30_000);
+
+test("a real daemon: when the config files stop loading, accept refuses with the reason, writes nothing and leaves the card open", async () => {
+  const { f, seed, card } = await daemonWithCandidate();
+  const { person } = await openDaemon(f, seed);
+  writeFileSync(f.shared, "{ not json"); // the daemon is up; its own loader can no longer read the project
   const reply = await person.request({ t: "task", op: "learn_accept", args: { id: card.id } });
   expect(reply.ok).toBe(false);
-  expect(bytes(f.local)).toBe("{ this is not json");
-});
+  expect(String(reply.error)).toContain("the config files do not load");
+  expect(String(reply.error)).toContain("nothing was written");
+  expect(bytes(f.local)).toBeNull();
+  writeFileSync(f.shared, JSON.stringify(BASE));
+  expect(parse(await person.request({ t: "task", op: "learn_list", args: {} }))).toMatchObject([{ id: card.id, status: "open" }]);
+}, 30_000);
 
 test("a real daemon: reject closes the card, writes nothing and is the person's only", async () => {
   const { f, seed, card } = await daemonWithCandidate();
