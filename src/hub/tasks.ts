@@ -2649,7 +2649,8 @@ export class Tasks {
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
     const plannerFull = plannedMove ? this.plannerFull(task) : [];
     const a = assign(opts.plannerPull ? { ...task, state: "proposed" } : task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: plannerFull, ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class, task), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}), // A self-claim hands over no envelope; reviewer admission remains automatic.
-      ...(opts.queueOverride || opts.claim ? { queueOverride: opts.queueOverride ?? "owner" as const, contextOverride: true } : {}) });
+      contextOverride: !!(opts.queueOverride || opts.claim),
+      ...(opts.queueOverride || opts.claim ? { queueOverride: opts.queueOverride ?? "owner" as const } : {}) });
 
     if (waits.length) {
       if (opts.plannerPull) throw new PreEffectToolRefusal("planner pull waits for dependency approval");
