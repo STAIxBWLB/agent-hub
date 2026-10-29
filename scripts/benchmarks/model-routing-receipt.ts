@@ -78,8 +78,9 @@ export function liveProblem(corpus: ModelRoutingCorpus, base: Routing, candidate
       if ("verdict" in outcome && !["approve", "redo", "unparsed"].includes(outcome.verdict)) return `${c.id}: the ${side} verdict is approve, redo or unparsed`;
       if ("escalate" in outcome && typeof outcome.escalate !== "boolean" && outcome.escalate !== "unparsed") return `${c.id}: the ${side} escalate is true, false or unparsed`;
       if (("verdict" in outcome && c.judge !== "advisor") || ("escalate" in outcome && c.judge !== "escalation")) return `${c.id}: the ${side} outcome is the wrong kind for a ${c.judge} case`;
-      if ("error" in outcome && typeof outcome.error !== "string") return `${c.id}: the ${side} error is text`;
-      if (!("error" in outcome)) aliases.add(alias);
+      // A call that failed or came back without a served id is no evidence either way: a receipt made of such calls would pass a candidate nobody measured.
+      if ("error" in outcome) return `${c.id}: the ${side} judge call has no answer (${String(outcome.error).slice(0, 120)}); rerun --live once the gateway answers every call`;
+      aliases.add(alias);
     }
   }
   for (const alias of aliases) {

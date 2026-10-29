@@ -1,7 +1,7 @@
 {
   "version": 1,
   "surface": "model-routing",
-  "hash": "a96909fb352072dc43cfa32c86b70a8c116d2e2737a2dc4f2b969163a140549b",
+  "hash": "3366190f8e7e4a6f613f6bcaac3cbbd3565d45c80d09c92529f9e52b35c17f8b",
   "cases": [
     {
       "id": "select-implement-uses-stage-route",
@@ -42,6 +42,17 @@
       "kind": "selection",
       "class": "no_such_class",
       "note": "a class that names neither a route nor a fixed_model takes the local default route and the local fixed_model fallback.",
+      "expect": {
+        "route": "hub/stage",
+        "model": "coding"
+      }
+    },
+    {
+      "id": "select-unlisted-class-takes-local-default",
+      "split": "test",
+      "kind": "selection",
+      "class": "refactor",
+      "note": "the same rule on the test split: a class the policy does not list takes the local default route (hub/stage) and the local fixed_model fallback.",
       "expect": {
         "route": "hub/stage",
         "model": "coding"
@@ -205,6 +216,276 @@
           "expect": {
             "tier": "capable",
             "source": "override"
+          }
+        }
+      ]
+    },
+    {
+      "id": "stage-spinning-below-threshold-stays-efficient",
+      "split": "test",
+      "kind": "route",
+      "route": "hub/stage",
+      "note": "a long run of shell commands with no reads or edits looks like spinning, but at 0.46 confidence it is under confidence_threshold 0.5: ambiguous, so the stage route keeps the default efficient tier (a lower threshold would escalate it).",
+      "turns": [
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "Make the parser accept trailing commas and add a test for it."
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "s0",
+                  "type": "function",
+                  "function": {
+                    "name": "bash",
+                    "arguments": "{\"command\":\"ls 0\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "s0",
+              "content": "ok 0"
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "s1",
+                  "type": "function",
+                  "function": {
+                    "name": "bash",
+                    "arguments": "{\"command\":\"ls 1\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "s1",
+              "content": "ok 1"
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "s2",
+                  "type": "function",
+                  "function": {
+                    "name": "bash",
+                    "arguments": "{\"command\":\"ls 2\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "s2",
+              "content": "ok 2"
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "s3",
+                  "type": "function",
+                  "function": {
+                    "name": "bash",
+                    "arguments": "{\"command\":\"ls 3\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "s3",
+              "content": "ok 3"
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "s4",
+                  "type": "function",
+                  "function": {
+                    "name": "bash",
+                    "arguments": "{\"command\":\"ls 4\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "s4",
+              "content": "ok 4"
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "s5",
+                  "type": "function",
+                  "function": {
+                    "name": "bash",
+                    "arguments": "{\"command\":\"ls 5\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "s5",
+              "content": "ok 5"
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "s6",
+                  "type": "function",
+                  "function": {
+                    "name": "bash",
+                    "arguments": "{\"command\":\"ls 6\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "s6",
+              "content": "ok 6"
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "s7",
+                  "type": "function",
+                  "function": {
+                    "name": "bash",
+                    "arguments": "{\"command\":\"ls 7\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "s7",
+              "content": "ok 7"
+            }
+          ],
+          "expect": {
+            "tier": "efficient",
+            "source": "default"
+          }
+        }
+      ]
+    },
+    {
+      "id": "stage-many-different-failures-capable-by-dimensions",
+      "split": "test",
+      "kind": "route",
+      "route": "hub/stage",
+      "note": "four different errors in a row (no repeat, so no override) still read as a high-severity run: the dimension score resolves capable at confidence 0.76, above confidence_threshold 0.5 (a threshold above 0.76 would leave it ambiguous and efficient).",
+      "turns": [
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "Make the parser accept trailing commas and add a test for it."
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "f1",
+                  "type": "function",
+                  "function": {
+                    "name": "bash",
+                    "arguments": "{\"command\":\"bun test\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "f1",
+              "content": "TypeError: x is not a function"
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "f2",
+                  "type": "function",
+                  "function": {
+                    "name": "bash",
+                    "arguments": "{\"command\":\"bun test\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "f2",
+              "content": "ReferenceError: y is not defined"
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "f3",
+                  "type": "function",
+                  "function": {
+                    "name": "bash",
+                    "arguments": "{\"command\":\"bun test\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "f3",
+              "content": "SyntaxError: unexpected token"
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "f4",
+                  "type": "function",
+                  "function": {
+                    "name": "bash",
+                    "arguments": "{\"command\":\"bun test\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "f4",
+              "content": "RangeError: out of range"
+            }
+          ],
+          "expect": {
+            "tier": "capable",
+            "source": "dimensions"
           }
         }
       ]
@@ -1098,6 +1379,35 @@
             {
               "role": "assistant",
               "content": "I think it is fine."
+            }
+          ],
+          "judge": [
+            "REDO: verify"
+          ],
+          "expect": {
+            "judgeCalls": 0,
+            "outcome": "none"
+          }
+        }
+      ]
+    },
+    {
+      "id": "advisor-answer-before-any-tool-not-reviewed",
+      "split": "test",
+      "kind": "route",
+      "route": "hub/advisor",
+      "note": "gate_min_tool_results is 1: a no-tool answer from a conversation where no tool has run yet is not reviewed (nothing to check it against).",
+      "turns": [
+        {
+          "op": "review",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Make the parser accept trailing commas and add a test for it."
+            },
+            {
+              "role": "assistant",
+              "content": "Everything is already fine."
             }
           ],
           "judge": [

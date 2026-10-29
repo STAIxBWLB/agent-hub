@@ -22,17 +22,16 @@ import { buildModelReceipt, compareLive, judgeAlias, liveProblem, renderModelRec
 // Exit status: 0 when the verdict is pass, 1 when the promotion rule blocks, 2 on a usage, corpus or environment error.
 
 const ROOT = resolve(import.meta.dir, "../..");
-const CORPUS = join(ROOT, "scripts/benchmarks/model-routing-corpus.json");
 export const TEMPLATE = "templates/routing.toml";
 
 function arg(args: readonly string[], name: string): string | undefined { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; }
-const git = (...args: string[]) => execFileSync("git", ["-C", ROOT, ...args], { encoding: "utf8" }).trim();
-function templateAt(ref: string): string {
-  try { return execFileSync("git", ["-C", ROOT, "show", `${ref}:${TEMPLATE}`], { encoding: "utf8" }); }
+const git = (root: string, ...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+function templateAt(root: string, ref: string): string {
+  try { return execFileSync("git", ["-C", root, "show", `${ref}:${TEMPLATE}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); }
   catch { throw new Error(`${TEMPLATE} does not exist at ${ref}`); }
 }
-function defaultBase(): string {
-  for (const ref of ["origin/main", "main"]) { try { return git("merge-base", ref, "HEAD"); } catch { /* try the next */ } }
+function defaultBase(root: string): string {
+  for (const ref of ["origin/main", "main"]) { try { return git(root, "merge-base", ref, "HEAD"); } catch { /* try the next */ } }
   throw new Error("no origin/main or main to compare against; pass --base <ref>");
 }
 
@@ -97,8 +96,8 @@ export async function main(options: GateOptions): Promise<number> {
   }
   let chat = options.chat;
   if (args.includes("--live") && !chat) { try { chat = gatewayChat(); } catch (error) { console.error(`model-routing-gate: ${(error as Error).message}`); return 2; } }
-  const baseRef = arg(args, "--base") ?? defaultBase();
-  const baseText = templateAt(baseRef), candidateText = readFileSync(join(root, TEMPLATE), "utf8");
+  const baseRef = arg(args, "--base") ?? defaultBase(root);
+  const baseText = templateAt(root, baseRef), candidateText = readFileSync(join(root, TEMPLATE), "utf8");
   const base = parseRouting(baseText), candidate = parseRouting(candidateText);
   const comparison = await compare(corpus, base, candidate, split);
   const changed = changedModelKeys(modelRoutingSummary(base), modelRoutingSummary(candidate));
