@@ -59,7 +59,7 @@ test("the read-only Rooms panel shows canonical metadata and wrapped relay label
     const text = lines.join("\n");
     expect(text).toContain("out handoff"); expect(text).toContain("in admitted"); expect(text).toContain("withheld");
     expect(text).toContain("since session"); expect(text).toContain(new Date(NOW).toISOString());
-    expect(text).toContain("out handoff 0"); expect(text).not.toContain("REMOTE_");
+    expect(text).toMatch(/out handoff +0/); expect(text).not.toContain("REMOTE_");
   }
 });
 

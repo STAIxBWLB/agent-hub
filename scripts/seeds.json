@@ -4072,6 +4072,28 @@
       "replacement": "const transient = !!replacing;",
       "testFile": "test/task-queue-backpressure.test.ts",
       "testName": "a plan policy refusal still replaces a queue origin when its peer goes offline during the same await"
+      "id": "room-x5-status-allowlist",
+      "file": "src/rooms/status.ts",
+      "search": "        name, room, owner, member, epoch,",
+      "replacement": "        ...item, name, room, owner, member, epoch,",
+      "testFile": "test/rooms-status.test.ts",
+      "testName": "room status projects only allowlisted metadata and leaves absent counts unknown"
+    },
+    {
+      "id": "room-x5-live-projection",
+      "file": "src/hub/daemon.ts",
+      "search": "    rooms: roomCommands.statusView(),",
+      "replacement": "    rooms: [],",
+      "testFile": "test/rooms-daemon.test.ts",
+      "testName": "X5 live status and dashboard publish only loaded room metadata without body title or detail reads"
+    },
+    {
+      "id": "room-x5-withheld-provenance",
+      "file": "src/rooms/service.ts",
+      "search": "this.count(binding, \"outbound\", withheld === true);",
+      "replacement": "this.count(binding, \"outbound\", false);",
+      "testFile": "test/rooms-chat.test.ts",
+      "testName": "an unknown on-prem screen crosses only a fixed stub, not the submitted body"
     }
   ]
 }
