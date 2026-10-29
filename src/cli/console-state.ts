@@ -14,6 +14,7 @@ import { configFormPrompt, reduceConfigForm, type ConfigEditBody, type ConfigFor
 import { windowKind } from "../hub/window-kind.ts";
 import { ownerIsolationText, taskHolderText } from "./role-holders.ts";
 import { USAGE_DROP, USAGE_HEAD, usageCells, usageDetail, usagePeers, usageTaskLines, type UsageState } from "./console-usage.ts";
+import type { RoomStatusView } from "../rooms/status.ts";
 
 export interface Approval {
   id: string; peer: string; title: string; expiresAt: number;
@@ -57,6 +58,8 @@ export interface ConsoleState {
   taskSelection?: number; queueSelection?: string;
   /** #683 U3: the Usage panel (7): what the `usage` op last answered, and the task that was selected in Tasks when the panel was opened. */
   usage?: UsageState; usageTask?: number;
+  /** Absent on older hubs, null when the current hub cannot report room status. */
+  rooms?: RoomStatusView[] | null; roomSelection?: string;
   actionLock?: { prefix: string[]; id: string; revision: number; state: string; owner?: string; reserved?: string; reviewer?: string; waiting?: boolean; syntax?: "planning" | "ownerless-return"; revisionField?: "planningRevision" | "flowRevision" };
   confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[]; prompt?: string; lock?: ConsoleState["actionLock"] } | { type: "permission_default"; peer: string; source: string };
   optionChoice?: string;
@@ -68,6 +71,7 @@ export interface ConsoleState {
   permissionDefaults: PermissionDefault[];
   permissionDefaultsHandled: string[];
 }
+const roomsVisible = (s: Pick<ConsoleState, "rooms">) => s.rooms === null || Array.isArray(s.rooms) && s.rooms.length > 0;
 /** A detail view: text as the stream shows it, or labeled fields. */
 export type Detail = string | Record<string, unknown>;
 export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; option?: string } |
@@ -401,9 +405,9 @@ const KEYS: [string, string[]][] = [
   ["Usage", ["7 Usage panel", "Enter view a peer", "tokens today/7d/lifetime with sources", "task from Tasks (3)"]],
 ];
 /** The `?` key table: one group per panel, its keys kept whole and packed into the width after the group column. */
-export function keyTable(columns: number, attention = false, characters = false): Span[][] {
+export function keyTable(columns: number, attention = false, characters = false, roomsAvailable = false): Span[][] {
   const lines: Span[][] = []; const pad = 12;
-  for (const [group, items] of [...KEYS, ...(attention ? [[characters ? "Pet" : "Attention", ["n next need", characters ? "P next character/off" : "P STAI/off"]] as [string, string[]]] : [])]) {
+  for (const [group, items] of [...KEYS, ...(roomsAvailable ? [["Rooms", ["8 Rooms panel (read only)", "j/k move", "Enter details"]] as [string, string[]]] : []), ...(attention ? [[characters ? "Pet" : "Attention", ["n next need", characters ? "P next character/off" : "P STAI/off"]] as [string, string[]]] : [])]) {
     let text = ""; let head = group;
     const flush = () => { lines.push([span(head.padEnd(pad), head ? "info" : undefined), span(text)]); head = ""; text = ""; };
     for (const item of items) { if (text && pad + Bun.stringWidth(`${text}   ${item}`) > columns) flush(); text = text ? `${text}   ${item}` : item; }
@@ -453,6 +457,7 @@ export function commandNeedsConfirmation(args: string[]): boolean {
 }
 export function panelRows(s: ConsoleState): any[] {
   if (s.panel === 1) return Object.entries(s.peers).map(([id, peer]) => ({ id, ...peer, budget: s.budget[id] }));
+  if (s.panel === 8) return s.rooms ?? [];
   if (s.panel === 2) return s.approvals;
   if (s.panel === 3) {
     if (s.backlogView) return s.tasks.filter(t => t.state === "backlog").sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.id - b.id);
@@ -479,6 +484,7 @@ const selection = (s: ConsoleState) => {
   if (s.panel === 2) return s.approvals.findIndex(a => a.id === s.approvalId);
   if (s.panel === 3 && s.taskSelection !== undefined) return panelRows(s).findIndex(row => row.id === s.taskSelection);
   if (s.panel === 4 && s.queueSelection !== undefined) return panelRows(s).findIndex(row => row.id === s.queueSelection);
+  if (s.panel === 8 && s.roomSelection !== undefined) return panelRows(s).findIndex(row => row.name === s.roomSelection);
   return s.selection;
 };
 export const selectedPanelRow = (s: ConsoleState): any | undefined => panelRows(s)[selection(s)];
@@ -486,6 +492,7 @@ export function captureConsoleSelection(s: ConsoleState, byIndex = false): void 
   const row = byIndex ? panelRows(s)[s.selection] : selectedPanelRow(s);
   if (s.panel === 3 && row) s.taskSelection = Number(row.id);
   if (s.panel === 4 && row) s.queueSelection = String(row.id);
+  if (s.panel === 8 && row) s.roomSelection = String(row.name);
 }
 const commandFlag = (args: string[], name: string) => { const at = args.indexOf(name); return at < 0 ? undefined : args[at + 1]; };
 function validateLockedCommand(lock: NonNullable<ConsoleState["actionLock"]>, args: string[]): void {
@@ -708,8 +715,9 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     // The task selected in Tasks is the one the Usage panel shows; switchPanel clears that selection, so it is read first (#683 U3).
     // With no valid selected row (an empty Tasks panel) the old task is cleared, never kept: the panel must not show a task that is no longer the selection.
     if (panel === 7 && s.panel === 3) { const task = selectedPanelRow(s); s.usageTask = task && Number.isSafeInteger(Number(task.id)) && Number(task.id) > 0 ? Number(task.id) : undefined; }
-    s.panel = panel; s.selection = panel === 5 ? newestEvent(s) : 0; s.taskSelection = undefined; s.queueSelection = undefined; s.detail = undefined; s.requestDetail = undefined; return done(); };
+    s.panel = panel; s.selection = panel === 5 ? newestEvent(s) : 0; s.taskSelection = undefined; s.queueSelection = undefined; s.roomSelection = undefined; s.detail = undefined; s.requestDetail = undefined; return done(); };
   if (s.mode === "panels" && /^[1-7]$/.test(key) && !s.optionChoice) return switchPanel(Number(key));
+  if (s.mode === "panels" && key === "8" && !s.optionChoice && roomsVisible(s)) return switchPanel(8);
   // Right and Left are the digit of the next or previous tab, wrapping at both ends (#309); the same guards as the
   // digits apply (the confirm, mode-choice, key-table and editing branches above returned already).
   if (s.mode === "panels" && (key === "\x1b[C" || key === "\x1b[D") && !s.optionChoice) return switchPanel(s.panel >= 6 ? key === "\x1b[C" ? 1 : 5 : (s.panel + (key === "\x1b[C" ? 0 : 3)) % 5 + 1);
@@ -805,7 +813,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     if (s.panel === 3 || s.panel === 4) effects.push({ type: "show", panel: s.panel, id: String(row.id) });
     else if (s.panel === 2) { s.requestDetail = row.id; s.detailOffset = 0; } // the row is the selected request
     else if (s.panel === 7) { s.detail = { usagePeer: row.id }; s.detailOffset = 0; } // rendered live from s.usage, so a refresh updates it
-    else { s.detail = s.panel === 5 ? String(row.text) : s.panel === 1 ? peerDetailRow(s, row) : { ...row }; s.detailOffset = 0; }
+    else { s.detail = s.panel === 5 ? String(row.text) : s.panel === 1 ? peerDetailRow(s, row) : s.panel === 8 ? roomDetail(row) : { ...row }; s.detailOffset = 0; }
     return done();
   }
   if (s.mode === "panels" && item !== undefined && item !== null) {
@@ -902,6 +910,7 @@ export const TABLES: Record<number, string[]> = {
   4: ["ID", "PEER", "STATE", "REV", "AGE"],
   6: ["GROUP", "KEY", "VALUE", "SOURCE", "APPLIES"],
   7: USAGE_HEAD,
+  8: ["ROOM", "LINK", "MEMBERS", "REMOTE"],
 };
 const showPermissionModes = (s: ConsoleState) => Object.values(s.peers).some(peer => peer.permissionMode && peer.permissionMode !== "ask");
 const count = (n: unknown) => typeof n === "number" && n ? String(n) : "-";
@@ -910,6 +919,9 @@ const waitingDeps = (s: ConsoleState, row: any): number[] => (row.deps ?? []).fi
 /** One span per column of a panel row; zero counters and unknown values read `-`. */
 export function cells(s: ConsoleState, row: any, selected: boolean, now: number, stages?: Map<number, ProgressStage>): Span[] {
   const id = (text: unknown, tone: Tone | undefined) => span(text, tone && (selected ? "strong" : tone));
+  if (s.panel === 8) return [id(row.name, "info"), span(row.link ?? "unknown", row.link ? stateTone(row.link) : "muted"),
+    span(row.memberCount === null ? "unknown" : String(row.memberCount), row.memberCount === null ? "muted" : undefined),
+    span(row.remotePeers === null ? "unknown" : String(row.remotePeers.length), row.remotePeers === null ? "muted" : undefined)];
   if (s.panel === 1) {
     const b = s.budget[row.id];
     const wip = s.taskWip?.[row.id];
@@ -952,6 +964,21 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
   // stream. Colour off concatenates to the same bytes.
   return [...streamTokens((header ?? "").replace(/\t/g, " "), row.tone, row.kind), ...(body.length ? [span("\n" + body.join("\n"))] : [])];
 }
+
+function roomDetail(row: RoomStatusView): Record<string, unknown> {
+  const relays = row.relays;
+  let since = "unknown";
+  if (relays) try { const date = new Date(relays.since); if (Number.isFinite(date.getTime())) since = date.toISOString(); } catch { /* keep unknown */ }
+  const count = (value: number | null | undefined) => typeof value === "number" ? String(value) : "unknown";
+  return {
+    room: row.name, "room id": row.room, "link state": row.link ?? "unknown", owner: row.owner, "local member": row.member,
+    "member count": count(row.memberCount),
+    "remote peers": row.remotePeers === null ? "unknown" : row.remotePeers.length ? row.remotePeers.map(peer => `${peer.id} (${peer.state})`) : "0",
+    "since session": since,
+    "out handoff": count(relays?.outbound), "in admitted": count(relays?.inbound), withheld: count(relays?.withheld),
+  };
+}
+
 /**
  * A header row, then the rows, each column starting at the same place on every row: two spaces apart, as wide as its
  * widest cell or header (Bun.stringWidth, at most a third of the width, wider cells cut with the marker); the last column
@@ -1038,16 +1065,17 @@ function hint(s: ConsoleState, columns: number): string {
   const compact = text.replace("m permission mode", "m mode").replace("w WIP limit", "w WIP").replace("j/k move", "j/k").replace(": command", ": cmd");
   return Bun.stringWidth(compact) > columns ? compact.replace("Enter view", "Enter") : compact;
 }
-/** The project, then the tabs: the active one in brackets, pending approvals and held deliveries counted. */
+/** The project, then the tabs: Rooms appears only when the hub reports room metadata. */
 function header(s: ConsoleState, columns: number): Span[] {
   const counts = [0, s.approvals.length, 0, s.queue.filter(q => q.state === "needs_review").length, 0];
   const project = s.project ?? "agent-hub";
-  // Seven tabs fill an 80-column line, which would squeeze the project name out: below that, one space before a tab instead of two (#683 U3).
+  // The tabs can fill an 80-column line, which would squeeze the project name out: below that, one space before a tab instead of two (#683 U3).
   const build = (lead: string) => {
     const tabs: Span[] = [];
-    for (const [i, name] of ["Peers", "Approvals", "Tasks", "Queue", "Events", "Settings", "Usage"].entries()) {
-      const active = i + 1 === s.panel; const tone = active ? "strong" : "info";
-      tabs.push(span(active ? lead.slice(1) + "[" : lead, tone), span(`${i + 1} ${name}`, tone));
+    const names = ["Peers", "Approvals", "Tasks", "Queue", "Events", "Settings", "Usage", ...(roomsVisible(s) ? ["Rooms"] : [])];
+    for (const [i, name] of names.entries()) {
+      const number = i === 7 ? 8 : i + 1, active = number === s.panel, tone = active ? "strong" : "info";
+      tabs.push(span(active ? lead.slice(1) + "[" : lead, tone), span(`${number} ${name}`, tone));
       if (counts[i]) tabs.push(span(` ${counts[i]}`, i === 1 ? "attention" : "failure"));
       tabs.push(span(active ? "]" : " ", tone));
     }
@@ -1157,10 +1185,10 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const definition: [string, unknown][] = row ? [["type", row.type], ...(row.min !== undefined || row.max !== undefined ? [["range", `${row.min ?? "-"}..${row.max ?? "-"}`] as [string, unknown]] : []), ["risk", row.risk], ["applies", row.applies]] : [];
     lines.push(...fieldLines([["setting", edit.key ?? s.settingsUndo ?? "last write"], ...definition, ["preview", (edit.lines ?? []).join("\n")], ["decision", "Esc cancels; saving needs a reason and explicit y"]], columns, now).flat());
   }
-  else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled || !!s.petChoices?.length, !!s.petChoices?.length));
+  else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled || !!s.petChoices?.length, !!s.petChoices?.length, roomsVisible(s)));
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
     const usagePeer = s.panel === 7 && s.detail && typeof s.detail === "object" ? (s.detail as { usagePeer?: unknown }).usagePeer : undefined;
-    const detail = typeof usagePeer === "string" ? fieldLines(Object.entries(usageDetail(s.usage, usagePeer, s.budget[usagePeer], at => relative(at, now))), columns, now).flat()
+      const detail = typeof usagePeer === "string" ? fieldLines(Object.entries(usageDetail(s.usage, usagePeer, s.budget[usagePeer], at => relative(at, now))), columns, now).flat()
       : s.detail !== undefined ? detailLines(s.detail, columns, now, s.panel === 3) : fieldLines(approvalFields(permission!), columns, now).flat();
     lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - height))));
   }
@@ -1199,6 +1227,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
         : `usage through ${s.usage.at ? relative(s.usage.at, now) : "now"}: today is the UTC day, 7d the last seven UTC days`;
       lines.push(fitLine([span(note, s.usage?.problem ? "failure" : !s.usage?.life || s.usage.behind ? "attention" : "info")], columns));
     }
+    if (s.panel === 8 && s.rooms === null) lines.push(fitLine([span("Room status unavailable", "attention")], columns));
     if (s.panel === 3 && s.backlogView) {
       lines.push(fitLine([span(s.tasksKnown === false ? "backlog loading..." : `backlog ${data.length}`, s.tasksKnown === false ? "attention" : "info")], columns));
     } else if (s.panel === 3) {

@@ -13,6 +13,7 @@ import { loadPetConfig } from "./pet-config.ts";
 import { CHARACTER_IDS, petGlyphs, petSize } from "../pet/frame.ts";
 import { activeNotice, consoleFooterRows } from "./console-state.ts";
 import { characterAttentionLine } from "./attention.ts";
+import { projectRoomStatus } from "../rooms/status.ts";
 
 export interface ConsoleTerminal {
   columns: number; rows: number; isTTY: boolean; isRaw?: boolean;
@@ -218,6 +219,18 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (status.status && status.ok !== false) state.pendingRestart = Array.isArray(status.status.pendingRestart) ? status.status.pendingRestart : [];
       if (status.status && status.ok !== false) state.retainedConfig = Array.isArray(status.status.retainedConfig) ? status.status.retainedConfig : [];
       if (status.status) state.features = Array.isArray(status.status.features) ? status.status.features : [];
+      if (status.status && status.ok !== false) {
+        const rooms = status.status.rooms;
+        state.rooms = rooms === undefined ? undefined : rooms === null ? null : Array.isArray(rooms) ? projectRoomStatus(rooms).sort((a, b) => a.name.localeCompare(b.name)) : null;
+        if (state.rooms === undefined || Array.isArray(state.rooms) && state.rooms.length === 0) {
+          if (state.panel === 8) { state.panel = 1; state.selection = 0; state.roomSelection = undefined; state.detail = undefined; state.detailOffset = 0; }
+        } else if (state.panel === 8) {
+          if (state.rooms === null) { state.roomSelection = undefined; state.selection = 0; state.detail = undefined; state.detailOffset = 0; }
+          else if (!state.roomSelection || !state.rooms.some(room => room.name === state.roomSelection)) {
+            state.roomSelection = state.rooms[0]?.name; state.selection = 0; state.detail = undefined; state.detailOffset = 0;
+          }
+        }
+      }
       if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer],
         ...(typeof status.status.ownerIsolation?.[peer] === "boolean" ? { ownerIsolation: status.status.ownerIsolation[peer] } : {}),
         ...(typeof status.status.ownerIsolationNotes?.[peer] === "string" ? { ownerIsolationNote: status.status.ownerIsolationNotes[peer] } : {}) }]));
@@ -332,7 +345,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (!action.option) stream({ text: `  ! denial requested for permission ${action.id}`, kind: "permission", tone: "failure" });
       return;
     }
-    if (action.type === "keys") return stream({ text: keyTable(columns, !!state.petEnabled || !!state.petChoices?.length, !!state.petChoices?.length).map(line => paint(line, false)).join("\n"), kind: "console" }, false);
+    if (action.type === "keys") return stream({ text: keyTable(columns, !!state.petEnabled || !!state.petChoices?.length, !!state.petChoices?.length, state.rooms === null || Array.isArray(state.rooms) && state.rooms.length > 0).map(line => paint(line, false)).join("\n"), kind: "console" }, false);
     if (action.type === "print") return stream({ text: action.text, kind: action.kind, ...(action.tone ? { tone: action.tone } : {}) }, false);
     if (action.type === "show") {
       const result = await client.request(action.panel === 3 ? { t: "task", op: "task_show", args: { id: action.id } } : { t: "queue", op: "show", id: action.id }, 3000);
