@@ -169,7 +169,10 @@ test("glob policies match decomposed, compatibility and long-s spellings of prot
 // #541: Bun's realpath sometimes names ANOTHER link of a hardlinked file (about 1 call in 100 on macOS APFS; the system realpath never does).
 // guardPath judges the name the caller typed as well, so a denied name is refused and a hub-owned name is not writable whichever link realpath picks.
 // Each leg runs enough iterations that an unfixed guard fails with overwhelming probability (1 percent per call: 5000 calls miss it with probability e^-50).
-const ITERATIONS = 5000;
+// #559: the 5000 are five tests of 1000 (PARTS), as test/realpath-name-audit.test.ts does. One test of 5000 iterations took 3.4 s idle and, with the three layouts in one test, 10.6 s idle and 27 s
+// on a loaded hosted macOS shard (past the 20 s limit): every iteration makes a directory, files and a link, so the time is the runner's, and a count of iterations is the only knob. Five parts keep
+// the total at 5000 per layout and put each test at about 0.7 s idle, so a runner 10 times slower still passes with the same assertions. Do not merge the parts back.
+const PARTS = [1, 2, 3, 4, 5] as const, ITERATIONS = 1000;
 function hardlinkLoop(layout: (dir: string) => { original: string; link: string }, attempt: (dir: string, link: string) => void): void {
   const base = root();
   for (let i = 0; i < ITERATIONS; i++) {
@@ -179,21 +182,21 @@ function hardlinkLoop(layout: (dir: string) => { original: string; link: string 
     attempt(dir, link);
   }
 }
-test("a denied name that is a hardlink of an innocent file is refused on every call, whichever link realpath names (#541)", () => {
-  let permitted = 0;
-  for (const [original, link] of [["data/raw/input.json", ".env"], ["data/raw/input.json", "secrets/.env"], ["notes.txt", "secrets/id_rsa"]] as const) {
+for (const [original, link] of [["data/raw/input.json", ".env"], ["data/raw/input.json", "secrets/.env"], ["notes.txt", "secrets/id_rsa"]] as const) for (const part of PARTS) {
+  test(`a denied name that is a hardlink of an innocent file is refused on every call, whichever link realpath names (#541, ${link} from ${original}, part ${part} of 5)`, () => {
+    let permitted = 0;
     hardlinkLoop(() => ({ original, link }), (dir, name) => { try { guardPath({ cwd: dir, deny: [] }, name, "read"); permitted++; } catch { /* refused, as required */ } });
-  }
-  expect(permitted).toBe(0);
-}, 20_000);
-test("the denied original of an innocent alias is refused by its own name on every call (#541)", () => {
+    expect(permitted).toBe(0);
+  }, 20_000);
+}
+for (const part of PARTS) test(`the denied original of an innocent alias is refused by its own name on every call (#541, part ${part} of 5)`, () => {
   // The reverse layout: the denied file was created first and the innocent name is the later link. The alias itself carries no denied name, so no guard that
   // sees one name can refuse it reliably (it is refused whenever realpath names the original: fail closed, never required); the denied name itself must never pass.
   let permitted = 0;
   hardlinkLoop(() => ({ original: "secrets/.env", link: "notes.txt" }), (dir) => { try { guardPath({ cwd: dir, deny: [] }, "secrets/.env", "read"); permitted++; } catch { /* refused, as required */ } });
   expect(permitted).toBe(0);
 }, 20_000);
-test("a hub-owned name that is the later hardlink of an innocent file stays unwritable on every call (#541)", () => {
+for (const part of PARTS) test(`a hub-owned name that is the later hardlink of an innocent file stays unwritable on every call (#541, part ${part} of 5)`, () => {
   // The hub-owned name must be the LATER link: Bun's realpath flips from the later link to the earlier one, so a typed `.agenthub/...` can resolve to an innocent name.
   let permitted = 0;
   hardlinkLoop(() => ({ original: "data/raw/input.json", link: "data/raw/hardlink.json" }), (dir) => {
@@ -202,7 +205,7 @@ test("a hub-owned name that is the later hardlink of an innocent file stays unwr
   });
   expect(permitted).toBe(0);
 }, 20_000);
-test("the write-side hardlink refusal and the permitted write of an ordinary file are unchanged on every call (#541)", () => {
+for (const part of PARTS) test(`the write-side hardlink refusal and the permitted write of an ordinary file are unchanged on every call (#541, part ${part} of 5)`, () => {
   hardlinkLoop(() => ({ original: "data/raw/input.json", link: "data/raw/hardlink.json" }), (dir, name) => {
     expect(() => guardPath({ cwd: dir, deny: [], readOnly: ["data/raw"] }, name, "write")).toThrow("hardlinked");
     expect(statSync(guardPath({ cwd: dir, deny: [] }, name, "write")).ino).toBe(statSync(join(dir, name)).ino);

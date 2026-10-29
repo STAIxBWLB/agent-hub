@@ -69,7 +69,11 @@ test("missing tool and private work make no native query",async()=>{
 
 test("a deadline stops the owned CLI and its descendant before worktree cleanup",async()=>{
  const f=fixture();try{
-  const child=join(f.root,"child"),facts=new CodeFacts({env:{...f.env,FAKE_RIPWIRE_MODE:"timeout",FAKE_RIPWIRE_CHILD:child},timeoutMs:400});
+ // The deadline starts when the owned CLI is spawned, and the fake needs time of its own to start and write its child marker: about 300 ms idle, and 1.4 s at 30-way local load (#559, measured).
+ // A 400 ms deadline therefore raced the marker and lost on a loaded hosted macOS shard ("the child marker did not exist yet"). The property is "the deadline stops the CLI and its descendant", which needs
+ // the descendant to exist first: the deadline is the production maximum, 5000 ms (CodeFacts caps timeoutMs at 5000), so the marker (at most 1.4 s loaded) comes first with 3.5x margin, and the
+ // test still ends in about 5.4 s, far under its own 20 s limit. Not shorter, and not a retry: the assertion is unchanged.
+  const child=join(f.root,"child"),facts=new CodeFacts({env:{...f.env,FAKE_RIPWIRE_MODE:"timeout",FAKE_RIPWIRE_CHILD:child},timeoutMs:5000});
   expect(await facts.changedSymbols(f.repo,f.base,f.head)).toEqual({state:"unknown"});expect(existsSync(child)).toBe(true);
   const pid=Number(readFileSync(child,"utf8"));const alive=spawnSync("ps",["-p",String(pid),"-o","stat="],{encoding:"utf8"});expect(alive.stdout.trim()===""||alive.stdout.trim().startsWith("Z")).toBe(true);
   expect(f.git("worktree","list","--porcelain").match(/^worktree /gm)).toHaveLength(1);

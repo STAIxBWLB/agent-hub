@@ -7,6 +7,19 @@ import { MAX_PTY_OUTPUT_BYTES, runPty } from "../src/cli/smoke-pty.ts";
 const dirs: string[] = [];
 afterAll(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), "ahub-smoke-pty-")); dirs.push(dir); return dir; };
+/**
+ * #559: on macOS the PTY bridge (src/cli/smoke-pty-bridge.ts) is a Bun process that calls `Bun.spawn` with a `terminal`. Under load that process sometimes never gets past the spawn: it sits in
+ * wait4 before the child exists (no output, no child process, no marker after the spawn call), so `runPty` ends at its own timeout with `outcome: "timeout"` and `outputBytes: 0` however long that
+ * timeout is. Measured on a 18-core Mac: 0 of 60 runs hang at 4 parallel, 13 of 60 at 12 parallel (60 s later it is still hung), and a plain no-op bun script never hangs at 40 parallel, so it is the
+ * spawn-with-terminal path and not process startup in general; the hosted macOS shards (about 1.5 times slower than the old single leg) hit it once in PR #960 run 40856337158. A longer timeout cannot
+ * help a process that never starts. So a run that ended as `timeout` having produced NO output at all is run once more: for the commands these tests run (echo, a node one-liner that prints, a
+ * child that must start before `ready` fires) a timeout with zero output is never the outcome under test. The timeout tests do not use this: their property is the timeout.
+ * ponytail: a second attempt, not a fix of the bridge. The upgrade path is the product: find and remove the hang in the bridge or in Bun, then delete this helper.
+ */
+async function runStarted(argv: readonly string[], patch: Parameters<typeof runPty>[1]): Promise<Awaited<ReturnType<typeof runPty>>> {
+  const first = await runPty(argv, patch);
+  return first.outcome === "timeout" && first.outputBytes === 0 ? runPty(argv, patch) : first;
+}
 const options = (cwd: string, patch: Partial<Parameters<typeof runPty>[1]> = {}) => ({
   cwd,
   env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: cwd, LANG: "C", TERM: "dumb" },
@@ -16,7 +29,7 @@ const options = (cwd: string, patch: Partial<Parameters<typeof runPty>[1]> = {})
 
 test("PTY runner captures output and returns a completed exit", async () => {
   const cwd = temp(), chunks: Buffer[] = [];
-  const result = await runPty([process.execPath, "-e", "process.stdout.write('pty-ready'); process.exit(0)"], options(cwd, { onOutput: chunk => chunks.push(Buffer.from(chunk)) }));
+  const result = await runStarted([process.execPath, "-e", "process.stdout.write('pty-ready'); process.exit(0)"], options(cwd, { onOutput: chunk => chunks.push(Buffer.from(chunk)) }));
   expect(result.outcome).toBe("exited");
   expect(result.exitCode).toBe(0);
   expect(result.outputBytes).toBeGreaterThan(0);
@@ -26,7 +39,7 @@ test("PTY runner captures output and returns a completed exit", async () => {
 
 test("ready callback completion stops the process group and reports completed", async () => {
   const cwd = temp();
-  const result = await runPty([process.execPath, "-e", "setInterval(() => {}, 1000)"], options(cwd, { ready: async () => {} }));
+  const result = await runStarted([process.execPath, "-e", "setInterval(() => {}, 1000)"], options(cwd, { ready: async () => {} }));
   expect(result.outcome).toBe("completed");
   expect(result.cleaned).toBe(true);
 });
@@ -62,7 +75,7 @@ test("argv metacharacters stay literal inside the PTY", async () => {
   const cwd = temp(), marker = join(cwd, "executed");
   let output = "";
   const literal = `; touch ${marker}; echo 'quoted'`;
-  const result = await runPty(["/bin/echo", literal], options(cwd, { onOutput: chunk => { output += chunk.toString(); } }));
+  const result = await runStarted(["/bin/echo", literal], options(cwd, { onOutput: chunk => { output += chunk.toString(); } }));
   expect(result.outcome).toBe("exited");
   expect(result.cleaned).toBe(true);
   expect(output).toContain(literal);
@@ -73,7 +86,7 @@ test("output over the bounded callback cap fails after cleanup", async () => {
   const cwd = temp();
   let delivered = 0;
   const code = `process.stdout.write('x'.repeat(${MAX_PTY_OUTPUT_BYTES + 1}))`;
-  const result = await runPty([process.execPath, "-e", code], options(cwd, { onOutput: chunk => { delivered += chunk.length; } }));
+  const result = await runStarted([process.execPath, "-e", code], options(cwd, { onOutput: chunk => { delivered += chunk.length; } }));
   expect(result.outcome).toBe("failed");
   expect(result.cleaned).toBe(true);
   expect(delivered).toBeLessThanOrEqual(MAX_PTY_OUTPUT_BYTES);
@@ -81,7 +94,7 @@ test("output over the bounded callback cap fails after cleanup", async () => {
 
 test("output callback failure returns a cleaned failed result without exposing its error", async () => {
   const cwd = temp();
-  const result = await runPty(["/bin/echo", "data"], options(cwd, { onOutput: () => { throw new Error("private callback detail"); } }));
+  const result = await runStarted(["/bin/echo", "data"], options(cwd, { onOutput: () => { throw new Error("private callback detail"); } }));
   expect(result.outcome).toBe("failed");
   expect(result.cleaned).toBe(true);
   expect(JSON.stringify(result)).not.toContain("private callback detail");
@@ -108,7 +121,7 @@ test("an abort signal stops the owned process group", async () => {
 test("PTY gives the child a real fixed-size terminal and preserves a nonzero exit code", async () => {
   const cwd = temp(), chunks: Buffer[] = [];
   const code = "console.log(JSON.stringify({tty:!!process.stdin.isTTY&&!!process.stdout.isTTY,cols:process.stdout.columns,rows:process.stdout.rows}));process.exit(7)";
-  const result = await runPty([process.execPath, "-e", code], options(cwd, { onOutput: chunk => chunks.push(Buffer.from(chunk)) }));
+  const result = await runStarted([process.execPath, "-e", code], options(cwd, { onOutput: chunk => chunks.push(Buffer.from(chunk)) }));
   expect(result.outcome).toBe("exited");
   expect(result.exitCode).toBe(7);
   expect(result.cleaned).toBe(true);
