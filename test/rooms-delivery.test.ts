@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startBroker, type BrokerEvent, type BrokerRuntime } from "../src/broker/server.ts";
+import type { Database } from "bun:sqlite";
 import { Bus, type PublishResult } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { BasePeer } from "../src/hub/peers.ts";
@@ -127,6 +128,22 @@ interface Mesh {
   root: string; broker: BrokerRuntime; event: Signal; control: Control; frames: { sender: string; digest: string; phase: string }[];
   brokerEvents: { event: BrokerEvent; member?: string; code?: string }[]; a: Hub; b: Hub; owner: string; guest: string;
   restart(which: "a" | "b"): Promise<Hub>; close(): Promise<void>;
+}
+function fillApplicationIdentityCap(receiver: Hub, remoteSender: string, now: number): void {
+  const store = receiver.store!;
+  const db = (store as unknown as { db: Database }).db;
+  const room = store.get("work")!.current.room;
+  const application = db.query("INSERT INTO applications(room,sender,application,content_hash,primary_digest,peer,trace,hop,state,created_at) VALUES(?,?,?,?,?,?,?,0,'needs_review',?)");
+  const frame = db.query("INSERT INTO application_frames(room,digest,sender,application) VALUES(?,?,?,?)");
+  db.transaction(() => {
+    for (let n = 1; n < ROOM_APPLICATION_RETENTION.identitiesPerRoom; n++) {
+      const id = crypto.randomUUID(), bytes = new Uint8Array(32);
+      new DataView(bytes.buffer).setUint32(28, n);
+      const digest = encodeBase64url(bytes);
+      application.run(room, remoteSender, id, digest, digest, "codex", crypto.randomUUID(), now);
+      frame.run(room, digest, remoteSender, id);
+    }
+  })();
 }
 const meshes: Mesh[] = [];
 afterEach(async () => { for (const mesh of meshes.splice(0).reverse()) await mesh.close(); });
@@ -290,6 +307,79 @@ test("a pre-claim capacity block retains plaintext while a later signed receipt 
   await command(f.b, "resolve", { name: "work", frame: holdDigest, action: "discard" });
   await f.event.wait(async () => (await outbound(f.a, blocked.id))?.state === "completed (admitted)", "person disposition retries retained plaintext");
   expect(f.b.peer.got.filter(row => row.id === blocked.id)).toHaveLength(1); expect(receiver.pendingInbox("work")).toEqual([]);
+});
+
+test("discarding a person inbox entry frees shared application capacity and retries retained native work once", async () => {
+  const f = await mesh(); let personReceiptSends = 0, nativeReceives = 0;
+  const person = newEnvelope("codex", "person inbox capacity release", { to: ["user@beta"], priority: "status" });
+  f.control.afterSend = async (label, message) => {
+    if (label === "beta" && message.type === "receipt" && message.application === person.id) personReceiptSends++;
+  };
+  expect(f.a.bus.publish(person)).toEqual(["user@beta"]);
+  await f.event.wait(async () => (await outbound(f.a, person.id))?.state === "completed (inbox)" && personReceiptSends === 1, "person inbox admission receipt");
+  const inbox = f.b.store!.listPersonInbox("work")[0]!;
+  expect(inbox.state).toBe("unread");
+
+  fillApplicationIdentityCap(f.b, f.owner, f.control.now);
+  const native = newEnvelope("user", "native work waits for person disposition", { to: ["codex@beta"] });
+  f.control.afterReceive = (label, input) => {
+    if (label === "beta" && input.message?.type === "chat" && input.message.envelope.id === native.id) nativeReceives++;
+  };
+  expect(f.a.bus.publish(native)).toEqual(["codex@beta"]);
+  await f.event.wait(() => f.b.notices.some(row => row.code === "application_capacity"), "shared application identity cap reached");
+  expect(nativeReceives).toBe(1);
+  expect(f.b.store!.pendingInbox("work")).toHaveLength(1);
+  expect(f.b.peer.got.some(row => row.id === native.id)).toBe(false);
+
+  await f.b.commands.inboxDispose(inbox.id, "discard", () => true);
+  expect(nativeReceives).toBe(2); // The explicit disposition awaits the retained-frame retry.
+  await f.event.wait(() => nativeReceives === 2 && f.b.peer.got.some(row => row.id === native.id)
+    && f.b.store!.pendingInbox("work").length === 0, "discard retries the retained native chat once");
+  await f.event.wait(async () => (await outbound(f.a, native.id))?.state === "completed (admitted)", "native admission receipt returned");
+  expect(f.b.peer.got.filter(row => row.id === native.id)).toHaveLength(1);
+  expect((await outbound(f.a, person.id))?.state).toBe("completed (inbox)");
+  expect(personReceiptSends).toBe(1); // Disposition never issues a second person application receipt.
+  expect(f.b.notices.filter(row => row.code === "application_capacity")).toHaveLength(1);
+});
+
+test("only an actual inbox TTL purge retries capacity blocked work and late sender proof stays needs_review", async () => {
+  const f = await mesh(); let personReceiptSends = 0, nativeReceives = 0;
+  const person = newEnvelope("codex", "person inbox TTL capacity release", { to: ["user@beta"], priority: "status" });
+  f.control.afterSend = async (label, message) => {
+    if (label === "beta" && message.type === "receipt" && message.application === person.id) personReceiptSends++;
+  };
+  expect(f.a.bus.publish(person)).toEqual(["user@beta"]);
+  await f.event.wait(async () => (await outbound(f.a, person.id))?.state === "completed (inbox)" && personReceiptSends === 1, "person inbox admission receipt");
+  const inbox = f.b.store!.listPersonInbox("work")[0]!;
+  fillApplicationIdentityCap(f.b, f.owner, f.control.now);
+  const native = newEnvelope("user", "native work waits for inbox expiry", { to: ["codex@beta"] });
+  f.control.afterReceive = (label, input) => {
+    if (label === "beta" && input.message?.type === "chat" && input.message.envelope.id === native.id) nativeReceives++;
+  };
+  expect(f.a.bus.publish(native)).toEqual(["codex@beta"]);
+  await f.event.wait(() => f.b.notices.some(row => row.code === "application_capacity"), "shared application identity cap reached");
+  expect(nativeReceives).toBe(1);
+  expect(f.b.store!.pendingInbox("work")).toHaveLength(1);
+
+  const noticeCount = f.b.notices.filter(row => row.code === "application_capacity").length;
+  f.b.commands.expireInbox(); // Unchanged expiry state must not trigger a plaintext retry.
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(nativeReceives).toBe(1);
+  expect(f.b.notices.filter(row => row.code === "application_capacity")).toHaveLength(noticeCount);
+  expect(f.b.store!.pendingInbox("work")).toHaveLength(1);
+
+  f.control.now = inbox.expiresAt + 1;
+  f.a.chat.tick(); // The sender's old ACK deadline is uncertainty, not a new completion.
+  await f.event.wait(async () => (await outbound(f.a, native.id))?.state === "needs_review", "native sender ACK deadline becomes uncertain");
+  f.b.commands.expireInbox();
+  await f.event.wait(() => nativeReceives === 2 && f.b.peer.got.some(row => row.id === native.id)
+    && f.b.store!.pendingInbox("work").length === 0, "actual TTL purge retries the retained native chat once");
+  expect(f.b.peer.got.filter(row => row.id === native.id)).toHaveLength(1);
+  await f.event.wait(async () => (await outbound(f.a, native.id))?.lateReceipt === "completed (admitted)", "late native admission proof retained");
+  expect(await outbound(f.a, native.id)).toMatchObject({ state: "needs_review", lateReceipt: "completed (admitted)" });
+  expect((await outbound(f.a, person.id))?.state).toBe("completed (inbox)");
+  expect(personReceiptSends).toBe(1); // TTL purge drops local body without a new signed person outcome.
+  expect(f.b.notices.filter(row => row.code === "application_capacity")).toHaveLength(noticeCount);
 });
 
 test("a silent local recipient returns a signed safe refusal before any local publication", async () => {

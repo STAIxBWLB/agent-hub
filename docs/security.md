@@ -802,3 +802,8 @@ refuse and ask for a room filter, rather than truncating. Older X4 codecs reject
 the new fixed inbox receipt reasons, leaving uncertainty rather than claiming
 mixed-version delivery success. Live two-machine/account evidence remains
 separate.
+
+Person disposition and actual TTL purge can wake existing X4 deferred traffic
+once, without a new outcome or receipt for the purged entry. Idle expiry ticks
+never poll plaintext; all resumed traffic retains the existing trust and role
+checks.

@@ -265,3 +265,18 @@ test("inbox show rechecks its socket after await before serializing a body", asy
     expect(reads).toBe(0);
   } finally { show.mockRestore(); }
 });
+
+
+test("person inbox expiry schedules a retry only after an actual purge and coalesces idle ticks", async () => {
+  let changed = false, retries = 0;
+  const commands = new RoomCommands({ cwd: tmpdir(), stateDir: tmpdir(), chat: {
+    retryPending: async () => { retries++; }, stop: () => {},
+  } as unknown as RoomChat });
+  Object.assign(commands, { store: { expirePersonInbox: () => changed, close: () => {} } });
+  commands.expireInbox(); await new Promise<void>(resolve => setImmediate(resolve));
+  expect(retries).toBe(0);
+  changed = true; commands.expireInbox(); changed = false; commands.expireInbox();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(retries).toBe(1);
+  commands.stop();
+});

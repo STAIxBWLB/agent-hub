@@ -951,12 +951,13 @@ export class RoomStore {
     for (const state of this.rooms.values()) this.db.query("DELETE FROM person_inbox WHERE room=? AND state!='unread' AND id NOT IN (SELECT id FROM person_inbox WHERE room=? AND state!='unread' ORDER BY settled_at DESC,id DESC LIMIT ?)")
       .run(state.current.room, state.current.room, ROOM_PERSON_INBOX_LIMITS.stubsPerRoom);
   }
-  expirePersonInbox(): void {
+  expirePersonInbox(): boolean {
     const now = this.now();
     // Idle ticks inspect indexed metadata only, with no transaction or durable clock write.
     const due = this.db.query("SELECT 1 FROM person_inbox WHERE (state='unread' AND expires_at<=?) OR (state!='unread' AND settled_at<=?) LIMIT 1").get(now, now - ROOM_PERSON_INBOX_LIMITS.ttlMs);
-    if (!due && !this.db.query("SELECT room FROM person_inbox WHERE state!='unread' GROUP BY room HAVING COUNT(*)>1000 LIMIT 1").get()) return;
+    if (!due && !this.db.query("SELECT room FROM person_inbox WHERE state!='unread' GROUP BY room HAVING COUNT(*)>1000 LIMIT 1").get()) return false;
     this.transaction(current => this.prunePersonInbox(current));
+    return true;
   }
   /** A person inbox and its immutable admission receipt commit together. No Bus or network effect occurs here. */
   admitPersonInbox(name: string, digestValue: string, current?: () => boolean): RoomPersonInboxAdmission {

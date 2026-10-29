@@ -114,10 +114,16 @@ export class RoomCommands {
     this.current(check);
     if (typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) refuse("invalid_input");
     const store = await this.inboxStore(check); this.current(check);
-    const item = store?.disposePersonInbox(id, action, () => { this.current(check); return true; }); this.current(check); return item;
+    const item = store?.disposePersonInbox(id, action, () => { this.current(check); return true; }); this.current(check);
+    if (item) await this.options.chat?.retryPending();
+    this.current(check); return item;
   }
   /** Loaded-state housekeeping only, including rooms that have been left. */
-  expireInbox(): void { if (!this.stopped) this.store?.expirePersonInbox(); }
+  expireInbox(): void {
+    if (this.stopped || !this.store?.expirePersonInbox()) return;
+    // Only a real local purge creates this opportunity; idle ticks never poll plaintext.
+    queueMicrotask(() => { if (!this.stopped) void this.options.chat?.retryPending().catch(() => undefined); });
+  }
   async rows(name?: string, details = name !== undefined): Promise<Record<string, unknown>[]> {
     if (!this.store && !existsSync(join(this.options.stateDir, "rooms"))) return [];
     const store = await this.open(); if (name !== undefined) roomName(name);

@@ -4862,7 +4862,9 @@ for a fingerprint. All inbox forms refuse agent shells, conductors and
 `--live-test`. They also refuse during recovery or a Bus hold. Show prints one
 sanitized, terminal-safe untrusted body and does not mark it done. Done/discard
 immediately purge the body and keep a metadata stub. Expiry does the same;
-there is no archive or read-after-done command. Dashboard, status, logs, memory,
+there is no archive or read-after-done command. Capacity released by done/discard
+or a real TTL purge wakes already-deferred X4 traffic; no new receipt is sent for
+the purged entry, and idle ticks never poll queued plaintext. Dashboard, status, logs, memory,
 models and observers never receive the body.
 
 The sender's **completed (inbox)** receipt means durable admission, not that the
