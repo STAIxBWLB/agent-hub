@@ -11,9 +11,9 @@ import type { ConductorRecoveryBinding } from "../src/hub/recovery-authority.ts"
 import { realPath } from "../src/hub/project.ts";
 import { planFingerprint, type Inspection, type RecoveryPeer, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { packageDigest } from "../src/cli/recovery-package.ts";
+import { preserveSource } from "../src/cli/upgrade-runtime.ts";
 import { VERSION } from "../src/version.ts";
-import { LocalPeer } from "../src/adapters/local-worker.ts";
-import { OmniRoute } from "../src/omniroute/client.ts";
+import type { LocalPeer } from "../src/adapters/local-worker.ts";
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 
 const PACKAGE_ROOT = realPath(resolve(import.meta.dir, ".."));
@@ -51,7 +51,14 @@ async function fixture() {
     rmSync(root, { recursive: true, force: true });
   };
   try {
-    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    // Exercise the same immutable runtime as recovery. Shared test dependencies may
+    // be symlinked; production runtime integrity must keep refusing those links.
+    const sourceDigest = packageDigest(PACKAGE_ROOT);
+    const runtimeRoot = preserveSource({ sourceRoot: PACKAGE_ROOT, sourceDigest } as UpgradePlan);
+    const runtime = await import(join(runtimeRoot, "src/hub/daemon.ts")) as typeof import("../src/hub/daemon.ts");
+    const runtimeLocal = await import(join(runtimeRoot, "src/adapters/local-worker.ts")) as typeof import("../src/adapters/local-worker.ts");
+    const runtimeOmni = await import(join(runtimeRoot, "src/omniroute/client.ts")) as typeof import("../src/omniroute/client.ts");
+    daemon = await runtime.startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
       config: loadConfig(root), snapshotClock: () => 0, configWatch: false, boundedTools: emulatedBoundedTools() });
     const connect = async (peer?: string) => {
       const client = await ControlClient.connect(stateDir, peer ? { role: "tools", peer, projectRoot: root } : { role: "console", projectRoot: root });
@@ -65,19 +72,19 @@ async function fixture() {
       const observed = await inspect(); expect(observed.ok).toBe(true);
       const source: Inspection = { state: "running", instanceId: project.instanceId, version: VERSION, protocol: PROTOCOL,
         peers: Object.values(observed.recovery.peers ?? {}) as RecoveryPeer[], blockers: [] };
-      const digest = packageDigest(PACKAGE_ROOT, { ownDependencies: true });
-      const body: Omit<UpgradePlan, "fingerprint"> = { schema: 1, kind: "restart", version: VERSION, sourceRoot: PACKAGE_ROOT, sourceDigest: digest,
+      const digest = packageDigest(runtimeRoot, { ownDependencies: true });
+      const body: Omit<UpgradePlan, "fingerprint"> = { schema: 1, kind: "restart", version: VERSION, sourceRoot: runtimeRoot, sourceDigest: digest,
         projects: [{ project, source, terminals: [], blockers: [] }], blockers: [] };
       const plan: UpgradePlan = { ...body, fingerprint: planFingerprint(body) };
       const binding: ConductorRecoveryBinding = { schema: 1, operationId: crypto.randomUUID(), peer: "codex", kind: "restart", projectId: project.id,
-        projectRoot: root, stateDir, sourceInstanceId: project.instanceId, targetRoot: PACKAGE_ROOT, targetDigest: digest, planFingerprint: plan.fingerprint,
+        projectRoot: root, stateDir, sourceInstanceId: project.instanceId, targetRoot: runtimeRoot, targetDigest: digest, planFingerprint: plan.fingerprint,
         ...captureRecoveryPolicy(project, "codex", loadConfig(root)) };
       return { binding, plan };
     };
     const request = (binding: ConductorRecoveryBinding, op: string, extra: Record<string, unknown> = {}) => lead.request({ t: "recovery", op,
       expectedInstanceId: project.instanceId, operationId: binding.operationId, authority: binding, targetFeatures: [...DAEMON_FEATURES], targetVersion: VERSION, ...extra });
     const addCapture = async (callback: () => Promise<void>) => { const peer = new CapturePeer(callback); daemon!.bus.add(peer); await peer.start(); return peer; };
-    return { root, stateDir, daemon, person, lead, ordinary, project, authority, inspect, request, addCapture,
+    return { root, stateDir, daemon, person, lead, ordinary, project, authority, inspect, request, addCapture, runtimeRoot, runtimeStart: runtime.startDaemon, LocalPeer: runtimeLocal.LocalPeer, OmniRoute: runtimeOmni.OmniRoute,
       async revokeConductor() {
         config.roles.codex = ["planner"]; writeFileSync(configFile, JSON.stringify(config));
         const first = await person.request({ t: "settings_reload" }); expect(first.ok).toBe(true);
@@ -200,10 +207,10 @@ test("real source commit permits only its stopping verification and a replacemen
   const savedSession = crypto.randomUUID(), fake = new SnapshotLocal(savedSession, stopping, releaseStop);
   let target: Awaited<ReturnType<typeof startDaemon>> | undefined;
   const targetClients: ControlClient[] = [], starts: Record<string, unknown>[] = [], modelCalls: string[] = [];
-  const originalStart = LocalPeer.prototype.start;
-  const start = spyOn(LocalPeer.prototype, "start").mockImplementation(function(this: LocalPeer) { starts.push(this.recoveryMetadata()); return originalStart.call(this); });
-  const inventory = spyOn(OmniRoute.prototype, "models").mockImplementation(async () => { modelCalls.push("models"); throw new Error("recovery fixture must not query a gateway"); });
-  const chat = spyOn(OmniRoute.prototype, "chat").mockImplementation(async () => { modelCalls.push("chat"); throw new Error("recovery fixture must not start a model turn"); });
+  const originalStart = f.LocalPeer.prototype.start;
+  const start = spyOn(f.LocalPeer.prototype, "start").mockImplementation(function(this: LocalPeer) { starts.push(this.recoveryMetadata()); return originalStart.call(this); });
+  const inventory = spyOn(f.OmniRoute.prototype, "models").mockImplementation(async () => { modelCalls.push("models"); throw new Error("recovery fixture must not query a gateway"); });
+  const chat = spyOn(f.OmniRoute.prototype, "chat").mockImplementation(async () => { modelCalls.push("chat"); throw new Error("recovery fixture must not start a model turn"); });
   const oldOperation = process.env.AGENTHUB_RECOVERY_OPERATION;
   try {
     source.bus.add(fake); await fake.start();
@@ -228,7 +235,7 @@ test("real source commit permits only its stopping verification and a replacemen
     const targetInstance = crypto.randomUUID();
     process.env.AGENTHUB_RECOVERY_OPERATION = binding.operationId;
     try {
-      target = await startDaemon({ cwd: f.root, stateDir: f.stateDir, projectId: f.project.id, instanceId: targetInstance,
+      target = await f.runtimeStart({ cwd: f.root, stateDir: f.stateDir, projectId: f.project.id, instanceId: targetInstance,
         controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: loadConfig(f.root), snapshotClock: () => 0,
         configWatch: false, boundedTools: emulatedBoundedTools() });
     } finally {
@@ -257,7 +264,7 @@ test("real source commit permits only its stopping verification and a replacemen
     // session persistence, only refusal to accept a wire-selected session.
     expect(starts[0]!.sessionId).not.toBe(savedSession); expect(starts[0]!.sessionId).not.toBe("WIRE_SESSION_CANARY");
     expect(JSON.stringify(starts)).not.toContain("WIRE_MODEL_CANARY"); expect(modelCalls).toEqual([]);
-    expect(target.bus.peers.get("local")).toBeInstanceOf(LocalPeer);
+    expect(target.bus.peers.get("local")).toBeInstanceOf(f.LocalPeer);
     expect(target.bus.isPaused("local")).toBe(true);
   } finally {
     releaseStop.resolve();
@@ -273,7 +280,7 @@ test("a source-issued grant cannot prepare an unrelated replacement daemon", asy
     const { binding, plan } = await f.authority();
     expect((await f.lead.request({ t: "recovery_authority", op: "issue", binding, plan })).ok).toBe(true);
     await f.daemon.stop(); await f.daemon.stopped;
-    replacement = await startDaemon({ cwd: f.root, stateDir: f.stateDir, projectId: binding.projectId, instanceId: crypto.randomUUID(),
+    replacement = await f.runtimeStart({ cwd: f.root, stateDir: f.stateDir, projectId: binding.projectId, instanceId: crypto.randomUUID(),
       controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: loadConfig(f.root), snapshotClock: () => 0, configWatch: false, boundedTools: emulatedBoundedTools() });
     lead = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex", projectRoot: f.root });
     expect((await lead.request({ t: "recovery", op: "prepare", operationId: binding.operationId, expectedInstanceId: lead.instanceId, authority: binding, targetFeatures: DAEMON_FEATURES })).ok).toBe(false);
@@ -288,7 +295,7 @@ test("a source-issued continuation refuses changed plan data under an unchanged 
     const { binding, plan } = await f.authority();
     expect((await f.lead.request({ t: "recovery_authority", op: "issue", binding, plan })).ok).toBe(true);
     const operation: import("../src/cli/upgrade.ts").RecoveryOperation = { schema: 1, id: binding.operationId, plan,
-      sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, targetDigest: binding.targetDigest, targetFeatures: DAEMON_FEATURES,
+      sourceRoot: f.runtimeRoot, targetRoot: f.runtimeRoot, targetDigest: binding.targetDigest, targetFeatures: DAEMON_FEATURES,
       createdAt: 1, updatedAt: 1, phase: "pending", step: "stage", projects: [{ id: binding.projectId, phase: "pending", terminals: {} }] };
     const { authorizeConductorOperation } = await import("../src/cli/conductor-recovery.ts");
     await authorizeConductorOperation(operation, "codex");
