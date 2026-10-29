@@ -357,15 +357,16 @@ The local worker and headless ACP peers, including Jcode, receive tools only ins
 Every console resolution needs a reason. Queue `discard` removes queued originals or
 settles a needs_review receipt; it never cancels a task or native turn.
 
-`ahub task unassign <id> [--role owner|reviewer] [--revision N]` is the terminal
-equivalent. Owner removal is allowed in `proposed`, `in_progress` and
+`ahub task unassign <id> [--role owner|reviewer] [--revision N]` is available to
+the person or configured conductor. The board records the caller that performed
+the unassign. Owner removal is allowed in `proposed`, `in_progress` and
 `changes_requested`, returns active work to `proposed`, and clears any owner
 reservation. It is refused in `in_review`, `approved` and `backlog`. Reviewer
 removal retains the state, including `in_review`, and refuses to remove the human
 reviewer of PII work. No replacement is routed and no native process or external
-effect is rolled back. A person-unassigned task stays out of automatic owner
+effect is rolled back. An owner-unassigned task stays out of automatic owner
 offers across dependency release, planner-pull processing, release timers and
-restarts until an explicit assignment or reservation. The later unassign also
+restarts until a later authorized explicit assignment or reservation. The later unassign also
 fences planner undo, so undo and re-pull cannot restore the removed reservation.
 Former queued assignment or review requests are withdrawn without resolving
 uncertain deliveries, and the former agent loses current authority. A withdrawal
@@ -565,9 +566,13 @@ and so is every help entry the gate has no class for yet;
 | `ahub release show <name>` | Allowed | public release metadata; private scope and internal history remain withheld |
 | `ahub projects [--json] [--color=...]` | Allowed | lists registered projects; `projects remove` stays Console |
 | `ahub models status [--json] [--color=...]` | Allowed | reads local model state; `setup\|start\|stop` stay Console |
-| `ahub recovery status [<op-id>] [--json]` | Allowed | reads a preflight operation; the bare interactive screen, `resume`, `abort` and `reattach` stay Console |
-| `ahub upgrade ... --dry-run` (no `--yes`) | Allowed | reviews the upgrade plan and applies nothing; `--yes` stays Console |
-| `ahub restart --dry-run [--json]` (no `--yes`) | Allowed | reviews the restart plan and applies nothing; `--yes` stays Console |
+| `ahub recovery status [<op-id>] [--json]` | Allowed | reads a preflight operation; the bare interactive screen and `reattach` stay Console |
+| `ahub upgrade ... --dry-run` (no `--yes`) | Allowed | reviews the upgrade plan and applies nothing; apply requires an exact conductor proof or the person's terminal |
+| `ahub restart --yes` | Conductor | only with a source-issued continuation proof for this project's own operation |
+| `ahub upgrade --yes --to <exact-version>` | Conductor | only when source and target support the bound continuation protocol; the parser still validates the exact version |
+| `ahub recovery resume|abort [<op-id>]` | Conductor | only for that same conductor's restart/authorized-upgrade operation and its current proof; otherwise person-only |
+| `ahub task unassign <id> [--role owner|reviewer] [--revision N]` | Conductor | actual caller is retained; no replacement is routed and native work is not stopped |
+| `ahub restart --dry-run [--json]` (no `--yes`) | Allowed | reviews the restart plan and applies nothing |
 
 `backlog list`, `release list` and `sdlc costs|metrics` retain their existing
 planner/person policy. Their CLI forms stay Console for ordinary agents; a
@@ -4604,7 +4609,7 @@ Optional code work runs only while Memory is open and visible. A cold console co
 
 ## Authority by command
 
-### Conductor operations (#812 T2)
+### Conductor operations (#812 T2, #535)
 
 The selected project's configured conductor may run the commands below through its ordinary peer identity. Other peers retain the guidance "the person runs it in ahub console or a terminal". A missing or dead descriptor refuses promptly. For a live descriptor the connect and local authorization handshakes each keep a 3-second bound; connection unavailability is not presented as proof that the peer lacks the conductor role. Actual authority refusals are audited as refused, while ordinary operation failures retain their original cause. The daemon checks the authenticated connection, current role and project membership before effects and after asynchronous boundaries. Roster handoffs carry that same authority check through plan admission, owner delivery and each later task; a saved assignment is never rolled back when delivery is interrupted. Effectful operations and operational history reads retain an `agent_cli` admission with the initiating peer; audit failure refuses those operations. Authorization negotiation, `settings_preview` and `queue show` still check current authority but emit no extra admission record or conductor notice. Admission records are not a unique invocation counter.
 
@@ -4624,7 +4629,45 @@ Log history is limited to the last 100 retained lines and export to the last 100
 
 Orphan cleanup requires a missing selected root, signed process identity and the host-known hub executable/entrypoint and argv. An inaccessible root or unavailable proof remains unknown; there is no offline config-based role grant. The daemon rechecks authority and process ownership before signals. A confirmed self candidate uses the existing lifecycle stop after its reply. A roster write already committed before authority ends is acknowledged as saved, without authorizing further lifecycle work or commands.
 
-`restart --yes` and `recovery resume/abort` await a project-scoped continuation proof. `task unassign` follows #481, and legacy models start/stop awaits a project that needs it. This slice adds no task eligibility rule and no MLX/recovery-driver changes. Person authority and the separately authorized `--live-test` path retain their existing behavior.
+### Conductor-bound restart and recovery continuation (#535)
+
+The configured conductor may start a restart with `ahub restart --yes` or an
+upgrade with `ahub upgrade --yes --to <exact-version>` only after the source hub
+issues a private continuation record for that exact operation. The record is
+separate from public recovery JSON and its `delegatedAudits` history. A
+source-issued HMAC binds the operation id, initiating peer, project id and
+canonical root, source daemon instance, target root and package bytes, plan
+fingerprint, current authority policy and privacy evidence. A public operation
+entry or audit label alone grants nothing.
+
+The source and target must both advertise `conductor_recovery`, and the target
+coordinator must be supported by the installed coordinator. Missing, old,
+unknown or mismatched evidence refuses before the operation takes its hold or
+starts staging. An upgrade that hands off to a newer coordinator is person-only
+unless that coordinator can establish the same supported proof. At every effect
+boundary, the host rechecks the same peer's live conductor role and roster
+membership, project authority, read-only status and current non-PII/privacy
+policy. Offline continuation uses only bounded current actor/privacy checks;
+unrelated public board writes do not invalidate it. Changed or unreadable
+authority evidence stops the next effect and leaves the operation for the
+person.
+
+Captured TUI terminal restoration remains person-only: a delayed native launcher cannot re-prove the conductor at its eventual spawn. Conductor plans containing captured terminal launches refuse before staging or runtime holds; headless restoration uses the target-owned snapshot through a tools connection.
+
+
+Only the conductor that created the restart or authorized upgrade may run
+`recovery resume|abort` for that operation. A different conductor cannot take
+over; the person can use the ordinary recovery commands. The detached
+`recovery-run` and target launcher are internal continuations bound to the
+recorded operation and captured target arguments. They do not grant arbitrary
+console CLI commands. The existing `--live-test` path remains separate and does
+not create a conductor continuation.
+
+`task unassign` runs as the conductor's own actor and does not route a
+replacement or stop native work. An owner unassign suppresses automatic owner
+offers until an authorized explicit assignment or reservation clears that
+suppression. This behavior has fixture coverage only; it does not establish a
+current installed-release or live-account receipt.
 
 ## Standalone ciphertext broker (#446 X2)
 

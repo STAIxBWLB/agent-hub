@@ -88,6 +88,11 @@ import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrust
 import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateEffectiveConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
+import { issueConductorRecoveryAuthority, authorizeConductorRecovery, assertConductorRecovery, RecoveryAuthorityError, type ConductorRecoveryBinding } from "./recovery-authority.ts";
+import { captureRecoveryPolicy } from "./recovery-policy.ts";
+import { operationPath } from "./recovery-store.ts";
+import { packageDigest } from "../cli/recovery-package.ts";
+import { planFingerprint, type UpgradePlan } from "../cli/upgrade.ts";
 import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
 import { eventLog, readEvents, type RoleIdentity } from "./events.ts";
@@ -3313,6 +3318,11 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!task || task.owner !== by) throw new PreEffectToolRefusal(`task #${Number.isSafeInteger(a.id) ? a.id : "?"} is not yours: an agent labels its own task only`);
       return JSON.stringify({ task: task.id, owner: by });
     }
+    if (op === "task_unassign" && by !== USER) {
+      if (a.role !== undefined && a.role !== "owner" && a.role !== "reviewer") throw new PreEffectToolRefusal("role must be owner or reviewer");
+      if (a.revision !== undefined && (!Number.isSafeInteger(a.revision) || a.revision < 0)) throw new PreEffectToolRefusal("revision must be a nonnegative integer");
+      return line(await tasks.unassign(a.id, by, true, a.role, a.revision));
+    }
     if (by !== USER && !(Object.hasOwn(CONDUCTOR_TASK_OPS, op) && operationalContext.getStore()?.actor === by)) throw new Error(`${op} is a console command`);
     switch (op) {
       case "release_new":
@@ -4528,7 +4538,9 @@ export async function startDaemon(opts: DaemonOptions) {
     replacingPi.add(pi);
     try { await pi.stop(); } finally { replacingPi.delete(pi); }
   }
-  function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }, replacementAuthority?: symbol): Promise<Record<string, unknown>> {
+  function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }, replacementAuthority?: symbol, startCurrent?: () => void): Promise<Record<string, unknown>> {
+    startCurrent?.();
+    if (startCurrent && starting.has(peer)) return Promise.resolve({ ok: false, error: "controlled recovery cannot join another pending start" });
     if (peer.includes("@")) return Promise.resolve({ ok: false, error: "remote peers have no local runtime or control authority" });
     if (isExternalInstance(peer) && (Object.keys(args).some(key => !["mode", "sessionId"].includes(key)) || args.mode !== undefined && args.mode !== "headless")) return Promise.resolve({ ok: false, error: "external module instances permit only a headless start and recorded session id" });
     if (args.replaceSession !== undefined && (args.replaceSession !== true || replacementAuthority !== piReplacementAuthority || definitionOf(peer)?.start.daemonPort !== "pi-rpc")) return Promise.resolve({ ok: false, error: "Pi session replacement requires explicit person authorization" });
@@ -4545,11 +4557,13 @@ export async function startDaemon(opts: DaemonOptions) {
       return joined;
     }
     if (definitionOf(peer)?.permission.trackUnattended) startingUnattended.set(peer, args.unattended === true);
-    const running = startPeerOnce(peer, args).then(async result => {
+    const running = startPeerOnce(peer, args, startCurrent).then(async result => {
+      startCurrent?.();
       if (!result.ok && definitionOf(peer)?.permission.trackUnattended) unattendedPeers.delete(peer);
       if (!result.ok || result.already) return result;
       if (definitionOf(peer)?.session.restoreOnStart) recordSessions();
       return permissionChange(peer, async () => {
+        startCurrent?.();
         if (definitionOf(peer)?.permission.trackUnattended) { if (args.unattended) unattendedPeers.add(peer); else unattendedPeers.delete(peer); }
         logPermissionStart(peer); writeStatus(); return result;
       }, true);
@@ -4732,7 +4746,8 @@ export async function startDaemon(opts: DaemonOptions) {
     };
   }
 
-  async function startPeerOnce(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }): Promise<Record<string, unknown>> {
+  async function startPeerOnce(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }, startCurrent?: () => void): Promise<Record<string, unknown>> {
+    startCurrent?.();
     let unmute: (() => void) | undefined;
     try {
       if (isExternalInstance(peer) && bus.peers.get(peer)?.state !== undefined && bus.peers.get(peer)?.state !== "offline" && !currentExecutionOwner(peer)) return { ok: false, error: "external instance owner binding changed; stop the retained owner before starting again" };
@@ -4742,15 +4757,17 @@ export async function startDaemon(opts: DaemonOptions) {
       catch (error) { return { ok: false, error: (error as Error).message }; }
       executionRoots.set(peer, executionCwd);
       applyPendingPermissionDefault(peer);
-      if (definitionOf(peer)?.start.refreshTools) { await ensureSpec(true); await refreshRunner(); }
-      const result = await startPeerBody(peer, args, (p) => { unmute = muteState(p); }, executionCwd);
+      if (definitionOf(peer)?.start.refreshTools) { await ensureSpec(true); startCurrent?.(); await refreshRunner(); startCurrent?.(); }
+      const result = await startPeerBody(peer, args, (p) => { unmute = muteState(p); }, executionCwd, startCurrent);
+      startCurrent?.();
       return result.ok && declarations[peer] ? { ...result, executionCwd } : result;
     } finally {
       unmute?.();
     }
   }
 
-  async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }, mute: (p: PeerAdapter) => void, executionCwd: string): Promise<Record<string, unknown>> {
+  async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }, mute: (p: PeerAdapter) => void, executionCwd: string, startCurrent?: () => void): Promise<Record<string, unknown>> {
+    startCurrent?.();
     const adapter = definitionOf(peer);
     if (adapter && configuredIds.includes(adapter.kind) && args.sessionId !== undefined
       && (typeof args.sessionId !== "string" || !args.sessionId.trim() || Buffer.byteLength(args.sessionId) > 4096 || /[\p{Cc}\p{Cf}]/u.test(args.sessionId))) {
@@ -4802,7 +4819,7 @@ export async function startDaemon(opts: DaemonOptions) {
       recordPiReplacement(nativeStateDir(peer), instanceId, previous, selected);
       args = { ...args, ...selected };
       mute(existing);
-      await stopPiForReplacement(existing);
+      await stopPiForReplacement(existing); startCurrent?.();
     }
     if (isPiPeer(existing) && !args.replaceSession) {
       let saved = existing.recoveryMetadata();
@@ -4819,18 +4836,18 @@ export async function startDaemon(opts: DaemonOptions) {
         // process from the abandoned CLI cannot claim the replacement owner.
         // The replacement's start event is the only state change the console should see (issue #42).
         mute(existing);
-        await stopPiForReplacement(existing);
+        await stopPiForReplacement(existing); startCurrent?.();
       } else if (changesOwner) {
-        saved = await existing.captureResume();
+        saved = await existing.captureResume(); startCurrent?.();
         if (!saved.sessionId) return { ok: false, error: "Pi session identity is not ready for handover" };
         args = { ...args, backend: args.backend ?? launch.backend as "auto" | "dgx" | "mlx", model: args.model ?? (args.backend === undefined && typeof launch.model === "string" ? launch.model : undefined), sessionId: String(saved.sessionId), sessionFile: typeof saved.sessionFile === "string" ? saved.sessionFile : undefined };
         // Same as the unclaimed handover: no offline flash between the adapters (issue #42).
         mute(existing);
-        await stopPiForReplacement(existing);
+        await stopPiForReplacement(existing); startCurrent?.();
       } else if (existing.state !== "offline") {
         return mode === "tui" ? { ok: false, error: "Pi already owns a native terminal; use that terminal or switch to headless first" } : { ok: true, already: true };
       } else if (saved.sessionId) {
-        saved = await existing.captureResume();
+        saved = await existing.captureResume(); startCurrent?.();
         args = { ...args, backend: args.backend ?? launch.backend as "auto" | "dgx" | "mlx", model: args.model ?? (args.backend === undefined && typeof launch.model === "string" ? launch.model : undefined), sessionId: String(saved.sessionId), sessionFile: typeof saved.sessionFile === "string" ? saved.sessionFile : undefined };
       }
     }
@@ -4847,6 +4864,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!adapter?.start.reconfigureWhileAttached) {
       if (isPiPeer(existing)) await stopPiForReplacement(existing);
       else await existing?.stop();
+      startCurrent?.();
     }
     if (adapter?.start.createTui && args.mode === "tui") {
       // #286 Part 3: Qwen's own TUI, driven through its dual-output files. The person's terminal runs it; the hub prepares the files and returns the launch.
@@ -4855,6 +4873,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (existing && existing.state !== "offline") return { ok: false, error: "Qwen is running headless; run ahub stop qwen before starting its TUI" };
       // The compat entry of the dual-output contract, not the headless ACP entry: 0.26.1 only.
       const verdict = await qwenDualVersionAsync(config.qwen_cmd, executionCwd);
+      startCurrent?.();
       if (!verdict.ok) return { ok: false, error: verdict.reason };
       if (verdict.note) log(verdict.note);
       if (args.sessionId !== undefined && !adapter.session.crashIdentity?.({ sessionId: args.sessionId }).sessionId) return { ok: false, error: "invalid Qwen session identity" };
@@ -4862,6 +4881,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const nativeRoot = nativeStateDir(peer);
       mkdirSync(nativeRoot, { recursive: true });
       const qwenState = join(nativeRoot, "qwen");
+      startCurrent?.();
       const tui: QwenDualPeer = adapter.start.createTui({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["qwen-dual"]({
         cwd: executionCwd, stateDir: qwenState, cmd: config.qwen_cmd, ...(args.model ? { model: args.model } : {}), ...(args.sessionId ? { sessionId: args.sessionId } : {}),
         mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: toolEnv(peer, true) }],
@@ -4876,10 +4896,10 @@ export async function startDaemon(opts: DaemonOptions) {
         onExit: () => { notify(`Qwen's terminal ended; start it again with ahub qwen --mode tui`); writeStatus(); },
         log,
       }) }) as QwenDualPeer;
-      recoveryTaskPreface(peer); await ensurePreface(peer);
+      recoveryTaskPreface(peer); await ensurePreface(peer); startCurrent?.();
       executionOwners.set(peer, { owner: tui, cwd: executionCwd });
       try {
-        await tui.start();
+        startCurrent?.(); await tui.start(); startCurrent?.();
         bus.add(tui);
         if (tui.state !== "offline") tui.onState?.(tui.state);
       } catch (error) { await tui.stop().catch(stop => log(`qwen tui stop after a failed start: ${(stop as Error).message}`)); throw error; }
@@ -4889,6 +4909,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!jcodeMcpReady(opts.cwd, opts.stateDir, SERVER_JS)) return { ok: false, error: "Jcode project MCP entry missing or stale; the person runs ahub jcode to configure it" };
       // #691: name a version refusal before the owned daemon starts; the ACP identity check stays the binding one.
       const jcodeVerdict = await jcodeVersionAsync(config.jcode_cmd, executionCwd);
+      startCurrent?.();
       if (!jcodeVerdict.ok) return { ok: false, error: jcodeVerdict.reason };
       if (jcodeVerdict.note) log(jcodeVerdict.note);
       // #685: an extra instance runs its own native home and model fields; the base peer keeps jcode_home and the global provider profile.
@@ -4896,6 +4917,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // #685 scope update 2: the person authenticates inside Jcode against that home. The hub passes -p, -m and --provider-profile as
       // written and reads or writes no credential; the only preflight is that the declared home is a directory the person owns.
       if (instance?.jcode_home) { const refusal = jcodeHomeRefusal(peer, instance.jcode_home); if (refusal) return { ok: false, error: refusal }; }
+      startCurrent?.();
       const jcode: JcodePeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["owned-acp"]({ peer, command: config.jcode_cmd, home: instance?.jcode_home ?? config.jcode_home,
         providerProfile: (args.providerProfile ?? instance?.provider_profile ?? config.jcode_provider_profile) || undefined,
         ...(instance?.provider ? { provider: instance.provider } : {}),
@@ -4916,14 +4938,15 @@ export async function startDaemon(opts: DaemonOptions) {
             ...(usage.cacheReadTokens !== undefined ? { cacheReadTokens: usage.cacheReadTokens } : {}), ...(usage.cacheWriteTokens !== undefined ? { cacheWriteTokens: usage.cacheWriteTokens } : {}), ...taskAttribution(peer) });
         } }) }) as JcodePeer;
       jcodeLaunches.set(peer, jcode);
-      recoveryTaskPreface(peer); await ensurePreface(peer);
-      try { await jcode.start(); await reconcileNativeStart(peer, jcode); }
+      recoveryTaskPreface(peer); await ensurePreface(peer); startCurrent?.();
+      try { startCurrent?.(); await jcode.start(); startCurrent?.(); await reconcileNativeStart(peer, jcode, startCurrent); }
       catch { await jcode.stop().catch(() => {}); if (jcodeLaunches.get(peer) === jcode) jcodeLaunches.delete(peer); throw new Error("Jcode startup not verified; check native version, provider profile, MCP store and owned daemon (details withheld)"); }
       return { ok: true, policy: "unmanaged" };
     }
     if (adapter?.start.acpCommand) {
       const cmd = adapter.start.acpCommand(config.kimi_cmd, args.model);
       actionBudgets.revoke(peer); // a new owner never inherits the allowance of the one it replaces, even for the same session id
+      startCurrent?.();
       const kimi: AcpPeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["acp"]({
         onActivity: item => activityRings[peer]?.append(item),
         isPrivateTurn: () => !!turns.get(peer)?.private || contextPii(peer),
@@ -4964,10 +4987,10 @@ export async function startDaemon(opts: DaemonOptions) {
         preamble: sessionRoleContract(peer),
       }) }) as AcpPeer;
       recoveryTaskPreface(peer);
-      await ensurePreface(peer);
+      await ensurePreface(peer); startCurrent?.();
       try {
-        await kimi.start();
-        await reconcileNativeStart(peer, kimi);
+        startCurrent?.(); await kimi.start(); startCurrent?.();
+        await reconcileNativeStart(peer, kimi, startCurrent);
       } catch (error) { await kimi.stop().catch(stop => log(`kimi stop after a failed start: ${(stop as Error).message}`)); throw error; }
       return { ok: true };
     }
@@ -5010,16 +5033,18 @@ export async function startDaemon(opts: DaemonOptions) {
         Object.freeze(acpOptions.cmd); for (const server of mcpServers) { server.env.forEach(Object.freeze); Object.freeze(server.env); Object.freeze(server.args); Object.freeze(server); } Object.freeze(mcpServers); Object.freeze(acpOptions);
         externalInstanceStateDir(opts.stateDir, peer);
       }
+      startCurrent?.();
       const owner = adapter.start.create({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, ...(externalBinding ? { instanceStateDir: nativeStateDir(peer) } : {}), kindConfig: undefined, permission, mcpServers, daemon: { acp: acpOptions } });
       if (externalBinding && externalLaunchId) externalLaunches.set(peer, { owner, options: acpOptions, launchId: externalLaunchId, binding: externalBinding, workspace: externalWorkspace! });
       assertNativeProofPorts(adapter, owner);
       if (!isAcpPeer(owner) || owner.id !== peer || owner.deliveryOnly !== true || owner.hubOwned !== true || owner.form !== "headless") throw new Error("ACP factory did not return its bound native transport");
-      recoveryTaskPreface(peer); await ensurePreface(peer);
+      recoveryTaskPreface(peer); await ensurePreface(peer); startCurrent?.();
       try {
         if (externalBinding && (!membershipAllowed(peer) || externalWorkspaceIdentity(executionCwd) !== externalWorkspace || !sameExternalInstanceBinding(externalBinding, captureExternalBinding(peer, args.sessionId)))) throw new Error("external instance binding changed before native spawn");
-        await owner.start();
+        startCurrent?.(); await owner.start(); startCurrent?.();
         if (externalBinding) {
           if (!await verifyManagedAcpLaunch(owner, acpOptions)) throw new Error("external ACP managed launch is unverified");
+          startCurrent?.();
           const receipt = managedAcpLaunch(owner, acpOptions), current = captureExternalBinding(peer, args.sessionId);
           if (!receipt || externalWorkspaceIdentity(executionCwd) !== externalWorkspace || receipt.cwd !== executionCwd || !sameExternalInstanceBinding(externalBinding, current)) throw new Error("external instance startup binding changed");
           externalLaunches.get(peer)!.generation = receipt.generation;
@@ -5027,7 +5052,7 @@ export async function startDaemon(opts: DaemonOptions) {
           externalSessions.set(peer, receipt.sessionId);
           writeExternalInstanceRecord(opts.stateDir, externalBinding, receipt.sessionId);
         }
-        await reconcileNativeStart(peer, owner);
+        await reconcileNativeStart(peer, owner, startCurrent);
       }
       catch (error) {
         await owner.stop().catch(() => log(`${peer}: ACP stop after failed startup was not confirmed`));
@@ -5042,6 +5067,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (args.unattended && permissionMode(peer) !== "ask") return { ok: false, error: "Codex --unattended cannot take a non-ask mode; run ahub permission codex ask first, or restart without --unattended" };
       let codexSteering = false;
       actionBudgets.revoke(peer);
+      startCurrent?.();
       const codex: CodexPeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["codex-appserver"]({
         admitAttach: () => membershipAllowed(peer),
         permissionMode: permissionMode(peer),
@@ -5111,10 +5137,10 @@ export async function startDaemon(opts: DaemonOptions) {
         log,
       }) }) as CodexPeer;
       recoveryTaskPreface(peer);
-      await ensurePreface(peer);
+      await ensurePreface(peer); startCurrent?.();
       try {
-        await codex.start();
-        await reconcileNativeStart(peer, codex);
+        startCurrent?.(); await codex.start(); startCurrent?.();
+        await reconcileNativeStart(peer, codex, startCurrent);
       } catch (error) { await codex.stop().catch(stop => log(`codex stop after a failed start: ${(stop as Error).message}`)); throw error; }
       const proxy = frontendProxyState(peer, codex);
       if (proxy.present && proxy.port === undefined) return { ok: false, error: "frontend proxy state unknown" };
@@ -5139,6 +5165,7 @@ export async function startDaemon(opts: DaemonOptions) {
         },
       });
       modelRelays.set(peer, modelRelay);
+      startCurrent?.();
       if (!declarations[peer]) globalModelRelay(modelRelay);
       const nativeRoot = nativeStateDir(peer);
       mkdirSync(nativeRoot, { recursive: true });
@@ -5202,6 +5229,7 @@ export async function startDaemon(opts: DaemonOptions) {
         },
       };
       const routing = activeRouting();
+      startCurrent?.();
       const pi: PiPeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["pi-rpc"]({
         cwd: executionCwd, stateDir: nativeRoot, ...(declarations[peer] ? { hubStateDir: opts.stateDir } : {}), cmd: config.pi.cmd, mode, backend,
         model: args.model,
@@ -5311,11 +5339,11 @@ export async function startDaemon(opts: DaemonOptions) {
         watchdogMs: config.watchdog_ms, maxSteps: config.pi.max_steps, log,
       }) }) as PiPeer;
       recoveryTaskPreface(peer);
-      await ensurePreface(peer);
+      await ensurePreface(peer); startCurrent?.();
       executionOwners.set(peer, { owner: pi, cwd: executionCwd });
       bus.add(pi);
       // The start's own error is the one reported; a stop that fails too is logged beside it (#115).
-      try { await pi.start(); } catch (error) {
+      try { startCurrent?.(); await pi.start(); } catch (error) {
         await pi.stop().catch((stop: Error) => log(`pi stop after a failed start: ${stop.message}`));
         if (error instanceof PiVersionRefusal) return { ok: false, error: sanitize(error.message).slice(0, 1000) };
         throw error;
@@ -5332,9 +5360,10 @@ export async function startDaemon(opts: DaemonOptions) {
       // It stays held; holdPeer validates the restored choice before an operator can resume it.
       if (recoveryActive() && manualPaused.has(peer)) log("local: availability deferred while controlled recovery retains its manual pause");
       else await validateLocalChoice(route, fixedModel);
+      startCurrent?.();
       // Validation can await network: a queued delivery may have started meanwhile.
       if (existing?.state === "busy") return { ok: false, error: "local is busy; retry when it is idle" };
-      if (existing) { mute(existing); await existing.stop(); }
+      if (existing) { mute(existing); await existing.stop(); startCurrent?.(); }
       const capture = config.memory.enabled
         ? new Capture(memory, { project: memoryProject, cwd: executionCwd, deny: config.local.deny })
         : undefined;
@@ -5376,6 +5405,7 @@ export async function startDaemon(opts: DaemonOptions) {
         shellProofs.ordinary(input, current);
         return current() ? true : "aborted";
       };
+      startCurrent?.();
       const local: LocalPeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["local-worker"]({
         cwd: executionCwd,
         omni,
@@ -5412,10 +5442,10 @@ export async function startDaemon(opts: DaemonOptions) {
         log,
       }) }) as LocalPeer;
       recoveryTaskPreface(peer);
-      await ensurePreface(peer);
+      await ensurePreface(peer); startCurrent?.();
       executionOwners.set(peer, { owner: local, cwd: executionCwd });
       bus.add(local);
-      await local.start();
+      startCurrent?.(); await local.start();
       return { ok: true, model: route ? `${route} (fallback ${routing.local.fixed_model})` : (args.model ?? routing.local.fixed_model) };
     }
     if (adapter?.start.daemonPort === "claude-implementer") {
@@ -5427,9 +5457,10 @@ export async function startDaemon(opts: DaemonOptions) {
       try { if (!declarations[peer]?.worktree || !currentRoot()) return { ok: false, error: "Claude implementer requires an isolated worktree and ask permissions" }; }
       catch { return { ok: false, error: "Claude implementer execution root unavailable" }; }
       if (existing?.state === "busy") return { ok: false, error: "Claude implementer is busy; cleanup must finish before restart" };
-      if (existing) { mute(existing); await existing.stop(); if (!currentRoot()) throw new Error("Claude implementer startup admission changed"); }
+      if (existing) { mute(existing); await existing.stop(); startCurrent?.(); if (!currentRoot()) throw new Error("Claude implementer startup admission changed"); }
       const selected = permissionMode(peer);
       if (selected !== "ask" && selected !== "ask-when-needed") return { ok: false, error: "Claude implementer refuses never-ask" };
+      startCurrent?.();
       const implementer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: selected, mcpServers: [], daemon: DAEMON_PORTS["claude-implementer"]({
         cwd: executionCwd, stateDir: opts.stateDir, projectRoot: opts.cwd, instanceId, server: SERVER_JS,
         factsHook: join(import.meta.dir, "..", "cli", "facts-hook.ts"), systemPrompt: sessionRoleContract(peer), mode: selected, watchdogMs: config.watchdog_ms, ...(declarations[peer]?.model ? { model: declarations[peer].model } : {}),
@@ -5473,10 +5504,11 @@ export async function startDaemon(opts: DaemonOptions) {
             ...(total !== undefined ? { totalTokens: total } : {}), ...taskAttribution(peer, task) });
         }, notify,
       }) });
-      await implementer.start();
+      startCurrent?.(); await implementer.start();
       try {
+        startCurrent?.();
         if (!currentRoot()) throw new Error("Claude implementer startup admission changed");
-        recoveryTaskPreface(peer); await ensurePreface(peer);
+        recoveryTaskPreface(peer); await ensurePreface(peer); startCurrent?.();
         if (!currentRoot()) throw new Error("Claude implementer startup admission changed");
         executionOwners.set(peer, { owner: implementer, cwd: executionCwd }); bus.add(implementer);
         return { ok: true };
@@ -5487,8 +5519,9 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!backend || !adapter.start.create) return { ok: false, error: "reviewer has no verified runtime" };
       // #519: each backend proves isolation before admission, then starts one fresh child per review.
       if (existing?.state === "busy") return { ok: false, error: `${peer} is reviewing; retry when it is idle` };
-      if (existing) { mute(existing); await existing.stop(); }
+      if (existing) { mute(existing); await existing.stop(); startCurrent?.(); }
       const reviewPolicies = new Map<string, string>();
+      startCurrent?.();
       const reviewer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["reviewer-print"]({
         backend, cwd: executionCwd,
         mcpConfig: JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", SERVER_JS], env: toolEnv(peer, true) } } }),
@@ -5535,9 +5568,10 @@ export async function startDaemon(opts: DaemonOptions) {
         },
         log,
       }) }) as ReviewerPrintPeer;
-      try { await reviewer.start(); }
+      try { startCurrent?.(); await reviewer.start(); startCurrent?.(); }
       catch (error) {
         await reviewer.stop().catch(() => {});
+        startCurrent?.();
         // #691: a version refusal names only versions and the trust command, so it is shown for every backend.
         const reason = error instanceof Error && (backend.nativePolicy || error.message.startsWith(VERSION_REFUSAL)) ? sanitize(error.message).slice(0, 1000)
           : reviewerUnavailableReason(error instanceof ReviewerUnavailableError ? error.causeClass : "unknown", error instanceof ReviewerUnavailableError ? error.detail : undefined);
@@ -5761,10 +5795,10 @@ export async function startDaemon(opts: DaemonOptions) {
       || githubOriginRepository(opts.cwd) === identity;
   }
   const publicReadPrivacy = () => JSON.stringify(board.list().map(task => [task.id, tasks.isPii(task), task.history.length]));
-  function operationalCurrent(sock:Sock,acceptedAfterClose=false):()=>void {
+  function operationalCurrent(sock:Sock,acceptedAfterClose=false,committedRecovery=false):()=>void {
     const client=sock.data,peer=client.peer;
     return ()=>{
-      if(!peer || sock.data!==client || client.role!=="tools" || !acceptedAfterClose && sock.readyState!==WebSocket.OPEN || client.toolsOwner || readOnlyPeer(peer) || stopping || !membershipAllowed(peer) || contextPii(peer))throw new OperationalAuthorityError("operational conductor authority unavailable");
+      if(!peer || sock.data!==client || client.role!=="tools" || !acceptedAfterClose && sock.readyState!==WebSocket.OPEN || client.toolsOwner || readOnlyPeer(peer) || stopping && !committedRecovery || !membershipAllowed(peer) || contextPii(peer))throw new OperationalAuthorityError("operational conductor authority unavailable");
       try {requireConductor(peer,config.roles);}
       catch {throw new OperationalAuthorityError("this operation requires the explicit conductor role","conductor");}
     };
@@ -6660,7 +6694,8 @@ export async function startDaemon(opts: DaemonOptions) {
     })),
   });
   const recoveryError = (error: string) => ({ t: "recovery", ok: false, error });
-  async function recoveryOp(msg: any): Promise<Record<string, unknown>> {
+  async function recoveryOp(msg: any, current: () => void = () => {}): Promise<Record<string, unknown>> {
+    current();
     if (typeof msg.op !== "string" || !["inspect", "prepare", "commit", "abort", "release"].includes(msg.op)) return recoveryError("unknown recovery operation");
     if (typeof msg.expectedInstanceId !== "string" || msg.expectedInstanceId !== instanceId) return recoveryError("expected daemon instance does not match");
     const incompatibleCancellationTarget = () => {
@@ -6691,7 +6726,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (msg.op === "inspect" || msg.op === "prepare" || msg.op === "commit") {
       for (const [id, peer] of bus.peers) if (isExternalInstance(id) && (peer.state !== "offline" || peer.pendingOwnedProcess !== false)) return recoveryError("external module has no verified controlled-recovery driver; stop it explicitly and restart with its recorded native session id");
       for (const peer of bus.peers.values()) if (peer.captureResume && peer.state === "idle") {
-        try { await peer.captureResume(); } catch (error) { return recoveryError((error as Error).message); }
+        try { await peer.captureResume(); current(); } catch (error) { return recoveryError((error as Error).message); }
         if (checkTarget) { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
       }
     }
@@ -6716,6 +6751,7 @@ export async function startDaemon(opts: DaemonOptions) {
       budget.setRecoveryHold(true);
       bus.setRecoveryHold(true, Array.isArray(msg.targetFeatures) && msg.targetFeatures.includes("recovery_deferred_hub"));
       await bus.fenceRecovery();
+      current();
       { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
       const blocked = [...bus.peers].filter(([id, peer]) => !id.includes("@") && peer.state === "busy").map(([id]) => id);
       if (!blocked.length && permissions.size === 0 && recoveryReady()) {
@@ -6782,6 +6818,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       if (recoveryPhase !== "restored") return recoveryError("recovery is not restored");
       await bus.fenceRecovery();
+      current();
       const current = recoveryPeers();
       const missing = (recoveryPeerSnapshot ?? []).filter((saved) => saved.state !== "offline" && !manualPaused.has(saved.id) && !budget.record(saved.id) && (!current[saved.id] || current[saved.id]!.state === "offline"));
       if (missing.length) return recoveryError(`required peers are not attached: ${missing.map((peer) => peer.id).join(", ")}`);
@@ -6892,8 +6929,10 @@ export async function startDaemon(opts: DaemonOptions) {
     try { return await action(); } finally { permissionChanges.delete(peer); release(); }
   }
 
-  async function reconcileNativeStart(peer: string, owner: AcpPeer | CodexPeer): Promise<void> {
+  async function reconcileNativeStart(peer: string, owner: AcpPeer | CodexPeer, startCurrent?: () => void): Promise<void> {
+    startCurrent?.();
     const result = await permissionChange(peer, async () => {
+      startCurrent?.();
       if (stopping) return { ok: false, error: "hub is stopping" };
       const selected = permissionMode(peer);
       const proxy = frontendProxyState(peer, owner);
@@ -6902,10 +6941,12 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!readOnlyPeer(peer) && owner.permissionModeState !== "unmanaged" && owner.getPermissionMode() !== selected) {
         if (proxy.port && !proxy.port.attached) proxy.port.setStartupPermissionMode(selected);
         else await owner.setPermissionMode(selected);
+        startCurrent?.();
       }
       if (isExternalInstance(peer)) {
         const launch = externalLaunches.get(peer), current = captureExternalBinding(peer);
         if (!membershipAllowed(peer) || !launch || launch.owner !== owner || !await verifyManagedAcpLaunch(owner, launch.options) || !sameExternalInstanceBinding(launch.binding, current)) return { ok: false, error: "external instance admission changed" };
+        startCurrent?.();
         if (stopping || recoveryActive() || !membershipAllowed(peer) || externalWorkspaceIdentity(current.executionCwd) !== launch.workspace || !sameExternalInstanceBinding(launch.binding, captureExternalBinding(peer))) return { ok: false, error: "external instance admission changed" };
       }
       // Roles may change while native startup/mode acknowledgement is awaited; the current workspace policy still owns admission.
@@ -6915,6 +6956,7 @@ export async function startDaemon(opts: DaemonOptions) {
         } catch { return { ok: false, error: "instance execution policy changed during startup" }; }
       }
       // The bus may immediately drain at add(): do not expose an idle adapter until its current choice is applied.
+      startCurrent?.();
       executionOwners.set(peer, { owner, cwd: executionRoots.get(peer) ?? opts.cwd });
       bus.add(owner);
       // start() finished before the bus installed its state hook: replay the current state to drain queued work and record it.
@@ -7245,9 +7287,92 @@ export async function startDaemon(opts: DaemonOptions) {
           return void reply({ ok: false, error: "unknown execution budget operation" });
         } catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
       }
-      case "recovery":
-        if (c.role !== "console") return void reply(recoveryError("recovery is a console command"));
-        void recoveryOp(msg).then(reply, (error) => {
+      case "recovery_restore": {
+        try {
+          const current = admitOperational(sock, "recovery restore"); current();
+          const raw = msg.authority as ConductorRecoveryBinding;
+          if (!raw || raw.peer !== c.peer || raw.projectRoot !== opts.cwd || raw.projectId !== projectId || raw.stateDir !== opts.stateDir
+            || !restored || restored.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId
+            || recoveryPhase !== "restored" || recoveryOperationId !== raw.operationId || instanceId === raw.sourceInstanceId
+            || packageDigest(resolve(import.meta.dir, "../.."), { ownDependencies: true }) !== raw.targetDigest) throw new RecoveryAuthorityError();
+          const proof = authorizeConductorRecovery(opts.stateDir, raw, () => { current(); const value = captureRecoveryPolicy({ root: opts.cwd, id: projectId, stateDir: opts.stateDir }, c.peer!, loadConfig(opts.cwd)); return value.policyDigest === raw.policyDigest && value.boardDigest === raw.boardDigest; });
+          const fence = () => { current(); assertConductorRecovery(proof); if (recoveryPhase !== "restored" || recoveryOperationId !== raw.operationId) throw new RecoveryAuthorityError(); };
+          const saved = restored.peers.find(row => row.id === msg.peer);
+          if (!saved || saved.state === "offline" || saved.launch?.mode === "tui" || definitionOf(saved.id)?.transport === "claude-channel" || !definitionOf(saved.id)?.session.restoreArgs) throw new RecoveryAuthorityError();
+          // Host snapshot only. No argv, model, session or launch field supplied by the tools caller is used.
+          const launch = saved.launch ?? {};
+          const args: Parameters<typeof startPeer>[1] = { mode: "headless",
+            ...(typeof launch.model === "string" ? { model: launch.model } : {}), ...(typeof launch.route === "string" ? { route: launch.route } : {}),
+            ...(launch.backend === "auto" || launch.backend === "dgx" || launch.backend === "mlx" ? { backend: launch.backend } : {}),
+            ...(saved.sessionId ? { sessionId: saved.sessionId } : {}), ...(typeof launch.sessionFile === "string" ? { sessionFile: launch.sessionFile } : {}),
+            ...(typeof launch.providerProfile === "string" ? { providerProfile: launch.providerProfile } : {}) };
+          fence();
+          void startPeer(saved.id, args, undefined, fence).then(result => { try { fence(); reply(result); } catch { reply({ ok: false, error: "conductor recovery authority unavailable" }); } }, () => reply({ ok: false, error: "conductor recovery restore refused" }));
+        } catch { reply({ ok: false, error: "conductor recovery authority unavailable; the person runs it in ahub console or a terminal" }); }
+        return;
+      }
+      case "recovery_authority": {
+        void (async () => { try {
+          const settlingSource = msg.op === "verify" && recoveryCommitted && msg.binding?.operationId === recoveryOperationId && msg.binding?.sourceInstanceId === instanceId;
+          const current = operationalCurrent(sock, false, settlingSource); current();
+          if (msg.op === "authorize" && ["restart", "upgrade"].includes(msg.command)) return void reply({ ok: true, instanceId });
+          if (!["issue", "verify"].includes(msg.op)) throw new RecoveryAuthorityError();
+          const raw = msg.binding as ConductorRecoveryBinding;
+          if (!raw || raw.peer !== c.peer || raw.projectRoot !== opts.cwd || raw.projectId !== projectId || raw.stateDir !== opts.stateDir) throw new RecoveryAuthorityError();
+          const project = { root: opts.cwd, id: projectId, stateDir: opts.stateDir };
+          const expected = { ...raw, ...captureRecoveryPolicy(project, c.peer!, loadConfig(opts.cwd)) };
+          const fresh = () => { current(); return JSON.stringify(captureRecoveryPolicy(project, c.peer!, loadConfig(opts.cwd))) === JSON.stringify({ policyDigest: raw.policyDigest, boardDigest: raw.boardDigest }); };
+          if (msg.op === "issue") {
+            const plan = msg.plan as UpgradePlan;
+            const { fingerprint, ...body } = plan ?? {} as UpgradePlan;
+            if (!plan || plan.projects.some(row => row.terminals.length > 0) || planFingerprint(body) !== fingerprint || fingerprint !== raw.planFingerprint || plan.kind !== raw.kind || existsSync(operationPath(raw.operationId))
+              || raw.sourceInstanceId !== instanceId || recoveryActive() || !plan.projects.some(row => row.project.id === projectId && row.project.root === opts.cwd && row.project.stateDir === opts.stateDir && row.source.instanceId === instanceId)) throw new RecoveryAuthorityError();
+            const selected = plan.projects.find(row => row.project.id === projectId)!;
+            const normalize = (row: { id: string; state: string; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
+              const launch = row.args ?? row.launch ?? {};
+              return { id: row.id, active: row.state !== "offline", threadId: row.threadId, sessionId: row.sessionId,
+                sessionFile: row.sessionFile ?? (typeof launch.sessionFile === "string" ? launch.sessionFile : undefined),
+                args: Object.fromEntries(Object.entries(launch).filter(([key, value]) => ["model", "route", "sessionFile", "mode", "backend"].includes(key) && typeof value === "string").sort(([a], [b]) => a.localeCompare(b))) };
+            };
+            const ordered = (rows: Parameters<typeof normalize>[0][]) => rows.map(normalize).sort((a, b) => a.id.localeCompare(b.id));
+            if (JSON.stringify(ordered(selected.source.peers)) !== JSON.stringify(ordered(Object.values(recoveryPeers())))) throw new RecoveryAuthorityError();
+            if (packageDigest(raw.targetRoot, { ownDependencies: true }) !== raw.targetDigest || !readFileSync(join(raw.targetRoot, "src/hub/control-client.ts"), "utf8").includes('"conductor_recovery"')) throw new RecoveryAuthorityError();
+            if (raw.kind === "restart") {
+              if (raw.targetDigest !== packageDigest(resolve(import.meta.dir, "../.."))) throw new RecoveryAuthorityError();
+            } else {
+              const staged = join(hubHome(), "releases", plan.version);
+              if (raw.targetRoot !== join(staged, "node_modules/@staix/agent-hub")) throw new RecoveryAuthorityError();
+              const verified = JSON.parse(readFileSync(join(staged, "verified.json"), "utf8"));
+              if (verified.digest !== raw.targetDigest || verified.integrity !== plan.integrity) throw new RecoveryAuthorityError();
+            }
+            current();
+            issueConductorRecoveryAuthority(opts.stateDir, expected, fresh);
+            if (!event({ type: "agent_cli", peer: c.peer!, command: raw.kind, refused: false })) throw new RecoveryAuthorityError();
+          } else {
+            if (instanceId !== raw.sourceInstanceId && (restored?.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId || packageDigest(resolve(import.meta.dir, "../.."), { ownDependencies: true }) !== raw.targetDigest)) throw new RecoveryAuthorityError();
+            assertConductorRecovery(authorizeConductorRecovery(opts.stateDir, expected, fresh));
+          }
+          current(); return void reply({ ok: true, instanceId, target: restored?.operationId === raw.operationId && instanceId !== raw.sourceInstanceId, operationId: recoveryOperationId, phase: recoveryPhase });
+        } catch { return void reply({ ok: false, error: "conductor recovery authority unavailable; the person runs it in ahub console or a terminal" }); }
+        })().catch(() => reply({ ok: false, error: "conductor recovery authority unavailable" }));
+        return;
+      }
+      case "recovery": {
+        let recoveryCurrent: () => void = () => {};
+        if (c.role !== "console") {
+          try {
+            if (!["inspect", "prepare", "commit", "abort", "release"].includes(msg.op)) throw new RecoveryAuthorityError();
+            const current = msg.op === "inspect" ? operationalCurrent(sock) : admitOperational(sock, `recovery ${msg.op}`); current();
+            if (msg.op !== "inspect" || msg.operationId !== undefined) {
+              const raw = msg.authority as ConductorRecoveryBinding;
+              if (!raw || raw.peer !== c.peer || raw.operationId !== msg.operationId || raw.projectRoot !== opts.cwd || raw.projectId !== projectId || raw.stateDir !== opts.stateDir) throw new RecoveryAuthorityError();
+              const proof = authorizeConductorRecovery(opts.stateDir, raw, () => { current(); const value = captureRecoveryPolicy({ root: opts.cwd, id: projectId, stateDir: opts.stateDir }, c.peer!, loadConfig(opts.cwd)); return value.policyDigest === raw.policyDigest && value.boardDigest === raw.boardDigest; });
+              recoveryCurrent = () => { current(); assertConductorRecovery(proof); };
+            } else recoveryCurrent = current;
+            recoveryCurrent();
+          } catch { return void reply(recoveryError("conductor recovery authority unavailable; the person runs it in ahub console or a terminal")); }
+        }
+        void recoveryOp(msg, recoveryCurrent).then(reply, (error) => {
           if (isDatabaseBusy(error)) {
             try { log(`recovery ${sanitize(String(msg.op))} database contention: ${databaseBusySite(error).join("\n")}`); } catch { /* the reply still settles its rid */ }
             const busy = new RecoveryDatabaseBusy();
@@ -7256,6 +7381,7 @@ export async function startDaemon(opts: DaemonOptions) {
           else reply(recoveryError((error as Error)?.message ?? "recovery operation failed"));
         });
         return;
+      }
       case "send": {
         if (recoveryActive()) return void reply({ t: "sent", ok: false, error: "recovery is holding new deliveries" });
         // A human at the console should not wait out the batch window; agents default to status.
@@ -7866,6 +7992,16 @@ export async function startDaemon(opts: DaemonOptions) {
           });
         return;
       case "task":
+        if (c.role === "tools" && msg.op === "task_unassign") {
+          try {
+            const current = admitOperational(sock, "task unassign");
+            void childToolAuthority.run({ by: c.peer!, current: () => { current(); return true; } },
+              () => taskOp(c.peer!, "task_unassign", msg.args ?? {})).then(
+                text => reply({ t: "task", ok: true, text }),
+                error => reply({ t: "task", ok: false, error: error instanceof Error ? error.message : "unassign refused" }));
+          } catch (error) { reply({ t: "task", ok: false, error: error instanceof Error ? error.message : "unassign refused" }); }
+          return;
+        }
         if (c.role === "tools" && msg.op === "release_show") {
           try { const current = publicReadCurrent(sock); current(); const release = publicReleaseShow(msg.args ?? {}); current(); return void reply({ t: "task", ok: true, text: JSON.stringify(release) }); }
           catch { return void reply({ t: "task", ok: false, error: "public release read unavailable" }); }

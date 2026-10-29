@@ -1,3 +1,4 @@
+import { assertConductorOperationLocal, authorizeConductorOperation, authorizeConductorLaunch, issueConductorOperation, preflightConductorRecovery, retireConductorOperation } from "./conductor-recovery.ts";
 #!/usr/bin/env bun
 import { conductorLocalOperation, conductorOperation, OPERATIONAL_PERSON_GUIDANCE } from "../hub/operational-authority.ts";
 import { sayRecipients } from "./say-input.ts";
@@ -64,8 +65,8 @@ import { VERSION } from "../version.ts";
 import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
 import { createInterface as lineReader } from "node:readline";
-import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner, supportsAction } from "../hub/recovery-store.ts";
-import { childEnv } from "../hub/child-process.ts";
+import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, writeOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner, supportsAction } from "../hub/recovery-store.ts";
+import { childEnv, personEnv } from "../hub/child-process.ts";
 import { abortRecovery, createOperation, disposeRecovery, recordRecoveryDelegation, repairedFreshSession, reattachRecovery, liveProjects, nextChoices, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation, type Inspection } from "./upgrade.ts";
 import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
@@ -212,11 +213,25 @@ const stateDir = selected.stateDir;
 var operationalAuditReady=false, operationalRefusalRecorded=false;
 const caller = declaredInstances ? detectCliIdentity(process.env, declaredInstances) : unboundCaller;
 const commandLabel = cliCommandLabel(cmd, args, projectCatalog);
-const commandAccess = classifyPeerCommand(cmd, args, projectCatalog);
+let commandAccess = classifyPeerCommand(cmd, args, projectCatalog);
+const continuationPeer = process.env.AGENTHUB_RECOVERY_CONDUCTOR;
+const continuationId = process.env.AGENTHUB_RECOVERY_OPERATION;
+let recoveryLauncher = false, recoveryRunnerContinuation = false;
+let recoveryLauncherCurrent: (() => void) | undefined;
+if (continuationPeer !== undefined) {
+  if (caller.role !== "tools" || caller.peer !== continuationPeer || !continuationId || !operationIdPattern.test(continuationId) || liveTest) fail("conductor recovery authority unavailable; the person runs it in ahub console or a terminal");
+  const operation = readOperation<RecoveryOperation>(continuationId);
+  if (cmd === "recovery-run" && args.length === 1 && args[0] === continuationId && realPath(operation.sourceRoot) === realPath(resolve(import.meta.dir, "../.."))) {
+    await authorizeConductorOperation(operation, continuationPeer); recoveryRunnerContinuation = true; commandAccess = "conductor";
+  } else if (process.env.AGENTHUB_RECOVERY_CONTINUATION === continuationId) {
+    await authorizeConductorLaunch(operation, continuationPeer, cwd, resolve(import.meta.dir, "../.."), cmd, args); recoveryLauncher = true; recoveryLauncherCurrent = () => assertConductorOperationLocal(operation, continuationPeer);
+  } else fail("conductor recovery authority unavailable; the person runs it in ahub console or a terminal");
+}
+const conductorPeer = !liveTest && caller.role === "tools" && (recoveryRunnerContinuation || ["restart", "upgrade", "recovery"].includes(cmd) && commandAccess === "conductor") ? caller.peer : undefined;
 // Agent-authored content keeps its peer. Operational starts/holds may borrow console authority for live verification.
 const delegationRefused = liveTest && caller.role === "tools" && commandAccess !== "allowed" && liveTestRefusal(cmd, args);
 const delegatedPeer = liveTest && caller.role === "tools" && commandAccess !== "allowed" && !delegationRefused ? caller.peer : undefined;
-const identity = delegatedPeer ? { role: "console" as const } : caller;
+const identity = delegatedPeer || recoveryLauncher ? { role: "console" as const } : caller;
 operationalAuditReady=identity.role==="tools" && commandAccess==="conductor" && conductorOperation(cmd,args)!==undefined;
 function audit(outcome: "run" | "refused" | "invalid"): void {
   if (caller.role === "console") return;
@@ -581,13 +596,13 @@ function printRecoveryStatus(op: RecoveryOperation, message: string, presentatio
   }
 }
 async function recoveryEndInspection(op: RecoveryOperation): Promise<Record<string, Inspection | undefined>> {
-  const driver = makeRecoveryDriver(undefined, delegatedPeer);
+  const driver = makeRecoveryDriver(undefined, delegatedPeer, undefined, conductorPeer);
   return Object.fromEntries(await Promise.all(op.plan.projects.map(async planned => [planned.project.id, await driver.inspect(planned.project).catch(() => undefined)] as const)));
 }
 
 function spawnRecovery(operation: RecoveryOperation, quiet = false, presentation?: RecoveryPresentationOptions): void {
   const child = spawn(process.execPath, [join(operation.sourceRoot, "src/cli/main.js"), ...liveTestArgs, "recovery-run", operation.id], {
-    cwd, detached: true, stdio: "ignore", env: { ...process.env, AGENTHUB_RECOVERY_OPERATION: operation.id },
+    cwd, detached: true, stdio: "ignore", env: { ...process.env, AGENTHUB_RECOVERY_OPERATION: operation.id, ...(conductorPeer ? { AGENTHUB_PEER_ID: conductorPeer, AGENTHUB_RECOVERY_CONDUCTOR: conductorPeer } : {}) },
   });
   child.on("error", () => console.error(`runner launch failed; use ${recoveryCommand(operation, "resume")}`));
   child.unref();
@@ -662,7 +677,7 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
     lock: recoveryLock,
     read: (id) => readOperation<RecoveryOperation>(id),
     runner: recoveryRunner,
-    live: (op) => liveProjects(op, makeRecoveryDriver(undefined, delegatedPeer).inspect),
+    live: (op) => liveProjects(op, makeRecoveryDriver(undefined, delegatedPeer, undefined, conductorPeer).inspect),
     endInspection: recoveryEndInspection,
     endPeer: (planned, peer) => endPlannedPeer(planned, peer),
     runnerStoppable: (id) => signedRunner(id) !== undefined,
@@ -689,6 +704,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   // Before the value reaches a package spec or the registry: a range such as 0.13 would resolve to whatever matches.
   if (to !== undefined) { try { exactVersion(to); } catch (error) { fail((error as Error).message); } }
   // An older CLI must not coordinate a newer target (docs/operations.md): the target's own coordinator takes over.
+  if (conductorPeer && kind === "upgrade" && newerVersion(to!, VERSION)) fail("a supporting target coordinator is required; the person runs it in ahub console or a terminal");
   if (kind === "upgrade" && newerVersion(to!, VERSION) && process.env.AGENTHUB_UPGRADE_HANDOVER !== "1") {
     const argv = ["x", "--package", `@staix/agent-hub@${to}`, "ahub", ...liveTestArgs, "upgrade", "--to", to!, ...rest, ...display.flags, ...(dry && !rest.includes("--dry-run") ? ["--dry-run"] : [])];
     console.error(`ahub: ${to} is newer than this CLI (${VERSION}), so its own coordinator runs the upgrade: bun ${argv.join(" ")}`);
@@ -708,7 +724,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   }
   if (kind === "upgrade") console.error("ahub: Kimi now defaults to its own TUI (pull-only) in projects without peers.kimi.start_mode. To keep ACP: ahub settings set peers.kimi.start_mode headless");
   if (interactive) return onTerminal((io) => planScreen(upgradeHost(kind, to ?? VERSION), io), display.options);
-  const plan = await makeUpgradePlan(kind, to ?? VERSION, kind === "restart" ? cwd : undefined);
+  const plan = await makeUpgradePlan(kind, to ?? VERSION, kind === "restart" ? cwd : undefined, undefined, conductorPeer);
   const jsonApply = display.json && yes && !dry;
   // #814: a person reading a pipe or a dry run gets the plan screen's rows, with every blocker, reconnect-only session and
   // fresh start in them. `--json` keeps the document and the stderr lines (#206) exactly as they were.
@@ -729,10 +745,21 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
       if (!/^(y|yes)$/i.test((await rl.question("Apply this project list and restore its sessions? [y/N] ")).trim())) return;
     } finally { rl.close(); }
   }
-  const current = await makeUpgradePlan(kind, plan.version, kind === "restart" ? cwd : undefined);
+  const current = await makeUpgradePlan(kind, plan.version, kind === "restart" ? cwd : undefined, undefined, conductorPeer);
   if (current.fingerprint !== plan.fingerprint) fail("plan changed during review; run the command again");
+  if (conductorPeer) await preflightConductorRecovery(plan, conductorPeer);
   const sourceRoot = preserveSource(plan);
-  const operation = createOperation(plan, sourceRoot, undefined, delegatedPeer ? { peer: delegatedPeer, command: kind } : undefined);
+  let operation: RecoveryOperation;
+  if (conductorPeer) {
+    const id = randomUUID();
+    const pending: RecoveryOperation = { schema: 1, id, plan, sourceRoot, createdAt: Date.now(), updatedAt: Date.now(), phase: "pending", step: "stage", projects: plan.projects.map(row => ({ id: row.project.id, phase: "pending", terminals: {} })) };
+    const target = await makeRecoveryDriver().stage(pending);
+    pending.targetRoot = target.root; pending.targetDigest = target.digest; pending.targetFeatures = target.targetFeatures;
+    await issueConductorOperation(pending, conductorPeer);
+    operation = createOperation(plan, sourceRoot, undefined, { peer: conductorPeer, command: kind }, id);
+    operation.targetRoot = target.root; operation.targetDigest = target.digest; operation.targetFeatures = target.targetFeatures;
+    writeOperation(id, operation);
+  } else operation = createOperation(plan, sourceRoot, undefined, delegatedPeer ? { peer: delegatedPeer, command: kind } : undefined);
   if (display.json) { spawnRecovery(operation, true); console.log(JSON.stringify(publicOperation(operation), null, 2)); }
   else spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
 }
@@ -817,7 +844,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const result = await reattachRecovery(selected.id, selected.peer, makeRecoveryDriver());
       if (display.json) { console.log(JSON.stringify(publicOperation(result), null, 2)); return; }
       printRecovery(renderOperation(result, undefined, display.options));
-      const live = await liveProjects(result, makeRecoveryDriver(undefined, delegatedPeer).inspect);
+      const live = await liveProjects(result, makeRecoveryDriver(undefined, delegatedPeer, undefined, conductorPeer).inspect);
       printRecovery(renderBlocked(result, nextChoices(result, undefined, live), display.options));
       return;
     }
@@ -844,15 +871,17 @@ const commands: Record<string, () => Promise<void> | void> = {
         audit("refused"); fail(LIVE_TEST_PERSON_REFUSAL);
       }
     }
+    if (conductorPeer) await authorizeConductorOperation(operation, conductorPeer);
     const runner = recoveryRunner(id);
     if (action === "status") {
       // #215: abort and resume are offered by what the open sources show, read as the runner's errors read them.
-      const live = runner ? {} : await liveProjects(operation, makeRecoveryDriver(undefined, delegatedPeer).inspect);
+      const live = runner ? {} : await liveProjects(operation, makeRecoveryDriver(undefined, delegatedPeer, undefined, conductorPeer).inspect);
       if (display.json) console.log(JSON.stringify(publicOperation(operation, runner, live), null, 2));
       else printRecovery(renderRecoveryStatus(operation, runner, nextChoices(operation, runner, live), display.options));
     }
     else if (action === "abort") {
-      await abortRecovery(id, makeRecoveryDriver(undefined, delegatedPeer));
+      await abortRecovery(id, makeRecoveryDriver(undefined, delegatedPeer, undefined, conductorPeer));
+      if (conductorPeer) retireConductorOperation(readOperation<RecoveryOperation>(id), conductorPeer);
       if (display.json) console.log(JSON.stringify(publicOperation(readOperation<RecoveryOperation>(id)), null, 2));
       else console.log("preflight cancelled; no committed transition was rolled back");
     }
@@ -862,7 +891,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const stop = flags.length === 1 && flags[0] === "--stop-and-archive";
       const reason = one["--reason"]?.trim() ?? "";
       if (!reason || reason.length > 500 || (flags.length && !stop) || stop === !!one["--fresh-session"]) fail(usage);
-      const result = await disposeRecovery(id, stop ? { stop: true } : { fresh: one["--fresh-session"]! }, reason, makeRecoveryDriver(undefined, delegatedPeer));
+      const result = await disposeRecovery(id, stop ? { stop: true } : { fresh: one["--fresh-session"]! }, reason, makeRecoveryDriver(undefined, delegatedPeer, undefined, conductorPeer));
       if (!stop) {
         if (display.json) { console.log(JSON.stringify(publicOperation(result), null, 2)); return spawnRecovery(result, true); }
         console.log(`${one["--fresh-session"]}: a fresh session is accepted and the lost one is recorded; resuming`);
@@ -873,7 +902,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     else if (["completed", "cancelled"].includes(operation.phase)) console.log(display.json ? JSON.stringify(publicOperation(operation, runner), null, 2) : `recovery is already ${operation.phase}`);
     // #215: an operation being abandoned is never resumed, whichever coordinator started it (an older one would).
-    else if (operation.disposition) fail(`a stop-and-archive of this operation is partway; nothing was resumed; ${nextActionsText(operation, await liveProjects(operation, makeRecoveryDriver(undefined, delegatedPeer).inspect))}`);
+    else if (operation.disposition) fail(`a stop-and-archive of this operation is partway; nothing was resumed; ${nextActionsText(operation, await liveProjects(operation, makeRecoveryDriver(undefined, delegatedPeer, undefined, conductorPeer).inspect))}`);
     else if (runner === "unknown") {
       if (display.json) console.log(JSON.stringify(publicOperation(operation, runner), null, 2));
       else if (humanRecovery(false)) printRecoveryStatus(operation, "Runner ownership is unknown; nothing was started.", display.options);
@@ -892,8 +921,9 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
   "recovery-run": async () => {
     if (args.length !== 1 || process.env.AGENTHUB_RECOVERY_OPERATION !== args[0]) fail("recovery-run is an internal command");
-    const result = await runRecovery(args[0]!, makeRecoveryDriver(undefined, delegatedPeer));
+    const result = await runRecovery(args[0]!, makeRecoveryDriver(undefined, delegatedPeer, undefined, conductorPeer));
     if (result.phase !== "completed") process.exitCode = 1;
+    else if (conductorPeer) retireConductorOperation(result, conductorPeer);
   },
   help: () => {
     const color = resolveColor(undefined, { isTTY: !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR }) === true;
@@ -962,10 +992,11 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   setup: async () => {
+    recoveryLauncherCurrent?.();
     assertLifecycleAvailable();
     const root = join(import.meta.dir, "..", "..");
     const state = () => {
-      const out = (argv: string[]) => spawnSync("claude", argv, { encoding: "utf8" }).stdout ?? "";
+      const out = (argv: string[]) => { recoveryLauncherCurrent?.(); const result = spawnSync("claude", argv, { encoding: "utf8", ...(recoveryLauncherCurrent ? { timeout: 30_000 } : {}) }); recoveryLauncherCurrent?.(); return result.stdout ?? ""; };
       return nextStep(parseList<InstalledPlugin>(out(["plugin", "list", "--json"])), parseList<Marketplace>(out(["plugin", "marketplace", "list", "--json"])), root);
     };
     let step = state();
@@ -982,11 +1013,14 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
       for (let i = 0; step && i < 6; i++, step = state()) {
         console.log(`> ${step.argv.join(" ")}   (${step.why})`);
-        if (spawnSync(step.argv[0]!, step.argv.slice(1), { stdio: "inherit" }).status !== 0) fail(`"${step.argv.join(" ")}" failed; nothing after it was run`);
+        recoveryLauncherCurrent?.();
+        if (spawnSync(step.argv[0]!, step.argv.slice(1), { stdio: "inherit", ...(recoveryLauncherCurrent ? { timeout: 30_000 } : {}) }).status !== 0) fail(`"${step.argv.join(" ")}" failed; nothing after it was run`);
+        recoveryLauncherCurrent?.();
       }
       if (step) fail(`still not done after 6 steps; next would be: ${step.argv.join(" ")}`);
     }
-    await commands.doctor!();
+    if (recoveryLauncherCurrent) recoveryLauncherCurrent();
+    else await commands.doctor!();
   },
 
   init: () => {
@@ -1023,7 +1057,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   up: async () => {
     const unattended = unattendedEnv || args.includes("--unattended");
     if (unattended) console.error(UNATTENDED_WARNING);
-    const status = await startProject(registeredProject(), { unattended, liveTest });
+    const status = await startProject(registeredProject(), { unattended, liveTest, ...(recoveryLauncherCurrent ? { current: recoveryLauncherCurrent, env: { ...personEnv(process.env), AGENTHUB_RECOVERY_OPERATION: continuationId } } : {}) });
     console.log(`ahub up (ws://127.0.0.1:${status.controlPort}), state in ${stateDir}`);
     try { if (loadPetConfig(cwd).window) console.log(await startPetWindow(stateDir, cwd)); }
     catch { console.error("Pet window was not started; run ahub pet --window to inspect it."); }
@@ -2585,6 +2619,7 @@ function inspectDoctorRouting(cwd: string): { routing?: Routing; errors: string[
 }
 
 async function runConductorCommand(): Promise<void> {
+  if (recoveryRunnerContinuation || conductorPeer && ["restart", "upgrade", "recovery"].includes(cmd)) return commands[cmd]!();
   const operation=conductorOperation(cmd,args);
   if(operation) {
     const unavailable=`conductor authorization unavailable; nothing was executed; ${OPERATIONAL_PERSON_GUIDANCE}`;
@@ -2608,6 +2643,7 @@ async function runConductorCommand(): Promise<void> {
   let op: string;
   let input: Record<string, unknown>;
   if (cmd === "sdlc") return commands.sdlc!(); // #786: `sdlc merge` is the one conductor-class sdlc subcommand; the daemon checks the role.
+  if (cmd === "task" && args[0] === "unassign") return commands.task!();
   if (cmd === "task") {
     op = args[0] === "assign" ? "hub_task_assign" : "hub_task_escalate";
     const { one, rest: positional } = takeFlags(args.slice(1), args[0] === "assign" ? ["--role"] : [], []);

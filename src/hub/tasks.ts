@@ -2552,11 +2552,12 @@ export class Tasks {
     }
   }
 
-  /** A person's owner removal sticks until a later explicit assignment or reservation, across hub runs. */
+  /** Authorized manual owner removal sticks until a later explicit assignment/reservation, across hub runs. */
   private personUnassigned(task: Task): boolean {
-    const removed = task.history.findLastIndex((h) => h.event === "unassigned" && h.by === USER);
+    const manual = (h: HistoryEntry) => h.by === USER || h.conductorManual === true;
+    const removed = task.history.findLastIndex((h) => h.event === "unassigned" && manual(h));
     if (removed < 0) return false;
-    return !task.history.slice(removed + 1).some((h) => h.by === USER && ["assigned", "reassigned", "escalated", "reserved", "backlog pulled"].includes(h.event));
+    return !task.history.slice(removed + 1).some((h) => manual(h) && ["assigned", "reassigned", "escalated", "reserved", "backlog pulled"].includes(h.event));
   }
 
   /**
@@ -2608,7 +2609,7 @@ export class Tasks {
   }
 
   /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
-  private async assignOwner(task: Task, by: PeerId, opts: { current?: () => void; queueOverride?: "owner"; candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number; refuseNamed?: "pre" | "plain"; plannerPull?: { revision: number; note: string; withheld: boolean; guard: () => void } } = {}): Promise<Task> {
+  private async assignOwner(task: Task, by: PeerId, opts: { current?: () => void; conductorManual?: true; queueOverride?: "owner"; candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number; refuseNamed?: "pre" | "plain"; plannerPull?: { revision: number; note: string; withheld: boolean; guard: () => void } } = {}): Promise<Task> {
     opts.current?.();
     if (task.state === "backlog" && !opts.plannerPull) throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
@@ -2675,7 +2676,7 @@ export class Tasks {
     opts.plannerPull?.guard();
     const assignmentNote = this.assignmentNote(`${opts.note ?? `to ${a.owner}`}${passed}`, a);
     const binding = this.plannerBinding(task, a, !!opts.plannerPull);
-    const assignmentExtra = { ...this.reviewMetadata(a, task), ...(binding ? { plannerReason: binding.plannerReason } : {}), ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) };
+    const assignmentExtra = { ...this.reviewMetadata(a, task), ...(binding ? { plannerReason: binding.plannerReason } : {}), ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}), ...(opts.conductorManual ? { conductorManual: true as const } : {}) };
     opts.current?.();
     const next = opts.plannerPull
       ? this.d.board.pullAssigned(task.id, by, a.owner, opts.plannerPull.revision, opts.plannerPull.note, opts.plannerPull.withheld, a.reviewer ?? null, assignmentNote, assignmentExtra, task.history.length, binding)
@@ -5643,9 +5644,22 @@ export class Tasks {
     return { role, current: () => { if (!current()) throw new (preEffect ? PreEffectToolRefusal : Error)("only the current configured conductor may override queue backpressure"); } };
   }
 
+  private configuredManualConductor(by: PeerId): boolean {
+    if (by === USER || by === HUB || isRemotePeerId(by)) return false;
+    const holders = Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => !isRemotePeerId(peer) && Array.isArray(roles) && roles.includes("conductor")).map(([peer]) => peer);
+    return holders.length === 1 && holders[0] === by;
+  }
+  private conductorManualCheck(by: PeerId, preEffect: boolean): () => void {
+    return () => {
+      if (!this.configuredManualConductor(by) || !this.d.bus.isRostered(by)) throw new (preEffect ? PreEffectToolRefusal : Error)("only the console user or the current configured conductor may unassign a task role");
+    };
+  }
+
   /** Caller authority is checked by the daemon; keep the real actor in task history. */
   async assignTo(id: unknown, peer: PeerId, by: PeerId = USER, preEffect = false, role: TaskAssignmentRole = "owner", expectedFlowRevision?: number): Promise<Task> {
     requireLocalTaskPeer(by); requireLocalTaskPeer(peer);
+    const conductorManual = this.configuredManualConductor(by), manualCurrent = conductorManual ? this.conductorManualCheck(by, preEffect) : undefined;
+    manualCurrent?.();
     if (role !== "owner" && role !== "reviewer" && role !== "planner") throw new (preEffect ? PreEffectToolRefusal : Error)("role must be owner, reviewer or planner");
     if (role === "planner") {
       if (by !== USER) throw new PreEffectToolRefusal("only the person may name a task planner");
@@ -5675,6 +5689,7 @@ export class Tasks {
       if (a.reviewer !== peer) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot name ${peer} as reviewer: ${a.trace.filter(line => line.includes("reviewer") || line.includes("pii")).join("; ")}`);
       const admission = task.state === "in_review" ? await this.reviewRequestAdmission(task, undefined, preEffect, by) : undefined;
       // Every runtime authority check precedes the final write, including revocations during the metadata await.
+      manualCurrent?.();
       queueAssignment?.current();
       const current = this.need(task.id, false, preEffect);
       if (current.history.length !== task.history.length) throw new (preEffect ? PreEffectToolRefusal : Error)("task changed during reviewer admission");
@@ -5695,16 +5710,23 @@ export class Tasks {
       return next;
     }
     // Work that waits is handed to nobody yet (issue #207): the peer becomes its reserved owner instead.
-    if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], namedOwner: peer, event: "reassigned", reason: "manual", override: by === USER, expectedFlowRevision, refuseNamed: preEffect ? "pre" : "plain", ...(queueAssignment ? { queueOverride: "owner" as const, current: queueAssignment.current } : {}) });
+    if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], namedOwner: peer, event: "reassigned", reason: "manual", override: by === USER, expectedFlowRevision, refuseNamed: preEffect ? "pre" : "plain", ...(conductorManual ? { conductorManual: true as const } : {}), ...(queueAssignment ? { queueOverride: "owner" as const } : {}), current: () => { manualCurrent?.(); queueAssignment?.current(); } });
+    manualCurrent?.();
     queueAssignment?.current();
-    const next = this.d.board.update(task.id, by, "reserved", { reserved: peer }, `for ${peer}`, { reason: "manual" }, expectedFlowRevision);
+    const next = this.d.board.update(task.id, by, "reserved", { reserved: peer }, `for ${peer}`, { reason: "manual", ...(conductorManual ? { conductorManual: true as const } : {}) }, expectedFlowRevision);
     this.releaseNotice(`task ${this.publicTitle(next)} reserved for ${peer} by ${by}; it is offered to ${peer} first once what it waits for is approved`);
     return next;
   }
 
-  /** Person-only removal without routing a replacement. The history marker suppresses later automatic owner offers. */
+  /** Explicit removal without routing a replacement; host history preserves manual intent across role changes. */
   async unassign(id: unknown, by: PeerId = USER, preEffect = false, role: TaskAssignmentRole = "owner", expectedFlowRevision?: number): Promise<Task> {
-    if (by !== USER) throw new (preEffect ? PreEffectToolRefusal : Error)("only the console user may unassign a task role");
+    const authority = by === USER ? undefined : this.conductorManualCheck(by, preEffect);
+    const current = authority && (() => {
+      authority();
+      if (this.d.privateTurn?.(by)) throw new (preEffect ? PreEffectToolRefusal : Error)("conductor task mutations are unavailable during a private turn");
+      if (this.d.cancellationHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) throw new (preEffect ? PreEffectToolRefusal : Error)("recovery or shutdown is holding task writes");
+    });
+    current?.();
     if (role !== "owner" && role !== "reviewer") throw new (preEffect ? PreEffectToolRefusal : Error)("role must be owner or reviewer");
     const task = this.need(id, false, preEffect);
     this.checkFlowRevision(task, expectedFlowRevision, preEffect);
@@ -5712,7 +5734,8 @@ export class Tasks {
     if (role === "owner") {
       if (!OPEN.includes(task.state)) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is ${task.state}: its owner cannot be unassigned`);
       if (!task.owner && !task.reserved) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: no owner or owner reservation to unassign`);
-      const next = this.d.board.update(task.id, by, "unassigned", { owner: null, reserved: null, ...(task.state === "proposed" ? {} : { state: "proposed" as const }) }, `person unassigned ${[task.owner, task.reserved].filter(Boolean).join(" and ")}`, { reason: "manual" }, expectedFlowRevision);
+      current?.();
+      const next = this.d.board.update(task.id, by, "unassigned", { owner: null, reserved: null, ...(task.state === "proposed" ? {} : { state: "proposed" as const }) }, `${by === USER ? "person" : "conductor"} unassigned ${[task.owner, task.reserved].filter(Boolean).join(" and ")}`, { reason: "manual", ...(current ? { conductorManual: true as const } : {}) }, expectedFlowRevision);
       this.cohorts.leave(task.id);
       this.withdrawRoleRequest(task, next, "owner");
       return next;
@@ -5720,7 +5743,8 @@ export class Tasks {
     if (!OPEN.includes(task.state) && task.state !== "in_review") throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is ${task.state}: its reviewer cannot be unassigned`);
     if (!task.reviewer) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: no reviewer to unassign`);
     if (task.reviewer === USER && this.isPii(task)) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: the human reviewer is required for PII work`);
-    const next = this.d.board.update(task.id, by, "reviewer changed", { reviewer: null }, `person unassigned reviewer ${task.reviewer}`, { reason: "manual" }, expectedFlowRevision);
+    current?.();
+    const next = this.d.board.update(task.id, by, "reviewer changed", { reviewer: null }, `${by === USER ? "person" : "conductor"} unassigned reviewer ${task.reviewer}`, { reason: "manual", ...(current ? { conductorManual: true as const } : {}) }, expectedFlowRevision);
     this.withdrawRoleRequest(task, next, "reviewer");
     return next;
   }

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
+import { processSignature } from "../src/pi/process-signature.ts";
 import { drainCliAudits } from "../src/cli/identity-audit.ts";
 import { classifyPeerCommand, liveTestRefusal } from "../src/cli/identity.ts";
 import { startFakeModelServer } from "./fakes/model-server.ts";
@@ -32,6 +33,41 @@ function project() {
   writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, snapshots: { enabled: false } }));
   return root;
 }
+
+test("exact recovery and restart conductor forms reach only the fixed pre-effect audit request", async () => {
+  const root = project(), stateDir = join(root, ".agenthub/state"), requests: Record<string, unknown>[] = [];
+  mkdirSync(stateDir);
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(req, server) { if (server.upgrade(req)) return; return new Response("unexpected"); },
+    websocket: { message(sock, raw) {
+      const request = JSON.parse(String(raw)) as Record<string, unknown>;
+      if (request.t === "hello") {
+        sock.send(JSON.stringify({ t: "welcome", rid: request.rid, ok: true, cwd: root, projectId: "fixture", instanceId: "fixture", protocol: PROTOCOL, features: [] }));
+        return;
+      }
+      requests.push(request);
+      sock.send(JSON.stringify({ t: "reply", rid: request.rid, ok: false, error: "fixture conductor refusal", authorityRefused: true, authorityScope: "conductor", refusalAudited: true }));
+    } } });
+  writeFileSync(join(stateDir, "control-token"), "fixture-token");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, protocol: PROTOCOL, projectId: "fixture", instanceId: "fixture", pid: process.pid, pidSignature: processSignature(process.pid) }));
+  const forms = [
+    [["restart", "--yes"], "restart"],
+    [["upgrade", "--yes", "--to", "0.18.1"], "upgrade"],
+    [["recovery", "resume", "op-1"], "recovery resume"],
+    [["recovery", "abort"], "recovery abort"],
+    [["task", "unassign", "123"], "task unassign"],
+  ] as const;
+  try {
+    for (const [args, operation] of forms) {
+      const result = await cli(root, [...args], { AGENTHUB_PEER_ID: "codex" });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("fixture conductor refusal");
+    }
+    expect(requests.map(request => [request.t, request.op, request.command])).toEqual(forms.map(([, operation]) => ["conductor_operational", "authorize", operation]));
+    expect(JSON.stringify(requests)).not.toContain("op-1");
+    expect(JSON.stringify(requests)).not.toContain("123");
+  } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
 
 test("#410 delegated operational audit negotiation preserves off-roster caller authority", async () => {
   const root = project(), stateDir = join(root, ".agenthub/state");
