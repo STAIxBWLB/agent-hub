@@ -103,6 +103,12 @@
   },
   {
     "predicate": "isWsPeer",
+    "function": "src/hub/daemon.ts:startDaemon.ownerIsolationProjection",
+    "count": 1,
+    "reason": "The status-only retained terminal Claude root projection checks the actual daemon-owned WsPeer socket attachment and generation without filesystem or Git reads. This display value never grants owner admission or replaces fresh effect-boundary proof."
+  },
+  {
+    "predicate": "isWsPeer",
     "function": "src/hub/daemon.ts:startDaemon.recoveryView",
     "count": 1,
     "reason": "The source recovery DTO separates observed channel kind, live socket attachment and session fingerprint from restoration metadata. Only an actual daemon-owned WsPeer may provide that host-channel observation (#900)."

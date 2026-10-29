@@ -873,11 +873,11 @@ export class Tasks {
   }
 
   /** Workload is board/queue data only: wip() never calls health() or weights(). */
-  private instanceRouting(): InstanceRoutingOptions {
+  private instanceRouting(ownerIsolation?: Readonly<Record<string, boolean>>): InstanceRoutingOptions {
     const instances = this.d.instances?.();
     if (!instances || !Object.keys(instances).length) return { adapterCatalog: this.d.adapterCatalog };
     const peers = [...new Set([...(this.d.adapterCatalog?.definitions ?? ADAPTERS).map(adapter => adapter.kind), ...Object.keys(instances), ...this.d.bus.peers.keys()])];
-    return { adapterCatalog: this.d.adapterCatalog, instances, ownerIsolation: this.d.ownerIsolation?.() ?? {}, wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])), load: Object.fromEntries(peers.map(peer => [peer, this.d.bus.queued(peer)])) };
+    return { adapterCatalog: this.d.adapterCatalog, instances, ownerIsolation: ownerIsolation ?? this.d.ownerIsolation?.() ?? {}, wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])), load: Object.fromEntries(peers.map(peer => [peer, this.d.bus.queued(peer)])) };
   }
 
   private queuePolicy(): QueueBackpressurePolicy | undefined {
@@ -918,10 +918,10 @@ export class Tasks {
   }
 
   /** Peer health and roles the daemon feeds routing (issues #89, #90, #92): failing peers are skipped, held queues explained. */
-  private health() {
+  private health(ownerIsolation?: Readonly<Record<string, boolean>>) {
     const failing = this.d.failing?.();
     const held = this.d.held?.();
-    const workload = this.instanceRouting();
+    const workload = this.instanceRouting(ownerIsolation);
     const peers = workload.instances ? [...new Set([...(this.d.adapterCatalog?.definitions ?? ADAPTERS).map(adapter => adapter.kind), ...Object.keys(workload.instances), ...this.d.bus.peers.keys()])] : (this.d.adapterCatalog?.definitions ?? ADAPTERS).map(adapter => adapter.kind);
     return { ...workload, ...this.contextRouting(), ...this.queueRouting([...new Set([...peers, ...this.d.bus.peers.keys()])]), reviewPool: { pool: this.d.review?.pool ?? DEFAULT_REVIEW_POOL, rerotate: this.d.review?.rerotate, required: this.d.review?.pool !== undefined, ...(this.d.review?.same_family === "never" ? { sameFamily: "never" as const } : {}) }, ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => (this.d.adapterCatalog?.definitionOf ?? definitionOf)(peer.id, workload.instances)?.attach?.pullOnlyForms?.length && peer.pullOnly).map(peer => peer.id), offRoster: peers.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
   }
@@ -986,10 +986,10 @@ export class Tasks {
     return Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => !isRemotePeerId(peer) && Array.isArray(roles) && roles.includes("planner") && this.d.bus.isRostered(peer)).map(([peer]) => peer).sort();
   }
 
-  private weights(cls: TaskClass, task?: Task) {
+  private weights(cls: TaskClass, task?: Task, projectedHealth?: ReturnType<Tasks["health"]>) {
     const now = Date.now();
     const quota = this.d.quota?.();
-    const health = this.health(), clock = health.now ?? now;
+    const health = projectedHealth ?? this.health(), clock = health.now ?? now;
     return { ...health, ...(task && this.hasPersonReservation(task) && task.reserved ? { queueReservedHold: task.reserved } : {}), planners: this.plannerHolders(), ...(task ? { reviewPool: this.reviewPoolOptions(task), ...(task.planner ? { keptPlanner: task.planner } : {}) } : {}), now: clock, demoted: this.demoted(cls, clock), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
   }
 
@@ -1343,11 +1343,11 @@ export class Tasks {
     }
     return parts.length ? `no peer can take the planner pull: ${parts.join("; ")}` : "no peer has eligible planner WIP capacity";
   }
-  private plannerAssignment(task: Task, reservedOnly = false, routing: Routing = this.d.routing(), queueOverride?: "owner"): Assignment {
+  private plannerAssignment(task: Task, reservedOnly = false, routing: Routing = this.d.routing(), queueOverride?: "owner", projectedHealth?: ReturnType<Tasks["health"]>): Assignment {
     const states = this.states();
     const full = this.plannerFull(task);
     // Preview the To Do transition without routing or offering the persisted backlog row.
-    return assign({ ...task, state: "proposed" }, states, routing, { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task), ...(queueOverride ? { queueOverride, contextOverride: true } : {}) });
+    return assign({ ...task, state: "proposed" }, states, routing, { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task, projectedHealth), ...(queueOverride ? { queueOverride, contextOverride: true } : {}) });
   }
 
   async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }, opts: { onBehalfOf?: PeerId; guard?: () => void } = {}): Promise<Task> {
@@ -2952,7 +2952,8 @@ export class Tasks {
       try { return this.d.offerRead?.(offer.peer, offer.envelopeId) !== true; } catch { return true; }
     }).map(offer => ({ ...offer }));
   }
-  stalled(): TaskStall[] {
+  /** A status-only snapshot is advisory; all effect/admission callers retain fresh health by default. */
+  stalled(projection?: { ownerIsolation: Readonly<Record<string, boolean>> }): TaskStall[] {
     const revision = this.d.board.statusRevision();
     if (this.stallCandidates?.revision !== revision) this.stallCandidates = { revision, rows: this.d.board.stalls().flatMap(stall => {
       const task = this.d.board.get(stall.task);
@@ -2962,11 +2963,12 @@ export class Tasks {
       return this.waitsFor(task).length ? [] : [{ stall, task, planned: this.plannerPullRecord(task)?.pull === true }];
     }) };
     // Eligibility inputs are live; queue journal writes alone do not re-decode board histories.
-    const key = JSON.stringify([revision, this.states(), this.d.routing(), this.health(), [...this.d.bus.peers.keys()].map(peer => {
+    const health = this.health(projection?.ownerIsolation);
+    const key = JSON.stringify([revision, this.states(), this.d.routing(), health, [...this.d.bus.peers.keys()].map(peer => {
       const queue = this.d.bus.queueSummary(peer);
       return [peer, this.wipLimit(peer), queue.heldBy, queue.needsReview];
     })]);
-    if (this.stallView?.key !== key) this.stallView = { key, stalls: this.stallCandidates.rows.filter(({ stall, task, planned }) => stall.cause.kind === "no-writes" || stall.cause.kind === "cancelled-dependency" || !(planned ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.weights(task.class, task), ...(stall.cause.kind === "no-eligible-peer" && isQueuePressureCode(stall.cause.code) && stall.cause.peer ? { candidates: [stall.cause.peer], namedOwner: stall.cause.peer } : {}) })).owner).map(({ stall }) => stall) };
+    if (this.stallView?.key !== key) this.stallView = { key, stalls: this.stallCandidates.rows.filter(({ stall, task, planned }) => stall.cause.kind === "no-writes" || stall.cause.kind === "cancelled-dependency" || !(planned ? this.plannerAssignment(task, true, this.d.routing(), undefined, health) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.weights(task.class, task, health), ...(stall.cause.kind === "no-eligible-peer" && isQueuePressureCode(stall.cause.code) && stall.cause.peer ? { candidates: [stall.cause.peer], namedOwner: stall.cause.peer } : {}) })).owner).map(({ stall }) => stall) };
     return structuredClone(this.stallView.stalls);
   }
   private queuePressureKnown: boolean | undefined;

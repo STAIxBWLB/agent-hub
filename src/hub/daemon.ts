@@ -578,6 +578,8 @@ export interface DaemonOptions {
   memoryClient?: MemoryClient;
   /** Host-only remote-default evidence seam; never read from config or control messages. */
   shellDefaultBranchProbe?: typeof readTaskShellDefaultBranch;
+  /** Host-only workspace-validation Git seam; never supplied by project config or control messages. */
+  instanceExecutionGit?: typeof hubGitSync;
   /** Host-only snapshot/probe seams; never read from project config or tool arguments. */
   snapshot?: typeof snapshot;
   snapshotBurstMs?: number;
@@ -703,6 +705,8 @@ function capturedRecoverySourceDigest(): string | undefined {
 }
 
 export async function startDaemon(opts: DaemonOptions) {
+  const resolveExecutionCwd = (peer: string, currentDeclarations: InstancesConfig | undefined, currentRoles: readonly string[], catalog: ReturnType<typeof createProjectAdapterCatalog>): string =>
+    resolveInstanceExecutionCwd(opts.cwd, peer, currentDeclarations, currentRoles, catalog, undefined, undefined, opts.instanceExecutionGit);
   const projectId = opts.projectId ?? randomUUID();
   const sourcePackageDigest = capturedRecoverySourceDigest();
   const instanceId = opts.instanceId ?? randomUUID();
@@ -832,7 +836,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!declaration || declaration.kind !== declarations[peer]?.kind) throw new Error("external instance declaration changed");
     const policy = loadConductorPolicy(opts.cwd, undefined, current);
     const currentRoles = effectiveInstanceRoles(peer, current.instances, policy.roles, current.catalog);
-    const cwd = resolveInstanceExecutionCwd(opts.cwd, peer, current.instances, currentRoles, current.catalog);
+    const cwd = resolveExecutionCwd(peer, current.instances, currentRoles, current.catalog);
     const binding = externalInstanceBinding(identity, peer, declaration, currentRoles, cwd);
     const startup = externalStartupPolicies.get(peer);
     if (!startup || binding.policyDigest !== externalInstanceBinding(identity, peer, startup.declaration, startup.roles, cwd).policyDigest) throw new Error("external instance policy changed; restart the hub before starting under its new policy");
@@ -2567,7 +2571,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // an admission/effect. Reuse only within synchronous code, never across an await.
       if (!verifiedTerminalRootsThisTurn.has(bound)) {
         try {
-          if (resolveInstanceExecutionCwd(opts.cwd, peer, declarations, config.roles[peer] ?? [], adapterCatalog) !== bound.cwd) throw new Error("execution root changed");
+          if (resolveExecutionCwd(peer, declarations, config.roles[peer] ?? [], adapterCatalog) !== bound.cwd) throw new Error("execution root changed");
         } catch { revokeTerminalExecution(peer); return undefined; }
         verifiedTerminalRootsThisTurn.add(bound);
         queueMicrotask(() => verifiedTerminalRootsThisTurn.delete(bound));
@@ -2578,12 +2582,22 @@ export async function startDaemon(opts: DaemonOptions) {
       try {
         if (bound.owner !== bus.peers.get(peer) || bound.owner.state === "offline" || bound.cwd === opts.cwd) throw new Error("execution root changed");
         if (!verifiedTerminalRootsThisTurn.has(bound)) {
-          if (resolveInstanceExecutionCwd(opts.cwd, peer, declarations, config.roles[peer] ?? [], adapterCatalog) !== bound.cwd) throw new Error("execution root changed");
+          if (resolveExecutionCwd(peer, declarations, config.roles[peer] ?? [], adapterCatalog) !== bound.cwd) throw new Error("execution root changed");
           verifiedTerminalRootsThisTurn.add(bound); queueMicrotask(() => verifiedTerminalRootsThisTurn.delete(bound));
         }
       } catch { revokeTerminalExecution(peer); return undefined; }
     }
     return bound;
+  }
+  /** Last verified roots for display only; no filesystem/Git probe and never owner-admission authority. */
+  function ownerIsolationProjection(): Readonly<Record<string, boolean>> {
+    return Object.fromEntries(extraIds.map(peer => {
+      const bound = executionOwners.get(peer), owner = bus.peers.get(peer);
+      if (!bound || !owner || bound.owner !== owner || owner.state === "offline" || bound.cwd === opts.cwd || bound.cwd !== executionRoots.get(peer)) return [peer, false];
+      if (bound.socket && (!isFixedBuiltinDefinition(definitionOf(peer)) || !isWsPeer(bound.owner)
+          || bound.owner.sessionGeneration !== bound.generation || !bound.owner.owns(bound.socket))) return [peer, false];
+      return [peer, true];
+    }));
   }
   function ownerWriteRoot(peer: string): string | undefined {
     if (declarations[peer]) {
@@ -3471,7 +3485,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (workspace !== undefined) {
           const current = readInstanceRoleConfig(opts.cwd), adapter = instanceDefinitionOf(turn.peer, current.instances, current.catalog);
           if (!current.instances?.[turn.peer] || adapter?.kind !== definitionOf(turn.peer)?.kind) throw new Error("turn workspace declaration changed; inspect before reverting");
-          const validated = resolveInstanceExecutionCwd(opts.cwd, turn.peer, current.instances, effectiveInstanceRoles(turn.peer, current.instances, current.roles, current.catalog), current.catalog);
+          const validated = resolveExecutionCwd(turn.peer, current.instances, effectiveInstanceRoles(turn.peer, current.instances, current.roles, current.catalog), current.catalog);
           const bound = executionOwners.get(turn.peer);
           if (validated !== workspace || executionRoot(turn.peer) !== workspace || bound?.owner !== codex || bound.cwd !== workspace) throw new Error("turn workspace differs from the current native owner; inspect before reverting");
         }
@@ -3859,7 +3873,8 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const status = (includeAttentionItems = false, includeAttentionInput = false, includeDoing = false) => {
     const taskNeeds = board.statusTasks();
-    const taskStalls = tasks.stalled();
+    const ownerIsolation = ownerIsolationProjection();
+    const taskStalls = tasks.stalled({ ownerIsolation });
     const pendingTaskOffers = tasks.pendingOffers().filter(offer => offer.pullOnly === true);
     const peerIds = byKind(statusPeerIds(taskNeeds));
     const queueBackpressure = tasks.queuePressureStatus(peerIds);
@@ -3901,8 +3916,8 @@ export async function startDaemon(opts: DaemonOptions) {
     readOnlyPeers: extraIds.filter(readOnlyPeer),
     // #450 I3: the instance ids this daemon bound at startup; a launcher selects only one of these.
     activeInstances: extraIds,
-    ownerIsolation: Object.fromEntries(extraIds.map(id => [id, !!ownerWriteRoot(id) && ownerWriteRoot(id) !== opts.cwd])),
-    ownerIsolationNotes: Object.fromEntries(extraIds.filter(id => !ownerWriteRoot(id) || ownerWriteRoot(id) === opts.cwd).map(id => [id, declarations[id]?.worktree ? definitionOf(id)?.transport === "claude-channel" ? "terminal execution root not verified; owner admission refused" : "execution root not verified" : "no declared write worktree"])),
+    ownerIsolation,
+    ownerIsolationNotes: Object.fromEntries(extraIds.filter(id => !ownerIsolation[id]).map(id => [id, declarations[id]?.worktree ? definitionOf(id)?.transport === "claude-channel" ? "terminal execution root not verified; owner admission refused" : "execution root not verified" : "no declared write worktree"])),
     stopping,
     pid: process.pid,
     cwd: opts.cwd,
@@ -3910,7 +3925,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const pressure = queueBackpressure?.peers[id]; const oldestQueuedAt = pressure ? pressure.oldestQueuedAt : summary.oldestQueuedAt; const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: !!ownerWriteRoot(id) && ownerWriteRoot(id) !== opts.cwd, ...(!ownerWriteRoot(id) ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(typeof oldestQueuedAt === "number" ? { oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const pressure = queueBackpressure?.peers[id]; const oldestQueuedAt = pressure ? pressure.oldestQueuedAt : summary.oldestQueuedAt; const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: ownerIsolation[id] === true, ...(ownerIsolation[id] !== true ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(typeof oldestQueuedAt === "number" ? { oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: tasks.wipBreakdown(peerIds),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
@@ -4799,7 +4814,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (isExternalInstance(peer) && bus.peers.get(peer)?.state !== undefined && bus.peers.get(peer)?.state !== "offline" && !currentExecutionOwner(peer)) return { ok: false, error: "external instance owner binding changed; stop the retained owner before starting again" };
       if (declarations[peer] && args.mode !== undefined && args.mode !== "headless") return { ok: false, error: "declared instances support headless starts only" };
       let executionCwd: string;
-      try { executionCwd = resolveInstanceExecutionCwd(opts.cwd, peer, declarations, config.roles[peer] ?? [], adapterCatalog); }
+      try { executionCwd = resolveExecutionCwd(peer, declarations, config.roles[peer] ?? [], adapterCatalog); }
       catch (error) { return { ok: false, error: (error as Error).message }; }
       executionRoots.set(peer, executionCwd);
       applyPendingPermissionDefault(peer);
@@ -5498,7 +5513,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (args.unattended) return { ok: false, error: "Claude implementer refuses unattended permission bypass" };
       const currentRoot = () => {
         const roles = config.roles[peer] ?? [];
-        return !stopping && !recoveryActive() && membershipAllowed(peer) && !contextPii(peer) && roles.includes("implementer") && roles.every(role => role === "implementer" || role === "verifier") && permissionMode(peer) !== "never-ask" && resolveInstanceExecutionCwd(opts.cwd, peer, declarations, roles, adapterCatalog) === executionCwd && executionCwd !== opts.cwd;
+        return !stopping && !recoveryActive() && membershipAllowed(peer) && !contextPii(peer) && roles.includes("implementer") && roles.every(role => role === "implementer" || role === "verifier") && permissionMode(peer) !== "never-ask" && resolveExecutionCwd(peer, declarations, roles, adapterCatalog) === executionCwd && executionCwd !== opts.cwd;
       };
       try { if (!declarations[peer]?.worktree || !currentRoot()) return { ok: false, error: "Claude implementer requires an isolated worktree and ask permissions" }; }
       catch { return { ok: false, error: "Claude implementer execution root unavailable" }; }
@@ -7014,7 +7029,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // Roles may change while native startup/mode acknowledgement is awaited; the current workspace policy still owns admission.
       if (declarations[peer]) {
         try {
-          if (resolveInstanceExecutionCwd(opts.cwd, peer, declarations, config.roles[peer] ?? [], adapterCatalog) !== executionRoots.get(peer)) return { ok: false, error: "instance execution policy changed during startup" };
+          if (resolveExecutionCwd(peer, declarations, config.roles[peer] ?? [], adapterCatalog) !== executionRoots.get(peer)) return { ok: false, error: "instance execution policy changed during startup" };
         } catch { return { ok: false, error: "instance execution policy changed during startup" }; }
       }
       // The bus may immediately drain at add(): do not expose an idle adapter until its current choice is applied.
@@ -7115,7 +7130,7 @@ export async function startDaemon(opts: DaemonOptions) {
           revokeTerminalExecution(c.peer);
           const launch = readClaudeLaunchProof(opts.stateDir, c.peer, instanceId);
           try {
-            const root = resolveInstanceExecutionCwd(opts.cwd, c.peer, declarations, config.roles[c.peer] ?? [], adapterCatalog);
+            const root = resolveExecutionCwd(c.peer, declarations, config.roles[c.peer] ?? [], adapterCatalog);
             if (root !== opts.cwd && launch?.privateRecord && launch.launchId === c.launchId && launch.executionCwd === root && typeof msg.cwd === "string" && realPath(msg.cwd) === root) {
               executionRoots.set(c.peer, root);
               executionOwners.set(c.peer, { owner: ws, cwd: root, socket: sock, launchId: launch.launchId, generation: ws.sessionGeneration });
