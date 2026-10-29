@@ -136,7 +136,7 @@ export function validateOperationalConfig(raw: unknown): void {
     let value: unknown = raw;
     for (const part of def.path) {
       if (value === undefined) break;
-      if (!value || typeof value !== "object" || Array.isArray(value)) fail(def.key, "parent must be an object");
+      if (!value || typeof value !== "object" || Array.isArray(value)) return fail(def.key, "parent must be an object");
       value = Object.hasOwn(value, part) ? (value as Record<string, unknown>)[part] : undefined;
     }
     if (value !== undefined) operationalNumberCheck(def.key)(value, def.key);
