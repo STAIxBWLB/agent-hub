@@ -1169,8 +1169,8 @@ local hub work available. Fake-hub/broker tests are not a live TLS/proxy or X7 r
 ## Encrypted rooms: X4 screened chat and application receipts (#446)
 
 This implements frozen D3/D5 from issue #446, comment 6242775004, with the
-approved X4 refinements and R1 clarifications. X5 dashboard membership/metrics, X6
-invocations and X7 live two-machine receipts remain separate.
+approved X4 refinements and R1 clarifications. X5 metadata views are described
+below; X6 invocations and X7 live two-machine receipts remain separate.
 
 ### Egress and authority
 
@@ -1207,7 +1207,8 @@ not newly inferred identity. A current exposed local native peer must be the
 incoming destination. The native console is a one-way sender identity in X4. A reply to `user@label`
 receives a signed `failed_safe/person_inbox_unsupported` NACK with the fixed
 reason "person inbox not supported yet (X5)"; no person queue or admission is
-invented. Remote replies to people need the separate X5 durable person inbox.
+invented. Remote replies to people need the separate durable person-inbox backlog;
+X5 metadata views do not enable it.
 
 ### Encrypted application wire
 
@@ -1342,6 +1343,27 @@ prioritizing unresolved traffic, up to 200 incoming rows with uncertainty first,
 counts/truncation and remote addresses/states. Native turns, task roles and
 recovery sessions are never invented for remote transports. Real TLS/proxy,
 account and two-machine X7 proof remain unverified until their own live legs.
+
+## Encrypted rooms: X5 metadata views (#446)
+
+The console's Rooms panel (`8`) and the dashboard's Agents > Rooms section are
+read-only views of the same canonical room metadata: local room name/id, epoch,
+owner/self fingerprints, member count, link state and exposed remote peer
+ids/states. Missing room metadata from an older hub and an empty room list hide
+the views; unavailable metadata is explicit rather than retaining old readings.
+Status reads create no room storage or keys.
+
+Relay counters describe only this daemon session, starting at daemon startup and
+resetting on restart. Outbound counts successful handoffs; inbound counts
+confirmed local admissions. Withheld counts are a subset of outbound handoffs,
+not an additional total. Missing or unreadable values stay `null`/unknown, never
+zero. These counters do not prove application completion or lifetime traffic.
+
+The projection contains no message body/title, reason, broker URL, key material
+or delivery history. It does not create a person inbox: `user@label` still gets
+the signed `failed_safe/person_inbox_unsupported` outcome, and durable person
+inbox delivery remains a separate backlog item. Native/account and X7
+two-machine receipts remain separate live verification.
 
 ## Risks
 

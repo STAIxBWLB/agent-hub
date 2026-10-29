@@ -4760,8 +4760,9 @@ ahub say @codex@hub-guest "Please inspect the public example"
 ```
 
 A local exposed agent can use `hub_send` with that exact address. Native peers
-can exchange round-trips. Console sends are one-way until X5 supplies a durable
-person inbox: a reply to `user@label` returns signed `failed_safe` with
+can exchange round-trips. Console sends are one-way until the separate durable
+person-inbox backlog is implemented: a reply to `user@label` returns signed
+`failed_safe` with
 "person inbox not supported yet (X5)", rather than being admitted or lost. One remote plus
 local recipients is supported. X4 refuses multiple remote recipients before any
 delivery: send separately. Ordinary broadcasts stay local. Unknown or ambiguous
@@ -4818,3 +4819,24 @@ retention no historical app-id or trace claim is made; permanent seq floors and
 MAX_HOP 3 still apply. Status prioritizes uncertainty and bounds each direction's
 rows to 200; queue inspection remains the delivery-history entry point. Broker,
 TLS/proxy and real two-machine/account receipts remain separate live proof.
+
+## Room metadata views (#446 X5)
+
+Press `8` in the panel console for Rooms, or open Agents > Rooms in the dashboard.
+The views show local room membership, owner/self fingerprints, member count,
+link state and exposed remote peer ids/states. They are hidden when an older hub
+supplies no room field or no rooms are configured. An unavailable read clears
+old metadata and shows an unavailable state. Reading status creates no room
+storage or keys.
+
+Relay figures are **since daemon startup**, not lifetime totals: outbound is
+successful handoffs, inbound is confirmed local admissions, and withheld is a
+subset of outbound handoffs. Unknown values display as unknown, not zero. A
+daemon restart resets the counters; neither a handoff nor these totals means a
+native agent completed its work.
+
+These views contain no message body/title, reason, broker URL, key material or delivery
+history. Use the existing queue inspection workflow for delivery uncertainty.
+The metadata-only views do not enable replies to people: `user@label` still
+receives signed `failed_safe` with "person inbox not supported yet (X5)".
+Durable person inbox delivery remains separate backlog work.

@@ -7,7 +7,7 @@ import { readRoomOutbound, roomBoundary, type RoomBoundaryContext } from "./boun
 export interface RemotePeerPorts {
   member: string;
   context: (env: Envelope) => RoomBoundaryContext;
-  send: (env: RoomChatEnvelope, deliveryId: string, expiresAt: number, current: () => boolean) => Promise<void>;
+  send: (env: RoomChatEnvelope, deliveryId: string, expiresAt: number, current: () => boolean, withheld: boolean) => Promise<void>;
   now?: () => number;
   /** Record post-publication trust loss locally before any late signed outcome can settle it. */
   quarantine?: (deliveryId: string) => void;
@@ -70,7 +70,7 @@ export class RemotePeer extends BasePeer {
     }
     this.pending.add(deliveryId); this.update();
     try {
-      await this.ports.send(view, deliveryId, expiresAt, () => current() && readRoomOutbound(result.proof) !== undefined);
+      await this.ports.send(view, deliveryId, expiresAt, () => current() && readRoomOutbound(result.proof) !== undefined, result.withheld);
       if (!current()) { this.quarantine(deliveryId); this.receipt({ id: deliveryId, state: "needs_review", reason: "room trust changed during publication" }); }
     } catch {
       this.quarantine(deliveryId);

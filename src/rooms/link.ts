@@ -111,6 +111,8 @@ export class RoomLink {
   private sendTail: Promise<void> = Promise.resolve();
   constructor(private readonly options: RoomLinkOptions) {}
 
+  /** Advisory transport state without copying or decoding a room epoch for a status poll. */
+  get connectionState(): RoomLinkState { return this.state; }
   status(): { state: RoomLinkState; members: number } {
     try {
       const row = this.options.store.get(this.options.name);

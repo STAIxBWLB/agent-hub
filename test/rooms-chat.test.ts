@@ -13,6 +13,7 @@ import { Tasks } from "../src/hub/tasks.ts";
 import { RoomCommands } from "../src/rooms/commands.ts";
 import { runRoomCommand } from "../src/cli/room.ts";
 import { RoomChat } from "../src/rooms/service.ts";
+import type { RoomLinkContext } from "../src/rooms/link.ts";
 import type { PiiVerdict } from "../src/hub/inference.ts";
 
 class LocalPeer extends BasePeer {
@@ -65,13 +66,24 @@ async function side(root: string, label: string, signals: ReturnType<typeof chan
   chat = new RoomChat({ bus, cwd, routing: () => routing, piiPaths: () => [], senderPrivate: () => false, taskPrivate: () => false,
     modelScreenOn: () => options.model === true, screen: options.screen ?? (async () => ({ label: "clear", ms: 0 })), policyVersion: () => 1,
     roster: ids => { roster.clear(); roster.add("codex"); for (const id of ids) roster.add(id); signals.notify(); }, changed: signals.notify });
+  let context: RoomLinkContext | undefined, lastChat: { context: RoomLinkContext; digest: string; sender: string } | undefined;
+  const members = chat.application.members, receive = chat.application.receive;
+  chat.application.members = value => { context = value; members(value); };
+  chat.application.receive = async (value, input) => {
+    if (input.message?.type === "chat") lastChat = { context: value, digest: input.digest, sender: input.sender };
+    await receive(value, input);
+  };
+  const replayLastChat = async () => {
+    if (!lastChat) throw new Error("no authenticated room chat observed");
+    await chat!.application.receive(lastChat.context, { digest: lastChat.digest, sender: lastChat.sender });
+  };
   const peer = new LocalPeer(options.held === true); bus.add(peer); await peer.start();
   const commands = new RoomCommands({ cwd, stateDir, chat, presence: () => [{ id: "codex", state: bus.stateOf("codex") }] });
   bus.onQueues = () => { chat!.queueChanged(); signals.notify(); };
   bus.onMemoryDelivery = (...args) => memory.push(args);
   bus.tap(event => { events.push(event); appendFileSync(publicLog, JSON.stringify(event) + "\n"); if (event.t === "state" && !event.peer.includes("@")) commands.changed(); signals.notify(); });
   const close = async () => { commands.stop(); await peer.stop(); bus.closeJournal(); };
-  return { cwd, stateDir, label, journal, bus, peer, commands, chat, events, condensed, memory, publicLog, close };
+  return { cwd, stateDir, label, journal, bus, peer, commands, chat, events, condensed, memory, publicLog, close, replayLastChat, get context() { return context; } };
 }
 async function command(side: Side, action: string, input: unknown) { return (await side.commands.preview(action, input, () => true)).commit(); }
 async function deliveries(side: Side): Promise<Record<string, unknown>[]> { return ((await side.commands.rows("work"))[0]?.deliveries ?? []) as Record<string, unknown>[]; }
@@ -101,6 +113,8 @@ test("two real room links admit one encrypted chat and signed completion before 
   expect(f.a.bus.publish(env)).toEqual(["codex@beta"]);
   await f.wait(async () => (await deliveries(f.a)).some(row => row.application === env.id && row.state === "completed (admitted)"), "signed admitted receipt");
   expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+  expect(f.a.chat.metrics("work")).toMatchObject({ outbound: 1, inbound: 0, withheld: 0 });
+  expect(f.b.chat.metrics("work")).toMatchObject({ outbound: 0, inbound: 1, withheld: 0 });
   expect(f.b.peer.running).toBe(1); // Application receipt means durable admission, not native completion.
   const incoming = f.b.peer.got.find(row => row.id === env.id)!;
   expect(incoming).toMatchObject({ from: "codex@alpha", to: ["codex"], trace: env.trace, hop: env.hop, priority: "status", body: canary });
@@ -138,6 +152,8 @@ test("an unknown on-prem screen crosses only a fixed stub, not the submitted bod
   const env = newEnvelope("codex", "PUBLIC-BUT-WITHHELD-CANARY", { to: ["codex@beta"] }); f.a.bus.publish(env);
   await f.wait(async () => (await deliveries(f.a)).some(row => row.application === env.id && row.state === "completed (admitted)"), "stub admitted");
   expect(screened).toEqual([env.body]);
+  expect(f.a.chat.metrics("work")).toMatchObject({ outbound: 1, inbound: 0, withheld: 1 });
+  expect(f.b.chat.metrics("work")).toMatchObject({ outbound: 0, inbound: 1, withheld: 0 });
   expect(f.b.peer.got.find(row => row.id === env.id)?.body).toBe(`[room message ${env.id} withheld]`);
   expect(JSON.stringify(f.b.peer.got)).not.toContain(env.body);
 });
@@ -216,6 +232,8 @@ test("a real native message to user@label receives a signed unsupported-person-i
   await f.wait(async () => (await deliveries(f.a)).some(row => row.application === direct.id && row.state === "failed_safe"), "signed person inbox unsupported receipt");
   const denied = (await deliveries(f.a)).find(row => row.application === direct.id)!;
   expect(denied.refusalReason).toBe("person_inbox_unsupported");
+  expect(f.a.chat.metrics("work")).toMatchObject({ outbound: 1, inbound: 0, withheld: 0 });
+  expect(f.b.chat.metrics("work")).toMatchObject({ outbound: 0, inbound: 0, withheld: 0 });
   expect(f.b.peer.got).toEqual([]); expect(f.b.peer.running).toBe(0); expect(f.b.bus.queued("user")).toBe(0);
   expect(f.a.bus.queueShow(String(denied.id))).toMatchObject({ peer: "user@beta", state: "failed" });
   expect(f.a.bus.queued("user@beta")).toBe(0); expect(f.a.bus.queueSummary("user@beta").needsReview).toBe(0);
@@ -257,4 +275,57 @@ test("room delivery refusal rendering rejects an unknown reason instead of print
       deliveries: [{ direction: "outbound", id: crypto.randomUUID(), application: crypto.randomUUID(), peer: "user@beta", state: "failed_safe", refusalReason: "PRIVATE_DIAGNOSTIC_CANARY" }] }] }))).rejects.toThrow("invalid control reply");
     expect(lines).toEqual([]);
   } finally { console.log = original; }
+});
+
+
+test("room metrics use host boundary provenance, exclude duplicate admission and reset with a new service", async () => {
+  const f = await mesh(), env = newEnvelope("codex", "temporary", { to: ["codex@beta"] });
+  env.body = `[room message ${env.id} withheld]`; // Public body spelling is never withholding evidence.
+  expect(f.a.chat.metrics("missing")).toBeNull();
+  f.a.bus.publish(env);
+  await f.wait(async () => (await deliveries(f.a)).some(row => row.application === env.id && row.state === "completed (admitted)"), "public stub-shaped text admitted");
+  expect(f.a.chat.metrics("work")).toMatchObject({ outbound: 1, inbound: 0, withheld: 0 });
+  expect(f.b.chat.metrics("work")).toMatchObject({ outbound: 0, inbound: 1, withheld: 0 });
+  // Exercise the retained-receipt path for the actual authenticated frame above.
+  await f.b.replayLastChat();
+  expect(f.b.chat.metrics("work")).toMatchObject({ outbound: 0, inbound: 1, withheld: 0 });
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+  const copy = f.a.chat.metrics("work")!; copy.outbound = 999;
+  expect(f.a.chat.metrics("work")?.outbound).toBe(1);
+  const bus = new Bus({ batchMs: 0 }), routing = parseRouting('[local]\nfixed_model="fixture"\n');
+  const restarted = new RoomChat({ bus, cwd: f.b.cwd, now: () => 123456, routing: () => routing, piiPaths: () => [],
+    senderPrivate: () => false, taskPrivate: () => false, modelScreenOn: () => false,
+    screen: async () => ({ label: "clear", ms: 0 }), policyVersion: () => 1 });
+  try {
+    restarted.bind(f.b.context!.store, "work", f.b.context!.link);
+    expect(restarted.metrics("work")).toEqual({ since: 123456, outbound: 0, inbound: 0, withheld: 0 });
+    expect(f.b.chat.metrics("work")?.inbound).toBe(1);
+  } finally { restarted.stop(); bus.closeJournal(); }
+});
+
+
+test("ambiguous exposed remote ids remain inert and show unknown rather than empty membership", async () => {
+  const f = await mesh();
+  expect(f.a.chat.peersForStatus("work")?.map(row => row.id)).toEqual(["codex@beta"]);
+  await command(f.a, "create", { name: "other", broker: f.broker.publicUrl, label: "alpha" });
+  await command(f.a, "expose", { name: "other", peers: ["codex"] });
+  writeFileSync(join(f.b.cwd, ".agenthub/config.local.json"), JSON.stringify({ rooms: { work: { expose: ["codex"] }, other: { expose: ["codex"] } } }));
+  const token = await command(f.a, "invite", { name: "other" });
+  const request = await command(f.b, "join", { name: "other", token: token.artifact, label: "beta" });
+  const roster = await command(f.a, "invite", { name: "other", request: request.artifact });
+  await command(f.b, "join", { name: "other", roster: roster.artifact });
+  await f.wait(() => f.a.chat.peers("work").length === 0 && f.a.chat.peers("other").length === 0, "ambiguous routes stay inert");
+  expect(f.a.chat.peersForStatus("work")).toBeNull();
+  expect(f.a.chat.peersForStatus("other")).toBeNull();
+  expect(f.a.chat.peers("work")).toEqual([]);
+  expect(f.a.chat.peers("other")).toEqual([]);
+  for (const row of f.a.commands.statusView()!) expect(row.remotePeers).toBeNull();
+  const env = newEnvelope("codex", "ambiguous route must stay inert", { to: ["codex@beta"] });
+  // Bus retains an explicit offline send locally; ambiguity must prevent a wire handoff.
+  expect(f.a.bus.publish(env)).toEqual(["codex@beta"]);
+  expect(f.a.bus.stateOf("codex@beta")).toBe("offline");
+  expect(f.a.bus.queued("codex@beta")).toBe(1);
+  expect(f.a.chat.metrics("work")?.outbound).toBe(0);
+  expect((await deliveries(f.a)).filter(row => row.direction === "outbound")).toEqual([]);
+  expect(f.b.peer.got).toEqual([]);
 });

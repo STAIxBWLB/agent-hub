@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,9 @@ import { decodeInvite, decodeJoin, decodeRoster } from "../src/rooms/wire.ts";
 import { RoomPolicy } from "../src/rooms/policy.ts";
 import { runRoomCommand } from "../src/cli/room.ts";
 import { BasePeer } from "../src/hub/peers.ts";
+import { RoomCommands } from "../src/rooms/commands.ts";
+import { RoomChat } from "../src/rooms/service.ts";
+import { RoomStore, type RoomState } from "../src/rooms/store.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -43,6 +46,53 @@ async function mutation(client: ControlClient, action: string, input: Record<str
   expect(preview.owner).toMatch(/^[0-9a-f]{64}$/); expect(preview.member).toMatch(/^[0-9a-f]{64}$/);
   return client.request({ t: "room", op: "execute", ticket: preview.ticket, confirm: preview.member });
 }
+
+test("X5 status and dashboard reads with rooms disabled create no room identity or database", async () => {
+  const f = await fixture();
+  for (let index = 0; index < 3; index++) {
+    expect((await f.person.request({ t: "status" })).status.rooms).toEqual([]);
+    expect((await f.person.request({ t: "ui_snapshot", after: 0 })).rooms).toEqual([]);
+  }
+  expect(existsSync(join(f.stateDir, "rooms"))).toBe(false);
+});
+
+test("X5 live status and dashboard publish only loaded room metadata without body title or detail reads", async () => {
+  const f = await fixture(), canary = "X5_REMOTE_BODY_TITLE_SECRET_CANARY";
+  expect((await mutation(f.person, "create", { name: "test", broker: "ws://127.0.0.1:1/" })).ok).toBe(true);
+  const metadata = RoomStore.prototype.statusMetadata;
+  let store: RoomStore | undefined, getterReads = 0;
+  const meta = spyOn(RoomStore.prototype, "statusMetadata").mockImplementation(function(this: RoomStore) {
+    store = this;
+    return metadata.call(this).map(row => Object.defineProperties({ ...row, title: canary, broker: canary, key: canary }, {
+      body: { get() { getterReads++; throw new Error(canary); } },
+    }));
+  });
+  const details = spyOn(RoomCommands.prototype, "rows");
+  const metrics = spyOn(RoomChat.prototype, "metrics").mockReturnValue({ since: 123456, outbound: 0, inbound: 0, withheld: 0, body: canary, title: canary } as never);
+  try {
+    for (let index = 0; index < 3; index++) {
+      const status = await f.person.request({ t: "status" });
+      const snapshot = await f.person.request({ t: "ui_snapshot", after: 0 });
+      for (const rows of [status.status.rooms, snapshot.rooms]) {
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ name: "test", epoch: "1", memberCount: 1,
+          relays: { since: 123456, outbound: 0, inbound: 0, withheld: 0 } });
+        expect(Object.keys(rows[0]).sort()).toEqual(["epoch", "link", "member", "memberCount", "name", "owner", "relays", "remotePeers", "room"]);
+      }
+      expect(JSON.stringify([status, snapshot])).not.toContain(canary);
+    }
+    expect(details).not.toHaveBeenCalled();
+    expect(getterReads).toBe(0);
+    expect(store).toBeDefined();
+    // The verified-epoch metadata cache makes a warm status read independent of wire copying/decoding.
+    const internal = (store as unknown as { rooms: Map<string, RoomState> }).rooms.get("test")!;
+    const wire = internal.wire;
+    Object.defineProperty(internal, "wire", { configurable: true, get() { getterReads++; throw new Error(canary); } });
+    try { expect(metadata.call(store!)[0]?.members).toBe(1); expect(getterReads).toBe(0); }
+    finally { Object.defineProperty(internal, "wire", { configurable: true, enumerable: true, writable: true, value: wire }); }
+    for (const name of ["status.json", "hub.log", "events.jsonl"]) expect(readFileSync(join(f.stateDir, name), "utf8")).not.toContain(canary);
+  } finally { metrics.mockRestore(); details.mockRestore(); meta.mockRestore(); }
+});
 
 test("every room rid is answered; tools can read ids but cannot mutate, even as conductor", async () => {
   const f = await fixture(true);

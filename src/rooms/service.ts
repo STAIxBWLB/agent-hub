@@ -23,14 +23,20 @@ export interface RoomChatOptions {
   limits?: () => LimitsConfig;
   notice?: (value: { code: "application_capacity"; room: string; count: number } | { code: "sequence_gap"; room: string; sender: string; count: string }) => void;
 }
-interface Binding { store: RoomStore; name: string; link: RoomLink; digest: string; online: boolean; states: Map<string, PeerState> }
+export interface RoomMetrics { since: number; outbound: number | null; inbound: number | null; withheld: number | null }
+interface Binding { store: RoomStore; name: string; room: string; link: RoomLink; digest: string; online: boolean; states: Map<string, PeerState> }
 interface Target { binding: Binding; member: string; peer: string }
 const ACTIVE = new Set(["dispatching", "accepted", "needs_review"]);
 
 export class RoomChat {
   private readonly policy: RoomPolicy;
+  private readonly metricsSince: number | null;
+  // ponytail: at most 64 room-name session counters, never cross-run totals.
+  // If cross-run totals are required, add durable versioned counters at the storage boundary.
+  private readonly counts = new Map<string, { room: string; outbound: number | null; inbound: number | null; withheld: number | null }>();
   private readonly bindings = new Map<string, Binding>();
   private readonly targets = new Map<string, Target>();
+  private statusTargets = new Map<string, string[] | null>();
   private readonly remotes = new Map<string, RemotePeer>();
   private readonly outgoing = new Map<string, { binding: Binding; row: RoomOutgoing }>();
   private evidenceCache?: Map<string, { peer: string; roomState: string; disposition?: string; lateReceipt?: string; refusalReason?: string }>;
@@ -42,6 +48,9 @@ export class RoomChat {
   readonly application: RoomLinkApplication;
   constructor(private readonly options: RoomChatOptions) {
     this.policy = new RoomPolicy(options.cwd);
+    let since: number | null = null;
+    try { const value = this.now(); if (Number.isSafeInteger(value) && value >= 0) since = value; } catch { /* Observation failure never disables transport construction. */ }
+    this.metricsSince = since;
     this.application = {
       members: context => { if (context.current()) this.bind(context.store, context.name, context.link); },
       receive: (context, input) => this.receive(context, input),
@@ -58,14 +67,32 @@ export class RoomChat {
     };
   }
   private now(): number { return this.options.now?.() ?? Date.now(); }
+  metrics(name: string, room?: string): RoomMetrics | null {
+    const binding = this.bindings.get(name);
+    if (this.stopped || !binding || this.metricsSince === null || room !== undefined && binding.room !== room) return null;
+    const row = this.counts.get(name);
+    return { since: this.metricsSince, outbound: row?.room === binding.room ? row.outbound : null,
+      inbound: row?.room === binding.room ? row.inbound : null, withheld: row?.room === binding.room ? row.withheld : null };
+  }
+  private count(binding: Binding, direction: "outbound" | "inbound", withheld = false): void {
+    const row = this.counts.get(binding.name);
+    if (!row || row.room !== binding.room) return;
+    const increment = (key: "outbound" | "inbound" | "withheld") => {
+      const value = row[key]; row[key] = value !== null && value < Number.MAX_SAFE_INTEGER ? value + 1 : null;
+    };
+    increment(direction); if (direction === "outbound" && withheld) increment("withheld");
+    try { this.options.changed?.(); } catch { /* Metrics observation changes no send/admission outcome. */ }
+  }
   private valid(binding: Binding): boolean {
     return !this.stopped && this.bindings.get(binding.name) === binding && binding.store.get(binding.name)?.left === false;
   }
   bind(store: RoomStore, name: string, link: RoomLink): void {
     if (this.stopped) return;
-    const digest = store.get(name)?.current.digest; if (!digest) return;
+    const state = store.get(name), digest = state?.current.digest; if (!digest || !state) return;
+    const room = state.current.room, counted = this.counts.get(name);
+    if (counted?.room !== room && (counted || this.counts.size < 64)) this.counts.set(name, { room, outbound: 0, inbound: 0, withheld: 0 });
     const saved = this.bindings.get(name);
-    const binding = saved?.store === store && saved.link === link ? saved : { store, name, link, digest, online: false, states: new Map<string, PeerState>() };
+    const binding = saved?.store === store && saved.link === link && saved.room === room ? saved : { store, name, room, link, digest, online: false, states: new Map<string, PeerState>() };
     if (binding.digest !== digest) { binding.states.clear(); binding.online = false; binding.digest = digest; }
     this.bindings.set(name, binding);
     this.refreshTargets(); this.refreshOutgoing(binding); this.queueChanged();
@@ -112,7 +139,7 @@ export class RoomChat {
               taskPrivate: this.options.taskPrivate, routing: this.options.routing, piiPaths: this.options.piiPaths,
               modelScreenOn: this.options.modelScreenOn, screen: this.options.screen };
           },
-          send: async (env, deliveryId, expiresAt, current) => {
+          send: async (env, deliveryId, expiresAt, current, withheld) => {
             const selected = this.targets.get(id);
             if (!selected || selected.member !== target.member || selected.peer !== target.peer || selected.binding.store.get(selected.binding.name)?.current.room !== room) throw new Error("room: state_changed");
             const binding = selected.binding;
@@ -124,6 +151,7 @@ export class RoomChat {
                 deliveryId, application: env.id, remotePeer: id, recipient: target.member, peer: target.peer,
                 ackTimeoutMs: timing.ackTimeoutMs, ttlMs: Math.min(remaining, timing.ttlMs),
               }, current);
+              this.count(binding, "outbound", withheld === true);
             } catch (error) { binding.store.quarantineOutgoing(binding.name, deliveryId); throw error; }
             finally { this.refreshOutgoing(binding); this.queueChanged(); }
           }, quarantine: deliveryId => {
@@ -142,6 +170,22 @@ export class RoomChat {
       }
       this.targets.set(id, target);
     }
+    // ponytail: status shows complete peer lists only within 32 per room / 256 total.
+    // Larger lists stay unknown here; the explicit room status command remains the detail path.
+    const statusTargets = new Map<string, string[] | null>([...this.bindings.keys()].map(name => [name, []]));
+    // An exposed candidate that cannot route uniquely is unknown, never an empty exposure list.
+    for (const [id, rows] of candidates) if (rows.some(row => row.peer !== USER) && (rows.length !== 1 || !this.targets.has(id))) {
+      for (const row of rows) statusTargets.set(row.binding.name, null);
+    }
+    let shown = 0;
+    for (const [id, target] of this.targets) {
+      if (target.peer === USER) continue;
+      const ids = statusTargets.get(target.binding.name);
+      if (!ids) continue;
+      if (ids.length >= 32 || shown >= 256) { shown -= ids.length; statusTargets.set(target.binding.name, null); }
+      else { ids.push(id); shown++; }
+    }
+    this.statusTargets = statusTargets;
     for (const [id, remote] of this.remotes) {
       const target = this.targets.get(id);
       remote.presence(target?.peer === USER ? "idle" : target?.binding.states.get(id) ?? "offline", target?.binding.online === true);
@@ -252,6 +296,7 @@ export class RoomChat {
         else {
           if (result.targets.length !== 1 || result.targets[0] !== chat.to || result.dropped) throw new Error("room: admission unavailable");
           context.store.finishApplication(context.name, input.digest, "completed", "admitted", context.current);
+          this.count(binding, "inbound");
         }
       } catch (error) {
         // Revocation removes business authority, but still permits recording uncertainty.
@@ -351,6 +396,11 @@ export class RoomChat {
   }
   peers(name: string): { id: string; state: PeerState }[] {
     return [...this.targets].filter(([, target]) => target.binding.name === name && target.peer !== USER).map(([id]) => ({ id, state: this.remotes.get(id)?.state ?? "offline" })).sort((a, b) => a.id.localeCompare(b.id));
+  }
+  /** A bounded status list, separate from the explicit detail query above. */
+  peersForStatus(name: string): { id: string; state: PeerState }[] | null {
+    const ids = this.statusTargets.get(name);
+    return ids ? ids.map(id => ({ id, state: this.remotes.get(id)?.state ?? "offline" })) : null;
   }
   stop(): void {
     if (this.stopped) return; this.stopped = true;
