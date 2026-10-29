@@ -521,7 +521,8 @@ test("the draft column survives a reopen and an old database without it gets it"
 // ---- the command
 
 test("intake is person-only: an agent shell is refused, live-test cannot write it, and the audit never names the request", () => {
-  for (const args of [["a request"], ["approve", "3"], ["discard", "3"], ["a request", "--source", SRC]]) expect(classifyPeerCommand("intake", args)).toBe("console");
+  for (const args of [["a request"], ["discard", "3"], ["a request", "--source", SRC]]) expect(classifyPeerCommand("intake", args)).toBe("console");
+  expect(classifyPeerCommand("intake", ["approve", "3"])).toBe("conductor"); // #933: the daemon admits only the configured conductor
   expect(liveTestRefusal("intake", ["a request"])).toBe(true);
   expect(cliCommandLabel("intake", ["approve", "3"])).toBe("intake approve");
   expect(cliCommandLabel("intake", ["discard", "3"])).toBe("intake discard");

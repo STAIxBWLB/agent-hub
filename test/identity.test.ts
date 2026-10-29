@@ -235,3 +235,68 @@ test("#494 keeps the merged SDLC renderer flags on public reads only", () => {
   for (const sub of ["costs", "metrics", "authorize-release"])
     expect(classifyPeerCommand("sdlc", [sub, "--json", "--color=never"])).toBe("console");
 });
+
+// #933: the console class shrinks to trust, money, attribution and interactive terminals. One row per form the issue lists.
+const consoleClassForms: readonly [string, readonly string[], PeerCommandAccess][] = [
+  // the person keeps these
+  ["permission", ["pi", "never-ask", "--yes"], "console"],
+  ["agents", ["trust", "codex-review", "0.165.0"], "console"],
+  ["agents", ["--json"], "allowed"],
+  ["role", ["assign", "codex", "backend-engineer"], "console"],
+  ["budget", ["set", "claude", "1"], "console"],
+  ["budget", ["resume", "claude"], "console"],
+  ["say", ["--as-user", "hello"], "console"],
+  ["task", ["cancel", "1", "--reason", "x", "--as-user"], "console"],
+  ["board", ["import", "github", "--label", "x", "--as-user=1"], "console"],
+  ["pi", ["--replace-session", "--session-file", "preserved.jsonl"], "console"],
+  ["pet", ["--window"], "console"],
+  ["watch", ["kimi"], "console"],
+  ["recovery", ["reattach", "op-1", "codex"], "console"],
+  ["no-such-command", [], "console"],
+  ["restart", ["--yes"], "console"], // #900
+  ["task", ["unassign", "1"], "console"], // #900
+  ["route", ["set", "x"], "console"], // route has no form beyond explain
+  ["route", ["explain", "1"], "allowed"],
+  // conductor: operational, audited once by the daemon
+  ["research", ["backfill"], "conductor"],
+  ["bench", ["run", "suite.json", "--arm", "x"], "conductor"],
+  ["board", ["import", "github", "--label", "ready"], "conductor"],
+  ["upgrade", ["--to", "1.2.3", "--yes"], "console"], // its recovery runner and every running project: with restart in #900
+  ["upgrade", ["--to", "1.2.3", "--yes", "--dry-run"], "console"],
+  ["upgrade", ["--dry-run"], "allowed"],
+  ["jcode", [], "conductor"],
+  ["agy", [], "conductor"],
+  ["settings", ["set", "tasks.escalate_after", "4"], "conductor"],
+  ["settings", ["set", "tasks.queue_backpressure.max_queued", "10"], "console"], // money: limits automatic offers (queue-backpressure-config test)
+  ["settings", ["set", "tasks.queue_backpressure.max_oldest_s", "60"], "console"],
+  ["settings", ["set", "tasks.wip_limits.codex", "2"], "console"],
+  ["settings", ["set", "tasks.auto_pull", "true"], "console"],
+  ["settings", ["set", "permission_modes.codex", "ask"], "console"],
+  ["settings", ["set", "planner", "codex"], "console"],
+  ["source", ["add", "notes.md"], "conductor"],
+  ["source", ["list"], "console"],
+  ["intake", ["approve", "3"], "conductor"],
+  ["intake", ["discard", "3"], "console"],
+  ["schedule", ["run", "nightly"], "conductor"],
+  ["schedule", ["pause", "nightly"], "conductor"],
+  ["schedule", ["resume", "nightly"], "conductor"],
+  ["schedule", ["list"], "console"],
+  // amem 0.12.0 records these as "user": they stay the person's until the hub passes an agent actor
+  ...["promote", "demote", "forget", "supersede", "rebuild"].map((sub): [string, string[], PeerCommandAccess] => ["memory", [sub, "x"], "console"]),
+  ["memory", ["machine", "--label", "office"], "console"],
+  ["memory", ["sync"], "console"],
+  ["memory", ["graph", "x"], "console"],
+  ...["new", "state", "done", "take"].map((sub): [string, string[], PeerCommandAccess] => ["goal", [sub, "x"], "console"]),
+  ["goal", ["link", "x", "1"], "conductor"], // the daemon records the peer as the link's actor
+  ["goal", ["take", "x", "--force"], "console"],
+  // any agent, as itself, on its own task (the daemon refuses another peer's)
+  ["task", ["cancel", "1", "--reason", "obsolete"], "allowed"],
+  ["task", ["label", "1", "ok"], "allowed"],
+  ["task", ["role", "1", "none"], "allowed"],
+  ["deliverables", [], "allowed"],
+  ["deliverables", ["--task", "1", "--check"], "allowed"],
+];
+
+test("#933: the fixture table covers every console, conductor and own-task row of the issue", () => {
+  for (const [command, args, access] of consoleClassForms) expect([command, args.join(" "), classifyPeerCommand(command, args)]).toEqual([command, args.join(" "), access]);
+});

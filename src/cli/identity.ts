@@ -137,21 +137,23 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (command === "sdlc" && args[0] === "merge") return "conductor";
   if (command === "role") return ["list", "show"].includes(args[0] ?? "") ? "allowed" : "console";
   if (command === "task") {
-    if (["propose", "show"].includes(args[0] ?? "")) return "allowed";
+    // #933: cancel, label and role act on the caller's own task only; the daemon refuses another peer's task by role (Tasks.cancel, task_catalog_role, task_label_check).
+    if (["propose", "show", "cancel", "label", "role"].includes(args[0] ?? "")) return "allowed";
     if (["assign", "escalate"].includes(args[0] ?? "")) return "conductor";
     return "console";
   }
-  // #317: the deliverable list is the person's view of the board (it can name files); an agent reads its own tasks through hub_task_show.
-  if (command === "deliverables") return "console";
+  // #933: an agent's deliverable list holds only the rows hub_task_show would show it, through the same public screening (#317).
+  if (command === "deliverables") return "allowed";
+  // #933 lists `route` beyond `explain` as conductor, but the command has no other form: anything else is a usage error and stays closed.
   if (command === "route") return args[0] === "explain" ? "allowed" : "console";
   // #691: reading agent CLI versions is harmless; trusting an untested version on this machine is a person's.
   if (command === "agents") return args.every(arg => arg === "--json") ? "allowed" : "console";
-  // #247: reading the research measures and records is harmless (ids and counts only); writing them is a person's.
+  // #247: reading the research measures and records is harmless (ids and counts only); #933 made backfill a conductor operation (above).
   if (command === "research") return args[0] === "backfill" ? "console" : "allowed";
-  // #258: reading hub memory is harmless; promote, demote, forget, supersede and rebuild are a person's.
+  // #258: reading hub memory is harmless; promote, demote, forget, supersede, rebuild and goal changes stay a person's (#933: amem records their actor as "user"; goal link is a conductor operation, above).
   if (command === "memory") { const sub = args.find((arg) => arg !== "--json"); return sub === undefined || sub.startsWith("--") || ["list", "search", "show", "suggestions"].includes(sub) || (sub === "machine" && !args.includes("--label")) ? "allowed" : "console"; } // graph labels are unscreened note text: a person's
   if (command === "goal") { const sub = args.find((arg) => arg !== "--json"); return sub === undefined || sub.startsWith("--") || ["list", "show"].includes(sub) ? "allowed" : "console"; }
-  // #251: a run resets the bench project's tree and proposes work; reading results is harmless.
+  // #251: a run resets the bench project's tree and proposes work (#933: a conductor operation, above); reading results is harmless.
   // The subcommand is the first argument that is not --json, which the command accepts anywhere.
   if (command === "bench") return args.find((arg) => arg !== "--json") === "run" ? "console" : "allowed";
   if (command === "budget") return !args.length || args.every((arg) => arg === "--json" || arg === "--full" || arg.startsWith("--color=")) ? "allowed" : "console";
@@ -165,7 +167,6 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if ((command === "upgrade" || command === "restart") && !args.includes("--yes") && args.includes("--dry-run")
     && readFormArgs(args.filter((arg) => arg !== "--dry-run"), { valueFlags: ["--to"] })) return "allowed"; // a preview that applies nothing; --yes stays console
   if (isPeerReadForm(command, args)) return "allowed"; // exact read forms; every mutating neighbour remains below its existing authority gate
-  if (native?.cli.authority === "person") return "console";
   if (native || ["pause", "resume"].includes(command)) return "conductor";
   if (command === "board" && args[0] === "import") return "console";
   if (["help", "version", "--version", "completion", "say", "status", "pet", "board", "report", "usage", "turns", "review", "remember", "facts", "check-path"].includes(command)) return "allowed";

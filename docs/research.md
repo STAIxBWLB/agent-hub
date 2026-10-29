@@ -73,8 +73,11 @@ given up). It labels the current board's task with that id (its proposal in `eve
 later task with the same id after a reset does not inherit it. A task from before `ahub reset --all` is not on the board
 any more: it is the store's only record with that id, or, when there are several or the id is in use again, the one
 `--created` names (the `createdAt` that `ahub research export` shows; a record without one takes no label). A task with no record yet (not approved, its record still waiting for
-the turns that approved it, or approved while research was off) is refused; labels mark approved tasks only. Only a
-person can run it (agent shells are refused), and only while research is on. The latest label wins.
+the turns that approved it, or approved while research was off) is refused; labels mark approved tasks only. A person
+labels any task; an agent labels only a task it owns, the hub checks that by role, and its record carries `by: <peer>`
+(#933). Only while research is on. A person's latest label for a record always wins, whatever an agent labelled
+after it; an agent's latest label counts only where the person never labelled that record. The CSV's `labelBy` column
+names the agent (empty for the person).
 
 ## Measures
 
@@ -92,7 +95,7 @@ They are computed each time from the records; nothing derived is stored. `ahub r
 [--since] [--all]` writes the records for outside analysis; the CSV columns are, in order: project, task, class, pii,
 outcome, createdAt, startedAt, approvedAt, wallMs, activeMs, owners, reviewer, reviewRounds, changesRequested, checkPassed,
 checkFailed, dones, reassignments, firstPass, stuck, overlaps, conflicts, testsPass, testsFail, tokens, turns,
-filesChanged, models, label, writerVersion, writerSource. The CSV is a flat subset; JSONL carries every field.
+filesChanged, models, label, labelBy, writerVersion, writerSource. The CSV is a flat subset; JSONL carries every field.
 Another project's measures: `ahub --project <dir> research`.
 
 ## Add-ons (#248)
@@ -119,4 +122,4 @@ either side a difference is inconclusive. This is field data: the sides differ i
 association, not cause. Controlled arms are `ahub bench run --addon <name>=on|off` (docs/bench.md), and the decisions
 taken from both are in `docs/addons/`.
 
-Agents may read the measures and export (ids and counts only); `backfill` and `task label` are a person's.
+Agents may read the measures and export (ids and counts only); `backfill` is the person's or the configured conductor's (#933), and an agent labels only its own task.

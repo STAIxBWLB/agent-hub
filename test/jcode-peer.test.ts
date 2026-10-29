@@ -48,7 +48,7 @@ test("Jcode project bridge preserves foreign values, supports both maps, refuses
 
 test("Jcode is off by default, native policy unmanaged, protected from scoped writes and previewed without side effects (#332)", () => {
   const dir = root(); expect(rosterAllows({}, "jcode", false, undefined, builtinProjectCatalog())).toBe(false);
-  expect(classifyPeerCommand("jcode", [])).toBe("console"); expect(permissionBoundary("jcode", undefined, builtinProjectCatalog())).toContain("unmanaged");
+  expect(classifyPeerCommand("jcode", [])).toBe("conductor"); // #933: a start the daemon admits for a conductorStartable adapter expect(permissionBoundary("jcode", undefined, builtinProjectCatalog())).toContain("unmanaged");
   expect(() => permissionDefaults({ jcode: "ask" })).toThrow("no hub");
   mkdirSync(join(dir, ".jcode")); expect(grantablePath(dir, join(dir, ".jcode"))).toBe(false);
   const preview = launcherPreview("jcode", ["--model", "private-model", "--provider-profile", "private-profile"], dir, "state", false);

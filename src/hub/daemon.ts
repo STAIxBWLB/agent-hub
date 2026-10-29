@@ -6,7 +6,7 @@ import { parseRemotePeerId } from "../rooms/application.ts";
 import { assertNativeProofPorts } from "../adapters/native-proof-ports.ts";
 import { externalInstanceCatalog } from "../adapters/external-metadata.ts";
 import { externalInstanceBinding, sameExternalInstanceBinding, externalInstanceStateDir, readExternalInstanceRecord, writeExternalInstanceRecord, type ExternalInstanceBinding } from "./external-instance.ts";
-import { OperationalAuthorityError, OPERATIONAL_PERSON_GUIDANCE, operationalRosterSetting, operationalSetting, operationalRefusal, operationalRequestLabel } from "./operational-authority.ts";
+import { OperationalAuthorityError, OPERATIONAL_PERSON_GUIDANCE, operationalRosterSetting, operationalSetting, operationalRefusal, operationalRequestLabel, CONDUCTOR_DAEMON_OPERATIONS, CONDUCTOR_TASK_OPS, conductorLocalOperation } from "./operational-authority.ts";
 import { operationalView, redactBusEvent } from "./operational-view.ts";
 import { inspectSelectedOrphans, stopSelectedOrphan, orphanProcessPorts } from "./orphan-process.ts";
 import { dogfoodLines } from "./dogfood-read.ts";
@@ -140,7 +140,7 @@ import { realPath, hubHome } from "./project.ts";
 import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, profileTaskTools } from "./hub-tools.ts";
-import { Conductor, ConductorHolds, conductorPeer, requireConductor, conductorProgressSink, publicConductorTask, publicPeerBudget, type ConductEvent } from "./conductor.ts";
+import { Conductor, ConductorHolds, conductorPeer, requireConductor, conductorProgressSink, publicConductorTask, publicPeerBudget, taskShowAllowed, type ConductEvent } from "./conductor.ts";
 import { SupervisionFeed } from "./supervision.ts";
 import { drainCliAudits } from "../cli/identity-audit.ts";
 import { launcherPreview } from "../cli/preview.ts";
@@ -1828,6 +1828,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const scope = childToolAuthority.getStore();
       return scope?.by === by ? () => scope.current() ? undefined : "Claude child generation or execution root changed" : undefined;
     },
+    // #933: a conductor task op admitted in onMessage runs inside operationalContext; the role is rechecked on every ask.
+    operational: by => { const scope = operationalContext.getStore(); if (!scope || scope.actor !== by) return false; scope.current(); return true; },
     // #223 R4: fresh only when the verdict comes from a reviewer session the hub started for this task's review.
     reviewContext: (by, task) => !!definitionOf(by)?.reviewer && (bus.peers.get(by) as ReviewerPrintPeer | undefined)?.reviewing === task ? "fresh" : "continuing",
     // Proof belongs to the adapter generation actually started in the validated root. A role-only
@@ -3299,14 +3301,26 @@ export async function startDaemon(opts: DaemonOptions) {
       if (a.id !== undefined && board.get(Number(a.id))?.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools");
       return tasks.publicExplain(a.id !== undefined ? Number(a.id) : { title: String(a.title ?? ""), class: a.class as TaskClass }).join("\n");
     }
-    if (by !== USER) throw new Error(`${op} is a console command`);
+    if (op === "deliverables" && by !== USER) {
+      // #933: an agent's list holds only the rows hub_task_show would show it (conductor or planner any non-backlog task, an owner or reviewer its own), through the same public records.
+      if (a.task !== undefined && (!Number.isSafeInteger(a.task) || (a.task as number) <= 0)) throw new PreEffectToolRefusal("task must be a positive integer");
+      const visible = (task: Task) => taskShowAllowed(by, task, config.roles, tasks.isConfiguredPlanner(by));
+      return JSON.stringify(await tasks.deliverableList({ ...(a.task !== undefined ? { task: a.task as number } : {}), approvedOnly: a.approved === true, check: a.check === true, visible }));
+    }
+    if (op === "task_label_check" && by !== USER) {
+      // #933: an agent labels only a task it owns; the CLI writes the research record after this answer.
+      const task = Number.isSafeInteger(a.id) && a.id > 0 ? board.get(a.id) : undefined;
+      if (!task || task.owner !== by) throw new PreEffectToolRefusal(`task #${Number.isSafeInteger(a.id) ? a.id : "?"} is not yours: an agent labels its own task only`);
+      return JSON.stringify({ task: task.id, owner: by });
+    }
+    if (by !== USER && !(Object.hasOwn(CONDUCTOR_TASK_OPS, op) && operationalContext.getStore()?.actor === by)) throw new Error(`${op} is a console command`);
     switch (op) {
       case "release_new":
         return JSON.stringify(await tasks.newRelease(by, { name: a.name, goal: a.goal, order: a.order }));
       case "claim_verdict": // #901: a person's verdict on one declared claim; the reply names the slot and the verdict only, never a claim
         return JSON.stringify((({ id, history }) => ({ task: id, recorded: history.at(-1)?.claim }))(tasks.recordClaimVerdict(by, a.id, { slot: a.slot, verdict: a.verdict, ...(a.model === undefined ? {} : { model: a.model }), ...(a.modelVerdict === undefined ? {} : { modelVerdict: a.modelVerdict }) })));
       case "github_import":
-        return JSON.stringify(await tasks.importGitHub(USER, { repo: a.repo, label: a.label, milestone: a.milestone }));
+        return JSON.stringify(await tasks.importGitHub(by, { repo: a.repo, label: a.label, milestone: a.milestone }));
       case "release_show": {
         const release = a.id !== undefined ? (Number.isSafeInteger(a.id) && a.id > 0 ? board.release(a.id) : undefined) : board.releases().find(release => release.name === a.name);
         if (!release) throw new PreEffectToolRefusal("no such release");
@@ -3322,7 +3336,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "backlog_pull":
       case "backlog_return":
         return line(await tasks.moveBacklog(by, a.id, op === "backlog_pull"));
-      // #335: the person's schedule commands. Tasks refuses any other actor; an agent shell never reaches a console op.
+      // #335: the person's schedule commands; #933: the admitted conductor's too. Tasks refuses any other actor.
       case "schedule_list":
         if (by !== USER) throw new PreEffectToolRefusal("schedule list is a console command");
         return JSON.stringify(scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true));
@@ -3338,7 +3352,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "schedule_resume":
         tasks.setSchedulePaused(by, schedulesStore, config.schedules, a.id, op === "schedule_pause", scheduleNow());
         return JSON.stringify(scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true).filter(view => view.id === a.id));
-      // #334: natural-language intake. Person only: Tasks refuses any other actor, and an agent shell never reaches a console op.
+      // #334: natural-language intake. Person only, except approve for the admitted conductor (#933): Tasks refuses any other actor.
       case "intake": {
         const result = await tasks.intake(by, { text: a.text, sources: a.sources });
         return JSON.stringify({ draft: tasks.publicView(result.draft), children: result.children.map(child => tasks.publicView(child)), split: result.split, ...(result.reason ? { reason: result.reason } : {}) });
@@ -7059,12 +7073,12 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "conductor_operational": {
         try {
-          if(!["authorize","logs","export","orphans"].includes(msg.op))return void reply({ok:false,error:"unknown operational request"});
-          const commands=["roster add","roster remove","stop","queue show","queue resolve","queue discard","task cancel","settings set","doctor orphans kill","logs","export"];
-          const command=msg.op==="authorize"?msg.command:msg.op==="orphans"?"doctor orphans kill":msg.op;
-          if(!commands.includes(command))return void reply({ok:false,error:"unknown operational command"});
+          if(!["authorize","admit","logs","export","orphans"].includes(msg.op))return void reply({ok:false,error:"unknown operational request"});
+          const command=msg.op==="authorize"||msg.op==="admit"?msg.command:msg.op==="orphans"?"doctor orphans kill":msg.op;
+          // #933: `admit` is the one audited admission of a form whose effect runs in the CLI process; `authorize` only checks the role for a form whose own request admits.
+          if(msg.op==="admit"?!conductorLocalOperation(command):!(CONDUCTOR_DAEMON_OPERATIONS as readonly string[]).includes(command))return void reply({ok:false,error:"unknown operational command"});
           const current=msg.op==="authorize"?operationalCurrent(sock):admitOperational(sock,command);current();
-          if(msg.op==="authorize")return void reply({ok:true,instanceId});
+          if(msg.op==="authorize"||msg.op==="admit")return void reply({ok:true,instanceId});
           if(msg.op==="logs" || msg.op==="export") {
             const lines=dogfoodLines(join(opts.stateDir,msg.op==="logs"?"hub.log":"events.jsonl"),128*1024);
             if(!lines.available)return void reply({ok:false,error:"operational history unavailable"});
@@ -7767,9 +7781,10 @@ export async function startDaemon(opts: DaemonOptions) {
         void uiAction(msg.action).then((result) => reply(result as Record<string, unknown>), () => reply({ ok: false, error: "dashboard action failed; check its inputs" }));
         return;
       case "task_catalog_role":
-        if (c.role !== "console") return void reply({ ok: false, error: "task roles are a person command" });
+        // #933: an agent changes its own task's role (Tasks.setRole refuses another peer's task); a child, read-only or private context never does.
+        if (c.role !== "console" && (c.role !== "tools" || !c.peer || c.toolsOwner || c.externalOwner || readOnlyPeer(c.peer) || contextPii(c.peer))) return void reply({ ok: false, error: "task roles are a person command" });
         if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding task role changes" });
-        try { const task = tasks.setRole(USER, msg.id, msg.role); return void reply({ ok: true, text: `task #${task.id}: catalog role ${task.role ?? "none"}` }); }
+        try { const task = tasks.setRole(c.role === "console" ? USER : c.peer!, msg.id, msg.role); return void reply({ ok: true, text: `task #${task.id}: catalog role ${task.role ?? "none"}` }); }
         catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
       case "settings_get":
         if (c.role !== "console") {
@@ -7857,6 +7872,16 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         if (c.toolsOwner && !IMPLEMENTER_HUB_TOOL_NAMES.includes(String(msg.op))) return void reply({ t: "task", ok: false, error: "tool is not available to this Claude implementer child" });
         if (recoveryActive() && recoveryPhase !== "preparing" && String(msg.op) !== "hub_checkpoint") return void reply({ t: "task", ok: false, error: "recovery is holding mutations" });
+        if (c.role === "tools" && c.peer && Object.hasOwn(CONDUCTOR_TASK_OPS, String(msg.op))) {
+          // #933: a console task op the conductor may run: admitted (role recheck and one audit row) before Tasks sees it; Tasks asks `operational` again.
+          let current: () => void;
+          try { current = admitOperational(sock, CONDUCTOR_TASK_OPS[String(msg.op)]!); } catch (error) { return void reply({ t: "task", ...operationalFailure(error) }); }
+          void operationalContext.run({ actor: c.peer, current }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})).then(
+            (text) => reply({ t: "task", ok: true, text }),
+            (e: Error) => reply({ t: "task", ...operationalFailure(e) }),
+          );
+          return;
+        }
         (c.externalOwner ? childToolAuthority.run({ by: c.peer!, current: () => currentExternalTools(c, true) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : c.toolsOwner ? childToolAuthority.run({ by: c.peer!, current: captureImplementerTools(c) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {})).then(
           (text) => reply({ t: "task", ok: true, text }),
           (e: Error) => reply({ t: "task", ok: false, error: e.message }),
@@ -7870,15 +7895,16 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       }
       case "goal_link":
-        // #258: a person links a board task to a long-term task (`ahub goal link`); the link goes through Tasks.
-        if (c.role !== "console") return void reply({ t: msg.t, ok: false, error: "goal_link is a console command" });
+        // #258: a person links a board task to a long-term task (`ahub goal link`); the link goes through Tasks. #933: the configured conductor too, admitted and audited here.
+        if (c.role !== "console" && c.role !== "tools") return void reply({ t: msg.t, ok: false, error: "goal_link is a console command" });
         try {
-          const text = tasks.linkGoal(USER, msg.task, msg.goal);
+          if (c.role === "tools") admitOperational(sock, "goal link");
+          const text = tasks.linkGoal(c.role === "console" ? USER : c.peer!, msg.task, msg.goal);
           const linked = board.get(Number(msg.task));
           if (linked?.state === "in_progress" && !tasks.isPii(linked)) renewLeases(linked); // already being worked on: hold it now
           return void reply({ t: msg.t, ok: true, text });
         }
-        catch (e) { return void reply({ t: msg.t, ok: false, error: (e as Error).message }); }
+        catch (e) { return void reply({ t: msg.t, ...operationalFailure(e) }); }
       case "ask": {
         // Console only: the evidence may hold PII task text (on campus), and the answer is for the person at the terminal.
         if (c.role !== "console") return void reply({ t: "ask", ok: false, error: "ask is a console command" });

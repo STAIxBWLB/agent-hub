@@ -170,7 +170,8 @@ test("an agent is refused every schedule op, and nothing changes", async () => {
   for (const op of ["schedule_list", "schedule_run", "schedule_pause", "schedule_resume"]) {
     const reply = await h.op(h.agent, op, { id: "nightly" });
     expect(reply.ok, op).toBe(false);
-    expect(String(reply.error), op).toContain("console command");
+    // #933: run, pause and resume are the configured conductor's too, so another agent gets the operational refusal; list stays the person's.
+    expect(String(reply.error), op).toContain(op === "schedule_list" ? "console command" : "requires the explicit conductor role");
   }
   expect(h.tasks()).toHaveLength(0);
   expect(h.row("nightly")).toMatchObject({ paused: 0, last_run: null });
@@ -199,12 +200,12 @@ test("ahub status shows a paused schedule as paused with the command to resume i
 
 // ---- the Tasks layer on its own: the daemon refuses a non-person op first, so these hold the second layer and the pass guard
 
-function tasksRig(options: { screen?: () => Promise<{ label: "clear"; ms: number }> } = {}) {
+function tasksRig(options: { screen?: () => Promise<{ label: "clear"; ms: number }>; operational?: (by: string) => boolean } = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-schedule-tasks-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   const tasks = new Tasks({ cwd, board, bus, roles: {}, project: "fixture", routing: () => {
     const routing = loadRouting(cwd);
     return options.screen ? { ...routing, signals: { ...routing.signals, pii_screen: "local" } } : routing;
-  }, notify: () => {}, ...(options.screen ? { piiScreen: options.screen } : {}) });
+  }, notify: () => {}, ...(options.screen ? { piiScreen: options.screen } : {}), ...(options.operational ? { operational: options.operational } : {}) });
   const store = new ScheduleStore(join(cwd, "hub.db"));
   cleanup.push(() => { store.close(); bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
   const entries = [{ id: "a", every: "1h", class: "plan", title: "Scheduled work", queue: "backlog" as const }];
@@ -272,6 +273,18 @@ test("the anchor never moves back: a run that finishes after a later resume keep
   expect(store.get("a")).toMatchObject({ anchor: 400, last_run: 300, last_task: 9 });
   store.ran("a", 500, 10);
   expect(store.get("a")).toMatchObject({ anchor: 500, last_run: 500 });
+});
+
+test("#933: a conductor's manual run whose authority ends during its PII screen writes nothing", async () => {
+  let release: (() => void) | undefined, entered = 0, authorized = true;
+  const r = tasksRig({ screen: () => new Promise(resolve => { entered++; release = () => resolve({ label: "clear", ms: 0 }); }), operational: by => by === "claude" && authorized });
+  const running = r.tasks.runScheduleNow("claude", r.store, r.entries, "a", T0);
+  await until(() => entered >= 1, "the conductor's run is inside its PII screen");
+  authorized = false; // the role was taken away or the tools connection closed
+  release!();
+  expect((await running).outcome).toBe("held");
+  expect(r.board.list()).toHaveLength(0);
+  expect(r.store.get("a")!.last_run).toBeNull();
 });
 
 test("a manual run is outside the timer's epoch: a pause during it does not cancel the person's own run", async () => {
@@ -351,7 +364,8 @@ test("scheduleViews: a pause wins over every other state, and an unpaused row is
 // ---- the command
 
 test("schedule is person-only: an agent shell is refused, live-test cannot write it, and the audit never names an id", () => {
-  for (const args of [["list"], ["run", "nightly"], ["pause", "nightly"], ["resume", "nightly"], []]) expect(classifyPeerCommand("schedule", args)).toBe("console");
+  for (const args of [["list"], []]) expect(classifyPeerCommand("schedule", args)).toBe("console");
+  for (const args of [["run", "nightly"], ["pause", "nightly"], ["resume", "nightly"]]) expect(classifyPeerCommand("schedule", args)).toBe("conductor"); // #933
   expect(liveTestRefusal("schedule", ["run", "nightly"])).toBe(true);
   for (const sub of ["list", "run", "pause", "resume"]) expect(cliCommandLabel("schedule", [sub, "nightly"])).toBe(`schedule ${sub}`);
   expect(cliCommandLabel("schedule", ["secret-id"])).toBe("schedule");

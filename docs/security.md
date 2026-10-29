@@ -291,9 +291,9 @@ as that peer in tools mode. Messages and task changes retain that actor;
 `say` defaults to status priority and important messages still require the peer's
 capability. Conflicting or malformed markers fail closed. Refusals name only the marker variable names actually present, never their values. There is no `--as-user`.
 By default, console operations are refused before connecting, including permission answers
-and permission modes, queue resolution and bulk discard, agent version trust, budget overrides, benchmark runs, research
-backfill and task labels, stopping a peer (`ahub stop`), lifecycle and recovery
-operations, and `ask`.
+and permission modes, agent version trust, budget overrides, role assignment, `--as-user`, recovery
+operations, the interactive terminals (`watch`, `pet --window`, a launcher's person-only flags), and `ask`
+(#933 keeps the person's class to trust, money, attribution and interactive terminals).
 For live verification explicitly authorized by the user, an agent may invoke
 `ahub --live-test [--project <path|id>] <command> [args...]`. The flag delegates
 the existing console authority for console-class operations and conductor-class peer starts/holds, including approvals,
@@ -359,9 +359,14 @@ only with `assign` when its capabilities are listed).
 A conductor may inspect public state, assign or escalate work, start a peer in
 the start mode a person set (it cannot choose the mode) and place its own
 delivery holds. Through the `ahub` CLI under its own peer identity it may also
-run the closed operational family of #812: `roster add|remove`, `stop <peer>`,
-`queue show|resolve|discard`, `task cancel`, `doctor --orphans --kill`, `logs`,
-`export` and `settings set` on twelve named live keys. Each is admitted by the
+run the closed operational family of #812 and #933: `roster add|remove`, `stop <peer>`,
+`queue show|resolve|discard`, `doctor --orphans --kill`, `logs`,
+`export`, `settings set` on thirteen named live keys, `board import`, `intake approve`,
+`schedule run|pause|resume`, `research backfill`, `bench run`, `source add`, `goal link`
+and starting a launcher-only peer the conductor may start (Jcode). Memory changes and the other
+`goal` changes stay the person's while amem records their actor as the user, and `upgrade --yes`
+stays the person's with restart (#900).
+Each is admitted by the
 daemon after a recheck of the conductor role, and bounded; the effectful ones and
 the history reads are audited as a closed label with no argument text (`queue show`
 and a settings preview recheck the role without an audit record), a refusal of
@@ -377,7 +382,10 @@ the person. Other agents may run only the read-only forms of #812 (`doctor`,
 `projects`, `models status`, `recovery status`, `queue list`, `roster`,
 `settings` reads, `sdlc status|explain|queue|release`, `release show` and the
 `--dry-run` upgrade and restart previews) through the public views, never the
-console identity.
+console identity, plus, on their own task only (#933), `task cancel` with the authority
+`hub_task_cancel` gives them, `task role` and `task label` (the research record names the agent),
+each refused by the daemon for another peer's task, and `ahub deliverables`, which lists only
+the tasks `hub_task_show` would show them.
 Pending approval summaries exclude titles; PII tasks remain public stubs.
 Conduct events contain ids only. Supervision feeds use structured reasons and
 never carry check output or approval bodies.
@@ -617,7 +625,7 @@ The fresh Kimi reviewer (#533) needs `review_mode: "fresh"` and a compat-admitte
 
 The review brief (#520) withholds private changes whole (both sides of a move) and counts them; a rule file that fails the private-data screen is named, not shown. Attributes and rules are read at the merge base, so a change cannot loosen its own review. Optional changed symbols (#684) come from ripwire 0.6.7 on the daemon's host PATH, run as an owned process on a disposable snapshot of the task's commit; each path, name and kind passes the hub's public metadata screen before the brief, the console's task detail or the dashboard shows it, a private task stores and shows none, and a failed or missing read is `unknown`, never a gate. Spec acceptance, plan review, plan conformance, premature-review, cost, test-integrity (#481 S4), issue and PR identity linking (#694) and dogfood scorecard (#687) reads fetch GitHub metadata only (edit times, check states, thread authorship and resolution, changed file names, open PR heads, workflow run conclusions), never issue bodies, comments or patches. Issue identity linking at propose and accept (#723) parses the task's title and refs locally, reads nothing from GitHub and skips PII tasks. The CI workflow keeps `contents: read` and `actions: read`.
 
-Deliverable records (#509a). `hub_task_done` and `hub_sdlc_record` name files as `{path, format, version?}`; the hub hashes them itself and refuses a claimed `sha256`, `hash` or `bytes` and any field it does not own. Paths resolve under the owner's execution root with `realPath` and `guardPath` in read mode: outside the project, the secrets denylist, the hub's own state (`.git`, `.agenthub`), a dangling link, a non-regular file and more than 256 MiB each or 512 MiB together are refused, with the path as given and never a resolved one. The file is opened without following a final link and its device, inode, size and time are compared with what was checked, before and after the read, so a swapped or changing file is refused rather than recorded half-read; a bad call writes nothing. A declared worktree instance whose root is not proven refuses, and a later read of it reports `unknown`. No hash of hub state is ever taken, and a file the hub cannot read or vouch for is `unknown`, never `unchanged`. A reviewer's approval re-hashes the files and is refused when one changed, went missing or is unknown; only the person may approve the current bytes, which are then measured and bound. For a PII task, a file under `pii.paths` or a path matching a PII pattern, `publicDeliverables` is the one projection every peer view, review request, status and log uses: id, hash and size only. The board keeps the path, as it keeps a PII task's text. `ahub deliverables` (#509b) is the person's: an agent shell is refused and `--live-test` cannot delegate it. It lists the board's records through `publicDeliverables` and opens a file only with `--check`, through the same reader and limits. The dashboard's Deliverables chip and task group use the same projection of the same records and never read a file on the poll; a `changed` mark there is only as fresh as the last live read in this daemon.
+Deliverable records (#509a). `hub_task_done` and `hub_sdlc_record` name files as `{path, format, version?}`; the hub hashes them itself and refuses a claimed `sha256`, `hash` or `bytes` and any field it does not own. Paths resolve under the owner's execution root with `realPath` and `guardPath` in read mode: outside the project, the secrets denylist, the hub's own state (`.git`, `.agenthub`), a dangling link, a non-regular file and more than 256 MiB each or 512 MiB together are refused, with the path as given and never a resolved one. The file is opened without following a final link and its device, inode, size and time are compared with what was checked, before and after the read, so a swapped or changing file is refused rather than recorded half-read; a bad call writes nothing. A declared worktree instance whose root is not proven refuses, and a later read of it reports `unknown`. No hash of hub state is ever taken, and a file the hub cannot read or vouch for is `unknown`, never `unchanged`. A reviewer's approval re-hashes the files and is refused when one changed, went missing or is unknown; only the person may approve the current bytes, which are then measured and bound. For a PII task, a file under `pii.paths` or a path matching a PII pattern, `publicDeliverables` is the one projection every peer view, review request, status and log uses: id, hash and size only. The board keeps the path, as it keeps a PII task's text. `ahub deliverables` (#509b) from an agent shell lists only the tasks `hub_task_show` would show that agent (#933), and `--live-test` cannot delegate it. It lists the board's records through `publicDeliverables` and opens a file only with `--check`, through the same reader and limits. The dashboard's Deliverables chip and task group use the same projection of the same records and never read a file on the poll; a `changed` mark there is only as fresh as the last live read in this daemon.
 
 Person release authorization (#481 S6). `ahub sdlc authorize-release <version>` is taken from the console role only and refused under `--live-test`. It binds the daemon checkout's commit, package version, push remote identity and a fresh-docs verdict, lives only in daemon memory (a restart revokes it) and is logged with its commit, version and docs digest. `ahub sdlc release-guard -- <argv>` is a read-only preflight that agents may run, except during a private or PII turn; it never executes the command and refuses ambient target selectors (`GIT_DIR`, `GH_REPO`, npm prefix and registry settings and the like). The pre-push hook that `ahub init --release-guard` installs refuses an unauthorized or unknown `v*` tag push, also with the daemon down, and passes other pushes through. It and the release block in `AGENTS.md` are a cooperative guard, not an operating-system boundary: `git push --no-verify`, a custom `core.hooksPath` or another Git invocation bypasses the hook, and `gh release create` and `npm publish` are checked only when the preflight is run (tasks 312 and 313).
 

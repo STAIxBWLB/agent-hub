@@ -28,8 +28,8 @@ import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 const temp=()=>realPath(mkdtempSync(join(tmpdir(),"ahub-conductor-ops-")));
 const CLI=join(import.meta.dir,"../src/cli/main.ts");
 
-test("operational policy has exactly twelve existing live keys and rejects every person setting",()=>{
-  expect(CONDUCTOR_SETTING_KEYS).toHaveLength(12);
+test("operational policy has exactly thirteen existing live keys and rejects every person setting",()=>{
+  expect(CONDUCTOR_SETTING_KEYS).toHaveLength(13); // #933 added tasks.escalate_after
   for(const key of CONDUCTOR_SETTING_KEYS) {
     const def=SETTINGS.find(d=>d.key===key)!;expect(def).toBeDefined();expect(operationalSetting(def)).toBe(true);expect(settingRefusal(def,true,"conductor")).toBeUndefined();
     expect(authorizeConfigLeaf({key,before:false,after:true,source:"config",sourceFile:"config.local.json",tracked:false,authority:"conductor",confirmed:true,guard:def}).allowed).toBe(true);
@@ -42,10 +42,11 @@ test("operational policy has exactly twelve existing live keys and rejects every
 });
 
 test("operational command classification preserves actor path and deferred person commands and live-test refusal",()=>{
-  for(const [cmd,args] of [["roster",["add","kimi"]],["roster",["remove","kimi","--yes"]],["stop",["pi"]],["queue",["show","x"]],["queue",["resolve","x"]],["queue",["discard","--peer","codex"]],["task",["cancel","1"]],["doctor",["--orphans","--kill"]],["logs",[]],["export",[]],["settings",["set","task_sweep.enabled","true"]]] as [string,string[]][]) {
+  for(const [cmd,args] of [["roster",["add","kimi"]],["roster",["remove","kimi","--yes"]],["stop",["pi"]],["queue",["show","x"]],["queue",["resolve","x"]],["queue",["discard","--peer","codex"]],["doctor",["--orphans","--kill"]],["logs",[]],["export",[]],["settings",["set","task_sweep.enabled","true"]]] as [string,string[]][]) {
     expect(conductorOperation(cmd,args)).toBeDefined();expect(classifyPeerCommand(cmd,args)).toBe("conductor");expect(classifyPeerCommand(cmd,[...args,"--as-user"])).toBe("console");
   }
   for(const [cmd,args] of [["restart",["--yes"]],["recovery",["resume"]],["recovery",["abort"]],["task",["unassign","1"]],["models",["start"]],["models",["stop"]],["pet",["--window"]],["permission",["pi","never-ask"]]] as [string,string[]][])expect(classifyPeerCommand(cmd,args)).toBe("console");
+  expect(classifyPeerCommand("task",["cancel","1"])).toBe("allowed"); // #933: own task only, refused by Tasks.cancel otherwise
   expect(liveTestRefusal("task",["cancel","1"])).toBe(true);expect(liveTestRefusal("permission",["pi","ask"])).toBe(false);
 });
 

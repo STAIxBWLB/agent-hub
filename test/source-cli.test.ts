@@ -166,7 +166,8 @@ test("an agent shell is refused before anything runs, under every marker, and no
       const r = await cli(p, args, env);
       expect(r.code, `${JSON.stringify(env)} ${args.join(" ")}`).not.toBe(0);
       expect(r.stdout).toBe("");
-      expect(r.stderr).toContain(`cannot run ahub source ${args[1]}`);
+      // #933: add is a conductor form, so with no hub to admit it the shell is refused before anything runs; list stays the person's.
+      expect(r.stderr).toContain(args[1] === "add" ? "conductor authorization unavailable; nothing was executed" : `cannot run ahub source ${args[1]}`);
       expect(r.stderr).not.toContain("agent text");
       expect(r.stderr).not.toContain(file); // the operand is never echoed
     }
@@ -175,9 +176,11 @@ test("an agent shell is refused before anything runs, under every marker, and no
 });
 
 test("classification: every form of source is console (never allowed or conductor), and the audit label names the form without its operands", () => {
-  for (const args of [["add", "/p/a.txt"], ["add", "https://example.com/x"], ["list"], ["list", "--json"], [], ["frob"], ["add", "--json", "/p/a.txt"]]) {
+  for (const args of [["list"], ["list", "--json"], [], ["frob"]]) {
     expect(classifyPeerCommand("source", args), args.join(" ")).toBe("console");
   }
+  // #933: add is the person's or the configured conductor's (the daemon admits and audits it at the handshake).
+  for (const args of [["add", "/p/a.txt"], ["add", "https://example.com/x"], ["add", "--json", "/p/a.txt"]]) expect(classifyPeerCommand("source", args), args.join(" ")).toBe("conductor");
   expect(cliCommandLabel("source", ["add", "/secret/patients.pdf"])).toBe("source add");
   expect(cliCommandLabel("source", ["list", "--json"])).toBe("source list");
   expect(cliCommandLabel("source", ["--json", "add", "/x"])).toBe("source add");

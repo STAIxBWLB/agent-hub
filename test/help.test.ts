@@ -30,11 +30,11 @@ await import(${JSON.stringify(CLI)});
 }
 
 describe("ahub help (#212)", () => {
-  test("#437 help lists person-only task cancellation and its complete syntax", () => {
+  test("#437 help lists task cancellation, an agent's own task only (#933), and its complete syntax", () => {
     const usage = "ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N] [--json] [--color=auto|always|never]";
     const entry = HELP.find(entry => entry.usage === usage);
     expect(entry?.section).toBe("Tasks and review");
-    expect(entry?.description).toContain("person only");
+    expect(entry?.description).toContain("an agent on its own task as hub_task_cancel allows");
     expect(renderHelp(80, false, "task").replace(/\s+/g, " ")).toContain(usage);
   });
 

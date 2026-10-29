@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { drainCliAudits } from "../src/cli/identity-audit.ts";
+import { classifyPeerCommand, liveTestRefusal } from "../src/cli/identity.ts";
 import { startFakeModelServer } from "./fakes/model-server.ts";
 import { readEvents } from "../src/hub/events.ts";
 
@@ -234,6 +235,21 @@ test("person commands and unverifiable operational commands refuse promptly with
   } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
 }, 20_000);
 
+test("#933: an agent's task label never names an earlier task with --created, before any control connection", async () => {
+  const root = project(), stateDir = join(root, ".agenthub/state");
+  mkdirSync(stateDir);
+  let connections = 0;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (_req, server) => { connections++; if (server.upgrade(_req)) return; return new Response("unexpected"); }, websocket: { message() {} } });
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, protocol: PROTOCOL }));
+  writeFileSync(join(stateDir, "control-token"), "fixture-token");
+  try {
+    const result = await cli(root, ["task", "label", "1", "ok", "--created", "2026-10-01T00:00:00.000Z"], { AGENTHUB_PEER_ID: "codex" });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("only the person labels it");
+    expect(connections).toBe(0);
+  } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
 test("native shell CLI messages and board history retain the actor while plain terminals keep human authority", async () => {
   const root = project(), stateDir = join(root, ".agenthub/state");
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } } });
@@ -280,15 +296,17 @@ test("live-test cannot impersonate the user or file person verdicts and workflow
   const root = project(), stateDir = join(root, ".agenthub/state");
   try {
     for (const args of [["say", "--as-user", "private-message"], ["say", "--as-user=true", "private-message"],
-      ["task", "label", "1", "ok"], ["task", "role", "1", "none"], ["task", "assign", "1", "pi"], ["task", "escalate", "1"], ["backlog", "add", "test", "private-title"],
+      ["task", "assign", "1", "pi"], ["task", "escalate", "1"], ["backlog", "add", "test", "private-title"],
       ["release", "new", "private-release", "goal", "1"], ["sdlc", "record", "1", "{}"], ["board", "import", "github"],
       ["bench", "run", "private-suite"], ["pet", "--window"]]) {
       const result = await cli(root, ["--live-test", ...args], { AGENTHUB_PEER_ID: "codex" });
       expect(result.code).toBe(1);
       expect(result.stderr).toContain("live-test cannot write person-attributed content");
     }
+    // #933: an agent's own-task label and role are Allowed: they run as the agent (its label record names it) and are never delegated.
+    for (const args of [["task", "label", "1", "ok"], ["task", "role", "1", "none"]]) { expect(classifyPeerCommand(args[0]!, args.slice(1))).toBe("allowed"); expect(liveTestRefusal(args[0]!, args.slice(1))).toBe(true); }
     const rows = drainCliAudits(stateDir);
-    expect(rows).toHaveLength(12);
+    expect(rows).toHaveLength(10);
     expect(rows.every(row => row.peer === "codex" && row.outcome === "refused")).toBe(true);
     expect(JSON.stringify(rows)).not.toContain("private");
   } finally { rmSync(root, { recursive: true, force: true }); }

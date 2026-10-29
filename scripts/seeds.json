@@ -884,15 +884,15 @@
     {
       "id": "task-role-person-only",
       "file": "src/hub/tasks.ts",
-      "search": "if (by !== USER) throw new PreEffectToolRefusal(\"only the person may change an existing task catalog role\");",
-      "replacement": "if (false) throw new PreEffectToolRefusal(\"only the person may change an existing task catalog role\");",
+      "search": "if (by !== USER && task.owner !== by) throw new PreEffectToolRefusal(`task #${task.id} is not yours: an agent changes the catalog role of its own task only`);",
+      "replacement": "if (false) throw new PreEffectToolRefusal(`task #${task.id} is not yours: an agent changes the catalog role of its own task only`);",
       "testFile": "test/role-settings.test.ts",
       "testName": "person task role changes keep ownership and private stubs while delivering bounded guidance (#295)"
     },
     {
       "id": "task-role-console-wire",
       "file": "src/hub/daemon.ts",
-      "search": "if (c.role !== \"console\") return void reply({ ok: false, error: \"task roles are a person command\" });",
+      "search": "if (c.role !== \"console\" && (c.role !== \"tools\" || !c.peer || c.toolsOwner || c.externalOwner || readOnlyPeer(c.peer) || contextPii(c.peer))) return void reply({ ok: false, error: \"task roles are a person command\" });",
       "replacement": "if (false) return void reply({ ok: false, error: \"task roles are a person command\" });",
       "testFile": "test/role-settings.test.ts",
       "testName": "agent shells and tools clients cannot mutate session or existing task roles (#295)"
@@ -2083,11 +2083,11 @@
     },
     {
       "id": "github-import-person-cli",
-      "file": "src/cli/identity.ts",
-      "search": "if (command === \"board\" && args[0] === \"import\") return \"console\";",
-      "replacement": "if (false) return \"console\";",
-      "testFile": "test/github-import-tasks.test.ts",
-      "testName": "GitHub intake persists dedupe and PII sources only through public projection (#263)"
+      "file": "src/hub/tasks.ts",
+      "search": "if (!this.personOrConductor(by)) throw new PreEffectToolRefusal(\"GitHub import is a person console command\");",
+      "replacement": "if (false) throw new PreEffectToolRefusal(\"GitHub import is a person console command\");",
+      "testFile": "test/console-class-933.test.ts",
+      "testName": "#933: Tasks records an admitted conductor as the actor of a GitHub import and refuses any other agent"
     },
     {
       "id": "split-plan-pii-floor",
