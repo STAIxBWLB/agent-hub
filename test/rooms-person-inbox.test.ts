@@ -94,17 +94,17 @@ async function side(root: string, label: string, notify: ReturnType<typeof signa
 
 async function command(side: Side, action: string, input: unknown) { return (await side.commands.preview(action, input, () => true)).commit(); }
 async function deliveries(side: Side): Promise<Record<string, unknown>[]> { return ((await side.commands.rows("work"))[0]?.deliveries ?? []) as Record<string, unknown>[]; }
-type MeshOptions = SideOptions & { holdFirstA?: () => Promise<void> };
+type MeshOptions = Omit<SideOptions, "now"> & { receiverNow?: () => number; senderNow?: () => number; holdFirstA?: () => Promise<void> };
 const meshes: { root: string; broker: BrokerRuntime; a: Side; b: Side }[] = [];
 afterEach(async () => { for (const f of meshes.splice(0).reverse()) { await f.a.close(); await f.b.close(); await f.broker.stop(); rmSync(f.root, { recursive: true, force: true }); } });
 async function mesh(options: MeshOptions = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-person-inbox-")), notify = signals();
   const broker = await startBroker({ stateDir: join(root, "broker"), port: 0 });
   let holdFirstA = options.holdFirstA;
-  const a = await side(root, "alpha", notify, { now: options.now, screen: options.screen, beforeReceive: async () => {
+  const a = await side(root, "alpha", notify, { now: options.receiverNow, screen: options.screen, beforeReceive: async () => {
     if (holdFirstA) { const hold = holdFirstA; holdFirstA = undefined; await hold(); }
   } });
-  const b = await side(root, "beta", notify, { now: options.now });
+  const b = await side(root, "beta", notify, { now: options.senderNow });
   meshes.push({ root, broker, a, b });
   await command(a, "create", { name: "work", broker: broker.publicUrl, label: "alpha" });
   await command(a, "expose", { name: "work", peers: ["codex"] });
@@ -189,53 +189,61 @@ test("a real room chat to user@label is durably admitted once, body-free to obse
 
 test("expiry uses first durable arrival time; post-admission expiry purges body without changing its receipt", async () => {
   let now = Date.now();
-  const arrived = new Deferred<void>(), release = new Deferred<void>();
-  const f = await mesh({ now: () => now, holdFirstA: async () => { arrived.resolve(undefined); await release.promise; } });
+  const release = new Deferred<void>();
+  const f = await mesh({ receiverNow: () => now, holdFirstA: async () => { await release.promise; } });
   const body = "delayed person inbox admission", env = newEnvelope("codex", body, { to: ["user@alpha"], priority: "status" });
   expect(f.b.bus.publish(env)).toEqual(["user@alpha"]);
-  await arrived.promise;
-  now += 15 * 24 * 60 * 60 * 1000;
-  release.resolve(undefined);
-  await f.wait(async () => (await deliveries(f.b)).some(row => row.application === env.id && row.state === "completed (inbox)"), "delayed person admission");
-  const captured = f.a.lastChat!, before = f.a.context!.store.applicationReceipt("work", captured.digest)!;
-  const meta = f.a.context!.store.listPersonInbox("work")[0]!;
-  expect(meta.expiresAt).toBe(meta.receivedAt + PERSON_TTL_MS);
-  now = meta.expiresAt + 1;
-  f.a.context!.store.expirePersonInbox();
-  expect(f.a.context!.store.listPersonInbox("work")[0]?.state).toBe("expired");
-  expect(f.a.context!.store.readPersonInbox(meta.id, () => true)?.body).toBeUndefined();
-  expect(f.a.context!.store.applicationReceipt("work", captured.digest)).toEqual(before);
-  expect(f.a.chat.metrics("work")).toMatchObject({ inbound: 1 });
+  try {
+    await f.a.signals.wait(() => f.a.lastChat?.message.envelope.id === env.id, "person chat durable arrival");
+    now += 15 * 24 * 60 * 60 * 1000;
+    release.resolve(undefined);
+    await waitReceipt(f, f.a.lastChat!, "inbox_admitted");
+    await f.wait(async () => (await deliveries(f.b)).some(row => row.application === env.id && row.state === "completed (inbox)"), "delayed person admission");
+    const captured = f.a.lastChat!, before = f.a.context!.store.applicationReceipt("work", captured.digest)!;
+    const meta = f.a.context!.store.listPersonInbox("work")[0]!;
+    expect(meta.expiresAt).toBe(meta.receivedAt + PERSON_TTL_MS);
+    now = meta.expiresAt + 1;
+    f.a.context!.store.expirePersonInbox();
+    expect(f.a.context!.store.listPersonInbox("work")[0]?.state).toBe("expired");
+    expect(f.a.context!.store.readPersonInbox(meta.id, () => true)?.body).toBeUndefined();
+    expect(f.a.context!.store.applicationReceipt("work", captured.digest)).toEqual(before);
+    expect(f.a.chat.metrics("work")).toMatchObject({ inbound: 1 });
+  } finally { release.resolve(undefined); }
 });
 
 test("pre-admission expiry, unexposed senders, FYI priority and oversized bodies fail safely", async () => {
   let now = Date.now();
-  const arrived = new Deferred<void>(), release = new Deferred<void>();
-  const f = await mesh({ now: () => now, holdFirstA: async () => { arrived.resolve(undefined); await release.promise; } });
+  const release = new Deferred<void>();
+  const f = await mesh({ receiverNow: () => now, holdFirstA: async () => { await release.promise; } });
   const expired = personChat("codex", "expired before admission");
   const source = f.b.context!, recipient = f.a.context!.store.identity.public.fingerprint;
-  await source.link.publishApplication(expired, recipient, undefined, source.current);
-  await arrived.promise;
-  const first = f.a.lastChat!;
-  now += PERSON_TTL_MS + 1;
-  release.resolve(undefined);
-  await waitReceipt(f, first, "inbox_expired");
-  expect(f.a.context!.store.listPersonInbox("work")).toEqual([]);
-  expect(f.a.chat.metrics("work")).toMatchObject({ inbound: 0 });
+  try {
+    await source.link.publishApplication(expired, recipient, undefined, source.current);
+    await f.a.signals.wait(() => f.a.lastChat?.message.envelope.id === expired.envelope.id, "expired chat durable arrival");
+    const first = f.a.lastChat!;
+    now += PERSON_TTL_MS + 1;
+    release.resolve(undefined);
+    await waitReceipt(f, first, "inbox_expired");
+    expect(f.a.context!.store.listPersonInbox("work")).toEqual([]);
+    expect(f.a.chat.metrics("work")).toMatchObject({ inbound: 0 });
 
-  for (const [message, reason] of [
-    [personChat("qwen", "unexposed sender"), "not_exposed"],
-    [personChat("codex", "FYI refusal", "fyi"), "boundary_refused"],
-    [personChat("codex", "x".repeat(BODY_LIMIT + 1)), "inbox_oversize"],
-  ] as const) {
-    const captured = await sendWire(f, message);
-    await waitReceipt(f, captured, reason);
-  }
-  expect(f.a.context!.store.listPersonInbox("work")).toEqual([]);
-  expect(f.a.chat.metrics("work")).toMatchObject({ inbound: 0 });
-  expect(f.a.peer.got).toEqual([]);
-  expect(f.a.memory).toEqual([]);
-  expect(f.a.screenCalls).toBe(0);
+    for (const [message, reason] of [
+      [personChat("qwen", "unexposed sender"), "not_exposed"],
+      [personChat("codex", "FYI refusal", "fyi"), "boundary_refused"],
+    ] as const) {
+      const captured = await sendWire(f, message);
+      await waitReceipt(f, captured, reason);
+    }
+    const oversized = personChat("codex", "x".repeat(BODY_LIMIT + 1));
+    expect(() => encodeRoomMessage(oversized)).toThrow("Room application: limit");
+    expect(f.a.lastChat?.message.envelope.id).not.toBe(oversized.envelope.id);
+
+    expect(f.a.context!.store.listPersonInbox("work")).toEqual([]);
+    expect(f.a.chat.metrics("work")).toMatchObject({ inbound: 0 });
+    expect(f.a.peer.got).toEqual([]);
+    expect(f.a.memory).toEqual([]);
+    expect(f.a.screenCalls).toBe(0);
+  } finally { release.resolve(undefined); }
 });
 
 class Deferred<T> {
