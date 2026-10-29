@@ -297,6 +297,7 @@ test("person inbox disposition replies before a blocked network retry and a late
     await retryEntered;
     // WebSocket FIFO makes this a consumed reply barrier, with no wall-clock assumption.
     await f.person.request({ t: "status" });
+    expect(response?.ok).toBe(true);
     expect(response).toMatchObject({ ok: true, item });
     f.person.close();
     expect(response.ok).toBe(true);
