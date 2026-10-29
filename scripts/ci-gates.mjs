@@ -83,7 +83,8 @@ export async function readFullGateAdmission(api, tree, { currentRunId, deadline 
     }
     return jobs;
   };
-  const gateJob = name => FULL_GATES.includes(name) || /^seeded-shard(?: \([1-4]\))?$/.test(name);
+  // #548: the macOS leg is shard jobs named `check (macos-latest) shard i/N` under the required aggregator `check (macos-latest)`; they launch the gate like the seeded shards do.
+  const gateJob = name => FULL_GATES.includes(name) || /^seeded-shard(?: \([1-4]\))?$/.test(name) || /^check \(macos-latest\) shard [1-9]\d?\/[1-9]\d?$/.test(name);
   try {
     let successful;
     try { successful = page(await read("actions/workflows/check.yml/runs?status=success&per_page=100"), "workflow_runs"); }
