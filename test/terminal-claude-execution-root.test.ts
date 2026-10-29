@@ -20,6 +20,7 @@ async function fixture(role: "implementer" | "verifier" = "implementer") {
   }
   const instances = { [peer]: { kind: "claude", roles: [role], worktree: `.worktrees/${peer}` } };
   writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify({ instances, roles: { [peer]: [role] }, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false }, task_sweep: { enabled: false }, batch_ms: 0 }));
+  writeFileSync(join(root, ".agenthub", "routing.toml"), `[local]\nfixed_model="fixture"\n[classes.implement]\npeers=[${JSON.stringify(peer)}]\n[classes.summarize]\npeers=[${JSON.stringify(peer)}]\n`);
   const workspaceGitCalls: string[][] = [];
   const instanceExecutionGit = ((args: string[], options: Parameters<typeof hubGitSync>[1]) => {
     workspaceGitCalls.push([...args]); return hubGitSync(args, options as never);
