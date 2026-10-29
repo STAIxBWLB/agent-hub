@@ -2276,6 +2276,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     await stopProject(project);
     console.log("hub stopped");
   },
+  // The counterpart of `ahub up`: the same verified graceful stop as `ahub kill`, never a second shutdown path.
+  down: async () => { await commands.kill!(); },
 
   reset: async () => {
     if (args.some((a) => !["--all", "--yes"].includes(a))) fail("usage: ahub reset [--all] [--yes]");

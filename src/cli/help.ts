@@ -47,6 +47,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub agents [--json]", "show each gated agent CLI's installed version and verdict (verified, in-line, trusted, refused or unknown)"],
     ["ahub agents trust <id> <version> [--revoke]", "accept an untested agent CLI version on this machine (person only; runtime proofs still run)"],
     ["ahub kill", "stop this project's hub"],
+    ["ahub down", "stop this project's hub, the counterpart of ahub up (same as ahub kill)"],
     ["ahub reset [--all] [--yes]", "list, then with --yes stop the hub and discard every queued and needs_review delivery, clear holds and pauses and drop session pointers; --all moves the state directory to .agenthub/archive instead"],
     ["ahub restart [--dry-run] [--yes] [--json] [--verbose] [--color=auto|always|never]", "recover this project's runtime; on a terminal without a flag it reviews the plan with you, follows the progress and offers the next steps"],
     ["ahub upgrade [--to <version>] [--dry-run] [--yes] [--json] [--verbose] [--color=auto|always|never]", "review and upgrade running projects; --to defaults to the latest release (--yes needs it), and a newer release's own coordinator takes over; on a terminal without --dry-run or --yes: review, end agents first if you choose, apply, follow, and resume, cancel, end or reset on the spot"],

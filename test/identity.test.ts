@@ -21,7 +21,7 @@ test("malformed and conflicting native identity never falls back to the person",
 });
 
 test("agent command classification refuses all human authority and keeps ordinary tools", () => {
-  for (const command of ["permit", "kill", "recovery-run", "up", "ask", "console", "ui", "tail", "undo", "unknown"]) expect(classifyPeerCommand(command, [])).toBe("console");
+  for (const command of ["permit", "kill", "down", "recovery-run", "up", "ask", "console", "ui", "tail", "undo", "unknown"]) expect(classifyPeerCommand(command, [])).toBe("console");
   // #812 moved bare recovery's screen forms and the dry-run previews to Allowed; these bare forms stay console.
   for (const command of ["queue", "recovery", "upgrade", "restart"]) expect(classifyPeerCommand(command, [])).toBe("console");
   for (const sub of ["resume", "set", "execution"]) expect(classifyPeerCommand("budget", [sub])).toBe("console");
@@ -47,6 +47,7 @@ test("starts, holds and assignment require daemon conductor authority, never an 
 test("audit labels and human-action hints contain command names only", () => {
   expect(cliCommandLabel("say", ["private-text"])).toBe("say");
   expect(cliCommandLabel("stop", ["private-peer"])).toBe("stop");
+  expect(cliCommandLabel("down", [])).toBe("down");
   for (const args of [[], ["pi", "--as-user"]]) expect(classifyPeerCommand("stop", args)).toBe("console");
   expect(classifyPeerCommand("stop", ["pi"])).toBe("conductor");
   expect(cliCommandLabel("task", ["private-text"])).toBe("task");

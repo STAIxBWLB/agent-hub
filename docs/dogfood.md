@@ -10,6 +10,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 
 | Feature | State here | Measured by |
 | --- | --- | --- |
+| `ahub down` (counterpart of `ahub up`) | on: an alias of `ahub kill` for stopping this project's hub | the person stops the hub with `ahub down` and `ahub status` then reports it stopped; test/identity.test.ts keeps it person-only (`console`) and labelled `down`, and test/help.test.ts holds its help entry |
 | Encrypted rooms (#446 X1) | off; source-only crypto/wire, with no broker, room link, invitation CLI or delivery enabled | real WebCrypto vectors and negative wire fixtures; atomic memory fake ports establish ordering only; durable X3 state and the X7 two-machine person receipt remain unverified |
 | Blind room broker (#446 X2) | off; standalone source/fixture work, no public TLS service or hub room link configured here | fake-client auth/fan-out/revocation/restart, ciphertext-only child-process canary, owner admission/offline room reset, queue caps/TTL/FIFO/migration, safe directory modes, and person-only CLI tests; live proxy/account/X7 receipts remain unverified |
 | Room membership and presence (#446 X3) | off; no person room enrollment or exposure configured here | isolated fake-hub/broker tests for OOB enrollment, MITM refusal, durable sequence/replay/grace, explicit fingerprint confirmation/abort, refused-frame retirement, exposure revocation and ids-only presence; room list/status for ids and link state; X4 chat and X7 two-machine live receipt remain separate and unverified |
