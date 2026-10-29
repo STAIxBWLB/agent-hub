@@ -182,6 +182,7 @@ or set `OMNIROUTE_API_KEY`. The `.agenthub/routing.toml` that `ahub init` writes
 | `ahub ask <question>` | what the board, shared memory and the log say, with the ids the answer rests on |
 | `ahub stop <peer>` | stop one headless peer (Kimi, headless Pi, `local`); the hub and the other peers keep running |
 | `ahub kill` | stop the daemon and everything it started |
+| `ahub down` | the same as `ahub kill`, named as the counterpart of `ahub up` |
 
 More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-design.md`](specs/2026-09-19-agent-hub-design.md). What it protects and what it does not: [`docs/security.md`](security.md).
 
