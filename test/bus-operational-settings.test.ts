@@ -138,6 +138,22 @@ test("#489 retry reload uses existing counts, keeps poison alone and exempts a p
   expect(b.attemptState()).toEqual({});
 });
 
+test("#489 a failed in-flight preface merges under the current note limit without losing recall", async () => {
+  let config: BusOperationalConfig = { bus: { notes_kept: 3 } };
+  const { b, p } = bus(() => config);
+  b.preface(p.id, "retained recall");
+  for (let n = 0; n < 3; n++) b.note(p.id, noteLine("codex", "finding", `old ${n}`));
+  p.fail = true;
+  p.beforeFailure = () => {
+    config = { bus: { notes_kept: 1 } };
+    b.note(p.id, noteLine("codex", "finding", "arrived during delivery"));
+  };
+  await p.start();
+  const env = newEnvelope("user", "safe failure", { to: [p.id] }); b.publish(env);
+  await until(() => b.attemptState()[`${p.id}:${env.id}`] === 1);
+  expect(b.snapshot(false).prefaces[p.id]!.body).toBe("retained recall\n\nnote from codex [finding]: arrived during delivery");
+});
+
 test("#489 terminal history reload prunes only at settlement and preserves unresolved retry ancestry", () => {
   let config: BusOperationalConfig = { bus: { terminal_history_limit: 3 } };
   const dir = mkdtempSync(join(tmpdir(), "ahub-operational-history-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
