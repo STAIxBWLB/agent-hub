@@ -221,6 +221,7 @@ let recoveryLauncherCurrent: (() => void) | undefined;
 if (continuationPeer !== undefined) {
   if (caller.role !== "tools" || caller.peer !== continuationPeer || !continuationId || !operationIdPattern.test(continuationId) || liveTest) fail("conductor recovery authority unavailable; the person runs it in ahub console or a terminal");
   const operation = readOperation<RecoveryOperation>(continuationId);
+  if (operation.id !== continuationId) fail("conductor recovery authority unavailable; the person runs it in ahub console or a terminal");
   if (cmd === "recovery-run" && args.length === 1 && args[0] === continuationId && realPath(operation.sourceRoot) === realPath(resolve(import.meta.dir, "../.."))) {
     await authorizeConductorOperation(operation, continuationPeer); recoveryRunnerContinuation = true; commandAccess = "conductor";
   } else if (process.env.AGENTHUB_RECOVERY_CONTINUATION === continuationId) {
@@ -872,7 +873,10 @@ const commands: Record<string, () => Promise<void> | void> = {
         audit("refused"); fail(LIVE_TEST_PERSON_REFUSAL);
       }
     }
-    if (conductorPeer) await authorizeConductorOperation(operation, conductorPeer);
+    if (conductorPeer) {
+      if (operation.id !== id) fail("conductor recovery authority unavailable; the person runs it in ahub console or a terminal");
+      await authorizeConductorOperation(operation, conductorPeer);
+    }
     const runner = recoveryRunner(id);
     if (action === "status") {
       // #215: abort and resume are offered by what the open sources show, read as the runner's errors read them.

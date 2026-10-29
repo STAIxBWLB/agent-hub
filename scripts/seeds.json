@@ -4368,6 +4368,14 @@
       "replacement": "if (false) throw new (preEffect ? PreEffectToolRefusal : Error)(\"only the console user or the current configured conductor may unassign a task role\");",
       "testFile": "test/task-unassign.test.ts",
       "testName": "only the current rostered conductor or person can unassign, never an ordinary owner or planner"
+    },
+    {
+      "id": "conductor-recovery-all-projects",
+      "file": "src/hub/daemon.ts",
+      "search": "if (affected.length !== plan.projects.length || affected.some(project => !plan.projects.some(row => row.project.id === project.id && row.project.root === project.root && row.project.stateDir === project.stateDir))) throw new RecoveryAuthorityError();",
+      "replacement": "if (false) throw new RecoveryAuthorityError();",
+      "testFile": "test/conductor-recovery.test.ts",
+      "testName": "shared upgrade issuance requires every live or uncertain registered project before creating a grant"
     }
   ]
 }

@@ -304,3 +304,35 @@ test("a source-issued continuation refuses changed plan data under an unchanged 
     f.noEffects();
   } finally { await f.close(); }
 }, 20_000);
+
+test("shared upgrade issuance requires every live or uncertain registered project before creating a grant", async () => {
+  const f = await fixture();
+  const { Registry } = await import("../src/hub/registry.ts");
+  const { processSignature } = await import("../src/pi/process-signature.ts");
+  const registry = new Registry();
+  try {
+    registry.register(f.root, f.stateDir); registry.claim(f.project.id, f.project.instanceId, process.pid, processSignature(process.pid));
+    const otherRoot = join(f.root, "other-project"), otherState = join(otherRoot, ".agenthub", "state"); mkdirSync(otherState, { recursive: true });
+    const other = registry.register(otherRoot, otherState), otherInstance = crypto.randomUUID();
+    registry.claim(other.id, otherInstance, process.pid, processSignature(process.pid));
+    const { binding: original, plan: originalPlan } = await f.authority();
+    const staged = join(process.env.AGENTHUB_HOME!, "releases", VERSION), targetRoot = join(staged, "node_modules", "@staix", "agent-hub");
+    for (const directory of ["src/hub", "src/cli", "plugins/agent-hub/.claude-plugin", "templates", ".claude-plugin"]) mkdirSync(join(targetRoot, directory), { recursive: true });
+    writeFileSync(join(targetRoot, "package.json"), JSON.stringify({ name: "@staix/agent-hub", version: VERSION }));
+    writeFileSync(join(targetRoot, "src/hub/control-client.ts"), 'export const DAEMON_FEATURES = ["conductor_recovery"];');
+    writeFileSync(join(targetRoot, "src/cli/main.js"), 'throw new Error("fixture runtime must never execute");');
+    writeFileSync(join(targetRoot, "plugins/agent-hub/.claude-plugin/plugin.json"), JSON.stringify({ version: VERSION }));
+    const targetDigest = packageDigest(targetRoot, { ownDependencies: true }), integrity = "fixture-registry-integrity";
+    writeFileSync(join(staged, "verified.json"), JSON.stringify({ digest: targetDigest, integrity }));
+    const { fingerprint: ignored, ...originalBody } = originalPlan;
+    const body: Omit<UpgradePlan, "fingerprint"> = { ...originalBody, kind: "upgrade", integrity };
+    let plan: UpgradePlan = { ...body, fingerprint: planFingerprint(body) };
+    let binding: ConductorRecoveryBinding = { ...original, kind: "upgrade", targetRoot, targetDigest, planFingerprint: plan.fingerprint };
+    expect((await f.lead.request({ t: "recovery_authority", op: "issue", binding, plan })).ok).toBe(false);
+    expect(existsSync(join(f.stateDir, "conductor-recovery.key"))).toBe(false); f.noEffects();
+    body.projects = [...body.projects, { project: { ...other, instanceId: otherInstance, pid: process.pid }, source: { state: "running", instanceId: otherInstance, version: VERSION, protocol: PROTOCOL, peers: [], blockers: [] }, terminals: [], blockers: [] }];
+    plan = { ...body, fingerprint: planFingerprint(body) }; binding = { ...binding, planFingerprint: plan.fingerprint };
+    expect((await f.lead.request({ t: "recovery_authority", op: "issue", binding, plan })).ok).toBe(true);
+    f.noEffects();
+  } finally { registry.close(); await f.close(); }
+}, 20_000);

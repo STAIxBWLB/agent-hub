@@ -57,6 +57,8 @@ export async function issueConductorOperation(op: RecoveryOperation, peer: strin
     const binding = conductorRecoveryBinding(op, row.project, peer);
     await conductorRecoveryRequest(row.project, peer, { t: "recovery_authority", op: "issue", binding, plan: op.plan });
   }
+  // A positive transport reply is not a source-issued grant. Prove every durable record before the public lock.
+  await authorizeConductorOperation(op, peer);
 }
 function localAuthority(op: RecoveryOperation, project: Project, peer: string) {
   try {

@@ -90,9 +90,9 @@ import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
 import { issueConductorRecoveryAuthority, authorizeConductorRecovery, assertConductorRecovery, RecoveryAuthorityError, type ConductorRecoveryBinding } from "./recovery-authority.ts";
 import { captureRecoveryPolicy } from "./recovery-policy.ts";
-import { operationPath } from "./recovery-store.ts";
+import { operationPath, recoveryLock } from "./recovery-store.ts";
 import { packageDigest } from "../cli/recovery-package.ts";
-import { planFingerprint, type UpgradePlan } from "../cli/upgrade.ts";
+import { planFingerprint, registeredProjects, type UpgradePlan } from "../cli/upgrade.ts";
 import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
 import { eventLog, readEvents, type RoleIdentity } from "./events.ts";
@@ -7328,7 +7328,16 @@ export async function startDaemon(opts: DaemonOptions) {
             const plan = msg.plan as UpgradePlan;
             const { fingerprint, ...body } = plan ?? {} as UpgradePlan;
             if (!plan || plan.projects.some(row => row.terminals.length > 0) || planFingerprint(body) !== fingerprint || fingerprint !== raw.planFingerprint || plan.kind !== raw.kind || existsSync(operationPath(raw.operationId))
-              || raw.sourceInstanceId !== instanceId || recoveryActive() || !plan.projects.some(row => row.project.id === projectId && row.project.root === opts.cwd && row.project.stateDir === opts.stateDir && row.source.instanceId === instanceId)) throw new RecoveryAuthorityError();
+              || raw.sourceInstanceId !== instanceId || recoveryActive() || recoveryLock() || !plan.projects.some(row => row.project.id === projectId && row.project.root === opts.cwd && row.project.stateDir === opts.stateDir && row.source.instanceId === instanceId)) throw new RecoveryAuthorityError();
+            if (plan.kind === "restart" && plan.projects.length !== 1) throw new RecoveryAuthorityError();
+            if (plan.kind === "upgrade") {
+              // Shared package/plugin effects cover every running or uncertain registered project, not a caller-selected subset.
+              const affected = registeredProjects().filter(project => {
+                const control = readControl(project.stateDir);
+                return control ? processLiveness(control.pid, control.pidSignature) !== "gone" : project.pid !== null && processLiveness(project.pid, project.pidSignature) !== "gone";
+              });
+              if (affected.length !== plan.projects.length || affected.some(project => !plan.projects.some(row => row.project.id === project.id && row.project.root === project.root && row.project.stateDir === project.stateDir))) throw new RecoveryAuthorityError();
+            }
             const selected = plan.projects.find(row => row.project.id === projectId)!;
             const normalize = (row: { id: string; state: string; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
               const launch = row.args ?? row.launch ?? {};
