@@ -27,7 +27,7 @@ const projectDefinition = (peer: string, root?: string) => {
 export interface RecoveryPeer {
   id: string;
   /** Read-only source observation; never consumed as restoration arguments. */
-  observation?: { kind: string; attached: boolean; sessionId?: string };
+  observation?: { kind: string; attached: boolean; sessionDigest?: string };
   /** Captured stable module/instance identity; never a portable current-owner proof. */
   externalInstance?: ExternalInstanceBinding;
   state: string;

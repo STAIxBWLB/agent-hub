@@ -6711,6 +6711,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   }
 
+  const recoverySessionDigest = (id: string | undefined) => id === undefined ? undefined : createHash("sha256").update(id).digest("hex");
   const recoveryView = () => ({
     operationId: recoveryOperationId,
     phase: recoveryPhase,
@@ -6738,7 +6739,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const now = recoveryPeers()[peer.id];
       const owner = bus.peers.get(peer.id), definition = definitionOf(peer.id);
       const observation = definition?.transport === "claude-channel" && isWsPeer(owner)
-        ? { kind: definition.kind, attached: owner.attached, ...(now?.sessionId === undefined ? {} : { sessionId: now.sessionId }) } : undefined;
+        ? { kind: definition.kind, attached: owner.attached, ...(now?.sessionId === undefined ? {} : { sessionDigest: recoverySessionDigest(now.sessionId) }) } : undefined;
       const visible = recoveryPhase === "restored" || recoveryPhase === "released" ? now ?? { id: peer.id, state: "offline", queueIds: bus.queueIds(peer.id) }
         : now ? { ...peer, ...now, queueIds: now.queueIds } : peer;
       return [peer.id, { ...visible, ...(observation === undefined ? {} : { observation }) }];
@@ -7398,22 +7399,23 @@ export async function startDaemon(opts: DaemonOptions) {
               for (const id of selected.reconnectOnly) {
                 const row = selected.source.peers.find(peer => peer.id === id), owner = bus.peers.get(id), definition = definitionOf(id);
                 if (!row || selected.freshStart?.includes(id) || Object.keys(row).some(key => !["id", "state", "observation"].includes(key)) || !row.observation
-                  || Object.keys(row.observation).some(key => !["kind", "attached", "sessionId"].includes(key))
+                  || Object.keys(row.observation).some(key => !["kind", "attached", "sessionDigest"].includes(key))
                   || !isWsPeer(owner) || definition?.transport !== "claude-channel" || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)
-                  || row.observation.kind !== definition.kind || row.observation.attached !== owner.attached || row.observation.sessionId !== claudeSession(id).sessionId) throw new RecoveryAuthorityError();
+                  || row.observation.kind !== definition.kind || row.observation.attached !== owner.attached || row.observation.sessionDigest !== recoverySessionDigest(claudeSession(id).sessionId)) throw new RecoveryAuthorityError();
                 const generation = owner.sessionGeneration;
                 const launcher = await launcherOf(id, opts.cwd, { stateDir: opts.stateDir, instanceId }); current();
                 if (launcher && launcher.state !== "gone" || bus.peers.get(id) !== owner || owner.sessionGeneration !== generation || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)) throw new RecoveryAuthorityError();
                 reconnectCurrent.push(() => bus.peers.get(id) === owner && owner.sessionGeneration === generation && owner.attached && !owner.managedLaunchId && !claudeLaunchProof.verified(id)
-                  && definitionOf(id)?.kind === row.observation!.kind && owner.attached === row.observation!.attached && claudeSession(id).sessionId === row.observation!.sessionId);
+                  && definitionOf(id)?.kind === row.observation!.kind && owner.attached === row.observation!.attached && recoverySessionDigest(claudeSession(id).sessionId) === row.observation!.sessionDigest);
                 reconnect.set(id, row.observation);
               }
             }
             if (reconnectCurrent.some(check => !check())) throw new RecoveryAuthorityError();
-            const normalize = (row: { id: string; state: string; observation?: { kind: string; attached: boolean; sessionId?: string }; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
+            const normalize = (row: { id: string; state: string; observation?: { kind: string; attached: boolean; sessionDigest?: string }; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
               const launch = row.args ?? row.launch ?? {};
               const observed = reconnect.get(row.id);
-              return { id: row.id, active: row.state !== "offline", threadId: row.threadId, sessionId: row.sessionId ?? (observed ? row.observation?.sessionId : undefined),
+              return { id: row.id, active: row.state !== "offline", threadId: row.threadId, sessionId: observed ? undefined : row.sessionId,
+                ...(observed ? { sessionDigest: row.observation?.sessionDigest ?? recoverySessionDigest(row.sessionId) } : {}),
                 ...(observed ? { kind: row.observation?.kind ?? definitionOf(row.id)?.kind, attached: row.observation?.attached ?? (isWsPeer(bus.peers.get(row.id)) && (bus.peers.get(row.id) as import("../adapters/channel-peer.ts").WsPeer).attached) } : {}),
                 sessionFile: row.sessionFile ?? (typeof launch.sessionFile === "string" ? launch.sessionFile : undefined),
                 args: Object.fromEntries(Object.entries(launch).filter(([key, value]) => ["model", "route", "sessionFile", "mode", "backend"].includes(key) && typeof value === "string").sort(([a], [b]) => a.localeCompare(b))) };

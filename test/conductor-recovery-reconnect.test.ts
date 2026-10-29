@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -104,7 +105,7 @@ test("a real unmanaged reconnect-only plan retains source observation and issues
   try {
     const row = f.plan.projects[0]!.source.peers.find(peer => peer.id === "claude")!;
     expect(Object.keys(row).sort()).toEqual(["id", "observation", "state"]);
-    expect(row.observation).toEqual({ kind: "claude", attached: true, sessionId: f.sessionId });
+    expect(row.observation).toEqual({ kind: "claude", attached: true, sessionDigest: createHash("sha256").update(f.sessionId).digest("hex") });
     expect(row.sessionId).toBeUndefined(); expect(row.threadId).toBeUndefined(); expect(row.args).toBeUndefined();
     expect((await f.issue(f.plan)).ok).toBe(true); f.noEffects();
   } finally { await f.close(); }
@@ -118,7 +119,7 @@ for (const mutation of ["id", "kind", "attachment", "observed-session", "restore
       if (mutation === "id") row.id = "foreign-peer";
       if (mutation === "kind") row.observation = { ...row.observation!, kind: "codex" };
       if (mutation === "attachment") row.observation = { ...row.observation!, attached: false };
-      if (mutation === "observed-session") row.observation = { ...row.observation!, sessionId: "foreign-session" };
+      if (mutation === "observed-session") row.observation = { ...row.observation!, sessionDigest: "foreign-session" };
       if (mutation === "restore-session") row.sessionId = f.sessionId;
       if (mutation === "restore-args") row.args = { model: "foreign-model" };
       if (mutation === "restore-thread") row.threadId = "foreign-thread";
@@ -165,7 +166,7 @@ test("reconnect-only handling does not relax another peer's native identity comp
     ordinary!.sessionId = "foreign-ordinary-session";
     expect((await f.issue(plan)).ok).toBe(false); f.noEffects();
     delete ordinary!.sessionId;
-    ordinary!.observation = { kind: "local", attached: true, sessionId: "ordinary-local-session" };
+    ordinary!.observation = { kind: "local", attached: true, sessionDigest: createHash("sha256").update("ordinary-local-session").digest("hex") };
     expect((await f.issue(plan)).ok).toBe(false); f.noEffects();
   } finally { await f.close(); }
 }, 20_000);
@@ -177,7 +178,7 @@ test("reconnect-only authority rechecks an observation that disappears across th
   const previous = Object.getOwnPropertyDescriptor(owner, "sessionGeneration"), generation = owner.sessionGeneration;
   let reads = 0, removed = false;
   try {
-    expect(f.plan.projects[0]!.source.peers.find(peer => peer.id === "claude")!.observation?.sessionId).toBe(f.sessionId);
+    expect(f.plan.projects[0]!.source.peers.find(peer => peer.id === "claude")!.observation?.sessionDigest).toBe(createHash("sha256").update(f.sessionId).digest("hex"));
     Object.defineProperty(owner, "sessionGeneration", { configurable: true, get() {
       // The first read captures the current owner before launcherOf; the second is its post-await fence.
       if (++reads === 2) { rmSync(join(f.stateDir, "claude-session.json")); removed = true; }
