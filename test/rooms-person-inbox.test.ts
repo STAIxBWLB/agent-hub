@@ -82,6 +82,7 @@ async function side(root: string, label: string, notify: ReturnType<typeof signa
       await options.beforeReceive?.();
     }
     await receive(value, input);
+    notify.notify(); // A saved refusal need not emit a Bus event or an outgoing application outcome.
   };
   const peer = new LocalPeer(); bus.add(peer); await peer.start();
   const commands = new RoomCommands({ cwd, stateDir, ...(options.now ? { clock: options.now } : {}), chat, presence: () => [{ id: "codex", state: bus.stateOf("codex") }] });
