@@ -1,3 +1,4 @@
+import { contextHeadroom, type ContextAdmission } from "./context-window.ts";
 import { queueBackpressure, type QueueBackpressureCode, type QueueBackpressurePolicy, type QueuePressure } from "./queue-backpressure.ts";
 import { selectReviewerPool, type ReviewerPoolSelection } from "./reviewer-pool.ts";
 import { ADAPTERS, definitionOf, kindOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
@@ -125,6 +126,10 @@ export interface InstanceRoutingOptions {
   queueBackpressure?: QueueBackpressurePolicy;
   /** Host-only explicit person/conductor nomination; a name or reservation alone grants no bypass. */
   queueOverride?: "owner" | "reviewer" | "both";
+  /** Fresh native session evidence supplied by the host; never read telemetry inside assign(). */
+  contextAdmission?: ContextAdmission;
+  /** Host-authorized explicit nomination or self-claim, never inferred from namedOwner or a reservation. */
+  contextOverride?: boolean;
   /** Host-proven person reservation: queue pressure holds this exact target instead of rerouting it. No bypass is granted. */
   queueReservedHold?: PeerId;
   /** Positive host verification of the live extra runtime's noncanonical execution root. */
@@ -305,7 +310,7 @@ export function detectSignals(task: Pick<Task, "title" | "detail" | "refs">, rou
 /** A peer's entry in a peer-indexed map: own keys only, so a peer named `constructor` is never an inherited Object member. */
 export const peerEntry = <T>(map: Readonly<Record<string, T>> | undefined, peer: string): T | undefined => (map && Object.hasOwn(map, peer) ? map[peer] : undefined);
 
-export type RoutingRefusalCode = QueueBackpressureCode | "instance" | "family" | "tests" | "spec" | "roster" | "pull-only" | "not-attached" | "excluded" | "owner-admission" | "offline" | "paused" | "failing" | "pii" | "policy";
+export type RoutingRefusalCode = QueueBackpressureCode | "context-headroom" | "instance" | "family" | "tests" | "spec" | "roster" | "pull-only" | "not-attached" | "excluded" | "owner-admission" | "offline" | "paused" | "failing" | "pii" | "policy";
 export interface RoutingRefusal { peer: PeerId; role: "owner" | "reviewer"; code: RoutingRefusalCode; reason: string }
 export interface Assignment {
   reviewSelection?: ReviewerPoolSelection;
@@ -514,6 +519,13 @@ export function assign(
     // I-2 (#525-3) is the last capability/independence gate, before queue-capacity admission. A former implementer never reviews its task,
     // including a named reviewer. Earlier offline, paused, failing and roster refusals retain their existing reason and outcome.
     if (role === "reviewer" && former.has(peer)) return deny("policy", "implemented this task");
+    if (role === "owner" && requiredRole !== "reviewer" && opts.contextAdmission) {
+      const decision = contextHeadroom(opts.contextAdmission.policy, adapter?.budget?.context ? peerEntry(opts.contextAdmission.peers, peer) : undefined, opts.now ?? NaN);
+      if (decision) {
+        trace.push(`  owner context ${peer}: ${decision.note}${opts.contextOverride ? "; explicit override" : ""}`);
+        if (decision.blocked && !opts.contextOverride) return deny("context-headroom", decision.note);
+      }
+    }
     if (opts.queueOverride !== role && opts.queueOverride !== "both") {
       const pressure = queueBackpressure(peer, opts.queueBackpressure, peerEntry(opts.queues, peer), opts.now ?? NaN);
       if (pressure) return deny(pressure.code, pressure.reason);

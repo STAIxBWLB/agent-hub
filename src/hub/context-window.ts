@@ -24,8 +24,8 @@ export interface ContextView {
   used: number | null;
   freshness: "fresh" | "stale" | "unknown";
 }
-export interface ContextConfig { gate: number; stale_min: number }
-export const DEFAULT_CONTEXT: ContextConfig = { gate: 0, stale_min: 30 };
+export interface ContextConfig { gate: number; stale_min: number; max_assignment_used?: number }
+export const DEFAULT_CONTEXT: ContextConfig = { gate: 0, stale_min: 30, max_assignment_used: 0 };
 export const unknownContext = (): ContextView => ({ source: null, measuredAt: null, tokens: null, window: null, used: null, freshness: "unknown" });
 /** Invalid/stale readings hide the value but never rearm a threshold already crossed. */
 export class ContextWindows {
@@ -46,6 +46,11 @@ export class ContextWindows {
     if (over && !crossed && this.crossing(peer, reading) === false) return;
     this.high.set(peer, { sessionId: reading.sessionId, crossed: over });
   }
+  /** Copy native evidence without changing the checkpoint latch or collecting new telemetry. */
+  admission(peer: string, currentSession: string | undefined, attached: boolean): ContextAdmissionSnapshot {
+    const reading = this.readings.get(peer);
+    return { ...(reading ? { reading: { ...reading } } : {}), sessionId: currentSession, attached };
+  }
   /** Reconsider a held crossing after release, using only the still-fresh reading and current native session. */
   retry(peer: string, currentSession: string | undefined): void {
     const reading = this.readings.get(peer);
@@ -58,4 +63,29 @@ export class ContextWindows {
     const valid = positive(r.measuredAt) && r.measuredAt <= this.now() && attached && !!currentSession && r.sessionId === currentSession && !stale;
     return { source: r.source, measuredAt: positive(r.measuredAt) ? r.measuredAt : null, tokens: valid ? r.tokens : null, window: r.window, used: valid ? r.used : null, freshness: !valid ? stale ? "stale" : "unknown" : r.used === null ? "unknown" : "fresh" };
   }
+}
+
+/** Host-only snapshot: session identifiers never enter routing traces or task history. */
+export interface ContextAdmissionSnapshot {
+  reading?: ContextReading;
+  sessionId?: string;
+  attached: boolean;
+}
+export interface ContextAdmissionPolicy { max_used: number; stale_min: number }
+export interface ContextAdmission {
+  policy: ContextAdmissionPolicy;
+  peers: Readonly<Record<string, ContextAdmissionSnapshot>>;
+}
+/** Pure new-work admission; unknown supplies no positive or negative context evidence. */
+export function contextHeadroom(policy: ContextAdmissionPolicy, snapshot: ContextAdmissionSnapshot | undefined, now: number): { blocked: boolean; note: string } | undefined {
+  if (!Number.isFinite(policy.max_used) || policy.max_used <= 0 || policy.max_used > 1) return undefined;
+  const r = snapshot?.reading;
+  if (!r || !snapshot.attached || !snapshot.sessionId || r.sessionId !== snapshot.sessionId
+      || !positive(now) || !positive(r.measuredAt) || r.measuredAt > now
+      || !positive(policy.stale_min) || now - r.measuredAt > policy.stale_min * 60_000
+      || r.used === null || !nonnegative(r.used) || r.used > 1) {
+    return { blocked: false, note: "context headroom: unknown (no fresh current-session reading)" };
+  }
+  const blocked = r.used >= policy.max_used;
+  return { blocked, note: `context headroom: used ${r.used} ${blocked ? "at or above" : "below"} max ${policy.max_used}` };
 }

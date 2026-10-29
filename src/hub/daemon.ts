@@ -1854,6 +1854,12 @@ export async function startDaemon(opts: DaemonOptions) {
   const tasks: Tasks = new Tasks({
     releaseWindow,
     capabilities: peerCapabilities, repository: memoryRepo,
+    contextAdmission: () => ({
+      policy: { max_used: config.context.max_assignment_used ?? 0, stale_min: config.context.stale_min },
+      peers: (config.context.max_assignment_used ?? 0) > 0 ? Object.fromEntries(bus.knownPeers().filter(peer => definitionOf(peer)?.budget?.context).map(peer => [peer,
+        contexts.admission(peer, contextSession(peer), bus.peers.has(peer) && ["idle", "busy", "paused"].includes(bus.stateOf(peer))),
+      ])) : {},
+    }),
     plannerBlocks: () => Object.fromEntries(bus.knownPeers().map(peer => {
       const codes: ("approvals" | "quota")[] = [];
       if ([...permissions.values()].some(request => request.peer === peer && request.expiresAt > Date.now())) codes.push("approvals");
