@@ -321,6 +321,11 @@ test("ambiguous exposed remote ids remain inert and show unknown rather than emp
   expect(f.a.chat.peers("other")).toEqual([]);
   for (const row of f.a.commands.statusView()!) expect(row.remotePeers).toBeNull();
   const env = newEnvelope("codex", "ambiguous route must stay inert", { to: ["codex@beta"] });
-  expect(f.a.bus.publish(env)).toEqual([]);
+  // Bus retains an explicit offline send locally; ambiguity must prevent a wire handoff.
+  expect(f.a.bus.publish(env)).toEqual(["codex@beta"]);
+  expect(f.a.bus.stateOf("codex@beta")).toBe("offline");
+  expect(f.a.bus.queued("codex@beta")).toBe(1);
+  expect(f.a.chat.metrics("work")?.outbound).toBe(0);
+  expect(await deliveries(f.a)).toEqual([]);
   expect(f.b.peer.got).toEqual([]);
 });
