@@ -280,7 +280,9 @@ test("a pre-claim capacity block retains plaintext while a later signed receipt 
   await f.event.wait(() => (f.control.blockedAttempts ?? 0) > 0, "application cap reported before claim");
   expect(receiver.pendingInbox("work")).toHaveLength(1); expect(f.b.peer.got.some(row => row.id === blocked.id)).toBe(false);
   const reply = newEnvelope("codex", "unrelated control receipt remains live", { to: ["user@alpha"] }); f.b.bus.publish(reply);
-  await f.event.wait(async () => (await outbound(f.b, reply.id))?.state === "failed_safe", "later matching signed receipt processed");
+  await f.event.wait(async () => (await outbound(f.b, reply.id))?.state === "completed (inbox)", "later matching signed inbox receipt processed");
+  expect(f.a.store!.listPersonInbox("work")).toHaveLength(1);
+  expect(f.a.peer.got.some(row => row.id === reply.id)).toBe(false);
   expect(receiver.pendingInbox("work")).toHaveLength(1);
   const attempts = f.control.blockedAttempts;
   await rows(f.b); await rows(f.b); expect(f.control.blockedAttempts).toBe(attempts); // Room status is a pure read.
