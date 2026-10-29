@@ -267,8 +267,8 @@ const consoleClassForms: readonly [string, readonly string[], PeerCommandAccess]
   ["jcode", [], "conductor"],
   ["agy", [], "conductor"],
   ["settings", ["set", "tasks.escalate_after", "4"], "conductor"],
-  ["settings", ["set", "tasks.queue_backpressure.max_queued", "10"], "conductor"],
-  ["settings", ["set", "tasks.queue_backpressure.max_oldest_s", "60"], "conductor"],
+  ["settings", ["set", "tasks.queue_backpressure.max_queued", "10"], "console"], // money: limits automatic offers (queue-backpressure-config test)
+  ["settings", ["set", "tasks.queue_backpressure.max_oldest_s", "60"], "console"],
   ["settings", ["set", "tasks.wip_limits.codex", "2"], "console"],
   ["settings", ["set", "tasks.auto_pull", "true"], "console"],
   ["settings", ["set", "permission_modes.codex", "ask"], "console"],

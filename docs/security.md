@@ -361,7 +361,7 @@ the start mode a person set (it cannot choose the mode) and place its own
 delivery holds. Through the `ahub` CLI under its own peer identity it may also
 run the closed operational family of #812 and #933: `roster add|remove`, `stop <peer>`,
 `queue show|resolve|discard`, `doctor --orphans --kill`, `logs`,
-`export`, `settings set` on fifteen named live keys, `board import`, `intake approve`,
+`export`, `settings set` on thirteen named live keys, `board import`, `intake approve`,
 `schedule run|pause|resume`, `research backfill`, `bench run`, `source add`, `upgrade --yes`,
 starting a launcher-only peer the conductor may start (Jcode), and, until amem records an agent actor,
 `memory promote|demote|forget|supersede|rebuild|machine --label` and `goal` changes (`take --force` stays the person's).

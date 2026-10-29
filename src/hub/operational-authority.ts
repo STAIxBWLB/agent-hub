@@ -3,14 +3,14 @@ import type { SettingDef } from "./settings.ts";
 /**
  * Existing live registry rows only. A new registry key never inherits conductor authority from a prefix.
  * #933: every live config key outside the person's group. The registry's groups cannot tell spending from operations
- * (`tasks.wip_limits.*` and `tasks.auto_pull` decide how much work the hub hands out unattended, and an agent never turns
- * auto pull on), and Permissions, Roles and Start are trust or not live, so the list stays explicit.
+ * (`tasks.wip_limits.*`, `tasks.auto_pull` and `tasks.queue_backpressure.*` decide how much work the hub hands out unattended,
+ * and an agent never turns auto pull on), and Permissions, Roles and Start are trust or not live, so the list stays explicit.
  */
 export const CONDUCTOR_SETTING_KEYS = [
   "task_sweep.enabled", "task_sweep.auto_reassign", "task_sweep.no_writes_turns", "task_sweep.interval_s",
   "task_sweep.unaccepted_min", "task_sweep.idle_min", "task_sweep.review_min", "task_sweep.ready_min", "task_sweep.ladder_min",
   "snapshots.enabled", "research.enabled", "approvals.notify",
-  "tasks.escalate_after", "tasks.queue_backpressure.max_queued", "tasks.queue_backpressure.max_oldest_s",
+  "tasks.escalate_after",
 ] as const;
 const settingKeys: ReadonlySet<string> = new Set(CONDUCTOR_SETTING_KEYS);
 export const operationalSettingKey = (value: unknown): value is string => typeof value === "string" && settingKeys.has(value);
