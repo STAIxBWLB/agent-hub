@@ -75,6 +75,9 @@ if [ -n "$shard" ]; then
   warm_git=${AHUB_CHECK_WARM_GIT:-/usr/bin/git}
   if [ -x "$warm_git" ]; then "$warm_git" --version >/dev/null 2>&1 || true; fi
 fi
+# The shard is this script's own business and is already in $shard and test_args: the test runner and everything it spawns must not inherit it. A test that runs a scratch check.sh
+# (test/check-lock.test.ts copies process.env) would otherwise skip the shard-1-only steps it expects, and fail in any shard but 1 (a rebalance of the timings would turn the macOS gate red).
+unset AHUB_CHECK_SHARD
 
 tests=0
 # #610: the temp root is the OS per-user temp dir, never an inherited TMPDIR that may sit inside an agent's home.

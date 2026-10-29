@@ -140,11 +140,12 @@ function runGate(env: Record<string, string>, ...args: string[]) {
     writeFileSync(join(repo, "scripts/record-test-process.mjs"), "");
     writeFileSync(join(bin, "warm-git"), `#!/bin/sh\necho "warm-git $*" >> ${JSON.stringify(log)}\nexit ${env.WARM_GIT_EXIT ?? "0"}\n`, { mode: 0o755 });
     // the fake bun: logs `bun <args>`; a `test` run prints one result line on stderr, which check.sh routes through its progress filter
-    writeFileSync(join(bin, "bun"), `#!/bin/sh\necho "bun $*" >> ${JSON.stringify(log)}\ncase "$1" in test) echo "(pass) fake [1ms]" >&2 ;; esac\nexit 0\n`, { mode: 0o755 });
+    writeFileSync(join(bin, "bun"), `#!/bin/sh\necho "bun $*" >> ${JSON.stringify(log)}\ncase "$1" in test) echo "bun-test-sees AHUB_CHECK_SHARD=\${AHUB_CHECK_SHARD-unset}" >> ${JSON.stringify(log)}; echo "(pass) fake [1ms]" >&2 ;; esac\nexit 0\n`, { mode: 0o755 });
     expect(Bun.spawnSync(["git", "init", "-q"], { cwd: repo }).exitCode).toBe(0);
     const run = Bun.spawnSync(["bash", "scripts/check.sh", ...args], { cwd: repo, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, AHUB_CHECK_LOCK_WAIT_S: "0", AHUB_CHECK_SHARD: "", AHUB_CHECK_HANG_S: "60", AHUB_CHECK_WARM_GIT: join(bin, "warm-git"), ...env } });
-    const steps = (() => { try { return readFileSync(log, "utf8").split("\n").filter(Boolean); } catch { return [] as string[]; } })();
-    return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString(), steps };
+    const all = (() => { try { return readFileSync(log, "utf8").split("\n").filter(Boolean); } catch { return [] as string[]; } })();
+    // `steps` are the commands run; `seen` are the observations the fake bun made about its environment (kept apart so the step-order tests stay about order)
+    return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString(), steps: all.filter(line => !line.startsWith("bun-test-sees")), seen: all.filter(line => line.startsWith("bun-test-sees")) };
   } finally { rmSync(repo, { recursive: true, force: true }); }
 }
 const ONCE = ["check-docs.mjs", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/build.mjs --check", "check-package.mjs"];
@@ -196,3 +197,24 @@ test("#548 a shard warms the system git once before its tests, and a failing or 
   expect(absent.steps.filter(step => step.startsWith("warm-git"))).toHaveLength(0);
   expect(runGate({}).steps.filter(step => step.startsWith("warm-git"))).toHaveLength(0);
 }, 20_000); // five real check.sh runs against stubs: the gate's own limit (scripts/check.sh --timeout 20000), not Bun's 5 s default
+
+// The shard belongs to check.sh: the test runner, and every scratch check.sh a test spawns with { ...process.env } (test/check-lock.test.ts), must not inherit it. Inherited, a shard other than 1
+// would skip the docs step that test expects and fail, and a rebalance of the timings would turn the macOS gate red (connector review of PR #954).
+test("#548 the shard is not exported to the test runner, in any shard, and the unsharded gate sees none either", () => {
+  for (const index of [1, 2, 3, 4]) {
+    const run = runGate({ AHUB_CHECK_SHARD: `${index}/4` });
+    expect(run.code, `shard ${index}`).toBe(0);
+    expect(run.seen, `shard ${index}`).toEqual(["bun-test-sees AHUB_CHECK_SHARD=unset"]);
+    expect(run.out.trim().split("\n").at(-1)).toBe(`check: OK (shard ${index}/4)`); // the shard is still known to check.sh itself
+  }
+  expect(runGate({}).seen).toEqual(["bun-test-sees AHUB_CHECK_SHARD=unset"]);
+}, 30_000);
+
+test("#548 a scratch check.sh spawned from a test in a sharded gate runs its own steps as an unsharded gate (the check-lock case)", () => {
+  // what a sharded run's test environment is: AHUB_CHECK_SHARD removed by check.sh. The scratch run below inherits that environment, so it behaves as an unsharded gate and its docs step runs.
+  const inherited = checkSh({ AHUB_CHECK_SHARD: "" });
+  expect(inherited.err).toContain("check-docs.mjs");
+  // and the contrary, the leak this fixes: the same scratch run with the shard still in its environment skips the docs step
+  const leaked = checkSh({ AHUB_CHECK_SHARD: "2/4" });
+  expect(leaked.err).not.toContain("check-docs.mjs");
+});
