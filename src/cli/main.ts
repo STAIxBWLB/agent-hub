@@ -1,5 +1,5 @@
-import { assertConductorOperationLocal, authorizeConductorOperation, authorizeConductorLaunch, issueConductorOperation, preflightConductorRecovery, retireConductorOperation } from "./conductor-recovery.ts";
 #!/usr/bin/env bun
+import { assertConductorOperationLocal, authorizeConductorOperation, authorizeConductorLaunch, issueConductorOperation, preflightConductorRecovery, retireConductorOperation } from "./conductor-recovery.ts";
 import { conductorLocalOperation, conductorOperation, OPERATIONAL_PERSON_GUIDANCE } from "../hub/operational-authority.ts";
 import { sayRecipients } from "./say-input.ts";
 import type { DeliverableRow } from "../hub/tasks.ts";
