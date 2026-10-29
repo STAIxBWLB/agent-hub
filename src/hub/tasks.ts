@@ -222,6 +222,8 @@ export interface TasksDeps {
   sweepHeld?: () => boolean;
   /** Consecutive changes_requested verdicts that move a task to another peer (`tasks.escalate_after`, #488). */
   escalateAfter?: () => number;
+  /** #489 H1: current host configuration, read at each planner-notice flush; no task/request override. */
+  groomFyiWindowMin?: () => number;
 }
 
 /** The `tasks.escalate_after` default (#488): the third consecutive changes_requested escalates. */
@@ -348,7 +350,7 @@ const RESCREEN_MAX = 10;
 /** #758: the planner "board changed" notice. Its body starts with this, so an unsettled copy is found (and replaced) by the prefix. */
 const GROOM_NOTICE_PREFIX = "The board changed";
 /** #758: a board change that needs no plan review is recorded at most once per planner in this window. */
-const GROOM_FYI_WINDOW_MS = 10 * 60_000;
+export const GROOM_FYI_WINDOW_MS = 10 * 60_000;
 
 /**
  * The task flow. Adapters and tools never touch the board: every change comes through here, where assignment,
@@ -1456,11 +1458,13 @@ export class Tasks {
       scan.revision = revision;
     }
     const now = this.d.now?.() ?? Date.now();
+    const configuredFyiMin = this.d.groomFyiWindowMin?.();
+    const fyiWindowMs = configuredFyiMin === undefined ? GROOM_FYI_WINDOW_MS : configuredFyiMin * 60_000;
     for (const peer of planners) {
       const told = scan.sent.get(peer), pending = scan.pending.get(peer);
       const review = told === undefined || pending?.review === true;
       if (!review && !pending?.other) continue;
-      if (!review && now - told!.fyiAt < GROOM_FYI_WINDOW_MS) { scan.pending.delete(peer); continue; }
+      if (!review && now - told!.fyiAt < fyiWindowMs) { scan.pending.delete(peer); continue; }
       this.releaseNotice(`could not notify planner ${peer} about grooming`, () => {
         if (review) this.sendGroomNotice(peer, revision);
         else this.d.bus.publish(newEnvelope(HUB, `${GROOM_NOTICE_PREFIX} (revision ${revision}): state moves, reviews or assignments only. No plan review is needed.`, { to: [peer], kind: "task", priority: "fyi" }));

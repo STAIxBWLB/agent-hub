@@ -6284,3 +6284,21 @@ Plan of record: ai-workspace#60 decision 8. `classifyPeerCommand` (`src/cli/iden
 - **Settings.** The conductor's keys are `CONDUCTOR_SETTING_KEYS` plus `tasks.escalate_after`. `tasks.wip_limits.*`, `tasks.auto_pull` and `tasks.queue_backpressure.*` stay person-only because they decide how much work the hub hands out unattended; the routing-store keys (`routing.classes.*.peers`, `escalate_to`, `route`, `pi_backend`, `routing.stay_switch`) stay person-only because they decide who gets work.
 - **The conductor** runs `board import`, `intake approve`, `schedule run|pause|resume` and `goal link` through their own daemon request, which calls `admitOperational` (role recheck, one `agent_cli` row) before Tasks sees it; Tasks admits the person or the admitted conductor (`TasksDeps.operational`) and records the conductor as actor. `research backfill`, `bench run` (its tasks proposed as the conductor) and `source add` run in the CLI, so the `admit` handshake is their one audit row, sent only after the CLI has checked their arguments. A native launcher with `cli.authority: "person"` starts through `hub_peer_start`, which needs `conductorStartable`.
 - **Any agent, on its own task:** `task cancel` through the unchanged `Tasks.cancel` rule of `hub_task_cancel`; `task role` when it owns the task and the task is not in review; `task label` when it owns the task (`task_label_check`), with `by` on the research record, where a person's label for the same record always wins and an agent's counts only without one; `ahub deliverables` filtered by `taskShowAllowed`, the rule `hub_task_show` uses, before any file is read.
+
+## Operational constants settings mechanism (issue #489 H1)
+
+H0-classified operational numbers use fixed metadata in
+`src/hub/operational-settings.ts`, consumed by the existing closed configuration
+schema, `configApply`, shared settings rows and `DEFAULT_CONFIG`. Registration
+is static and each schema leaf is explicit; writes, reload authorization,
+inheritance and undo retain their existing paths. No new configuration file,
+environment knob or request-level override is added.
+
+The first conversion is `tasks.groom_fyi_window_min`: 1-1440 minutes, default 10,
+live at the next planner-notice flush. Its unset behavior is pinned to the
+independent pre-conversion `GROOM_FYI_WINDOW_MS = 10 * 60_000`. Only state-change
+FYI coalescing changes; initial/planning/dependency notices, ownership and
+sessions do not. A new row never grants conductor permission automatically.
+Safety floors and contract constants are not converted by H1. A later exposed
+safety floor must allow tightening only in schema bounds and have its own test;
+wire/storage/protocol contracts remain constants.

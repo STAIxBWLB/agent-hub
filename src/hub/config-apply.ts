@@ -1,3 +1,4 @@
+import { operationalNumber, OPERATIONAL_NUMBERS } from "./operational-settings.ts";
 import { QUEUE_BACKPRESSURE_LIMITS } from "./queue-backpressure.ts";
 import { operationalSettingKey } from "./operational-authority.ts";
 import { remoteRunnerConfig } from "./check-runner.ts";
@@ -123,6 +124,24 @@ const text: Check = (v, k) => { if (typeof v !== "string" || v.length > 16_384 |
 const number = (min = 0, max = Number.MAX_SAFE_INTEGER, integer = false): Check => (v, k) => {
   if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max || integer && !Number.isSafeInteger(v)) fail(k, "number outside bounds");
 };
+/** Reuse the existing numeric schema validator with the operational row's one set of bounds. */
+const operationalNumberCheck = (key: string): Check => {
+  const def = operationalNumber(key);
+  if (!def) return fail(key, "unknown operational setting");
+  return number(def.min, def.max, def.type === "integer");
+};
+/** Startup and reload share the same fixed descriptors and numeric schema checks. */
+export function validateOperationalConfig(raw: unknown): void {
+  for (const def of OPERATIONAL_NUMBERS) {
+    let value: unknown = raw;
+    for (const part of def.path) {
+      if (value === undefined) break;
+      if (!value || typeof value !== "object" || Array.isArray(value)) return fail(def.key, "parent must be an object");
+      value = Object.hasOwn(value, part) ? (value as Record<string, unknown>)[part] : undefined;
+    }
+    if (value !== undefined) operationalNumberCheck(def.key)(value, def.key);
+  }
+}
 const words = (values: readonly string[]): Check => (v, k) => { if (typeof v !== "string" || !values.includes(v)) fail(k, "unknown choice"); };
 const strings: Check = (v, k) => { if (!Array.isArray(v) || v.length > 1024) return fail(k, "must be a bounded string list"); for (const x of v) text(x, k); };
 const argv: Check = (v, k) => { strings(v, k); if (!(v as string[]).length || (v as string[]).some(x => !x)) fail(k, "must be a nonempty argv"); };
@@ -179,7 +198,7 @@ const schema: Record<string, Check> = {
   omniroute: block({ urls: strings, api_key_file: text, access_hosts: strings, cf_client_id_file: text, cf_client_secret_file: text }),
   mlx: block({ enabled: bool, provider: words(["legacy", "ollama"]), host: text, runtimeDir: text, modelPath: text, bin: text, port: number(1, 65535, true), model: text, sourceModel: text,
     contextWindow: number(1), maxInputTokens: number(1), maxTokens: number(1), maxConcurrency: number(1, 1024, true) }),
-  approvals: block({ timeout_s: timerSeconds, notify: bool }), tasks: block({ release_after_min: number(0), wip_limits: map(number(0, 32, true)), escalate_after: number(1, 10, true), auto_pull: bool, queue_backpressure: block({ max_queued: number(0, QUEUE_BACKPRESSURE_LIMITS.max_queued, true), max_oldest_s: number(0, QUEUE_BACKPRESSURE_LIMITS.max_oldest_s, true) }) }),
+  approvals: block({ timeout_s: timerSeconds, notify: bool }), tasks: block({ groom_fyi_window_min: operationalNumberCheck("tasks.groom_fyi_window_min"), release_after_min: number(0), wip_limits: map(number(0, 32, true)), escalate_after: number(1, 10, true), auto_pull: bool, queue_backpressure: block({ max_queued: number(0, QUEUE_BACKPRESSURE_LIMITS.max_queued, true), max_oldest_s: number(0, QUEUE_BACKPRESSURE_LIMITS.max_oldest_s, true) }) }),
   schedules: v => { schedulesConfig(v); },
   folder_triggers: v => { foldersConfig(v); },
   task_sweep: (v, k) => { block({ enabled: bool, auto_reassign: bool, no_writes_turns: number(0, Number.MAX_SAFE_INTEGER, true), interval_s: timerSeconds, unaccepted_min: timerMinutes, idle_min: timerMinutes, review_min: timerMinutes, ready_min: timerMinutes, ladder_min: timerMinutes })(v, k); taskSweepConfig(v); },
@@ -260,6 +279,8 @@ export function configApply(key: string, scopes: readonly ConfigIdentityScope[] 
   if (top === "routing" && !ADAPTERS.some(adapter => Object.keys(adapter.configuration?.restartReasons ?? {}).some(prefix => prefix.startsWith("routing.") && key.startsWith(prefix))) && key !== "routing") {
     return { applies: ["classes", "stay_switch", "signals", "constraints", "hub_routes", "max_switch_prefill_tokens"].includes(key.split(".")[1]!) ? "live" : "next use" };
   }
+  const operational = operationalNumber(key);
+  if (operational) return { applies: operational.applies, ...(operational.restartReason ? { reason: operational.restartReason } : {}) };
   if (nextMemory.has(key)) return { applies: "next use" };
   for (const [path, reason] of Object.entries(restart)) if (key === path || key.startsWith(`${path}.`)) return { applies: "restart", reason };
   if ([...live].some(path => key === path || key.startsWith(`${path}.`))) return { applies: "live" };

@@ -1944,9 +1944,38 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Switches | `task_sweep.enabled`, `.auto_reassign`, `.interval_s`, `.unaccepted_min`, `.idle_min`, `.review_min`, `.ready_min`, `.ladder_min`, `.no_writes_turns` | `config.local.json` | live; `.no_writes_turns` sets the turn threshold independently; other keys reschedule the sweep timer |
 | Routing | `tasks.wip_limits.<peer>` | `config.local.json` | live |
 | Routing | `tasks.escalate_after` (1-10, default 3: consecutive `changes_requested` before a task moves to the next `escalate_to` peer) | `config.local.json` | live; the next verdict uses it |
+| Routing | `tasks.groom_fyi_window_min` (1-1440 minutes, default 10) | `config.local.json` | live; the next planner-notice flush uses it; planning-change task notices are unchanged |
 | Switches | `tasks.auto_pull` (default off: pull the top explicitly reserved ready card when a planner slot frees) | `config.local.json` | live; the next freed planner slot uses it |
 | Routing | `tasks.queue_backpressure.max_queued` (0-10000), `.max_oldest_s` (0-604800); 0, the default, disables each ([backpressure](#queue-backpressure-on-automatic-task-offers-800)) | `config.local.json` | live |
 | Roles | `planner` (one or up to eight planner holders) | `config.local.json` | at once |
+
+### Operational numeric settings (#489 H1)
+
+Numeric operational conversions use the existing settings writer, loader and
+reload path. A fixed row in `src/hub/operational-settings.ts` supplies the key,
+unit, default, bounds, apply class and console/dashboard metadata. The closed
+`config-apply.ts` schema still names each leaf explicitly; there is no dynamic
+registration, extra configuration file, environment knob or per-call override.
+`configApply` and the UI row consume the same metadata. The default enters the
+existing `DEFAULT_CONFIG`; unset therefore keeps the previous value.
+
+The worked H0 conversion is `tasks.groom_fyi_window_min`, the spacing between
+state-only planner board-update FYIs. Its range is 1-1440 minutes and its
+default is the existing 10 minutes. A settings-session or terminal change takes
+effect at the next notice flush, without restarting a peer or altering task
+ownership. It does not delay new planning/dependency task notices. Removing a
+local value inherits the shared value or default through the ordinary settings
+undo/write path. This new key grants no conductor authority.
+
+For a later operational group, add its metadata row, exact schema leaf,
+default and runtime config read, then its settings-table entry and independent
+pin against the original constant. Test schema/UI bounds and apply-class parity,
+inherit/undo and the real runtime boundary. H0 safety floors and contract
+constants stay outside this table. Exposing a floor requires schema bounds that
+permit tightening only, tested for that floor; UI `floor` metadata alone does
+not enforce a safety ceiling. This H1 example changes no safety floor, protocol,
+wire format or storage contract. The remaining H0 conversions belong to later
+area PRs.
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
   the machine-local files (`ahub init` ignores both in git). The shared
