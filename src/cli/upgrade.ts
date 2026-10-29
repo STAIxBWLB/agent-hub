@@ -620,12 +620,12 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
   try {
     op = readOperation<RecoveryOperation>(id, home);
     validateReceipt(id, op);
-    if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, "run");
     if (op.phase === "completed" || op.phase === "cancelled") {
       if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
       releaseRunner();
       return op;
     }
+    if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, "run");
     if (driver.conductorPeer ?? driver.liveTestPeer) {
       appendRecoveryDelegation(op, { peer: (driver.conductorPeer ?? driver.liveTestPeer)!, command: "recovery-run" }, driver.now());
       writeOperation(id, op, home);
@@ -988,11 +988,11 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
     // stale pending/prepared receipt after another runner advanced it.
     op = readOperation<RecoveryOperation>(id, home);
     validateReceipt(id, op, true);
-    if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, "abort");
     if (op.phase === "completed" || op.phase === "cancelled") {
       if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
       return;
     }
+    if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, "abort");
     if (driver.conductorPeer ?? driver.liveTestPeer) {
       appendRecoveryDelegation(op, { peer: (driver.conductorPeer ?? driver.liveTestPeer)!, command: "recovery abort" }, driver.now());
       writeOperation(id, op, home);

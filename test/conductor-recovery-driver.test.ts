@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { abortRecovery, createOperation, disposeRecovery, guardedRecoveryDriver, planFingerprint, reattachRecovery, runRecovery, type Inspection, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
-import { operationPath, readOperation, recoveryLock, releaseRecoveryLock } from "../src/hub/recovery-store.ts";
+import { operationPath, readOperation, recoveryLock, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
 
 const homes: string[] = [], root = resolve(import.meta.dir, "..");
 afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); });
@@ -114,4 +114,17 @@ test("a host-selected operation ID is validated before creating its receipt or l
   releaseRecoveryLock(id, f.home);
   expect(() => createOperation(f.plan, root, f.home, undefined, "../invalid")).toThrow("invalid recovery operation ID");
   expect(recoveryLock(f.home)).toBeUndefined();
+});
+
+test("a concurrent terminal receipt releases the contender lock before checking a retired grant", async () => {
+  for (const action of ["run", "abort"] as const) {
+    const f = fixture(); let checks = 0;
+    Object.assign(f.driver, { conductorPeer: "codex", authorize: async () => {
+      if (++checks > 1) throw new Error("the winning runner retired this grant");
+      writeOperation(f.op.id, { ...f.op, phase: action === "run" ? "completed" : "cancelled", step: "completed" }, f.home);
+    } });
+    const completed = await (action === "run" ? runRecovery(f.op.id, f.driver, f.home) : abortRecovery(f.op.id, f.driver, f.home)).then(() => true, () => false);
+    expect(completed).toBe(true);
+    expect(checks).toBe(1); expect(f.calls).toEqual([]); expect(recoveryLock(f.home)).toBeUndefined();
+  }
 });
