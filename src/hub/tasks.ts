@@ -2755,6 +2755,8 @@ export class Tasks {
     if (raw === undefined) throw new PreEffectToolRefusal("name a catalog role id or explicit null to clear it");
     const task = this.need(id, false, true);
     if (by !== USER && task.owner !== by) throw new PreEffectToolRefusal(`task #${task.id} is not yours: an agent changes the catalog role of its own task only`);
+    // #933: under review the role is what the reviewer reviews against; only the person changes it then.
+    if (by !== USER && task.state === "in_review") throw new PreEffectToolRefusal(`task #${task.id} is in review: only the person changes its catalog role until the verdict`);
     if (isClosedTaskState(task.state)) throw new PreEffectToolRefusal("a closed task's role is historical; propose new work instead");
     let selected;
     try { selected = taskRole(raw === null ? undefined : raw, task.class, this.d.catalog ?? loadRoleCatalog(this.d.cwd)); }

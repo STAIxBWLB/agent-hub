@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { readEvents, type StampedEvent } from "../src/hub/events.ts";
+import type { LabelRecord } from "../src/hub/research.ts";
 import { appendRecords, CSV_COLUMNS, formatResearch, labelTarget, projectKey, readStore, readStores, RESEARCH_SCHEMA, researchFile, researchReport, taskRecords, toCsv, type TaskRecord } from "../src/hub/research.ts";
 import { newEnvelope, USER } from "../src/hub/envelope.ts";
 import { classifyPeerCommand as cliClass } from "../src/cli/identity.ts";
@@ -346,4 +347,23 @@ test("unpulled backlog generations cannot contaminate a reused normal proposal (
   expect(records[0]!.pii).toBe(false);expect(records[0]!.role).toBe("new-role");
   expect(records[0]!.activeMs).toBe(0);expect(records[0]!.owners).not.toContain("local");
   expect(records[0]!.createdAt).toBe(events[2]!.at);
+});
+
+test("#933: a person's label wins over the owner agent's for the same record, in either order, in the rates, by owner and in the CSV", () => {
+  const [record] = taskRecords([task(1, "proposed", "proposed"), task(1, "accepted", "in_progress", { owner: "codex" }), task(1, "done", "approved", { owner: "codex" })], "p", writer);
+  const label = (value: "ok" | "regressed", at: string, by?: string): LabelRecord => ({ schema: RESEARCH_SCHEMA, kind: "label" as const, project: record!.project, task: 1, createdAt: record!.createdAt!, label: value, at, ...(by ? { by } : {}) });
+  for (const order of [[label("regressed", "2026-10-01T00:00:00Z"), label("ok", "2026-10-02T00:00:00Z", "codex")], [label("ok", "2026-10-01T00:00:00Z", "codex"), label("regressed", "2026-10-02T00:00:00Z")]]) {
+    const stored = [record!, ...order];
+    const report = researchReport(stored);
+    expect(report.overall).toMatchObject({ tasks: 1, failedByLabel: 1, successRate: 0 });
+    expect(report.byOwner.codex).toMatchObject({ tasks: 1, failedByLabel: 1, successRate: 0 });
+    const [header, row] = toCsv(stored).trim().split("\n");
+    const cells = Object.fromEntries(row!.split(",").map((v, i) => [header!.split(",")[i], v]));
+    expect(cells).toMatchObject({ label: "regressed", labelBy: "" });
+  }
+  // With no person label, the agent's own label counts and the CSV names it.
+  const agentOnly = [record!, label("regressed", "2026-10-01T00:00:00Z", "codex"), label("ok", "2026-10-02T00:00:00Z", "codex")];
+  expect(researchReport(agentOnly).overall).toMatchObject({ failedByLabel: 0, successRate: 1 });
+  const [header, row] = toCsv(agentOnly).trim().split("\n");
+  expect(Object.fromEntries(row!.split(",").map((v, i) => [header!.split(",")[i], v]))).toMatchObject({ label: "ok", labelBy: "codex" });
 });

@@ -34,13 +34,14 @@ export const conductorLocalAction = (value:unknown): value is ConductorLocalActi
 export const CONDUCTOR_DAEMON_OPERATIONS = ["roster add","roster remove","stop","queue show","queue resolve","queue discard","settings set","doctor orphans kill","logs","export",
   "board import","intake approve","schedule run","schedule pause","schedule resume","goal link"] as const;
 /**
- * #933: forms whose effect runs in the CLI process itself (local files, the memory store, a recovery operation). The daemon admits and audits
- * them once at the handshake (`admit`). ponytail: memory and goal changes are written by amem without an agent actor until agent-mem ships
- * attribution (`actor: agent`); then they become Allowed, screened like the read forms, and leave this list.
+ * #933: forms whose effect runs in the CLI process itself (local files). The daemon admits and audits them once at the handshake (`admit`),
+ * after the CLI has validated their arguments. `upgrade --yes` is not here: its detached recovery runner inherits the agent markers and the
+ * plan covers every running project, so it stays the person's with restart (#900).
+ * ponytail: `memory promote|demote|forget|supersede|rebuild|machine --label` and the local `goal` changes stay the person's because the pinned
+ * amem (0.12.0) records their actor as "user"; once the hub passes an agent actor through agent-mem 0.13.0 attribution (agent-mem#143, after
+ * the pin bump in #958) they can join this list. `goal link` is a daemon form: the hub records the peer as its actor.
  */
-export const CONDUCTOR_LOCAL_OPERATIONS = ["research backfill","bench run","source add","upgrade",
-  "memory promote","memory demote","memory forget","memory supersede","memory rebuild","memory machine",
-  "goal new","goal state","goal done","goal take"] as const;
+export const CONDUCTOR_LOCAL_OPERATIONS = ["research backfill","bench run","source add"] as const;
 export type ConductorOperation = typeof CONDUCTOR_DAEMON_OPERATIONS[number] | typeof CONDUCTOR_LOCAL_OPERATIONS[number];
 export const conductorLocalOperation = (value:unknown): boolean => typeof value==="string" && (CONDUCTOR_LOCAL_OPERATIONS as readonly string[]).includes(value);
 
@@ -54,18 +55,14 @@ export function conductorOperation(command:string,args:readonly string[]): Condu
   if (command==="doctor" && args.includes("--orphans") && args.includes("--kill")) return "doctor orphans kill";
   if (command==="logs" || command==="export") return command;
   if (command==="settings" && sub==="set" && operationalSettingKey(words[1])) return "settings set";
-  // #933: operational forms the person no longer has to run. Restart and task unassign stay with #900.
+  // #933: operational forms the person no longer has to run. Restart, upgrade --yes and task unassign stay with #900.
   if (command==="board" && args[0]==="import") return "board import";
   if (command==="research" && args[0]==="backfill") return "research backfill";
   if (command==="bench" && args.find(arg=>arg!=="--json")==="run") return "bench run";
-  if (command==="upgrade" && args.includes("--yes") && !args.includes("--dry-run")) return "upgrade";
   if (command==="source" && sub==="add") return "source add";
   if (command==="intake" && sub==="approve" && words.length===2) return "intake approve";
   if (command==="schedule" && (sub==="run" || sub==="pause" || sub==="resume")) return `schedule ${sub}`;
-  const memorySub=args.find(arg=>arg!=="--json");
-  if (command==="memory" && (["promote","demote","forget","supersede","rebuild"].includes(memorySub??"") || memorySub==="machine" && args.includes("--label"))) return `memory ${memorySub}` as ConductorOperation;
-  // `goal take --force` overrides another holder's claim: that settlement stays the person's.
-  if (command==="goal" && (["new","state","done","link"].includes(memorySub??"") || memorySub==="take" && !args.includes("--force"))) return `goal ${memorySub}` as ConductorOperation;
+  if (command==="goal" && args.find(arg=>arg!=="--json")==="link") return "goal link";
   return undefined;
 }
 

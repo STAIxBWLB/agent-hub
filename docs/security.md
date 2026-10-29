@@ -362,9 +362,10 @@ delivery holds. Through the `ahub` CLI under its own peer identity it may also
 run the closed operational family of #812 and #933: `roster add|remove`, `stop <peer>`,
 `queue show|resolve|discard`, `doctor --orphans --kill`, `logs`,
 `export`, `settings set` on thirteen named live keys, `board import`, `intake approve`,
-`schedule run|pause|resume`, `research backfill`, `bench run`, `source add`, `upgrade --yes`,
-starting a launcher-only peer the conductor may start (Jcode), and, until amem records an agent actor,
-`memory promote|demote|forget|supersede|rebuild|machine --label` and `goal` changes (`take --force` stays the person's).
+`schedule run|pause|resume`, `research backfill`, `bench run`, `source add`, `goal link`
+and starting a launcher-only peer the conductor may start (Jcode). Memory changes and the other
+`goal` changes stay the person's while amem records their actor as the user, and `upgrade --yes`
+stays the person's with restart (#900).
 Each is admitted by the
 daemon after a recheck of the conductor role, and bounded; the effectful ones and
 the history reads are audited as a closed label with no argument text (`queue show`

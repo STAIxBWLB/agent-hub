@@ -150,7 +150,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (command === "agents") return args.every(arg => arg === "--json") ? "allowed" : "console";
   // #247: reading the research measures and records is harmless (ids and counts only); #933 made backfill a conductor operation (above).
   if (command === "research") return args[0] === "backfill" ? "console" : "allowed";
-  // #258: reading hub memory is harmless; #933 made promote, demote, forget, supersede, rebuild and machine --label conductor operations (above) until amem attributes agents.
+  // #258: reading hub memory is harmless; promote, demote, forget, supersede, rebuild and goal changes stay a person's (#933: amem records their actor as "user"; goal link is a conductor operation, above).
   if (command === "memory") { const sub = args.find((arg) => arg !== "--json"); return sub === undefined || sub.startsWith("--") || ["list", "search", "show", "suggestions"].includes(sub) || (sub === "machine" && !args.includes("--label")) ? "allowed" : "console"; } // graph labels are unscreened note text: a person's
   if (command === "goal") { const sub = args.find((arg) => arg !== "--json"); return sub === undefined || sub.startsWith("--") || ["list", "show"].includes(sub) ? "allowed" : "console"; }
   // #251: a run resets the bench project's tree and proposes work (#933: a conductor operation, above); reading results is harmless.

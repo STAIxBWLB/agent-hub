@@ -75,7 +75,9 @@ any more: it is the store's only record with that id, or, when there are several
 `--created` names (the `createdAt` that `ahub research export` shows; a record without one takes no label). A task with no record yet (not approved, its record still waiting for
 the turns that approved it, or approved while research was off) is refused; labels mark approved tasks only. A person
 labels any task; an agent labels only a task it owns, the hub checks that by role, and its record carries `by: <peer>`
-(#933). Only while research is on. The latest label wins.
+(#933). Only while research is on. A person's latest label for a record always wins, whatever an agent labelled
+after it; an agent's latest label counts only where the person never labelled that record. The CSV's `labelBy` column
+names the agent (empty for the person).
 
 ## Measures
 

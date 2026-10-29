@@ -293,15 +293,26 @@ export function formatResearch(r: ResearchReport): string[] {
   return [head, row("all approved tasks", r.overall), ...section("by class", r.byClass), ...section("by owner", r.byOwner), ...section("by model", r.byModel), ...section("by project", r.byProject), ...(Object.keys(r.byMemoryBrief).some((k) => k !== "no brief recorded") ? section("by memory brief", r.byMemoryBrief) : [])];
 }
 
-/** Each approved task once, its last record, and every task's latest label: what both reports count. */
-function latestRecords(records: ResearchRecord[], since: number): { all: TaskRecord[]; labels: Map<string, Label> } {
-  const latest = new Map<string, TaskRecord>(), labels = new Map<string, Label>();
+/**
+ * The label each record counts with: the person's latest label, whatever came after it; an agent's (#933, `by` set) only when the person
+ * never labelled that record, the latest of them then. An agent's verdict on its own task never replaces the person's.
+ */
+function effectiveLabels(records: readonly ResearchRecord[]): Map<string, LabelRecord> {
+  const labels = new Map<string, LabelRecord>();
   for (const r of records) {
-    const key = recordKey(r);
-    if (r.kind === "label") { labels.set(key, r.label); continue; }
-    if (Date.parse(r.approvedAt) >= since) latest.set(key, r);
+    if (r.kind !== "label") continue;
+    const key = recordKey(r), held = labels.get(key);
+    if (r.by === undefined || held === undefined || held.by !== undefined) labels.set(key, r);
   }
-  return { all: [...latest.values()], labels };
+  return labels;
+}
+const labelValues = (labels: Map<string, LabelRecord>): Map<string, Label> => new Map([...labels].map(([key, r]) => [key, r.label]));
+
+/** Each approved task once, its last record, and every task's effective label: what both reports count. */
+function latestRecords(records: ResearchRecord[], since: number): { all: TaskRecord[]; labels: Map<string, Label> } {
+  const latest = new Map<string, TaskRecord>();
+  for (const r of records) if (r.kind === "task" && Date.parse(r.approvedAt) >= since) latest.set(recordKey(r), r);
+  return { all: [...latest.values()], labels: labelValues(effectiveLabels(records)) };
 }
 
 /** The peers that worked on a task: every peer with an attributed event, else (older records) owners, reviewer and token peers. */
@@ -364,15 +375,14 @@ export function formatAddons(rows: AddonComparison[]): string[] {
 
 export const CSV_COLUMNS = ["project", "task", "class", "pii", "outcome", "createdAt", "startedAt", "approvedAt", "wallMs", "activeMs", "owners",
   "reviewer", "reviewRounds", "changesRequested", "checkPassed", "checkFailed", "dones", "reassignments", "firstPass", "stuck", "overlaps", "conflicts",
-  "testsPass", "testsFail", "tokens", "turns", "filesChanged", "models", "label", "writerVersion", "writerSource"] as const;
-/** Task records as CSV with a header row, one row per record, each with the task's latest label; JSONL has every field. */
+  "testsPass", "testsFail", "tokens", "turns", "filesChanged", "models", "label", "labelBy", "writerVersion", "writerSource"] as const;
+/** Task records as CSV with a header row, one row per record, each with its effective label and who gave it (empty: the person); JSONL has every field. */
 export function toCsv(records: ResearchRecord[]): string {
-  const labels = new Map<string, Label>();
-  for (const r of records) if (r.kind === "label") labels.set(recordKey(r), r.label);
+  const labels = effectiveLabels(records);
   const cell = (v: unknown) => { const s = v === null || v === undefined ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const rows = records.filter((r): r is TaskRecord => r.kind === "task").map((r) => [r.project, r.task, r.class, r.pii, r.outcome, r.createdAt, r.startedAt,
     r.approvedAt, r.wallMs, r.activeMs, r.owners.join(" "), r.reviewer, r.reviewRounds, r.changesRequested, r.checkPassed, r.checkFailed, r.dones,
     r.reassignments, r.firstPass, r.stuck, r.overlaps, r.conflicts, r.tests.pass, r.tests.fail, r.tokens.total, r.turns, r.filesChanged, r.models.join(" "),
-    labels.get(recordKey(r)) ?? "", r.writer.version, r.writer.source].map(cell).join(","));
+    labels.get(recordKey(r))?.label ?? "", labels.get(recordKey(r))?.by ?? "", r.writer.version, r.writer.source].map(cell).join(","));
   return [CSV_COLUMNS.join(","), ...rows].join("\n") + "\n";
 }

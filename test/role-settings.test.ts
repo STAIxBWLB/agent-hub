@@ -62,6 +62,10 @@ test("agent shells and tools clients cannot mutate session or existing task role
   const other = await ControlClient.connect(f.state, { role: "tools", peer: "claude" }); cleanup.push(() => other.close());
   const refused = await other.request({ t: "task_catalog_role", id: 1, role: "backend-engineer" }); expect(refused.ok).toBe(false); expect(refused.error).toContain("not yours"); expect(board.get(1)!.role).toBeUndefined();
   expect((await f.tools.request({ t: "task_catalog_role", id: 1, role: "backend-engineer" })).ok).toBe(true); expect(board.get(1)!.role).toBe("backend-engineer");
+  // Under review only the person changes the role, whoever owns the task.
+  board.update(1, "codex", "done", { state: "in_review", reviewer: "user" });
+  const reviewing = await f.tools.request({ t: "task_catalog_role", id: 1, role: null }); expect(reviewing.ok).toBe(false); expect(reviewing.error).toContain("in review"); expect(board.get(1)!.role).toBe("backend-engineer");
+  board.update(1, "user", "changes requested", { state: "changes_requested" });
   // A PII context keeps even the owner out: its words may carry the private task's text.
   const pii = board.propose("user", { title: "private review", class: "implement", signals: ["pii_path"] }); board.update(pii.id, "user", "fixture reviewer", { reviewer: "codex" });
   expect((await f.tools.request({ t: "task_catalog_role", id: 1, role: null })).ok).toBe(false); expect(board.get(1)!.role).toBe("backend-engineer");

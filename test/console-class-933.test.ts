@@ -127,9 +127,19 @@ test("#933 AC2: conductor CLI forms run end to end with one daemon audit row and
   } finally { await f.close(); }
 }, 30000);
 
+test("#933: a local conductor form's usage error is refused before the admission, so it leaves no admitted row", async () => {
+  const f = await fixture(); try {
+    for (const [args, label] of [[["bench", "run", "--arm", "x"], "bench run"], [["research", "backfill", "--unknown"], "research backfill"], [["source", "add", "a", "b"], "source add"]] as [string[], string][]) {
+      const result = await cli(f.root, args);
+      expect(result.code, label).toBe(1); expect(result.stderr).toMatch(/usage|unknown argument/);
+      expect(f.admitted(label), label).toBe(0);
+    }
+  } finally { await f.close(); }
+}, 30000);
+
 test("#933 AC3: the person's forms are still refused in every agent shell, the conductor's included, with the unchanged cause line", async () => {
   const f = await fixture(); try {
-    for (const args of [["permission", "claude", "never-ask", "--yes"], ["budget", "set", "claude", "1"], ["agents", "trust", "codex-review", "0.165.0"], ["role", "assign", "claude", "backend-engineer"], ["task", "cancel", "1", "--reason", "x", "--as-user"], ["say", "--as-user", "hello"]]) {
+    for (const args of [["permission", "claude", "never-ask", "--yes"], ["budget", "set", "claude", "1"], ["agents", "trust", "codex-review", "0.165.0"], ["role", "assign", "claude", "backend-engineer"], ["task", "cancel", "1", "--reason", "x", "--as-user"], ["say", "--as-user", "hello"], ["upgrade", "--to", "1.2.3", "--yes"], ["memory", "forget", "x"], ["goal", "new", "a goal"]]) {
       expect(classifyPeerCommand(args[0]!, args.slice(1))).toBe("console");
       const result = await cli(f.root, args);
       expect(result.code, args.join(" ")).toBe(1);

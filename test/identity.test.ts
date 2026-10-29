@@ -160,7 +160,7 @@ const allowedForms: readonly [string, readonly string[], PeerCommandAccess][] = 
   ["upgrade", ["--to", "1.2.3", "--dry-run"], "allowed"],
   ["upgrade", [], "console"],
   ["upgrade", ["--dry-run", "--yes"], "console"],
-  ["upgrade", ["--yes"], "conductor"], // #933: applying an upgrade is the configured conductor's too (the interactive screens stay the person's)
+  ["upgrade", ["--yes"], "console"],
   ["restart", ["--dry-run"], "allowed"],
   ["restart", ["--dry-run", "--json", "--color=never"], "allowed"],
   ["restart", [], "console"],
@@ -261,7 +261,7 @@ const consoleClassForms: readonly [string, readonly string[], PeerCommandAccess]
   ["research", ["backfill"], "conductor"],
   ["bench", ["run", "suite.json", "--arm", "x"], "conductor"],
   ["board", ["import", "github", "--label", "ready"], "conductor"],
-  ["upgrade", ["--to", "1.2.3", "--yes"], "conductor"],
+  ["upgrade", ["--to", "1.2.3", "--yes"], "console"], // its recovery runner and every running project: with restart in #900
   ["upgrade", ["--to", "1.2.3", "--yes", "--dry-run"], "console"],
   ["upgrade", ["--dry-run"], "allowed"],
   ["jcode", [], "conductor"],
@@ -281,12 +281,13 @@ const consoleClassForms: readonly [string, readonly string[], PeerCommandAccess]
   ["schedule", ["pause", "nightly"], "conductor"],
   ["schedule", ["resume", "nightly"], "conductor"],
   ["schedule", ["list"], "console"],
-  ...["promote", "demote", "forget", "supersede", "rebuild"].map((sub): [string, string[], PeerCommandAccess] => ["memory", [sub, "x"], "conductor"]),
-  ["memory", ["machine", "--label", "office"], "conductor"],
+  // amem 0.12.0 records these as "user": they stay the person's until the hub passes an agent actor
+  ...["promote", "demote", "forget", "supersede", "rebuild"].map((sub): [string, string[], PeerCommandAccess] => ["memory", [sub, "x"], "console"]),
+  ["memory", ["machine", "--label", "office"], "console"],
   ["memory", ["sync"], "console"],
   ["memory", ["graph", "x"], "console"],
-  ...["new", "state", "done", "link"].map((sub): [string, string[], PeerCommandAccess] => ["goal", [sub, "x"], "conductor"]),
-  ["goal", ["take", "x"], "conductor"],
+  ...["new", "state", "done", "take"].map((sub): [string, string[], PeerCommandAccess] => ["goal", [sub, "x"], "console"]),
+  ["goal", ["link", "x", "1"], "conductor"], // the daemon records the peer as the link's actor
   ["goal", ["take", "x", "--force"], "console"],
   // any agent, as itself, on its own task (the daemon refuses another peer's)
   ["task", ["cancel", "1", "--reason", "obsolete"], "allowed"],

@@ -2083,11 +2083,11 @@
     },
     {
       "id": "github-import-person-cli",
-      "file": "src/hub/operational-authority.ts",
-      "search": "if (command===\"board\" && args[0]===\"import\") return \"board import\";",
-      "replacement": "if (false) return \"board import\";",
-      "testFile": "test/github-import-tasks.test.ts",
-      "testName": "GitHub intake persists dedupe and PII sources only through public projection (#263)"
+      "file": "src/hub/tasks.ts",
+      "search": "if (!this.personOrConductor(by)) throw new PreEffectToolRefusal(\"GitHub import is a person console command\");",
+      "replacement": "if (false) throw new PreEffectToolRefusal(\"GitHub import is a person console command\");",
+      "testFile": "test/console-class-933.test.ts",
+      "testName": "#933: Tasks records an admitted conductor as the actor of a GitHub import and refuses any other agent"
     },
     {
       "id": "split-plan-pii-floor",
