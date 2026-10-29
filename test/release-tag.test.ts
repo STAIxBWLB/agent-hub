@@ -100,38 +100,80 @@ test("a second run after the tag exists refuses (one shot), locally and on the r
   expect(refusalText(releaseTag(local.work, VERSION, { execute: true }, ports(consent)) as never)).toContain(`tag v${VERSION} already exists locally`);
 });
 
-test("every preflight refusal, each on its own: not main, dirty tree, squash merge, unmerged HEAD, version mismatches, stale stamps, missing report, TODO markers", () => {
+// Each refusal owns one scratch release and its own guard; the aggregate's 16 git-heavy fixtures exceeded 20 s on macOS.
+const preflight = (r: ReturnType<typeof released>, version = VERSION) => {
   const consent: Consent = { grant: true, calls: [] };
-  const preflight = (r: ReturnType<typeof released>, version = VERSION) => { const result = tagPreflight(r.work, version, ports(consent)); return result.ok ? "ok" : result.refusals.join(" | "); };
+  const result = tagPreflight(r.work, version, ports(consent));
+  return result.ok ? "ok" : result.refusals.join(" | ");
+};
 
+test("preflight accepts a prepared release", () => {
   expect(preflight(released())).toBe("ok");
+}, 20_000);
 
+test("preflight refuses a branch other than main", () => {
   const branch = released(); branch.git("checkout", "-qb", "elsewhere");
   expect(preflight(branch)).toContain("not main");
+}, 20_000);
 
+test("preflight refuses an untracked dirty tree", () => {
   const dirty = released(); writeFileSync(join(dirty.work, "stray.txt"), "x");
   expect(preflight(dirty)).toContain("working tree is not clean");
+}, 20_000);
+
+test("preflight refuses staged changes", () => {
   const staged = released(); writeFileSync(join(staged.work, "src/covered.ts"), "edited\n"); staged.git("add", ".");
   expect(preflight(staged)).toContain("working tree is not clean");
+}, 20_000);
 
+test("preflight refuses a squashed release", () => {
   const squash = released({ squash: true });
   expect(preflight(squash)).toContain("not the merge commit of the release/0.2.0 PR");
+}, 20_000);
 
+test("preflight refuses an unmerged and unpushed HEAD", () => {
   const unpushed = released(); unpushed.write("src/covered.ts", "later\n"); unpushed.git("add", "."); unpushed.git("commit", "-qm", "later");
   expect(preflight(unpushed)).toContain("not the merge commit");
   expect(preflight(unpushed)).toContain("not on origin/main");
+}, 20_000);
 
+test("preflight refuses a package version mismatch", () => {
   expect(preflight(released(), "0.3.0")).toContain("package.json at HEAD is 0.2.0, not 0.3.0");
+}, 20_000);
+
+test("preflight refuses a README version mismatch", () => {
   expect(preflight(released(), "0.3.0")).toContain("README.md Status line at HEAD is 0.2.0, not 0.3.0");
+}, 20_000);
+
+test("preflight refuses a missing requested CHANGELOG version", () => {
   expect(preflight(released(), "0.3.0")).toContain("CHANGELOG.md at HEAD has no 0.3.0 section");
+}, 20_000);
+
+test("preflight refuses a tag-prefixed version", () => {
   expect(preflight(released(), "v0.2.0")).toContain("not a release version");
+}, 20_000);
+
+test("preflight refuses a build-metadata version", () => {
   expect(preflight(released(), "0.2.0+build")).toContain("not a release version");
+}, 20_000);
 
+test("preflight refuses a missing release CHANGELOG section", () => {
   expect(preflight(released({ changelog: false }))).toContain("CHANGELOG.md at HEAD has no 0.2.0 section");
-  expect(preflight(released({ staleStamp: true }))).toContain("documentation stamps are not fresh at HEAD");
-  expect(preflight(released({ skipReport: true }))).toContain("expected one docs/verification/<date>-0.2.0.md at HEAD, found 0");
-  expect(preflight(released({ todo: true }))).toContain(`still has ${AGENT_TODO} markers`);
+}, 20_000);
 
+test("preflight refuses stale documentation stamps", () => {
+  expect(preflight(released({ staleStamp: true }))).toContain("documentation stamps are not fresh at HEAD");
+}, 20_000);
+
+test("preflight refuses a missing verification report", () => {
+  expect(preflight(released({ skipReport: true }))).toContain("expected one docs/verification/<date>-0.2.0.md at HEAD, found 0");
+}, 20_000);
+
+test("preflight refuses TODO markers in the verification report", () => {
+  expect(preflight(released({ todo: true }))).toContain(`still has ${AGENT_TODO} markers`);
+}, 20_000);
+
+test("preflight refuses an unreachable origin", () => {
   const unreachable = released(); unreachable.git("remote", "set-url", "origin", join(unreachable.dir, "does-not-exist.git"));
   expect(preflight(unreachable)).toContain("could not read origin/main");
 }, 20_000);
