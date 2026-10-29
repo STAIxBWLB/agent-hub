@@ -125,7 +125,7 @@ async function sendWire(f: Awaited<ReturnType<typeof mesh>>, message: Extract<Ro
   return f.a.lastChat!;
 }
 async function waitReceipt(f: Awaited<ReturnType<typeof mesh>>, captured: CapturedChat, reason: string) {
-  await f.a.signals.wait(() => f.a.context!.store.applicationReceipt("work", captured.digest)?.reason === reason, `receipt ${reason}`);
+  await f.a.signals.wait(() => { const value = f.a.context!.store.applicationReceipt("work", captured.digest); return value?.type === "receipt" && value.reason === reason; }, `receipt ${reason}`);
   return f.a.context!.store.applicationReceipt("work", captured.digest)!;
 }
 

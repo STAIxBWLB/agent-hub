@@ -24,7 +24,7 @@ test("person inbox parser accepts only the frozen list and exact local UUID acti
     expect(parseRoomCommand(["inbox", name])).toEqual({ op: "inbox", action: "list", input: { name }, json: false });
     expect(parseRoomCommand(["inbox", "--json", name])).toEqual({ op: "inbox", action: "list", input: { name }, json: true });
   }
-  for (const action of ["show", "done", "discard"]) expect(parseRoomCommand(["inbox", action, id])).toEqual({ op: "inbox", action, input: { id } });
+  for (const action of ["show", "done", "discard"] as const) expect(parseRoomCommand(["inbox", action, id])).toEqual({ op: "inbox", action, input: { id } });
 });
 
 test("person inbox parser refuses JSON actions, confirmations, paths, partial ids and extra operands before any request", async () => {
