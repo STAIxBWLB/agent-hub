@@ -7072,7 +7072,9 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL, features: DAEMON_FEATURES });
     }
-    if (stopping && msg.t !== "status" && msg.t !== "kill" && !(c.role === "console" && msg.t === "native_hook_launch" && msg.op === "end")) return void reply({ ok: false, error: "hub is stopping" });
+    const committedSourceProof = c.role === "tools" && msg.t === "recovery_authority" && msg.op === "verify" && recoveryCommitted
+      && msg.binding?.operationId === recoveryOperationId && msg.binding?.sourceInstanceId === instanceId;
+    if (stopping && !committedSourceProof && msg.t !== "status" && msg.t !== "kill" && !(c.role === "console" && msg.t === "native_hook_launch" && msg.op === "end")) return void reply({ ok: false, error: "hub is stopping" });
     if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });
     if (c.externalOwner && !currentExternalTools(c)) return void reply({ ok: false, error: "external instance launch or execution root changed" });
     if (c.toolsOwner && !currentImplementerTools(c)) return void reply({ ok: false, error: "Claude child generation or execution root changed" });
@@ -7366,6 +7368,7 @@ export async function startDaemon(opts: DaemonOptions) {
             if (msg.op !== "inspect" || msg.operationId !== undefined) {
               const raw = msg.authority as ConductorRecoveryBinding;
               if (!raw || raw.peer !== c.peer || raw.operationId !== msg.operationId || raw.projectRoot !== opts.cwd || raw.projectId !== projectId || raw.stateDir !== opts.stateDir) throw new RecoveryAuthorityError();
+              if (instanceId !== raw.sourceInstanceId && (restored?.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId || packageDigest(resolve(import.meta.dir, "../.."), { ownDependencies: true }) !== raw.targetDigest)) throw new RecoveryAuthorityError();
               const proof = authorizeConductorRecovery(opts.stateDir, raw, () => { current(); const value = captureRecoveryPolicy({ root: opts.cwd, id: projectId, stateDir: opts.stateDir }, c.peer!, loadConfig(opts.cwd)); return value.policyDigest === raw.policyDigest && value.boardDigest === raw.boardDigest; });
               recoveryCurrent = () => { current(); assertConductorRecovery(proof); };
             } else recoveryCurrent = current;

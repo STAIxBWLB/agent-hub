@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -12,6 +12,8 @@ import { realPath } from "../src/hub/project.ts";
 import { planFingerprint, type Inspection, type RecoveryPeer, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { packageDigest } from "../src/cli/recovery-package.ts";
 import { VERSION } from "../src/version.ts";
+import { LocalPeer } from "../src/adapters/local-worker.ts";
+import { OmniRoute } from "../src/omniroute/client.ts";
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 
 const PACKAGE_ROOT = realPath(resolve(import.meta.dir, ".."));
@@ -183,4 +185,84 @@ test("new private conductor context revokes a previously issued recovery proof w
     }
     f.noEffects();
   } finally { board.close(); await f.close(); }
+}, 20_000);
+
+class SnapshotLocal extends BasePeer {
+  constructor(readonly session: string, readonly stopping: Deferred, readonly releaseStop: Deferred) { super("local"); }
+  async start() { this.setState("idle"); }
+  async stop() { this.stopping.resolve(); await this.releaseStop.promise; this.clearWatchdog(); this.setState("offline"); }
+  async deliver() { throw new Error("paused source fixture never delivers a native turn"); }
+  recoveryMetadata(): Record<string, unknown> { return { launch: { kind: "local", model: "saved-recovery-model" }, sessionId: this.session }; }
+}
+
+test("real source commit permits only its stopping verification and a replacement target restores only its own saved launch", async () => {
+  const f = await fixture(), source = f.daemon, stopping = new Deferred(), releaseStop = new Deferred();
+  const savedSession = crypto.randomUUID(), fake = new SnapshotLocal(savedSession, stopping, releaseStop);
+  let target: Awaited<ReturnType<typeof startDaemon>> | undefined;
+  const targetClients: ControlClient[] = [], starts: Record<string, unknown>[] = [], modelCalls: string[] = [];
+  const originalStart = LocalPeer.prototype.start;
+  const start = spyOn(LocalPeer.prototype, "start").mockImplementation(function(this: LocalPeer) { starts.push(this.recoveryMetadata()); return originalStart.call(this); });
+  const inventory = spyOn(OmniRoute.prototype, "models").mockImplementation(async () => { modelCalls.push("models"); throw new Error("recovery fixture must not query a gateway"); });
+  const chat = spyOn(OmniRoute.prototype, "chat").mockImplementation(async () => { modelCalls.push("chat"); throw new Error("recovery fixture must not start a model turn"); });
+  const oldOperation = process.env.AGENTHUB_RECOVERY_OPERATION;
+  try {
+    source.bus.add(fake); await fake.start();
+    // Preserve a manual pause through the actual snapshot: this model-free leg may
+    // restore its saved alias while provider availability remains deliberately unknown.
+    expect((await f.person.request({ t: "pause", peer: "local" })).ok).toBe(true);
+    const { binding, plan } = await f.authority();
+    expect(plan.projects[0]!.source.peers.find(peer => peer.id === "local")).toMatchObject({ sessionId: savedSession });
+    expect((await f.lead.request({ t: "recovery_authority", op: "issue", binding, plan })).ok).toBe(true);
+    expect((await f.lead.request({ t: "recovery_restore", peer: "local", authority: binding, model: "WIRE_MODEL_CANARY", sessionId: "WIRE_SESSION_CANARY" })).ok).toBe(false);
+    expect(starts).toEqual([]); expect(modelCalls).toEqual([]);
+    expect((await f.request(binding, "prepare")).ok).toBe(true);
+    const committing = f.request(binding, "commit");
+    const committed = await committing; expect(committed).toMatchObject({ ok: true, committed: true });
+    await stopping.promise; // The old listener is still owned while its fake peer stop is held.
+    expect((await f.lead.request({ t: "recovery_authority", op: "verify", binding })).ok).toBe(true);
+    expect((await f.lead.request({ t: "recovery_authority", op: "verify", binding: { ...binding, operationId: crypto.randomUUID() } })).ok).toBe(false);
+    expect((await f.lead.request({ t: "recovery_authority", op: "authorize", command: "restart" })).ok).toBe(false);
+    releaseStop.resolve(); await source.stopped;
+    expect(existsSync(join(f.stateDir, "restart.json"))).toBe(true);
+
+    const targetInstance = crypto.randomUUID();
+    process.env.AGENTHUB_RECOVERY_OPERATION = binding.operationId;
+    try {
+      target = await startDaemon({ cwd: f.root, stateDir: f.stateDir, projectId: f.project.id, instanceId: targetInstance,
+        controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: loadConfig(f.root), snapshotClock: () => 0,
+        configWatch: false, boundedTools: emulatedBoundedTools() });
+    } finally {
+      if (oldOperation === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = oldOperation;
+    }
+    const connectTarget = async (peer?: string) => {
+      const client = await ControlClient.connect(f.stateDir, { role: peer ? "tools" : "console", ...(peer ? { peer } : {}),
+        projectRoot: f.root, projectId: f.project.id, instanceId: targetInstance }); targetClients.push(client); return client;
+    };
+    const lead = await connectTarget("codex"), ordinary = await connectTarget("claude"), person = await connectTarget();
+    const targetStatus = (await person.request({ t: "status" })).status;
+    expect(targetStatus.instanceId).toBe(targetInstance); expect(targetStatus.instanceId).not.toBe(binding.sourceInstanceId);
+    expect(targetStatus.recovery).toMatchObject({ operationId: binding.operationId, phase: "restored" });
+    expect((await lead.request({ t: "recovery_authority", op: "verify", binding })).ok).toBe(true);
+    expect((await ordinary.request({ t: "recovery_restore", peer: "local", authority: binding })).ok).toBe(false);
+    for (const authority of [undefined, { ...binding, sourceInstanceId: targetInstance }, { ...binding, operationId: crypto.randomUUID() }, { ...binding, targetDigest: "e".repeat(64) }]) {
+      expect((await lead.request({ t: "recovery_restore", peer: "local", authority })).ok).toBe(false);
+    }
+    expect(starts).toEqual([]); expect(modelCalls).toEqual([]);
+    const restored = await lead.request({ t: "recovery_restore", peer: "local", authority: binding,
+      model: "WIRE_MODEL_CANARY", sessionId: "WIRE_SESSION_CANARY", args: { model: "WIRE_MODEL_CANARY", sessionId: "WIRE_SESSION_CANARY" }, launch: { model: "WIRE_MODEL_CANARY" } });
+    expect(restored.ok).toBe(true); expect(starts).toHaveLength(1);
+    expect(starts[0]!.launch).toMatchObject({ kind: "local", model: "saved-recovery-model" });
+    expect(starts[0]!.sessionId).toMatch(/^[a-f0-9-]{36}$/);
+    // Local intentionally rebuilds a fresh worker; this does not claim native
+    // session persistence, only refusal to accept a wire-selected session.
+    expect(starts[0]!.sessionId).not.toBe(savedSession); expect(starts[0]!.sessionId).not.toBe("WIRE_SESSION_CANARY");
+    expect(JSON.stringify(starts)).not.toContain("WIRE_MODEL_CANARY"); expect(modelCalls).toEqual([]);
+    expect(target.bus.peers.get("local")).toBeInstanceOf(LocalPeer);
+    expect(target.bus.isPaused("local")).toBe(true);
+  } finally {
+    releaseStop.resolve();
+    if (oldOperation === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = oldOperation;
+    for (const client of targetClients) client.close(); await target?.stop();
+    start.mockRestore(); inventory.mockRestore(); chat.mockRestore(); await f.close();
+  }
 }, 20_000);
