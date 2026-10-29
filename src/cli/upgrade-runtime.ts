@@ -281,6 +281,7 @@ export async function inspectRecovery(project: Project, targetFeatures?: readonl
   const waiting = (Array.isArray(response.recovery?.blockers) ? response.recovery.blockers : []).filter((b: unknown): b is string => typeof b === "string").slice(0, 20).map((b: string) => b.slice(0, 200));
   return { state: "running", instanceId: status.instanceId, version: status.version, protocol: status.protocol,
     recovery: { operationId: response.recovery?.operationId, phase: response.recovery?.phase, ready: response.recovery?.ready, ...(waiting.length ? { waiting } : {}) }, peers: peers.map((peer) => ({ id: peer.id, state: peer.state,
+      ...(peer.observation === undefined ? {} : { observation: peer.observation }),
       ...(peer.externalInstance === undefined ? {} : { externalInstance: peer.externalInstance }),
       ...(peer.threadId ? { threadId: peer.threadId } : {}), ...(peer.sessionId ? { sessionId: peer.sessionId } : {}),
       ...(typeof (peer.sessionFile ?? peer.launch?.sessionFile) === "string" ? { sessionFile: peer.sessionFile ?? peer.launch.sessionFile } : {}),
@@ -339,6 +340,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
         if (!launcher) {
           unrecordedTerminals.push(peer.id);
           delete peer.sessionId;
+          delete peer.args; // An unmanaged channel reconnects itself; its observed identity is not restoration data.
           if (source.protocol === PROTOCOL) reconnectOnly.push(peer.id);
           else blockers.push(`${peer.id}: unmanaged session (no live ahub claude launcher recorded) runs a protocol-${source.protocol} plugin and cannot reconnect to a protocol-${PROTOCOL} hub; next action: end that Claude session, or relaunch it with ahub claude in an Orca terminal, then make a new plan`);
           continue;

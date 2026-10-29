@@ -49,6 +49,10 @@ export class WsPeer extends BasePeer {
     this.claimedPullOnly = pullOnly;
   }
   /** A session that shows pushes holds the peer or is arriving: a session without them must not take it (issue #205). */
+  /** Host transport observation, distinct from the peer's activity state. */
+  get attached(): boolean { return !!this.sock && this.sock.readyState === WebSocket.OPEN && !this.claiming; }
+  get managedLaunchId(): string | undefined { return this.attached ? this.sock?.data.launchId : undefined; }
+
   get channelHeld(): boolean {
     return (!!this.sock && !this.pullOnly) || (this.claiming && !this.claimedPullOnly);
   }

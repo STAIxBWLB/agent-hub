@@ -179,7 +179,7 @@ import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./li
 import { soleWorktree, branchHeads, changedPaths, dirtySubmodules, submodulePaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, budgetNow, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
-import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate } from "../cli/terminal-recovery.ts";
+import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate, launcherOf } from "../cli/terminal-recovery.ts";
 import { TerminalLaunches, terminalOwnerReads } from "./terminal-launch.ts";
 
 import { peerStartConfig, PEER_START_RETRY_MS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
@@ -6736,8 +6736,12 @@ export async function startDaemon(opts: DaemonOptions) {
     integrity: { current: integrityAs(restored?.integrity), ...(restored?.integrity ? { expected: restored.integrity } : {}) },
     peers: Object.fromEntries([...(recoveryPeerSnapshot ?? []), ...Object.values(recoveryPeers()).filter((peer) => !(recoveryPeerSnapshot ?? []).some((saved) => saved.id === peer.id))].map((peer) => {
       const now = recoveryPeers()[peer.id];
-      if (recoveryPhase === "restored" || recoveryPhase === "released") return [peer.id, now ?? { id: peer.id, state: "offline", queueIds: bus.queueIds(peer.id) }];
-      return [peer.id, now ? { ...peer, ...now, queueIds: now.queueIds } : peer];
+      const owner = bus.peers.get(peer.id), definition = definitionOf(peer.id);
+      const observation = definition?.transport === "claude-channel" && isWsPeer(owner)
+        ? { kind: definition.kind, attached: owner.attached, ...(now?.sessionId === undefined ? {} : { sessionId: now.sessionId }) } : undefined;
+      const visible = recoveryPhase === "restored" || recoveryPhase === "released" ? now ?? { id: peer.id, state: "offline", queueIds: bus.queueIds(peer.id) }
+        : now ? { ...peer, ...now, queueIds: now.queueIds } : peer;
+      return [peer.id, { ...visible, ...(observation === undefined ? {} : { observation }) }];
     })),
   });
   const recoveryError = (error: string) => ({ t: "recovery", ok: false, error });
@@ -7387,9 +7391,26 @@ export async function startDaemon(opts: DaemonOptions) {
               if (affected.length !== plan.projects.length || affected.some(project => !plan.projects.some(row => row.project.id === project.id && row.project.root === project.root && row.project.stateDir === project.stateDir))) throw new RecoveryAuthorityError();
             }
             const selected = plan.projects.find(row => row.project.id === projectId)!;
-            const normalize = (row: { id: string; state: string; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
+            const reconnect = new Map<string, import("../cli/upgrade.ts").RecoveryPeer["observation"]>();
+            if (selected.reconnectOnly !== undefined) {
+              if (!Array.isArray(selected.reconnectOnly) || new Set(selected.reconnectOnly).size !== selected.reconnectOnly.length) throw new RecoveryAuthorityError();
+              for (const id of selected.reconnectOnly) {
+                const row = selected.source.peers.find(peer => peer.id === id), owner = bus.peers.get(id), definition = definitionOf(id);
+                if (!row || selected.freshStart?.includes(id) || Object.keys(row).some(key => !["id", "state", "observation"].includes(key)) || !row.observation
+                  || Object.keys(row.observation).some(key => !["kind", "attached", "sessionId"].includes(key))
+                  || !isWsPeer(owner) || definition?.transport !== "claude-channel" || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)
+                  || row.observation.kind !== definition.kind || row.observation.attached !== owner.attached || row.observation.sessionId !== claudeSession(id).sessionId) throw new RecoveryAuthorityError();
+                const generation = owner.sessionGeneration;
+                const launcher = await launcherOf(id, opts.cwd, { stateDir: opts.stateDir, instanceId }); current();
+                if (launcher && launcher.state !== "gone" || bus.peers.get(id) !== owner || owner.sessionGeneration !== generation || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)) throw new RecoveryAuthorityError();
+                reconnect.set(id, row.observation);
+              }
+            }
+            const normalize = (row: { id: string; state: string; observation?: { kind: string; attached: boolean; sessionId?: string }; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
               const launch = row.args ?? row.launch ?? {};
-              return { id: row.id, active: row.state !== "offline", threadId: row.threadId, sessionId: row.sessionId,
+              const observed = reconnect.get(row.id);
+              return { id: row.id, active: row.state !== "offline", threadId: row.threadId, sessionId: row.sessionId ?? observed?.sessionId,
+                ...(observed ? { kind: row.observation?.kind ?? definitionOf(row.id)?.kind, attached: row.observation?.attached ?? (isWsPeer(bus.peers.get(row.id)) && (bus.peers.get(row.id) as import("../adapters/channel-peer.ts").WsPeer).attached) } : {}),
                 sessionFile: row.sessionFile ?? (typeof launch.sessionFile === "string" ? launch.sessionFile : undefined),
                 args: Object.fromEntries(Object.entries(launch).filter(([key, value]) => ["model", "route", "sessionFile", "mode", "backend"].includes(key) && typeof value === "string").sort(([a], [b]) => a.localeCompare(b))) };
             };
