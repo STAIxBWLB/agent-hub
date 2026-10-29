@@ -30,12 +30,13 @@ const ACTIVE = new Set(["dispatching", "accepted", "needs_review"]);
 
 export class RoomChat {
   private readonly policy: RoomPolicy;
-  private readonly metricsSince: number;
+  private readonly metricsSince: number | null;
   // ponytail: at most 64 room-name session counters, never cross-run totals.
   // If cross-run totals are required, add durable versioned counters at the storage boundary.
   private readonly counts = new Map<string, { room: string; outbound: number | null; inbound: number | null; withheld: number | null }>();
   private readonly bindings = new Map<string, Binding>();
   private readonly targets = new Map<string, Target>();
+  private statusTargets = new Map<string, string[] | null>();
   private readonly remotes = new Map<string, RemotePeer>();
   private readonly outgoing = new Map<string, { binding: Binding; row: RoomOutgoing }>();
   private evidenceCache?: Map<string, { peer: string; roomState: string; disposition?: string; lateReceipt?: string; refusalReason?: string }>;
@@ -47,7 +48,9 @@ export class RoomChat {
   readonly application: RoomLinkApplication;
   constructor(private readonly options: RoomChatOptions) {
     this.policy = new RoomPolicy(options.cwd);
-    this.metricsSince = this.now();
+    let since: number | null = null;
+    try { const value = this.now(); if (Number.isSafeInteger(value) && value >= 0) since = value; } catch { /* Observation failure never disables transport construction. */ }
+    this.metricsSince = since;
     this.application = {
       members: context => { if (context.current()) this.bind(context.store, context.name, context.link); },
       receive: (context, input) => this.receive(context, input),
@@ -64,10 +67,9 @@ export class RoomChat {
     };
   }
   private now(): number { return this.options.now?.() ?? Date.now(); }
-  metrics(name: string): RoomMetrics | null {
+  metrics(name: string, room?: string): RoomMetrics | null {
     const binding = this.bindings.get(name);
-    if (!binding) return null;
-    try { if (binding.store.get(name)?.current.room !== binding.room) return null; } catch { return null; }
+    if (this.stopped || !binding || this.metricsSince === null || room !== undefined && binding.room !== room) return null;
     const row = this.counts.get(name);
     return { since: this.metricsSince, outbound: row?.room === binding.room ? row.outbound : null,
       inbound: row?.room === binding.room ? row.inbound : null, withheld: row?.room === binding.room ? row.withheld : null };
@@ -168,6 +170,18 @@ export class RoomChat {
       }
       this.targets.set(id, target);
     }
+    // ponytail: status shows complete peer lists only within 32 per room / 256 total.
+    // Larger lists stay unknown here; the explicit room status command remains the detail path.
+    const statusTargets = new Map<string, string[] | null>([...this.bindings.keys()].map(name => [name, []]));
+    let shown = 0;
+    for (const [id, target] of this.targets) {
+      if (target.peer === USER) continue;
+      const ids = statusTargets.get(target.binding.name);
+      if (!ids) continue;
+      if (ids.length >= 32 || shown >= 256) { shown -= ids.length; statusTargets.set(target.binding.name, null); }
+      else { ids.push(id); shown++; }
+    }
+    this.statusTargets = statusTargets;
     for (const [id, remote] of this.remotes) {
       const target = this.targets.get(id);
       remote.presence(target?.peer === USER ? "idle" : target?.binding.states.get(id) ?? "offline", target?.binding.online === true);
@@ -378,6 +392,11 @@ export class RoomChat {
   }
   peers(name: string): { id: string; state: PeerState }[] {
     return [...this.targets].filter(([, target]) => target.binding.name === name && target.peer !== USER).map(([id]) => ({ id, state: this.remotes.get(id)?.state ?? "offline" })).sort((a, b) => a.id.localeCompare(b.id));
+  }
+  /** A bounded status list, separate from the explicit detail query above. */
+  peersForStatus(name: string): { id: string; state: PeerState }[] | null {
+    const ids = this.statusTargets.get(name);
+    return ids ? ids.map(id => ({ id, state: this.remotes.get(id)?.state ?? "offline" })) : null;
   }
   stop(): void {
     if (this.stopped) return; this.stopped = true;

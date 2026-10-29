@@ -35,6 +35,7 @@ const NAME = /^[a-z][a-z0-9-]{0,31}$/;
 interface Row { name: string; room: string; broker: string; owner: string; epoch: string; digest: string; wire: Uint8Array; previous_wire: Uint8Array | null; previous_digest: string | null; previous_epoch: string | null; previous_expires: number | null; left: number }
 interface InviteRow { name: string; id: string; wire: Uint8Array; digest: string; expires: number; request_digest: string | null }
 export interface RoomState { name: string; broker: string; current: VerifiedEpoch; wire: Uint8Array; previous?: { epoch: VerifiedEpoch; expiresAt: number }; left: boolean }
+export interface RoomStateMetadata { name: string; room: string; owner: string; member: string; epoch: string; members: number; left: boolean }
 export interface RoomInboxEntry { sender: string; seq: string; digest: string; plaintext: Uint8Array; gap: string }
 export interface RoomOutgoingInput { deliveryId: string; application: string; remotePeer: string; recipient: string; peer: string; ackTimeoutMs: number; ttlMs: number }
 export interface RoomOutgoing {
@@ -448,6 +449,20 @@ export class RoomStore {
   }
   private snapshot(value: RoomState): RoomState {
     return { ...value, wire: copy(value.wire), ...(value.previous ? { previous: { ...value.previous } } : {}) };
+  }
+  private readonly statusEpochs = new WeakMap<VerifiedEpoch, { owner: string; members: number }>();
+  /** Loaded identity metadata only. Repeated polling never clones a wire or opens application history. */
+  statusMetadata(): RoomStateMetadata[] {
+    this.now();
+    return [...this.rooms.values()].map(value => {
+      let epoch = this.statusEpochs.get(value.current);
+      if (!epoch) {
+        epoch = { owner: decodeRoster(value.wire).owner, members: roomMembers(value.current).length };
+        this.statusEpochs.set(value.current, epoch);
+      }
+      return { name: value.name, room: value.current.room, owner: epoch.owner, member: this.identity.public.fingerprint,
+        epoch: value.current.epoch, members: epoch.members, left: value.left };
+    });
   }
   list(): RoomState[] { this.now(); return [...this.rooms.values()].map(x => this.snapshot(x)); }
   get(name: string): RoomState | undefined { this.now(); const state = this.rooms.get(named(name)); return state && this.snapshot(state); }

@@ -7,6 +7,7 @@ import { RoomStore, type RoomState } from "./store.ts";
 import { RoomLink } from "./link.ts";
 import { exposedPeers, roomName, RoomPolicy } from "./policy.ts";
 import type { RoomChat } from "./service.ts";
+import { projectRoomStatus, type RoomStatusView } from "./status.ts";
 
 export interface RoomCommandResult { kind?: string; artifact?: string; name?: string; room?: string; owner?: string; member?: string }
 export interface RoomPreview { owner: string; member: string; commit: () => Promise<RoomCommandResult> }
@@ -97,6 +98,19 @@ export class RoomCommands {
     if (!this.store && !existsSync(join(this.options.stateDir, "rooms"))) return [];
     const store = await this.open(); if (name !== undefined) roomName(name);
     return store.list().filter(row => name === undefined || row.name === name).map(row => ({ name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch, state: row.left ? "left" : this.links.get(row.name)?.status().state ?? "offline", ...(details && this.options.chat ? { deliveries: this.options.chat.rows(row.name), remotePeers: this.options.chat.peers(row.name) } : {}) }));
+  }
+  /** Polling uses only already-loaded public metadata; it never opens room state or reads message rows. */
+  statusView(): RoomStatusView[] | null {
+    if (this.stopped) return null;
+    if (!this.store) return this.pending ? null : [];
+    try {
+      return projectRoomStatus(this.store.statusMetadata().map(row => ({
+        name: row.name, room: row.room, owner: row.owner, member: row.member, epoch: row.epoch,
+        state: row.left ? "left" : this.links.get(row.name)?.connectionState ?? "offline", members: row.members,
+        remotePeers: this.options.chat?.peersForStatus(row.name) ?? null,
+        relays: this.options.chat?.metrics(row.name, row.room) ?? null,
+      })));
+    } catch { return null; }
   }
   async preview(action: unknown, raw: unknown, check: () => boolean): Promise<RoomPreview> {
     if (typeof action !== "string") refuse("invalid_operation");
