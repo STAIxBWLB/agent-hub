@@ -4112,6 +4112,70 @@
       "replacement": "    else if (s.panel === 8) { s.roomSelection = row.name; s.detail = roomDetail(row); s.detailOffset = 0; }",
       "testFile": "test/rooms-console.test.ts",
       "testName": "an open Rooms detail follows current status by room identity across reorder and unavailable readings"
+    },
+    {
+      "id": "claude-failure-private-stub",
+      "file": "src/hub/claude-failure-stage.ts",
+      "search": "if (privateTurn !== false) return WITHHELD;",
+      "replacement": "if (false) return WITHHELD;",
+      "testFile": "test/claude-failure-stage.test.ts",
+      "testName": "private or unknown privacy emits only a constant stub without inspecting evidence"
+    },
+    {
+      "id": "claude-failure-current-owner",
+      "file": "src/hub/claude-failure-stage.ts",
+      "search": "typeof current === \"function\" && current() === true && !sealed && !consumed && !discarded",
+      "replacement": "typeof current === \"function\" && true && !sealed && !consumed && !discarded",
+      "testFile": "test/claude-failure-stage.test.ts",
+      "testName": "trace ignores stale, throwing and non-positive owner predicates without throwing"
+    },
+    {
+      "id": "claude-failure-probe-host-budget",
+      "file": "src/hub/daemon.ts",
+      "search": "if (!entry || ++entry.probeCount > NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH) return void reply({ ok: false, error: \"permission diagnostic unavailable\" });",
+      "replacement": "if (!entry) return void reply({ ok: false, error: \"permission diagnostic unavailable\" });",
+      "testFile": "test/claude-failure-stage-daemon.test.ts",
+      "testName": "#551 oversize and exhausted host probes leave failure stage unclaimed"
+    },
+    {
+      "id": "claude-failure-probe-never-authorizes",
+      "file": "src/adapters/claude-channel.ts",
+      "search": "return deny(\"invalid native permission request\");",
+      "replacement": "return text(JSON.stringify({ behavior: \"allow\" }));",
+      "testFile": "test/headless-claude-permission-client.test.ts",
+      "testName": "#551 invalid native request awaits the diagnostic probe but never adopts its allow"
+    },
+    {
+      "id": "claude-failure-legacy-permission-extensions",
+      "file": "src/hub/native-permission-request.ts",
+      "search": "  return true;",
+      "replacement": "  return validateNativePermissionRequest(value);",
+      "testFile": "test/headless-claude-permission-client.test.ts",
+      "testName": "#551 native permission request extensions preserve the existing approval path"
+    },
+    {
+      "id": "claude-failure-deadline-not-refusal",
+      "file": "src/hub/claude-shell-wrapper.ts",
+      "search": "this.refuse(response, execution.proc === undefined ? ticket : undefined);",
+      "replacement": "this.refuse(response, ticket);",
+      "testFile": "test/claude-shell-wrapper.test.ts",
+      "testName": "target deadline remains active through settlement"
+    },
+    {
+      "id": "claude-failure-descendant-not-refusal",
+      "file": "src/hub/claude-shell-wrapper.ts",
+      "search": "this.refuse(response, execution.proc === undefined ? ticket : undefined);",
+      "replacement": "this.refuse(response, ticket);",
+      "testFile": "test/claude-shell-wrapper.test.ts",
+      "testName": "leader exit with a background pipe holder settles and reaps the original owned group"
+    },
+    {
+      "id": "claude-failure-private-cleanup-fact",
+      "file": "src/adapters/claude-implementer.ts",
+      "search": "? \"Claude implementer cleanup incomplete; details withheld\"",
+      "replacement": "? failureReason",
+      "testFile": "test/claude-implementer.test.ts",
+      "testName": "cleanup failure retains busy handle and refuses restart until a verified retry succeeds"
     }
   ]
 }
