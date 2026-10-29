@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { assign, parseRouting } from "../src/hub/routing.ts";
-import { ContextWindows, contextHeadroom, type ContextAdmissionSnapshot, type ContextReading } from "../src/hub/context-window.ts";
+import { ContextWindows, contextHeadroom, type ContextAdmission, type ContextAdmissionSnapshot, type ContextReading } from "../src/hub/context-window.ts";
 
 const now = 1_800_000_000_000;
 const policy = { max_used: 0.8, stale_min: 1 };
@@ -9,7 +9,7 @@ const snapshot = (used: number | null): ContextAdmissionSnapshot => ({ reading: 
 const routing = parseRouting('[local]\nfixed_model="fixture"\n[classes.implement]\npeers=["codex","kimi"]\n[classes.review]\npeers=["claude"]\n');
 const task = { class: "implement" as const, signals: [] as string[] };
 const states = { codex: "idle", kimi: "idle", claude: "idle", local: "idle" } as const;
-const input = (row: ContextAdmissionSnapshot | undefined = snapshot(0.9)) => ({ now, contextAdmission: { policy, peers: row ? { codex: row } : {} } });
+const input = (row: ContextAdmissionSnapshot | undefined = snapshot(0.9)): { now: number; contextAdmission: ContextAdmission } => ({ now, contextAdmission: { policy, peers: row ? { codex: row } : {} } });
 
 test("context admission skips fresh occupancy at and above threshold, with exact equality", () => {
   expect(assign(task, states, routing, input(snapshot(0.799))).owner).toBe("codex");
