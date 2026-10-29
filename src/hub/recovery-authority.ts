@@ -27,7 +27,7 @@ const KEYS: readonly (keyof ConductorRecoveryBinding)[] = ["schema", "operationI
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const MAX_RECORD = 16 * 1024;
-const refuse = (): never => { throw new RecoveryAuthorityError(); };
+function refuse(): never { throw new RecoveryAuthorityError(); }
 function guarded<T>(work: () => T): T { try { return work(); } catch { return refuse(); } }
 function object(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) refuse();
@@ -46,7 +46,7 @@ function binding(value: unknown): Readonly<ConductorRecoveryBinding> {
   for (const key of ["targetDigest", "planFingerprint", "policyDigest", "boardDigest"] as const) if (typeof row[key] !== "string" || !HASH.test(row[key])) refuse();
   return Object.freeze(Object.fromEntries(KEYS.map(key => [key, row[key]])) as unknown as ConductorRecoveryBinding);
 }
-function identity(stat: ReturnType<typeof lstatSync>): string {
+function identity(stat: NonNullable<ReturnType<typeof lstatSync>>): string {
   return JSON.stringify([stat.dev, stat.ino, stat.mode, stat.uid, stat.nlink, stat.size, stat.mtimeMs, stat.ctimeMs]);
 }
 function directory(stateDir: string): string {

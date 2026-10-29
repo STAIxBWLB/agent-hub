@@ -131,3 +131,22 @@ test("agent recovery resume without target authority proof refuses before runner
     expect(f.messages).toEqual([]);
   } finally { clearTimeout(timeout); }
 }, 20_000);
+
+test("captured terminal plans require a person before any project authorization or staging", async () => {
+  const f = projectFixture("terminal");
+  const { preflightConductorRecovery } = await import("../src/cli/conductor-recovery.ts");
+  await expect(preflightConductorRecovery({ kind: "restart", projects: [{ ...f.planned, terminals: [{ peer: "codex" }] }] }, "codex")).rejects.toThrow(REFUSAL);
+  expect(f.messages).toEqual([]);
+  expect(readdirSync(f.stateDir).sort()).toEqual(["control-token", "status.json"]);
+});
+
+test("native descendants cannot inherit the conductor recovery continuation", async () => {
+  const { childEnv, personEnv } = await import("../src/hub/child-process.ts");
+  const parent = { AGENTHUB_RECOVERY_OPERATION: "owned-operation", AGENTHUB_RECOVERY_CONDUCTOR: "codex", AGENTHUB_RECOVERY_CONTINUATION: "owned-operation", AGENTHUB_HOME: "/fixture/home" };
+  for (const env of [childEnv(parent), personEnv(parent)]) {
+    expect(env.AGENTHUB_RECOVERY_OPERATION).toBeUndefined();
+    expect(env.AGENTHUB_RECOVERY_CONDUCTOR).toBeUndefined();
+    expect(env.AGENTHUB_RECOVERY_CONTINUATION).toBeUndefined();
+    expect(env.AGENTHUB_HOME).toBe("/fixture/home");
+  }
+});

@@ -22,9 +22,9 @@ export interface RecoveryPolicyCapture { policyDigest: string; boardDigest: stri
 const MAX_POLICY_BYTES = 1024 * 1024;
 const MAX_ACTOR_TASKS = 4096;
 const MAX_SIGNALS_BYTES = 65536;
-const refuse = (): never => { throw new RecoveryAuthorityError(); };
+function refuse(): never { throw new RecoveryAuthorityError(); }
 const hash = (text: string): string => createHash("sha256").update(text).digest("hex");
-const stamp = (s: ReturnType<typeof lstatSync>): string => JSON.stringify([s.dev, s.ino, s.size, s.mode, s.nlink, s.mtimeMs, s.ctimeMs]);
+const stamp = (s: NonNullable<ReturnType<typeof lstatSync>>): string => JSON.stringify([s.dev, s.ino, s.size, s.mode, s.nlink, s.mtimeMs, s.ctimeMs]);
 
 /** Only bounded, regular, stable files; an absent optional policy is different from an unreadable one. */
 function boundedText(file: string, optional = false): string | undefined {

@@ -13,7 +13,7 @@ function fixture() {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-recovery-policy-")));
   const stateDir = join(root, ".agenthub", "state");
   mkdirSync(stateDir, { recursive: true });
-  const git = hubGitSync(["init", "-q", root]);
+  const git = hubGitSync(["init", "-q", root], {});
   if (git.status !== 0) throw new Error("fixture git init failed");
   let config: Record<string, unknown> = { roles: { codex: ["conductor", "implementer"] } };
   const write = (next: Record<string, unknown>) => { config = next; writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify(config)); };

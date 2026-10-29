@@ -6694,8 +6694,8 @@ export async function startDaemon(opts: DaemonOptions) {
     })),
   });
   const recoveryError = (error: string) => ({ t: "recovery", ok: false, error });
-  async function recoveryOp(msg: any, current: () => void = () => {}): Promise<Record<string, unknown>> {
-    current();
+  async function recoveryOp(msg: any, checkCurrent: () => void = () => {}): Promise<Record<string, unknown>> {
+    checkCurrent();
     if (typeof msg.op !== "string" || !["inspect", "prepare", "commit", "abort", "release"].includes(msg.op)) return recoveryError("unknown recovery operation");
     if (typeof msg.expectedInstanceId !== "string" || msg.expectedInstanceId !== instanceId) return recoveryError("expected daemon instance does not match");
     const incompatibleCancellationTarget = () => {
@@ -6726,7 +6726,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (msg.op === "inspect" || msg.op === "prepare" || msg.op === "commit") {
       for (const [id, peer] of bus.peers) if (isExternalInstance(id) && (peer.state !== "offline" || peer.pendingOwnedProcess !== false)) return recoveryError("external module has no verified controlled-recovery driver; stop it explicitly and restart with its recorded native session id");
       for (const peer of bus.peers.values()) if (peer.captureResume && peer.state === "idle") {
-        try { await peer.captureResume(); current(); } catch (error) { return recoveryError((error as Error).message); }
+        try { await peer.captureResume(); checkCurrent(); } catch (error) { return recoveryError((error as Error).message); }
         if (checkTarget) { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
       }
     }
@@ -6751,7 +6751,7 @@ export async function startDaemon(opts: DaemonOptions) {
       budget.setRecoveryHold(true);
       bus.setRecoveryHold(true, Array.isArray(msg.targetFeatures) && msg.targetFeatures.includes("recovery_deferred_hub"));
       await bus.fenceRecovery();
-      current();
+      checkCurrent();
       { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
       const blocked = [...bus.peers].filter(([id, peer]) => !id.includes("@") && peer.state === "busy").map(([id]) => id);
       if (!blocked.length && permissions.size === 0 && recoveryReady()) {
@@ -6818,7 +6818,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       if (recoveryPhase !== "restored") return recoveryError("recovery is not restored");
       await bus.fenceRecovery();
-      current();
+      checkCurrent();
       const current = recoveryPeers();
       const missing = (recoveryPeerSnapshot ?? []).filter((saved) => saved.state !== "offline" && !manualPaused.has(saved.id) && !budget.record(saved.id) && (!current[saved.id] || current[saved.id]!.state === "offline"));
       if (missing.length) return recoveryError(`required peers are not attached: ${missing.map((peer) => peer.id).join(", ")}`);

@@ -12,7 +12,7 @@ import type { Project } from "../hub/registry.ts";
 import { planFingerprint, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
 import { realPath } from "../hub/project.ts";
 
-const unavailable = (): never => { throw new RecoveryAuthorityError(); };
+function unavailable(): never { throw new RecoveryAuthorityError(); }
 function validateConductorOperation(op: RecoveryOperation): void {
   try {
     const { fingerprint, ...body } = op.plan;
