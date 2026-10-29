@@ -129,7 +129,7 @@ export function renderModelReceipt(receipt: ModelReceipt, corpus?: ModelRoutingC
     `- Current default (\`${receipt.base.ref}\`): model-routing keys sha256 \`${receipt.base.sha256}\`, template sha256 \`${receipt.base.template_sha256}\``,
     `- Candidate (\`templates/routing.toml\`): model-routing keys sha256 \`${receipt.candidate.sha256}\`, template sha256 \`${receipt.candidate.template_sha256}\``,
     `- Keys that differ: ${receipt.changed_keys.length ? receipt.changed_keys.map(key => `\`${key}\``).join(", ") : "none (the same model-routing keys)"}`,
-    `- Live half required: ${receipt.live_required ? "yes (the change moves an alias or a judge, so a model answers differently)" : "no (the change moves only a deterministic decision the corpus runs through the real code)"}`,
+    `- Live half required: ${receipt.live_required ? "yes (the change moves an alias or a judge, so a model answers differently)" : receipt.changed_keys.length ? "no (the change moves only a deterministic decision the corpus runs through the real code)" : "no (no model-routing key changed: this is the baseline of the shipped default against itself)"}`,
     `- Served model ids: ${served}`,
     "",
     "| Metric | Current default | Candidate |", "| --- | --- | --- |",
