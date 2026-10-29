@@ -4348,7 +4348,7 @@
     {
       "id": "conductor-recovery-replacement",
       "file": "src/hub/daemon.ts",
-      "search": "              if (instanceId !== raw.sourceInstanceId && (restored?.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId || packageDigest(resolve(import.meta.dir, \"../..\"), { ownDependencies: true }) !== raw.targetDigest)) throw new RecoveryAuthorityError();",
+      "search": "              if (instanceId !== raw.sourceInstanceId && (restored?.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId || recoveryTargetDigest(raw.kind, resolve(import.meta.dir, \"../..\")) !== raw.targetDigest)) throw new RecoveryAuthorityError();",
       "replacement": "              // mutant: replacement is trusted by project identity alone.",
       "testFile": "test/conductor-recovery.test.ts",
       "testName": "a source-issued grant cannot prepare an unrelated replacement daemon"
@@ -4420,16 +4420,16 @@
     {
       "id": "conductor-recovery-accepted-config",
       "file": "src/hub/daemon.ts",
-      "search": "assertRecoveryConfiguration({ ...config, roles: policyRoles }, candidate);",
-      "replacement": "void candidate;",
+      "search": "    assertRecoverySourceInputs(acceptedSources.trustLayers, inputs);\n    // Compare accepted declarations; config.roles also contains the settled planner projection.\n    assertRecoveryConfiguration({ ...config, roles: policyRoles }, candidate);\n    assertRecoveryRouting(activeRouting(), inputs.routing);",
+      "replacement": "    void inputs;\n    assertRecoveryRouting(activeRouting(), inputs.routing);",
       "testFile": "test/conductor-recovery-config.test.ts",
       "testName": "pending protected instructions config cannot mint or use source recovery authority"
     },
     {
       "id": "conductor-recovery-accepted-routing",
       "file": "src/hub/daemon.ts",
-      "search": "assertRecoveryRouting(activeRouting(), inputs.routing);",
-      "replacement": "void inputs.routing;",
+      "search": "    assertRecoverySourceInputs(acceptedSources.trustLayers, inputs);\n    // Compare accepted declarations; config.roles also contains the settled planner projection.\n    assertRecoveryConfiguration({ ...config, roles: policyRoles }, candidate);\n    assertRecoveryRouting(activeRouting(), inputs.routing);",
+      "replacement": "    assertRecoveryConfiguration({ ...config, roles: policyRoles }, candidate);",
       "testFile": "test/conductor-recovery-config.test.ts",
       "testName": "pending routing cannot replace the source's accepted runtime routing under an existing grant"
     },

@@ -403,3 +403,17 @@ test("person recovery also preserves open conductor manual intent across target 
     expect((await f.person.request({ ...message, op: "abort" })).ok).toBe(true); f.noEffects();
   } finally { board.close(); await f.close(); }
 }, 20_000);
+
+test("a refused admission audit cannot leave a new usable conductor grant", async () => {
+  const f = await fixture(), events = join(f.stateDir, "events.jsonl");
+  try {
+    const value = await f.authority();
+    rmSync(events, { force: true }); mkdirSync(events);
+    expect((await f.lead.request({ t: "recovery_authority", op: "issue", ...value })).ok).toBe(false);
+    expect(existsSync(join(f.stateDir, "conductor-recovery.key"))).toBe(false);
+    expect(existsSync(join(f.stateDir, `conductor-recovery.${value.binding.operationId}.json`))).toBe(false);
+    f.noEffects();
+    rmSync(events, { recursive: true, force: true });
+    expect((await f.lead.request({ t: "recovery_authority", op: "issue", ...value })).ok).toBe(true);
+  } finally { if (existsSync(events)) { try { if ((await import("node:fs")).lstatSync(events).isDirectory()) rmSync(events, { recursive: true, force: true }); } catch {} } await f.close(); }
+}, 20_000);

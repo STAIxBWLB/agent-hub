@@ -165,7 +165,8 @@ test("operational CLI stop uses owned adapter lifecycle and task cancel preserve
     const stopped=await runOperationalCli(f.root,["stop","kimi"]);expect(stopped.code,stopped.stderr).toBe(0);expect(peer.state).toBe("offline");
     const task=board.propose("codex",{title:"synthetic unaccepted backlog",class:"plan",backlog:true});
     const cancelled=await runOperationalCli(f.root,["task","cancel",String(task.id),"--reason","fixture cancellation"]);expect(cancelled.code,cancelled.stderr).toBe(0);expect(board.get(task.id)!.history.findLast(h=>h.event==="cancelled")?.by).toBe("codex");
-    for(const args of [["task","unassign",String(task.id)],["models","start"],["models","stop"],["restart","--yes"],["recovery","resume"],["settings","set","permission_modes.codex","never-ask"]]){const result=await runOperationalCli(f.root,args);expect(result.code).toBe(1);expect(result.stderr).toContain("the person");}
+    for(const args of [["models","start"],["models","stop"],["settings","set","permission_modes.codex","never-ask"]]){const result=await runOperationalCli(f.root,args);expect(result.code).toBe(1);expect(result.stderr).toContain("the person");}
+    for(const args of [["task","unassign",String(task.id)],["restart","--yes"],["upgrade","--yes","--to","0.18.1"],["recovery","resume"],["recovery","abort"]]){const result=await runOperationalCli(f.root,args,"claude");expect(result.code).toBe(1);expect(result.stderr).toContain("conductor");}
   } finally {await peer.stop();board.close();await f.close();}
 },20000);
 

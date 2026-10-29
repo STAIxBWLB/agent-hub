@@ -753,17 +753,17 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   }
   const current = await makeUpgradePlan(kind, plan.version, kind === "restart" ? cwd : undefined, undefined, conductorPeer);
   if (current.fingerprint !== plan.fingerprint) fail("plan changed during review; run the command again");
-  if (conductorPeer) await preflightConductorRecovery(plan, conductorPeer);
+  const routingDefaults = conductorPeer ? await preflightConductorRecovery(plan, conductorPeer) : undefined;
   const sourceRoot = preserveSource(plan);
   let operation: RecoveryOperation;
   if (conductorPeer) {
     const id = randomUUID();
-    const pending: RecoveryOperation = { schema: 1, id, plan, sourceRoot, createdAt: Date.now(), updatedAt: Date.now(), phase: "pending", step: "stage", projects: plan.projects.map(row => ({ id: row.project.id, phase: "pending", terminals: {} })) };
+    const pending: RecoveryOperation = { schema: 1, id, plan, sourceRoot, createdAt: Date.now(), updatedAt: Date.now(), phase: "pending", step: "stage", ...(routingDefaults ? { conductorRoutingDefaults: routingDefaults } : {}), projects: plan.projects.map(row => ({ id: row.project.id, phase: "pending", terminals: {} })) };
     const target = await makeRecoveryDriver().stage(pending);
     pending.targetRoot = target.root; pending.targetDigest = target.digest; pending.targetFeatures = target.targetFeatures;
     await issueConductorOperation(pending, conductorPeer);
     operation = createOperation(plan, sourceRoot, undefined, { peer: conductorPeer, command: kind }, id);
-    operation.targetRoot = target.root; operation.targetDigest = target.digest; operation.targetFeatures = target.targetFeatures;
+    operation.targetRoot = target.root; operation.targetDigest = target.digest; operation.targetFeatures = target.targetFeatures; operation.conductorRoutingDefaults = routingDefaults;
     writeOperation(id, operation);
   } else operation = createOperation(plan, sourceRoot, undefined, delegatedPeer ? { peer: delegatedPeer, command: kind } : undefined);
   if (display.json) { spawnRecovery(operation, true); console.log(JSON.stringify(publicOperation(operation), null, 2)); }
@@ -2656,7 +2656,6 @@ async function runConductorCommand(): Promise<void> {
   let op: string;
   let input: Record<string, unknown>;
   if (cmd === "sdlc") return commands.sdlc!(); // #786: `sdlc merge` is the one conductor-class sdlc subcommand; the daemon checks the role.
-  if (cmd === "task" && args[0] === "unassign") return commands.task!();
   if (cmd === "task") {
     op = args[0] === "assign" ? "hub_task_assign" : "hub_task_escalate";
     const { one, rest: positional } = takeFlags(args.slice(1), args[0] === "assign" ? ["--role"] : [], []);

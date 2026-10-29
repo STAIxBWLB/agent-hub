@@ -129,6 +129,8 @@ export interface RecoveryOperation {
   sourceRoot: string;
   /** Ids-only initiating and subsequent delegated invocations; retained across coordinator replacement. */
   delegatedAudits?: RecoveryDelegationAudit[];
+  /** Source template bytes only when the project has no routing.toml; integrity is sealed in the private policy digest. */
+  conductorRoutingDefaults?: Record<string, string>;
   targetRoot?: string;
   targetDigest?: string;
   /** Verified capability evidence bound to targetRoot/targetDigest; absence is legacy unknown, not an empty list. */

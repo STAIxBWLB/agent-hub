@@ -7,7 +7,7 @@ import { authorizeConductorRecovery, assertConductorRecovery, retireConductorRec
 import { operationPath } from "../hub/recovery-store.ts";
 import { readRestartSnapshot } from "../hub/restart.ts";
 import { processLiveness } from "../pi/process-signature.ts";
-import { packageDigest } from "./recovery-package.ts";
+import { packageDigest, recoveryTargetDigest } from "./recovery-package.ts";
 import type { Project } from "../hub/registry.ts";
 import { planFingerprint, registeredProjects, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
 import { realPath } from "../hub/project.ts";
@@ -25,7 +25,7 @@ export function conductorRecoveryBinding(op: RecoveryOperation, project: Pick<Pr
   validateConductorOperation(op);
   const planned = op.plan.projects.find(row => row.project.id === project.id);
   if (!planned?.source.instanceId || op.plan.projects.some(row => row.terminals.length > 0) || !op.targetRoot || !op.targetDigest || !op.targetFeatures?.includes("conductor_recovery") || op.disposition || op.audit?.length || op.freshOverride) unavailable();
-  const inputs = captured?.inputs ?? readRecoveryPolicyInputs(project.root);
+  const inputs = captured?.inputs ?? readRecoveryPolicyInputs(project.root, op.conductorRoutingDefaults?.[project.id]);
   const candidate = captured?.config ?? loadConfig(project.root, inputs.layers, inputs.routing.retired ?? [], []);
   const policy = captureRecoveryPolicy(project, peer, candidate, inputs);
   return { schema: 1, operationId: op.id, peer, kind: op.plan.kind, projectId: project.id, projectRoot: project.root, stateDir: project.stateDir,
@@ -45,12 +45,18 @@ export async function conductorRecoveryRequest(project: Project, peer: string, m
   finally { client?.close(); }
 }
 /** No hold, lock, staging or package effect precedes proof in every affected project. */
-export async function preflightConductorRecovery(plan: Pick<UpgradePlan, "projects" | "kind">, peer: string): Promise<void> {
+export async function preflightConductorRecovery(plan: Pick<UpgradePlan, "projects" | "kind">, peer: string): Promise<Record<string, string>> {
+  const defaults: Record<string, string> = {};
   if (!Array.isArray(plan.projects) || !plan.projects.length || plan.projects.some(row => !Array.isArray(row.terminals) || row.terminals.length > 0)) unavailable();
   for (const row of plan.projects) {
     const result = await conductorRecoveryRequest(row.project, peer, { t: "recovery_authority", op: "authorize", command: plan.kind });
     if (row.source.instanceId && result.instanceId !== row.source.instanceId) unavailable();
+    if (result.routingDefault !== undefined) {
+      if (typeof result.routingDefault !== "string" || Buffer.byteLength(result.routingDefault) > 1024 * 1024) unavailable();
+      defaults[row.project.id] = result.routingDefault;
+    }
   }
+  return defaults;
 }
 /** This is called only before the new public receipt exists; resume can never mint a grant. */
 export async function issueConductorOperation(op: RecoveryOperation, peer: string): Promise<void> {
@@ -66,7 +72,7 @@ export async function issueConductorOperation(op: RecoveryOperation, peer: strin
 function localAuthority(op: RecoveryOperation, project: Project, peer: string) {
   try {
   const expected = conductorRecoveryBinding(op, project, peer);
-  if (packageDigest(op.sourceRoot, { ownDependencies: true }) !== op.plan.sourceDigest || packageDigest(expected.targetRoot, { ownDependencies: true }) !== expected.targetDigest) unavailable();
+  if (packageDigest(op.sourceRoot, { ownDependencies: true }) !== op.plan.sourceDigest || recoveryTargetDigest(op.plan.kind, expected.targetRoot) !== expected.targetDigest) unavailable();
   return authorizeConductorRecovery(project.stateDir, expected, () => {
     try { return JSON.stringify(conductorRecoveryBinding(op, project, peer)) === JSON.stringify(expected); } catch { return false; }
   });

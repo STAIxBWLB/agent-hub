@@ -89,9 +89,9 @@ import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, v
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSourceTexts, type ConfigSources } from "./config-reload.ts";
 import { issueConductorRecoveryAuthority, authorizeConductorRecovery, assertConductorRecovery, RecoveryAuthorityError, type ConductorRecoveryBinding } from "./recovery-authority.ts";
-import { captureRecoveryPolicy, readRecoveryPolicyInputs, assertRecoveryConfiguration, assertRecoveryRouting, readRecoveryTargetFeatures } from "./recovery-policy.ts";
+import { captureRecoveryPolicy, readRecoveryPolicyInputs, recoveryRoutingFallback, assertRecoveryConfiguration, assertRecoveryRouting, assertRecoverySourceInputs, readRecoveryTargetFeatures } from "./recovery-policy.ts";
 import { operationPath, recoveryLock, readOperation } from "./recovery-store.ts";
-import { packageDigest, verifyPackage, exactVersion } from "../cli/recovery-package.ts";
+import { packageDigest, recoveryTargetDigest, verifyRecoveryTarget, exactVersion } from "../cli/recovery-package.ts";
 import { planFingerprint, registeredProjects, type UpgradePlan } from "../cli/upgrade.ts";
 import { conductorRecoveryBinding } from "../cli/conductor-recovery.ts";
 import { createConfigEditor } from "./config-edit-host.ts";
@@ -708,7 +708,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let ready = false;
   try {
   let startupLayers: ReturnType<typeof readInstanceConfigLayers>;
-  let recoveryConfiguration: HubConfig | undefined, recoveryRouting: Routing | undefined, recoverySources: ConfigSourceTexts | undefined;
+  let recoveryConfiguration: HubConfig | undefined, recoveryRouting: Routing | undefined, recoverySources: ConfigSourceTexts | undefined, recoveryDefaultRouting: string | undefined;
   const recoveryInitiator = process.env.AGENTHUB_RECOVERY_CONDUCTOR;
   if (recoveryInitiator !== undefined) {
     // Before module imports or factories: the exact startup snapshot must match the source-issued policy.
@@ -719,13 +719,13 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!operation || operation.id !== operationId) throw new RecoveryAuthorityError();
       const snapshot = readRestartSnapshot(opts.stateDir, { projectRoot: opts.cwd, projectId, operationId });
       if (!snapshot) throw new RecoveryAuthorityError();
-      const inputs = readRecoveryPolicyInputs(opts.cwd);
+      const inputs = readRecoveryPolicyInputs(opts.cwd, operation.conductorRoutingDefaults?.[projectId]);
       const candidate = loadConfig(opts.cwd, inputs.layers, inputs.routing.retired ?? [], []);
       const expected = conductorRecoveryBinding(operation, { root: opts.cwd, id: projectId, stateDir: opts.stateDir }, recoveryInitiator, { config: candidate, inputs });
       if (expected.sourceInstanceId !== snapshot.sourceInstanceId || expected.targetRoot !== resolve(import.meta.dir, "../..") || expected.targetDigest !== sourcePackageDigest) throw new RecoveryAuthorityError();
       const proof = authorizeConductorRecovery(opts.stateDir, expected, () => { const value = captureRecoveryPolicy({ root: opts.cwd, id: projectId, stateDir: opts.stateDir }, recoveryInitiator, candidate, inputs); return value.policyDigest === expected.policyDigest && value.boardDigest === expected.boardDigest; });
       assertConductorRecovery(proof);
-      startupLayers = inputs.layers; recoveryConfiguration = candidate; recoveryRouting = inputs.routing; recoverySources = inputs.texts;
+      startupLayers = inputs.layers; recoveryConfiguration = candidate; recoveryRouting = inputs.routing; recoverySources = inputs.texts; recoveryDefaultRouting = inputs.routingFallback;
     } catch { throw new RecoveryAuthorityError(); }
     delete process.env.AGENTHUB_RECOVERY_CONDUCTOR;
     delete process.env.AGENTHUB_RECOVERY_CONTINUATION;
@@ -930,6 +930,8 @@ export async function startDaemon(opts: DaemonOptions) {
     let publicLine:string|undefined,view:ReturnType<typeof operationalView>|undefined;
     for(const [sock,current] of operationalLogSubscribers)try {current();if(sock.getBufferedAmount()>64*1024)throw new Error("slow log consumer");view??=publicOperationalView();publicLine??=view.line(text);sock.send(JSON.stringify({t:"operational_log",line:publicLine,complete:view.complete,...(!view.complete?{incompleteReason:view.incompleteReason}:{})}));}catch{operationalLogSubscribers.delete(sock);try{sock.close(4403,"operational log authority ended");}catch{/* The subscription is already gone. */}}
   };
+  let runningRoutingDefault = recoveryDefaultRouting;
+  if (runningRoutingDefault === undefined) try { runningRoutingDefault = recoveryRoutingFallback(); } catch { /* unknown defaults refuse conductor recovery */ }
   let runningRouting = recoveryRouting ?? currentRouting(opts.cwd, log);
   let acceptedSources = parseConfigSources(recoverySources ?? configSourceTexts(opts.cwd), runningRouting, opts.cwd, externalAdapters, externalDefinitions);
   const startupSources = structuredClone(acceptedSources.trustLayers);
@@ -5839,8 +5841,9 @@ export async function startDaemon(opts: DaemonOptions) {
     };
   }
   function currentRecoveryPolicy(peer: string) {
-    const inputs = readRecoveryPolicyInputs(opts.cwd);
+    const inputs = readRecoveryPolicyInputs(opts.cwd, runningRoutingDefault);
     const candidate = loadConfig(opts.cwd, inputs.layers, inputs.routing.retired ?? [], []);
+    assertRecoverySourceInputs(acceptedSources.trustLayers, inputs);
     // Compare accepted declarations; config.roles also contains the settled planner projection.
     assertRecoveryConfiguration({ ...config, roles: policyRoles }, candidate);
     assertRecoveryRouting(activeRouting(), inputs.routing);
@@ -7340,7 +7343,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (!raw || raw.peer !== c.peer || raw.projectRoot !== opts.cwd || raw.projectId !== projectId || raw.stateDir !== opts.stateDir
             || !restored || restored.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId
             || recoveryPhase !== "restored" || recoveryOperationId !== raw.operationId || instanceId === raw.sourceInstanceId
-            || packageDigest(resolve(import.meta.dir, "../.."), { ownDependencies: true }) !== raw.targetDigest) throw new RecoveryAuthorityError();
+            || recoveryTargetDigest(raw.kind, resolve(import.meta.dir, "../..")) !== raw.targetDigest) throw new RecoveryAuthorityError();
           const proof = authorizeConductorRecovery(opts.stateDir, raw, () => { current(); const value = currentRecoveryPolicy(c.peer!); return value.policyDigest === raw.policyDigest && value.boardDigest === raw.boardDigest; });
           const fence = () => { current(); assertConductorRecovery(proof); if (recoveryPhase !== "restored" || recoveryOperationId !== raw.operationId) throw new RecoveryAuthorityError(); };
           const saved = restored.peers.find(row => row.id === msg.peer);
@@ -7361,7 +7364,7 @@ export async function startDaemon(opts: DaemonOptions) {
         void (async () => { try {
           const settlingSource = msg.op === "verify" && recoveryCommitted && msg.binding?.operationId === recoveryOperationId && msg.binding?.sourceInstanceId === instanceId;
           const current = operationalCurrent(sock, false, settlingSource); current();
-          if (msg.op === "authorize" && ["restart", "upgrade"].includes(msg.command)) { currentRecoveryPolicy(c.peer!); current(); return void reply({ ok: true, instanceId }); }
+          if (msg.op === "authorize" && ["restart", "upgrade"].includes(msg.command)) { currentRecoveryPolicy(c.peer!); const inputs = readRecoveryPolicyInputs(opts.cwd, runningRoutingDefault); current(); return void reply({ ok: true, instanceId, ...(inputs.routingFallback === undefined ? {} : { routingDefault: inputs.routingFallback }) }); }
           if (!["issue", "verify"].includes(msg.op)) throw new RecoveryAuthorityError();
           const raw = msg.binding as ConductorRecoveryBinding;
           if (!raw || raw.peer !== c.peer || raw.projectRoot !== opts.cwd || raw.projectId !== projectId || raw.stateDir !== opts.stateDir) throw new RecoveryAuthorityError();
@@ -7371,7 +7374,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (msg.op === "issue") {
             const plan = msg.plan as UpgradePlan;
             const { fingerprint, ...body } = plan ?? {} as UpgradePlan;
-            if (!plan || plan.projects.some(row => row.terminals.length > 0) || planFingerprint(body) !== fingerprint || fingerprint !== raw.planFingerprint || plan.kind !== raw.kind || existsSync(operationPath(raw.operationId))
+            if (!plan || !["restart", "upgrade"].includes(plan.kind) || plan.projects.some(row => row.terminals.length > 0) || planFingerprint(body) !== fingerprint || fingerprint !== raw.planFingerprint || plan.kind !== raw.kind || existsSync(operationPath(raw.operationId))
               || raw.sourceInstanceId !== instanceId || recoveryActive() || recoveryLock() || !plan.projects.some(row => row.project.id === projectId && row.project.root === opts.cwd && row.project.stateDir === opts.stateDir && row.source.instanceId === instanceId)) throw new RecoveryAuthorityError();
             if (plan.kind === "restart" && plan.projects.length !== 1) throw new RecoveryAuthorityError();
             if (plan.kind === "upgrade") {
@@ -7392,7 +7395,7 @@ export async function startDaemon(opts: DaemonOptions) {
             const ordered = (rows: Parameters<typeof normalize>[0][]) => rows.map(normalize).sort((a, b) => a.id.localeCompare(b.id));
             if (JSON.stringify(ordered(selected.source.peers)) !== JSON.stringify(ordered(Object.values(recoveryPeers())))) throw new RecoveryAuthorityError();
             exactVersion(plan.version);
-            if (verifyPackage(raw.targetRoot, plan.version, { ownDependencies: true }) !== raw.targetDigest) throw new RecoveryAuthorityError();
+            if (verifyRecoveryTarget(raw.kind, raw.targetRoot, plan.version) !== raw.targetDigest) throw new RecoveryAuthorityError();
             readRecoveryTargetFeatures(raw.targetRoot);
             if (raw.kind === "restart") {
               if (!sourcePackageDigest || raw.targetDigest !== sourcePackageDigest) throw new RecoveryAuthorityError();
@@ -7404,10 +7407,11 @@ export async function startDaemon(opts: DaemonOptions) {
             }
             if (!sourcePackageDigest || plan.sourceDigest !== sourcePackageDigest && (plan.kind !== "upgrade" || plan.sourceDigest !== raw.targetDigest)) throw new RecoveryAuthorityError();
             current();
-            issueConductorRecoveryAuthority(opts.stateDir, expected, fresh);
             if (!event({ type: "agent_cli", peer: c.peer!, command: raw.kind, refused: false })) throw new RecoveryAuthorityError();
+            current();
+            issueConductorRecoveryAuthority(opts.stateDir, expected, fresh);
           } else {
-            if (instanceId !== raw.sourceInstanceId && (restored?.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId || packageDigest(resolve(import.meta.dir, "../.."), { ownDependencies: true }) !== raw.targetDigest)) throw new RecoveryAuthorityError();
+            if (instanceId !== raw.sourceInstanceId && (restored?.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId || recoveryTargetDigest(raw.kind, resolve(import.meta.dir, "../..")) !== raw.targetDigest)) throw new RecoveryAuthorityError();
             assertConductorRecovery(authorizeConductorRecovery(opts.stateDir, expected, fresh));
           }
           current(); return void reply({ ok: true, instanceId, target: restored?.operationId === raw.operationId && instanceId !== raw.sourceInstanceId, operationId: recoveryOperationId, phase: recoveryPhase });
@@ -7425,9 +7429,9 @@ export async function startDaemon(opts: DaemonOptions) {
             if (msg.op !== "inspect" || msg.operationId !== undefined) {
               const raw = msg.authority as ConductorRecoveryBinding;
               if (!raw || raw.peer !== c.peer || raw.operationId !== msg.operationId || raw.projectRoot !== opts.cwd || raw.projectId !== projectId || raw.stateDir !== opts.stateDir) throw new RecoveryAuthorityError();
-              if (instanceId !== raw.sourceInstanceId && (restored?.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId || packageDigest(resolve(import.meta.dir, "../.."), { ownDependencies: true }) !== raw.targetDigest)) throw new RecoveryAuthorityError();
+              if (instanceId !== raw.sourceInstanceId && (restored?.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId || recoveryTargetDigest(raw.kind, resolve(import.meta.dir, "../..")) !== raw.targetDigest)) throw new RecoveryAuthorityError();
               const proof = authorizeConductorRecovery(opts.stateDir, raw, () => { current(); const value = currentRecoveryPolicy(c.peer!); return value.policyDigest === raw.policyDigest && value.boardDigest === raw.boardDigest; });
-              recoveryCurrent = () => { current(); assertConductorRecovery(proof); if (packageDigest(raw.targetRoot, { ownDependencies: true }) !== raw.targetDigest) throw new RecoveryAuthorityError(); };
+              recoveryCurrent = () => { current(); assertConductorRecovery(proof); if (recoveryTargetDigest(raw.kind, raw.targetRoot) !== raw.targetDigest) throw new RecoveryAuthorityError(); };
               recoveryCurrent();
               recoveryMessage = { ...msg, targetFeatures: readRecoveryTargetFeatures(raw.targetRoot) };
             } else recoveryCurrent = current;

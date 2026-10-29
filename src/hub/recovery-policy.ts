@@ -7,10 +7,11 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { types } from "node:util";
-import { defaultPeerRoles, definitionOf } from "../adapters/registry.ts";
+import { definitionOf } from "../adapters/registry.ts";
 import type { HubConfig } from "./daemon.ts";
 import type { ConfigSourceTexts } from "./config-reload.ts";
 import { conductorPeer } from "./conductor.ts";
+import { DEFAULT_ROLES } from "./hub-tools.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { readInstanceConfig, type InstanceConfigLayer } from "./instance-config.ts";
 import { effectiveInstanceRoles } from "./instances.ts";
@@ -22,7 +23,7 @@ import { parseOverlay, parseRouting, type Routing } from "./routing.ts";
 export interface RecoveryPolicyProject { root: string; id: string; stateDir: string }
 export interface RecoveryPolicyCapture { policyDigest: string; boardDigest: string }
 /** Host-captured inputs, shared with loadConfig before any module evaluation. */
-export interface RecoveryPolicyInputs { layers: InstanceConfigLayer[]; routing: Routing; texts?: ConfigSourceTexts }
+export interface RecoveryPolicyInputs { layers: InstanceConfigLayer[]; routing: Routing; texts?: ConfigSourceTexts; routingFallback?: string }
 const MAX_POLICY_BYTES = 1024 * 1024;
 const MAX_ACTOR_TASKS = 4096;
 const MAX_SIGNALS_BYTES = 65536;
@@ -84,7 +85,7 @@ function canonical(value: unknown, depth = 0): string {
 }
 
 function freshRoles(layers: readonly InstanceConfigLayer[], scope: ReturnType<typeof readInstanceConfig>): Record<string, string[]> {
-  const roles = defaultPeerRoles(true);
+  const roles = structuredClone(DEFAULT_ROLES);
   for (const { raw } of layers) if (raw.roles !== undefined) {
     conductorPeer(raw.roles);
     for (const [id, list] of Object.entries(raw.roles as Record<string, string[]>)) {
@@ -139,8 +140,25 @@ export function assertRecoveryRouting(accepted: Routing, candidate: Routing): vo
   catch { refuse(); }
 }
 
+/** Unknown future keys are still protected inputs; an older source may not silently authorize a pending edit. */
+export function assertRecoverySourceInputs(accepted: readonly { name: string; raw: Record<string, unknown> }[], candidate: RecoveryPolicyInputs): void {
+  try {
+    const actual: { name: string; raw: Record<string, unknown> }[] = [...candidate.layers];
+    for (const name of ["routing.toml", "routing.local.toml"] as const) {
+      const text = candidate.texts?.[name];
+      if (text != null) actual.push({ name, raw: Bun.TOML.parse(text) });
+    }
+    const projection = (rows: readonly { name: string; raw: Record<string, unknown> }[]) => Object.fromEntries(rows.filter(row => Object.keys(row.raw).length > 0).map(row => [row.name, row.raw]));
+    if (canonical(projection(accepted)) !== canonical(projection(actual))) refuse();
+  } catch { refuse(); }
+}
+
 /** One bounded source capture feeds both loadConfig and the recovery proof. No module is evaluated. */
-export function readRecoveryPolicyInputs(root: string): RecoveryPolicyInputs {
+export function recoveryRoutingFallback(): string {
+  try { return boundedText(resolve(import.meta.dir, "..", "..", "templates", "routing.toml"))!; } catch { return refuse(); }
+}
+
+export function readRecoveryPolicyInputs(root: string, fallback?: string): RecoveryPolicyInputs {
   try {
     if (!isAbsolute(root) || realPath(root) !== root) refuse();
     const layers: InstanceConfigLayer[] = [];
@@ -154,10 +172,11 @@ export function readRecoveryPolicyInputs(root: string): RecoveryPolicyInputs {
       layers.push({ name, raw: raw as Record<string, unknown> });
     }
     const ownMain = boundedText(join(root, ".agenthub", "routing.toml"), true);
-    const main = ownMain ?? boundedText(resolve(import.meta.dir, "..", "..", "templates", "routing.toml"))!;
+    const main = ownMain ?? fallback ?? recoveryRoutingFallback();
+    if (Buffer.byteLength(main) > MAX_POLICY_BYTES) refuse();
     const overlay = boundedText(join(root, ".agenthub", "routing.local.toml"), true);
     texts["routing.toml"] = ownMain ?? null; texts["routing.local.toml"] = overlay ?? null;
-    return { layers, routing: parseRouting(main, overlay === undefined ? undefined : parseOverlay(overlay)), texts };
+    return { layers, routing: parseRouting(main, overlay === undefined ? undefined : parseOverlay(overlay)), texts, ...(ownMain === undefined ? { routingFallback: main } : {}) };
   } catch { return refuse(); }
 }
 
@@ -170,7 +189,8 @@ export function captureRecoveryPolicy(project: RecoveryPolicyProject, peer: stri
     const snapshot = canonical(inputs ?? readRecoveryPolicyInputs(project.root));
     if (Buffer.byteLength(snapshot) > 8 * MAX_POLICY_BYTES) refuse();
     // Copy host own-data fields once, so proof evaluation cannot run callbacks or observe mutation mid-capture.
-    const { layers, routing } = JSON.parse(snapshot) as RecoveryPolicyInputs;
+    const captured = JSON.parse(snapshot) as RecoveryPolicyInputs;
+    const { layers, routing } = captured;
     if (!Array.isArray(layers) || layers.length > 2 || new Set(layers.map(layer => layer.name)).size !== layers.length
       || layers.some(layer => !["config.json", "config.local.json"].includes(layer.name) || !layer.raw || typeof layer.raw !== "object" || Array.isArray(layer.raw))) refuse();
     // Explicit empty runtime definitions: never import a module or trust a retained display catalog.
@@ -186,8 +206,10 @@ export function captureRecoveryPolicy(project: RecoveryPolicyProject, peer: stri
     if (canonical(roster) !== canonical(currentConfig.roster) || !rosterAllows(roster, peer, currentConfig.pi.enabled, scope.instances, scope.catalog)) refuse();
     // ponytail: at most 2 MiB config, 2 MiB routing and 4096 actor-bound open rows (1 MiB signals).
     // A larger board fails closed; the upgrade path is an indexed durable per-actor privacy generation.
-    const policy = canonical({ schema: 1, project: { root: project.root, id: project.id, stateDir: project.stateDir }, peer, roles, roster, instances: scope.instances ?? {},
-      config: currentConfig, sources: layers, routing });
+    // Seal version-neutral inputs and the fresh actor decision. Defaults and registry projections may evolve in the verified target.
+    const policy = canonical({ schema: 1, project: { root: project.root, id: project.id, stateDir: project.stateDir }, peer,
+      actor: { conductor: true, rostered: true, writable: true }, sources: layers, texts: captured.texts ?? null,
+      routingFallback: captured.routingFallback ?? null });
     if (Buffer.byteLength(policy) > 8 * MAX_POLICY_BYTES) refuse();
     return { policyDigest: hash(policy), boardDigest: publicActorBoard(project.stateDir, peer, routing) };
   } catch { return refuse(); }
