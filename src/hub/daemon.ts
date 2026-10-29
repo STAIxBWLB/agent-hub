@@ -80,12 +80,13 @@ import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
+import { GROOM_FYI_WINDOW_SETTING } from "./operational-settings.ts";
 import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
 import type { ScannedFile } from "./schedules.ts";
 import { corpusConfig } from "./corpus-config.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
-import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateEffectiveConfig, validatePetConfig } from "./config-apply.ts";
+import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateEffectiveConfig, validateOperationalConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSourceTexts, type ConfigSources } from "./config-reload.ts";
 import { issueConductorRecoveryAuthority, authorizeConductorRecovery, assertConductorRecovery, RecoveryAuthorityError, type ConductorRecoveryBinding } from "./recovery-authority.ts";
@@ -244,7 +245,7 @@ export interface HubConfig {
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
-  tasks: { release_after_min: number; wip_limits?: Record<string, number>; escalate_after: number; /** #785 P1c: pull the top explicitly reserved ready card when a slot frees; machine-local, default off. */ auto_pull?: boolean; queue_backpressure?: Partial<QueueBackpressurePolicy> };
+  tasks: { release_after_min: number; wip_limits?: Record<string, number>; escalate_after: number; groom_fyi_window_min?: number; /** #785 P1c: pull the top explicitly reserved ready card when a slot frees; machine-local, default off. */ auto_pull?: boolean; queue_backpressure?: Partial<QueueBackpressurePolicy> };
   /** Between-turn task escalation, disabled unless explicitly enabled (#186). */
   task_sweep: TaskSweepConfig;
   /** #512a: machine-local schedules; checked by `schedulesConfig`, never set from a committed file. */
@@ -309,7 +310,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   ...nativeDefaults.sandbox,
   // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
   approvals: { timeout_s: 120, notify: false },
-  tasks: { release_after_min: 30, escalate_after: ESCALATE_AFTER, auto_pull: false },
+  tasks: { release_after_min: 30, escalate_after: ESCALATE_AFTER, groom_fyi_window_min: GROOM_FYI_WINDOW_SETTING.defaultValue, auto_pull: false },
   task_sweep: DEFAULT_TASK_SWEEP,
   schedules: [],
   folder_triggers: [],
@@ -430,6 +431,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     projectionConfig(file.text_projection);
     corpusConfig(file.corpus);
     queueBackpressurePolicy(file.tasks?.queue_backpressure);
+    validateOperationalConfig(file);
     for (const [block, key] of [["pii", "paths"], ["data", "readonly"]] as const) {
       const raw = file[block];
       if (raw !== undefined && (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).some(k => k !== key))) throw new Error(block + " must be a bounded path policy block");
@@ -1889,6 +1891,7 @@ export async function startDaemon(opts: DaemonOptions) {
     recordPlanning: change => event({ type: "planning", ...change }),
     wipLimit: peer => Object.hasOwn(config.tasks.wip_limits ?? {}, peer) ? config.tasks.wip_limits![peer]! : 1,
     escalateAfter: () => config.tasks.escalate_after ?? ESCALATE_AFTER,
+    groomFyiWindowMin: () => config.tasks.groom_fyi_window_min ?? GROOM_FYI_WINDOW_SETTING.defaultValue,
     profile: profileName(config.profile),
     profileData: resolvedProfile,
     piiPaths: config.pii?.paths,
