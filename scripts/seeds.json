@@ -4408,6 +4408,14 @@
       "replacement": "if (false) throw new RecoveryAuthorityError();",
       "testFile": "test/conductor-recovery.test.ts",
       "testName": "source issuance refuses an unbound coordinator or invalid target version before creating a grant"
+    },
+    {
+      "id": "conductor-recovery-retained-intent",
+      "file": "src/hub/daemon.ts",
+      "search": "if (board.hasConductorManualState() && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes(\"conductor_recovery\"))) return \"target lacks conductor_recovery; open conductor manual-assignment intent cannot be preserved\";",
+      "replacement": "if (false) return \"target lacks conductor_recovery; open conductor manual-assignment intent cannot be preserved\";",
+      "testFile": "test/conductor-recovery.test.ts",
+      "testName": "person recovery also preserves open conductor manual intent across target versions"
     }
   ]
 }

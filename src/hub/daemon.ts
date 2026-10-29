@@ -6714,6 +6714,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ? `target lacks task_cancel; cancelled tasks: ${ids.map(id => `#${id}`).join(", ")}` : undefined;
     };
     const incompatibleRecoveryTarget = () => {
+      if (board.hasConductorManualState() && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("conductor_recovery"))) return "target lacks conductor_recovery; open conductor manual-assignment intent cannot be preserved";
       if (allExternalInstanceIds().length && (!Array.isArray(msg.targetFeatures) || !["external_adapter_instances", "external_adapter_modules", "peer_instances"].every(feature => msg.targetFeatures.includes(feature)))) return "target lacks external_adapter_instances or its module/instance prerequisites";
       if (!(msg.op === "inspect" && recoveryPhase === "restored")) for (const id of allExternalInstanceIds()) if (!retainedExternalBinding(id, true)) return "external instance retained binding changed or unavailable";
       const cancelled = incompatibleCancellationTarget();

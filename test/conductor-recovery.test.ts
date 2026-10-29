@@ -385,3 +385,21 @@ test("missing control metadata cannot bootstrap while the signed source claim is
     releaseStop.resolve(); await f.daemon.stop(); registry.release(f.project.id, f.project.instanceId); registry.close(); await f.close();
   }
 }, 20_000);
+
+test("person recovery also preserves open conductor manual intent across target versions", async () => {
+  const f = await fixture(), board = new Board(join(f.stateDir, "hub.db"));
+  const id = crypto.randomUUID(), targetFeatures = DAEMON_FEATURES.filter(feature => feature !== "conductor_recovery");
+  try {
+    const row = board.propose("user", { title: "manual intent compatibility fixture", class: "plan" });
+    board.update(row.id, "user", "assigned", { owner: "claude" });
+    expect((await f.lead.request({ t: "task", op: "task_unassign", args: { id: row.id } })).ok).toBe(true);
+    expect(board.hasConductorManualState()).toBe(true);
+    const message = { t: "recovery", op: "prepare", expectedInstanceId: f.project.instanceId, operationId: id, targetFeatures };
+    const refused = await f.person.request(message);
+    expect(refused.ok).toBe(false); expect(refused.error).toContain("target lacks conductor_recovery"); f.noEffects();
+    board.update(row.id, "user", "cancelled", { state: "cancelled" });
+    expect(board.hasConductorManualState()).toBe(false);
+    expect((await f.person.request(message)).ok).toBe(true);
+    expect((await f.person.request({ ...message, op: "abort" })).ok).toBe(true); f.noEffects();
+  } finally { board.close(); await f.close(); }
+}, 20_000);

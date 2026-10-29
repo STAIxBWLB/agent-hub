@@ -738,6 +738,15 @@ export class Board {
   }
 
   /** A short-circuit SQL presence read; no task, receipt or history body is hydrated into JS. */
+  hasConductorManualState(): boolean {
+    const row = this.db.query(`SELECT EXISTS(
+      SELECT 1 FROM tasks, json_each(CASE WHEN json_valid(tasks.history) THEN tasks.history ELSE '[]' END) AS entry
+      WHERE tasks.state NOT IN ('approved','cancelled') AND CASE WHEN json_valid(entry.value)
+        THEN json_type(entry.value,'$.conductorManual') IS NOT NULL ELSE 0 END
+    ) AS present`).get() as { present: number };
+    return row.present === 1;
+  }
+
   hasPlannerState(): boolean {
     const row = this.db.query(`SELECT
       EXISTS(SELECT 1 FROM tasks WHERE planner IS NOT NULL) OR
