@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "a9e2970da94d65cf5473bd9d3ddbe6193b9c3454",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "a9e2970da94d65cf5473bd9d3ddbe6193b9c3454",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "a9e2970da94d65cf5473bd9d3ddbe6193b9c3454",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "a9e2970da94d65cf5473bd9d3ddbe6193b9c3454",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "package.json",
         "src/",
@@ -43,7 +43,7 @@
       ]
     },
     "docs/agent-notes/adapters.md": {
-      "verifiedAgainst": "a9e2970da94d65cf5473bd9d3ddbe6193b9c3454",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "src/adapters/",
         "src/pi/",
@@ -81,7 +81,7 @@
       ]
     },
     "docs/agent-notes/benchmarks.md": {
-      "verifiedAgainst": "a9e2970da94d65cf5473bd9d3ddbe6193b9c3454",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "scripts/benchmarks/",
         "test/benchmarks/",
@@ -93,7 +93,7 @@
       ]
     },
     "docs/agent-notes/budget.md": {
-      "verifiedAgainst": "a9e2970da94d65cf5473bd9d3ddbe6193b9c3454",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "src/hub/budget.ts",
         "src/cli/statusline-tee.ts",
@@ -117,7 +117,7 @@
       ]
     },
     "docs/agent-notes/bus.md": {
-      "verifiedAgainst": "a9e2970da94d65cf5473bd9d3ddbe6193b9c3454",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "src/hub/bus.ts",
         "src/hub/envelope.ts",
@@ -132,7 +132,7 @@
       ]
     },
     "docs/agent-notes/daemon.md": {
-      "verifiedAgainst": "a9e2970da94d65cf5473bd9d3ddbe6193b9c3454",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "src/hub/daemon.ts",
         "src/hub/control-client.ts",
@@ -205,7 +205,7 @@
       ]
     },
     "docs/agent-notes/local-worker.md": {
-      "verifiedAgainst": "a9e2970da94d65cf5473bd9d3ddbe6193b9c3454",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "src/adapters/local-worker.ts",
         "src/local/",
@@ -217,7 +217,7 @@
       ]
     },
     "docs/agent-notes/models.md": {
-      "verifiedAgainst": "af22ee0dd9c6a1f4a5c5fc3f10fbfe4875350c1e",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "src/models/",
         "src/hub/inference.ts",
@@ -225,7 +225,7 @@
       ]
     },
     "docs/agent-notes/tasks.md": {
-      "verifiedAgainst": "a9e2970da94d65cf5473bd9d3ddbe6193b9c3454",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "src/hub/tasks.ts",
         "src/hub/board.ts",
@@ -264,7 +264,7 @@
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "a9e2970da94d65cf5473bd9d3ddbe6193b9c3454",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "test/",
         "scripts/check.sh",
@@ -292,7 +292,7 @@
       ]
     },
     "docs/agent-notes/README.md": {
-      "verifiedAgainst": "a9e2970da94d65cf5473bd9d3ddbe6193b9c3454",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "src/cli/console-state.ts",
         "src/cli/attention.ts",
@@ -301,7 +301,7 @@
       ]
     },
     "src/cli/help.ts": {
-      "verifiedAgainst": "bc8a7f25f5ca93563bf1d43aca374b0c85560356",
+      "verifiedAgainst": "aeeaeb048860316dd4e08d84a658519ed6c0ad24",
       "paths": [
         "src/cli/main.ts",
         "src/cli/launch.ts",
