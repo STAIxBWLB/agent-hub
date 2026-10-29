@@ -1,3 +1,4 @@
+import { types } from "node:util";
 import type { PeerState } from "../hub/envelope.ts";
 import { decodeBase64url, encodeBase64url } from "./crypto.ts";
 import { parseRemotePeerId } from "./application.ts";
@@ -30,13 +31,17 @@ export interface RoomStatusView {
 }
 
 function plainRecord(value: unknown): value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!value || typeof value !== "object" || types.isProxy(value) || Array.isArray(value)) return false;
   try { return Object.getPrototypeOf(value) === Object.prototype; } catch { return false; }
+}
+
+function plainArray(value: unknown): value is unknown[] {
+  return !!value && typeof value === "object" && !types.isProxy(value) && Array.isArray(value);
 }
 
 /** Read own data properties only; accessors and hostile proxies are never evaluated. */
 function ownData(value: unknown, key: string): unknown {
-  if (!value || typeof value !== "object") return undefined;
+  if (!value || typeof value !== "object" || types.isProxy(value)) return undefined;
   try {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
@@ -44,6 +49,7 @@ function ownData(value: unknown, key: string): unknown {
 }
 
 function arrayItem(value: unknown[], index: number): unknown {
+  if (types.isProxy(value)) return undefined;
   try {
     const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
     return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
@@ -66,7 +72,7 @@ function memberCount(value: unknown): number | null {
 
 /** Invalid or absent remote peer metadata stays unknown; no body, title, or arbitrary row is copied. */
 function remotePeers(value: unknown): RoomStatusPeer[] | null {
-  if (!Array.isArray(value) || value.length > REMOTE_PEER_LIMIT) return null;
+  if (!plainArray(value) || value.length > REMOTE_PEER_LIMIT) return null;
   const result: RoomStatusPeer[] = [], ids = new Set<string>();
   for (let index = 0; index < value.length; index++) {
     const item = arrayItem(value, index);
@@ -82,7 +88,7 @@ function remotePeers(value: unknown): RoomStatusPeer[] | null {
 /** Project RoomCommands.rows-compatible data to body-free room status metadata. */
 export function projectRoomStatus(value: unknown): RoomStatusView[] {
   try {
-    if (!Array.isArray(value) || value.length > ROOM_LIMIT) return [];
+    if (!plainArray(value) || value.length > ROOM_LIMIT) return [];
     const views: RoomStatusView[] = [];
     for (let index = 0; index < value.length; index++) {
       const item = arrayItem(value, index);

@@ -48,3 +48,22 @@ test("room status ignores accessor and arbitrary nested body, title and debug fi
   expect(projectRoomStatus([requiredAccessor])).toEqual([]);
   expect(reads).toBe(0);
 });
+
+test("room status refuses proxies at root, row, remote list and peer boundaries without running traps", () => {
+  let traps = 0;
+  const wrap = <T extends object>(value: T): T => new Proxy(value, {
+    get() { traps++; throw new Error("get trap ran"); },
+    getPrototypeOf() { traps++; throw new Error("prototype trap ran"); },
+    ownKeys() { traps++; throw new Error("keys trap ran"); },
+    getOwnPropertyDescriptor() { traps++; throw new Error("descriptor trap ran"); },
+  });
+  const root = wrap([base]);
+  expect(projectRoomStatus(root)).toEqual([]);
+  expect(projectRoomStatus([wrap({ ...base })])).toEqual([]);
+  expect(projectRoomStatus([{ ...base, remotePeers: wrap([{ id: "codex@hub-b", state: "idle" }]) }])[0]?.remotePeers).toBeNull();
+  expect(projectRoomStatus([{ ...base, remotePeers: [wrap({ id: "codex@hub-b", state: "idle" })] }])[0]?.remotePeers).toBeNull();
+  expect(traps).toBe(0);
+
+  const revoked = Proxy.revocable([base], {}); revoked.revoke();
+  expect(projectRoomStatus(revoked.proxy)).toEqual([]);
+});
