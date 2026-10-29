@@ -756,6 +756,10 @@ export interface SplitInput {
   /** Other open work each peer has: a busy owner does not start from orientation plus two whole units. */
   backlog: Record<PeerId, number>;
   available: Record<PeerId, boolean>;
+  /** #489 H2: `tasks.split_min_observations`; absent is `SPLIT_MIN`. */
+  minObservations?: number;
+  /** #489 H2: `tasks.split_max_failure_share`; absent is `SPLIT_FAILURE_SHARE`. */
+  maxFailureShare?: number;
 }
 
 export interface SplitPrediction {
@@ -770,7 +774,7 @@ export interface SplitPrediction {
 
 /** Observations a peer needs, and the share of failures a history may hold, before a prediction is made. */
 export const SPLIT_MIN = 5;
-const SPLIT_FAILURE_SHARE = 0.3;
+export const SPLIT_FAILURE_SHARE = 0.3;
 
 /**
  * Shadow split prediction (issue #109): never changes assignment. For two similar units of overlapping work, a split
@@ -781,6 +785,8 @@ const SPLIT_FAILURE_SHARE = 0.3;
  * comparable. A difference under a tenth of the single time is inconclusive.
  */
 export function predictSplit(input: SplitInput): SplitPrediction {
+  // #489 H2: `tasks.split_min_observations` and `tasks.split_max_failure_share`; absent, the constants above.
+  const minObservations = input.minObservations ?? SPLIT_MIN, maxFailureShare = input.maxFailureShare ?? SPLIT_FAILURE_SHARE;
   const trace: string[] = ["shadow split prediction (it never changes assignment):"];
   const unknown = (why: string): SplitPrediction => ({ verdict: "unknown", trace: [...trace, `  unknown: ${why}`] });
   const [a, b] = input.peers;
@@ -804,8 +810,8 @@ export function predictSplit(input: SplitInput): SplitPrediction {
     const all = input.observations[p] ?? [];
     const failed = all.filter((o) => o.outcome !== "approved").length;
     const ok = all.filter((o): o is Required<SplitObservation> => o.outcome === "approved" && o.orient !== undefined && o.work !== undefined);
-    if (ok.length < SPLIT_MIN) return unknown(`${p} has ${ok.length} measured task(s) with this profile; ${SPLIT_MIN} are needed`);
-    if (failed / all.length > SPLIT_FAILURE_SHARE) return unknown(`${failed} of ${all.length} of ${p}'s recorded tasks failed: its successes alone would understate its time`);
+    if (ok.length < minObservations) return unknown(`${p} has ${ok.length} measured task(s) with this profile; ${minObservations} are needed`);
+    if (failed / all.length > maxFailureShare) return unknown(`${failed} of ${all.length} of ${p}'s recorded tasks failed: its successes alone would understate its time`);
     const works = ok.map((o) => o.work).sort((x, y) => x - y);
     const u = median(works);
     const iqr = works[Math.floor((works.length * 3) / 4)]! - works[Math.floor(works.length / 4)]!;

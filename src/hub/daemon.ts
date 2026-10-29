@@ -80,7 +80,7 @@ import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
-import { GROOM_FYI_WINDOW_SETTING } from "./operational-settings.ts";
+import { CONTRADICTION_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SETTING, GROOM_FYI_WINDOW_SETTING, RESCREEN_MAX_SETTING, SPLIT_FAILURE_SHARE_SETTING, SPLIT_MIN_SETTING, taskOperationalReaders } from "./operational-settings.ts";
 import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
 import type { ScannedFile } from "./schedules.ts";
@@ -245,7 +245,7 @@ export interface HubConfig {
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
-  tasks: { release_after_min: number; wip_limits?: Record<string, number>; escalate_after: number; groom_fyi_window_min?: number; /** #785 P1c: pull the top explicitly reserved ready card when a slot frees; machine-local, default off. */ auto_pull?: boolean; queue_backpressure?: Partial<QueueBackpressurePolicy> };
+  tasks: { release_after_min: number; wip_limits?: Record<string, number>; escalate_after: number; groom_fyi_window_min?: number; demote_at?: number; demotion_half_life_h?: number; contradiction_window_days?: number; rescreen_max?: number; split_min_observations?: number; split_max_failure_share?: number; /** #785 P1c: pull the top explicitly reserved ready card when a slot frees; machine-local, default off. */ auto_pull?: boolean; queue_backpressure?: Partial<QueueBackpressurePolicy> };
   /** Between-turn task escalation, disabled unless explicitly enabled (#186). */
   task_sweep: TaskSweepConfig;
   /** #512a: machine-local schedules; checked by `schedulesConfig`, never set from a committed file. */
@@ -310,7 +310,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   ...nativeDefaults.sandbox,
   // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
   approvals: { timeout_s: 120, notify: false },
-  tasks: { release_after_min: 30, escalate_after: ESCALATE_AFTER, groom_fyi_window_min: GROOM_FYI_WINDOW_SETTING.defaultValue, auto_pull: false },
+  tasks: { release_after_min: 30, escalate_after: ESCALATE_AFTER, groom_fyi_window_min: GROOM_FYI_WINDOW_SETTING.defaultValue, demote_at: DEMOTE_AT_SETTING.defaultValue, demotion_half_life_h: DEMOTION_HALF_LIFE_SETTING.defaultValue, contradiction_window_days: CONTRADICTION_WINDOW_SETTING.defaultValue, rescreen_max: RESCREEN_MAX_SETTING.defaultValue, split_min_observations: SPLIT_MIN_SETTING.defaultValue, split_max_failure_share: SPLIT_FAILURE_SHARE_SETTING.defaultValue, auto_pull: false },
   task_sweep: DEFAULT_TASK_SWEEP,
   schedules: [],
   folder_triggers: [],
@@ -1896,6 +1896,7 @@ export async function startDaemon(opts: DaemonOptions) {
     wipLimit: peer => Object.hasOwn(config.tasks.wip_limits ?? {}, peer) ? config.tasks.wip_limits![peer]! : 1,
     escalateAfter: () => config.tasks.escalate_after ?? ESCALATE_AFTER,
     groomFyiWindowMin: () => config.tasks.groom_fyi_window_min ?? GROOM_FYI_WINDOW_SETTING.defaultValue,
+    ...taskOperationalReaders(() => config), // #489 H2
     profile: profileName(config.profile),
     profileData: resolvedProfile,
     piiPaths: config.pii?.paths,

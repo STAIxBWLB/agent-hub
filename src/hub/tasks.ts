@@ -224,17 +224,24 @@ export interface TasksDeps {
   escalateAfter?: () => number;
   /** #489 H1: current host configuration, read at each planner-notice flush; no task/request override. */
   groomFyiWindowMin?: () => number;
+  /** #489 H2: current host configuration, read at each use (no cache, no task/request override); absent is the constant each replaces. */
+  demoteAt?: () => number;
+  demotionHalfLifeH?: () => number;
+  contradictionWindowDays?: () => number;
+  rescreenMax?: () => number;
+  splitMinObservations?: () => number;
+  splitMaxFailureShare?: () => number;
 }
 
 /** The `tasks.escalate_after` default (#488): the third consecutive changes_requested escalates. */
 export const ESCALATE_AFTER = 3;
 // Demotion (issue #36): a failure counts half after a day. A peer is demoted for a class once its decayed failures
 // reach 1.5 (two within about half a day, three within two days) and outweigh its decayed successes there.
-// ponytail: fixed constants; make them config when someone needs to tune them.
-const DEMOTION_HALF_LIFE_MS = 24 * 3_600_000;
-const DEMOTE_AT = 1.5;
-/** An approval counts as contradicted when work on the same places fails within this window (issue #35). */
-const CONTRADICTION_WINDOW_MS = 7 * 86_400_000;
+// #489 H2: `tasks.demotion_half_life_h` and `tasks.demote_at` set these; unset they are exactly the constants below (pinned in test/operational-settings.test.ts).
+export const DEMOTION_HALF_LIFE_MS = 24 * 3_600_000;
+export const DEMOTE_AT = 1.5;
+/** An approval counts as contradicted when work on the same places fails within this window (issue #35); `tasks.contradiction_window_days` sets it. */
+export const CONTRADICTION_WINDOW_MS = 7 * 86_400_000;
 const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 const QUEUE_PRESSURE_CODES: readonly QueueBackpressureCode[] = ["queue-count", "queue-age", "queue-age-unknown"];
 const isQueuePressureCode = (code: string): code is QueueBackpressureCode => (QUEUE_PRESSURE_CODES as readonly string[]).includes(code);
@@ -346,7 +353,7 @@ const planText = (plan: TaskPlan = {}) => ALL_PLAN_KEYS.filter((k) => plan[k]?.l
 /** What the PII screen reads of a task (#198): the text the patterns are checked against. */
 const screenText = (t: { title: string; detail: string; plan?: TaskPlan; external?: Task["external"] }) => [t.title, t.detail, planText(t.plan), t.external?.repo, t.external?.url].filter(value => value !== undefined).join("\n");
 /** Re-screens of one task whose verdict was unknown, per hub run (#198). */
-const RESCREEN_MAX = 10;
+export const RESCREEN_MAX = 10;
 /** #758: the planner "board changed" notice. Its body starts with this, so an unsettled copy is found (and replaced) by the prefix. */
 const GROOM_NOTICE_PREFIX = "The board changed";
 /** #758: a board change that needs no plan review is recorded at most once per planner in this window. */
@@ -829,14 +836,15 @@ export class Tasks {
   /** Decayed failure weights of the peers demoted for a class: failures count half after a day (issue #36). */
   demoted(cls: TaskClass, now = Date.now()): Record<PeerId, number> {
     const sums = new Map<PeerId, { bad: number; good: number }>();
+    const halfLifeH = this.d.demotionHalfLifeH?.(), halfLifeMs = halfLifeH === undefined ? DEMOTION_HALF_LIFE_MS : halfLifeH * 3_600_000, demoteAt = this.d.demoteAt?.() ?? DEMOTE_AT;
     for (const o of this.d.board.outcomes(cls, now - OUTCOMES_KEPT_MS)) {
-      const w = 0.5 ** ((now - o.at) / DEMOTION_HALF_LIFE_MS);
+      const w = 0.5 ** ((now - o.at) / halfLifeMs);
       const s = sums.get(o.peer) ?? { bad: 0, good: 0 };
       if (o.ok) s.good += w;
       else s.bad += w;
       sums.set(o.peer, s);
     }
-    return Object.fromEntries([...sums].filter(([, s]) => s.bad >= DEMOTE_AT && s.bad > s.good).map(([p, s]) => [p, s.bad]));
+    return Object.fromEntries([...sums].filter(([, s]) => s.bad >= demoteAt && s.bad > s.good).map(([p, s]) => [p, s.bad]));
   }
 
   /** How each reviewer's reviews of each implementer's work in a class held up (issue #35). */
@@ -1048,6 +1056,8 @@ export class Tasks {
       peers,
       observations: Object.fromEntries(peers.map((p) => [p, this.splitObservations(task.class, p, task.id)])),
       units: [unit, unit],
+      ...(this.d.splitMinObservations ? { minObservations: this.d.splitMinObservations() } : {}),
+      ...(this.d.splitMaxFailureShare ? { maxFailureShare: this.d.splitMaxFailureShare() } : {}),
       profiles: Object.fromEntries(peers.map((p) => [p, this.d.splitProfile?.(p)])),
       backlog: Object.fromEntries(peers.map((p) => [p, open.filter((t) => t.owner === p).length])),
       // Busy is taking the task in question only in the turn that task started (an owner goes busy as its task is
@@ -1065,11 +1075,12 @@ export class Tasks {
   private contradict(failed: Task): void {
     if (this.isPii(failed)) return; // its places are left out everywhere else too
     const now = Date.now();
+    const contradictionDays = this.d.contradictionWindowDays?.(), contradictionWindowMs = contradictionDays === undefined ? CONTRADICTION_WINDOW_MS : contradictionDays * 86_400_000;
     const mine = this.places(failed);
     for (const t of this.d.board.list("approved")) {
       if (t.id === failed.id || !t.owner || this.isPii(t)) continue;
       const approval = [...t.history].reverse().find((h) => h.event === "approved");
-      if (!approval || now - approval.at > CONTRADICTION_WINDOW_MS || approval.by === USER) continue;
+      if (!approval || now - approval.at > contradictionWindowMs || approval.by === USER) continue;
       const theirs = this.places(t);
       // Blame needs the same file or symbol: a directory or `.` would contradict every approval under it. Older rows
       // were stored as written, so both sides are compared in one spelling.
@@ -2205,7 +2216,8 @@ export class Tasks {
       return t.state === "proposed" && !t.owner && !t.history.some((h) => h.owner) && t.signals.includes("pii") && last.startsWith("pii: unknown") && last !== "pii: unknown, too long";
     };
     const tries = (t: Task) => this.rescreens.get(t.id) ?? 0;
-    const task = this.d.board.list("proposed").filter((t) => waiting(t) && tries(t) < RESCREEN_MAX).sort((a, b) => tries(a) - tries(b))[0];
+    const rescreenMax = this.d.rescreenMax?.() ?? RESCREEN_MAX;
+    const task = this.d.board.list("proposed").filter((t) => waiting(t) && tries(t) < rescreenMax).sort((a, b) => tries(a) - tries(b))[0];
     if (!task) return;
     this.rescreens.set(task.id, (this.rescreens.get(task.id) ?? 0) + 1);
     const text = screenText(task);
