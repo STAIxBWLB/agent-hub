@@ -9,7 +9,7 @@ import { readRestartSnapshot } from "../hub/restart.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 import { packageDigest } from "./recovery-package.ts";
 import type { Project } from "../hub/registry.ts";
-import { planFingerprint, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
+import { planFingerprint, registeredProjects, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
 import { realPath } from "../hub/project.ts";
 
 function unavailable(): never { throw new RecoveryAuthorityError(); }
@@ -119,6 +119,10 @@ export async function authorizeConductorLaunch(op: RecoveryOperation, peer: stri
   if (command === "up" && args.length === 0) {
     const descriptor = readControl(planned.project.stateDir);
     if (descriptor && processLiveness(descriptor.pid, descriptor.pidSignature) !== "gone") unavailable();
+    const claim = registeredProjects().find(row => row.id === planned.project.id);
+    if (!claim || claim.root !== root || claim.stateDir !== planned.project.stateDir
+      || claim.pid !== null && processLiveness(claim.pid, claim.pidSignature) !== "gone"
+      || claim.pid === null && claim.instanceId !== null) unavailable();
     requireConductorCheckpoint(op, planned.project); return;
   }
   if (command === "setup" && op.plan.kind === "upgrade" && args.length === 1 && args[0] === "--yes") {

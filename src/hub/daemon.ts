@@ -111,7 +111,7 @@ import { startModelRelay, type ModelRelay } from "../models/relay.ts";
 import { ensureMlx, type MlxOptions } from "../models/mlx.ts";
 import { PiToolReceipts, packPiShellResult } from "../pi/tool-receipts.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
-import { processSignature } from "../pi/process-signature.ts";
+import { processSignature, processLiveness } from "../pi/process-signature.ts";
 import { PiSessionBookmarkMismatch, PiSessionUnresumable, recordPiReplacement, validatePiSession } from "../pi/session.ts";
 import { profile, proxyEnv, sandboxAvailable, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
