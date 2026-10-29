@@ -630,6 +630,11 @@ export interface DaemonOptions {
    * second reports `applied: []`, and a watcher pass between a preview and its confirm replaces the confirmation token.
    */
   configWatch?: boolean;
+  /**
+   * Host-only test seam (#553), never read from config or a control message: the transport the `web_fetch` tool uses instead of the global `fetch`, so a daemon test
+   * does not make a real round trip to a public host. The tool still gets the daemon's own proxy URL and allowlist; only the request itself is replaced.
+   */
+  webFetchTransport?: import("../local/web-fetch.ts").WebFetchPort["fetch"];
   /** Tests observe timer-driven sync without opening a remote; production uses the package sync. */
   memorySync?: typeof syncMemory;
   /** Host-only test/embedding transports. Never read from config or tool input. */
@@ -5354,7 +5359,7 @@ export async function startDaemon(opts: DaemonOptions) {
         tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, readOnly: config.data?.readonly, permit, shellExecutionCheck: input => shellProofs.check(input),
           // #515: `doc_read` exists only when the project opted in. The projections are this worker's execution root's (the hub's own facts and review use the same ones).
           // #515b: `web_fetch` exists only when the project listed a host. A PII turn is refused inside the tool, so the port carries no PII logic of its own.
-          ...(webEgress ? { webFetch: { allow: webAllow, proxyUrl: () => webEgress?.url } } : {}),
+          ...(webEgress ? { webFetch: { allow: webAllow, proxyUrl: () => webEgress?.url, ...(opts.webFetchTransport ? { fetch: opts.webFetchTransport } : {}) } } : {}),
           ...(config.local.doc_read === true ? { docRead: { projections: () => projectionsFor(peer), piiPaths: () => config.pii?.paths ?? [], piiPatterns: () => activeRouting().signals.pii_patterns } } : {}) },
         onApprovalStop: reason => notify(reason),
         ...(capture ? { capture } : {}),
