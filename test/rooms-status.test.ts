@@ -9,7 +9,7 @@ const base = { name: "work", room, owner, member, epoch: "12", state: "online" }
 test("room status projects only allowlisted metadata and leaves absent counts unknown", () => {
   const projected = projectRoomStatus([{ ...base, title: "REMOTE_TITLE_CANARY", body: "REMOTE_BODY_CANARY", debug: { secret: "PRIVATE_CANARY" }, relayCount: 0, withheldCount: 0 }]);
   expect(projected).toEqual([{ name: "work", room, owner, member, epoch: "12", link: "online", memberCount: null, remotePeers: null, relays: null }]);
-  expect(Object.keys(projected[0]!).sort()).toEqual(["epoch", "link", "member", "memberCount", "name", "owner", "remotePeers", "relays", "room"]);
+  expect(Object.keys(projected[0]!).sort()).toEqual(["epoch", "link", "member", "memberCount", "name", "owner", "relays", "remotePeers", "room"]);
   expect(JSON.stringify(projected)).not.toContain("CANARY");
   expect(projected[0]).not.toHaveProperty("relayCount");
   expect(projected[0]).not.toHaveProperty("withheldCount");
