@@ -233,7 +233,7 @@ test("pre-admission expiry, unexposed senders, FYI priority and oversized bodies
     // Sender exposure is verified before the application callback: no business NACK can be fabricated.
     const unexposed = personChat("qwen", "unexposed sender");
     const rejected = await source.link.publishApplication(unexposed, recipient, undefined, source.current);
-    await f.b.signals.wait(() => f.b.transportAcks.has(rejected), "unexposed frame retired at the crypto boundary");
+    await f.a.signals.wait(() => f.a.transportAcks.has(rejected), "unexposed frame retired at the crypto boundary");
     expect(f.a.lastChat?.message.envelope.id).not.toBe(unexposed.envelope.id);
     expect(f.a.context!.store.applicationReceipt("work", rejected)).toBeUndefined();
     const fyi = await sendWire(f, personChat("codex", "FYI refusal", "fyi"));
