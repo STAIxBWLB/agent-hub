@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { hubHome, realPath } from "../hub/project.ts";
 
@@ -103,6 +103,23 @@ export function verifyPackage(root: string, version: string, options: { ownDepen
   if (pkg.name !== "@staix/agent-hub" || pkg.version !== version || plugin.version !== version ||
       !existsSync(join(root, "src/cli/main.js"))) throw new Error("staged package identity/version mismatch");
   return packageDigest(root, options);
+}
+
+/** Preserved restart coordinators own their dependency; staged upgrades use the install's hoisted dependency. */
+export function recoveryPackageOptions(kind: "restart" | "upgrade", root: string): { ownDependencies?: boolean; dependencyRoot?: string } {
+  if (kind === "restart") return { ownDependencies: true };
+  if (kind !== "upgrade") throw new Error("unsupported recovery package kind");
+  const canonical = realPath(root), dependencyRoot = resolve(canonical, "../../..");
+  if (canonical !== root || canonical !== join(dependencyRoot, "node_modules", "@staix", "agent-hub")) throw new Error("invalid staged recovery package path");
+  return { dependencyRoot };
+}
+
+export function recoveryTargetDigest(kind: "restart" | "upgrade", root: string): string {
+  return packageDigest(root, recoveryPackageOptions(kind, root));
+}
+
+export function verifyRecoveryTarget(kind: "restart" | "upgrade", root: string, version: string): string {
+  return verifyPackage(root, version, recoveryPackageOptions(kind, root));
 }
 
 export async function registryRelease(version: string, run: RunCommand = runCommand): Promise<{ version: string; integrity: string }> {

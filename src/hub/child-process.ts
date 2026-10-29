@@ -8,6 +8,8 @@ import type { ChildProcess } from "node:child_process";
 export function childEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = { ...source };
   delete env.AGENTHUB_RECOVERY_OPERATION;
+  delete env.AGENTHUB_RECOVERY_CONDUCTOR;
+  delete env.AGENTHUB_RECOVERY_CONTINUATION;
   delete env.AGENTHUB_DELIVERY_ONLY;
   return env;
 }

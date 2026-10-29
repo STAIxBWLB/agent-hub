@@ -20,7 +20,7 @@ export type ProjectInspection = {
 };
 
 /** A port or PID alone is never evidence that the selected project's hub is alive. */
-export async function inspectProject(project: Project, timeoutMs = 3000): Promise<ProjectInspection> {
+export async function inspectProject(project: Project, timeoutMs = 3000, readerPeer?: string): Promise<ProjectInspection> {
   if (!existsSync(project.root)) return { state: "missing", error: "project directory is missing" };
   const control = readControl(project.stateDir);
   if (control) {
@@ -34,7 +34,7 @@ export async function inspectProject(project: Project, timeoutMs = 3000): Promis
     let client: ControlClient | undefined;
     try {
       // Older manifests omit identity. Authenticate first, then require the full current contract.
-      client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: project.root,
+      client = await ControlClient.connect(project.stateDir, { ...(readerPeer ? { role: "tools" as const, peer: readerPeer } : { role: "console" as const }), projectRoot: project.root,
         ...(control.projectId ? { projectId: project.id } : {}), ...(control.instanceId ? { instanceId: control.instanceId } : {}) }, timeoutMs);
       const response = await client.request({ t: "status" }, timeoutMs);
       if (isDatabaseBusyReply(response)) return { state: "unavailable", error: new RecoveryDatabaseBusy().message, failure: { code: "database_busy" } };
@@ -143,13 +143,15 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
   }
 }
 
-export async function startProject(project: Project, options: { unattended?: boolean; env?: NodeJS.ProcessEnv; liveTest?: boolean } = {}): Promise<any> {
+export async function startProject(project: Project, options: { unattended?: boolean; env?: NodeJS.ProcessEnv; liveTest?: boolean; current?: () => void } = {}): Promise<any> {
+  options.current?.();
   assertLifecycleAvailable();
   const registry = new Registry();
   try {
     const current = registry.get(project.id);
     if (!current || current.root !== project.root || current.stateDir !== project.stateDir) throw new Error("project registration changed; refresh before starting");
     const before = await inspectProject(current);
+    options.current?.();
     if (before.state === "running") return before.status;
     if (before.state !== "stopped" && before.state !== "starting") throw new Error(before.error ?? before.state);
     if (!existsSync(join(project.root, ".agenthub", "config.json"))) throw new Error("project is not initialized; run ahub init there first");
@@ -165,6 +167,7 @@ export async function startProject(project: Project, options: { unattended?: boo
         // Native sessions can outlive the operation which launched them. An expired
         // operation ID must not make a later ordinary startup load a retired snapshot.
         if (launchEnv.AGENTHUB_RECOVERY_OPERATION !== recoveryLock()) delete launchEnv.AGENTHUB_RECOVERY_OPERATION;
+        options.current?.();
         const child = spawn(process.execPath, [join(import.meta.dir, "../cli/main.ts"), "--project", project.root, ...(options.liveTest ? ["--live-test"] : []), "daemon",
           ...(options.unattended ? ["--unattended"] : [])], {
           cwd: project.root, detached: true, stdio: ["ignore", log, log],
@@ -178,6 +181,7 @@ export async function startProject(project: Project, options: { unattended?: boo
     const deadline = Date.now() + 12_000;
     while (Date.now() < deadline) {
       const observed = await inspectProject(registry.get(project.id) ?? project);
+      options.current?.();
       if (observed.state === "running") return observed.status;
       if (observed.state === "incompatible" || observed.state === "missing") throw new Error(observed.error ?? observed.state);
       await Bun.sleep(100);

@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { REGISTRY_DB_BUSY_TIMEOUT_MS, PROJECT_COLUMNS, projectFromRow, type Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
-import { acquireRecoveryLock, claimRunner, coordinatorCurrent, readOperation, recoveryCommand, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
+import { acquireRecoveryLock, claimRunner, coordinatorCurrent, operationIdPattern, readOperation, recoveryCommand, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
 import { resolveAcceptedBinding, piArchiveExit, recordedPeerGuidance, type RecoveryNativePeer } from "./recovery-guidance.ts";
 import type { TerminalBinding } from "./terminal-recovery.ts";
 import { RecoveryPresentationError, type RecoveryPresentationCause, type RecoveryWaitTiming } from "./upgrade-presentation-data.ts";
@@ -26,6 +26,8 @@ const projectDefinition = (peer: string, root?: string) => {
 
 export interface RecoveryPeer {
   id: string;
+  /** Read-only source observation; never consumed as restoration arguments. */
+  observation?: { kind: string; attached: boolean; sessionDigest?: string };
   /** Captured stable module/instance identity; never a portable current-owner proof. */
   externalInstance?: ExternalInstanceBinding;
   state: string;
@@ -129,6 +131,8 @@ export interface RecoveryOperation {
   sourceRoot: string;
   /** Ids-only initiating and subsequent delegated invocations; retained across coordinator replacement. */
   delegatedAudits?: RecoveryDelegationAudit[];
+  /** Source template bytes only when the project has no routing.toml; integrity is sealed in the private policy digest. */
+  conductorRoutingDefaults?: Record<string, string>;
   targetRoot?: string;
   targetDigest?: string;
   /** Verified capability evidence bound to targetRoot/targetDigest; absence is legacy unknown, not an empty list. */
@@ -412,12 +416,13 @@ export function planFingerprint(plan: Omit<UpgradePlan, "fingerprint">): string 
   return createHash("sha256").update(JSON.stringify(stable)).digest("hex");
 }
 
-export function createOperation(plan: UpgradePlan, sourceRoot: string, home = hubHome(), delegation?: RecoveryDelegation): RecoveryOperation {
+export function createOperation(plan: UpgradePlan, sourceRoot: string, home = hubHome(), delegation?: RecoveryDelegation, operationId: string = randomUUID()): RecoveryOperation {
+  if (!operationIdPattern.test(operationId)) throw new Error("invalid recovery operation ID");
   if (plan.blockers.length || plan.projects.some((p) => p.blockers.length)) throw new Error("upgrade plan has blockers; no runtimes were changed");
   if (!plan.projects.length) throw new Error("no running projects to recover");
   const { fingerprint, ...body } = plan;
   if (planFingerprint(body) !== fingerprint) throw new Error("upgrade plan fingerprint is invalid");
-  const id = randomUUID();
+  const id = operationId;
   const op: RecoveryOperation = {
     schema: 1, id, plan, sourceRoot, createdAt: Date.now(), updatedAt: Date.now(), phase: "pending", step: "stage",
     projects: plan.projects.map((p) => ({ id: p.project.id, phase: "pending", terminals: {} })),
@@ -566,6 +571,45 @@ export interface RecoveryDriver {
   now(): number;
   /** Trusted per-invocation delegation, supplied only by the CLI's identity preflight. */
   readonly liveTestPeer?: string;
+  /** Trusted actor from the live conductor preflight; receipt audit rows confer no authority. */
+  readonly conductorPeer?: string;
+  /** Host-only current authority proof for this exact operation and every affected project. */
+  authorize?(op: RecoveryOperation, phase: "run" | "abort" | "effect"): Promise<void>;
+}
+
+async function authorizeRecoveryDriver(driver: RecoveryDriver, op: RecoveryOperation, phase: "run" | "abort" | "effect"): Promise<void> {
+  if (driver.conductorPeer === undefined) return;
+  if (!validRecoveryDelegation({ peer: driver.conductorPeer, command: "recovery-run" }) || typeof driver.authorize !== "function") throw new Error("conductor recovery authorization unavailable");
+  await driver.authorize(op, phase);
+}
+
+/** Closed effect ports only. Inspection stays read-only; person drivers keep their existing behavior. */
+export function guardedRecoveryDriver(driver: RecoveryDriver, operation: () => RecoveryOperation): RecoveryDriver {
+  if (driver.conductorPeer === undefined) return driver;
+  const guard = <A extends unknown[], R>(action: (...args: A) => Promise<R>) => async (...args: A): Promise<R> => {
+    await authorizeRecoveryDriver(driver, operation(), "effect");
+    try { return await action(...args); }
+    finally { await authorizeRecoveryDriver(driver, operation(), "effect"); }
+  };
+  return {
+    ...driver,
+    stage: guard((...args: Parameters<RecoveryDriver["stage"]>) => driver.stage(...args)),
+    prepare: guard((...args: Parameters<RecoveryDriver["prepare"]>) => driver.prepare(...args)),
+    abort: guard((...args: Parameters<RecoveryDriver["abort"]>) => driver.abort(...args)),
+    commit: guard((...args: Parameters<RecoveryDriver["commit"]>) => driver.commit(...args)),
+    closeTerminals: guard((...args: Parameters<RecoveryDriver["closeTerminals"]>) => driver.closeTerminals(...args)),
+    start: guard((...args: Parameters<RecoveryDriver["start"]>) => driver.start(...args)),
+    restore: guard((...args: Parameters<RecoveryDriver["restore"]>) => driver.restore(...args)),
+    installPlugin: guard((...args: Parameters<RecoveryDriver["installPlugin"]>) => driver.installPlugin(...args)),
+    installGlobal: guard((...args: Parameters<RecoveryDriver["installGlobal"]>) => driver.installGlobal(...args)),
+    ...(driver.refreshManager ? { refreshManager: guard((op: RecoveryOperation) => driver.refreshManager!(op)) } : {}),
+    release: guard((...args: Parameters<RecoveryDriver["release"]>) => driver.release(...args)),
+    verify: guard((...args: Parameters<RecoveryDriver["verify"]>) => driver.verify(...args)),
+    stopAndArchive: guard((...args: Parameters<RecoveryDriver["stopAndArchive"]>) => driver.stopAndArchive(...args)),
+    inspect: (...args) => driver.inspect(...args),
+    ...(driver.recordedSessionState ? { recordedSessionState: (binding: TerminalBinding, kind: "rollout" | "transcript") => driver.recordedSessionState!(binding, kind) } : {}),
+    sleep: ms => driver.sleep(ms), now: () => driver.now(),
+  };
 }
 
 /** Resumable state machine. Driver actions are preceded by receipts and followed by live readback. */
@@ -574,6 +618,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
   // mutable phase. A concurrent runner may have completed the operation meanwhile.
   let op = readOperation<RecoveryOperation>(id, home);
   validateReceipt(id, op);
+  if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, "run");
   acquireRecoveryLock(id, home);
   const releaseRunner = claimRunner(id, home);
   try {
@@ -584,11 +629,13 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       releaseRunner();
       return op;
     }
-    if (driver.liveTestPeer) {
-      appendRecoveryDelegation(op, { peer: driver.liveTestPeer, command: "recovery-run" }, driver.now());
+    if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, "run");
+    if (driver.conductorPeer ?? driver.liveTestPeer) {
+      appendRecoveryDelegation(op, { peer: (driver.conductorPeer ?? driver.liveTestPeer)!, command: "recovery-run" }, driver.now());
       writeOperation(id, op, home);
     }
   } catch (error) { releaseRunner(); throw error; }
+  driver = guardedRecoveryDriver(driver, () => op);
   let targetFeatures: readonly string[] = [];
   const save = () => { op.updatedAt = driver.now(); writeOperation(id, op, home); };
   const step = (value: string) => { op.step = value; save(); };
@@ -874,6 +921,7 @@ export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unk
  * release, installation or completion. A later normal resume owns those steps.
  */
 export async function reattachRecovery(id: string, peer: string, driver: RecoveryDriver, home = hubHome()): Promise<RecoveryOperation> {
+  if (driver.conductorPeer !== undefined) throw new Error("recovery reattachment is person-only");
   let op = readOperation<RecoveryOperation>(id, home);
   validateReceipt(id, op);
   const selection = () => {
@@ -936,6 +984,7 @@ export async function reattachRecovery(id: string, peer: string, driver: Recover
 export async function abortRecovery(id: string, driver: RecoveryDriver, home = hubHome()): Promise<void> {
   let op = readOperation<RecoveryOperation>(id, home);
   validateReceipt(id, op, true);
+  if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, "abort");
   acquireRecoveryLock(id, home);
   const releaseRunner = claimRunner(id, home);
   try {
@@ -947,10 +996,12 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
       if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
       return;
     }
-    if (driver.liveTestPeer) {
-      appendRecoveryDelegation(op, { peer: driver.liveTestPeer, command: "recovery abort" }, driver.now());
+    if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, "abort");
+    if (driver.conductorPeer ?? driver.liveTestPeer) {
+      appendRecoveryDelegation(op, { peer: (driver.conductorPeer ?? driver.liveTestPeer)!, command: "recovery abort" }, driver.now());
       writeOperation(id, op, home);
     }
+    driver = guardedRecoveryDriver(driver, () => op);
     if (abandoned(op)) writeOperation(id, op, home);
     const { fingerprint, ...body } = op.plan;
     if (fingerprint !== planFingerprint(body)) throw new Error("operation plan changed");
@@ -978,6 +1029,7 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
  * every runtime this operation held or started is verified released or stopped.
  */
 export async function disposeRecovery(id: string, choice: { fresh: string } | { stop: true }, reason: string, driver: RecoveryDriver, home = hubHome()): Promise<RecoveryOperation> {
+  if (driver.conductorPeer !== undefined) throw new Error("recovery disposition is person-only");
   let op: RecoveryOperation;
   try { op = readOperation<RecoveryOperation>(id, home); validateReceipt(id, op, "stop" in choice); }
   catch (error) { if (driver.liveTestPeer && "fresh" in choice) throw new Error(LIVE_TEST_PERSON_REFUSAL); throw error; }

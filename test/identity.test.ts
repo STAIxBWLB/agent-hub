@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, liveTestRefusal, peerCommandRefusal, type PeerCommandAccess } from "../src/cli/identity.ts";
+import { operationalRequestLabel } from "../src/hub/operational-authority.ts";
 import { HELP, helpCommands } from "../src/cli/help.ts";
 
 test("plain terminals keep console identity and native markers select tools identity", () => {
@@ -31,7 +32,7 @@ test("agent command classification refuses all human authority and keeps ordinar
   for (const command of ["say", "status", "board", "report", "turns", "review", "remember", "help", "version", "facts", "check-path"]) expect(classifyPeerCommand(command, [])).toBe("allowed");
   expect(classifyPeerCommand("task", ["propose"])).toBe("allowed");
   expect(classifyPeerCommand("task", ["show"])).toBe("allowed");
-  expect(classifyPeerCommand("task", ["unassign"])).toBe("console");
+  expect(classifyPeerCommand("task", ["unassign", "123"])).toBe("conductor");
   expect(classifyPeerCommand("route", ["explain"])).toBe("allowed");
   expect(classifyPeerCommand("budget", [])).toBe("allowed");
   expect(classifyPeerCommand("say", ["--as-user", "hello"])).toBe("console");
@@ -42,6 +43,34 @@ test("starts, holds and assignment require daemon conductor authority, never an 
   for (const command of ["claude", "codex", "kimi", "pi", "local", "pause", "resume"]) expect(classifyPeerCommand(command, [])).toBe("conductor");
   for (const sub of ["assign", "escalate"]) expect(classifyPeerCommand("task", [sub])).toBe("conductor");
   expect(detectCliIdentity({ AGENTHUB_PEER_ID: "kimi", AGENTHUB_CONDUCTOR: "true" })).toEqual({ role: "tools", peer: "kimi" });
+});
+
+test("only exact restart, upgrade, recovery and unassign forms enter the conductor family", () => {
+  const conductor: readonly [string, readonly string[]][] = [
+    ["restart", ["--yes"]], ["restart", ["--yes", "--json"]],
+    ["upgrade", ["--yes", "--to", "not-validated-here"]], ["upgrade", ["--to", "0.18.1", "--yes", "--json"]],
+    ["recovery", ["resume"]], ["recovery", ["resume", "op-1"]], ["recovery", ["--json", "abort", "op-1"]],
+    ["task", ["unassign", "123"]], ["task", ["unassign", "123", "--role", "reviewer"]],
+  ];
+  for (const [command, args] of conductor) expect(classifyPeerCommand(command, args)).toBe("conductor");
+
+  const refused: readonly [string, readonly string[]][] = [
+    ["restart", []], ["restart", ["--dry-run", "--yes"]], ["restart", ["--yes", "--to", "0.18.1"]],
+    ["upgrade", ["--yes"]], ["upgrade", ["--to", "0.18.1"]], ["upgrade", ["--yes", "--to", "0.18.1", "--dry-run"]],
+    ["recovery", ["resume", "op-1", "extra"]], ["recovery", ["abort", "--reason", "text"]], ["recovery", ["dispose", "op-1"]],
+    ["recovery-run", ["op-1"]],
+    ["backlog", ["list"]], ["release", ["list"]], ["sdlc", ["costs"]], ["sdlc", ["metrics"]],
+  ];
+  for (const [command, args] of refused) expect(classifyPeerCommand(command, args)).toBe("console");
+});
+
+test("operational request audit labels are closed and never include operands", () => {
+  for (const command of ["restart", "upgrade", "recovery resume", "recovery abort", "task unassign"]) {
+    expect(operationalRequestLabel({ t: "conductor_operational", op: "authorize", command, id: "PRIVATE_ID_CANARY", reason: "PRIVATE_REASON_CANARY" })).toBe(command);
+  }
+  expect(operationalRequestLabel({ t: "task", op: "task_unassign", args: { id: "PRIVATE_ID_CANARY", role: "owner" } })).toBe("task unassign");
+  expect(operationalRequestLabel({ t: "conductor_operational", op: "authorize", command: "recovery-run", id: "PRIVATE_ID_CANARY" })).toBe("unknown");
+  expect(operationalRequestLabel({ t: "task", op: "task_cancel", args: { id: "PRIVATE_ID_CANARY" } })).toBeUndefined();
 });
 
 test("audit labels and human-action hints contain command names only", () => {
@@ -152,8 +181,8 @@ const allowedForms: readonly [string, readonly string[], PeerCommandAccess][] = 
   ["recovery", ["status"], "allowed"],
   ["recovery", ["status", "op-1", "--json"], "allowed"],
   ["recovery", [], "console"],
-  ["recovery", ["resume", "op-1"], "console"],
-  ["recovery", ["abort", "op-1"], "console"],
+  ["recovery", ["resume", "op-1"], "conductor"],
+  ["recovery", ["abort", "op-1"], "conductor"],
   ["recovery", ["reattach", "op-1", "codex"], "console"],
   ["upgrade", ["--dry-run"], "allowed"],
   ["upgrade", ["--dry-run", "--json"], "allowed"],
@@ -164,7 +193,7 @@ const allowedForms: readonly [string, readonly string[], PeerCommandAccess][] = 
   ["restart", ["--dry-run"], "allowed"],
   ["restart", ["--dry-run", "--json", "--color=never"], "allowed"],
   ["restart", [], "console"],
-  ["restart", ["--yes"], "console"],
+  ["restart", ["--yes"], "conductor"],
   ["restart", ["--dry-run", "--yes"], "console"],
   ["settings", [], "allowed"],
   ["settings", ["list"], "allowed"],
@@ -253,15 +282,15 @@ const consoleClassForms: readonly [string, readonly string[], PeerCommandAccess]
   ["watch", ["kimi"], "console"],
   ["recovery", ["reattach", "op-1", "codex"], "console"],
   ["no-such-command", [], "console"],
-  ["restart", ["--yes"], "console"], // #900
-  ["task", ["unassign", "1"], "console"], // #900
+  ["restart", ["--yes"], "conductor"], // #900 continuation proof
+  ["task", ["unassign", "1"], "conductor"], // #900 keeps the actual actor
   ["route", ["set", "x"], "console"], // route has no form beyond explain
   ["route", ["explain", "1"], "allowed"],
   // conductor: operational, audited once by the daemon
   ["research", ["backfill"], "conductor"],
   ["bench", ["run", "suite.json", "--arm", "x"], "conductor"],
   ["board", ["import", "github", "--label", "ready"], "conductor"],
-  ["upgrade", ["--to", "1.2.3", "--yes"], "console"], // its recovery runner and every running project: with restart in #900
+  ["upgrade", ["--to", "1.2.3", "--yes"], "conductor"], // #900 continuation proof; parser validates the target
   ["upgrade", ["--to", "1.2.3", "--yes", "--dry-run"], "console"],
   ["upgrade", ["--dry-run"], "allowed"],
   ["jcode", [], "conductor"],

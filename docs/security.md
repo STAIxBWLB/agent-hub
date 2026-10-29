@@ -359,33 +359,92 @@ only with `assign` when its capabilities are listed).
 A conductor may inspect public state, assign or escalate work, start a peer in
 the start mode a person set (it cannot choose the mode) and place its own
 delivery holds. Through the `ahub` CLI under its own peer identity it may also
-run the closed operational family of #812 and #933: `roster add|remove`, `stop <peer>`,
-`queue show|resolve|discard`, `doctor --orphans --kill`, `logs`,
-`export`, `settings set` on thirteen named live keys, `board import`, `intake approve`,
-`schedule run|pause|resume`, `research backfill`, `bench run`, `source add`, `goal link`
-and starting a launcher-only peer the conductor may start (Jcode). Memory changes and the other
-`goal` changes stay the person's while amem records their actor as the user, and `upgrade --yes`
-stays the person's with restart (#900).
-Each is admitted by the
-daemon after a recheck of the conductor role, and bounded; the effectful ones and
-the history reads are audited as a closed label with no argument text (`queue show`
-and a settings preview recheck the role without an audit record), a refusal of
-that authority is audited as refused, and an ordinary operation failure keeps its
-own cause rather than being reported as missing authority (#839): logs and export are public projections of the last
-100 lines and 1000 events, orphan cleanup signals only a positively identified
-hub-owned process of the selected project, and a stop keeps the existing
-ownership and recovery guards (`peer_stop` from a non-console connection is
-admitted only through this conductor check; no hub tool sends it). It still cannot answer
-approvals, override budget pauses, release a human hold, trust an agent version,
-authorize a release or run recovery resume, abort and reattach: those stay with
-the person. Other agents may run only the read-only forms of #812 (`doctor`,
-`projects`, `models status`, `recovery status`, `queue list`, `roster`,
-`settings` reads, `sdlc status|explain|queue|release`, `release show` and the
-`--dry-run` upgrade and restart previews) through the public views, never the
-console identity, plus, on their own task only (#933), `task cancel` with the authority
-`hub_task_cancel` gives them, `task role` and `task label` (the research record names the agent),
-each refused by the daemon for another peer's task, and `ahub deliverables`, which lists only
-the tasks `hub_task_show` would show them.
+run the closed operational family of #812 and #933: `roster add|remove`,
+`stop <peer>`, `queue show|resolve|discard`, `doctor --orphans --kill`, `logs`,
+`export`, `settings set` on thirteen named live keys, `board import`,
+`intake approve`, `schedule run|pause|resume`, `research backfill`, `bench run`,
+`source add`, `goal link` and starting a launcher-only peer the conductor may
+start (Jcode). Memory changes and the other `goal` changes stay the person's
+while amem records their actor as the user. `task unassign` is a conductor form;
+it keeps the conductor as the board actor. `task cancel` remains separately
+available through `hub_task_cancel` only on the caller's own eligible task
+(#933), not as a conductor operation; `task role`, `task label` and
+`ahub deliverables` retain their own-task checks. `models start|stop` and
+`pet --window` remain Console. `restart --yes`,
+`upgrade --yes --to <exact-version>` and `recovery resume|abort` have the
+separate continuity proof described below. Each conductor operation is admitted
+after a recheck of role and project membership; effectful operations and history
+reads are audited as closed labels without argument text (`queue show` and a
+settings preview recheck authority without an admission record), refusals are
+audited as refused, and ordinary operation failures keep their own cause (#839).
+Logs and export are bounded public projections; orphan cleanup signals only a
+positively identified hub-owned process in the selected project, and stop keeps
+its ownership and recovery guards. Other agents may run only the read-only
+forms of #812 (`doctor`, `projects`, `models status`, `recovery status`, `queue
+list`, `roster`, `settings` reads, `sdlc status|explain|queue|release`,
+`release show` and `--dry-run` upgrade/restart previews) through public views,
+never console identity. `backlog list`, `release list` and `sdlc costs|metrics`
+remain Console for ordinary agents.
+
+The recovery continuation is a separate, narrow capability, not a generic
+console command. Only the configured conductor currently connected to the source
+hub may receive a proof while creating that project's restart or authorized
+upgrade. The source stores a bounded, fixed-shape private operation record sealed by its host HMAC
+key, separate from public recovery JSON and actor/audit fields. It binds the
+initiating peer, operation, canonical project root/id, source instance, target
+root and package digest, plan fingerprint, and a version-neutral digest of
+bounded source inputs plus fresh actor/privacy evidence. The digest covers raw
+config-layer and routing-file texts, and the source-resolved public routing
+template bytes only when the project has no routing file. It does not hash
+expanded defaults, default roles or parsed routing. The public
+`conductorRoutingDefaults` map is advisory; the target inherits the sealed
+source fallback. The private record stores digests, not raw config, routing
+contents or the HMAC key. Every planned project's source capability and authority are
+preflighted before staging. An upgrade then stages and verifies its exact
+target; restart has no package stage. The source issues the HMAC record after
+target bytes and feature support are verified, before the public operation
+receipt, lock or runtime holds. A source preflight refusal prevents staging; a
+target mismatch or failed proof prevents the public operation and its holds. A
+target requiring a newer-coordinator handoff is person-only.
+
+Recovery cannot apply an unpublished protected configuration or routing edit.
+The source compares the fresh candidate and raw source inputs with its accepted
+running config/routing inputs. A conductor bootstrap verifies those same inputs
+against the private grant before module imports and uses the sealed source
+fallback when the project had no routing file; a later file edit cannot replace
+it. A person may explicitly take over recovery to adopt a changed policy.
+
+The coordinator must match the source-start package digest or the same
+authorized, verified upgrade target. Upgrade identity includes the exact
+hoisted `@staix/agent-mem` package; restart verifies the source package's own
+dependency. Another source tree or an invalid target version cannot obtain a
+continuation.
+
+Target compatibility labels are read from the sealed target bytes; a tools request or public receipt cannot waive a target feature floor. Computed or unreadable feature metadata remains person-only.
+
+Captured TUI terminal restoration remains person-only: a delayed native
+launcher cannot re-prove the conductor at its eventual spawn. Headless
+restoration uses the target-owned snapshot through a tools connection.
+
+An unmanaged reconnect-only Claude channel may reattach itself without a native launch. The source keeps a SHA-256 fingerprint of its observed session identity separate from restoration metadata (the raw unmanaged session id is omitted from the plan) and verifies the exact peer, kind and attachment against the live channel. This exception requires no terminal or restoration arguments, no managed launch proof, and an absent or confirmed-ended launcher; unknown launcher evidence refuses. Other peer identities still compare exactly.
+
+
+Before each effect and after awaits, the host rechecks the same initiating
+conductor's current role, roster membership, project and writable-instance
+authority, and non-PII/privacy policy. Offline checks are limited to bounded
+current actor and privacy evidence; unrelated public task writes do not revoke
+the proof. The same conductor may resume or abort only its own restart/upgrade
+operation. A different conductor or a person-created operation cannot be taken
+over with this proof; the person retains the normal recovery path. The detached
+`recovery-run` and launcher continuation accept only the captured operation and
+target arguments, never arbitrary CLI commands. Loss, replacement or unreadable
+proof refuses the next effect. This host HMAC record is not an OS boundary: a
+same-user process able to replace both the mode-0600 private key and record can
+replace the proof. The existing `--live-test` path is separate and does not mint
+this record or widen it into generic console authority. Fixture tests do not
+establish native-account or real-account evidence.
+
+Pending approval summaries exclude titles; PII tasks remain public stubs.
 Pending approval summaries exclude titles; PII tasks remain public stubs.
 Conduct events contain ids only. Supervision feeds use structured reasons and
 never carry check output or approval bodies.
