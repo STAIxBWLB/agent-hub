@@ -60,7 +60,10 @@ test("#525-5 terminal Claude owns write work only after all execution-root evide
       expect(facts.projectRoot).toBe(f.executionCwd);
     } finally { tools.close(); }
     f.record({ launchId: "replacement" });
-    expect((await f.facts()).projectRoot).toBeUndefined(); // A facts effect, not the cached display, revokes stale launch evidence.
+    expect((await f.facts()).projectRoot).toBeUndefined(); // The old hook is refused before a permission-root reply.
+    // Routing checks the retained binding itself, independent of the rejected hook's launch id.
+    const admission = await f.console_.request({ t: "task", op: "route_explain", args: { title: "launch proof fixture", class: "summarize" } });
+    expect(admission.ok).toBe(true); expect(admission.text).toContain("verified isolated execution root");
     expect((await f.status()).ownerIsolation[f.peer]).toBe(false);
   } finally { await f.close(); }
 }, 20_000);
@@ -210,16 +213,21 @@ test("#525-5 repeated status writes use cached isolation, including ordinary and
 
 test("#525-5 actual owner admission revalidates and rejects drift despite a positive display cache", async () => {
   const f = await fixture();
+  let board: Board | undefined;
   try {
     f.record(); await f.attach({ launchId: "launch-one", cwd: f.executionCwd });
+    board = new Board(join(f.stateDir, "hub.db"));
+    const row = board.propose("user", { title: "root admission fixture", class: "summarize" });
+    board.update(row.id, "user", "unassigned", { owner: null });
     expect(hubGitSync(["-C", f.executionCwd, "checkout", "--detach", "-q"], { encoding: "utf8" }).status).toBe(0);
     f.workspaceGitCalls.length = 0;
     expect((await f.status()).ownerIsolation[f.peer]).toBe(true);
     expect(f.workspaceGitCalls).toEqual([]);
-    const result = await f.console_.request({ t: "task", op: "hub_task_propose", args: { title: "root admission fixture", class: "summarize", owner: f.peer } });
+    const result = await f.console_.request({ t: "task", op: "task_assign", args: { id: row.id, peer: f.peer } });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("verified isolated execution root");
     expect(f.workspaceGitCalls.length).toBeGreaterThan(0);
+    expect(board.get(row.id)?.owner).toBeNull();
     expect((await f.status()).ownerIsolation[f.peer]).toBe(false);
-  } finally { await f.close(); }
+  } finally { board?.close(); await f.close(); }
 }, 20_000);
