@@ -68,12 +68,58 @@ test("missing tool and private work make no native query",async()=>{
 },20000);
 
 test("a deadline stops the owned CLI and its descendant before worktree cleanup",async()=>{
- const f=fixture();try{
-  const child=join(f.root,"child"),facts=new CodeFacts({env:{...f.env,FAKE_RIPWIRE_MODE:"timeout",FAKE_RIPWIRE_CHILD:child},timeoutMs:400});
-  expect(await facts.changedSymbols(f.repo,f.base,f.head)).toEqual({state:"unknown"});expect(existsSync(child)).toBe(true);
+ const f=fixture();const realSetTimeout=globalThis.setTimeout;let facts:CodeFacts|undefined,pending:Promise<unknown>|undefined;try{
+  // #559: a barrier, not a margin. The deadline timer starts when the owned CLI is spawned, and the fake needs time of its own to start and write its child marker (about 0.3 s idle, 1.4 s at 30-way
+  // load, measured), so a short deadline raced the marker and lost on a loaded hosted macOS shard ("the child marker did not exist yet"). The property is "when the deadline stops the CLI, its
+  // descendant is stopped too", which needs the descendant to exist first. So the test holds the callbacks of the deadline timers (every setTimeout of exactly 4321 ms, the configured deadline: one per
+  // spawned CLI, the `--version` probe first and the analysis second), waits for the marker the analysis writes, and only then fires the LAST one: it is the real deadline code of the analysis, and it
+  // runs after the descendant exists whatever the runner's speed. Each held timer is replaced by a parked handle, so clearTimeout still works. setTimeout is restored in finally.
+  const child=join(f.root,"child"),deadlines:(()=>void)[]=[];
+  globalThis.setTimeout=((fn:(...a:unknown[])=>void,ms?:number,...args:unknown[])=>{
+   if(ms===4321){deadlines.push(()=>fn(...args));return realSetTimeout(()=>{},120_000);}
+   return realSetTimeout(fn,ms,...args);
+  }) as unknown as typeof setTimeout;
+  facts=new CodeFacts({env:{...f.env,FAKE_RIPWIRE_MODE:"timeout",FAKE_RIPWIRE_CHILD:child},timeoutMs:4321});
+  pending=facts.changedSymbols(f.repo,f.base,f.head);
+  for(const end=Date.now()+12_000;!existsSync(child)&&Date.now()<end;)await Bun.sleep(10);
+  if(!existsSync(child))throw new Error("code-facts child marker readiness timed out before cleanup guard");
+  globalThis.setTimeout=realSetTimeout;
+  expect(existsSync(child)).toBe(true);expect(deadlines.length).toBeGreaterThanOrEqual(2); // the probe's deadline and the analysis's
+  deadlines.at(-1)!();
+  expect(await pending).toEqual({state:"unknown"});expect(existsSync(child)).toBe(true);
   const pid=Number(readFileSync(child,"utf8"));const alive=spawnSync("ps",["-p",String(pid),"-o","stat="],{encoding:"utf8"});expect(alive.stdout.trim()===""||alive.stdout.trim().startsWith("Z")).toBe(true);
   expect(f.git("worktree","list","--porcelain").match(/^worktree /gm)).toHaveLength(1);
- }finally{f.close();}
+ }finally{
+  // The held deadlines never fire on their own, so any failure above (the marker never written, an assertion, the test's own timeout) would leave the analysis, its CLI and its descendant alive.
+  // Cancel and await the owned analysis BEFORE the fixture goes: `close()` cancels the active deadline (not a held one), awaits the job and its tree cleanup, and stops the retained child.
+  globalThis.setTimeout=realSetTimeout;
+  try{await facts?.close();await pending?.catch(()=>undefined);}finally{f.close();}
+ }
+},20000);
+
+// The barrier above holds the deadline timers, so nothing but the test's own teardown can stop the analysis if the test fails before it fires them (#559 review). This pins that teardown: the same
+// steps, a failure forced right after the marker exists, and the teardown the barrier test uses. The CLI's descendant (the fake's `sleep 30`) must be gone, not left to outlive the test.
+test("a failure after the marker, with the deadline held, still cancels and awaits the analysis and leaves no descendant",async()=>{
+ const f=fixture();const realSetTimeout=globalThis.setTimeout;let facts:CodeFacts|undefined,pending:Promise<unknown>|undefined;
+ const child=join(f.root,"child");let pid=0;
+ try{
+  try{
+   globalThis.setTimeout=((fn:(...a:unknown[])=>void,ms?:number,...args:unknown[])=>ms===4321?realSetTimeout(()=>{},120_000):realSetTimeout(fn,ms,...args)) as unknown as typeof setTimeout;
+   facts=new CodeFacts({env:{...f.env,FAKE_RIPWIRE_MODE:"timeout",FAKE_RIPWIRE_CHILD:child},timeoutMs:4321});
+   pending=facts.changedSymbols(f.repo,f.base,f.head);
+   for(const end=Date.now()+12_000;!existsSync(child)&&Date.now()<end;)await Bun.sleep(10);
+   if(!existsSync(child))throw new Error("code-facts child marker readiness timed out before cleanup guard");
+   expect(existsSync(child)).toBe(true);pid=Number(readFileSync(child,"utf8"));
+   const before=spawnSync("ps",["-p",String(pid),"-o","stat="],{encoding:"utf8"}).stdout.trim();expect(before!==""&&!before.startsWith("Z")).toBe(true); // alive, and nothing will stop it but the teardown
+   throw new Error("forced failure after the marker");
+  }catch(error){expect((error as Error).message).toBe("forced failure after the marker");}
+  finally{
+   globalThis.setTimeout=realSetTimeout;
+   try{await facts?.close();await pending?.catch(()=>undefined);}finally{f.close();}
+  }
+  const after=spawnSync("ps",["-p",String(pid),"-o","stat="],{encoding:"utf8"}).stdout.trim();expect(after===""||after.startsWith("Z")).toBe(true);
+  expect(existsSync(f.root)).toBe(false);
+ }finally{globalThis.setTimeout=realSetTimeout;if(pid)try{process.kill(pid,"SIGKILL");}catch{/* already gone */}}
 },20000);
 
 test("at, existence and callers/callees use their schema and distinguish missing from no callers",async()=>{
