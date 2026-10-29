@@ -8,7 +8,7 @@ const MEMBER_LIMIT = 64;
 const UINT64_MAX = 18_446_744_073_709_551_615n;
 const NAME = /^[a-z][a-z0-9-]{0,31}$/;
 const FINGERPRINT = /^[0-9a-f]{64}$/;
-const EPOCH = /^(0|[1-9][0-9]{0,19})$/;
+const EPOCH = /^[1-9][0-9]{0,19}$/;
 const LINK_STATES = new Set(["online", "connecting", "offline", "left"]);
 const PEER_STATES = new Set<PeerState>(["idle", "busy", "paused", "offline"]);
 
