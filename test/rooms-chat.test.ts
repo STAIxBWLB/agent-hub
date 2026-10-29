@@ -302,3 +302,22 @@ test("room metrics use host boundary provenance, exclude duplicate admission and
     expect(f.b.chat.metrics("work")?.inbound).toBe(1);
   } finally { restarted.stop(); bus.closeJournal(); }
 });
+
+
+test("ambiguous exposed remote ids remain inert and show unknown rather than empty membership", async () => {
+  const f = await mesh();
+  expect(f.a.chat.peersForStatus("work")?.map(row => row.id)).toEqual(["codex@beta"]);
+  await command(f.a, "create", { name: "other", broker: f.broker.publicUrl, label: "alpha" });
+  await command(f.a, "expose", { name: "other", peers: ["codex"] });
+  const token = await command(f.a, "invite", { name: "other" });
+  const request = await command(f.b, "join", { name: "other", token: token.artifact, label: "beta" });
+  const roster = await command(f.a, "invite", { name: "other", request: request.artifact });
+  await command(f.b, "join", { name: "other", roster: roster.artifact });
+  await f.wait(() => f.a.chat.peersForStatus("work") === null && f.a.chat.peersForStatus("other") === null, "ambiguous room metadata refreshed");
+  expect(f.a.chat.peers("work")).toEqual([]);
+  expect(f.a.chat.peers("other")).toEqual([]);
+  for (const row of f.a.commands.statusView()!) expect(row.remotePeers).toBeNull();
+  const env = newEnvelope("codex", "ambiguous route must stay inert", { to: ["codex@beta"] });
+  expect(f.a.bus.publish(env)).toEqual([]);
+  expect(f.b.peer.got).toEqual([]);
+});

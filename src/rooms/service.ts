@@ -173,6 +173,10 @@ export class RoomChat {
     // ponytail: status shows complete peer lists only within 32 per room / 256 total.
     // Larger lists stay unknown here; the explicit room status command remains the detail path.
     const statusTargets = new Map<string, string[] | null>([...this.bindings.keys()].map(name => [name, []]));
+    // An exposed candidate that cannot route uniquely is unknown, never an empty exposure list.
+    for (const [id, rows] of candidates) if (rows.some(row => row.peer !== USER) && (rows.length !== 1 || !this.targets.has(id))) {
+      for (const row of rows) statusTargets.set(row.binding.name, null);
+    }
     let shown = 0;
     for (const [id, target] of this.targets) {
       if (target.peer === USER) continue;
