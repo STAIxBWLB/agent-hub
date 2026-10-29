@@ -76,12 +76,13 @@ jobs:
     if: needs.decision.outputs.admission == 'run' || needs.decision.outputs.admission == 'reuse'
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'macos-latest' && 50 || 35 }}
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        # macOS runs the seatbelt sandbox tests; Ubuntu proves the rest does not depend on macOS.
-        os: [ubuntu-latest, macos-latest]
+        # Ubuntu proves the rest does not depend on macOS. The macOS leg, which runs the seatbelt sandbox tests, is the macos-shard jobs below (#548): a healthy
+        # single macOS leg had reached 26 to 41 minutes, and the hang backstop had been raised three times to follow it.
+        os: [ubuntu-latest]
     steps:
       - name: Reuse verified identical-tree full gate
         if: needs.decision.outputs.admission == 'reuse'
@@ -124,14 +125,53 @@ jobs:
           # 31m34s and 31m47s) were stopped with `hang-watch: cause=total quiet_for=1s` while tests were still printing results, and
           # recent green legs took about 30 minutes (main 7a1d5cff, 10:46 to 11:17). macOS gets 2400 s and the job limit 50 minutes;
           # Linux stays at 1500 s. The 300 s quiet bound above remains the hang detector.
-          # ponytail: this is the third raise of the macOS backstop. The ceiling is a symptom: the upgrade path is to shard the macOS
-          # leg the way the seeded guards are sharded (follow-up task), so each shard stays well under the bound.
-          AHUB_CHECK_HANG_S: ${{ runner.os == 'macOS' && '2400' || '1500' }}
+          # #548: the macOS leg is sharded (macos-shard), so each macOS shard runs under the same 1500 s bound as Linux and the macOS raises above are retired.
+          AHUB_CHECK_HANG_S: '1500'
+          AHUB_CHECK_QUIET_S: '300'
+          AHUB_RESTART_DIAGNOSTICS_DIR: ${{ runner.temp }}/ahub-restart-diagnostics
+        run: scripts/check.sh
+      - name: Retain failed restart fixture diagnostics
+        if: failure() && needs.decision.outputs.run_gate == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: restart-diagnostics-${{ matrix.os }}-${{ github.sha }}
+          path: ${{ runner.temp }}/ahub-restart-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+
+  macos-shard:
+    # #548: the macOS leg as shards of the full suite, balanced by the recorded per-file times in scripts/test-timings.json (bun test --shard --timings: every file in
+    # exactly one shard). Shard 1 also runs typecheck, roles, bundle freshness, package contents and docs once; the others install and test. Each shard stays under 15 minutes.
+    name: check (macos-latest) shard ${{ matrix.shard }}/4
+    needs: decision
+    if: needs.decision.outputs.run_gate == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Gate shard (once-only steps on shard 1, tests of this shard)
+        env:
+          # The same bounds as Linux: the quiet bound is the hang detector, the total is only the backstop for a run that keeps printing while hung.
+          AHUB_CHECK_SHARD: ${{ matrix.shard }}/4
+          AHUB_CHECK_HANG_S: '1500'
           AHUB_CHECK_QUIET_S: '300'
           AHUB_RESTART_DIAGNOSTICS_DIR: ${{ runner.temp }}/ahub-restart-diagnostics
         run: scripts/check.sh
       - name: Capture macOS fsmonitor readback diagnostics after a failed gate
-        if: failure() && needs.decision.outputs.run_gate == 'true' && runner.os == 'macOS'
+        if: failure() && needs.decision.outputs.run_gate == 'true'
         shell: bash
         run: |
           diagnostic_dir="$RUNNER_TEMP/ahub-docs-git-diagnostics"
@@ -148,10 +188,10 @@ jobs:
             fi
           done
       - name: Retain macOS fsmonitor readback diagnostics
-        if: failure() && needs.decision.outputs.run_gate == 'true' && runner.os == 'macOS'
+        if: failure() && needs.decision.outputs.run_gate == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: docs-git-diagnostics-${{ github.sha }}
+          name: docs-git-diagnostics-${{ matrix.shard }}-${{ github.sha }}
           path: ${{ runner.temp }}/ahub-docs-git-diagnostics
           if-no-files-found: ignore
           retention-days: 1
@@ -159,10 +199,33 @@ jobs:
         if: failure() && needs.decision.outputs.run_gate == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: restart-diagnostics-${{ matrix.os }}-${{ github.sha }}
+          name: restart-diagnostics-macos-latest-${{ matrix.shard }}-${{ github.sha }}
           path: ${{ runner.temp }}/ahub-restart-diagnostics
           if-no-files-found: ignore
           retention-days: 7
+
+  macos:
+    # The required name stays `check (macos-latest)` (branch protection, scripts/ci-gates.mjs FULL_GATES and the identical-tree reuse proof read it): success means every
+    # shard passed, or an identical-tree full proof was reused. The same shape as `seeded`.
+    name: check (macos-latest)
+    needs: [decision, macos-shard]
+    if: always() && needs.decision.result == 'success' && (needs.decision.outputs.admission == 'run' || needs.decision.outputs.admission == 'reuse')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reuse verified identical-tree full gate
+        if: needs.decision.outputs.admission == 'reuse'
+        env:
+          VERIFIED_RUN: ${{ needs.decision.outputs.verified_run }}
+        run: |
+          test -n "$VERIFIED_RUN" || { echo "missing verified full-gate proof"; exit 1; }
+          echo "Reused identical-tree full gate run $VERIFIED_RUN"
+      - name: Every macOS shard passed
+        if: needs.decision.outputs.run_gate == 'true'
+        env:
+          SHARDS: ${{ needs.macos-shard.result }}
+        run: |
+          test "$SHARDS" = success || { echo "macOS shards: $SHARDS"; exit 1; }
 
   seeded-shard:
     # #457: the sequential seed pairs, split into four Linux shards that run beside check; each shard stays sequential.
