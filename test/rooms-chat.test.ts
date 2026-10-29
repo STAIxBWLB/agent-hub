@@ -225,45 +225,41 @@ test("leaving and rejoining the same room rebinds an existing remote target befo
 });
 
 
-test("a real native message to user@label receives a signed unsupported-person-inbox refusal and never enters a human queue", async () => {
+test("a real native message to user@label gets immutable inbox admission without a native turn", async () => {
   const f = await mesh(), direct = newEnvelope("codex", "message for remote person", { to: ["user@beta"], priority: "status" });
   expect(f.a.chat.peers("work").map(row => row.id)).not.toContain("user@beta");
   expect(f.a.bus.publish(direct)).toEqual(["user@beta"]);
-  await f.wait(async () => (await deliveries(f.a)).some(row => row.application === direct.id && row.state === "failed_safe"), "signed person inbox unsupported receipt");
-  const denied = (await deliveries(f.a)).find(row => row.application === direct.id)!;
-  expect(denied.refusalReason).toBe("person_inbox_unsupported");
+  await f.wait(async () => (await deliveries(f.a)).some(row => row.application === direct.id && row.state === "completed (inbox)"), "signed person inbox admission");
+  const admitted = (await deliveries(f.a)).find(row => row.application === direct.id)!;
   expect(f.a.chat.metrics("work")).toMatchObject({ outbound: 1, inbound: 0, withheld: 0 });
-  expect(f.b.chat.metrics("work")).toMatchObject({ outbound: 0, inbound: 0, withheld: 0 });
+  expect(f.b.chat.metrics("work")).toMatchObject({ outbound: 0, inbound: 1, withheld: 0 });
   expect(f.b.peer.got).toEqual([]); expect(f.b.peer.running).toBe(0); expect(f.b.bus.queued("user")).toBe(0);
-  expect(f.a.bus.queueShow(String(denied.id))).toMatchObject({ peer: "user@beta", state: "failed" });
+  expect(f.a.bus.queueShow(String(admitted.id))).toMatchObject({ peer: "user@beta", state: "completed" });
   expect(f.a.bus.queued("user@beta")).toBe(0); expect(f.a.bus.queueSummary("user@beta").needsReview).toBe(0);
+  const inbox = await f.b.commands.inboxRows("work", () => true);
+  expect(inbox).toHaveLength(1); expect(inbox[0]).not.toHaveProperty("body");
+  expect((await f.b.commands.inboxShow(inbox[0]!.id, () => true))?.body).toBe(direct.body);
   const human: string[] = [], original = console.log;
   console.log = (...values: unknown[]) => { human.push(values.map(String).join(" ")); };
   try { await runRoomCommand(["status", "work"], async () => ({ ok: true, rooms: await f.a.commands.rows("work") })); }
   finally { console.log = original; }
-  expect(human.join("\n")).toContain("person inbox not supported yet (X5)");
-  const json: string[] = [];
-  console.log = (...values: unknown[]) => { json.push(values.map(String).join(" ")); };
-  try { await runRoomCommand(["status", "work", "--json"], async () => ({ ok: true, rooms: await f.a.commands.rows("work") })); }
-  finally { console.log = original; }
-  expect(JSON.parse(json.join("\n"))[0].deliveries.find((row: Record<string, unknown>) => row.application === direct.id).refusalReason).toBe("person_inbox_unsupported");
+  expect(human.join("\n")).toContain("completed (inbox)");
+  expect(human.join("\n")).not.toContain(direct.body);
   expect((await deliveries(f.a)).filter(row => row.application === direct.id).some(row => row.state === "completed (admitted)")).toBe(false);
 
-  // A person may ask a remote native peer; that native peer's addressed reply must not disappear or claim admission into a person inbox.
   const question = newEnvelope("user", "question for the remote coding peer", { to: ["codex@beta"], priority: "status" });
   expect(f.a.bus.publish(question)).toEqual(["codex@beta"]);
-  await f.wait(() => f.b.peer.got.some(row => row.id === question.id), "one-way person question admitted to remote native peer");
+  await f.wait(() => f.b.peer.got.some(row => row.id === question.id), "person question admitted to native peer");
   const received = f.b.peer.got.find(row => row.id === question.id)!;
   expect(received.from).toBe("user@alpha");
   const answer = newEnvelope("codex", "reply to the remote person", { inReplyTo: received, priority: "status" });
   expect(answer.to).toEqual(["user@alpha"]); expect(f.b.bus.publish(answer)).toEqual(["user@alpha"]);
-  await f.wait(async () => (await deliveries(f.b)).some(row => row.application === answer.id && row.state === "failed_safe"), "signed refusal for the addressed native reply");
-  const failedReply = (await deliveries(f.b)).find(row => row.application === answer.id)!;
-  expect(failedReply.refusalReason).toBe("person_inbox_unsupported");
+  await f.wait(async () => (await deliveries(f.b)).some(row => row.application === answer.id && row.state === "completed (inbox)"), "native reply committed to person inbox");
   expect(f.a.peer.got).toEqual([]); expect(f.a.bus.queued("user")).toBe(0); expect(f.b.peer.got.filter(row => row.id === question.id)).toHaveLength(1);
-  expect(f.b.bus.queueShow(String(failedReply.id))).toMatchObject({ peer: "user@alpha", state: "failed" });
+  const replies = await f.a.commands.inboxRows("work", () => true);
+  expect(replies).toHaveLength(1);
+  expect((await f.a.commands.inboxShow(replies[0]!.id, () => true))?.body).toBe(answer.body);
   expect(f.b.bus.queued("user@alpha")).toBe(0);
-  expect((await deliveries(f.b)).filter(row => row.application === answer.id).some(row => row.state === "completed (admitted)")).toBe(false);
 });
 
 

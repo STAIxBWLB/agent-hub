@@ -3,13 +3,13 @@ import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, open
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { realPath } from "../hub/project.ts";
-import { MAX_HOP } from "../hub/envelope.ts";
+import { MAX_HOP, USER } from "../hub/envelope.ts";
 import { assertRoomCryptoReady, exportHubIdentityForStorage, generateHubIdentity, importHubIdentity, decodeBase64url, encodeBase64url, sha256, type HubIdentity, type LocalIdentityRecord } from "./crypto.ts";
 import { acceptJoin, acceptRoomEpoch, brokerUrl, createRoomEpoch, decodeFrame, decodeInvite, decodeJoin, decodeRoster, positiveU64, roomMembers, type ReplayCommit, type ReplayPort, type SequenceBinding, type SequencePort, type VerifiedEpoch, type RoomMember, type VerifiedPublicRoster, verifyPublicRoster, verifyPublicFrame } from "./wire.ts";
-import { decodeRoomMessage, encodeRoomMessage, type RoomChatEnvelope, type RoomMessage, type RoomReceiptReason } from "./application.ts";
+import { decodeRoomMessage, encodeRoomMessage, type RoomChatEnvelope, type RoomMessage, type RoomReceiptReason, parseRemotePeerId } from "./application.ts";
 
 export const ROOM_STORE_LIMITS = Object.freeze({ rooms: 64, invites: 128, pendingJoins: 64, inboxPerRoom: 200, inboxBytes: 16 * 1024 * 1024, receiptsPerRoom: 1000, outboxPerRoom: 200, outboxBytes: 16 * 1024 * 1024, floorsPerRoom: 256, refusedPerRoom: 1000, receiptReservePerRoom: 8, receiptReserveBytes: 1024 });
-export type RoomStoreCode = "invalid" | "busy" | "corrupt" | "unsupported" | "limit" | "untrusted" | "state_changed" | "clock_rollback" | "closed";
+export type RoomStoreCode = "invalid" | "busy" | "corrupt" | "unsupported" | "limit" | "untrusted" | "state_changed" | "clock_rollback" | "closed" | "inbox_list_limit";
 export class RoomStoreError extends Error {
   constructor(readonly code: RoomStoreCode) { super(`Room store: ${code}`); this.name = "RoomStoreError"; }
 }
@@ -28,7 +28,7 @@ export class RoomApplicationLimitError extends RoomStoreError {
   }
 }
 function fail(code: RoomStoreCode): never { throw new RoomStoreError(code); }
-const DB_NAME = "rooms.db", SCHEMA = 3, GRACE_MS = 60_000;
+const DB_NAME = "rooms.db", SCHEMA = 4, GRACE_MS = 60_000;
 const ROOM_DB_BUSY_TIMEOUT_MS = 1;
 // ponytail: keep at most 256 historical sender floors per room; refuse new senders at the ceiling until versioned archival preserves replay proofs.
 const NAME = /^[a-z][a-z0-9-]{0,31}$/;
@@ -37,6 +37,18 @@ interface InviteRow { name: string; id: string; wire: Uint8Array; digest: string
 export interface RoomState { name: string; broker: string; current: VerifiedEpoch; wire: Uint8Array; previous?: { epoch: VerifiedEpoch; expiresAt: number }; left: boolean }
 export interface RoomStateMetadata { name: string; room: string; owner: string; member: string; epoch: string; members: number; left: boolean }
 export interface RoomInboxEntry { sender: string; seq: string; digest: string; plaintext: Uint8Array; gap: string }
+export interface RoomPersonInboxMeta {
+  id: string; name: string; room: string; sender: string; from: string; receivedAt: number; expiresAt: number; bytes: number;
+  state: "unread" | "done" | "discarded" | "expired";
+}
+export interface RoomPersonInboxItem extends RoomPersonInboxMeta { body?: string }
+export interface RoomPersonInboxAdmission { state: "admitted" | "duplicate" | "refused"; reason: RoomReceiptReason; id?: string }
+interface PersonInboxRow {
+  id: string; room: string; sender: string; application: string; primary_digest: string; from_peer: string;
+  received_at: number; expires_at: number; bytes: number; body: Uint8Array | null;
+  state: RoomPersonInboxMeta["state"]; settled_at: number | null;
+}
+export const ROOM_PERSON_INBOX_LIMITS = Object.freeze({ unreadPerRoom: 100, bodyBytes: 65536, globalBytes: 4 * 1024 * 1024, stubsPerRoom: 1000, ttlMs: 30 * 24 * 60 * 60 * 1000 });
 export interface RoomOutgoingInput { deliveryId: string; application: string; remotePeer: string; recipient: string; peer: string; ackTimeoutMs: number; ttlMs: number }
 export interface RoomOutgoing {
   digest: string; deliveryId: string; application: string; remotePeer: string; recipient: string; peer: string;
@@ -54,13 +66,16 @@ interface OutgoingRow {
   reason: RoomReceiptReason | null; late_outcome: "completed" | "failed_safe" | null; late_reason: RoomReceiptReason | null; receipt_digest: string | null;
   disposition: "completed" | "retry" | "discard" | null;
 }
-const APPLICATION_REASONS: readonly RoomReceiptReason[] = ["admitted", "not_exposed", "boundary_refused", "invalid_message", "rate_limited", "hop", "person_inbox_unsupported"];
+const APPLICATION_REASONS: readonly RoomReceiptReason[] = ["admitted", "not_exposed", "boundary_refused", "invalid_message", "rate_limited", "hop", "person_inbox_unsupported", "inbox_admitted", "inbox_full", "inbox_oversize", "inbox_expired", "inbox_age_unavailable"];
 const APPLICATION_HISTORY_CAP = 1000;
 export const ROOM_APPLICATION_RETENTION = Object.freeze({ identitiesPerRoom: 10_000, aliasesPerRoom: 10_000, settledMs: 30 * 24 * 60 * 60 * 1000 });
 const isTerminal = (state: string): boolean => state === "completed" || state === "failed_safe";
 const isSettledApplication = (state: string): boolean => isTerminal(state) || state === "disposed";
-function validOutcome(outcome: unknown, reason: unknown): boolean {
-  return APPLICATION_REASONS.includes(reason as RoomReceiptReason) && (outcome === "completed" ? reason === "admitted" : outcome === "failed_safe" && reason !== "admitted");
+function validOutcome(outcome: unknown, reason: unknown, peer?: string): boolean {
+  if (!APPLICATION_REASONS.includes(reason as RoomReceiptReason)) return false;
+  if (outcome === "completed") return reason === "inbox_admitted" ? peer === undefined || peer === USER : reason === "admitted" && peer !== USER;
+  return outcome === "failed_safe" && reason !== "admitted" && reason !== "inbox_admitted"
+    && (!(typeof reason === "string" && reason.startsWith("inbox_")) || peer === undefined || peer === USER);
 }
 function boundedId(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\s|]/.test(value); }
 function validUuid(value: unknown): value is string { return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value); }
@@ -112,6 +127,7 @@ export class RoomStore {
   readonly replay: ReplayPort;
   private readonly rooms = new Map<string, RoomState>();
   private closed = false;
+  private pendingPersonPurge = false;
   private constructor(private readonly db: Database, readonly identity: HubIdentity, private readonly clock: () => number) {
     this.sequence = { reserve: async input => this.reserve(input), isCurrent: input => this.isCurrent(input) };
     this.replay = { accept: async input => this.accept(input) };
@@ -142,7 +158,7 @@ export class RoomStore {
       db.run(`PRAGMA busy_timeout = ${ROOM_DB_BUSY_TIMEOUT_MS}`);
       db.exec("PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE;");
       const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
-      if (version !== 0 && version !== 1 && version !== 2 && version !== SCHEMA) fail("unsupported");
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== SCHEMA) fail("unsupported");
       if (version === 0) {
         if (!created) fail("corrupt");
         db.exec(`
@@ -159,14 +175,14 @@ export class RoomStore {
           PRAGMA user_version=1;
         `);
       }
-      const tables = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 13").all().map(x => x.name).join(",");
+      const tables = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 14").all().map(x => x.name).join(",");
       const legacyTables = "counters,floors,inbox,invites,meta,outbox,pending_joins,refusals,rooms";
-      if (tables !== (version! >= 2 ? "application_frames,application_outbox,applications," + legacyTables : legacyTables)) fail("unsupported");
+      if (tables !== (version === 4 ? "application_frames,application_outbox,applications,counters,floors,inbox,invites,meta,outbox,pending_joins,person_inbox,refusals,rooms" : version! >= 2 ? "application_frames,application_outbox,applications," + legacyTables : legacyTables)) fail("unsupported");
       const columns: Record<string, string[]> = {
         meta: ["key", "value"],
         rooms: ["name", "room", "broker", "owner", "epoch", "digest", "wire", "previous_wire", "previous_digest", "previous_epoch", "previous_expires", "left"],
         counters: ["room", "seq"], floors: ["room", "sender", "seq", "digest"],
-        inbox: ["room", "sender", "seq", "digest", "plaintext", "gap", ...(version === 3 ? ["receipt_reserve"] : [])],
+        inbox: ["room", "sender", "seq", "digest", "plaintext", "gap", ...(version! >= 3 ? ["receipt_reserve"] : []), ...(version === 4 ? ["received_at"] : [])],
         invites: ["name", "id", "wire", "digest", "expires", "request_digest"],
         outbox: ["room", "digest", "wire", "roster", "state"], pending_joins: ["name", "invite", "request", "selection"], refusals: ["room", "digest", "reason", "at"],
       };
@@ -197,12 +213,26 @@ export class RoomStore {
         if (db.query<{ name: string }, []>(`PRAGMA index_info(${index})`).all().map(x => x.name).join(",") !== names.join(",")) fail("unsupported");
       }
       if (db.query<{ name: string; unique: number }, []>("PRAGMA index_list(application_outbox)").all().find(row => row.name === "application_outbox_delivery")?.unique !== 1) fail("unsupported");
-      if (version !== 3) {
+      if (version! < 3) {
         // Legacy readers must refuse the extra lane. Legacy payload JSON never manufactures a reserved admission.
         if (db.query("SELECT 1 FROM application_outbox WHERE typeof(created_at)!='integer' OR typeof(ack_timeout)!='integer' OR (ack_deadline IS NOT NULL AND (typeof(ack_deadline)!='integer' OR ack_deadline<created_at)) LIMIT 1").get()) fail("corrupt");
         db.exec("UPDATE application_outbox SET ack_deadline=CASE WHEN ack_deadline IS NULL THEN created_at+ack_timeout ELSE MIN(ack_deadline,created_at+ack_timeout) END;");
         db.exec("ALTER TABLE inbox ADD COLUMN receipt_reserve INTEGER NOT NULL DEFAULT 0 CHECK (receipt_reserve IN (0,1)); PRAGMA user_version=3;");
       }
+      if (version! < 4) db.exec(`
+        ALTER TABLE inbox ADD COLUMN received_at INTEGER;
+        CREATE TABLE person_inbox (id TEXT PRIMARY KEY, room TEXT NOT NULL, sender TEXT NOT NULL, application TEXT NOT NULL, primary_digest TEXT NOT NULL, from_peer TEXT NOT NULL, received_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, bytes INTEGER NOT NULL, body BLOB, state TEXT NOT NULL, settled_at INTEGER);
+        CREATE UNIQUE INDEX person_inbox_identity ON person_inbox(room,sender,application);
+        CREATE INDEX person_inbox_room ON person_inbox(room,state,received_at,id);
+        CREATE INDEX person_inbox_retention ON person_inbox(state,settled_at);
+        PRAGMA user_version=4;
+      `);
+      const personColumns = ["id", "room", "sender", "application", "primary_digest", "from_peer", "received_at", "expires_at", "bytes", "body", "state", "settled_at"];
+      if (db.query<{ name: string }, []>("PRAGMA table_info(person_inbox)").all().map(row => row.name).join(",") !== personColumns.join(",")) fail("unsupported");
+      for (const [index, fields] of Object.entries({ person_inbox_room: ["room", "state", "received_at", "id"], person_inbox_retention: ["state", "settled_at"], person_inbox_identity: ["room", "sender", "application"] })) {
+        if (db.query<{ name: string }, []>(`PRAGMA index_info(${index})`).all().map(row => row.name).join(",") !== fields.join(",")) fail("unsupported");
+      }
+      if (db.query<{ name: string; unique: number }, []>("PRAGMA index_list(person_inbox)").all().find(row => row.name === "person_inbox_identity")?.unique !== 1) fail("unsupported");
       if (db.query<{ quick_check: string }, []>("PRAGMA quick_check").all().some(x => x.quick_check !== "ok")) fail("corrupt");
       const meta = db.query<{ key: string; n: number }, []>("SELECT key,length(value) AS n FROM meta LIMIT 4").all();
       if (meta.length > 2 || meta.some(row => !["identity", "clock"].includes(row.key) || row.n > (row.key === "identity" ? 4096 : 32))) fail("corrupt");
@@ -238,6 +268,7 @@ export class RoomStore {
       try { await store.validateRows(); }
       catch { fail("corrupt"); }
       store.recoverApplications();
+      store.expirePersonInbox();
       return store;
     } catch (e) {
       try { db?.exec("ROLLBACK;"); } catch { /* no transaction */ }
@@ -309,8 +340,9 @@ export class RoomStore {
       // Removed senders keep their floor. Current membership is checked at acceptance, not retroactively imposed on history.
       floors.set(`${row.room}|${row.sender}`, { seq: row.seq, digest: row.digest });
     }
-    for (const row of this.db.query<{ room: string; sender: string; seq: string; digest: string; plaintext: Uint8Array | null; gap: string; receipt_reserve: number }, []>(`SELECT room,sender,seq,digest,plaintext,gap,receipt_reserve FROM inbox LIMIT ${limits.rooms * (limits.receiptsPerRoom + limits.inboxPerRoom + limits.receiptReservePerRoom) + 1}`).all()) {
+    for (const row of this.db.query<{ room: string; sender: string; seq: string; digest: string; plaintext: Uint8Array | null; gap: string; receipt_reserve: number; received_at: number | null }, []>(`SELECT room,sender,seq,digest,plaintext,gap,receipt_reserve,received_at FROM inbox LIMIT ${limits.rooms * (limits.receiptsPerRoom + limits.inboxPerRoom + limits.receiptReservePerRoom) + 1}`).all()) {
       room(row.room); fp(row.sender); positiveU64(row.seq); hash(row.digest);
+      if (row.received_at !== null && (!Number.isSafeInteger(row.received_at) || row.received_at <= 0 || row.received_at > this.now())) fail("corrupt");
       if (typeof row.gap !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(row.gap) || BigInt(row.gap) >= BigInt(row.seq)) fail("corrupt");
       if (row.plaintext !== null && (!(row.plaintext instanceof Uint8Array) || row.plaintext.length > 65536)) fail("corrupt");
       // This private host-issued marker is preserved across completion; never reconstruct it from JSON or current outbox state.
@@ -357,6 +389,7 @@ export class RoomStore {
       if (!validSelection(row.selection)) fail("corrupt");
     }
     await this.validateApplications();
+    await this.validatePersonInbox();
   }
 
   private async validateApplications(): Promise<void> {
@@ -386,7 +419,7 @@ export class RoomStore {
           || row.disposed_at! < row.created_at || row.disposed_at! > now || row.settled_at !== row.disposed_at) fail("corrupt");
       } else if (row.disposition !== null || row.disposed_at !== null || row.disposed_by !== null) fail("corrupt");
       if (isTerminal(row.state)) {
-        if (!validOutcome(row.state, row.reason) || !Number.isSafeInteger(row.settled_at) || row.settled_at! < row.created_at || row.settled_at! > now) fail("corrupt");
+        if (!validOutcome(row.state, row.reason, row.peer) || !Number.isSafeInteger(row.settled_at) || row.settled_at! < row.created_at || row.settled_at! > now) fail("corrupt");
       } else if (row.state !== "disposed" && (row.reason !== null || row.settled_at !== null)) fail("corrupt");
       const entry = this.db.query<RoomInboxEntry, [string, string]>("SELECT sender,seq,digest,plaintext,gap FROM inbox WHERE room=? AND digest=?").get(row.room, row.primary_digest);
       if (row.state === "pending" || row.state === "dispatching") {
@@ -413,9 +446,9 @@ export class RoomStore {
         || row.expires_at <= row.created_at || row.expires_at - row.created_at > 604_800_000
         || !Number.isSafeInteger(row.ack_timeout) || row.ack_timeout < 1 || row.ack_timeout > 86_400_000) fail("corrupt");
       if (!Number.isSafeInteger(row.ack_deadline) || row.ack_deadline! < row.created_at || row.ack_deadline! > row.created_at + row.ack_timeout) fail("corrupt");
-      if (isTerminal(row.state) ? !validOutcome(row.state, row.reason) : row.reason !== null) fail("corrupt");
+      if (isTerminal(row.state) ? !validOutcome(row.state, row.reason, row.peer) : row.reason !== null) fail("corrupt");
       if (row.disposition !== null && (row.state !== "needs_review" || !["completed", "retry", "discard"].includes(row.disposition))) fail("corrupt");
-      if (row.late_outcome !== null ? row.state !== "needs_review" || !validOutcome(row.late_outcome, row.late_reason) : row.late_reason !== null) fail("corrupt");
+      if (row.late_outcome !== null ? row.state !== "needs_review" || !validOutcome(row.late_outcome, row.late_reason, row.peer) : row.late_reason !== null) fail("corrupt");
       if ((isTerminal(row.state) || row.late_outcome !== null) ? !validDigest(row.receipt_digest) : row.receipt_digest !== null) fail("corrupt");
       const sealed = this.db.query<{ wire: Uint8Array; room: string }, [string]>("SELECT wire,room FROM outbox WHERE digest=?").get(row.digest);
       if (isTerminal(row.state) || row.disposition !== null) { if (sealed) fail("corrupt"); }
@@ -424,6 +457,35 @@ export class RoomStore {
         const frame = decodeFrame(sealed.wire);
         if (frame.recipients.length !== 1 || frame.recipients[0] !== row.recipient) fail("corrupt");
       }
+    }
+  }
+
+  private async validatePersonInbox(): Promise<void> {
+    const limits = ROOM_PERSON_INBOX_LIMITS, now = this.now(), maximum = ROOM_STORE_LIMITS.rooms * (limits.unreadPerRoom + limits.stubsPerRoom);
+    const count = this.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM person_inbox").get()?.n ?? 0;
+    const bytes = this.db.query<{ n: number }, []>("SELECT COALESCE(SUM(length(body)),0) AS n FROM person_inbox WHERE body IS NOT NULL").get()?.n ?? 0;
+    if (!Number.isSafeInteger(count) || count > maximum || !Number.isSafeInteger(bytes) || bytes > limits.globalBytes
+      || this.db.query("SELECT room FROM person_inbox WHERE state='unread' GROUP BY room HAVING COUNT(*)>100 LIMIT 1").get()
+      || this.db.query("SELECT room FROM person_inbox WHERE state!='unread' GROUP BY room HAVING COUNT(*)>1000 LIMIT 1").get()
+      || this.db.query("SELECT 1 FROM person_inbox WHERE length(id)>36 OR length(room)>43 OR length(sender)>64 OR length(application)>36 OR length(primary_digest)>43 OR length(from_peer)>65 OR length(body)>65536 OR length(state)>9 LIMIT 1").get()) fail("corrupt");
+    const ids = new Set<string>(), keys = new Set<string>();
+    for (const row of this.db.query<PersonInboxRow, []>(`SELECT * FROM person_inbox LIMIT ${maximum + 1}`).all()) {
+      const room = this.byRoom(row.room), from = parseRemotePeerId(row.from_peer), key = `${row.room}|${row.sender}|${row.application}`;
+      if (!room || !validUuid(row.id) || ids.has(row.id) || keys.has(key) || !/^[a-f0-9]{64}$/.test(row.sender) || !validUuid(row.application) || !validDigest(row.primary_digest) || !from
+        || !Number.isSafeInteger(row.received_at) || row.received_at <= 0 || row.received_at > now || !Number.isSafeInteger(row.expires_at) || row.expires_at !== row.received_at + limits.ttlMs
+        || !Number.isSafeInteger(row.bytes) || row.bytes < 0 || row.bytes > limits.bodyBytes || !["unread", "done", "discarded", "expired"].includes(row.state)) fail("corrupt");
+      ids.add(row.id); keys.add(key);
+      const app = this.applicationFor(row.room, row.primary_digest);
+      if (!app || app.primary_digest !== row.primary_digest || app.sender !== row.sender || app.application !== row.application || app.peer !== USER || app.state !== "completed" || app.reason !== "inbox_admitted"
+        || row.received_at > app.created_at || app.settled_at === null || app.settled_at >= row.expires_at) fail("corrupt");
+      if (row.state === "unread") {
+        if (row.settled_at !== null || !(row.body instanceof Uint8Array)) fail("corrupt");
+        const message = decodeRoomMessage(row.body);
+        if (message.type !== "chat" || message.envelope.to !== USER || message.envelope.id !== app.application || message.envelope.from !== from.peer
+          || message.envelope.trace !== app.trace || message.envelope.hop !== app.hop || Buffer.byteLength(message.envelope.body, "utf8") !== row.bytes
+          || await digest(encodeRoomMessage(message)) !== app.content_hash) fail("corrupt");
+      } else if (row.body !== null || !Number.isSafeInteger(row.settled_at) || row.settled_at! < app.settled_at || row.settled_at! > now
+        || (row.state === "expired" ? row.settled_at !== row.expires_at : row.settled_at! >= row.expires_at)) fail("corrupt");
     }
   }
 
@@ -440,12 +502,16 @@ export class RoomStore {
   }
   private transaction<T>(fn: (now: number) => T): T {
     this.assertOpen();
+    const priorPersonPurge = this.pendingPersonPurge;
     try { return this.db.transaction(() => {
       const now = this.now();
       const result = fn(now);
       this.db.query("INSERT INTO meta(key,value) VALUES('clock',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(now));
       return result;
-    })(); } catch (e) { if (e instanceof RoomStoreError) throw e; throw new RoomStoreError(code(e)); }
+    })(); } catch (e) {
+      this.pendingPersonPurge = priorPersonPurge; // Includes a successful nested savepoint rolled back by its outer transaction.
+      if (e instanceof RoomStoreError) throw e; throw new RoomStoreError(code(e));
+    }
   }
   private snapshot(value: RoomState): RoomState {
     return { ...value, wire: copy(value.wire), ...(value.previous ? { previous: { ...value.previous } } : {}) };
@@ -618,7 +684,7 @@ export class RoomStore {
       if (known) return { status: known.digest === input.frameDigest ? "duplicate" : "conflict" };
       // An application alias was committed only after crypto replay accepted these exact bytes.
       // Keep its duplicate proof after bounded inbox pruning, without advancing the sender floor.
-      const alias = this.db.query("SELECT 1 FROM application_frames f JOIN applications a ON a.room=f.room AND a.sender=f.sender AND a.application=f.application WHERE f.room=? AND f.sender=? AND f.digest=? AND (a.state NOT IN ('completed','failed_safe','disposed') OR a.settled_at>?)")
+      const alias = this.db.query("SELECT 1 FROM application_frames f JOIN applications a ON a.room=f.room AND a.sender=f.sender AND a.application=f.application WHERE f.room=? AND f.sender=? AND f.digest=? AND (a.state NOT IN ('completed','failed_safe','disposed') OR a.settled_at>? OR EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=a.room AND p.sender=a.sender AND p.application=a.application))")
         .get(input.room, input.sender, input.frameDigest, now - ROOM_APPLICATION_RETENTION.settledMs);
       if (alias) return { status: "duplicate" };
       const floor = this.db.query<{ seq: string; digest: string }, [string, string]>("SELECT seq,digest FROM floors WHERE room=? AND sender=?").get(input.room, input.sender);
@@ -643,7 +709,7 @@ export class RoomStore {
         reserved = true;
       }
       const gap = String(BigInt(input.seq) - BigInt(floor?.seq ?? "0") - 1n);
-      this.db.query("INSERT INTO inbox(room,sender,seq,digest,plaintext,gap,receipt_reserve) VALUES(?,?,?,?,?,?,?)").run(input.room, input.sender, input.seq, input.frameDigest, input.plaintext, gap, reserved ? 1 : 0);
+      this.db.query("INSERT INTO inbox(room,sender,seq,digest,plaintext,gap,receipt_reserve,received_at) VALUES(?,?,?,?,?,?,?,?)").run(input.room, input.sender, input.seq, input.frameDigest, input.plaintext, gap, reserved ? 1 : 0, now);
       this.db.query("INSERT INTO floors(room,sender,seq,digest) VALUES(?,?,?,?) ON CONFLICT(room,sender) DO UPDATE SET seq=excluded.seq,digest=excluded.digest").run(input.room, input.sender, input.seq, input.frameDigest);
       return { status: "accepted", gap };
     });
@@ -762,7 +828,7 @@ export class RoomStore {
       if (message.type !== "receipt") return undefined;
       const row = this.db.query<OutgoingRow, [string, string]>("SELECT * FROM application_outbox WHERE room=? AND digest=?").get(state.current.room, message.frame);
       if (!row || row.application !== message.application || row.peer !== message.peer || row.recipient !== entry.sender
-        || !roomMembers(state.current).some(member => member.fingerprint === entry.sender) || !validOutcome(message.outcome, message.reason)) return undefined;
+        || !roomMembers(state.current).some(member => member.fingerprint === entry.sender) || !validOutcome(message.outcome, message.reason, row.peer)) return undefined;
       if (isTerminal(row.state) || row.state === "needs_review" && row.late_outcome !== null) return outgoing(row);
       const expired = now >= row.expires_at || row.ack_deadline !== null && now >= row.ack_deadline;
       if (row.state === "needs_review" || expired) {
@@ -807,20 +873,29 @@ export class RoomStore {
   private applicationFor(room: string, digestValue: string): ApplicationRow | undefined {
     return this.db.query<ApplicationRow, [string, string]>("SELECT a.* FROM applications a JOIN application_frames f ON f.room=a.room AND f.sender=a.sender AND f.application=a.application WHERE f.room=? AND f.digest=?").get(room, digestValue) ?? undefined;
   }
+  private personIdentityRetained(row: Pick<ApplicationRow, "room" | "sender" | "application">): boolean {
+    return !!this.db.query("SELECT 1 FROM person_inbox WHERE room=? AND sender=? AND application=?").get(row.room, row.sender, row.application);
+  }
   private deleteSettledApplication(row: ApplicationRow): void {
+    if (this.db.query("SELECT 1 FROM person_inbox WHERE room=? AND sender=? AND application=? AND state='unread'").get(row.room, row.sender, row.application)) return;
+    this.db.query("DELETE FROM person_inbox WHERE room=? AND sender=? AND application=?").run(row.room, row.sender, row.application);
     this.db.query("DELETE FROM inbox WHERE room=? AND plaintext IS NULL AND digest IN (SELECT digest FROM application_frames WHERE room=? AND sender=? AND application=?)")
       .run(row.room, row.room, row.sender, row.application);
     this.db.query("DELETE FROM application_frames WHERE room=? AND sender=? AND application=?").run(row.room, row.sender, row.application);
     this.db.query("DELETE FROM applications WHERE room=? AND sender=? AND application=?").run(row.room, row.sender, row.application);
   }
   private applicationCapacity(room: string, now: number, freshIdentity: boolean, retained?: Pick<ApplicationRow, "sender" | "application">): void {
-    const expired = this.db.query<ApplicationRow, [string, number, string, string]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND settled_at<=? AND NOT (sender=? AND application=?)").all(room, now - ROOM_APPLICATION_RETENTION.settledMs, retained?.sender ?? "", retained?.application ?? "");
+    this.prunePersonInbox(now);
+    // Person stubs have their own disposition/expiry horizon. Only the cap walk
+    // below may evict a settled stub early; unread identities are never candidates.
+    const expired = this.db.query<ApplicationRow, [string, number, string, string]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND settled_at<=? AND NOT (sender=? AND application=?) AND NOT EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application)").all(room, now - ROOM_APPLICATION_RETENTION.settledMs, retained?.sender ?? "", retained?.application ?? "");
     for (const row of expired) this.deleteSettledApplication(row);
     for (;;) {
       const identities = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM applications WHERE room=?").get(room)?.n ?? 0;
       const aliases = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM application_frames WHERE room=?").get(room)?.n ?? 0;
       if ((!freshIdentity || identities < ROOM_APPLICATION_RETENTION.identitiesPerRoom) && aliases < ROOM_APPLICATION_RETENTION.aliasesPerRoom) return;
-      const settled = this.db.query<ApplicationRow, [string, string, string]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND NOT (sender=? AND application=?) ORDER BY settled_at,created_at,sender,application LIMIT 1").get(room, retained?.sender ?? "", retained?.application ?? "");
+      // A person identity becomes settled at done/discard/expiry, not at its earlier admission.
+      const settled = this.db.query<ApplicationRow, [string, string, string]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND NOT (sender=? AND application=?) AND NOT EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application AND p.state='unread') ORDER BY COALESCE((SELECT p.settled_at FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application),settled_at),created_at,sender,application LIMIT 1").get(room, retained?.sender ?? "", retained?.application ?? "");
       if (!settled) throw new RoomApplicationLimitError(room, Math.max(identities, aliases));
       this.deleteSettledApplication(settled);
     }
@@ -842,7 +917,8 @@ export class RoomStore {
       const key = [state.current.room, original.sender, chat.id] as [string, string, string];
       let saved = this.db.query<ApplicationRow, [string, string, string]>("SELECT * FROM applications WHERE room=? AND sender=? AND application=?").get(...key);
       if (saved && saved.settled_at !== null && saved.settled_at <= now - ROOM_APPLICATION_RETENTION.settledMs && isSettledApplication(saved.state)) {
-        this.deleteSettledApplication(saved); saved = null;
+        this.prunePersonInbox(now);
+        if (!this.db.query("SELECT 1 FROM person_inbox WHERE room=? AND sender=? AND application=?").get(saved.room, saved.sender, saved.application)) { this.deleteSettledApplication(saved); saved = null; }
       }
       if (saved && (saved.content_hash !== contentHash || saved.peer !== chat.to)) fail("invalid");
       const alias = this.applicationFor(state.current.room, digestValue);
@@ -869,6 +945,119 @@ export class RoomStore {
       return { sender: original.sender, chat, contentHash, primary, state: saved.state };
     });
   }
+  private personMeta(row: PersonInboxRow): RoomPersonInboxMeta {
+    const state = this.byRoom(row.room); if (!state) fail("corrupt");
+    return { id: row.id, name: state.name, room: row.room, sender: row.sender, from: row.from_peer,
+      receivedAt: row.received_at, expiresAt: row.expires_at, bytes: row.bytes, state: row.state };
+  }
+  private prunePersonInbox(now: number): void {
+    const expired = this.db.query("UPDATE person_inbox SET body=NULL,state='expired',settled_at=expires_at WHERE state='unread' AND expires_at<=?").run(now).changes;
+    const removed = this.db.query("DELETE FROM person_inbox WHERE state!='unread' AND settled_at<=?").run(now - ROOM_PERSON_INBOX_LIMITS.ttlMs).changes;
+    if (expired > 0 || removed > 0) this.pendingPersonPurge = true;
+    for (const state of this.rooms.values()) {
+      const capped = this.db.query("DELETE FROM person_inbox WHERE room=? AND state!='unread' AND id NOT IN (SELECT id FROM person_inbox WHERE room=? AND state!='unread' ORDER BY settled_at DESC,id DESC LIMIT ?)")
+        .run(state.current.room, state.current.room, ROOM_PERSON_INBOX_LIMITS.stubsPerRoom).changes;
+      if (capped > 0) this.pendingPersonPurge = true;
+    }
+  }
+  expirePersonInbox(): boolean {
+    const now = this.now();
+    // Idle ticks inspect indexed metadata only, with no transaction or durable clock write.
+    const due = this.db.query("SELECT 1 FROM person_inbox WHERE (state='unread' AND expires_at<=?) OR (state!='unread' AND settled_at<=?) LIMIT 1").get(now, now - ROOM_PERSON_INBOX_LIMITS.ttlMs);
+    if (due || this.db.query("SELECT room FROM person_inbox WHERE state!='unread' GROUP BY room HAVING COUNT(*)>1000 LIMIT 1").get()) this.transaction(current => this.prunePersonInbox(current));
+    // Indirect cleanup (show/admission/capacity) reports its committed wake once,
+    // even when this tick has nothing left to prune. No body or clock write is needed.
+    const purged = this.pendingPersonPurge; this.pendingPersonPurge = false;
+    return purged;
+  }
+  /** A person inbox and its immutable admission receipt commit together. No Bus or network effect occurs here. */
+  admitPersonInbox(name: string, digestValue: string, current?: () => boolean): RoomPersonInboxAdmission {
+    const state = this.applicationRoom(name, current);
+    if (!validDigest(digestValue)) fail("invalid");
+    return this.transaction(now => {
+      const latest = this.applicationRoom(name, current);
+      if (latest.current.digest !== state.current.digest) fail("state_changed");
+      this.prunePersonInbox(now);
+      const row = this.applicationFor(state.current.room, digestValue);
+      if (!row || row.peer !== USER) fail("untrusted");
+      if (isTerminal(row.state)) {
+        if (!validOutcome(row.state, row.reason, row.peer)) fail("corrupt");
+        const existing = this.db.query<{ id: string }, [string, string, string]>("SELECT id FROM person_inbox WHERE room=? AND sender=? AND application=?").get(row.room, row.sender, row.application);
+        return { state: row.reason === "inbox_admitted" ? "duplicate" : "refused", reason: row.reason!, ...(existing ? { id: existing.id } : {}) };
+      }
+      if (row.state !== "pending" || row.primary_digest !== digestValue) fail("state_changed");
+      const entry = this.db.query<{ plaintext: Uint8Array; received_at: number | null }, [string, string, string]>("SELECT plaintext,received_at FROM inbox WHERE room=? AND digest=? AND sender=? AND plaintext IS NOT NULL").get(row.room, digestValue, row.sender);
+      if (!entry) fail("untrusted");
+      const message = decodeRoomMessage(entry.plaintext);
+      if (message.type !== "chat" || message.envelope.to !== USER || message.envelope.id !== row.application || message.envelope.trace !== row.trace || message.envelope.hop !== row.hop
+        || new Bun.CryptoHasher("sha256").update(encodeRoomMessage(message)).digest("base64url") !== row.content_hash) fail("untrusted");
+      const member = roomMembers(latest.current).find(value => value.fingerprint === row.sender);
+      if (!member || (message.envelope.from !== USER && !member.exposedPeers.includes(message.envelope.from))) fail("untrusted");
+      const bytes = Buffer.byteLength(message.envelope.body, "utf8"), received = entry.received_at;
+      let reason: RoomReceiptReason | undefined;
+      if (received === null) reason = "inbox_age_unavailable";
+      else if (!Number.isSafeInteger(received) || received <= 0 || received > now || !Number.isSafeInteger(received + ROOM_PERSON_INBOX_LIMITS.ttlMs)) fail("corrupt");
+      else if (received + ROOM_PERSON_INBOX_LIMITS.ttlMs <= now) reason = "inbox_expired";
+      else if (bytes > ROOM_PERSON_INBOX_LIMITS.bodyBytes) reason = "inbox_oversize";
+      else {
+        const unread = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM person_inbox WHERE room=? AND state='unread'").get(row.room)?.n ?? 0;
+        const retained = this.db.query<{ n: number }, []>("SELECT COALESCE(SUM(length(body)),0) AS n FROM person_inbox WHERE body IS NOT NULL").get()?.n ?? 0;
+        if (unread >= ROOM_PERSON_INBOX_LIMITS.unreadPerRoom || retained + entry.plaintext.byteLength > ROOM_PERSON_INBOX_LIMITS.globalBytes) reason = "inbox_full";
+      }
+      assertCurrent(current);
+      if (reason) {
+        this.finishApplication(name, digestValue, "failed_safe", reason, current);
+        return { state: "refused", reason };
+      }
+      const id = crypto.randomUUID();
+      this.db.query("INSERT INTO person_inbox(id,room,sender,application,primary_digest,from_peer,received_at,expires_at,bytes,body,state) VALUES(?,?,?,?,?,?,?,?,?,?,'unread')")
+        .run(id, row.room, row.sender, row.application, digestValue, `${message.envelope.from}@${member.label}`, received!, received! + ROOM_PERSON_INBOX_LIMITS.ttlMs, bytes, entry.plaintext);
+      this.db.query("UPDATE applications SET state='completed',reason='inbox_admitted',settled_at=? WHERE room=? AND sender=? AND application=?").run(now, row.room, row.sender, row.application);
+      this.db.query("UPDATE inbox SET plaintext=NULL WHERE room=? AND digest IN (SELECT digest FROM application_frames WHERE room=? AND sender=? AND application=?)").run(row.room, row.room, row.sender, row.application);
+      this.pruneInbox(row.room);
+      return { state: "admitted", reason: "inbox_admitted", id };
+    });
+  }
+  listPersonInbox(name?: string): RoomPersonInboxMeta[] {
+    this.assertOpen(); const now = this.now();
+    const state = name === undefined ? undefined : this.get(named(name));
+    if (name !== undefined && !state) return [];
+    const rows = state ? this.db.query<PersonInboxRow, [string]>("SELECT id,room,sender,application,primary_digest,from_peer,received_at,expires_at,bytes,state,settled_at FROM person_inbox WHERE room=? ORDER BY received_at,id LIMIT 1101").all(state.current.room)
+      : this.db.query<PersonInboxRow, []>("SELECT id,room,sender,application,primary_digest,from_peer,received_at,expires_at,bytes,state,settled_at FROM person_inbox ORDER BY received_at,id LIMIT 1101").all();
+    // ponytail: one complete bounded room (1100 rows), no global truncation. Add versioned pagination if global inventory is required.
+    if (rows.length > 1100) fail("inbox_list_limit");
+    // Metadata projection never loads a body; callers cannot infer a fresh unread TTL from a stale row.
+    return rows.map(row => this.personMeta(row.state === "unread" && row.expires_at <= now ? { ...row, state: "expired" } : row));
+  }
+  readPersonInbox(id: string, current: () => boolean): RoomPersonInboxItem | undefined {
+    if (typeof current !== "function") fail("untrusted"); assertCurrent(current);
+    if (!validUuid(id)) fail("invalid");
+    return this.transaction(now => {
+      assertCurrent(current); this.prunePersonInbox(now);
+      const row = this.db.query<PersonInboxRow, [string]>("SELECT * FROM person_inbox WHERE id=?").get(id);
+      if (!row) return undefined;
+      const item: RoomPersonInboxItem = this.personMeta(row);
+      if (row.body !== null) {
+        const message = decodeRoomMessage(row.body); if (message.type !== "chat") fail("corrupt"); item.body = message.envelope.body;
+      }
+      assertCurrent(current); return item;
+    });
+  }
+  disposePersonInbox(id: string, action: "done" | "discard", current: () => boolean): RoomPersonInboxMeta | undefined {
+    if (typeof current !== "function") fail("untrusted"); assertCurrent(current);
+    if (!validUuid(id) || action !== "done" && action !== "discard") fail("invalid");
+    return this.transaction(now => {
+      assertCurrent(current); this.prunePersonInbox(now);
+      const row = this.db.query<PersonInboxRow, [string]>("SELECT id,room,sender,application,primary_digest,from_peer,received_at,expires_at,bytes,state,settled_at FROM person_inbox WHERE id=?").get(id);
+      if (!row) return undefined;
+      const next = action === "done" ? "done" : "discarded";
+      if (row.state !== "unread") { if (row.state !== next && row.state !== "expired") fail("state_changed"); return this.personMeta(row); }
+      assertCurrent(current);
+      this.db.query("UPDATE person_inbox SET body=NULL,state=?,settled_at=? WHERE id=?").run(next, now, id);
+      this.prunePersonInbox(now);
+      return this.personMeta({ ...row, body: null, state: next, settled_at: now });
+    });
+  }
   claimApplication(name: string, digestValue: string, current?: () => boolean): boolean {
     const state = this.applicationRoom(name, current);
     return this.transaction(() => {
@@ -887,6 +1076,7 @@ export class RoomStore {
       this.applicationRoom(name, current);
       const row = this.applicationFor(state.current.room, digestValue);
       if (!row || row.primary_digest !== digestValue || row.state === "needs_review" || row.state === "disposed") fail("state_changed");
+      if (!validOutcome(outcome, reason, row.peer) || reason === "inbox_admitted") fail("invalid");
       if (isTerminal(row.state)) { if (row.state !== outcome || row.reason !== reason) fail("state_changed"); return; }
       if (outcome === "completed" && row.state !== "dispatching") fail("state_changed");
       this.db.query("UPDATE applications SET state=?,reason=?,settled_at=? WHERE room=? AND sender=? AND application=?").run(outcome, reason, now, row.room, row.sender, row.application);
@@ -897,7 +1087,7 @@ export class RoomStore {
   }
   applicationReceipt(name: string, digestValue: string): RoomMessage | undefined {
     const state = this.applicationRoom(name), row = this.applicationFor(state.current.room, digestValue);
-    if (!row || !isTerminal(row.state) || !validOutcome(row.state, row.reason) || row.settled_at === null || row.settled_at <= this.now() - ROOM_APPLICATION_RETENTION.settledMs) return undefined;
+    if (!row || !isTerminal(row.state) || !validOutcome(row.state, row.reason, row.peer) || row.settled_at === null || row.settled_at <= this.now() - ROOM_APPLICATION_RETENTION.settledMs && !this.personIdentityRetained(row)) return undefined;
     return { v: 1, type: "receipt", frame: digestValue, application: row.application, peer: row.peer, outcome: row.state as "completed" | "failed_safe", reason: row.reason! };
   }
   pendingApplications(name: string): { digest: string }[] {
@@ -920,7 +1110,7 @@ export class RoomStore {
     const state = this.get(name); if (!state) return undefined;
     if (!validDigest(digestValue)) fail("invalid");
     const row = this.applicationFor(state.current.room, digestValue);
-    if (!row || isSettledApplication(row.state) && row.settled_at! <= this.now() - ROOM_APPLICATION_RETENTION.settledMs) return undefined;
+    if (!row || isSettledApplication(row.state) && row.settled_at! <= this.now() - ROOM_APPLICATION_RETENTION.settledMs && !this.personIdentityRetained(row)) return undefined;
     return incomingMetadata(row, digestValue);
   }
   /** A person disposes uncertainty locally; accept is not Bus admission or signed remote completion. */
@@ -956,7 +1146,7 @@ export class RoomStore {
   applicationTraceHop(trace: string): number | undefined {
     if (!validUuid(trace)) fail("invalid");
     const now = this.now();
-    const row = this.db.query<{ hop: number | null }, [string, number]>("SELECT MAX(hop) AS hop FROM applications WHERE trace=? AND (state NOT IN ('completed','failed_safe','disposed') OR settled_at>?)").get(trace, now - ROOM_APPLICATION_RETENTION.settledMs);
+    const row = this.db.query<{ hop: number | null }, [string, number]>("SELECT MAX(hop) AS hop FROM applications WHERE trace=? AND (state NOT IN ('completed','failed_safe','disposed') OR settled_at>? OR EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application))").get(trace, now - ROOM_APPLICATION_RETENTION.settledMs);
     if (row?.hop === null || row === null) return undefined;
     if (!Number.isSafeInteger(row.hop) || row.hop! < 0 || row.hop! > MAX_HOP) fail("corrupt");
     return row.hop!;

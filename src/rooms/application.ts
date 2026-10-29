@@ -8,7 +8,7 @@ export interface RoomChatEnvelope {
   id: string; trace: string; hop: number; from: string; to: string;
   kind: "chat" | "status"; priority: Priority; body: string; ts: number;
 }
-export type RoomReceiptReason = "admitted" | "not_exposed" | "boundary_refused" | "invalid_message" | "rate_limited" | "hop" | "person_inbox_unsupported";
+export type RoomReceiptReason = "admitted" | "inbox_admitted" | "inbox_full" | "inbox_oversize" | "inbox_expired" | "inbox_age_unavailable" | "not_exposed" | "boundary_refused" | "invalid_message" | "rate_limited" | "hop" | "person_inbox_unsupported";
 export type RoomMessage =
   | { v: 1; type: "chat"; envelope: RoomChatEnvelope }
   | { v: 1; type: "receipt"; frame: string; application: string; peer: string; outcome: "completed" | "failed_safe"; reason: RoomReceiptReason };
@@ -20,11 +20,13 @@ const LOCAL_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const REMOTE_ID = /^([a-z][a-z0-9-]{0,31})@([a-z][a-z0-9-]{0,31})$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REASON_TEXT: Readonly<Record<RoomReceiptReason, string>> = Object.freeze({
-  admitted: "admitted", not_exposed: "peer not exposed", boundary_refused: "room boundary refused",
+  admitted: "admitted", inbox_admitted: "admitted to person inbox", inbox_full: "person inbox full",
+  inbox_oversize: "person inbox message too large", inbox_expired: "person inbox message expired",
+  inbox_age_unavailable: "person inbox admission age unavailable", not_exposed: "peer not exposed", boundary_refused: "room boundary refused",
   invalid_message: "invalid room message", rate_limited: "room rate limit", hop: "hop limit",
   person_inbox_unsupported: "person inbox not supported yet (X5)",
 });
-const REASONS: readonly RoomReceiptReason[] = ["admitted", "not_exposed", "boundary_refused", "invalid_message", "rate_limited", "hop", "person_inbox_unsupported"];
+const REASONS: readonly RoomReceiptReason[] = ["admitted", "inbox_admitted", "inbox_full", "inbox_oversize", "inbox_expired", "inbox_age_unavailable", "not_exposed", "boundary_refused", "invalid_message", "rate_limited", "hop", "person_inbox_unsupported"];
 /** Fixed operator text only; a diagnostic or remote field can never become a rendered reason. */
 export function roomReceiptReasonText(reason: RoomReceiptReason): string {
   return Object.hasOwn(REASON_TEXT, reason) ? REASON_TEXT[reason] : "room receipt unavailable";
@@ -84,7 +86,8 @@ function parseMessage(value: unknown): RoomMessage {
   if (type === "receipt") {
     const row = object(value, ["v", "type", "frame", "application", "peer", "outcome", "reason"]);
     if (row.v !== 1 || row.outcome !== "completed" && row.outcome !== "failed_safe" || !REASONS.includes(row.reason as RoomReceiptReason)
-      || row.outcome === "completed" && row.reason !== "admitted" || row.outcome === "failed_safe" && row.reason === "admitted") fail();
+      || row.outcome === "completed" && row.reason !== "admitted" && row.reason !== "inbox_admitted"
+      || row.outcome === "failed_safe" && (row.reason === "admitted" || row.reason === "inbox_admitted")) fail();
     return { v: 1, type, frame: frameDigest(row.frame), application: uuid(row.application), peer: localPeer(row.peer), outcome: row.outcome, reason: row.reason as RoomReceiptReason };
   }
   return fail();

@@ -179,6 +179,7 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   // #508: the registry's two forms are named in the audit and in a refusal, never their operands (a path or a URL can carry a secret).
   if (command === "smoke") return args[0] === "run" ? "smoke run" : "smoke";
   if (command === "broker") return args[0] === "serve" ? "broker serve" : args[0] === "room" && args[1] === "drop" ? "broker room drop" : "broker";
+  if (command === "room" && args[0] === "inbox") return ["show", "done", "discard"].includes(args[1] ?? "") && args[2] && args[2] !== "--json" ? `room inbox ${args[1]}` : "room inbox list";
   if (command === "room") return ["create", "invite", "join", "leave", "revoke", "expose", "resolve", "list", "status"].includes(args[0] ?? "") ? `room ${args[0]}` : "room";
   // #335: a schedule id is config text, so the audit names the subcommand only.
   if (command === "schedule") return ["list", "run", "pause", "resume"].includes(args.find(arg => arg !== "--json") ?? "") ? `schedule ${args.find(arg => arg !== "--json")}` : "schedule";

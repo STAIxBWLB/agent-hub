@@ -212,3 +212,94 @@ test("room exposure is machine-local and a committed local config cannot authori
   expect(policy.get("test")).toEqual([]);
   expect(() => policy.set("test", ["claude"], () => true)).toThrow("untrusted_config");
 });
+
+
+test("person inbox operations answer every rid and refuse a tools conductor before body access", async () => {
+  const f = await fixture(true), tools = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex" });
+  cleanup.push(() => tools.close());
+  const list = spyOn(RoomCommands.prototype, "inboxRows"), show = spyOn(RoomCommands.prototype, "inboxShow"), dispose = spyOn(RoomCommands.prototype, "inboxDispose");
+  try {
+    for (const op of ["inbox_list", "inbox_show", "inbox_done", "inbox_discard"]) {
+      const reply = await tools.request({ t: "room", op, input: op === "inbox_list" ? {} : { id: crypto.randomUUID() } });
+      expect(reply.ok).toBe(false); expect(reply.error).toBe("room inbox is person-only");
+    }
+    expect(list).not.toHaveBeenCalled(); expect(show).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled();
+    expect(await f.person.request({ t: "room", op: "inbox_list", input: {} })).toMatchObject({ ok: true, inbox: [] });
+    expect(await f.person.request({ t: "room", op: "inbox_show", input: { id: crypto.randomUUID() } })).toMatchObject({ ok: false, code: "inbox_not_found" });
+    for (const input of [{ id: "../private" }, { id: crypto.randomUUID(), body: "not an input field" }, null]) {
+      expect((await f.person.request({ t: "room", op: "inbox_show", input })).ok).toBe(false);
+    }
+    expect(existsSync(join(f.stateDir, "rooms"))).toBe(false);
+  } finally { list.mockRestore(); show.mockRestore(); dispose.mockRestore(); }
+});
+
+test("only the person's explicit inbox show reply carries a body, never status snapshot events or logs", async () => {
+  const f = await fixture(), canary = "PERSON_INBOX_RPC_BODY_CANARY";
+  const item = { id: crypto.randomUUID(), name: "work", room: "A".repeat(43), sender: "a".repeat(64), from: "codex@remote", receivedAt: 1000, expiresAt: 2000, bytes: Buffer.byteLength(canary), state: "unread" as const };
+  const list = spyOn(RoomCommands.prototype, "inboxRows").mockResolvedValue([item]);
+  const show = spyOn(RoomCommands.prototype, "inboxShow").mockResolvedValue({ ...item, body: canary });
+  const dispose = spyOn(RoomCommands.prototype, "inboxDispose").mockResolvedValue({ ...item, state: "done" });
+  const events: unknown[] = []; f.daemon.bus.tap(event => events.push(event));
+  try {
+    expect(await f.person.request({ t: "room", op: "inbox_list", input: {} })).toMatchObject({ ok: true, inbox: [item] });
+    expect(await f.person.request({ t: "room", op: "inbox_show", input: { id: item.id } })).toMatchObject({ ok: true, item: { ...item, body: canary } });
+    const done = await f.person.request({ t: "room", op: "inbox_done", input: { id: item.id } });
+    expect(done.item.state).toBe("done"); expect(done.item).not.toHaveProperty("body");
+    const publicReads = [await f.person.request({ t: "status" }), await f.person.request({ t: "ui_snapshot", after: 0 }), events];
+    expect(JSON.stringify(publicReads)).not.toContain(canary);
+    for (const name of ["status.json", "hub.log", "events.jsonl"]) expect(readFileSync(join(f.stateDir, name), "utf8")).not.toContain(canary);
+  } finally { list.mockRestore(); show.mockRestore(); dispose.mockRestore(); }
+});
+
+test("inbox show rechecks its socket after await before serializing a body", async () => {
+  const f = await fixture();
+  let entered!: () => void, release!: (value: never) => void, reads = 0;
+  const observed = new Promise<void>(resolve => { entered = resolve; });
+  const show = spyOn(RoomCommands.prototype, "inboxShow").mockImplementation(async () => { entered(); return new Promise<never>(resolve => { release = resolve; }); });
+  try {
+    const pending = f.person.request({ t: "room", op: "inbox_show", input: { id: crypto.randomUUID() } }).catch(() => undefined);
+    await observed; f.person.close(); await pending;
+    release(Object.defineProperty({}, "body", { get() { reads++; return "BODY_MUST_NOT_SERIALIZE"; } }) as never);
+    const other = await ControlClient.connect(f.stateDir, { role: "console" }); cleanup.push(() => other.close());
+    await other.request({ t: "status" });
+    expect(reads).toBe(0);
+  } finally { show.mockRestore(); }
+});
+
+
+test("person inbox expiry schedules a retry only after an actual purge and coalesces idle ticks", async () => {
+  let changed = false, retries = 0;
+  const commands = new RoomCommands({ cwd: tmpdir(), stateDir: tmpdir(), chat: {
+    retryPending: async () => { retries++; }, stop: () => {},
+  } as unknown as RoomChat });
+  Object.assign(commands, { store: { expirePersonInbox: () => changed, close: () => {} } });
+  commands.expireInbox(); await new Promise<void>(resolve => setImmediate(resolve));
+  expect(retries).toBe(0);
+  changed = true; commands.expireInbox(); changed = false; commands.expireInbox();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(retries).toBe(1);
+  commands.stop();
+});
+
+
+test("person inbox disposition replies before a blocked network retry and a later socket drop cannot change success", async () => {
+  const f = await fixture();
+  expect((await mutation(f.person, "create", { name: "test", broker: "ws://127.0.0.1:1/" })).ok).toBe(true);
+  const item = { id: crypto.randomUUID(), name: "test", room: "A".repeat(43), sender: "a".repeat(64), from: "codex@remote", receivedAt: 1, expiresAt: 2, bytes: 0, state: "discarded" as const };
+  let entered!: () => void, release!: () => void;
+  const retryEntered = new Promise<void>(resolve => { entered = resolve; });
+  const retryHeld = new Promise<void>(resolve => { release = resolve; });
+  const dispose = spyOn(RoomStore.prototype, "disposePersonInbox").mockReturnValue(item);
+  const retry = spyOn(RoomChat.prototype, "retryPending").mockImplementation(async () => { entered(); await retryHeld; });
+  let response: any;
+  const pending = f.person.request({ t: "room", op: "inbox_discard", input: { id: item.id } }).then(value => { response = value; return value; }).catch(() => undefined);
+  try {
+    await retryEntered;
+    // WebSocket FIFO makes this a consumed reply barrier, with no wall-clock assumption.
+    await f.person.request({ t: "status" });
+    expect(response?.ok).toBe(true);
+    expect(response).toMatchObject({ ok: true, item });
+    f.person.close();
+    expect(response.ok).toBe(true);
+  } finally { release(); await pending; retry.mockRestore(); dispose.mockRestore(); }
+});

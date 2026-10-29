@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { assertRoomCryptoReady, decodeBase64url, encodeBase64url, signBytes, verifyBytes } from "./crypto.ts";
 import { acceptRoomEpoch, brokerUrl, canonicalBytes, createInvite, createJoin, createRoomEpoch, decodeInvite, decodeJoin, decodeRoster, roomMembers } from "./wire.ts";
-import { RoomStore, type RoomState } from "./store.ts";
+import { RoomStore, type RoomState, type RoomPersonInboxMeta, type RoomPersonInboxItem } from "./store.ts";
 import { RoomLink } from "./link.ts";
 import { exposedPeers, roomName, RoomPolicy } from "./policy.ts";
 import type { RoomChat } from "./service.ts";
@@ -93,6 +93,45 @@ export class RoomCommands {
   private current(check: () => boolean): void { if (this.stopped || !check()) refuse("state_changed"); }
   private active(store: RoomStore, name: string): RoomState {
     const state = store.get(name); if (!state || state.left) refuse("unavailable"); return state;
+  }
+  private async inboxStore(check: () => boolean): Promise<RoomStore | undefined> {
+    this.current(check);
+    if (!this.store && !this.pending && !existsSync(join(this.options.stateDir, "rooms", "rooms.db"))) return undefined;
+    const store = await this.open(); this.current(check); return store;
+  }
+  async inboxRows(name: unknown, check: () => boolean): Promise<RoomPersonInboxMeta[]> {
+    this.current(check); if (name !== undefined) roomName(name);
+    const store = await this.inboxStore(check); this.current(check);
+    const rows = store?.listPersonInbox(name as string | undefined) ?? []; this.current(check); return rows;
+  }
+  async inboxShow(id: unknown, check: () => boolean): Promise<RoomPersonInboxItem | undefined> {
+    this.current(check);
+    if (typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) refuse("invalid_input");
+    const store = await this.inboxStore(check); this.current(check);
+    const item = store?.readPersonInbox(id, () => { this.current(check); return true; }); this.current(check); return item;
+  }
+  async inboxDispose(id: unknown, action: "done" | "discard", check: () => boolean): Promise<RoomPersonInboxMeta | undefined> {
+    this.current(check);
+    if (typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) refuse("invalid_input");
+    const store = await this.inboxStore(check); this.current(check);
+    const item = store?.disposePersonInbox(id, action, () => { this.current(check); return true; }); this.current(check);
+    this.current(check); return item;
+  }
+  /** Host calls this after replying to a committed person disposition. */
+  retryInboxPending(): void {
+    queueMicrotask(() => {
+      if (this.stopped) return;
+      try {
+        this.store?.expirePersonInbox(); // Consume cleanup signals together with this explicit opportunity.
+        void this.options.chat?.retryPending().catch(() => undefined);
+      } catch { /* A retry failure cannot change an already committed and acknowledged disposition. */ }
+    });
+  }
+  /** Loaded-state housekeeping only, including rooms that have been left. */
+  expireInbox(): void {
+    if (this.stopped || !this.store?.expirePersonInbox()) return;
+    // Only a real local purge creates this opportunity; idle ticks never poll plaintext.
+    queueMicrotask(() => { if (!this.stopped) void this.options.chat?.retryPending().catch(() => undefined); });
   }
   async rows(name?: string, details = name !== undefined): Promise<Record<string, unknown>[]> {
     if (!this.store && !existsSync(join(this.options.stateDir, "rooms"))) return [];

@@ -1,3 +1,4 @@
+import { RoomStoreError } from "../rooms/store.ts";
 import { RoomCommands, type RoomPreview } from "../rooms/commands.ts";
 import { queueBackpressurePolicy, type QueueBackpressurePolicy } from "./queue-backpressure.ts";
 import { RoomChat } from "../rooms/service.ts";
@@ -3511,6 +3512,13 @@ export async function startDaemon(opts: DaemonOptions) {
   });
   // Room crypto/state failure disables only this optional outbound service, never local work.
   void roomCommands.start().catch(() => log("rooms unavailable"));
+  let roomInboxExpiryFailed = false;
+  const roomInboxExpiry = setInterval(() => {
+    if (stopping || recoveryActive() || bus.isRecoveryHeld) return;
+    try { roomCommands.expireInbox(); roomInboxExpiryFailed = false; }
+    catch { if (!roomInboxExpiryFailed) log("room inbox expiry unavailable"); roomInboxExpiryFailed = true; }
+  }, 30_000);
+  roomInboxExpiry.unref?.(); intervals.push(roomInboxExpiry);
   const roomTickets = new WeakMap<Sock, { id: string; expires: number; preview: RoomPreview }>();
 
   const releaseAuthorizations = new ReleaseAuthorizations(opts.cwd, {
@@ -7685,6 +7693,34 @@ export async function startDaemon(opts: DaemonOptions) {
           if (msg.input !== undefined && (!msg.input || typeof msg.input !== "object" || Array.isArray(msg.input)
             || Object.keys(msg.input).some(key => key !== "name") || (msg.input.name !== undefined && typeof msg.input.name !== "string"))) return roomFailure();
           void roomCommands.rows(msg.input?.name, msg.op === "status").then(rooms => reply({ ok: true, rooms }), roomFailure);
+          return;
+        }
+        if (["inbox_list", "inbox_show", "inbox_done", "inbox_discard"].includes(msg.op)) {
+          if (!personRoom) return void reply({ ok: false, error: "room inbox is person-only" });
+          if (!roomCurrent() || Object.keys(msg).some(key => !["t", "op", "input", "rid"].includes(key))) return roomFailure();
+          const input = msg.input;
+          if (!input || typeof input !== "object" || Array.isArray(input)) return roomFailure();
+          if (msg.op === "inbox_list") {
+            if (Object.keys(input).some(key => key !== "name") || (input.name !== undefined && typeof input.name !== "string")) return roomFailure();
+            void roomCommands.inboxRows(input.name, roomCurrent).then(inbox => {
+              if (!roomCurrent()) return roomFailure();
+              reply({ ok: true, inbox });
+            }, error => {
+              if (!roomCurrent()) return roomFailure();
+              if (error instanceof RoomStoreError && error.code === "inbox_list_limit") return reply({ ok: false, code: "inbox_list_limit" });
+              roomFailure();
+            });
+            return;
+          }
+          if (Object.keys(input).length !== 1 || typeof input.id !== "string" || !Object.hasOwn(input, "id")) return roomFailure();
+          const operation = msg.op === "inbox_show" ? roomCommands.inboxShow(input.id, roomCurrent)
+            : roomCommands.inboxDispose(input.id, msg.op === "inbox_done" ? "done" : "discard", roomCurrent);
+          void operation.then(item => {
+            if (!roomCurrent()) return roomFailure();
+            if (!item) return reply({ ok: false, code: "inbox_not_found" });
+            reply({ ok: true, item });
+            if (msg.op !== "inbox_show") roomCommands.retryInboxPending();
+          }, roomFailure);
           return;
         }
         if (!personRoom) return void reply({ ok: false, error: "room mutations are person-only" });
