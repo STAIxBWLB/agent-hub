@@ -74,7 +74,8 @@ test("manual person/conductor assignment and self-claim bypass only context admi
     const row = f.board.propose(HUB, { title: `manual ${by}`, class: "implement" });
     expect((await f.tasks.assignTo(row.id, "codex", by)).owner).toBe("codex");
   }
-  const claim = await f.tasks.propose("codex", { title: "claim", class: "implement", owner: "codex" });
+  const fresh = await fixture(); fresh.report("codex", 1);
+  const claim = await fresh.tasks.propose("codex", { title: "claim", class: "implement", owner: "codex" });
   expect(claim.owner).toBe("codex"); expect(claim.state).toBe("in_progress");
   const named = await f.tasks.propose(HUB, { title: "named automatic", class: "implement", owner: "codex" });
   expect(named.owner).toBeNull();
