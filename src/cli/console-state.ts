@@ -974,7 +974,7 @@ function roomDetail(row: RoomStatusView): Record<string, unknown> {
     room: row.name, "room id": row.room, "link state": row.link ?? "unknown", owner: row.owner, "local member": row.member,
     "member count": count(row.memberCount),
     "remote peers": row.remotePeers === null ? "unknown" : row.remotePeers.length ? row.remotePeers.map(peer => `${peer.id} (${peer.state})`) : "0",
-    "since daemon start": since,
+    "counter scope": `since daemon start: ${since}`,
     "out handoff": count(relays?.outbound), "in admitted": count(relays?.inbound), withheld: count(relays?.withheld),
   };
 }
