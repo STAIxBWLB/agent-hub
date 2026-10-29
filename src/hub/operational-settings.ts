@@ -57,8 +57,32 @@ export const SPLIT_FAILURE_SHARE_SETTING = taskNumber({
   type: "number", min: 0, max: 1, defaultValue: 0.3, unit: "share", inventory: "src/hub/routing.ts:SPLIT_FAILURE_SHARE",
 });
 
+const busNumber = <const T extends Omit<OperationalNumberSetting, "group" | "store" | "risk" | "applies" | "type" | "min">>(def: T) => ({ group: "Routing", store: "config", risk: "raises", applies: "live", type: "integer", min: 1, ...def }) as const satisfies OperationalNumberSetting;
+
+export const BUS_MAX_ATTEMPTS_SETTING = busNumber({
+  key: "bus.max_attempts", path: ["bus", "max_attempts"], label: "Safe-failure delivery attempts",
+  max: 100, defaultValue: 3, unit: "attempts", inventory: "src/hub/bus.ts:MAX_ATTEMPTS",
+});
+export const BUS_DIGEST_MAX_SETTING = busNumber({
+  key: "bus.digest_max", path: ["bus", "digest_max"], label: "Maximum originals in a push digest",
+  max: 10, defaultValue: 10, unit: "envelopes", inventory: "src/hub/bus.ts:DIGEST_MAX",
+});
+export const BUS_PULL_BUDGET_BYTES_SETTING = busNumber({
+  key: "bus.pull_budget_bytes", path: ["bus", "pull_budget_bytes"], label: "Pull rendered-text budget (bytes)",
+  max: 65_536, defaultValue: 65_536, unit: "bytes", inventory: "src/hub/bus.ts:PULL_BUDGET_BYTES",
+});
+export const BUS_NOTES_KEPT_SETTING = busNumber({
+  key: "bus.notes_kept", path: ["bus", "notes_kept"], label: "Shared notes retained in a merged preface",
+  max: 10, defaultValue: 10, unit: "notes", inventory: "src/hub/bus.ts:NOTES_KEPT",
+});
+export const BUS_TERMINAL_HISTORY_LIMIT_SETTING = busNumber({
+  key: "bus.terminal_history_limit", path: ["bus", "terminal_history_limit"], label: "Unprotected terminal delivery history target",
+  max: 2048, defaultValue: 2048, unit: "rows", inventory: "src/hub/delivery-journal.ts:TERMINAL_CAP",
+});
+
 /** Fixed metadata; never registration from a file, request, adapter or environment variable. */
-export const OPERATIONAL_NUMBERS: readonly OperationalNumberSetting[] = [GROOM_FYI_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SETTING, CONTRADICTION_WINDOW_SETTING, RESCREEN_MAX_SETTING, SPLIT_MIN_SETTING, SPLIT_FAILURE_SHARE_SETTING];
+export const OPERATIONAL_NUMBERS: readonly OperationalNumberSetting[] = [GROOM_FYI_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SETTING, CONTRADICTION_WINDOW_SETTING, RESCREEN_MAX_SETTING, SPLIT_MIN_SETTING, SPLIT_FAILURE_SHARE_SETTING,
+  BUS_MAX_ATTEMPTS_SETTING, BUS_DIGEST_MAX_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_NOTES_KEPT_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING];
 /** The `tasks` leaves the six #489 H2 readers need; `HubConfig.tasks` has them all. */
 export interface TaskOperationalConfig { tasks: { demote_at?: number; demotion_half_life_h?: number; contradiction_window_days?: number; rescreen_max?: number; split_min_observations?: number; split_max_failure_share?: number } }
 /**
@@ -72,5 +96,14 @@ export const taskOperationalReaders = (config: () => TaskOperationalConfig) => (
   rescreenMax: () => config().tasks.rescreen_max ?? RESCREEN_MAX_SETTING.defaultValue,
   splitMinObservations: () => config().tasks.split_min_observations ?? SPLIT_MIN_SETTING.defaultValue,
   splitMaxFailureShare: () => config().tasks.split_max_failure_share ?? SPLIT_FAILURE_SHARE_SETTING.defaultValue,
+});
+export interface BusOperationalConfig { bus?: { max_attempts?: number; digest_max?: number; pull_budget_bytes?: number; notes_kept?: number; terminal_history_limit?: number } }
+/** Read accepted configuration at the next operation; a reload itself never trims or retries work. */
+export const busOperationalReaders = (config: () => BusOperationalConfig) => ({
+  maxAttempts: () => config().bus?.max_attempts ?? BUS_MAX_ATTEMPTS_SETTING.defaultValue,
+  digestMax: () => config().bus?.digest_max ?? BUS_DIGEST_MAX_SETTING.defaultValue,
+  pullBudgetBytes: () => config().bus?.pull_budget_bytes ?? BUS_PULL_BUDGET_BYTES_SETTING.defaultValue,
+  notesKept: () => config().bus?.notes_kept ?? BUS_NOTES_KEPT_SETTING.defaultValue,
+  terminalHistoryLimit: () => config().bus?.terminal_history_limit ?? BUS_TERMINAL_HISTORY_LIMIT_SETTING.defaultValue,
 });
 export const operationalNumber = (key: string): OperationalNumberSetting | undefined => OPERATIONAL_NUMBERS.find(def => def.key === key);

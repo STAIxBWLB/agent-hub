@@ -20,8 +20,8 @@ export type JournalDeliveryState =
   | "discarded";
 export type JournalResolution = "completed" | "retry" | "discard";
 export const MAX_ENVELOPE_BODY = 1_000_000;
+export const TERMINAL_CAP = 2048;
 const SCHEMA_VERSION = 1,
-  TERMINAL_CAP = 2048,
   MAX_ROWS = 100_000,
   MAX_JSON = 20 * 1024 * 1024;
 const STATES = new Set<JournalDeliveryState>([
@@ -56,6 +56,8 @@ export interface DeliveryJournalOptions {
   projectId: string;
   instanceId: string;
   operationId?: string;
+  /** Accepted live history target; only normal terminal settlement invokes pruning. */
+  terminalHistoryLimit?: () => number;
 }
 export interface JournalSnapshot {
   schemaVersion: number;
@@ -272,12 +274,14 @@ export class DeliveryJournal {
   private queueMetadataTracking = false;
   private queueMetadataInvalidated = false;
   private readonly operationId?: string;
+  private readonly terminalHistoryLimit?: () => number;
   constructor(options: DeliveryJournalOptions) {
     this.file = options.file;
     this.projectRoot = text(options.projectRoot, "projectRoot", 4096);
     this.projectId = text(options.projectId, "projectId", 256);
     this.instanceId = text(options.instanceId, "instanceId", 256);
     this.operationId = options.operationId;
+    this.terminalHistoryLimit = options.terminalHistoryLimit;
     mkdirSync(dirname(options.file), { recursive: true, mode: 0o700 });
     this.db = new Database(options.file, { create: true });
     this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
@@ -1032,6 +1036,7 @@ export class DeliveryJournal {
     return row ? { action: row.action, reason: row.reason, observedRevision: row.observed_revision, actor: row.actor } : undefined;
   }
   private pruneTerminal(): void {
+    const terminalCap = this.terminalHistoryLimit?.() ?? TERMINAL_CAP;
     const count = Number(
       (
         this.db
@@ -1041,12 +1046,12 @@ export class DeliveryJournal {
           .get(this.projectId) as { n: number }
       ).n,
     );
-    if (count <= TERMINAL_CAP) return;
+    if (count <= terminalCap) return;
     this.db
       .query(
         "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded','failed') AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
       )
-      .run(this.projectId, count - TERMINAL_CAP);
+      .run(this.projectId, count - terminalCap);
   }
   importSnapshot(snapshot: JournalSnapshot, operationId: string, trackQueuePressure = false): boolean {
     this.ensureOpen();

@@ -194,6 +194,7 @@ const schema: Record<string, Check> = {
   conductor: block({ feed: words(["own", "all", "off"]), approval_wait_s: number(0, 2_147_483_647 / 1000) }),
   budget: block({ gate: number(0, 1), stale_min: timerMinutes, poll_min: timerMinutes, checkpoint_timeout_s: timerSeconds, kimi_tokens_5h: number(0), wait_max_min: number(0) }),
   context: block({ gate: number(0, 1), stale_min: timerMinutes, max_assignment_used: number(0, 1) }),
+  bus: block({ max_attempts: operationalNumberCheck("bus.max_attempts"), digest_max: operationalNumberCheck("bus.digest_max"), pull_budget_bytes: operationalNumberCheck("bus.pull_budget_bytes"), notes_kept: operationalNumberCheck("bus.notes_kept"), terminal_history_limit: operationalNumberCheck("bus.terminal_history_limit") }),
   inference: block({ enabled: bool, digest_min_items: number(1, 100_000, true), digest_min_chars: number(1, 10_000_000, true), triage: bool }),
   omniroute: block({ urls: strings, api_key_file: text, access_hosts: strings, cf_client_id_file: text, cf_client_secret_file: text }),
   mlx: block({ enabled: bool, provider: words(["legacy", "ollama"]), host: text, runtimeDir: text, modelPath: text, bin: text, port: number(1, 65535, true), model: text, sourceModel: text,

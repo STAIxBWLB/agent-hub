@@ -1,0 +1,187 @@
+import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Bus, MAX_ATTEMPTS, DIGEST_MAX, PULL_BUDGET_BYTES, NOTES_KEPT, type BusEvent } from "../src/hub/bus.ts";
+import { DeliveryJournal, TERMINAL_CAP } from "../src/hub/delivery-journal.ts";
+import { BasePeer } from "../src/hub/peers.ts";
+import { newEnvelope, noteLine, type Envelope, type PeerState } from "../src/hub/envelope.ts";
+import { busOperationalReaders, OPERATIONAL_NUMBERS, type BusOperationalConfig } from "../src/hub/operational-settings.ts";
+import { configApply, validateRawConfig, validateOperationalConfig } from "../src/hub/config-apply.ts";
+import { checkSettingValue, settingDef } from "../src/hub/settings.ts";
+import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
+import { ControlClient } from "../src/hub/control-client.ts";
+import { realPath } from "../src/hub/project.ts";
+
+const cleanup: (() => unknown)[] = [];
+afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
+const rows = OPERATIONAL_NUMBERS.filter(def => def.key.startsWith("bus."));
+const defaults = [MAX_ATTEMPTS, DIGEST_MAX, PULL_BUDGET_BYTES, NOTES_KEPT, TERMINAL_CAP];
+const until = async (condition: () => boolean) => {
+  for (let n = 0; n < 400 && !condition(); n++) await Bun.sleep(10);
+  expect(condition()).toBe(true);
+};
+class Peer extends BasePeer {
+  batches: Envelope[][] = [];
+  fail = false;
+  quota = false;
+  beforeFailure?: () => void;
+  constructor(id: string, readonly pullOnly = false) { super(id); }
+  async start() { this.setState("idle"); }
+  async stop() { this.setState("offline"); }
+  set(state: PeerState) { this.setState(state); }
+  async deliver(envs: Envelope[]) {
+    this.setState("busy"); this.batches.push(envs);
+    if (this.fail) { this.beforeFailure?.(); this.onFailed?.(envs, { quota: this.quota }); }
+  }
+}
+function bus(config: () => BusOperationalConfig, pullOnly = false) {
+  const b = new Bus({ batchMs: 0, ...busOperationalReaders(config) }), p = new Peer("claude", pullOnly);
+  b.add(p); cleanup.push(() => p.stop(), () => b.closeJournal());
+  return { b, p };
+}
+
+test("#489 H3 defaults remain the five original constants, and all bounds/apply/UI checks share H1", () => {
+  expect(defaults).toEqual([3, 10, 65_536, 10, 2048]);
+  expect(rows).toHaveLength(5);
+  for (const [index, row] of rows.entries()) {
+    expect(row.defaultValue).toBe(defaults[index]!);
+    expect(configApply(row.key)).toEqual({ applies: "live" });
+    const def = settingDef(row.key); if (typeof def === "string") throw new Error(def);
+    expect(def).toMatchObject({ min: 1, max: row.max, type: "integer", applies: "live" });
+    for (const value of [1, row.defaultValue, row.max]) {
+      expect(checkSettingValue(def, value)).toBe(value);
+      expect(() => validateRawConfig({ bus: { [row.path[1]!]: value } })).not.toThrow();
+      expect(() => validateOperationalConfig({ bus: { [row.path[1]!]: value } })).not.toThrow();
+    }
+    for (const value of [0, -1, 1.5, row.max + 1, NaN, Infinity, "2", null]) {
+      if (value === null) expect(checkSettingValue(def, value)).toBeNull(); // UI inherit removes the local leaf
+      else expect(() => checkSettingValue(def, value)).toThrow();
+      expect(() => validateRawConfig({ bus: { [row.path[1]!]: value } })).toThrow(row.key);
+      expect(() => validateOperationalConfig({ bus: { [row.path[1]!]: value } })).toThrow(row.key);
+    }
+    if (row.key !== "bus.max_attempts") expect(row.max).toBe(row.defaultValue); // four existing ceilings only tighten
+  }
+});
+
+test("#489 unset readers preserve legacy digest, pull and preface text", () => {
+  for (const pullOnly of [false, true]) {
+    const legacy = new Bus({ batchMs: 0 }), { b } = bus(() => ({}), pullOnly);
+    const peer = new Peer("claude", pullOnly); legacy.add(peer);
+    cleanup.push(() => peer.stop(), () => legacy.closeJournal());
+    for (let n = 0; n < 12; n++) {
+      const env = newEnvelope("user", `${n}: ${"x".repeat(7000)}`, { to: ["claude"] });
+      legacy.publish(env); b.publish(env);
+      for (const target of [legacy, b]) target.note("claude", noteLine("codex", "finding", `note ${n}`));
+    }
+    expect(b.snapshot(false).prefaces.claude!.body).toBe(legacy.snapshot(false).prefaces.claude!.body);
+    const normalized = (envs: Envelope[]) => envs.map(env => env.from === "hub" ? { body: env.body, kind: env.kind } : env);
+    expect(normalized(b.pull("claude")!)).toEqual(normalized(legacy.pull("claude")!));
+    expect(b.queueIds("claude")).toEqual(legacy.queueIds("claude"));
+  }
+});
+
+test("#489 digest reload leaves queued order intact and applies at the next take", () => {
+  let config: BusOperationalConfig = { bus: { digest_max: 2 } };
+  const { b } = bus(() => config);
+  const envs = ["first", "second", "important", "last"].map((body, n) => newEnvelope("user", body, { to: ["claude"], priority: n === 2 ? "important" : "status" }));
+  envs.forEach(env => b.publish(env));
+  expect(b.pull("claude")!.map(env => env.body)).toEqual(["important", "first"]);
+  const before = b.snapshot(false);
+  config = { bus: { digest_max: 1 } };
+  expect(b.snapshot(false)).toEqual(before);
+  expect(b.pull("claude")!.map(env => env.body)).toEqual(["second"]);
+  expect(b.pull("claude")!.map(env => env.body)).toEqual(["last"]);
+});
+
+test("#489 pull budget reload keeps FIFO and lets the first oversized item through", () => {
+  let config: BusOperationalConfig = { bus: { pull_budget_bytes: 1 } };
+  const { b } = bus(() => config, true);
+  const envs = ["big".repeat(1000), "second", "third"].map(body => newEnvelope("user", body, { to: ["claude"] }));
+  envs.forEach(env => b.publish(env));
+  expect(b.pull("claude")!.map(env => env.id)).toEqual([envs[0]!.id]);
+  const before = b.snapshot(false);
+  config = { bus: { pull_budget_bytes: 65_536 } };
+  expect(b.snapshot(false)).toEqual(before);
+  expect(b.pull("claude")!.map(env => env.id)).toEqual(envs.slice(1).map(env => env.id));
+});
+
+test("#489 notes reload trims only on the next merge and preserves non-note recall", () => {
+  let config: BusOperationalConfig = {};
+  const { b } = bus(() => config);
+  b.preface("claude", "retained recall");
+  for (let n = 0; n < 4; n++) b.note("claude", noteLine("codex", "finding", `n${n}`));
+  const before = b.snapshot(false);
+  config = { bus: { notes_kept: 2 } };
+  expect(b.snapshot(false)).toEqual(before);
+  b.note("claude", noteLine("codex", "finding", "n4"));
+  expect(b.snapshot(false).prefaces.claude!.body).toBe("retained recall\n\nnote from codex [finding]: n3\nnote from codex [finding]: n4");
+});
+
+test("#489 retry reload uses existing counts, keeps poison alone and exempts a paused quota refusal", async () => {
+  let config: BusOperationalConfig = { bus: { max_attempts: 4 } };
+  const { b, p } = bus(() => config), events: BusEvent[] = [];
+  b.tap(event => events.push(event)); p.fail = true; await p.start();
+  const first = newEnvelope("user", "poison", { to: [p.id] }); b.publish(first);
+  await until(() => b.attemptState()[`${p.id}:${first.id}`] === 1);
+  const before = b.snapshot(false);
+  config = { bus: { max_attempts: 2 } };
+  expect(b.snapshot(false)).toEqual(before);
+  const next = newEnvelope("user", "innocent", { to: [p.id] }); b.publish(next);
+  p.set("idle");
+  await until(() => events.some(event => event.t === "undeliverable" && event.env.id === first.id));
+  expect(p.batches[1]!.map(env => env.id)).toEqual([first.id]);
+  expect(b.queueIds(p.id)).toEqual([next.id]);
+  p.quota = true; p.beforeFailure = () => b.pause(p.id); p.set("idle");
+  await until(() => p.batches.length === 3);
+  expect(b.queueIds(p.id)).toEqual([next.id]);
+  expect(b.attemptState()).toEqual({});
+});
+
+test("#489 terminal history reload prunes only at settlement and preserves unresolved retry ancestry", () => {
+  let config: BusOperationalConfig = { bus: { terminal_history_limit: 3 } };
+  const dir = mkdtempSync(join(tmpdir(), "ahub-operational-history-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i", terminalHistoryLimit: busOperationalReaders(() => config).terminalHistoryLimit });
+  cleanup.push(() => journal.close());
+  const env = newEnvelope("user", "history");
+  const terminal = (id: string) => journal.createDelivery({ id, peer: "claude", state: "completed", createdAt: env.ts, originals: [env], out: [env] });
+  terminal("protected");
+  journal.createDelivery({ id: "held", peer: "claude", state: "needs_review", previousId: "protected", createdAt: env.ts, originals: [env], out: [env] });
+  terminal("a"); terminal("b");
+  const before = journal.snapshot();
+  config = { bus: { terminal_history_limit: 1 } };
+  expect(journal.snapshot()).toEqual(before);
+  terminal("c");
+  expect(journal.get("protected")?.state).toBe("completed");
+  expect(journal.get("held")?.state).toBe("needs_review");
+  expect(journal.list().filter(row => row.state === "completed")).toHaveLength(1);
+});
+
+test("#489 five real daemon settings rows write, inherit and undo through the existing local file", async () => {
+  const cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-bus-config-"))), state = join(cwd, ".agenthub/state");
+  cleanup.push(() => rmSync(cwd, { recursive: true, force: true })); mkdirSync(join(cwd, ".agenthub"));
+  const shared = JSON.stringify({ memory: { enabled: false, native: false }, inference: { enabled: false }, mlx: { enabled: false }, pi: { auto_start: false }, research: { enabled: false }, snapshots: { enabled: false } });
+  writeFileSync(join(cwd, ".agenthub/config.json"), shared);
+  const daemon = await startDaemon({ cwd, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, agentDrift: false, snapshotClock: () => 0 });
+  cleanup.push(() => daemon.stop());
+  const client = await ControlClient.connect(state, { role: "console", projectRoot: cwd }); cleanup.push(() => client.close());
+  const instance = (await client.request({ t: "status" })).status.instanceId;
+  for (const row of rows) {
+    const get = async () => (await client.request({ t: "settings_get" })).rows.find((entry: { key: string }) => entry.key === row.key);
+    expect(await get()).toMatchObject({ value: row.defaultValue, applies: "live" });
+    const set = (value: unknown) => client.request({ t: "settings_set", key: row.key, value, reason: "bus settings regression" });
+    expect((await set(1)).ok).toBe(true);
+    expect((await get()).value).toBe(1);
+    expect(loadConfig(cwd).bus?.[row.path[1] as keyof NonNullable<BusOperationalConfig["bus"]>]).toBe(1);
+    const saved = readFileSync(join(cwd, ".agenthub/config.local.json"), "utf8");
+    expect((await set(row.max + 1)).ok).toBe(false);
+    expect(readFileSync(join(cwd, ".agenthub/config.local.json"), "utf8")).toBe(saved);
+    expect((await set(null)).ok).toBe(true);
+    expect((await get()).value).toBe(row.defaultValue);
+    expect((await client.request({ t: "settings_undo", reason: "restore bus override" })).ok).toBe(true);
+    expect((await get()).value).toBe(1);
+    expect((await set(null)).ok).toBe(true);
+  }
+  expect((await client.request({ t: "status" })).status.instanceId).toBe(instance);
+  expect(readFileSync(join(cwd, ".agenthub/config.json"), "utf8")).toBe(shared);
+}, 20_000);

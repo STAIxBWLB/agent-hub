@@ -41,6 +41,11 @@ export interface BusOptions {
   /** How long a status envelope may wait for company before it is delivered on its own. */
   batchMs: number;
   queueCap: number;
+  /** Accepted live operational settings; read only at the next matching delivery/note operation. */
+  maxAttempts?: () => number;
+  digestMax?: () => number;
+  pullBudgetBytes?: () => number;
+  notesKept?: () => number;
   /** Optional: rewrite a delivery before it goes out (M6 digest condensation). Must return its input on any failure. */
   condense?: (envs: Envelope[]) => Promise<Envelope[]>;
   journal?: DeliveryJournal;
@@ -118,7 +123,7 @@ function resolveTo(to: PeerId[], originals: Envelope[] | undefined): PeerId[] {
 }
 
 const SEEN_CAP = 2048;
-const MAX_ATTEMPTS = 3;
+export const MAX_ATTEMPTS = 3;
 // ponytail: provenance is capped at 2048 ids/peer, 4096 peers, 100000 ids total and 256 KiB per snapshot.
 // Omitted metadata means unknown age only; use a measured per-envelope store if larger queues need provenance.
 const QUEUE_TIME_CAP = 2048, QUEUE_TIME_PEERS_CAP = 4096, QUEUE_TIME_TOTAL_CAP = 100_000, QUEUE_TIME_SNAPSHOT_BYTES = 256 * 1024;
@@ -127,11 +132,11 @@ const remoteId = (id: string): boolean => id.includes("@");
 const remoteFingerprint = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 // ponytail: one digest carries at most ten originals; larger supervision windows split into bounded deliveries.
 // Revisit this ceiling after measuring native supervision cost, rather than bypassing the delivery limit.
-const DIGEST_MAX = 10;
+export const DIGEST_MAX = 10;
 // #713: a pull-only peer reads between steps, often minutes apart, so one pull drains its queue up to this many bytes of rendered text instead of ten items.
 // Bounded, not unbounded: a queue larger than the budget takes more than one pull, and the reply says how many are still waiting. Push peers keep DIGEST_MAX.
-const PULL_BUDGET_BYTES = 64 * 1024;
-const NOTES_KEPT = 10;
+export const PULL_BUDGET_BYTES = 64 * 1024;
+export const NOTES_KEPT = 10;
 
 /**
  * N-peer fan-out. Never delivers back to `from`, caps hops, dedupes by id. Each peer has one queue,
@@ -797,7 +802,7 @@ export class Bus {
   note(id: PeerId, line: string): void {
     if (remoteId(id)) return;
     const existing = this.prefaces.get(id);
-    this.prefaces.set(id, existing ? { ...existing, body: keepNotes(uniqueMemoryLines(appendNote(existing.body, line)), NOTES_KEPT) } : newEnvelope(HUB, uniqueMemoryLines(line), { to: [id], kind: "presence" }));
+    this.prefaces.set(id, existing ? { ...existing, body: keepNotes(uniqueMemoryLines(appendNote(existing.body, line)), this.opts.notesKept?.() ?? NOTES_KEPT) } : newEnvelope(HUB, uniqueMemoryLines(line), { to: [id], kind: "presence" }));
     this.persist();
   }
 
@@ -805,7 +810,7 @@ export class Bus {
   private restorePreface(id: PeerId, env: Envelope): void {
     if (remoteId(id)) return;
     const now = this.prefaces.get(id);
-    this.prefaces.set(id, !now ? { ...env, body: uniqueMemoryLines(env.body) } : now.id === env.id ? { ...now, body: uniqueMemoryLines(now.body) } : { ...env, body: keepNotes(mergePrefaces(env.body, now.body), NOTES_KEPT) });
+    this.prefaces.set(id, !now ? { ...env, body: uniqueMemoryLines(env.body) } : now.id === env.id ? { ...now, body: uniqueMemoryLines(now.body) } : { ...env, body: keepNotes(mergePrefaces(env.body, now.body), this.opts.notesKept?.() ?? NOTES_KEPT) });
   }
 
   /**
@@ -1505,13 +1510,14 @@ export class Bus {
    * An envelope that already failed once goes alone, so a poison one cannot take a digest down with it.
    */
   private take(id: PeerId, queue: Envelope[], remove = true): Envelope[] {
+    const digestMax = this.opts.digestMax?.() ?? DIGEST_MAX;
     const ordered = [...queue.filter((e) => e.priority === "important"), ...queue.filter((e) => e.priority !== "important")];
     const batch: Envelope[] = [];
     for (const env of ordered) {
       const failedBefore = this.attempts.has(`${id}:${env.id}`);
       if (failedBefore && batch.length) break;
       batch.push(env);
-      if (failedBefore || remoteId(id) || batch.length === DIGEST_MAX) break;
+      if (failedBefore || remoteId(id) || batch.length === digestMax) break;
     }
     if (remove) for (const env of batch) queue.splice(queue.indexOf(env), 1);
     return batch;
@@ -1523,13 +1529,14 @@ export class Bus {
    * envelope cannot stall the queue. An envelope that already failed once still goes alone, as in `take`.
    */
   private takeBudget(id: PeerId, queue: Envelope[]): Envelope[] {
+    const pullBudgetBytes = this.opts.pullBudgetBytes?.() ?? PULL_BUDGET_BYTES;
     const batch: Envelope[] = [];
     let bytes = 0;
     for (const env of queue) {
       const failedBefore = this.attempts.has(`${id}:${env.id}`);
       if (failedBefore && batch.length) break;
       const size = Buffer.byteLength(frame(env)) + 2;
-      if (batch.length && bytes + size > PULL_BUDGET_BYTES) break;
+      if (batch.length && bytes + size > pullBudgetBytes) break;
       batch.push(env); bytes += size;
       if (failedBefore) break;
     }
@@ -1555,11 +1562,12 @@ export class Bus {
   }
 
   private failed(id: PeerId, envs: Envelope[], reason = "delivery failed without an error detail", quota = false): void {
+    const maxAttempts = this.opts.maxAttempts?.() ?? MAX_ATTEMPTS;
     if (!this.journal) this.deliveryFailed(id);
     // A quota refusal ran no work. The budget pause fences retries until reset; it is not a poison attempt.
     const quotaPaused = quota && this.paused.has(id);
     this.lastFailure.set(id, reason.replace(/\s+/g, " ").slice(0, 300));
-    if (!quotaPaused && envs.some((env) => !(env.from === HUB && env.kind === "presence") && (this.attempts.get(`${id}:${env.id}`) ?? 0) + 1 >= MAX_ATTEMPTS)) {
+    if (!quotaPaused && envs.some((env) => !(env.from === HUB && env.kind === "presence") && (this.attempts.get(`${id}:${env.id}`) ?? 0) + 1 >= maxAttempts)) {
       this.failureStreak.set(id, (this.failureStreak.get(id) ?? 0) + 1);
     }
     const keep = envs.filter((env) => {
@@ -1571,7 +1579,7 @@ export class Bus {
       if (quotaPaused) return true;
       const key = `${id}:${env.id}`;
       const n = (this.attempts.get(key) ?? 0) + 1;
-      if (n < MAX_ATTEMPTS) return this.attempts.set(key, n);
+      if (n < maxAttempts) return this.attempts.set(key, n);
       this.attempts.delete(key);
       this.emit({ t: "undeliverable", env, peer: id, reason: this.lastFailure.get(id) });
       return false;
