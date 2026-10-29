@@ -16,9 +16,13 @@ const temp = () => { const dir = mkdtempSync(join(tmpdir(), "ahub-smoke-pty-"));
  * child that must start before `ready` fires) a timeout with zero output is never the outcome under test. The timeout tests do not use this: their property is the timeout.
  * ponytail: a second attempt, not a fix of the bridge. The upgrade path is the product: find and remove the hang in the bridge or in Bun, then delete this helper.
  */
-async function runStarted(argv: readonly string[], patch: Parameters<typeof runPty>[1]): Promise<Awaited<ReturnType<typeof runPty>>> {
-  const first = await runPty(argv, patch);
-  return first.outcome === "timeout" && first.outputBytes === 0 ? runPty(argv, patch) : first;
+type PtyRun = typeof runPty;
+async function runStarted(argv: readonly string[], patch: Parameters<PtyRun>[1], run: PtyRun = runPty): Promise<Awaited<ReturnType<PtyRun>>> {
+  const first = await run(argv, patch);
+  if (first.outcome !== "timeout" || first.outputBytes !== 0) return first;
+  // The discarded attempt keeps the cleanup guarantee: `runPty` may report a timeout with `cleaned: false` (its owned process group not confirmed stopped), and a successful second attempt must not hide that.
+  expect(first.cleaned, "the first attempt's owned process group must be confirmed stopped before a retry").toBe(true);
+  return run(argv, patch);
 }
 const options = (cwd: string, patch: Partial<Parameters<typeof runPty>[1]> = {}) => ({
   cwd,
@@ -126,4 +130,26 @@ test("PTY gives the child a real fixed-size terminal and preserves a nonzero exi
   expect(result.exitCode).toBe(7);
   expect(result.cleaned).toBe(true);
   expect(JSON.parse(Buffer.concat(chunks).toString().trim())).toEqual({ tty: true, cols: 120, rows: 40 });
+});
+
+// runStarted's own contract (#559): a retry only for a timeout with no output, and never past a first attempt whose owned process group was not confirmed stopped.
+test("runStarted retries a no-output timeout once, keeps every other result, and refuses to retry past an unconfirmed cleanup", async () => {
+  const result = (patch: Partial<Awaited<ReturnType<PtyRun>>>) => ({ outcome: "exited" as const, exitCode: 0, outputBytes: 1, elapsedMs: 1, cleaned: true, ...patch });
+  const script = (...results: ReturnType<typeof result>[]) => { const calls: number[] = []; const run = (async () => { calls.push(calls.length); return results[calls.length - 1]!; }) as PtyRun; return { run, calls }; };
+  const opts = options("/tmp");
+  // a normal result is returned as it is, with one call
+  let s1 = script(result({}));
+  expect((await runStarted(["x"], opts, s1.run)).outcome).toBe("exited"); expect(s1.calls).toHaveLength(1);
+  // a timeout that produced output is a real timeout: not retried
+  s1 = script(result({ outcome: "timeout", outputBytes: 5 }), result({}));
+  expect((await runStarted(["x"], opts, s1.run)).outcome).toBe("timeout"); expect(s1.calls).toHaveLength(1);
+  // a timeout with no output and a confirmed cleanup is retried exactly once, and the second result is returned
+  s1 = script(result({ outcome: "timeout", outputBytes: 0 }), result({ outcome: "exited", exitCode: 3 }));
+  expect(await runStarted(["x"], opts, s1.run)).toMatchObject({ outcome: "exited", exitCode: 3 }); expect(s1.calls).toHaveLength(2);
+  // the second attempt's own timeout is returned, not retried again
+  s1 = script(result({ outcome: "timeout", outputBytes: 0 }), result({ outcome: "timeout", outputBytes: 0 }), result({}));
+  expect((await runStarted(["x"], opts, s1.run)).outcome).toBe("timeout"); expect(s1.calls).toHaveLength(2);
+  // a no-output timeout whose cleanup was NOT confirmed is never retried: the unconfirmed process group would be hidden by a clean second attempt
+  s1 = script(result({ outcome: "timeout", outputBytes: 0, cleaned: false }), result({}));
+  await expect(runStarted(["x"], opts, s1.run)).rejects.toThrow("owned process group must be confirmed stopped"); expect(s1.calls).toHaveLength(1);
 });
