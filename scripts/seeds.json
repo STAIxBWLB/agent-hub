@@ -4420,7 +4420,7 @@
     {
       "id": "conductor-recovery-accepted-config",
       "file": "src/hub/daemon.ts",
-      "search": "assertRecoveryConfiguration(config, candidate);",
+      "search": "assertRecoveryConfiguration({ ...config, roles: policyRoles }, candidate);",
       "replacement": "void candidate;",
       "testFile": "test/conductor-recovery-config.test.ts",
       "testName": "pending protected instructions config cannot mint or use source recovery authority"

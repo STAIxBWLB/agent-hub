@@ -9,6 +9,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { types } from "node:util";
 import { defaultPeerRoles, definitionOf } from "../adapters/registry.ts";
 import type { HubConfig } from "./daemon.ts";
+import type { ConfigSourceTexts } from "./config-reload.ts";
 import { conductorPeer } from "./conductor.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { readInstanceConfig, type InstanceConfigLayer } from "./instance-config.ts";
@@ -21,7 +22,7 @@ import { parseOverlay, parseRouting, type Routing } from "./routing.ts";
 export interface RecoveryPolicyProject { root: string; id: string; stateDir: string }
 export interface RecoveryPolicyCapture { policyDigest: string; boardDigest: string }
 /** Host-captured inputs, shared with loadConfig before any module evaluation. */
-export interface RecoveryPolicyInputs { layers: InstanceConfigLayer[]; routing: Routing }
+export interface RecoveryPolicyInputs { layers: InstanceConfigLayer[]; routing: Routing; texts?: ConfigSourceTexts }
 const MAX_POLICY_BYTES = 1024 * 1024;
 const MAX_ACTOR_TASKS = 4096;
 const MAX_SIGNALS_BYTES = 65536;
@@ -143,17 +144,20 @@ export function readRecoveryPolicyInputs(root: string): RecoveryPolicyInputs {
   try {
     if (!isAbsolute(root) || realPath(root) !== root) refuse();
     const layers: InstanceConfigLayer[] = [];
+    const texts: ConfigSourceTexts = { "config.json": null, "config.local.json": null, "routing.toml": null, "routing.local.toml": null };
     for (const name of ["config.json", "config.local.json"] as const) {
       const text = boundedText(join(root, ".agenthub", name), true);
+      texts[name] = text ?? null;
       if (text === undefined) continue;
       const raw: unknown = JSON.parse(text);
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) refuse();
       layers.push({ name, raw: raw as Record<string, unknown> });
     }
-    const main = boundedText(join(root, ".agenthub", "routing.toml"), true)
-      ?? boundedText(resolve(import.meta.dir, "..", "..", "templates", "routing.toml"))!;
+    const ownMain = boundedText(join(root, ".agenthub", "routing.toml"), true);
+    const main = ownMain ?? boundedText(resolve(import.meta.dir, "..", "..", "templates", "routing.toml"))!;
     const overlay = boundedText(join(root, ".agenthub", "routing.local.toml"), true);
-    return { layers, routing: parseRouting(main, overlay === undefined ? undefined : parseOverlay(overlay)) };
+    texts["routing.toml"] = ownMain ?? null; texts["routing.local.toml"] = overlay ?? null;
+    return { layers, routing: parseRouting(main, overlay === undefined ? undefined : parseOverlay(overlay)), texts };
   } catch { return refuse(); }
 }
 

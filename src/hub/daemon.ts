@@ -87,7 +87,7 @@ import { corpusConfig } from "./corpus-config.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
 import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateEffectiveConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
-import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
+import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSourceTexts, type ConfigSources } from "./config-reload.ts";
 import { issueConductorRecoveryAuthority, authorizeConductorRecovery, assertConductorRecovery, RecoveryAuthorityError, type ConductorRecoveryBinding } from "./recovery-authority.ts";
 import { captureRecoveryPolicy, readRecoveryPolicyInputs, assertRecoveryConfiguration, assertRecoveryRouting, readRecoveryTargetFeatures } from "./recovery-policy.ts";
 import { operationPath, recoveryLock, readOperation } from "./recovery-store.ts";
@@ -708,7 +708,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let ready = false;
   try {
   let startupLayers: ReturnType<typeof readInstanceConfigLayers>;
-  let recoveryConfiguration: HubConfig | undefined, recoveryRouting: Routing | undefined;
+  let recoveryConfiguration: HubConfig | undefined, recoveryRouting: Routing | undefined, recoverySources: ConfigSourceTexts | undefined;
   const recoveryInitiator = process.env.AGENTHUB_RECOVERY_CONDUCTOR;
   if (recoveryInitiator !== undefined) {
     // Before module imports or factories: the exact startup snapshot must match the source-issued policy.
@@ -725,7 +725,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (expected.sourceInstanceId !== snapshot.sourceInstanceId || expected.targetRoot !== resolve(import.meta.dir, "../..") || expected.targetDigest !== sourcePackageDigest) throw new RecoveryAuthorityError();
       const proof = authorizeConductorRecovery(opts.stateDir, expected, () => { const value = captureRecoveryPolicy({ root: opts.cwd, id: projectId, stateDir: opts.stateDir }, recoveryInitiator, candidate, inputs); return value.policyDigest === expected.policyDigest && value.boardDigest === expected.boardDigest; });
       assertConductorRecovery(proof);
-      startupLayers = inputs.layers; recoveryConfiguration = candidate; recoveryRouting = inputs.routing;
+      startupLayers = inputs.layers; recoveryConfiguration = candidate; recoveryRouting = inputs.routing; recoverySources = inputs.texts;
     } catch { throw new RecoveryAuthorityError(); }
     delete process.env.AGENTHUB_RECOVERY_CONDUCTOR;
     delete process.env.AGENTHUB_RECOVERY_CONTINUATION;
@@ -931,7 +931,7 @@ export async function startDaemon(opts: DaemonOptions) {
     for(const [sock,current] of operationalLogSubscribers)try {current();if(sock.getBufferedAmount()>64*1024)throw new Error("slow log consumer");view??=publicOperationalView();publicLine??=view.line(text);sock.send(JSON.stringify({t:"operational_log",line:publicLine,complete:view.complete,...(!view.complete?{incompleteReason:view.incompleteReason}:{})}));}catch{operationalLogSubscribers.delete(sock);try{sock.close(4403,"operational log authority ended");}catch{/* The subscription is already gone. */}}
   };
   let runningRouting = recoveryRouting ?? currentRouting(opts.cwd, log);
-  let acceptedSources = parseConfigSources(configSourceTexts(opts.cwd), runningRouting, opts.cwd, externalAdapters, externalDefinitions);
+  let acceptedSources = parseConfigSources(recoverySources ?? configSourceTexts(opts.cwd), runningRouting, opts.cwd, externalAdapters, externalDefinitions);
   const startupSources = structuredClone(acceptedSources.trustLayers);
   const embeddedConfig = structuredClone(config);
   let desiredConfig = structuredClone(config);
@@ -5841,7 +5841,8 @@ export async function startDaemon(opts: DaemonOptions) {
   function currentRecoveryPolicy(peer: string) {
     const inputs = readRecoveryPolicyInputs(opts.cwd);
     const candidate = loadConfig(opts.cwd, inputs.layers, inputs.routing.retired ?? [], []);
-    assertRecoveryConfiguration(config, candidate);
+    // Compare accepted declarations; config.roles also contains the settled planner projection.
+    assertRecoveryConfiguration({ ...config, roles: policyRoles }, candidate);
     assertRecoveryRouting(activeRouting(), inputs.routing);
     return captureRecoveryPolicy({ root: opts.cwd, id: projectId, stateDir: opts.stateDir }, peer, candidate, inputs);
   }

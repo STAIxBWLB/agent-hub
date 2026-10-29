@@ -4652,6 +4652,8 @@ unrelated public board writes do not invalidate it. Changed or unreadable
 authority evidence stops the next effect and leaves the operation for the
 person.
 
+Pending settings or routing changes must already be accepted by the running hub before conductor recovery. Protected or restart-bound edits that cannot be proved remain a person's restart. The replacement validates the source-issued policy before importing adapters and uses that same startup snapshot.
+
 Captured TUI terminal restoration remains person-only: a delayed native launcher cannot re-prove the conductor at its eventual spawn. Conductor plans containing captured terminal launches refuse before staging or runtime holds; headless restoration uses the target-owned snapshot through a tools connection.
 
 

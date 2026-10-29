@@ -399,6 +399,8 @@ staging or other operation effect. In particular, upgrade handoff to a newer
 coordinator is person-only until that coordinator is known to support this
 contract.
 
+Recovery cannot apply an unpublished protected configuration or routing edit. The source compares the fresh candidate with its accepted running policy. A conductor bootstrap verifies the same captured config/routing inputs against the private grant before module imports, then starts from that snapshot; a later file edit cannot replace it. A person may explicitly take over recovery to adopt a changed policy.
+
 The coordinator must match the source-start package digest or the same authorized, verified upgrade target. Another source tree or an invalid target version cannot obtain a continuation.
 
 Target compatibility labels are read from the sealed target bytes; a tools request or public receipt cannot waive a target feature floor. Computed or unreadable feature metadata remains person-only.
