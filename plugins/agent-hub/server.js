@@ -10836,6 +10836,7 @@ function effectiveLocalRoute(defaultRoute, classRoute, classFixedModel) {
 }
 var TEMPLATE, cache;
 var init_routing = __esm(() => {
+  init_context_window();
   init_queue_backpressure();
   init_registry();
   init_board();
@@ -21970,7 +21971,7 @@ var MACHINE_LOCAL = [
   "schedules",
   "corpus.paths"
 ];
-var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "rooms", "tasks.queue_backpressure", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"];
+var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"];
 function configRefusal(cwd, name) {
   const tracked = configTracked(cwd, name);
   return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;

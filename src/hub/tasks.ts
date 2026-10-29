@@ -1,3 +1,4 @@
+import type { ContextAdmission } from "./context-window.ts";
 import { queueBackpressure, queueBackpressurePolicy, type QueueBackpressureCode, type QueueBackpressurePolicy, type QueueBackpressureStatus, type QueuePressure } from "./queue-backpressure.ts";
 import { canonicalMemorySymbolNode, normalizeMemorySymbolInput, MEMORY_SYMBOL_LIMIT, type MemorySymbolNodes } from "./memory-symbols.ts";
 import { createHash } from "node:crypto";
@@ -81,6 +82,8 @@ export interface TasksDeps {
   routing: () => Routing;
   /** #800: normalized machine-local admission policy; absent or both zero preserve the old queue behaviour. */
   queueBackpressure?: () => QueueBackpressurePolicy;
+  /** Host-only native context snapshots, separate from checkpoint notification and quota. */
+  contextAdmission?: () => ContextAdmission;
   /** Startup-bound project declarations; routing never discovers instances from peer names. */
   instances?: () => InstancesConfig;
   /** Host proof of each live extra runtime's actual isolated execution root; config paths alone are not proof. */
@@ -891,6 +894,12 @@ export class Tasks {
     return { queueBackpressure: policy, queues, now: this.d.now?.() ?? Date.now() };
   }
 
+  private contextRouting(): Pick<InstanceRoutingOptions, "contextAdmission"> & { now?: number } {
+    const admission = this.d.contextAdmission?.();
+    if (!admission || !Number.isFinite(admission.policy.max_used) || admission.policy.max_used <= 0 || admission.policy.max_used > 1) return {};
+    return { contextAdmission: admission, now: this.d.now?.() ?? Date.now() };
+  }
+
   /** Public ids/counts/reasons only; no board history, pending envelope body or task text is read. */
   queuePressureStatus(peers: readonly string[]): QueueBackpressureStatus | undefined {
     const policy = this.queuePolicy();
@@ -912,7 +921,7 @@ export class Tasks {
     const held = this.d.held?.();
     const workload = this.instanceRouting();
     const peers = workload.instances ? [...new Set([...(this.d.adapterCatalog?.definitions ?? ADAPTERS).map(adapter => adapter.kind), ...Object.keys(workload.instances), ...this.d.bus.peers.keys()])] : (this.d.adapterCatalog?.definitions ?? ADAPTERS).map(adapter => adapter.kind);
-    return { ...workload, ...this.queueRouting([...new Set([...peers, ...this.d.bus.peers.keys()])]), reviewPool: { pool: this.d.review?.pool ?? DEFAULT_REVIEW_POOL, rerotate: this.d.review?.rerotate, required: this.d.review?.pool !== undefined, ...(this.d.review?.same_family === "never" ? { sameFamily: "never" as const } : {}) }, ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => (this.d.adapterCatalog?.definitionOf ?? definitionOf)(peer.id, workload.instances)?.attach?.pullOnlyForms?.length && peer.pullOnly).map(peer => peer.id), offRoster: peers.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+    return { ...workload, ...this.contextRouting(), ...this.queueRouting([...new Set([...peers, ...this.d.bus.peers.keys()])]), reviewPool: { pool: this.d.review?.pool ?? DEFAULT_REVIEW_POOL, rerotate: this.d.review?.rerotate, required: this.d.review?.pool !== undefined, ...(this.d.review?.same_family === "never" ? { sameFamily: "never" as const } : {}) }, ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => (this.d.adapterCatalog?.definitionOf ?? definitionOf)(peer.id, workload.instances)?.attach?.pullOnlyForms?.length && peer.pullOnly).map(peer => peer.id), offRoster: peers.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
   }
 
   private reviewHead(task: Task): string | undefined { return task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead; }
@@ -1336,7 +1345,7 @@ export class Tasks {
     const states = this.states();
     const full = this.plannerFull(task);
     // Preview the To Do transition without routing or offering the persisted backlog row.
-    return assign({ ...task, state: "proposed" }, states, routing, { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task), ...(queueOverride ? { queueOverride } : {}) });
+    return assign({ ...task, state: "proposed" }, states, routing, { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task), ...(queueOverride ? { queueOverride, contextOverride: true } : {}) });
   }
 
   async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }, opts: { onBehalfOf?: PeerId; guard?: () => void } = {}): Promise<Task> {
@@ -2640,6 +2649,7 @@ export class Tasks {
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
     const plannerFull = plannedMove ? this.plannerFull(task) : [];
     const a = assign(opts.plannerPull ? { ...task, state: "proposed" } : task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: plannerFull, ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class, task), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}), // A self-claim hands over no envelope; reviewer admission remains automatic.
+      contextOverride: !!(opts.queueOverride || opts.claim),
       ...(opts.queueOverride || opts.claim ? { queueOverride: opts.queueOverride ?? "owner" as const } : {}) });
 
     if (waits.length) {
@@ -3122,7 +3132,7 @@ export class Tasks {
   private ownerStallCause(task: Task, admission: Assignment, automatic = true): TaskStall["cause"] {
     const refusal = admission.refusals?.find(row => row.role === "owner" && row.peer === task.reserved);
     // Persist the existing stall vocabulary; the assignment/explain keeps the precise instance/family refusal.
-    const persisted = (code: NonNullable<Assignment["refusals"]>[number]["code"]): TaskStall["cause"]["code"] => code === "instance" || code === "family" ? "policy" : code;
+    const persisted = (code: NonNullable<Assignment["refusals"]>[number]["code"]): TaskStall["cause"]["code"] => code === "context-headroom" || code === "instance" || code === "family" ? "policy" : code;
     const pressure = automatic ? admission.refusals?.find(row => row.role === "owner" && isQueuePressureCode(row.code)) : undefined;
     return refusal && !(automatic && isQueuePressureCode(refusal.code)) ? { kind: "reservation", peer: refusal.peer, code: persisted(refusal.code) } : { kind: "no-eligible-peer", code: pressure ? persisted(pressure.code) : "unavailable", refusals: admission.refusals?.filter(row => row.role === "owner").map(({ peer, code }) => ({ peer, code: persisted(code) })).sort((a, b) => a.peer.localeCompare(b.peer)) ?? [] };
   }
@@ -5633,15 +5643,15 @@ export class Tasks {
     });
   }
 
+  /** Preserve explicit intent across a policy reload; recheck conductor authority after every await. */
   private explicitQueueAssignment(by: PeerId, role: Exclude<TaskAssignmentRole, "planner">, preEffect: boolean): { role: "owner" | "reviewer"; current: () => void } | undefined {
-    if (!this.queuePolicy()) return undefined;
     if (by === USER) return { role, current: () => {} };
     const current = () => {
       const holders = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([peer]) => peer);
       return holders.length === 1 && holders[0] === by && this.d.bus.isRostered(by);
     };
     if (!current()) return undefined;
-    return { role, current: () => { if (!current()) throw new (preEffect ? PreEffectToolRefusal : Error)("only the current configured conductor may override queue backpressure"); } };
+    return { role, current: () => { if (!current()) throw new (preEffect ? PreEffectToolRefusal : Error)("only the current configured conductor may override assignment admission"); } };
   }
 
   private configuredManualConductor(by: PeerId): boolean {

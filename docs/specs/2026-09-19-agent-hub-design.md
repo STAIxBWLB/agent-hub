@@ -2291,6 +2291,30 @@ Release 0.12.16 uses control protocol 14. Recovery sources 9 through 13 remain
 supported; protocol 13 identifies releases 0.12.4 through 0.12.15, while
 0.12.16 uses protocol 14.
 
+## New-work context admission (issue #802)
+
+`context.max_assignment_used` defaults to 0 (disabled), is a machine-local
+finite fraction in `[0, 1]`, and is independent of `context.gate`. Only an
+untracked local source and a confirmed person reload (or deliberate restart)
+may enable it. A known occupancy greater than or equal to the configured
+nonzero threshold excludes a candidate from a new automatic owner offer.
+
+`assign()` remains pure: its host inputs include the threshold, freshness
+limit, clock, attachment, current native session and a copy of that peer's
+native reading. Validate timestamp, session equality and finite occupancy
+before comparing. Missing, invalid, stale, future, mismatched or unsupported
+readings are unknown, never zero or evidence of headroom. Unknown does not add
+an eligibility refusal; the ordinary gates still apply. Traces show the same
+context decision as actual assignment without exposing session identifiers.
+
+Only new automatic owner offers use the guard; reviewer admission is unchanged,
+including owners of review-class work. A name or reservation is not an override.
+A host-authorized explicit person/conductor nomination or self-claim can bypass
+only this context guard; all other privacy, roster, quota, capability and manual
+assignment constraints remain. Re-evaluate at the existing post-await owner
+admission boundary. No reading triggers pause, compaction, replacement, task
+reassignment or a new retry timer. Checkpoint pressure semantics stay unchanged.
+
 ## Operator console and conductor (issues #190, #191, #193, #194, #195)
 
 `ahub console` owns one authenticated console connection. It shares tail's

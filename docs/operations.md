@@ -3620,6 +3620,32 @@ nor hands work over. Continue normally or deliberately restart into a fresh
 session with your chosen checkpoint as preface. No automatic restart or native
 compaction override is performed.
 
+## Context headroom admission for new work (#802)
+
+`context.max_assignment_used` is a separate, default-off admission threshold.
+In an untracked `.agenthub/config.local.json`, set it to a fraction in `(0, 1]`,
+for example `{"context":{"max_assignment_used":0.85}}`. Zero disables it.
+Tracked configuration cannot enable it on another machine. Restart deliberately,
+or preview and confirm `ahub settings reload` as the person; it applies to the
+next routing decision. `context.stale_min` is the freshness limit.
+
+A fresh native occupancy at or above the threshold skips that peer for a new
+automatic owner offer. `ahub route explain` uses the same pure decision and
+prints the measured fraction and limit. Missing, malformed, future, stale,
+detached or replaced-session evidence is explicitly unknown: it neither blocks
+nor establishes spare capacity, and the existing routing rules still decide.
+Only adapters with declared native context readers supply evidence, including
+Jcode's session-bound reader; unsupported surfaces stay unknown.
+
+A name or reservation alone does not bypass admission. Explicit assignments by
+the person or current configured conductor, and a peer's own self-claim, may
+bypass this context limit; roster, privacy, quota, capability and other gates
+still apply. Reviewer selection is unchanged, including review-class owners.
+The rule never pauses, compacts, replaces or moves an active session or task.
+It leaves `context.gate` checkpoint events and requests unchanged, and does not
+add a telemetry-driven reassignment or retry timer. Re-evaluate or explicitly
+assign an unassigned task when its owner's context has changed.
+
 ## Pi tool refusals, exit causes and idle automatic restart
 
 Pi hub-task/conductor refusals proven before any task or board effect return
