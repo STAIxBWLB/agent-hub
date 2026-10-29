@@ -81,7 +81,8 @@ test("a deadline stops the owned CLI and its descendant before worktree cleanup"
   }) as unknown as typeof setTimeout;
   facts=new CodeFacts({env:{...f.env,FAKE_RIPWIRE_MODE:"timeout",FAKE_RIPWIRE_CHILD:child},timeoutMs:4321});
   pending=facts.changedSymbols(f.repo,f.base,f.head);
-  for(const end=Date.now()+30_000;!existsSync(child)&&Date.now()<end;)await Bun.sleep(10);
+  for(const end=Date.now()+12_000;!existsSync(child)&&Date.now()<end;)await Bun.sleep(10);
+  if(!existsSync(child))throw new Error("code-facts child marker readiness timed out before cleanup guard");
   globalThis.setTimeout=realSetTimeout;
   expect(existsSync(child)).toBe(true);expect(deadlines.length).toBeGreaterThanOrEqual(2); // the probe's deadline and the analysis's
   deadlines.at(-1)!();
@@ -106,7 +107,8 @@ test("a failure after the marker, with the deadline held, still cancels and awai
    globalThis.setTimeout=((fn:(...a:unknown[])=>void,ms?:number,...args:unknown[])=>ms===4321?realSetTimeout(()=>{},120_000):realSetTimeout(fn,ms,...args)) as unknown as typeof setTimeout;
    facts=new CodeFacts({env:{...f.env,FAKE_RIPWIRE_MODE:"timeout",FAKE_RIPWIRE_CHILD:child},timeoutMs:4321});
    pending=facts.changedSymbols(f.repo,f.base,f.head);
-   for(const end=Date.now()+30_000;!existsSync(child)&&Date.now()<end;)await Bun.sleep(10);
+   for(const end=Date.now()+12_000;!existsSync(child)&&Date.now()<end;)await Bun.sleep(10);
+   if(!existsSync(child))throw new Error("code-facts child marker readiness timed out before cleanup guard");
    expect(existsSync(child)).toBe(true);pid=Number(readFileSync(child,"utf8"));
    const before=spawnSync("ps",["-p",String(pid),"-o","stat="],{encoding:"utf8"}).stdout.trim();expect(before!==""&&!before.startsWith("Z")).toBe(true); // alive, and nothing will stop it but the teardown
    throw new Error("forced failure after the marker");
