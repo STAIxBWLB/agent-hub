@@ -14323,6 +14323,13 @@ var init_registry = __esm(() => {
   }));
 });
 
+// node_modules/@staix/agent-mem/src/memory/cli-attribution.ts
+import { AsyncLocalStorage } from "async_hooks";
+var scope;
+var init_cli_attribution = __esm(() => {
+  scope = new AsyncLocalStorage;
+});
+
 // node_modules/@staix/agent-mem/src/memory/private-spans.ts
 var init_private_spans = () => {};
 
@@ -14649,10 +14656,20 @@ var init_shard_bridge = __esm(() => {
   init_bridge();
 });
 
+// node_modules/@staix/agent-mem/src/memory/style.ts
+function style(color) {
+  return { color, ok: wrap(color, 32, 39), attention: wrap(color, 33, 39), error: wrap(color, 31, 39), dim: wrap(color, 2, 22), bold: wrap(color, 1, 22) };
+}
+var wrap = (on, open, close) => (text) => on ? `\x1B[${open}m${text}\x1B[${close}m` : text, PLAIN;
+var init_style = __esm(() => {
+  PLAIN = style(false);
+});
+
 // node_modules/@staix/agent-mem/src/memory/prune.ts
 var init_prune = __esm(() => {
   init_generation();
   init_store();
+  init_style();
 });
 
 // node_modules/@staix/agent-mem/src/memory/generation-index.ts
@@ -14671,6 +14688,7 @@ var init_migrate = __esm(() => {
   init_mutation();
   init_platform();
   init_generation();
+  init_style();
 });
 
 // node_modules/@staix/agent-mem/src/memory/reader-lease.ts
@@ -14685,6 +14703,7 @@ var init_reader_lease = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/store.ts
 var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP;
 var init_store = __esm(() => {
+  init_cli_attribution();
   init_platform();
   init_private_spans();
   init_screen();
@@ -22099,6 +22118,7 @@ var METRICS_MAX_BYTES = 64 * 1024;
 // node_modules/@staix/agent-mem/src/memory/capacity.ts
 init_lifecycle();
 init_capture();
+init_style();
 
 // node_modules/@staix/agent-mem/src/index.ts
 init_lifecycle();
@@ -22134,8 +22154,10 @@ init_candidate_pending();
 
 // node_modules/@staix/agent-mem/src/memory/note-add.ts
 init_store();
+init_cli_attribution();
 
 // node_modules/@staix/agent-mem/src/memory/candidates.ts
+init_cli_attribution();
 init_home();
 init_platform();
 init_private_spans();
@@ -22156,6 +22178,7 @@ init_lifecycle();
 // node_modules/@staix/agent-mem/src/memory/vault.ts
 init_generation();
 init_policy();
+init_style();
 init_generation();
 
 // node_modules/@staix/agent-mem/src/index.ts
@@ -22178,8 +22201,10 @@ init_home();
 init_platform();
 
 // node_modules/@staix/agent-mem/src/memory/commands.ts
+init_cli_attribution();
 init_store();
 init_sync();
+init_style();
 init_project2();
 var AMEM_NAMES = { memory: "amem", goal: "amem goal" };
 var memoryUsage = (name = AMEM_NAMES.memory) => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> [--history] [--as-of <UTC>] | show <id> [--history] [--as-of <UTC>] | graph <id|node> [--hops 1|2] [--history] [--as-of <UTC>] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] [--capture-days N] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`;
@@ -22204,6 +22229,7 @@ init_reader_lease();
 init_shard();
 init_store();
 init_migrate();
+init_style();
 var USER2 = Symbol("shared-user-shard");
 // node_modules/@staix/agent-mem/src/mcp.ts
 var string = (maxLength, minLength = 1) => ({ type: "string", minLength, maxLength });
@@ -22229,7 +22255,7 @@ var MCP_TOOLS = [
     maxProperties: 64,
     additionalProperties: { type: ["string", "number", "boolean", "null"], maxLength: 4000 }
   } }, ["list", "fields"]), false),
-  tool2("amem_remember", "Propose a memory candidate (text, optional kind/title), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. Person acceptance only; never writes curated notes.", object6({
+  tool2("amem_remember", "Propose a memory candidate (text, optional kind/title), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. Review and accept or reject through the CLI under current policy; this tool never writes curated notes.", object6({
     text: string(3000),
     title: string(200),
     kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] },
@@ -22239,9 +22265,9 @@ var MCP_TOOLS = [
     evidenceRefs: { type: "array", minItems: 1, maxItems: 16, items: string(400) },
     retryWhen: string(4000)
   }), false),
-  tool2("amem_correct", "Propose a correction to an exact curated entry id visible in this project. The host binds its current revision; the full accepted body including reason and provenance headers must fit 4000 characters. A person must accept before any note or supersession is written.", object6({ id: string(80), proposedText: string(4000), reason: string(4000), kind: { type: "string", enum: ["decision", "contract", "fail"] } }, ["id", "proposedText", "reason"]), false),
-  tool2("amem_vault_candidates", "List screened durable curated notes eligible for a person to move to the vault. Read only.", object6({ limit })),
-  tool2("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it is person-only.", object6({}))
+  tool2("amem_correct", "Propose a correction to an exact curated entry id visible in this project. The host binds its current revision; the full accepted body including reason and provenance headers must fit 4000 characters. Review and accept or reject through the CLI under current policy before any note or supersession is written.", object6({ id: string(80), proposedText: string(4000), reason: string(4000), kind: { type: "string", enum: ["decision", "contract", "fail"] } }, ["id", "proposedText", "reason"]), false),
+  tool2("amem_vault_candidates", "List screened durable curated notes for review before moving them to a vault. Read only.", object6({ limit })),
+  tool2("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it requires the matching CLI preview and `--confirm`. This tool has no apply operation.", object6({}))
 ];
 // node_modules/@staix/agent-mem/src/memory/evidence.ts
 init_policy();
@@ -22275,6 +22301,7 @@ init_store();
 init_work_lists();
 
 // node_modules/@staix/agent-mem/src/index.ts
+init_config2();
 init_policy();
 init_work_lists();
 
@@ -22404,7 +22431,7 @@ var package_default = {
     bun: ">=1.4.2"
   },
   dependencies: {
-    "@staix/agent-mem": "0.12.0"
+    "@staix/agent-mem": "0.13.0"
   },
   devDependencies: {
     "@modelcontextprotocol/sdk": "^1.27.1",
