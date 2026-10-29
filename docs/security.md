@@ -711,3 +711,19 @@ live TLS/proxy forwarding and X7 two-machine behavior remain unverified here.
 The console is a one-way room sender in X4. Replies to `user@label` receive an
 authenticated unsupported-person-inbox NACK, retained as a known terminal
 `failed_safe` outcome, never silently retried or claimed as person admission.
+
+### X5 metadata views
+
+The console Rooms panel (`8`) and dashboard Agents > Rooms use only the canonical
+room metadata projection: local name/id, epoch, owner/self fingerprints, member
+count, link state and exposed peer ids/states. No body, title, reason, broker URL,
+key material or delivery history enters this projection. Reading it creates no
+room storage or keys; missing rooms stay hidden and unavailable metadata stays
+explicitly unknown.
+
+Relay counts are daemon-session observations, reset at restart: successful
+outbound handoffs, confirmed inbound admissions and withheld handoffs as a subset
+of outbound. Missing values remain `null`/unknown rather than zero. They neither
+certify native completion nor reconstruct historical traffic. This display adds
+no delivery or authority: `user@label` still receives signed `failed_safe`, and
+durable person inbox handling remains a separate backlog item.
