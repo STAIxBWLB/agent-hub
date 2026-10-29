@@ -56,7 +56,7 @@ export interface DeliveryJournalOptions {
   projectId: string;
   instanceId: string;
   operationId?: string;
-  /** Accepted live history target; only normal terminal settlement invokes pruning. */
+  /** Accepted live history target; only terminal mutations apply it, other pruning keeps the legacy cap. */
   terminalHistoryLimit?: () => number;
 }
 export interface JournalSnapshot {
