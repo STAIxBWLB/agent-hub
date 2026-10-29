@@ -6097,3 +6097,39 @@ fall back to a sender timestamp and appear fresh. The stall view retains the sam
 queue reason codes; metrics contain ids/numbers/closed words, not envelope bodies
 or task text. The policy changes assignment admission only: it never drops,
 reorders, auto-resolves or cancels existing delivery.
+
+## Vendor model and effort controls (#266 AC1)
+
+This is the capability snapshot from 2026-10-29, for Codex 0.165.0, Claude Code
+2.1.312 and Kimi 2.3.2. It precedes task/role `exec`, execution policy and bench
+matrix implementation. The [sanitized receipt](../verification/2026-10-29-model-effort-capabilities.md)
+separates native configuration/control acceptance from provider execution.
+A successful setter or readback does not identify the model that served an answer.
+
+| Vendor / setting | Launch | After launch | Verified boundary and remaining unknown |
+| --- | --- | --- | --- |
+| Codex model | `--model` advertised by help; the `model` config override has verified native readback | `thread/start` / `thread/resume` model override and `turn/start.model`; per-turn setting becomes a thread default | A bounded, network-denied turn attempt followed by interrupt and no-override resume returned the requested replacement model. Provider execution is **UNVERIFIED**. |
+| Codex effort | `model_reasoning_effort` config override; native config readback verified | Thread config override and `turn/start.effort`; sticky across later turns | Native reasoning-effort readback changed and persisted through the same interrupted attempt. Effort is a nonempty string in this version's schema; eligible values come from each model's `supportedReasoningEfforts`, not a universal four-level enum. Provider application is **UNVERIFIED**. |
+| Claude Code model | `--model`; accepted by the isolated print/control session | Session `set_model` control ACK and canonical-family readback verified; `/model` is also documented for the terminal | Session configuration, not an active inference switch. Provider execution and a real interactive/account leg are **UNVERIFIED**. |
+| Claude Code effort | `--effort`; launch-level status readback verified | `/effort` changes the session setting for a later message; print-session set/status readback verified | Native status changed from the launch choice to the new choice. Model-specific effort support and actual provider application are **UNVERIFIED**; thinking on/off or a thinking budget is not interchangeable with graded effort. |
+| Kimi model | `--model` is advertised for that invocation | Vendor documents `session/set_model` and `session/set_config_option` with `configId: model` | Native initialize succeeded, but `session/new` returned `-32000` in the isolated, unconfigured, network-denied fixture. Selection ACK/readback and provider execution are **UNVERIFIED**, not established unsupported. |
+| Kimi effort | No graded-effort flag was advertised by the observed root help; config-driven launch effort is **UNVERIFIED** | Vendor documents a `thinking` config picker; graded ACP effort is **UNVERIFIED** | Do not equate an on/off picker, permission `session/set_mode`, or an arbitrary graded string with supported effort. An open upstream report describes a graded-to-boolean collapse; revalidate the installed model/options before any mapping. |
+
+The native interfaces and the hub's current wiring are different contracts. At
+`88e38f3d`, the Codex adapter forwards TUI fields but hub-created turns supply no
+model/effort override. Claude's headless writer supplies its declared model when
+launching each child, including resumes; its current transport closes stdin after
+input and exposes no later setting control. Kimi's ACP path has a launch model
+argument and permission-mode control, with no hub model/effort setter or selected
+model readback. These observations add no runtime setting or permission change.
+
+The [Codex app-server contract](https://learn.chatgpt.com/docs/app-server),
+[Claude model/effort controls](https://code.claude.com/docs/en/model-config),
+[Kimi ACP coverage](https://moonshotai.github.io/kimi-code/en/reference/kimi-acp)
+and [graded ACP effort report](https://github.com/MoonshotAI/kimi-code/issues/1486)
+corroborate the surface descriptions; moving documentation does not extend this
+receipt to another native version. `turn/steer` is not the Codex setting interface.
+An unsupported or unverified mapping must remain unavailable to a future policy,
+rather than silently retaining a default or treating unknown as supported.
+The [remaining smoke legs](../smoke.md#model-and-effort-capability-verification-266-ac1)
+are separate from AC2-AC10 and any real matrix, account or provider proof.

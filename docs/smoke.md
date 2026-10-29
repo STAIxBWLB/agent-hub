@@ -40,6 +40,7 @@
 | Managed Pi live receipts (#418 AC8) | none yet (issue #418) | person-only, then agent-executable | the person opts in to a check runner and answers the approvals |
 | Kimi credential probe (#285 AC9) | Kimi usage counting | person-only | the owner's approval of the probe |
 | Six role instances (#525-6, hub card #138 I4) | Six role instances (#525-6) | person-only | native terminal/account starts, the person's sandbox and approval choices, and the live six-instance verdict |
+| Model/effort provider execution (#266 AC1) | Model and effort capability verification (#266 AC1) | external-blocked | isolated configured Kimi session and provider/account fixtures; no login or account/provider edits authorized by this receipt |
 
 ## Issue #273 operator execution plan (2026-10-16)
 
@@ -2098,3 +2099,59 @@ The runner creates a private native HOME and a separate empty Git project beneat
 The new receipt must be a previously absent file directly under the fixture root. It contains fixed schema/leg/outcome/reason names, boolean checks, counts and timings only. It contains no prompt, native session id, credential, endpoint, model name, native output or filesystem path. `--json` prints that same document; the default output is a short outcome/count summary. Each invocation uses the existing ids-only CLI audit, including delegated `--live-test` invocations. Never delete a fixture whose cleanup is unconfirmed.
 
 Real-account Q2 receipt: **UNVERIFIED**. The conductor runs this leg with the person after merge. Fake PTY/protocol tests are implementation evidence only. Q3 approvals, Q5 FIFO and Q6 resume are later executable legs. Q4 remains the known native Qwen turn-stop limitation documented in the 2026-10-25 T0 receipt; the runner's owned-group timeout cleanup does not claim a supported in-session turn interruption.
+
+## Model and effort capability verification (#266 AC1)
+
+The 2026-10-29 [version-bound capability table](specs/2026-09-19-agent-hub-design.md#vendor-model-and-effort-controls-266-ac1)
+and [sanitized native receipt](verification/2026-10-29-model-effort-capabilities.md)
+record agent-executed, model-free configuration/control observations: Codex
+0.165.0, Claude Code 2.1.312 and Kimi 2.3.2. Every invocation used fresh isolated
+`HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `KIMI_CODE_HOME` and XDG directories,
+a scratch cwd, an environment without real credentials and a network-denied
+Seatbelt profile. Calls were sequential and bounded. No login, update, account
+or saved provider configuration command was run. Native input/output text,
+session ids and usage data are absent from the receipt.
+
+Observed outcomes:
+
+- Codex launch model/effort config and thread overrides read back as requested.
+  A per-turn replacement survived interrupt and no-override resume; permission
+  and sandbox readbacks were unchanged. The turn did not complete, and no
+  provider-serving claim follows from the frontend state.
+- Claude accepted launch model/effort flags, acknowledged an in-session model
+  change and returned the selected model family. Launch effort status and an
+  in-session effort change both read back as requested in print mode. The
+  inputs were local slash commands, with no inference prompt sent to a provider.
+- Kimi initialize passed; session creation returned `-32000`. Runtime model and
+  graded-effort controls remain **UNVERIFIED** in this fixture. A missing or
+  rejected session is not evidence that the methods are unsupported.
+
+To repeat the model-free leg, create a fresh private scratch cwd and distinct
+HOME/config roots for each process. Clear credential, gateway, agent and provider
+overrides from the child environment; disable ancillary traffic and deny network
+access. Do not copy a real account or provider config. Record only versions,
+request counts and fixed outcomes, and terminate/reap the owned process on a
+short deadline.
+
+1. Read native `--version`/`--help`. For Codex, generate the installed protocol
+   schema with `app-server generate-json-schema --experimental --out <scratch>`.
+2. Codex: initialize, inspect model/config metadata, create a read-only thread,
+   then compare turn overrides with no-override resume readback. Keep any
+   disposable input in memory and out of the receipt; interrupt the one bounded
+   attempt before cleanup. Compare permission/sandbox metadata too.
+3. Claude: initialize a tool-free, no-session-persistence print/control process.
+   Compare launch effort with `/effort status`, set a different session effort
+   and query status again. Use `set_model` for the model control check; do not
+   infer provider selection from an alias echo alone.
+4. Kimi: initialize and create an empty-MCP session. If it refuses, stop and mark
+   the setting cells unverified. Otherwise inspect the advertised config options
+   before sending a setter. `session/set_mode` is permission policy, not effort.
+
+Remaining **UNVERIFIED** legs: Kimi model selection/effort readback in an authorized
+isolated configured session; actual provider model/effort application for all
+three vendors; a real interactive Claude session; and a two-arm effort matrix.
+A later model-free fake-endpoint fixture needs its scope approved first; a real
+account fixture needs the person's account setup. Ask the planner before any
+quota-heavy run. Never publish prompts, tokens, credentials, endpoints, native
+transcripts or session ids as evidence. This slice implements no task `exec`,
+routing policy or matrix runner.
