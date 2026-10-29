@@ -49,7 +49,7 @@ test("Rooms shows canonical membership and peer metadata with boot-scoped relay 
   const text = f.get("rooms").text();
   expect(f.get("rooms-section").dataset.empty).toBe("false"); expect(f.get("room-count").textContent).toBe("1 room");
   for (const value of ["lab", "Room: " + "c".repeat(43), "epoch 3", "online", "Owner fingerprint: " + owner, "Self fingerprint: " + self, "members: 2", "codex@remote: busy"]) expect(text).toContain(value);
-  expect(text).toContain("Relay counters since daemon boot (start: 1970-01-01T00:00:01.000Z)");
+  expect(text).toContain("Relay counters since daemon start (start: 1970-01-01T00:00:01.000Z)");
   expect(text).toContain("Outbound handoffs: 4"); expect(text).toContain("Inbound admitted: 2"); expect(text).toContain("Withheld outbound (subset): 1");
   expect(f.get("rooms").all().some(node => node.className === "row room-metadata")).toBe(true);
 });

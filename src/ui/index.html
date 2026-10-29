@@ -1560,7 +1560,7 @@ function renderRooms(rooms) {
     }
     const stats = room.relays, since = Number.isSafeInteger(stats?.since) && stats.since > 0 ? new Date(stats.since) : undefined;
     const start = since && Number.isFinite(since.getTime()) ? since.toISOString() : 'unknown';
-    row.append(el('p', 'Relay counters since daemon boot (start: ' + start + ')', 'meta'));
+    row.append(el('p', 'Relay counters since daemon start (start: ' + start + ')', 'meta'));
     const counters = el('div', undefined, 'peer-summary');
     counters.append(el('span', 'Outbound handoffs: ' + roomMetadataCount(stats?.outbound), 'meta'), el('span', 'Inbound admitted: ' + roomMetadataCount(stats?.inbound), 'meta'), el('span', 'Withheld outbound (subset): ' + roomMetadataCount(stats?.withheld), 'meta'));
     row.append(counters); target.append(row);
