@@ -172,6 +172,13 @@ test("a deleted or newly created template and templates that do not parse give t
   expect(reason(await checkModelReceipt(input("[hub_routes.\"hub/x\"]\ntype = \"nonsense\"\n", [])))).not.toBe("");
   expect(reason(await checkModelReceipt(input("this = = not toml", [])))).toContain("do not parse");
 });
+test("a malformed input yields a reason, never an exception: the check is total", async () => {
+  for (const broken of [{ changed: undefined }, { receipts: undefined }, { corpusText: undefined }, { receipts: [undefined] }] as unknown as Partial<CheckInput>[]) {
+    const result = await checkModelReceipt(input(HOLD, [], broken));
+    expect(result.ok, JSON.stringify(Object.keys(broken))).toBe(false);
+  }
+  expect(reason(await checkModelReceipt(input(HOLD, [], { changed: undefined as never })))).toContain("could not be checked");
+});
 test("one matching receipt is enough, and the reasons of the others are reported only if none matches", async () => {
   const good = await receiptFor(BASE, HOLD);
   const junk = { path: `${RECEIPT_DIR}/2026-10-01-modelrouting-deadbeef.md`, text: "no block here" };

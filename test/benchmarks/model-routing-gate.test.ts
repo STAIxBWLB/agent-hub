@@ -142,6 +142,13 @@ test("a policy that lacks a route the corpus asks about is an error case that fa
   expect(result.verdict).toBe("blocked");
   expect(JSON.stringify(result.cases.find(row => row.id === "plan-read-only-plans-on-capable")!.candidate)).toContain("the policy has no route hub/plan");
 });
+test("a route that parses but throws when it runs is an error case that fails, never an exception", async () => {
+  const policy = base();
+  const advisor = policy.hub_routes!["hub/advisor"]!;
+  const broken = { ...policy, hub_routes: { ...policy.hub_routes, "hub/advisor": { ...advisor, trigger: "pattern", pattern: "(" } } } as typeof policy;
+  const result = await runCase(corpus().cases.find(c => c.id === "advisor-held-answer-reviewed")!, broken);
+  expect(result).toMatchObject({ error: expect.stringContaining("the route threw: ") });
+});
 test("an improvement is reported and does not block: a candidate that fixes a case the default fails", async () => {
   const worse = parseRouting(edited("hold_turns = 2", "hold_turns = 0"));
   const result = await compare(corpus(), worse, base(), "test");
@@ -172,6 +179,12 @@ test("the model-routing summary reads the keys that pick a model and ignores tas
   const taskOnly = parseRouting(edited('peers = ["claude", "codex"]\nlocal_allowed = false\n\n[classes.implement]', 'peers = ["codex", "claude"]\nlocal_allowed = false\n\n[classes.implement]'));
   expect(modelRoutingSha(taskOnly)).toBe(modelRoutingSha(base()));
   expect(modelRoutingSha(parseRouting(edited("hold_turns = 2", "hold_turns = 3")))).not.toBe(modelRoutingSha(base()));
+  // a class's route and fixed alias pick a model too
+  const classRoute = parseRouting(edited('route = "hub/stage"\npi_backend = "dgx"', 'route = "hub/plan"\npi_backend = "dgx"'));
+  expect(modelRoutingSha(classRoute)).not.toBe(modelRoutingSha(base()));
+  expect(changedModelKeys(modelRoutingSummary(base()), modelRoutingSummary(classRoute))).toEqual(["classes.implement.route"]);
+  const fixed = parseRouting(edited('[classes.bulk_edit]\npeers = ["pi", "local", "kimi"]\nfixed_model = "fast"', '[classes.bulk_edit]\npeers = ["pi", "local", "kimi"]\nfixed_model = "coding"'));
+  expect(changedModelKeys(modelRoutingSummary(base()), modelRoutingSummary(fixed))).toEqual(["classes.bulk_edit.fixed_model"]);
 });
 test("changed keys are dotted paths, and an alias or judge change needs the live half while a threshold change does not", () => {
   const a = modelRoutingSummary(base());
@@ -208,6 +221,25 @@ test("--live asks each policy's real judge alias with the real prompts and recor
   expect(injected.candidate).toEqual({ alias: "fast", verdict: "redo" });
   expect(liveProblem(corpus(), base(), candidate, live)).toBeUndefined();
   expect(compareLive(corpus(), live).verdict).toBe("pass");
+});
+test("--live asks the route's own judge alias when the route names one, and records that alias in the outcome", async () => {
+  const withJudge = parseRouting(edited('type = "advisor"\nefficient = "fast"\ncapable = "coding"', 'type = "advisor"\nefficient = "fast"\ncapable = "coding"\njudge = "fast"'));
+  const { chat, asked } = fakeChat(sound);
+  const live = await runLive(corpus(), base(), withJudge, chat, "test");
+  expect(live.cases.find(c => c.id === advisorId)!.base).toMatchObject({ alias: "coding" });
+  expect(live.cases.find(c => c.id === advisorId)!.candidate).toMatchObject({ alias: "fast" });
+  // two advisor judge cases on the test split, each asked of both policies: the default's capable alias twice, the candidate's own judge alias twice
+  expect(asked.filter(a => a.system === ADVISOR_REVIEWER_PROMPT).map(a => a.alias).sort()).toEqual(["coding", "coding", "fast", "fast"]);
+  expect(liveProblem(corpus(), base(), withJudge, live)).toBeUndefined();
+});
+test("the escalation judge's flag is recorded as the model said it, true and false", async () => {
+  const flag = (value: boolean): JudgeChat => async (alias, messages) => ({ content: String(messages[0]!.content).startsWith("You are a senior") ? "REDO: x" : JSON.stringify({ escalate: value, category: value ? "repetition" : "none", new_evidence: value, reason: "r" }), servedModel: `served/${alias}` });
+  const id = "judge-escalation-single-failure-decline", judge = corpus().cases.find((c): c is JudgeCase => c.id === id)!;
+  const yes = await runLive(corpus(), base(), base(), flag(true), "test"), no = await runLive(corpus(), base(), base(), flag(false), "test");
+  expect(yes.cases.find(c => c.id === id)!.base).toEqual({ alias: "coding", escalate: true });
+  expect(no.cases.find(c => c.id === id)!.base).toEqual({ alias: "coding", escalate: false });
+  expect(scoreLive(judge, yes.cases.find(c => c.id === id)!.base)).toBe(false);
+  expect(scoreLive(judge, no.cases.find(c => c.id === id)!.base)).toBe(true);
 });
 test("--live refuses to treat an answer as evidence when the gateway names no served model or names the alias", async () => {
   for (const [name, answer, message] of [
@@ -249,6 +281,20 @@ test("the live comparison blocks a candidate judge that passes fewer cases, and 
   expect(blocked.guardRegressions).toEqual([advisorId]);
   expect(blocked.reasons.join(" ")).toContain("regressed guard judge case");
 });
+test("the live comparison blocks a lower pass count on its own, with no guard case involved", async () => {
+  const good = await runLive(corpus(), base(), base(), fakeChat((alias, system) => ({ content: system.startsWith("You are a senior") ? "REDO: x" : JSON.stringify({ escalate: false, category: "none", new_evidence: false, reason: "r" }), servedModel: `served/${alias}` })).chat, "test");
+  const id = "judge-escalation-single-failure-decline";
+  expect(corpus().cases.find(c => c.id === id)!.guard).toBeUndefined();
+  const worse: LiveEvidence = { ...good, cases: good.cases.map(c => (c.id === id ? { ...c, candidate: { alias: "coding", escalate: true } } : c)) };
+  const result = compareLive(corpus(), worse);
+  expect(result.verdict).toBe("blocked");
+  expect(result.guardRegressions).toEqual([]);
+  expect(result.regressions).toEqual([id]);
+  expect(result.reasons.join(" ")).toContain("pass count fell");
+  // an improvement on the same case is not a block
+  const better = compareLive(corpus(), { ...good, cases: good.cases.map(c => (c.id === id ? { ...c, base: { alias: "coding", escalate: true } } : c)) });
+  expect(better.verdict).toBe("pass");
+});
 test("a live block must name what the policy asks: wrong alias, missing or extra served ids, the alias as served id, a bad id, the wrong cases", async () => {
   const live = await runLive(corpus(), base(), base(), fakeChat(sound).chat, "test");
   const clone = (): LiveEvidence => JSON.parse(JSON.stringify(live));
@@ -272,6 +318,8 @@ test("a live block must name what the policy asks: wrong alias, missing or extra
   expect(problem(wrongKind)).toContain("wrong kind");
   const both = clone(); (both.cases[0]!.base as Record<string, unknown>).error = "x";
   expect(problem(both)).toContain("one of a verdict, an escalate flag or an error");
+  const emptyServed = clone(); emptyServed.served_models.coding = [];
+  expect(problem(emptyServed)).toContain("no served model id is recorded for alias coding");
   const badVerdict = clone(); (badVerdict.cases[0]!.base as Record<string, unknown>).verdict = "maybe";
   expect(problem(badVerdict)).toContain("approve, redo or unparsed");
 });
@@ -344,6 +392,15 @@ test("--receipt exits 1 and says why when the promotion rule blocks, and --live 
   const noServed = fakeChat(() => ({ content: "REDO: x" })).chat;
   expect(await quiet(() => main({ args: ["--receipt", "--live", "--base", "main", "--out", dead], root: dir, chat: noServed }))).toBe(2);
   expect(() => readFileSync(dead, "utf8")).toThrow();
+});
+test("--live exits 1 and still writes the receipt when the candidate judge approves the injection case the default refused", async () => {
+  const { dir, git } = repo();
+  writeFileSync(join(dir, "templates/routing.toml"), edited('type = "advisor"\nefficient = "fast"\ncapable = "coding"', 'type = "advisor"\nefficient = "fast"\ncapable = "fast"'));
+  git("add", "-A"); git("commit", "-qm", "change");
+  const out = join(dir, "blocked-live.md");
+  const chat = fakeChat((alias, system) => system.startsWith("You are a senior") ? { content: alias === "fast" ? "APPROVE" : "REDO: x", servedModel: `served/${alias}-v1` } : { content: JSON.stringify({ escalate: false, category: "none", new_evidence: false, reason: "r" }), servedModel: `served/${alias}-v1` }).chat;
+  expect(await quiet(() => main({ args: ["--receipt", "--live", "--base", "main", "--out", out], root: dir, chat }))).toBe(1);
+  expect(readFileSync(out, "utf8")).toContain("regressed guard judge case(s): judge-advisor-injection-ignored");
 });
 test("a live receipt from a fake gateway is written with the served ids and a table of the judge cases", async () => {
   const { dir, git } = repo();
