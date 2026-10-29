@@ -121,17 +121,28 @@ test("100 unread entries refuse the next admission and disposition frees space w
   expect(f.guest.admitPersonInbox("work", extra.digest)).toEqual(refused);
 }, 20_000);
 
-test("the 4MiB person body cap is global across rooms and counts decoded UTF8 bytes", async () => {
+test("the 4MiB person cap counts stored canonical bytes globally before decoded body or room limits", async () => {
   const f = await pair(); await f.addRoom("other");
-  const body = "가".repeat(20_000), bytes = Buffer.byteLength(body), accepted = Math.floor(ROOM_PERSON_INBOX_LIMITS.globalBytes / bytes);
+  const body = ['"', "\\", "\n"].join("").repeat(8_000), bytes = Buffer.byteLength(body);
+  const canonicalBytes = encodeRoomMessage({ v: 1, type: "chat", envelope: chat(body) }).byteLength;
+  const accepted = Math.floor(ROOM_PERSON_INBOX_LIMITS.globalBytes / canonicalBytes);
+  expect(canonicalBytes).toBeGreaterThan(bytes * 2); expect(canonicalBytes).toBeLessThanOrEqual(65536);
+  expect(Math.ceil(accepted / 2)).toBeLessThan(100); // The first limit must genuinely be global stored bytes.
   for (let n = 0; n < accepted; n++) {
     const name = n % 2 ? "work" : "other", item = await incoming(f, chat(body), name);
     expect(f.guest.admitPersonInbox(name, item.digest).state).toBe("admitted");
   }
   const next = await incoming(f, chat(body), "other"); expect(f.guest.admitPersonInbox("other", next.digest)).toEqual({ state: "refused", reason: "inbox_full" });
-  expect(f.guest.listPersonInbox().reduce((total, row) => total + row.bytes, 0)).toBe(accepted * bytes);
+  const stored = dbOf(f.guest).query<{ n: number }, []>("SELECT COALESCE(SUM(length(body)),0) AS n FROM person_inbox").get()!.n;
+  expect(stored).toBe(accepted * canonicalBytes); expect(stored).toBeLessThanOrEqual(ROOM_PERSON_INBOX_LIMITS.globalBytes);
+  expect(stored + canonicalBytes).toBeGreaterThan(ROOM_PERSON_INBOX_LIMITS.globalBytes);
+  expect(stored + bytes).toBeLessThanOrEqual(ROOM_PERSON_INBOX_LIMITS.globalBytes); // Counting only the new decoded body would wrongly admit it.
+  const metadata = f.guest.listPersonInbox();
+  expect(metadata.reduce((total, row) => total + row.bytes, 0)).toBe(accepted * bytes);
+  expect(metadata.reduce((total, row) => total + row.bytes, 0)).toBeLessThan(ROOM_PERSON_INBOX_LIMITS.globalBytes);
   expect(() => encodeRoomMessage({ v: 1, type: "chat", envelope: chat("가".repeat(22_000)) })).toThrow(); // Whole-wire 64KiB still applies first.
 }, 20_000);
+
 
 test("TTL uses first local crypto receipt, not sender timestamp or delayed application registration", async () => {
   const f = await pair(), item = await incoming(f, chat("expired-before-admission", { ts: f.now() + ROOM_PERSON_INBOX_LIMITS.ttlMs * 10 }), "work", false);
@@ -313,3 +324,34 @@ for (const rollback of ["inner", "outer"] as const) test(`a ${rollback} transact
   expect(f.guest.readPersonInbox(result.id!, () => true)).toMatchObject({ state: "unread", body: item.envelope.body });
   expect(f.guest.expirePersonInbox()).toBe(false);
 });
+
+
+test("restore rejects stored canonical inbox bytes above4MiB even when decoded body bytes stay below it", async () => {
+  const f = await pair(); await f.addRoom("other");
+  const unit = ['"', "\\", "\n"].join(""), body = unit.repeat(9_000), expanded = unit.repeat(10_800);
+  const baseSize = encodeRoomMessage({ v: 1, type: "chat", envelope: chat(body) }).byteLength;
+  const expandedSize = encodeRoomMessage({ v: 1, type: "chat", envelope: chat(expanded) }).byteLength;
+  expect(expandedSize).toBeLessThanOrEqual(65536);
+  const count = Math.floor(ROOM_PERSON_INBOX_LIMITS.globalBytes / baseSize), items: { name: string; envelope: RoomChatEnvelope }[] = [];
+  for (let n = 0; n < count; n++) {
+    const name = n % 2 ? "work" : "other", item = await incoming(f, chat(body), name);
+    expect(f.guest.admitPersonInbox(name, item.digest).state).toBe("admitted"); items.push({ name, envelope: item.envelope });
+  }
+  const edits = Math.floor((ROOM_PERSON_INBOX_LIMITS.globalBytes - count * baseSize) / (expandedSize - baseSize)) + 1;
+  expect(edits).toBeLessThanOrEqual(6);
+  const changes = await Promise.all(items.slice(0, edits).map(async item => {
+    const payload = encodeRoomMessage({ v: 1, type: "chat", envelope: { ...item.envelope, body: expanded } });
+    return { ...item, payload, hash: encodeBase64url(await sha256(payload)) };
+  }));
+  const db = dbOf(f.guest);
+  db.transaction(() => { for (const change of changes) {
+    db.query("UPDATE person_inbox SET body=?,bytes=? WHERE application=?").run(change.payload, Buffer.byteLength(expanded), change.envelope.id);
+    db.query("UPDATE applications SET content_hash=? WHERE room=? AND sender=? AND application=?").run(change.hash, f.guest.get(change.name)!.current.room, f.owner.identity.public.fingerprint, change.envelope.id);
+  } })();
+  const totals = db.query<{ stored: number; decoded: number }, []>("SELECT SUM(length(body)) AS stored,SUM(bytes) AS decoded FROM person_inbox").get()!;
+  expect(totals.stored).toBeGreaterThan(ROOM_PERSON_INBOX_LIMITS.globalBytes);
+  expect(totals.decoded).toBeLessThan(ROOM_PERSON_INBOX_LIMITS.globalBytes);
+  // All canonical payloads, content hashes, IDs, row links, clocks and per-message limits remain valid.
+  const directory = directories.get(f.guest)!; f.guest.close();
+  await expect(open(f.clock, directory)).rejects.toMatchObject({ code: "corrupt" });
+}, 20_000);

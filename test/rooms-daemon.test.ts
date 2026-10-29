@@ -280,3 +280,25 @@ test("person inbox expiry schedules a retry only after an actual purge and coale
   expect(retries).toBe(1);
   commands.stop();
 });
+
+
+test("person inbox disposition replies before a blocked network retry and a later socket drop cannot change success", async () => {
+  const f = await fixture();
+  expect((await mutation(f.person, "create", { name: "test", broker: "ws://127.0.0.1:1/" })).ok).toBe(true);
+  const item = { id: crypto.randomUUID(), name: "test", room: "A".repeat(43), sender: "a".repeat(64), from: "codex@remote", receivedAt: 1, expiresAt: 2, bytes: 0, state: "discarded" as const };
+  let entered!: () => void, release!: () => void;
+  const retryEntered = new Promise<void>(resolve => { entered = resolve; });
+  const retryHeld = new Promise<void>(resolve => { release = resolve; });
+  const dispose = spyOn(RoomStore.prototype, "disposePersonInbox").mockReturnValue(item);
+  const retry = spyOn(RoomChat.prototype, "retryPending").mockImplementation(async () => { entered(); await retryHeld; });
+  let response: any;
+  const pending = f.person.request({ t: "room", op: "inbox_discard", input: { id: item.id } }).then(value => { response = value; return value; }).catch(() => undefined);
+  try {
+    await retryEntered;
+    // WebSocket FIFO makes this a consumed reply barrier, with no wall-clock assumption.
+    await f.person.request({ t: "status" });
+    expect(response).toMatchObject({ ok: true, item });
+    f.person.close();
+    expect(response.ok).toBe(true);
+  } finally { release(); await pending; retry.mockRestore(); dispose.mockRestore(); }
+});

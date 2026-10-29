@@ -4861,7 +4861,8 @@ Only list accepts `--json`; none of these commands accepts `--confirm` or asks
 for a fingerprint. All inbox forms refuse agent shells, conductors and
 `--live-test`. They also refuse during recovery or a Bus hold. Show prints one
 sanitized, terminal-safe untrusted body and does not mark it done. Done/discard
-immediately purge the body and keep a metadata stub. Expiry does the same;
+immediately purge the body and keep a metadata stub. Their acknowledgement is
+sent before any background room retry. Expiry does the same;
 there is no archive or read-after-done command. Capacity released by done/discard
 or a real TTL purge wakes already-deferred X4 traffic; no new receipt is sent for
 the purged entry, and idle ticks never poll queued plaintext. Dashboard, status, logs, memory,
@@ -4874,7 +4875,8 @@ admission. Older X4 senders cannot parse the new inbox receipt reasons and stay
 uncertain; do not treat mixed-version traffic as verified success.
 
 Limits are 100 unread messages per room, 64 KiB decoded body per message and
-4 MiB decoded body bytes retained globally. The unchanged 64 KiB entire-wire cap
+4 MiB canonical payload bytes retained globally, including JSON overhead and
+escaping (the displayed size remains decoded UTF-8 body bytes). The unchanged 64 KiB entire-wire cap
 leaves less than 64 KiB for a sendable body. Schema 4 starts the 30-day TTL at the
 first durable local crypto arrival, not remote time or restart. Legacy pending
 person traffic without that age gets fixed `failed_safe/inbox_age_unavailable`;

@@ -776,8 +776,10 @@ no body delivery or authority and never reads X5b inbox bodies.
 The only inbox-body output is the person's `ahub room inbox show <id>`, one
 untrusted frame with hub-header sanitization and terminal controls stripped.
 Inbox list is metadata-only, including `--json`; show/done/discard accept no JSON
-output or fingerprint-confirmation flag. Agent markers, conductors and
-`--live-test` cannot use any inbox form. Dashboard/status projections, logs,
+output or fingerprint-confirmation flag. The RPC checks the console role; as
+with X3, agent/conductor and `--live-test` refusal occurs at the CLI before it
+connects. Console hello has no delegation marker, so the RPC does not separately
+identify a raw console connection as live-test. Dashboard/status projections, logs,
 memory, models and observers receive no body or title. Reads and dispositions
 also refuse during recovery or a Bus hold in this first slice.
 
@@ -788,8 +790,9 @@ Duplicate delivery cannot re-admit or increment inbound counts twice.
 
 The private local store uses the existing protected directory/file modes, with
 plaintext bodies and no added at-rest encryption or secure-erasure claim. Caps
-are 100 unread messages per room, 64 KiB decoded body each and 4 MiB decoded
-body bytes globally; the unchanged entire-wire cap further limits sendable
+are 100 unread messages per room, 64 KiB decoded body each and 4 MiB stored
+canonical payload bytes globally, counting JSON overhead and escaping; metadata
+`bytes` still means decoded UTF-8 body size; the unchanged entire-wire cap further limits sendable
 content. Schema 4 binds the 30-day TTL to the first durable local crypto arrival.
 Unknown-age legacy person traffic fails safely with `inbox_age_unavailable`,
 without changing native peer admission. Settled stubs retain at most 1,000 per
@@ -811,3 +814,7 @@ checks.
 Indirect TTL cleanup retains one committed wake signal until the host consumes
 it; a rolled-back cleanup cannot create a signal. This adds no body to the wake
 path and no polling when no real cleanup occurred.
+
+Done/discard acknowledgement precedes the background room retry. A network retry
+failure or socket loss during that later work cannot report a committed local
+disposition as failed.

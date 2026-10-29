@@ -115,11 +115,17 @@ export class RoomCommands {
     if (typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) refuse("invalid_input");
     const store = await this.inboxStore(check); this.current(check);
     const item = store?.disposePersonInbox(id, action, () => { this.current(check); return true; }); this.current(check);
-    if (item) {
-      store?.expirePersonInbox(); // This explicit opportunity consumes any cleanup signal before its direct retry.
-      await this.options.chat?.retryPending();
-    }
     this.current(check); return item;
+  }
+  /** Host calls this after replying to a committed person disposition. */
+  retryInboxPending(): void {
+    queueMicrotask(() => {
+      if (this.stopped) return;
+      try {
+        this.store?.expirePersonInbox(); // Consume cleanup signals together with this explicit opportunity.
+        void this.options.chat?.retryPending().catch(() => undefined);
+      } catch { /* A retry failure cannot change an already committed and acknowledged disposition. */ }
+    });
   }
   /** Loaded-state housekeeping only, including rooms that have been left. */
   expireInbox(): void {

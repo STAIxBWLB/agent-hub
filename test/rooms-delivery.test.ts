@@ -331,8 +331,9 @@ test("discarding a person inbox entry frees shared application capacity and retr
   expect(f.b.store!.pendingInbox("work")).toHaveLength(1);
   expect(f.b.peer.got.some(row => row.id === native.id)).toBe(false);
 
-  await f.b.commands.inboxDispose(inbox.id, "discard", () => true);
-  expect(nativeReceives).toBe(2); // The explicit disposition awaits the retained-frame retry.
+  const disposed = await f.b.commands.inboxDispose(inbox.id, "discard", () => true);
+  expect(disposed?.state).toBe("discarded");
+  f.b.commands.retryInboxPending(); // The daemon does this only after its successful disposition reply.
   await f.event.wait(() => nativeReceives === 2 && f.b.peer.got.some(row => row.id === native.id)
     && f.b.store!.pendingInbox("work").length === 0, "discard retries the retained native chat once");
   await f.event.wait(async () => (await outbound(f.a, native.id))?.state === "completed (admitted)", "native admission receipt returned");

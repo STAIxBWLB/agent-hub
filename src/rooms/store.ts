@@ -463,7 +463,7 @@ export class RoomStore {
   private async validatePersonInbox(): Promise<void> {
     const limits = ROOM_PERSON_INBOX_LIMITS, now = this.now(), maximum = ROOM_STORE_LIMITS.rooms * (limits.unreadPerRoom + limits.stubsPerRoom);
     const count = this.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM person_inbox").get()?.n ?? 0;
-    const bytes = this.db.query<{ n: number }, []>("SELECT COALESCE(SUM(bytes),0) AS n FROM person_inbox WHERE body IS NOT NULL").get()?.n ?? 0;
+    const bytes = this.db.query<{ n: number }, []>("SELECT COALESCE(SUM(length(body)),0) AS n FROM person_inbox WHERE body IS NOT NULL").get()?.n ?? 0;
     if (!Number.isSafeInteger(count) || count > maximum || !Number.isSafeInteger(bytes) || bytes > limits.globalBytes
       || this.db.query("SELECT room FROM person_inbox WHERE state='unread' GROUP BY room HAVING COUNT(*)>100 LIMIT 1").get()
       || this.db.query("SELECT room FROM person_inbox WHERE state!='unread' GROUP BY room HAVING COUNT(*)>1000 LIMIT 1").get()
@@ -1001,8 +1001,8 @@ export class RoomStore {
       else if (bytes > ROOM_PERSON_INBOX_LIMITS.bodyBytes) reason = "inbox_oversize";
       else {
         const unread = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM person_inbox WHERE room=? AND state='unread'").get(row.room)?.n ?? 0;
-        const retained = this.db.query<{ n: number }, []>("SELECT COALESCE(SUM(bytes),0) AS n FROM person_inbox WHERE body IS NOT NULL").get()?.n ?? 0;
-        if (unread >= ROOM_PERSON_INBOX_LIMITS.unreadPerRoom || retained + bytes > ROOM_PERSON_INBOX_LIMITS.globalBytes) reason = "inbox_full";
+        const retained = this.db.query<{ n: number }, []>("SELECT COALESCE(SUM(length(body)),0) AS n FROM person_inbox WHERE body IS NOT NULL").get()?.n ?? 0;
+        if (unread >= ROOM_PERSON_INBOX_LIMITS.unreadPerRoom || retained + entry.plaintext.byteLength > ROOM_PERSON_INBOX_LIMITS.globalBytes) reason = "inbox_full";
       }
       assertCurrent(current);
       if (reason) {

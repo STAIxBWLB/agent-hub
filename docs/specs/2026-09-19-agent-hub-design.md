@@ -1373,9 +1373,11 @@ Admission, duplicate identity and receipt commit together before publication;
 duplicate frames cannot admit or count the message again. Done, discard and
 expiry never change that receipt or manufacture another outcome.
 
-Only the person's CLI can use these forms; agents, conductors and `--live-test`
-are refused, and dashboard, status, logs, memory, models and observers receive
-no inbox body:
+The RPC gate admits only the console role. As with X3 room mutations, the CLI
+refuses agents, conductors and `--live-test` before connecting. A console RPC
+connection carries no delegated/live-test marker, so that flag is not independently
+classified at the RPC gate. Dashboard, status, logs, memory, models and observers
+receive no inbox body:
 
 ```sh
 ahub room inbox [<name>] [--json]
@@ -1392,15 +1394,19 @@ and terminal control stripping, and never marks it done. Done/discard are local
 metadata changes and immediately purge the body. Expired or disposed entries
 show metadata stubs only: no archive or read-after-done path exists.
 
-A person done/discard and an actual TTL purge create one capacity-release
-opportunity for existing X4 deferred traffic. The disposed or expired entry gets
+A person done/discard commits and replies before firing a background retry, so
+a retry failure or socket drop during that work cannot change its acknowledgement.
+It and an actual TTL purge create one capacity-release opportunity for existing
+X4 deferred traffic. The disposed or expired entry gets
 no new outcome or receipt; unrelated authenticated pending chats may resume.
 Idle expiry ticks never retry or poll retained plaintext.
 Cleanup performed during show or admission retains a committed purge signal until
 the host consumes it once; rollback restores the prior signal.
 
 Limits are 100 unread messages per room, 64 KiB decoded body per message and
-4 MiB retained decoded body bytes globally. The existing 64 KiB entire
+4 MiB retained canonical payload bytes globally (the stored BLOB length, including
+JSON envelope overhead and escaping). Metadata `bytes` remains decoded UTF-8 body
+size. The existing 64 KiB entire
 application-wire cap is unchanged, so envelope overhead makes the actual
 sendable body smaller. Schema 4 records the first durable local crypto arrival;
 the inbox TTL is 30 days from that time, not the remote timestamp, admission

@@ -7719,6 +7719,7 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!roomCurrent()) return roomFailure();
             if (!item) return reply({ ok: false, code: "inbox_not_found" });
             reply({ ok: true, item });
+            if (msg.op !== "inbox_show") roomCommands.retryInboxPending();
           }, roomFailure);
           return;
         }
