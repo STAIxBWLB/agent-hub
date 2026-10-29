@@ -5642,15 +5642,15 @@ export class Tasks {
     });
   }
 
+  /** Preserve explicit intent across a policy reload; recheck conductor authority after every await. */
   private explicitQueueAssignment(by: PeerId, role: Exclude<TaskAssignmentRole, "planner">, preEffect: boolean): { role: "owner" | "reviewer"; current: () => void } | undefined {
-    if (!this.queuePolicy() && !this.contextRouting().contextAdmission) return undefined;
     if (by === USER) return { role, current: () => {} };
     const current = () => {
       const holders = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([peer]) => peer);
       return holders.length === 1 && holders[0] === by && this.d.bus.isRostered(by);
     };
     if (!current()) return undefined;
-    return { role, current: () => { if (!current()) throw new (preEffect ? PreEffectToolRefusal : Error)("only the current configured conductor may override queue backpressure"); } };
+    return { role, current: () => { if (!current()) throw new (preEffect ? PreEffectToolRefusal : Error)("only the current configured conductor may override assignment admission"); } };
   }
 
   private configuredManualConductor(by: PeerId): boolean {

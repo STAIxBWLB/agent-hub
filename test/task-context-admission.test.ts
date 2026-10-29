@@ -116,3 +116,19 @@ test("automatic owner admission uses a fresh reading after its awaited plan chec
   expect("error" in result && String(result.error)).toContain("context headroom");
   expect(f.board.get(row.id)?.owner).toBeNull();
 });
+
+test("explicit person and conductor intent survives admission being enabled during the await", async () => {
+  for (const actor of [USER, "claude"]) {
+    const f = await fixture(); f.lifecycle(); f.config.max_assignment_used = 0; f.report("codex", 1);
+    const row = f.board.propose(HUB, { title: `reload ${actor}`, class: "implement" });
+    f.board.update(row.id, USER, "lifecycle", { sdlc: { stage: "build", planReview: { planner: "claude", planningRevision: 0, recordedAt: Date.now() } } });
+    let release!: () => void, entered!: () => void;
+    const waiting = new Promise<void>(done => { entered = done; }), barrier = new Promise<void>(done => { release = done; });
+    f.tasks.planReviewGap = async () => { entered(); await barrier; return undefined; };
+    const pending = f.tasks.assignTo(row.id, "codex", actor, true);
+    await waiting; f.config.max_assignment_used = 0.8; release();
+    const assigned = await pending;
+    expect(assigned.owner).toBe("codex");
+    expect(assigned.history.findLast(entry => entry.event === "reassigned")?.by).toBe(actor);
+  }
+});
