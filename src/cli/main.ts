@@ -26,6 +26,7 @@ import { fetchSourceUrl, MAX_SOURCE_BYTES, publicSourceView, screenRegistration,
 import { renderSourceAdd, renderSourceList } from "./source-output.ts";
 import { renderScheduleChange, renderScheduleList, renderScheduleRun } from "./schedule-output.ts";
 import { renderIntake, renderIntakeChange } from "./intake-output.ts";
+import { renderLearnChange, renderLearnList } from "./learn-output.ts";
 import { terminalText } from "./console-state.ts";
 import { parseSettingsEditArgs, runSettingsEdit, SETTINGS_EDIT_USAGE } from "./settings-edit.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
@@ -38,7 +39,7 @@ import { verifiedJcodeCommand } from "../adapters/jcode.ts";
 import { configureJcodeMcp, jcodeExtraMcpServers } from "./jcode-mcp.ts";
 import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
-import { parseSettingText, settingDef, settingText, type SettingRow } from "../hub/settings.ts";
+import { parseSettingText, settingDef, settingText, undoableDef, type SettingRow } from "../hub/settings.ts";
 import { startModeOf } from "../hub/start-mode.ts";
 import { currentRouting, OVERLAY_FILE, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
@@ -1450,6 +1451,23 @@ const commands: Record<string, () => Promise<void> | void> = {
     return showToolText(data => renderScheduleChange(sub as "pause" | "resume", data, present.columns, Date.now()), await taskOp(sub === "pause" ? "schedule_pause" : "schedule_resume", { id }), present);
   },
 
+  learn: async () => {
+    // #514b: the person's verdict on a recurring-criterion candidate (#514a). Person only, end to end: `learn` is a `console` command for an agent shell (classifyPeerCommand has no entry for it, so the
+    // identity layer refuses it before this runs), and the daemon refuses any caller but the person again. `accept` writes ONE key (profile_overrides.review_checklist) to the machine-local
+    // config through the settings writer; nothing in a card's text is written.
+    const split = splitPresentation(args);
+    const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
+    const usage = "usage: ahub learn list [--all] | accept <id> | reject <id> [--json] [--color=auto|always|never]";
+    const [sub, ...rest] = split.operands;
+    if (sub === "list" && rest.every(arg => arg === "--all")) {
+      const all = rest.includes("--all");
+      return showToolText(data => renderLearnList(data, present.columns, all), await taskOp("learn_list", { ...(all ? { all: true } : {}) }), present);
+    }
+    const [id, ...extra] = rest;
+    if ((sub !== "accept" && sub !== "reject") || !id || extra.length || !/^[1-9]\d*$/.test(id)) return fail(usage);
+    return showToolText(data => renderLearnChange(sub, data, present.columns), await taskOp(sub === "accept" ? "learn_accept" : "learn_reject", { id: Number(id) }), present);
+  },
+
   intake: async () => {
     // #334 (#511a): natural-language intake. Person only, except approve (#933: the configured conductor too, admitted and audited by the daemon).
     // The request is a draft backlog card that nothing offers until `approve`; the hub, not this process, splits it.
@@ -1952,7 +1970,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         return console.log(paint([{ text: result.text }], false));
       }
       if (sub === "undo") {
-        const view = await request({ t: "settings_get" }), undoDef = settingDef(view.undo, settingScope.instances, settingScope.catalog);
+        const view = await request({ t: "settings_get" }), undoDef = undoableDef(view.undo, settingScope.instances, settingScope.catalog);
         // A roster undo of a declared peer needs its confirmation prompt; without readable declarations, refuse rather than skip it.
         if (typeof undoDef === "string" && settingScopeError) fail(`pending undo ${String(view.undo)}: ${undoDef}; the project config could not be read: ${settingScopeError}`);
         const rosterPeer = typeof undoDef !== "string" && undoDef.group === "Roster" ? undoDef.path[1] : undefined;

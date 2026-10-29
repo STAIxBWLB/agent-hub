@@ -155,7 +155,8 @@ import { AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig, type PiiVerdict } from "./inference.ts";
 import { taskEvidencePrivacy, type TaskEvidencePrivacy, ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
-import { NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
+import { withChecklistLine } from "./learning.ts";
+import { LEARN_CHECKLIST, undoableDef, NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { githubOriginRepository } from "./task-repository.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
@@ -3432,6 +3433,30 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify((await tasks.approveIntake(by, a.id)).map(task => tasks.publicView(task)));
       case "intake_discard":
         return JSON.stringify((await tasks.discardIntake(by, a.id)).map(task => tasks.publicView(task)));
+      // #514b: the person's verdict on a recurring-criterion candidate. Person only (Tasks refuses any other `by`, and the generic gate above already refuses every non-person caller, the configured
+      // conductor included: none of these is in CONDUCTOR_TASK_OPS). Accept writes ONE key, derived from the card's key line, through the settings writer.
+      case "learn_list":
+        return JSON.stringify(tasks.learnCandidates(by, { all: a.all === true }));
+      case "learn_reject":
+        return JSON.stringify(tasks.publicView(await tasks.learnClose(by, a.id, "rejected")));
+      case "learn_accept": {
+        const plan = tasks.learnAcceptPlan(by, a.id);
+        const stored = storedConfig();
+        if (!stored) throw new PreEffectToolRefusal("the config files do not load; fix them in your editor first: nothing was written");
+        const active = profileName(stored.profile);
+        if (plan.profile !== active) throw new PreEffectToolRefusal(`this card is for the ${plan.profile} profile and the project's profile is ${active}: nothing was written; reject the card, or switch profile first`);
+        // review_checklist replaces as a unit: extend the checklist the profile uses now (the person's, else the shipped one), never start from one line.
+        const current = resolveProfile(stored.profile, stored.profile_overrides).review_checklist ?? [];
+        const next = withChecklistLine(current, plan.line);
+        if ("refused" in next) throw new PreEffectToolRefusal(next.refused);
+        const already = next.list.length === current.length;
+        if (!already) {
+          const written = await settingsSet(LEARN_CHECKLIST.key, next.list, "terminal", undefined, undefined, `ahub learn accept #${plan.id}`, LEARN_CHECKLIST);
+          if (written.ok !== true) throw new PreEffectToolRefusal(String(written.error ?? "the checklist could not be written") + "; the candidate stays open");
+        }
+        const closed = await tasks.learnClose(by, a.id, "accepted");
+        return JSON.stringify({ card: tasks.publicView(closed), accepted: { profile: plan.profile, class: plan.class, criterion: plan.criterion, line: plan.line, tasks: plan.tasks, lines: next.list.length, alreadyPresent: already, file: ".agenthub/config.local.json", applies: "after a restart (profile contracts are bound at startup)", undo: already ? undefined : "ahub settings undo" } });
+      }
       case "review_brief": {
         const task = board.get(Number(a.id));
         return task ? tasks.briefText(task) || `task #${task.id} names no commit, or is private: no brief` : `no task #${a.id}`;
@@ -6475,13 +6500,17 @@ export async function startDaemon(opts: DaemonOptions) {
     if (typeof reason !== "string" || !reason.trim() || Buffer.byteLength(reason) > 400) throw new Error("setting reason must contain 1..400 UTF-8 bytes");
     return sanitize(reason.trim());
   };
-  async function settingsSet(key: unknown, raw: unknown, authority: SettingAuthority, confirm?: unknown, now?: unknown, rawReason?: unknown): Promise<Record<string, unknown>> {
+  /** `managed` (#514b) is the learn command's own definition: a function argument, never read from a request, so no other key or caller can reach the managed row. */
+  async function settingsSet(key: unknown, raw: unknown, authority: SettingAuthority, confirm?: unknown, now?: unknown, rawReason?: unknown, managed?: SettingDef): Promise<Record<string, unknown>> {
     checkOperational(authority);
     if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding settings" };
     let reason: string | undefined;
     try { reason = settingReason(rawReason); } catch (error) { return { ok: false, error: (error as Error).message }; }
     if(authority==="conductor" && reason && !tasks.publicMetadataText(reason))return {ok:false,error:"setting reason withheld by privacy policy"};
-    const input = settingInput(key, raw);
+    if (managed && (managed !== LEARN_CHECKLIST || authority !== "terminal")) return { ok: false, error: "a managed setting is written only by its own command, as the person" };
+    let input: ReturnType<typeof settingInput>;
+    if (managed) { try { input = { def: managed, value: checkSettingValue(managed, raw) }; } catch (error) { return { ok: false, error: (error as Error).message }; } }
+    else input = settingInput(key, raw);
     if ("error" in input) return { ok: false, error: input.error };
     const { def, value } = input;
     const refusal = settingRefusal(def, value, authority);
@@ -6520,7 +6549,9 @@ export async function startDaemon(opts: DaemonOptions) {
       const result = await reloadConfig(authority, def.path.join("."));
       if (result.ok !== true) return { ...result, saved: true };
       const to = settingScalar(valueAt(storedConfig(), def.path));
-      recordSetting(def.key, from, to, source, false, reason);
+      // A managed checklist is the person's own profile text: the event and the notice carry line counts, never the lines.
+      const shown = (v: SettingValue): SettingValue => managed ? (Array.isArray(v) ? `${v.length} line(s)` : v === null ? "(not set)" : v) : v;
+      recordSetting(def.key, shown(from), shown(to), source, false, reason);
       if (def.type === "roles") { prepareRoleSelection(def.path[1]!); event({ type: "role", peer: def.path[1]!, actor: "user", stage: "assigned", roles: selectedRoles(def.path[1]!, config.roles, roleAssignments, catalog).map(roleIdentity) }); }
       const timing = def.applies === "live" ? "in force now" : def.applies === "restart" ? "pending restart"
         : ["permission_modes", "catalog_roles", "peers"].includes(def.path[0]!) ? "applies at the peer's next start" : def.key === "coordination" ? "applies to new tasks" : "applies at next use";
@@ -6541,8 +6572,9 @@ export async function startDaemon(opts: DaemonOptions) {
       if (typeof expectedKey !== "string" || !expectedKey || typeof expectedDigest !== "string" || !/^[a-f0-9]{64}$/.test(expectedDigest)) return { ok: false, error: "invalid undo preview identity; preview again; nothing was undone" };
       if (!identity || identity.key !== expectedKey || identity.undoDigest !== expectedDigest) return { ok: false, error: "undo record changed since preview; preview again; nothing was undone" };
     }
-    const def = settingDef(identity?.key);
+    const def = undoableDef(identity?.key);
     if (typeof def === "string" || !identity) return { ok: false, error: "nothing to undo" };
+    if (def.managed && authority !== "terminal") return { ok: false, error: `${def.key} was written by ahub learn accept: put it back with ahub settings undo in a terminal` };
     if (def.group === "Roster") return changeRosterSetting(def, null, settingSource(authority), confirm, now === true, true, authority, reason, identity);
     if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };
     const read = (): SettingValue => def.store === "routing" ? routingValue(activeRouting(), def) : settingScalar(valueAt(storedConfig(), def.path));
@@ -6594,8 +6626,9 @@ export async function startDaemon(opts: DaemonOptions) {
   }
 
   function settingsUndoPreview(): Record<string, unknown> {
-    const identity = pendingUndoIdentity(opts.stateDir), def = settingDef(identity?.key);
+    const identity = pendingUndoIdentity(opts.stateDir), def = undoableDef(identity?.key);
     if (typeof def === "string" || !identity) return { ok: false, error: "nothing to undo" };
+    if (def.managed) return { ok: true, ...identity, lines: [`Undo ${def.key}: put back the previous machine-local file (the review checklist ahub learn accept changed; its lines are not shown here)`, "The saved previous machine-local file is revalidated before writing."] };
     const value = restoredValue(opts.cwd, opts.stateDir, def), preview = settingsPreview(def.key, value ?? null);
     if (pendingUndoIdentity(opts.stateDir)?.undoDigest !== identity.undoDigest) return { ok: false, error: "undo record changed during preview; preview again" };
     return { ...preview, ...identity, lines: [`Undo ${def.key}: put back ${settingText(value)}`, ...(Array.isArray(preview.lines) ? preview.lines : []), "The saved previous machine-local file is revalidated before writing."] };

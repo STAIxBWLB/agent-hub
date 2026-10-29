@@ -28,7 +28,9 @@ export interface SettingDef {
   key: string;
   group: "Permissions" | "Start" | "Routing" | "Switches" | "Roster" | "Roles";
   label: string;
-  type: "enum" | "boolean" | "peers" | "roles" | "integer" | "number";
+  type: "enum" | "boolean" | "peers" | "roles" | "integer" | "number" | "lines";
+  /** Written only by the named hub command, never by `settings set`, a dashboard session or a conductor (#514b). */
+  managed?: "learn";
   min?: number; max?: number;
   /** The closed values of an enum; a route setting takes the project's own route ids instead. */
   values?: readonly string[];
@@ -87,6 +89,15 @@ export const SETTINGS: readonly SettingDef[] = [
  */
 export const NEVER_EDITABLE = ["kimi_cmd", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "codex_bin", "pi.cmd", "checks", "mlx", "omniroute", "memory.worker_url", "local.read_allow", "local.bash_network", "local.network_allow", "bench.enabled", "terminal", "schedules", "folder_triggers", "corpus", "rooms", "instances", "adapters", "adapter_modules", "local.doc_read", "local.web_fetch"] as const;
 
+/**
+ * The one key `ahub learn accept` writes (#514b): the active profile's review checklist, which replaces as a unit. It is NOT a row of `SETTINGS` and `settingDef` does NOT resolve it, so
+ * `settings set|get|list`, the dashboard, a settings session and a conductor all see an unknown setting and nothing about them changed. Only the daemon's learn operation passes this
+ * definition to `settingsSet` itself (a function argument no request field can reach), so the write still goes through the same writer, loader check, reload and undo as every other setting.
+ */
+export const LEARN_CHECKLIST: SettingDef = Object.freeze({ key: "profile_overrides.review_checklist", group: "Routing", label: "Profile review checklist (written by ahub learn accept)", type: "lines", managed: "learn",
+  store: "config", applies: "restart", restartReason: "Session tool schemas and profile contracts are bound at startup", risk: "raises", path: Object.freeze(["profile_overrides", "review_checklist"]) });
+const LEARN_LINES_MAX = 16, LEARN_LINE_MAX = 500;
+
 /** Derive project-bound rows from the same builtin templates used by lookup, without registering aliases globally. */
 export function projectSettings(instances?: KindMap, adapterCatalog?: ProjectAdapterCatalog): readonly SettingDef[] {
   const resolve = adapterCatalog?.definitionOf ?? definitionOf;
@@ -143,6 +154,11 @@ export function projectSettings(instances?: KindMap, adapterCatalog?: ProjectAda
   return extra.length ? Object.freeze([...settings, ...extra]) : settings;
 }
 
+/** What undo may put back: a registry key, or the one managed key `ahub learn accept` writes. Never used to set anything. */
+export function undoableDef(key: unknown, instances?: KindMap, adapterCatalog?: ProjectAdapterCatalog): SettingDef | string {
+  return key === LEARN_CHECKLIST.key ? LEARN_CHECKLIST : settingDef(key, instances, adapterCatalog);
+}
+
 /** The definition of a key, or why there is none. */
 export function settingDef(key: unknown, instances?: KindMap, adapterCatalog?: ProjectAdapterCatalog): SettingDef | string {
   if (typeof key !== "string" || key.length > 80) return "unknown setting";
@@ -162,6 +178,10 @@ export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonl
   if (def.type === "integer" || def.type === "number") {
     if (typeof raw !== "number" || !(def.type === "integer" ? Number.isSafeInteger(raw) : Number.isFinite(raw)) || raw < (def.min ?? 0) || raw > (def.max ?? Number.MAX_SAFE_INTEGER)) throw new Error(`${def.key} takes ${def.type === "integer" ? "an integer" : "a number"} from ${def.min ?? 0} to ${def.max ?? Number.MAX_SAFE_INTEGER}`);
     return raw;
+  }
+  if (def.type === "lines") {
+    if (!Array.isArray(raw) || !raw.length || raw.length > LEARN_LINES_MAX || raw.some(line => typeof line !== "string" || !line.trim() || line.length > LEARN_LINE_MAX || /[\x00-\x1f\x7f]/.test(line))) throw new Error(`${def.key} takes one to ${LEARN_LINES_MAX} lines of plain text, each at most ${LEARN_LINE_MAX} characters`);
+    return raw.map(line => line.trim());
   }
   if (def.type === "boolean") {
     if (typeof raw !== "boolean") throw new Error(`${def.key} takes true or false`);
