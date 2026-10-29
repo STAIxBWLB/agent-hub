@@ -751,9 +751,10 @@ settled capacity. This state protects against other users, not hostile code
 running as the same user with access to the private room keys. Native/account,
 live TLS/proxy forwarding and X7 two-machine behavior remain unverified here.
 
-The console is a one-way room sender in X4. Replies to `user@label` receive an
-authenticated unsupported-person-inbox NACK, retained as a known terminal
+An X4-only receiver is a one-way room endpoint for a person. Replies to
+`user@label` receive an authenticated unsupported-person-inbox NACK, retained as a known terminal
 `failed_safe` outcome, never silently retried or claimed as person admission.
+X5b adds the separate durable inbox boundary below.
 
 ### X5 metadata views
 
@@ -768,5 +769,36 @@ Relay counts are daemon-session observations, reset at restart: successful
 outbound handoffs, confirmed inbound admissions and withheld handoffs as a subset
 of outbound. Missing values remain `null`/unknown rather than zero. They neither
 certify native completion nor reconstruct historical traffic. This display adds
-no delivery or authority: `user@label` still receives signed `failed_safe`, and
-durable person inbox handling remains a separate backlog item.
+no body delivery or authority and never reads X5b inbox bodies.
+
+### X5b person inbox
+
+The only inbox-body output is the person's `ahub room inbox show <id>`, one
+untrusted frame with hub-header sanitization and terminal controls stripped.
+Inbox list is metadata-only, including `--json`; show/done/discard accept no JSON
+output or fingerprint-confirmation flag. Agent markers, conductors and
+`--live-test` cannot use any inbox form. Dashboard/status projections, logs,
+memory, models and observers receive no body or title. Reads and dispositions
+also refuse during recovery or a Bus hold in this first slice.
+
+`completed/inbox_admitted` is an immutable receipt of durable inbox admission,
+not a person-read or work-completion receipt. Done/discard/expiry purge the body
+locally and retain only metadata; they neither resend nor revise admission.
+Duplicate delivery cannot re-admit or increment inbound counts twice.
+
+The private local store uses the existing protected directory/file modes, with
+plaintext bodies and no added at-rest encryption or secure-erasure claim. Caps
+are 100 unread messages per room, 64 KiB decoded body each and 4 MiB decoded
+body bytes globally; the unchanged entire-wire cap further limits sendable
+content. Schema 4 binds the 30-day TTL to the first durable local crypto arrival.
+Unknown-age legacy person traffic fails safely with `inbox_age_unavailable`,
+without changing native peer admission. Settled stubs retain at most 1,000 per
+room for 30 days after settlement, oldest first; unread rows and their admission
+identities, and shared-cap unsettled identities, are protected. The loaded-state
+30-second expiry hook covers left rooms without creating a store or keys.
+
+Metadata list replies cap at 1,100 complete rows; larger global lists explicitly
+refuse and ask for a room filter, rather than truncating. Older X4 codecs reject
+the new fixed inbox receipt reasons, leaving uncertainty rather than claiming
+mixed-version delivery success. Live two-machine/account evidence remains
+separate.

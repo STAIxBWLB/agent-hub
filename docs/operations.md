@@ -4760,10 +4760,9 @@ ahub say @codex@hub-guest "Please inspect the public example"
 ```
 
 A local exposed agent can use `hub_send` with that exact address. Native peers
-can exchange round-trips. Console sends are one-way until the separate durable
-person-inbox backlog is implemented: a reply to `user@label` returns signed
-`failed_safe` with
-"person inbox not supported yet (X5)", rather than being admitted or lost. One remote plus
+can exchange round-trips. X5b below adds the person's durable inbox for replies
+to `user@label`. An older X4-only receiver returns signed `failed_safe` with
+"person inbox not supported yet (X5)", rather than claiming admission. One remote plus
 local recipients is supported. X4 refuses multiple remote recipients before any
 delivery: send separately. Ordinary broadcasts stay local. Unknown or ambiguous
 addresses refuse. Private turns, PII task references and private envelopes do not
@@ -4837,6 +4836,57 @@ native agent completed its work.
 
 These views contain no message body/title, reason, broker URL, key material or delivery
 history. Use the existing queue inspection workflow for delivery uncertainty.
-The metadata-only views do not enable replies to people: `user@label` still
-receives signed `failed_safe` with "person inbox not supported yet (X5)".
-Durable person inbox delivery remains separate backlog work.
+The metadata-only views never show inbox bodies; use the separate person-only
+CLI below.
+
+## Person-only room inbox (#446 X5b)
+
+List metadata for all rooms or one named room:
+
+```sh
+ahub room inbox [<name>] [--json]
+```
+
+The list contains local inbox ids, room/sender metadata, times, byte counts and
+states, never body previews. One operand is always a room name, even `show`,
+`done` or `discard`. Only an action plus an exact local UUID acts on a message:
+
+```sh
+ahub room inbox show <id>
+ahub room inbox done <id>
+ahub room inbox discard <id>
+```
+
+Only list accepts `--json`; none of these commands accepts `--confirm` or asks
+for a fingerprint. All inbox forms refuse agent shells, conductors and
+`--live-test`. They also refuse during recovery or a Bus hold. Show prints one
+sanitized, terminal-safe untrusted body and does not mark it done. Done/discard
+immediately purge the body and keep a metadata stub. Expiry does the same;
+there is no archive or read-after-done command. Dashboard, status, logs, memory,
+models and observers never receive the body.
+
+The sender's **completed (inbox)** receipt means durable admission, not that the
+person read or completed the request. Reading, disposing or expiring the local
+copy never changes that receipt. Inbound session counts increment once at
+admission. Older X4 senders cannot parse the new inbox receipt reasons and stay
+uncertain; do not treat mixed-version traffic as verified success.
+
+Limits are 100 unread messages per room, 64 KiB decoded body per message and
+4 MiB decoded body bytes retained globally. The unchanged 64 KiB entire-wire cap
+leaves less than 64 KiB for a sendable body. Schema 4 starts the 30-day TTL at the
+first durable local crypto arrival, not remote time or restart. Legacy pending
+person traffic without that age gets fixed `failed_safe/inbox_age_unavailable`;
+native peer traffic is unchanged. Full, oversized or already-expired person
+admissions return fixed `inbox_full`, `inbox_oversize` or `inbox_expired` refusals.
+
+Up to 1,000 settled stubs per room remain for 30 days after settlement, oldest
+first. Unread messages and their admission identities are protected, along with
+unsettled identities at the shared 10,000-per-room application cap. One loaded
+daemon expiry hook runs every 30 seconds, including for left rooms; it creates
+no empty room database or keys. Bodies remain plaintext in the protected local
+store, with no new encryption-at-rest or secure-erasure guarantee.
+
+Lists are complete up to 1,100 rows. If an all-room list exceeds that limit, the
+CLI explicitly asks you to choose a room name; it never silently truncates.
+ponytail: pagination is later work; a filtered room's 100 unread plus 1,000
+settled stubs fit the current response ceiling.

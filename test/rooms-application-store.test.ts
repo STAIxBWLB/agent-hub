@@ -65,7 +65,7 @@ test("room application schema3 migrates a v1 identity, pins, counters and legacy
   const state = f.owner.get("work")!, fingerprint = f.owner.identity.public.fingerprint, dir = locations.get(f.owner)!;
   f.owner.close();
   const db = new Database(join(dir, "rooms.db"));
-  db.exec("DROP TABLE application_frames; DROP TABLE applications; DROP TABLE application_outbox; ALTER TABLE inbox DROP COLUMN receipt_reserve; PRAGMA user_version=1;"); db.close();
+  db.exec("DROP TABLE person_inbox; ALTER TABLE inbox DROP COLUMN received_at; DROP TABLE application_frames; DROP TABLE applications; DROP TABLE application_outbox; ALTER TABLE inbox DROP COLUMN receipt_reserve; PRAGMA user_version=1;"); db.close();
   const restored = await opened(f.clock, dir);
   expect(restored.identity.public.fingerprint).toBe(fingerprint);
   expect(restored.get("work")!.current.digest).toBe(state.current.digest);
@@ -407,7 +407,7 @@ test("schema3 migrates v2 handoff deadlines conservatively and never infers rece
     const frame = await hash(wire), directory = locations.get(f.owner)!; f.owner.close();
     const legacy = new Database(join(directory, "rooms.db"));
     try {
-      legacy.exec("ALTER TABLE inbox DROP COLUMN receipt_reserve; PRAGMA user_version=2;");
+      legacy.exec("DROP TABLE person_inbox; ALTER TABLE inbox DROP COLUMN received_at; ALTER TABLE inbox DROP COLUMN receipt_reserve; PRAGMA user_version=2;");
       legacy.query("UPDATE application_outbox SET ack_deadline=?").run(previous === "missing" ? null : q.outgoing.createdAt + (previous === "late" ? 1000 : 50));
     } finally { legacy.close(); }
     const restored = await opened(f.clock, directory);
@@ -417,7 +417,7 @@ test("schema3 migrates v2 handoff deadlines conservatively and never infers rece
     restored.close();
     const migrated = new Database(join(directory, "rooms.db"));
     try {
-      expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(3);
+      expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(4);
       expect(migrated.query<{ receipt_reserve: number }, [string]>("SELECT receipt_reserve FROM inbox WHERE digest=?").get(frame)?.receipt_reserve).toBe(0);
       expect(migrated.query<{ wire: Uint8Array }, [string]>("SELECT wire FROM outbox WHERE digest=?").get(q.outgoing.digest)?.wire).toEqual(q.wire);
       expect(migrated.query<{ seq: string }, [string]>("SELECT seq FROM counters WHERE room=?").get(current.current.room)?.seq).toBe(decodeFrame(q.wire).seq);

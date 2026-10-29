@@ -1,19 +1,24 @@
 import { decodeBase64url } from "../rooms/crypto.ts";
 import { roomReceiptReasonText, type RoomReceiptReason } from "../rooms/application.ts";
-/** Room mutations are person-only; main.ts refuses agent and live-test calls before importing this module. */
-export const ROOM_USAGE = "usage: ahub room create <name> --broker <url> [--label <id>] | invite <name> [--accept <request>] | join <token> [--name <name>] [--label <id>] | join <name> --roster <signed-roster> | leave <name> | revoke <name> <fingerprint> | expose <name> [<peer>...] | resolve <name> --frame <digest> --action accept|discard (mutations require TTY y/N or --confirm <member-fingerprint-prefix>, 16..64 lowercase hex) | list [--json] | status [<name>] [--json]";
+import { frame, type Envelope } from "../hub/envelope.ts";
+import { terminalText } from "./console-state.ts";
+import type { RoomPersonInboxMeta, RoomPersonInboxItem } from "../rooms/store.ts";
+/** Membership mutations and inbox forms are person-only; main.ts refuses agent/live-test calls before importing this module. */
+export const ROOM_USAGE = "usage: ahub room create <name> --broker <url> [--label <id>] | invite <name> [--accept <request>] | join <token> [--name <name>] [--label <id>] | join <name> --roster <signed-roster> | leave <name> | revoke <name> <fingerprint> | expose <name> [<peer>...] | resolve <name> --frame <digest> --action accept|discard (membership mutations and resolve require TTY y/N or --confirm <member-fingerprint-prefix>, 16..64 lowercase hex) | list [--json] | status [<name>] [--json] | inbox [<name>] [--json] | inbox show|done|discard <id>";
 
 type RoomAction = "create" | "invite" | "join" | "leave" | "revoke" | "expose" | "resolve";
 export type RoomCliCommand =
   | { op: "list" | "status"; input: Record<string, unknown>; json: boolean }
+  | { op: "inbox"; action: "list"; input: { name?: string }; json: boolean }
+  | { op: "inbox"; action: "show" | "done" | "discard"; input: { id: string } }
   | { op: "mutation"; action: RoomAction; input: Record<string, unknown>; confirm?: string };
 export type RoomRequest = (message: Record<string, unknown>) => Promise<any>;
 /** Fixed host/test I/O only, never a callback selected by project configuration. */
 export interface RoomConfirmationIO { isTTY(): boolean; answer(prompt: string): Promise<string> }
 
 export class RoomCliError extends Error {
-  constructor(readonly code: "usage" | "refused" | "invalid_reply" | "confirmation_required" | "not_confirmed" | "confirmation_mismatch") {
-    const message = { refused: "operation refused", invalid_reply: "invalid control reply", confirmation_required: "confirmation required; use a TTY or --confirm with the member fingerprint prefix", not_confirmed: "not confirmed; nothing executed", confirmation_mismatch: "confirmation does not match the member fingerprint; nothing executed" };
+  constructor(readonly code: "usage" | "refused" | "invalid_reply" | "inbox_list_limit" | "confirmation_required" | "not_confirmed" | "confirmation_mismatch") {
+    const message = { refused: "operation refused", invalid_reply: "invalid control reply", inbox_list_limit: "inbox list exceeds the limit; choose a room name", confirmation_required: "confirmation required; use a TTY or --confirm with the member fingerprint prefix", not_confirmed: "not confirmed; nothing executed", confirmation_mismatch: "confirmation does not match the member fingerprint; nothing executed" };
     super(code === "usage" ? ROOM_USAGE : `room: ${message[code]}`);
     this.name = "RoomCliError";
   }
@@ -86,6 +91,17 @@ function parseRoomInput(args: readonly string[]): RoomCliCommand {
 }
 
 export function parseRoomCommand(args: readonly string[]): RoomCliCommand {
+  if (args[0] === "inbox") {
+    const values = args.slice(1).filter(value => value !== "--json"), json = args.includes("--json");
+    if (args.filter(value => value === "--json").length > 1) fail();
+    if (values.length === 2) {
+      const [action, value] = values;
+      if (json || (action !== "show" && action !== "done" && action !== "discard") || !value || value.length !== 36 || !UUID.test(value)) fail();
+      return { op: "inbox", action, input: { id: value } };
+    }
+    if (values.length > 1) fail();
+    return { op: "inbox", action: "list", input: values.length ? { name: id(values[0]) } : {}, json };
+  }
   if (args[0] === "list" || args[0] === "status") return parseRoomInput(args);
   let confirm: string | undefined;
   const input: string[] = [];
@@ -124,15 +140,15 @@ async function confirmMember(member: string, explicit: string | undefined, io: R
   return member;
 }
 
-type DeliveryState = "pending" | "dispatching" | "accepted" | "completed" | "completed (admitted)" | "failed_safe" | "needs_review" | "disposed" | "disposed (accept, by person)" | "disposed (discard, by person)";
-interface DeliveryRow { direction: "inbound" | "outbound"; id: string; application: string; peer: string; state: DeliveryState; disposition?: "accept" | "completed" | "retry" | "discard"; lateReceipt?: "completed (admitted)" | "failed_safe"; refusalReason?: RoomReceiptReason }
+type DeliveryState = "pending" | "dispatching" | "accepted" | "completed" | "completed (admitted)" | "completed (inbox)" | "failed_safe" | "needs_review" | "disposed" | "disposed (accept, by person)" | "disposed (discard, by person)";
+interface DeliveryRow { direction: "inbound" | "outbound"; id: string; application: string; peer: string; state: DeliveryState; disposition?: "accept" | "completed" | "retry" | "discard"; lateReceipt?: "completed (admitted)" | "completed (inbox)" | "failed_safe"; refusalReason?: RoomReceiptReason }
 interface DeliverySummary { direction: "inbound"; pending: number; needsReview: number; truncated: boolean }
 interface RemotePeerRow { id: string; state: "idle" | "busy" | "paused" | "offline" }
 interface RoomRow { name: string; room: string; owner: string; member: string; epoch: string; state: string; deliveries?: (DeliveryRow | DeliverySummary)[]; remotePeers?: RemotePeerRow[] }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REMOTE_ID = /^[a-z][a-z0-9-]{0,31}@[a-z][a-z0-9-]{0,31}$/;
-const REFUSAL_REASONS: readonly RoomReceiptReason[] = ["admitted", "not_exposed", "boundary_refused", "invalid_message", "rate_limited", "hop", "person_inbox_unsupported"];
-const DELIVERY_STATES: readonly string[] = ["pending", "dispatching", "accepted", "completed", "completed (admitted)", "failed_safe", "needs_review", "disposed", "disposed (accept, by person)", "disposed (discard, by person)"];
+const REFUSAL_REASONS: readonly RoomReceiptReason[] = ["admitted", "not_exposed", "boundary_refused", "invalid_message", "rate_limited", "hop", "person_inbox_unsupported", "inbox_admitted", "inbox_full", "inbox_oversize", "inbox_expired", "inbox_age_unavailable"];
+const DELIVERY_STATES: readonly string[] = ["pending", "dispatching", "accepted", "completed", "completed (admitted)", "completed (inbox)", "failed_safe", "needs_review", "disposed", "disposed (accept, by person)", "disposed (discard, by person)"];
 function digestId(value: unknown): value is string {
   if (typeof value !== "string" || value.length !== 43) return false;
   try { decodeBase64url(value, 32); return true; } catch { return false; }
@@ -152,10 +168,10 @@ function deliveryRows(value: unknown): (DeliveryRow | DeliverySummary)[] {
       || typeof row.peer !== "string" || !(ID.test(row.peer) || REMOTE_ID.test(row.peer))
       || typeof row.state !== "string" || !DELIVERY_STATES.includes(row.state)) return fail("invalid_reply");
     if (row.disposition !== undefined && (typeof row.disposition !== "string" || (row.direction === "inbound" ? !["accept", "discard"].includes(row.disposition) : !["completed", "retry", "discard"].includes(row.disposition)))) return fail("invalid_reply");
-    if (row.lateReceipt !== undefined && row.lateReceipt !== "completed (admitted)" && row.lateReceipt !== "failed_safe") return fail("invalid_reply");
+    if (row.lateReceipt !== undefined && row.lateReceipt !== "completed (admitted)" && row.lateReceipt !== "completed (inbox)" && row.lateReceipt !== "failed_safe") return fail("invalid_reply");
     if (row.refusalReason !== undefined && (typeof row.refusalReason !== "string" || !REFUSAL_REASONS.includes(row.refusalReason as RoomReceiptReason))) return fail("invalid_reply");
     if (row.direction === "outbound" && row.state.startsWith("disposed")) return fail("invalid_reply");
-    const state = row.state === "completed" ? "completed (admitted)" : row.state === "disposed" && row.disposition !== undefined ? `disposed (${row.disposition}, by person)` as DeliveryState : row.state as DeliveryState;
+    const state = row.state === "completed" ? row.refusalReason === "inbox_admitted" ? "completed (inbox)" : "completed (admitted)" : row.state === "disposed" && row.disposition !== undefined ? `disposed (${row.disposition}, by person)` as DeliveryState : row.state as DeliveryState;
     return { direction: row.direction, id: row.id, application: row.application, peer: row.peer, state,
       ...(row.disposition !== undefined ? { disposition: row.disposition as DeliveryRow["disposition"] } : {}), ...(row.lateReceipt !== undefined ? { lateReceipt: row.lateReceipt as DeliveryRow["lateReceipt"] } : {}), ...(row.refusalReason !== undefined ? { refusalReason: row.refusalReason as RoomReceiptReason } : {}) };
   });
@@ -191,9 +207,63 @@ function roomRows(value: unknown): RoomRow[] {
   });
 }
 
+const INBOX_LIST_LIMIT = 1100, INBOX_BODY_BYTES = 65536;
+function inboxMeta(value: unknown): RoomPersonInboxMeta {
+  const row = record(value);
+  if (typeof row.id !== "string" || row.id.length !== 36 || !UUID.test(row.id)
+    || typeof row.name !== "string" || row.name.length > 32 || ID.exec(row.name)?.[0] !== row.name
+    || !digestId(row.room) || typeof row.sender !== "string" || row.sender.length !== 64 || !FP.test(row.sender)
+    || typeof row.from !== "string" || row.from.length > 65 || REMOTE_ID.exec(row.from)?.[0] !== row.from
+    || typeof row.receivedAt !== "number" || !Number.isSafeInteger(row.receivedAt) || row.receivedAt < 0
+    || typeof row.expiresAt !== "number" || !Number.isSafeInteger(row.expiresAt) || row.expiresAt < row.receivedAt
+    || typeof row.bytes !== "number" || !Number.isSafeInteger(row.bytes) || row.bytes < 0 || row.bytes > INBOX_BODY_BYTES
+    || (row.state !== "unread" && row.state !== "done" && row.state !== "discarded" && row.state !== "expired")) fail("invalid_reply");
+  // Deliberately never read body, title, debug or other fields on metadata paths.
+  return { id: row.id, name: row.name, room: row.room, sender: row.sender, from: row.from, receivedAt: row.receivedAt,
+    expiresAt: row.expiresAt, bytes: row.bytes, state: row.state };
+}
+function inboxItem(value: unknown, expectedId: string): RoomPersonInboxItem {
+  const meta = inboxMeta(value);
+  if (meta.id !== expectedId) fail("invalid_reply");
+  if (meta.state !== "unread") return meta; // Purged stubs never render an injected body.
+  const body = record(value).body;
+  if (typeof body !== "string" || body.length > INBOX_BODY_BYTES) fail("invalid_reply");
+  const bytes = new TextEncoder().encode(body).byteLength;
+  if (bytes > INBOX_BODY_BYTES || bytes !== meta.bytes) fail("invalid_reply");
+  return { ...meta, body };
+}
+
+async function runInboxCommand(options: Extract<RoomCliCommand, { op: "inbox" }>, request: RoomRequest): Promise<void> {
+  if (options.action === "list") {
+    const reply = record(await request({ t: "room", op: "inbox_list", input: options.input }));
+    if (reply.ok !== true && reply.code === "inbox_list_limit") fail("inbox_list_limit");
+    const value = success(reply).inbox;
+    if (!Array.isArray(value)) fail("invalid_reply");
+    if (value.length > INBOX_LIST_LIMIT) fail("inbox_list_limit");
+    const rows = value.map(inboxMeta);
+    if (new Set(rows.map(row => row.id)).size !== rows.length || options.input.name !== undefined && rows.some(row => row.name !== options.input.name)) fail("invalid_reply");
+    if (options.json) return console.log(JSON.stringify(rows));
+    console.log(`Room inbox (${rows.length})`);
+    for (const row of rows) console.log(`${row.id} ${row.name} ${row.from} ${row.state}; received ${row.receivedAt}; expires ${row.expiresAt}; ${row.bytes} bytes\n  sender ${row.sender}`);
+    return;
+  }
+  const reply = success(await request({ t: "room", op: `inbox_${options.action}`, input: options.input }));
+  if (options.action !== "show") {
+    const item = inboxMeta(reply.item);
+    if (item.id !== options.input.id || item.state === "unread") fail("invalid_reply");
+    console.log(`Room inbox ${item.id}: ${item.state}`);
+    return;
+  }
+  const item = inboxItem(reply.item, options.input.id);
+  if (item.body === undefined) { console.log(`Room inbox ${item.id}: ${item.state} (body unavailable)`); return; }
+  const env: Envelope = { id: item.id, trace: item.id, hop: 0, from: item.from, to: ["user"], kind: "chat", priority: "status", ts: item.receivedAt, body: terminalText(item.body) };
+  console.log(frame(env));
+}
+
 /** Uses one already authenticated control connection so an ephemeral preview ticket cannot cross callers. */
 export async function runRoomCommand(args: readonly string[], request: RoomRequest, io: RoomConfirmationIO = confirmationIO): Promise<void> {
   const command = parseRoomCommand(args);
+  if (command.op === "inbox") return runInboxCommand(command, request);
   if (command.op !== "mutation") {
     const result = success(await request({ t: "room", op: command.op, input: command.input })), rows = roomRows(result.rooms);
     if (args.includes("--json")) return console.log(JSON.stringify(rows));

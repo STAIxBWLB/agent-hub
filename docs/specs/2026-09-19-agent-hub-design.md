@@ -1203,12 +1203,11 @@ The private roster binds labels to fingerprints. Ambiguous global `peer@label`
 addresses across rooms are inert. Queue recipient bindings survive active and
 uncertain journal rows; neither a restart nor a person retry may substitute a
 new fingerprint reusing the label. Unknown legacy bindings become uncertainty,
-not newly inferred identity. A current exposed local native peer must be the
-incoming destination. The native console is a one-way sender identity in X4. A reply to `user@label`
+not newly inferred identity. Native peer delivery requires a current exposed
+local native target. On an X4-only receiver, a reply to `user@label`
 receives a signed `failed_safe/person_inbox_unsupported` NACK with the fixed
 reason "person inbox not supported yet (X5)"; no person queue or admission is
-invented. Remote replies to people need the separate durable person-inbox backlog;
-X5 metadata views do not enable it.
+invented. X5b below adds durable person admission; X5 metadata views alone do not.
 
 ### Encrypted application wire
 
@@ -1360,10 +1359,69 @@ not an additional total. Missing or unreadable values stay `null`/unknown, never
 zero. These counters do not prove application completion or lifetime traffic.
 
 The projection contains no message body/title, reason, broker URL, key material
-or delivery history. It does not create a person inbox: `user@label` still gets
-the signed `failed_safe/person_inbox_unsupported` outcome, and durable person
-inbox delivery remains a separate backlog item. Native/account and X7
-two-machine receipts remain separate live verification.
+or delivery history. This projection never reads a person inbox body; X5b below
+provides that separate person-only CLI. Native/account and X7 two-machine
+receipts remain separate live verification.
+
+## Encrypted rooms: X5b person inbox (#446)
+
+Authenticated eligible chat to local `user` is admitted to a durable person
+inbox, separately from native peer delivery. The signed
+`completed/inbox_admitted` receipt, displayed as **completed (inbox)**, means
+durable inbox admission only. It does not mean the person read or acted on it.
+Admission, duplicate identity and receipt commit together before publication;
+duplicate frames cannot admit or count the message again. Done, discard and
+expiry never change that receipt or manufacture another outcome.
+
+Only the person's CLI can use these forms; agents, conductors and `--live-test`
+are refused, and dashboard, status, logs, memory, models and observers receive
+no inbox body:
+
+```sh
+ahub room inbox [<name>] [--json]
+ahub room inbox show <id>
+ahub room inbox done <id>
+ahub room inbox discard <id>
+```
+
+One operand always names a room, including `show`, `done` and `discard`; only
+an action followed by an exact local inbox UUID performs that action. Only the
+metadata list accepts `--json`; none of these forms accepts `--confirm` or adds a
+fingerprint prompt. Show returns one untrusted framed body through `sanitize`
+and terminal control stripping, and never marks it done. Done/discard are local
+metadata changes and immediately purge the body. Expired or disposed entries
+show metadata stubs only: no archive or read-after-done path exists.
+
+Limits are 100 unread messages per room, 64 KiB decoded body per message and
+4 MiB retained decoded body bytes globally. The existing 64 KiB entire
+application-wire cap is unchanged, so envelope overhead makes the actual
+sendable body smaller. Schema 4 records the first durable local crypto arrival;
+the inbox TTL is 30 days from that time, not the remote timestamp, admission
+retry or restart. Legacy pending person traffic with unknown local arrival age
+receives fixed `failed_safe/inbox_age_unavailable`; native peer handling is
+unchanged. Other fixed refusal reasons are `inbox_full`, `inbox_oversize` and
+`inbox_expired`.
+
+Retain up to 1,000 settled metadata stubs per room for 30 days after settlement,
+evicting oldest settled stubs first. Unread messages and their matching admission
+identities remain protected, as do unsettled identities under the shared
+10,000-per-room application cap. Inbound session counts increment once at
+admission, never on duplicate delivery, show or disposition. One 30-second
+loaded-state daemon hook expires bodies even when all rooms were left; it opens
+no empty store and creates no keys.
+
+Lists return complete metadata, with at most 1,100 rows (100 unread plus 1,000
+stubs for one filtered room). A larger global list explicitly refuses with
+`inbox_list_limit` and guidance to choose a room, never silently truncates.
+ponytail: this complete-list ceiling keeps the first slice bounded; pagination
+is the follow-up for cross-room inventories. Inbox reads and dispositions refuse
+during recovery or a Bus hold in this slice.
+
+Bodies are plaintext in the private local store under its existing directory/file
+modes; this adds neither at-rest encryption nor secure-erasure guarantees.
+Older X4 codecs reject the new receipt reasons and leave their sender outcome
+uncertain; no mixed-version success is claimed. Native/account and live
+two-machine receipts remain separate verification.
 
 ## Risks
 
