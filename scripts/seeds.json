@@ -4272,6 +4272,102 @@
       "replacement": "    const bytes = this.db.query<{ n: number }, []>(\"SELECT COALESCE(SUM(bytes),0) AS n FROM person_inbox WHERE body IS NOT NULL\").get()?.n ?? 0;",
       "testFile": "test/rooms-person-inbox-store.test.ts",
       "testName": "restore rejects stored canonical inbox bytes above4MiB even when decoded body bytes stay below it"
+    },
+    {
+      "id": "conductor-recovery-seal",
+      "file": "src/hub/recovery-authority.ts",
+      "search": "if (!timingSafeEqual(Buffer.from(row.seal, \"hex\"), Buffer.from(computed, \"hex\"))) refuse();",
+      "replacement": "if (false) refuse();",
+      "testFile": "test/conductor-recovery-authority.test.ts",
+      "testName": "public actor/audit claims, a carried key and an invented opaque object grant no continuity"
+    },
+    {
+      "id": "conductor-recovery-current",
+      "file": "src/hub/recovery-authority.ts",
+      "search": "fresh(grant.current, authority.binding);",
+      "replacement": "void grant.current;",
+      "testFile": "test/conductor-recovery-authority.test.ts",
+      "testName": "source issuance creates private sealed continuity and verification still requires current host authority"
+    },
+    {
+      "id": "conductor-recovery-plan",
+      "file": "src/cli/conductor-recovery.ts",
+      "search": "planFingerprint(body) !== fingerprint",
+      "replacement": "false",
+      "testFile": "test/conductor-recovery.test.ts",
+      "testName": "a source-issued continuation refuses changed plan data under an unchanged signed fingerprint"
+    },
+    {
+      "id": "conductor-recovery-feature",
+      "file": "src/cli/conductor-recovery.ts",
+      "search": "if (!client.features.includes(\"conductor_recovery\")) unavailable();",
+      "replacement": "if (false) unavailable();",
+      "testFile": "test/conductor-recovery-cli.test.ts",
+      "testName": "an old daemon missing welcome recovery capability refuses without console fallback"
+    },
+    {
+      "id": "conductor-recovery-effect-after-await",
+      "file": "src/cli/upgrade.ts",
+      "search": "finally { await authorizeRecoveryDriver(driver, operation(), \"effect\"); }",
+      "replacement": "finally {}",
+      "testFile": "test/conductor-recovery-driver.test.ts",
+      "testName": "every closed recovery effect authorizes before and after its await while inspection remains read-only"
+    },
+    {
+      "id": "conductor-recovery-privacy",
+      "file": "src/hub/recovery-policy.ts",
+      "search": "if (signals.includes(\"pii_path\") || signals.includes(\"pii\") && routing.constraints.pii === \"local_only\") refuse();",
+      "replacement": "if (false) refuse();",
+      "testFile": "test/conductor-recovery-policy.test.ts",
+      "testName": "conductor recovery policy refuses fresh actor-private tasks but permits closed ones"
+    },
+    {
+      "id": "conductor-recovery-manual-history",
+      "file": "src/hub/tasks.ts",
+      "search": "const manual = (h: HistoryEntry) => h.by === USER || h.conductorManual === true;",
+      "replacement": "const manual = (h: HistoryEntry) => h.by === USER;",
+      "testFile": "test/task-unassign.test.ts",
+      "testName": "manual conductor unassignment survives role change and reopen until an authorized explicit assignment"
+    },
+    {
+      "id": "conductor-recovery-native-env",
+      "file": "src/hub/child-process.ts",
+      "search": "delete env.AGENTHUB_RECOVERY_CONDUCTOR;",
+      "replacement": "void env.AGENTHUB_RECOVERY_CONDUCTOR;",
+      "testFile": "test/conductor-recovery-cli.test.ts",
+      "testName": "native descendants cannot inherit the conductor recovery continuation"
+    },
+    {
+      "id": "conductor-recovery-snapshot-model",
+      "file": "src/hub/daemon.ts",
+      "search": "...(typeof launch.model === \"string\" ? { model: launch.model } : {}), ...(typeof launch.route",
+      "replacement": "...(typeof msg.model === \"string\" ? { model: msg.model } : {}), ...(typeof launch.route",
+      "testFile": "test/conductor-recovery.test.ts",
+      "testName": "real source commit permits only its stopping verification and a replacement target restores only its own saved launch"
+    },
+    {
+      "id": "conductor-recovery-replacement",
+      "file": "src/hub/daemon.ts",
+      "search": "              if (instanceId !== raw.sourceInstanceId && (restored?.operationId !== raw.operationId || restored.sourceInstanceId !== raw.sourceInstanceId || packageDigest(resolve(import.meta.dir, \"../..\"), { ownDependencies: true }) !== raw.targetDigest)) throw new RecoveryAuthorityError();",
+      "replacement": "              // mutant: replacement is trusted by project identity alone.",
+      "testFile": "test/conductor-recovery.test.ts",
+      "testName": "a source-issued grant cannot prepare an unrelated replacement daemon"
+    },
+    {
+      "id": "conductor-recovery-stopping",
+      "file": "src/hub/daemon.ts",
+      "search": "stopping && !committedSourceProof && msg.t !== \"status\"",
+      "replacement": "stopping && msg.t !== \"status\"",
+      "testFile": "test/conductor-recovery.test.ts",
+      "testName": "real source commit permits only its stopping verification and a replacement target restores only its own saved launch"
+    },
+    {
+      "id": "conductor-recovery-conductor-unassign",
+      "file": "src/hub/tasks.ts",
+      "search": "if (!this.configuredManualConductor(by) || !this.d.bus.isRostered(by)) throw new (preEffect ? PreEffectToolRefusal : Error)(\"only the console user or the current configured conductor may unassign a task role\");",
+      "replacement": "if (false) throw new (preEffect ? PreEffectToolRefusal : Error)(\"only the console user or the current configured conductor may unassign a task role\");",
+      "testFile": "test/task-unassign.test.ts",
+      "testName": "only the current rostered conductor or person can unassign, never an ordinary owner or planner"
     }
   ]
 }

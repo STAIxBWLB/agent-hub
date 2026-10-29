@@ -2619,11 +2619,13 @@ function inspectDoctorRouting(cwd: string): { routing?: Routing; errors: string[
 }
 
 async function runConductorCommand(): Promise<void> {
-  if (recoveryRunnerContinuation || conductorPeer && ["restart", "upgrade", "recovery"].includes(cmd)) return commands[cmd]!();
+  if (recoveryRunnerContinuation) return commands[cmd]!();
   const operation=conductorOperation(cmd,args);
   if(operation) {
     const unavailable=`conductor authorization unavailable; nothing was executed; ${OPERATIONAL_PERSON_GUIDANCE}`;
     const descriptor=readControl(stateDir);
+    // Offline resume proves the source-issued local continuation inside the command; no console connection is borrowed.
+    if (conductorPeer && cmd === "recovery" && (!descriptor?.pid || !descriptor.pidSignature || processLiveness(descriptor.pid, descriptor.pidSignature) !== "live")) return commands.recovery!();
     if(!descriptor?.instanceId || !descriptor.projectId || !descriptor.pid || !descriptor.pidSignature || processLiveness(descriptor.pid,descriptor.pidSignature)!=="live")fail(unavailable);
     let hub:ControlClient;
     try {hub=await connect(3000);} catch {fail(unavailable);}
@@ -2635,7 +2637,8 @@ async function runConductorCommand(): Promise<void> {
       try {result=await hub.request({t:"conductor_operational",op:conductorLocalOperation(operation)?"admit":"authorize",command:operation},3000);} catch {fail(unavailable);}
       if(result.ok!==true)fail(result.authorityRefused===true || result.authorityRefused===false?String(result.error??unavailable):unavailable,result.refusalAudited===true,result.authorityRefused);
       if(!hub.instanceId)fail(unavailable);
-      release=ControlClient.pinInstance(stateDir,hub.instanceId);
+      // Recovery replaces its source instance. Its own per-project proofs fence every later connection.
+      if (!conductorPeer || !["restart", "upgrade", "recovery"].includes(cmd)) release=ControlClient.pinInstance(stateDir,hub.instanceId);
       await commands[cmd]!();
     } finally {release?.();hub.close();}
     return;

@@ -281,3 +281,19 @@ test("a source-issued grant cannot prepare an unrelated replacement daemon", asy
     expect(existsSync(join(f.stateDir, "restart.json"))).toBe(false);
   } finally { lead?.close(); await replacement?.stop(); await f.close(); }
 }, 20_000);
+
+test("a source-issued continuation refuses changed plan data under an unchanged signed fingerprint", async () => {
+  const f = await fixture();
+  try {
+    const { binding, plan } = await f.authority();
+    expect((await f.lead.request({ t: "recovery_authority", op: "issue", binding, plan })).ok).toBe(true);
+    const operation: import("../src/cli/upgrade.ts").RecoveryOperation = { schema: 1, id: binding.operationId, plan,
+      sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, targetDigest: binding.targetDigest, targetFeatures: DAEMON_FEATURES,
+      createdAt: 1, updatedAt: 1, phase: "pending", step: "stage", projects: [{ id: binding.projectId, phase: "pending", terminals: {} }] };
+    const { authorizeConductorOperation } = await import("../src/cli/conductor-recovery.ts");
+    await authorizeConductorOperation(operation, "codex");
+    plan.version = "0.0.0";
+    await expect(authorizeConductorOperation(operation, "codex")).rejects.toThrow("conductor recovery authority unavailable");
+    f.noEffects();
+  } finally { await f.close(); }
+}, 20_000);
