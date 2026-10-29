@@ -4094,6 +4094,14 @@
       "replacement": "this.count(binding, \"outbound\", false);",
       "testFile": "test/rooms-chat.test.ts",
       "testName": "an unknown on-prem screen crosses only a fixed stub, not the submitted body"
+    },
+    {
+      "id": "room-x5-ambiguous-membership",
+      "file": "src/rooms/service.ts",
+      "search": "if (rows.some(row => row.peer !== USER) && (rows.length !== 1 || !this.targets.has(id))) {",
+      "replacement": "if (false) {",
+      "testFile": "test/rooms-chat.test.ts",
+      "testName": "ambiguous exposed remote ids remain inert and show unknown rather than empty membership"
     }
   ]
 }
