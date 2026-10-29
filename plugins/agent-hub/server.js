@@ -22513,6 +22513,11 @@ init_path_policy();
 // src/hub/tasks.ts
 init_profiles();
 init_workflow();
+
+// src/hub/learning.ts
+var LEARNING_DEFAULTS = { windowMs: 30 * 24 * 3600000, threshold: 3, maxGroups: 64 };
+
+// src/hub/tasks.ts
 init_deliverables();
 
 // src/hub/deliverable-files.ts
