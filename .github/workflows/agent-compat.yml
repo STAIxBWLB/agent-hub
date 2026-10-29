@@ -26,7 +26,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           AHEAD: ${{ steps.watch.outputs.ahead }}
         run: |
-          number=$(gh issue list --label agent-compat --state open --json number -q '.[0].number' 2>/dev/null || true)
+          set -euo pipefail
+          number=$(gh issue list --state open --limit 1000 --json number,title | bun scripts/agent-compat-issue.ts)
           if [ "$AHEAD" = "true" ]; then
             gh label create agent-compat --color FBCA04 --description "agent CLI version drift (#691)" 2>/dev/null || true
             if [ -n "$number" ]; then gh issue edit "$number" --body-file report.md
