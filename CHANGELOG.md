@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.21.0
+
 - Conductor-bound recovery continuation and task unassign (task 535, #900): `restart --yes`, `upgrade --yes --to <exact-version>` and `recovery resume|abort` are limited to a source-issued, same-actor, project/target/policy-bound continuation; unsupported coordinator handoff remains person-only. The proof is separate from public recovery JSON, rechecked before effects and does not grant general console commands. `task unassign` retains the conductor actor and manual-offer suppression. Fixture coverage does not establish current installed or real-account behavior.
 - Pin `@staix/agent-mem` 0.13.0 (was 0.12.0). The hub uses the library API; amem 0.13.0's CLI behaviour change (attributed agent and non-TTY sessions, readable default output with `--json` byte-identical) does not change hub recall, capture or briefs.
 - `ahub down` stops this project's hub as the counterpart of `ahub up`. It is the same verified graceful stop as `ahub kill` (owned peers stopped, manifest and registry claim cleared) and stays person-only from an agent shell.
@@ -34,6 +36,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - `doc_read` for the local worker (#515 AC2 and AC3, off by default): `local.doc_read: true` in `.agenthub/config.local.json` lets the on-prem worker read a PDF, DOCX or HWPX document through the project's `text_projection` converters, inside the projection sandbox and bounded. The shared path guard, `pii.paths` (by path and by text patterns: an ordinary turn is refused, a PII task turn may read), and `sanitize()` apply, and the text is never captured to memory. A committed config cannot set it and settings cannot change it. `web_fetch` is a separate task.
 - Hub board task ids in the 0.19.0 entries, the 0.19.0 verification report and the user documents are written `task N` instead of `#N`, so GitHub no longer links them to unrelated issues (#879).
 - `ahub sdlc merge <task> [--dry-run]` and the conductor's `ahub doctor --orphans --kill` print for a person by default (#899, the last two sites of #814): the merge shows the mode, the decision, every gate that refused it, the `gh` command and GitHub's readback after a run; the orphan cleanup shows the pids the hub stopped and whether any candidate stayed unconfirmed. `--json` prints exactly what each printed before, and the exit codes are unchanged. The print guard's not-yet-converted list is empty.
+
 ## 0.20.0
 
 - Pin @staix/agent-mem 0.11.0 (ranked search explanations, dated eval sets, and import and consolidation boundaries: Claude Code project-directory encoding, accepted-only relation targets, consolidation review receipts that survive pruning). Every amem that shares a memory home must run 0.11.0 or later to keep those receipts, so upgrade a global `amem` CLI too. Refs agent-mem#13.
