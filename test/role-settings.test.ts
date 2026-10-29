@@ -54,8 +54,17 @@ test("catalog settings validate two compatible ids and preserve shared config th
 test("agent shells and tools clients cannot mutate session or existing task roles (#295)", async () => {
   const f = await fixture();
   expect((await f.tools.request({ t: "task", op: "hub_task_propose", args: { title: "Existing", class: "implement", owner: "codex" } })).ok).toBe(true);
-  for (const op of ["assign", "clear"]) expect(classifyPeerCommand("role", [op, "codex", "backend-engineer"])).toBe("console"); expect(classifyPeerCommand("task", ["role", "1", "backend-engineer"])).toBe("console");
-  for (const msg of [{ t: "settings_set", key: "catalog_roles.codex", value: [] }, { t: "task_catalog_role", id: 1, role: "backend-engineer" }, { t: "settings_undo" }]) expect((await f.tools.request(msg)).ok).toBe(false);
+  for (const op of ["assign", "clear"]) expect(classifyPeerCommand("role", [op, "codex", "backend-engineer"])).toBe("console");
+  // #933: an agent re-roles its own task; the daemon refuses another peer's task, and every session-role write stays the person's.
+  expect(classifyPeerCommand("task", ["role", "1", "backend-engineer"])).toBe("allowed");
+  for (const msg of [{ t: "settings_set", key: "catalog_roles.codex", value: [] }, { t: "settings_undo" }]) expect((await f.tools.request(msg)).ok).toBe(false);
+  const board = new Board(join(f.state, "hub.db")); cleanup.push(() => board.close());
+  const other = await ControlClient.connect(f.state, { role: "tools", peer: "claude" }); cleanup.push(() => other.close());
+  const refused = await other.request({ t: "task_catalog_role", id: 1, role: "backend-engineer" }); expect(refused.ok).toBe(false); expect(refused.error).toContain("not yours"); expect(board.get(1)!.role).toBeUndefined();
+  expect((await f.tools.request({ t: "task_catalog_role", id: 1, role: "backend-engineer" })).ok).toBe(true); expect(board.get(1)!.role).toBe("backend-engineer");
+  // A PII context keeps even the owner out: its words may carry the private task's text.
+  const pii = board.propose("user", { title: "private review", class: "implement", signals: ["pii_path"] }); board.update(pii.id, "user", "fixture reviewer", { reviewer: "codex" });
+  expect((await f.tools.request({ t: "task_catalog_role", id: 1, role: null })).ok).toBe(false); expect(board.get(1)!.role).toBe("backend-engineer");
   const peer = await ControlClient.connect(f.state, { role: "peer", peer: "other", channel: false }); cleanup.push(() => peer.close());
   expect((await peer.request({ t: "settings_set", key: "catalog_roles.codex", value: [] })).ok).toBe(false); expect((await peer.request({ t: "task_catalog_role", id: 1, role: null })).ok).toBe(false);
 });
@@ -64,7 +73,7 @@ test("person task role changes keep ownership and private stubs while delivering
   expect((await f.tools.request({ t: "task", op: "hub_task_propose", args: { title: "Work", class: "implement", owner: "codex" } })).ok).toBe(true);
   const board = new Board(join(f.state, "hub.db")); cleanup.push(() => board.close()); const before = board.get(1)!;
   const direct = new Tasks({ board, bus:f.daemon.bus, cwd:f.dir, project:"fixture", routing:()=>loadRouting(f.dir), notify:()=>{} });
-  expect(() => direct.setRole("codex",1,"backend-engineer")).toThrow("person");
+  expect(() => direct.setRole("claude",1,"backend-engineer")).toThrow("not yours"); // #933: the owner (codex) may; another peer may not
   expect((await f.client.request({ t: "task_catalog_role", id: 1, role: "code-reviewer" })).ok).toBe(false); expect(board.get(1)!.role).toBeUndefined();
   expect((await f.client.request({ t: "task_catalog_role", id: 1, role: "backend-engineer" })).ok).toBe(true); expect(board.get(1)).toMatchObject({ role: "backend-engineer", owner: before.owner, reviewer: before.reviewer, class: before.class, state: before.state });
   for (let i = 0; i < 100 && !f.peer.got.length; i++) await Bun.sleep(5); expect(f.peer.got.some(env => env.body.includes("catalog role changed"))).toBe(true);
@@ -117,7 +126,9 @@ test("native CLI role assign and selective clear use person settings while agent
   expect((await cli(f,["role","assign","codex","test-engineer"])).code).toBe(0); expect(loadConfig(f.dir).catalog_roles!.codex).toEqual(["backend-engineer","test-engineer"]);
   expect((await cli(f,["role","assign","codex","frontend-engineer"])).code).not.toBe(0); expect(loadConfig(f.dir).catalog_roles!.codex).toEqual(["backend-engineer","test-engineer"]);
   expect((await cli(f,["role","clear","codex","backend-engineer"])).code).toBe(0); expect(loadConfig(f.dir).catalog_roles!.codex).toEqual(["test-engineer"]);
-  for (const args of [["role","assign","codex","backend-engineer"],["role","clear","codex"],["task","role","1","backend-engineer"]]) { const denied=await cli(f,args,true); expect(denied.code).not.toBe(0); expect(denied.err).toContain("person"); }
+  for (const args of [["role","assign","codex","backend-engineer"],["role","clear","codex"]]) { const denied=await cli(f,args,true); expect(denied.code).not.toBe(0); expect(denied.err).toContain("person"); }
+  // #933: `task role` reaches the daemon from an agent shell; here the daemon refuses (there is no task #1), not the identity table.
+  const taskRole=await cli(f,["task","role","1","backend-engineer"],true); expect(taskRole.code).not.toBe(0); expect(taskRole.err).toContain("no task #1"); expect(taskRole.err).not.toContain("inherited agent markers");
   expect(readFileSync(join(f.dir,".agenthub/config.json"),"utf8")).toBe(f.shared);
 });
 

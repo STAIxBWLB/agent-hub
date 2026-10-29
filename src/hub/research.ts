@@ -58,8 +58,8 @@ export interface TaskRecord {
   /** #258 AC11: task briefs handed over for it, and how many of them carried a hub-memory fail note; absent without briefs. */
   briefs?: { delivered: number; withFail: number };
 }
-/** A person's later verdict on one task record: `createdAt` binds it to that task, not a later one with the same id. */
-export interface LabelRecord { schema: typeof RESEARCH_SCHEMA; kind: "label"; project: string; task: number; createdAt: string; label: Label; at: string }
+/** A person's later verdict on one task record: `createdAt` binds it to that task, not a later one with the same id. `by`: the agent that labelled its own task (#933); absent for the person. */
+export interface LabelRecord { schema: typeof RESEARCH_SCHEMA; kind: "label"; project: string; task: number; createdAt: string; label: Label; at: string; by?: string }
 export type ResearchRecord = TaskRecord | LabelRecord;
 
 /** The store name for a project: a hash of its id, never its path. */

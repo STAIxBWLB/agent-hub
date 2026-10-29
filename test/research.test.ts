@@ -159,8 +159,8 @@ test("an owner who gets a task back counts it once; a move without a reason is n
 });
 
 test("labelling a task is a person's; reading the research measures is not", () => {
-  expect(cliClass("task", ["label", "3", "reverted"])).toBe("console");
-  expect(cliClass("research", ["backfill"])).toBe("console");
+  expect(cliClass("task", ["label", "3", "reverted"])).toBe("allowed"); // #933: own task only, checked by the daemon
+  expect(cliClass("research", ["backfill"])).toBe("conductor"); // #933
   expect(cliClass("research", [])).toBe("allowed");
   expect(cliClass("research", ["export", "--format", "csv"])).toBe("allowed");
 });

@@ -133,6 +133,11 @@ export interface TasksDeps {
   reviewAuthority?: (by: PeerId, task: number) => (() => string | undefined) | undefined;
   /** Host-captured current-child authority, rechecked before an admitted async tool first commits effects. */
   requestAuthority?: (by: PeerId) => (() => string | undefined) | undefined;
+  /**
+   * #933: whether `by` runs this call inside an admitted, audited conductor operation. The host rechecks the role on every call and throws
+   * its authority refusal when it ended; a peer outside such a call gets `false`. Host-only: never read from configuration or a tool.
+   */
+  operational?: (by: PeerId) => boolean;
   memory?: MemoryClient;
   /** Captured native profile fence at our memory operation boundaries; no board mutation. */
   memoryCheck?: () => void;
@@ -1657,7 +1662,7 @@ export class Tasks {
   }
 
   async importGitHub(by: PeerId, input: GitHubImportSelection, run?: SdlcGh): Promise<{ imported: number[]; existing: number[]; partial: boolean; complete: boolean; unconfirmed?: true }> {
-    if (by !== USER) throw new PreEffectToolRefusal("GitHub import is a person console command");
+    if (!this.personOrConductor(by)) throw new PreEffectToolRefusal("GitHub import is a person console command");
     const deadline = performance.now() + 20_000;
     const page = await readGitHubImport(input, run ?? ((args, timeout, _cwd, bound) => sdlcGh(args, timeout, this.d.cwd, bound)));
     const imported: number[] = [], existing: number[] = [];
@@ -1669,7 +1674,7 @@ export class Tasks {
         if (prior) { existing.push(prior.id); continue; }
         const classes = profileData(this.d.profileData ?? this.d.profile ?? "dev").classes;
         const cls = Object.keys(classes).find(name => classes[name] === "implement") ?? Object.keys(classes)[0];
-        const task = await this.propose(USER, { title: issue.title, detail: issue.detail, class: cls, backlog: true }, issue.source, () => { created = true; });
+        const task = await this.propose(by, { title: issue.title, detail: issue.detail, class: cls, backlog: true }, issue.source, () => { created = true; });
         (created ? imported : existing).push(task.id);
         if (performance.now() >= deadline) return { imported, existing, partial: true, complete: false };
       } catch {
@@ -1827,11 +1832,11 @@ export class Tasks {
 
   /** #334: the person approves a draft; it and its children leave draft and follow the normal backlog pull. */
   async approveIntake(by: PeerId, id: unknown): Promise<Task[]> {
-    if (by !== USER) throw new PreEffectToolRefusal("intake approval is a console command");
+    if (!this.personOrConductor(by)) throw new PreEffectToolRefusal("intake approval is a console command");
     if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) throw new PreEffectToolRefusal("id must be a positive task number");
     const family = this.intakeFamily(id);
     let approved: Task[];
-    try { approved = this.d.board.approveDrafts(family.map(task => task.id), USER, "intake approved by the person"); }
+    try { approved = this.d.board.approveDrafts(family.map(task => task.id), by, by === USER ? "intake approved by the person" : `intake approved by the conductor ${by}`); }
     catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
     for (const task of approved) this.incomingBacklog.add(task.id);
     this.releaseNotice(`intake draft #${id} approved: ${approved.length} backlog card${approved.length === 1 ? "" : "s"}`);
@@ -2000,7 +2005,7 @@ export class Tasks {
     const requestCheck = this.requestCheck(by, fence);
     requireLocalTaskPeer(input.owner);
     external = external ? { ...external } : undefined;
-    if (external && (by !== USER || input.backlog !== true)) throw new PreEffectToolRefusal("external intake requires person-owned backlog staging");
+    if (external && (!this.personOrConductor(by) || input.backlog !== true)) throw new PreEffectToolRefusal("external intake requires person-owned backlog staging");
     if (input.backlog !== undefined && typeof input.backlog !== "boolean") throw new PreEffectToolRefusal("backlog must be a boolean");
     const backlog = input.backlog === true;
     if (input.draft !== undefined && (input.draft !== true || !backlog || by !== USER)) throw new PreEffectToolRefusal("only the person's intake stages a backlog draft");
@@ -2742,11 +2747,14 @@ export class Tasks {
     return next;
   }
 
-  /** Person-only advice changes never change ownership, class or authority. */
+  /** #933: the person, or the configured conductor inside an admitted operation (`TasksDeps.operational` rechecks the role). */
+  private personOrConductor(by: PeerId): boolean { return by === USER || this.d.operational?.(by) === true; }
+
+  /** Advice changes by the person or, #933, the task's own owner never change ownership, class or authority. */
   setRole(by: PeerId, id: unknown, raw: unknown): Task {
-    if (by !== USER) throw new PreEffectToolRefusal("only the person may change an existing task catalog role");
     if (raw === undefined) throw new PreEffectToolRefusal("name a catalog role id or explicit null to clear it");
     const task = this.need(id, false, true);
+    if (by !== USER && task.owner !== by) throw new PreEffectToolRefusal(`task #${task.id} is not yours: an agent changes the catalog role of its own task only`);
     if (isClosedTaskState(task.state)) throw new PreEffectToolRefusal("a closed task's role is historical; propose new work instead");
     let selected;
     try { selected = taskRole(raw === null ? undefined : raw, task.class, this.d.catalog ?? loadRoleCatalog(this.d.cwd)); }
@@ -2756,7 +2764,7 @@ export class Tasks {
     for (const peer of new Set([next.owner, next.state === "in_review" ? next.reviewer : null])) {
       if (!peer || peer === USER) continue;
       this.releaseNotice(`task ${this.publicTitle(next)}: catalog role update delivery unconfirmed`, () => this.d.bus.publish(newEnvelope(HUB,
-        `Task #${next.id}: catalog role changed by the person. ${next.role ? this.roleGuidance(next, peer, peer === next.reviewer) : "Catalog guidance cleared; follow the task's existing plan and requirements."}`,
+        `Task #${next.id}: catalog role changed by ${by === USER ? "the person" : by}. ${next.role ? this.roleGuidance(next, peer, peer === next.reviewer) : "Catalog guidance cleared; follow the task's existing plan and requirements."}`,
         { to: [peer], kind: "task", refs: { task: String(next.id), taskRecipient: peer === next.reviewer ? "reviewer" : "owner" }, ...(this.isPii(next) ? { private: true } : {}) })));
     }
     return next;
@@ -3650,7 +3658,7 @@ export class Tasks {
    * runs too: a pause stops the timer, not the person. Only the person may.
    */
   async runScheduleNow(by: PeerId, store: ScheduleStore, entries: readonly ScheduleEntry[], id: unknown, now: number, extraHold: () => boolean = () => false): Promise<ScheduleRunResult & { reason?: string }> {
-    if (by !== USER) throw new PreEffectToolRefusal("schedule run is a console command");
+    if (!this.personOrConductor(by)) throw new PreEffectToolRefusal("schedule run is a console command");
     const entry = typeof id === "string" ? entries.find(candidate => candidate.id === id) : undefined;
     if (!entry) throw new PreEffectToolRefusal(`no schedule ${typeof id === "string" ? JSON.stringify(id.slice(0, 64)) : "named"}; ahub schedule list shows the configured ones`);
     if (this.schedulesRunning) throw new PreEffectToolRefusal("a schedules pass is running; try again in a moment");
@@ -3665,7 +3673,7 @@ export class Tasks {
 
   /** #335: pause or resume one configured schedule. Only the person may; resuming starts a fresh period, so a pause is never replayed as a run. */
   setSchedulePaused(by: PeerId, store: ScheduleStore, entries: readonly ScheduleEntry[], id: unknown, paused: boolean, now: number): void {
-    if (by !== USER) throw new PreEffectToolRefusal(`schedule ${paused ? "pause" : "resume"} is a console command`);
+    if (!this.personOrConductor(by)) throw new PreEffectToolRefusal(`schedule ${paused ? "pause" : "resume"} is a console command`);
     const entry = typeof id === "string" ? entries.find(candidate => candidate.id === id) : undefined;
     if (!entry) throw new PreEffectToolRefusal(`no schedule ${typeof id === "string" ? JSON.stringify(id.slice(0, 64)) : "named"}; ahub schedule list shows the configured ones`);
     store.setPaused(entry.id, paused, now);
@@ -4575,9 +4583,10 @@ export class Tasks {
    * Without `check` this reads the board only: no file is opened, so no row claims `changedSinceReview`. With `check` every file is measured now (one task at a time).
    * Every path goes through `publicDeliverables`, so a PII task or a path under `pii.paths` shows id, hash and size only.
    */
-  async deliverableList(opts: { task?: number; approvedOnly?: boolean; check?: boolean } = {}): Promise<DeliverableRow[]> {
+  async deliverableList(opts: { task?: number; approvedOnly?: boolean; check?: boolean; visible?: (task: Task) => boolean } = {}): Promise<DeliverableRow[]> {
     const rows: DeliverableRow[] = [];
-    const tasks = (opts.task !== undefined ? [this.d.board.get(opts.task)].filter((task): task is Task => !!task) : this.d.board.list()).sort((a, b) => b.id - a.id);
+    // #933: `visible` drops a task before anything is read or measured (an agent's list holds only what hub_task_show shows it).
+    const tasks = (opts.task !== undefined ? [this.d.board.get(opts.task)].filter((task): task is Task => !!task) : this.d.board.list()).filter(task => !opts.visible || opts.visible(task)).sort((a, b) => b.id - a.id);
     for (const task of tasks) {
       const delivered = latestDeliverables(task.history);
       if (!delivered) continue;

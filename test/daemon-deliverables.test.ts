@@ -121,14 +121,20 @@ test("the deliverables op lists the board's records for the person, opens no fil
   expect(JSON.parse((await r.op(r.console_, "deliverables", { task: 4242 })).text)).toEqual([]);
 });
 
-test("the deliverables op is the person's: an agent's tools connection is refused, and a malformed task is refused before any read", async () => {
+test("the deliverables op gives an agent only the rows hub_task_show would show it (#933), and a malformed task is refused before any read", async () => {
   const r = await rig(); r.write("report.md", "x");
   const id = await r.propose();
   expect((await r.op(r.tools, "hub_task_done", { id, summary: "done", deliverables: [{ path: "report.md", format: "md" }] })).ok).toBe(true);
-  const agent = await r.op(r.tools, "deliverables", {});
-  expect(agent.ok).toBe(false); expect(String(agent.error)).toContain("console command");
-  for (const bad of [0, -1, 1.5, "1", null]) {
-    const refused = await r.op(r.console_, "deliverables", { task: bad });
+  // The owner sees its own task's row through the same public records as the person; a peer hub_task_show refuses sees none.
+  const owner = JSON.parse(String((await r.op(r.tools, "deliverables", {})).text));
+  expect(owner).toEqual(JSON.parse(String((await r.op(r.console_, "deliverables", {})).text)));
+  expect(owner).toHaveLength(1); expect(owner[0]).toMatchObject({ task: id, files: [{ path: "report.md", sha256: sha("x") }] });
+  const outsider = await ControlClient.connect(join(r.root, "state"), { role: "tools", peer: "codex" }); cleanup.push(() => outsider.close());
+  expect(await r.op(outsider, "hub_task_show", { id })).toMatchObject({ ok: false });
+  expect(JSON.parse(String((await r.op(outsider, "deliverables", {})).text))).toEqual([]);
+  expect(JSON.parse(String((await r.op(outsider, "deliverables", { task: id, check: true })).text))).toEqual([]);
+  for (const bad of [0, -1, 1.5, "1", null]) for (const client of [r.console_, r.tools]) {
+    const refused = await r.op(client, "deliverables", { task: bad });
     expect(refused.ok, `task=${String(bad)}`).toBe(false); expect(String(refused.error)).toContain("positive integer");
   }
 });
@@ -201,12 +207,14 @@ test("ahub deliverables prints the records, --check marks a change since review,
   }
 });
 
-test("ahub deliverables from an agent shell is refused by the identity layer and by the live-test delegation, and shows no record", async () => {
+test("ahub deliverables from an agent shell shows only the rows hub_task_show would show that agent (#933), and live-test never borrows the person's view", async () => {
   const r = await rig(); r.write("report.md", "secret-looking text");
   const id = await r.propose();
   expect((await r.op(r.tools, "hub_task_done", { id, summary: "done", deliverables: [{ path: "report.md", format: "md" }] })).ok).toBe(true);
-  const agent = await ahub(r.root, ["deliverables"], { AGENTHUB_PEER_ID: "kimi" });
-  expect(agent.code).toBe(1); expect(agent.stdout).not.toContain("report.md"); expect(agent.stdout).not.toContain(sha("secret-looking text"));
-  const delegated = await ahub(r.root, ["--live-test", "deliverables"], { AGENTHUB_PEER_ID: "kimi" });
-  expect(delegated.code).toBe(1); expect(delegated.stderr).toContain("live-test cannot write person-attributed content"); expect(delegated.stdout).not.toContain("report.md");
+  const owner = await ahub(r.root, ["deliverables"], { AGENTHUB_PEER_ID: "kimi" });
+  expect(owner.code, owner.stderr).toBe(0); expect(owner.stdout).toContain("report.md"); expect(owner.stdout).toContain(sha("secret-looking text"));
+  for (const argv of [["deliverables"], ["--live-test", "deliverables"]]) {
+    const outsider = await ahub(r.root, argv, { AGENTHUB_PEER_ID: "codex" });
+    expect(outsider.code, outsider.stderr).toBe(0); expect(outsider.stdout).not.toContain("report.md"); expect(outsider.stdout).not.toContain(sha("secret-looking text"));
+  }
 });

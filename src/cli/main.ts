@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { conductorOperation, OPERATIONAL_PERSON_GUIDANCE } from "../hub/operational-authority.ts";
+import { conductorLocalOperation, conductorOperation, OPERATIONAL_PERSON_GUIDANCE } from "../hub/operational-authority.ts";
 import { sayRecipients } from "./say-input.ts";
 import type { DeliverableRow } from "../hub/tasks.ts";
 import { kimiSourceRow } from "../hub/budget-notes.ts";
@@ -1310,7 +1310,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   source: async () => {
-    // #508: the source registry. Person only (classifyPeerCommand sends an unlisted command to console, so an agent shell is refused before this runs) and local:
+    // #508: the source registry. `add` is the person's or the configured conductor's (#933: admitted and audited by the daemon before this runs) and local:
     // it reads and writes the hub state dir directly and needs no daemon. A URL is fetched here, once, by this process; no hub tool or agent ever fetches one.
     const options = outputOptions();
     const operands = args.filter(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color="));
@@ -1361,7 +1361,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   schedule: async () => {
-    // #335 (#512 AC3 and AC4): the person's schedule commands. Person only (classifyPeerCommand sends an unlisted command to console, so an agent shell is refused before this runs).
+    // #335 (#512 AC3 and AC4): the person's schedule commands; #933: run, pause and resume are the configured conductor's too, admitted and audited by the daemon.
     // The hub keeps the schedules, their periods and the pause; this process only asks.
     const split = splitPresentation(args);
     const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
@@ -1374,7 +1374,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   intake: async () => {
-    // #334 (#511a): natural-language intake. Person only (classifyPeerCommand sends an unlisted command to console, so an agent shell is refused before this runs).
+    // #334 (#511a): natural-language intake. Person only, except approve (#933: the configured conductor too, admitted and audited by the daemon).
     // The request is a draft backlog card that nothing offers until `approve`; the hub, not this process, splits it.
     const split = splitPresentation(args, { valueFlags: ["--source"] });
     const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
@@ -1394,7 +1394,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   deliverables: async () => {
-    // #317: what each task delivered and what a reviewer approved, by id, hash and size (a path only where the PII screen allows it). Person only: the daemon refuses an agent.
+    // #317: what each task delivered and what a reviewer approved, by id, hash and size (a path only where the PII screen allows it). #933: an agent gets only the rows hub_task_show would show it.
     const options = outputOptions();
     const { one, rest } = takeFlags(args, ["--task"], []);
     const approved = rest.includes("--approved"), check = rest.includes("--check");
@@ -1651,14 +1651,16 @@ const commands: Record<string, () => Promise<void> | void> = {
       return console.log(await taskOp("task_unassign", { id: positional[0], role, ...(revision === undefined ? {} : { revision }) }));
     }
     if (sub === "label") {
-      // #247: a person's later verdict on an approved task (the identity gate keeps it human-only), for research records.
+      // #247: a later verdict on an approved task, for research records (#933: an agent's own task only, attributed to it).
       const { one, rest: positional } = takeFlags(rest, ["--created"], []);
       const id = Number(positional[0]), label = positional[1] as Label;
       if (positional.length !== 2 || !/^[1-9]\d*$/.test(positional[0]!) || !Number.isSafeInteger(id) || !(LABELS as readonly string[]).includes(label)) fail(`usage: ahub task label <id> ${LABELS.join("|")} [--created <time from ahub research export>]`);
       const project = researchProject();
+      // #933: an agent labels only its own task, which the daemon checks by role; its record names it, so it never reads as the person's verdict.
+      if (identity.role === "tools") await taskOp("task_label_check", { id });
       let record: TaskRecord;
       try { record = labelTarget(readStores(project.id), readEvents(join(stateDir, "events.jsonl")), id, one["--created"]); } catch (error) { fail((error as Error).message); }
-      appendRecords(project.id, [{ schema: RESEARCH_SCHEMA, kind: "label", project: projectKey(project.id), task: id, createdAt: record!.createdAt!, label, at: new Date().toISOString() }]);
+      appendRecords(project.id, [{ schema: RESEARCH_SCHEMA, kind: "label", project: projectKey(project.id), task: id, createdAt: record!.createdAt!, label, at: new Date().toISOString(), ...(identity.role === "tools" ? { by: identity.peer } : {}) }]);
       return console.log(`task #${id} (approved ${record!.approvedAt}) labelled ${label} in the research records`);
     }
     if (sub !== "propose" || rest.length < 1) fail("usage: ahub task propose [<class>] <title...> | show <id> | assign <id> <peer> | unassign <id> | cancel <id> --reason <text> | escalate <id>");
@@ -2006,7 +2008,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const stop = () => { interrupted = true; console.log("stopping at the next check: the attempt in progress is recorded as interrupted (a task still open is named)"); };
       process.on("SIGINT", stop);
       try {
-        const run = await runBench({ cwd, stateDir, suitePath: resolve(invokedFrom, suite!), arm: one["--arm"]!.trim(), repeat, addons, ...(one["--memory"] ? { memory: one["--memory"] as MemoryMode } : {}), only: one["--tasks"]?.split(",").map((t) => t.trim()).filter(Boolean), stopped: () => interrupted }, defaultIo(stateDir, cwd));
+        const run = await runBench({ cwd, stateDir, suitePath: resolve(invokedFrom, suite!), arm: one["--arm"]!.trim(), repeat, addons, ...(one["--memory"] ? { memory: one["--memory"] as MemoryMode } : {}), only: one["--tasks"]?.split(",").map((t) => t.trim()).filter(Boolean), stopped: () => interrupted }, defaultIo(stateDir, cwd, identity.role === "tools" ? identity.peer : undefined));
         return console.log(formatBenchReport(benchReport(readRuns().filter((r) => r.header.run === run))).join("\n"));
       } finally { process.off("SIGINT", stop); }
     }
@@ -2576,7 +2578,8 @@ async function runConductorCommand(): Promise<void> {
     let release:(()=>void)|undefined;
     try {
       let result:any;
-      try {result=await hub.request({t:"conductor_operational",op:"authorize",command:operation},3000);} catch {fail(unavailable);}
+      // #933: a form that runs in this process is admitted and audited once here (`admit`); any other form's own request admits it.
+      try {result=await hub.request({t:"conductor_operational",op:conductorLocalOperation(operation)?"admit":"authorize",command:operation},3000);} catch {fail(unavailable);}
       if(result.ok!==true)fail(result.authorityRefused===true || result.authorityRefused===false?String(result.error??unavailable):unavailable,result.refusalAudited===true,result.authorityRefused);
       if(!hub.instanceId)fail(unavailable);
       release=ControlClient.pinInstance(stateDir,hub.instanceId);

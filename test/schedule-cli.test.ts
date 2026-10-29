@@ -170,7 +170,8 @@ test("an agent is refused every schedule op, and nothing changes", async () => {
   for (const op of ["schedule_list", "schedule_run", "schedule_pause", "schedule_resume"]) {
     const reply = await h.op(h.agent, op, { id: "nightly" });
     expect(reply.ok, op).toBe(false);
-    expect(String(reply.error), op).toContain("console command");
+    // #933: run, pause and resume are the configured conductor's too, so another agent gets the operational refusal; list stays the person's.
+    expect(String(reply.error), op).toContain(op === "schedule_list" ? "console command" : "requires the explicit conductor role");
   }
   expect(h.tasks()).toHaveLength(0);
   expect(h.row("nightly")).toMatchObject({ paused: 0, last_run: null });
@@ -351,7 +352,8 @@ test("scheduleViews: a pause wins over every other state, and an unpaused row is
 // ---- the command
 
 test("schedule is person-only: an agent shell is refused, live-test cannot write it, and the audit never names an id", () => {
-  for (const args of [["list"], ["run", "nightly"], ["pause", "nightly"], ["resume", "nightly"], []]) expect(classifyPeerCommand("schedule", args)).toBe("console");
+  for (const args of [["list"], []]) expect(classifyPeerCommand("schedule", args)).toBe("console");
+  for (const args of [["run", "nightly"], ["pause", "nightly"], ["resume", "nightly"]]) expect(classifyPeerCommand("schedule", args)).toBe("conductor"); // #933
   expect(liveTestRefusal("schedule", ["run", "nightly"])).toBe(true);
   for (const sub of ["list", "run", "pause", "resume"]) expect(cliCommandLabel("schedule", [sub, "nightly"])).toBe(`schedule ${sub}`);
   expect(cliCommandLabel("schedule", ["secret-id"])).toBe("schedule");

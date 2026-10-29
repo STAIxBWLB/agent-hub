@@ -109,7 +109,8 @@ test("notes on an open task are short-term; approval promotes decisions, contrac
   await expect(memoryCommand(["list", "--since", "yesterday-ish"], h.root, { store })).rejects.toThrow("--since");
   expect(classifyPeerCommand("memory", ["search", "x"])).toBe("allowed");
   expect(classifyPeerCommand("memory", ["--json"])).toBe("allowed");
-  for (const sub of ["forget", "promote", "demote", "supersede", "rebuild", "graph"]) expect(classifyPeerCommand("memory", [sub, "x"])).toBe("console");
+  for (const sub of ["forget", "promote", "demote", "supersede", "rebuild"]) expect(classifyPeerCommand("memory", [sub, "x"])).toBe("conductor"); // #933, until amem attributes agents
+  expect(classifyPeerCommand("memory", ["graph", "x"])).toBe("console");
 }, 30_000);
 
 test("briefs go through the graph: a linked fail first, a superseded decision dropped, another project's shared entry in and its private one out", () => {

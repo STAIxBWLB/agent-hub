@@ -42,7 +42,8 @@ async function git(cwd: string, args: string[]): Promise<{ code: number; out: st
   return { code, out: out.trim() };
 }
 
-export const defaultIo = (stateDir: string, cwd: string): BenchIo => ({
+/** `peer`: the conductor running the bench (#933) proposes as itself, never through the person's console identity. */
+export const defaultIo = (stateDir: string, cwd: string, peer?: string): BenchIo => ({
   sh: async (command, dir, timeoutMs, stopped) => {
     const p = spawn("sh", ["-c", command], { cwd: dir, detached: true, stdio: "ignore", env: childEnv() });
     trackGroup(p);
@@ -68,7 +69,7 @@ export const defaultIo = (stateDir: string, cwd: string): BenchIo => ({
     });
     return { code: timedOut || interrupted ? null : code ?? null, timedOut, interrupted };
   },
-  connect: () => ControlClient.connect(stateDir, { role: "console", projectRoot: cwd }),
+  connect: () => ControlClient.connect(stateDir, peer ? { role: "tools", peer, projectRoot: cwd } : { role: "console", projectRoot: cwd }),
   now: () => Date.now(),
   sleep: (ms) => Bun.sleep(ms),
   log: (line) => console.log(line),

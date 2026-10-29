@@ -76,7 +76,7 @@ ahub bench run ../suites/suite.json --arm baseline --repeat 5
 ahub bench run ../suites/suite.json --arm ripwire-on --repeat 5 --tasks b,a,c   # --tasks also sets the order
 ```
 
-Only a person can run a suite (agent shells are refused). Each attempt resets the tree to `ref`, runs `setup`, proposes
+Only a person or the configured conductor can run a suite (#933: the hub admits and audits the conductor's run; other agent shells are refused). Each attempt resets the tree to `ref`, runs `setup`, proposes
 the task as the console does, waits until it is approved or `timeout_s` passes, then runs `verify`. Outcomes:
 
 - `pass`: approved and `verify` exited 0;

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { drainCliAudits } from "../src/cli/identity-audit.ts";
+import { classifyPeerCommand, liveTestRefusal } from "../src/cli/identity.ts";
 import { startFakeModelServer } from "./fakes/model-server.ts";
 import { readEvents } from "../src/hub/events.ts";
 
@@ -280,15 +281,17 @@ test("live-test cannot impersonate the user or file person verdicts and workflow
   const root = project(), stateDir = join(root, ".agenthub/state");
   try {
     for (const args of [["say", "--as-user", "private-message"], ["say", "--as-user=true", "private-message"],
-      ["task", "label", "1", "ok"], ["task", "role", "1", "none"], ["task", "assign", "1", "pi"], ["task", "escalate", "1"], ["backlog", "add", "test", "private-title"],
+      ["task", "assign", "1", "pi"], ["task", "escalate", "1"], ["backlog", "add", "test", "private-title"],
       ["release", "new", "private-release", "goal", "1"], ["sdlc", "record", "1", "{}"], ["board", "import", "github"],
       ["bench", "run", "private-suite"], ["pet", "--window"]]) {
       const result = await cli(root, ["--live-test", ...args], { AGENTHUB_PEER_ID: "codex" });
       expect(result.code).toBe(1);
       expect(result.stderr).toContain("live-test cannot write person-attributed content");
     }
+    // #933: an agent's own-task label and role are Allowed: they run as the agent (its label record names it) and are never delegated.
+    for (const args of [["task", "label", "1", "ok"], ["task", "role", "1", "none"]]) { expect(classifyPeerCommand(args[0]!, args.slice(1))).toBe("allowed"); expect(liveTestRefusal(args[0]!, args.slice(1))).toBe(true); }
     const rows = drainCliAudits(stateDir);
-    expect(rows).toHaveLength(12);
+    expect(rows).toHaveLength(10);
     expect(rows.every(row => row.peer === "codex" && row.outcome === "refused")).toBe(true);
     expect(JSON.stringify(rows)).not.toContain("private");
   } finally { rmSync(root, { recursive: true, force: true }); }

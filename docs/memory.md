@@ -100,7 +100,7 @@ A running hub syncs 5 seconds after start and every `memory.sync_interval_min` m
 - **Session-start recall**: this project's long-term decisions, contracts and fails (and shared ones) lead the recall block; display-only filtering omits automatic approval notes, while changes-requested notes show their nonempty reasons. Lines preserve their headers and end at word boundaries with a visible marker when capped; each delivery deduplicates memory ids across prefaces and note lines. Stored notes and brief evidence are unchanged. Recent short-term amem curated notes follow; each gets half of `memory.inject_tokens` when both answer.
 - **`ahub ask`**: entries that match the question and the graph neighbourhood of what they are about are evidence, cited
   as `[mem:<8 hex>]` for existing native projections or `[mem:<32 hex>]` for full entry references. A question that carries PII skips them. `ahub ask --remember` writes a pending candidate, never curated evidence; a person must review it.
-- **`ahub memory`** needs no running hub. The hub CLI identity gate allows screened list/search/show reads in agent shells; graph and unscreened views are a person's. Managed peers use the bounded `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools through the daemon, with project scope, `memory_read`, PII-turn refusal and capture exclusion:
+- **`ahub memory`** needs no running hub. The hub CLI identity gate allows screened list/search/show reads in agent shells; graph and unscreened views are a person's, and changes are the person's or the configured conductor's (#933, admitted and audited by the hub; ponytail: amem writes them without an agent actor until agent-mem ships agent attribution, when they become any agent's, screened like the reads). Managed peers use the bounded `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools through the daemon, with project scope, `memory_read`, PII-turn refusal and capture exclusion:
 
 ```bash
 ahub memory                              # this project's entries, newest first, with tier counts
@@ -119,7 +119,7 @@ ahub memory graph 1a2b3c4d --hops 2      # its neighbourhood as edges, a person'
 
 `list`, `search` and `show` may run in agent shells, so they leave out notes that match the project's current PII
 patterns or are about a path its `pii.paths` makes private (a shared note was accepted under another project's patterns) and say how many; the dashboard shows a person
-everything. A person's, from a terminal (agent shells are refused):
+everything. A person's, from a terminal, or the configured conductor's (#933; other agent shells are refused):
 
 ```bash
 ahub memory promote 1a2b3c4d             # a short-term entry gets a long-term copy

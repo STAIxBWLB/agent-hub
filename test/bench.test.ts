@@ -433,11 +433,11 @@ test("a run whose runner died without an end record reads interrupted; the dashb
 });
 
 test("running a suite is a person's; reading benchmark results is not", () => {
-  expect(classifyPeerCommand("bench", ["run", "suite.json", "--arm", "x"])).toBe("console");
+  expect(classifyPeerCommand("bench", ["run", "suite.json", "--arm", "x"])).toBe("conductor"); // #933: the person's or the configured conductor's
   for (const sub of [[], ["list"], ["status"], ["report", "r"], ["compare", "a", "b"], ["export"]]) expect(classifyPeerCommand("bench", sub)).toBe("allowed");
   // --json is accepted anywhere, so it cannot hide the subcommand from the gate.
-  expect(classifyPeerCommand("bench", ["--json", "run", "suite.json", "--arm", "x"])).toBe("console");
-  expect(classifyPeerCommand("bench", ["--json", "--json", "run"])).toBe("console");
+  expect(classifyPeerCommand("bench", ["--json", "run", "suite.json", "--arm", "x"])).toBe("conductor");
+  expect(classifyPeerCommand("bench", ["--json", "--json", "run"])).toBe("conductor");
   expect(classifyPeerCommand("bench", ["--json", "list"])).toBe("allowed");
 });
 

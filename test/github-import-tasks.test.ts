@@ -27,7 +27,7 @@ test("GitHub intake persists dedupe and PII sources only through public projecti
  expect(tasks.publicView(board.get(2)!)).not.toHaveProperty("external");expect(JSON.stringify(tasks.publicView(board.get(2)!))).not.toContain("900101");
  const repeated=await tasks.importGitHub(USER,{repo:"OWNER/REPO",label:"ready"},run);expect(repeated).toMatchObject({imported:[],existing:[1,2]});
  const reopened=new Board(file);try{expect(reopened.imported("OWNER/REPO",1)?.id).toBe(1);}finally{reopened.close();}
- expect(classifyPeerCommand("board",["import","github","--label","ready"])).toBe("console");
+ expect(classifyPeerCommand("board",["import","github","--label","ready"])).toBe("conductor"); // #933: the daemon admits only the configured conductor
 });
 test("GitHub import rechecks persistent identity after asynchronous screening (#263)",async()=>{
  const {board,tasks,routing,screen}=rig();routing.signals.pii_screen="local";let injected=false;
