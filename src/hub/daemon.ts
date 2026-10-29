@@ -91,7 +91,7 @@ import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigS
 import { issueConductorRecoveryAuthority, authorizeConductorRecovery, assertConductorRecovery, RecoveryAuthorityError, type ConductorRecoveryBinding } from "./recovery-authority.ts";
 import { captureRecoveryPolicy, readRecoveryTargetFeatures } from "./recovery-policy.ts";
 import { operationPath, recoveryLock } from "./recovery-store.ts";
-import { packageDigest } from "../cli/recovery-package.ts";
+import { packageDigest, verifyPackage, exactVersion } from "../cli/recovery-package.ts";
 import { planFingerprint, registeredProjects, type UpgradePlan } from "../cli/upgrade.ts";
 import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
@@ -690,8 +690,18 @@ export function resolutionRefusal(error: unknown): string {
 /** No remote set and a stop are not failures: agent-mem words the missing remote "no sync remote" (v1) or "no generation sync remote configured". */
 export const quietSyncError = (error: string | undefined): boolean => /^(no (generation )?sync remote|stopped)/.test(error ?? "");
 
+let recoverySourcePackageDigest: string | null | undefined;
+function capturedRecoverySourceDigest(): string | undefined {
+  if (recoverySourcePackageDigest === undefined) {
+    try { recoverySourcePackageDigest = packageDigest(resolve(import.meta.dir, "../..")); }
+    catch { recoverySourcePackageDigest = null; }
+  }
+  return recoverySourcePackageDigest ?? undefined;
+}
+
 export async function startDaemon(opts: DaemonOptions) {
   const projectId = opts.projectId ?? randomUUID();
+  const sourcePackageDigest = capturedRecoverySourceDigest();
   const instanceId = opts.instanceId ?? randomUUID();
   const startupCleanup: (() => void | Promise<void>)[] = [];
   let ready = false;
@@ -7347,16 +7357,18 @@ export async function startDaemon(opts: DaemonOptions) {
             };
             const ordered = (rows: Parameters<typeof normalize>[0][]) => rows.map(normalize).sort((a, b) => a.id.localeCompare(b.id));
             if (JSON.stringify(ordered(selected.source.peers)) !== JSON.stringify(ordered(Object.values(recoveryPeers())))) throw new RecoveryAuthorityError();
-            if (packageDigest(raw.targetRoot, { ownDependencies: true }) !== raw.targetDigest) throw new RecoveryAuthorityError();
+            exactVersion(plan.version);
+            if (verifyPackage(raw.targetRoot, plan.version, { ownDependencies: true }) !== raw.targetDigest) throw new RecoveryAuthorityError();
             readRecoveryTargetFeatures(raw.targetRoot);
             if (raw.kind === "restart") {
-              if (raw.targetDigest !== packageDigest(resolve(import.meta.dir, "../.."))) throw new RecoveryAuthorityError();
+              if (!sourcePackageDigest || raw.targetDigest !== sourcePackageDigest) throw new RecoveryAuthorityError();
             } else {
               const staged = join(hubHome(), "releases", plan.version);
               if (raw.targetRoot !== join(staged, "node_modules/@staix/agent-hub")) throw new RecoveryAuthorityError();
               const verified = JSON.parse(readFileSync(join(staged, "verified.json"), "utf8"));
               if (verified.digest !== raw.targetDigest || verified.integrity !== plan.integrity) throw new RecoveryAuthorityError();
             }
+            if (!sourcePackageDigest || plan.sourceDigest !== sourcePackageDigest && (plan.kind !== "upgrade" || plan.sourceDigest !== raw.targetDigest)) throw new RecoveryAuthorityError();
             current();
             issueConductorRecoveryAuthority(opts.stateDir, expected, fresh);
             if (!event({ type: "agent_cli", peer: c.peer!, command: raw.kind, refused: false })) throw new RecoveryAuthorityError();

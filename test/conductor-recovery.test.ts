@@ -153,6 +153,20 @@ test("source issuance refuses foreign owner, plan, instance and package bindings
   } finally { await f.close(); }
 }, 20_000);
 
+test("source issuance refuses an unbound coordinator or invalid target version before creating a grant", async () => {
+  const f = await fixture();
+  try {
+    const { binding, plan } = await f.authority();
+    for (const change of [{ sourceDigest: "e".repeat(64) }, { version: "../outside-cache" }]) {
+      const { fingerprint: ignored, ...original } = plan;
+      const body = { ...original, ...change }, changed = { ...body, fingerprint: planFingerprint(body) };
+      expect((await f.lead.request({ t: "recovery_authority", op: "issue", binding: { ...binding, planFingerprint: changed.fingerprint }, plan: changed })).ok).toBe(false);
+      expect(existsSync(join(f.stateDir, "conductor-recovery.key"))).toBe(false); f.noEffects();
+    }
+    expect((await f.lead.request({ t: "recovery_authority", op: "issue", binding, plan })).ok).toBe(true);
+  } finally { await f.close(); }
+}, 20_000);
+
 test("a minted recovery continuation refuses every mismatched binding without recovery effects", async () => {
   const f = await fixture();
   try {

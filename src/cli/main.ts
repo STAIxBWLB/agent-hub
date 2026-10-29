@@ -220,10 +220,14 @@ let recoveryLauncher = false, recoveryRunnerContinuation = false;
 let recoveryLauncherCurrent: (() => void) | undefined;
 if (continuationPeer !== undefined) {
   if (caller.role !== "tools" || caller.peer !== continuationPeer || !continuationId || !operationIdPattern.test(continuationId) || liveTest) fail("conductor recovery authority unavailable; the person runs it in ahub console or a terminal");
-  const operation = readOperation<RecoveryOperation>(continuationId);
-  if (operation.id !== continuationId) fail("conductor recovery authority unavailable; the person runs it in ahub console or a terminal");
-  if (cmd === "recovery-run" && args.length === 1 && args[0] === continuationId && realPath(operation.sourceRoot) === realPath(resolve(import.meta.dir, "../.."))) {
-    await authorizeConductorOperation(operation, continuationPeer); recoveryRunnerContinuation = true; commandAccess = "conductor";
+  let operation: RecoveryOperation;
+  try { operation = readOperation<RecoveryOperation>(continuationId); }
+  catch { fail("conductor recovery authority unavailable; the person runs it in ahub console or a terminal"); }
+  if (!operation || operation.id !== continuationId || typeof operation.sourceRoot !== "string") fail("conductor recovery authority unavailable; the person runs it in ahub console or a terminal");
+  if (cmd === "recovery-run" && args.length === 1 && args[0] === continuationId) {
+    await authorizeConductorOperation(operation, continuationPeer);
+    if (realPath(operation.sourceRoot) !== realPath(resolve(import.meta.dir, "../.."))) fail("conductor recovery authority unavailable; the person runs it in ahub console or a terminal");
+    recoveryRunnerContinuation = true; commandAccess = "conductor";
   } else if (process.env.AGENTHUB_RECOVERY_CONTINUATION === continuationId) {
     await authorizeConductorLaunch(operation, continuationPeer, cwd, resolve(import.meta.dir, "../.."), cmd, args); recoveryLauncher = true; recoveryLauncherCurrent = () => assertConductorOperationLocal(operation, continuationPeer);
   } else fail("conductor recovery authority unavailable; the person runs it in ahub console or a terminal");

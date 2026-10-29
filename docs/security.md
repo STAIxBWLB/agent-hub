@@ -399,6 +399,8 @@ staging or other operation effect. In particular, upgrade handoff to a newer
 coordinator is person-only until that coordinator is known to support this
 contract.
 
+The coordinator must match the source-start package digest or the same authorized, verified upgrade target. Another source tree or an invalid target version cannot obtain a continuation.
+
 Target compatibility labels are read from the sealed target bytes; a tools request or public receipt cannot waive a target feature floor. Computed or unreadable feature metadata remains person-only.
 
 Captured TUI terminal restoration remains person-only: a delayed native launcher cannot re-prove the conductor at its eventual spawn. Conductor plans containing captured terminal launches refuse before staging or runtime holds; headless restoration uses the target-owned snapshot through a tools connection.
