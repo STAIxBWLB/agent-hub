@@ -567,11 +567,7 @@ and so is every help entry the gate has no class for yet;
 | `ahub projects [--json] [--color=...]` | Allowed | lists registered projects; `projects remove` stays Console |
 | `ahub models status [--json] [--color=...]` | Allowed | reads local model state; `setup\|start\|stop` stay Console |
 | `ahub recovery status [<op-id>] [--json]` | Allowed | reads a preflight operation; the bare interactive screen and `reattach` stay Console |
-| `ahub upgrade ... --dry-run` (no `--yes`) | Allowed | reviews the upgrade plan and applies nothing; apply requires an exact conductor proof or the person's terminal |
-| `ahub restart --yes` | Conductor | only with a source-issued continuation proof for this project's own operation |
-| `ahub upgrade --yes --to <exact-version>` | Conductor | only when source and target support the bound continuation protocol; the parser still validates the exact version |
-| `ahub recovery resume|abort [<op-id>]` | Conductor | only for that same conductor's restart/authorized-upgrade operation and its current proof; otherwise person-only |
-| `ahub task unassign <id> [--role owner|reviewer] [--revision N]` | Conductor | actual caller is retained; no replacement is routed and native work is not stopped |
+| `ahub upgrade ... --dry-run` (no `--yes`) | Allowed | reviews the upgrade plan and applies nothing; apply is a separate person or conductor operation |
 | `ahub restart --dry-run [--json]` (no `--yes`) | Allowed | reviews the restart plan and applies nothing |
 
 `backlog list`, `release list` and `sdlc costs|metrics` retain their existing
@@ -579,7 +575,7 @@ planner/person policy. Their CLI forms stay Console for ordinary agents; a
 configured planner can use the existing planner tools without borrowing console
 authority. All newly admitted reads use the ordinary tools connection and public
 views, never console identity. The person's full readback stays unchanged.
-Conductor operations are listed in [the operational command table](#conductor-operations-812-t2).
+Conductor operations are listed in [the operational command table](#conductor-operations-812-t2-933-900).
 
 ## Conducting a team from Claude Code or Codex
 
@@ -4609,7 +4605,7 @@ Optional code work runs only while Memory is open and visible. A cold console co
 
 ## Authority by command
 
-### Conductor operations (#812 T2, #535)
+### Conductor operations (#812 T2, #933, #900)
 
 The selected project's configured conductor may run the commands below through its ordinary peer identity. Other peers retain the guidance "the person runs it in ahub console or a terminal". A missing or dead descriptor refuses promptly. For a live descriptor the connect and local authorization handshakes each keep a 3-second bound; connection unavailability is not presented as proof that the peer lacks the conductor role. Actual authority refusals are audited as refused, while ordinary operation failures retain their original cause. The daemon checks the authenticated connection, current role and project membership before effects and after asynchronous boundaries. Roster handoffs carry that same authority check through plan admission, owner delivery and each later task; a saved assignment is never rolled back when delivery is interrupted. Effectful operations and operational history reads retain an `agent_cli` admission with the initiating peer; audit failure refuses those operations. Authorization negotiation, `settings_preview` and `queue show` still check current authority but emit no extra admission record or conductor notice. Admission records are not a unique invocation counter.
 
@@ -4618,43 +4614,64 @@ The selected project's configured conductor may run the commands below through i
 | roster add/remove | Existing roster lifecycle and confirmations; no role or permission-mode grant |
 | stop peer | Existing hub-owned peer stop, ownership and recovery guards |
 | queue show/resolve/discard | Public queue projection and existing revision/confirmation guards |
-| task cancel | Existing hub_task_cancel with the real peer; eligibility follows the task-board policy |
+| board import / intake approve | Existing import and intake admission; the actual conductor remains the actor |
+| schedule run/pause/resume | Existing machine-local schedule controls; no role or policy changes |
+| research backfill / bench run / source add / goal link | Existing bounded CLI or daemon paths, with fixed audit labels |
+| start Jcode | Launcher-only peer the conductor is configured to start |
+| task unassign <id> [--role owner\|reviewer] [--revision N] | The actual conductor is recorded; no replacement is routed and no native work is stopped |
+| restart --yes | Only with a source-issued continuation proof for this project's own operation |
+| upgrade --yes --to <exact-version> | Only with proof for this project's supported exact-version upgrade; newer coordinator handoff is person-only |
+| recovery resume\|abort [<op-id>] | Only the initiating conductor's own restart/authorized-upgrade operation; the person keeps the normal recovery path |
 | doctor --orphans --kill | Selected project's positively identified hub-owned process only; no cross-project registrations or unsigned process files. Prints the stopped pids for a person; `--json` prints the hub's reply |
 | logs / export | Bounded daemon projections, with unsupported/private records withheld; logs -f ends when authority ends |
-| settings set | Only the twelve existing live registry keys listed below |
+| settings set | Only the thirteen existing live registry keys listed below |
 
-The exact settings keys are `task_sweep.enabled`, `task_sweep.auto_reassign`, `task_sweep.no_writes_turns`, `task_sweep.interval_s`, `task_sweep.unaccepted_min`, `task_sweep.idle_min`, `task_sweep.review_min`, `task_sweep.ready_min`, `task_sweep.ladder_min`, `snapshots.enabled`, `research.enabled` and `approvals.notify`. New keys receive no authority by prefix. Generic roster setting writes still use the dedicated roster lifecycle. Conductor setting records name the initiating peer, and conductor writes preserve the person's pending undo record. An intervening write can still invalidate that undo through the existing file-digest guard; preserving the record does not bypass that guard. Permission modes, roles, `pet.window`, arbitrary configuration reload and undo remain person commands.
+The exact settings keys are `task_sweep.enabled`, `task_sweep.auto_reassign`, `task_sweep.no_writes_turns`, `task_sweep.interval_s`, `task_sweep.unaccepted_min`, `task_sweep.idle_min`, `task_sweep.review_min`, `task_sweep.ready_min`, `task_sweep.ladder_min`, `snapshots.enabled`, `research.enabled`, `approvals.notify` and `tasks.escalate_after`. New keys receive no authority by prefix. Generic roster setting writes still use the dedicated roster lifecycle. Conductor setting records name the initiating peer, and conductor writes preserve the person's pending undo record. An intervening write can still invalidate that undo through the existing file-digest guard; preserving the record does not bypass that guard. Permission modes, roles, `pet.window`, `models start|stop`, arbitrary configuration reload and undo remain person commands. `task cancel` remains a separate own-task `hub_task_cancel` permission, not a conductor operation.
 
 Log history is limited to the last 100 retained lines and export to the last 1000 retained events, each within a 128 KiB read. Truncation is explicit. An incomplete public projection reports one bounded reason on stderr, preserving export JSON on stdout. The complete privacy inventory has no 500-task cutoff and is cached until board or privacy/config revisions change, so log-follow does not rebuild it for every line. Export accepts closed metadata shapes; unknown fields and nested records are withheld rather than copied. Task titles, paths and private delivery bodies are not part of this projection. It does not change the person's ordinary logs/export output.
 
 Orphan cleanup requires a missing selected root, signed process identity and the host-known hub executable/entrypoint and argv. An inaccessible root or unavailable proof remains unknown; there is no offline config-based role grant. The daemon rechecks authority and process ownership before signals. A confirmed self candidate uses the existing lifecycle stop after its reply. A roster write already committed before authority ends is acknowledged as saved, without authorizing further lifecycle work or commands.
 
-### Conductor-bound restart and recovery continuation (#535)
+### Conductor-bound restart and recovery continuation (task 535, #900)
 
 The configured conductor may start a restart with `ahub restart --yes` or an
 upgrade with `ahub upgrade --yes --to <exact-version>` only after the source hub
-issues a private continuation record for that exact operation. The record is
+issues a bounded, fixed-shape private continuation record for that exact operation. The record is
 separate from public recovery JSON and its `delegatedAudits` history. A
 source-issued HMAC binds the operation id, initiating peer, project id and
 canonical root, source daemon instance, target root and package bytes, plan
-fingerprint, current authority policy and privacy evidence. A public operation
-entry or audit label alone grants nothing.
+fingerprint, and a version-neutral digest of bounded source inputs and fresh
+actor/privacy evidence. A public operation entry or audit label alone grants
+nothing. The digest covers raw config-layer and routing-file texts, plus the
+source-resolved public routing template bytes when no project routing file
+exists; it does not hash expanded defaults, default roles or parsed routing.
+The public `conductorRoutingDefaults` map is advisory; the target inherits the
+sealed source fallback. The private record stores digests, not raw config,
+routing contents or the HMAC key.
 
-The source and target must both advertise `conductor_recovery`, and the target
-coordinator must be supported by the installed coordinator. Missing, old,
-unknown or mismatched evidence refuses before the operation takes its hold or
-starts staging. An upgrade that hands off to a newer coordinator is person-only
-unless that coordinator can establish the same supported proof. At every effect
-boundary, the host rechecks the same peer's live conductor role and roster
-membership, project authority, read-only status and current non-PII/privacy
-policy. Offline continuation uses only bounded current actor/privacy checks;
-unrelated public board writes do not invalidate it. Changed or unreadable
-authority evidence stops the next effect and leaves the operation for the
-person.
+Every planned project is preflighted for source recovery support and current
+authority before staging begins. An upgrade then stages and verifies its exact
+target; restart has no package stage. The source issues the private HMAC record
+after the target bytes and feature floor are verified, before publishing the
+public operation receipt, taking the lock or applying runtime holds. A source
+preflight refusal prevents staging; an unsupported staged target or failed
+proof prevents the public operation and its holds. A target requiring handoff
+to a newer coordinator remains person-only. At every effect boundary, the host
+rechecks the same peer's live conductor role and roster membership, project
+authority, read-only status and current non-PII/privacy policy. Offline
+continuation uses only bounded current actor/privacy checks; unrelated public
+board writes do not invalidate it. Changed or unreadable authority evidence
+stops the next effect and leaves the operation for the person.
 
-Pending settings or routing changes must already be accepted by the running hub before conductor recovery. Protected or restart-bound edits that cannot be proved remain a person's restart. The replacement validates the source-issued policy before importing adapters and uses that same startup snapshot.
+An upgrade digest includes the exact staged `@staix/agent-mem` package from its
+hoisted install; a restart digest includes its verified source dependency.
+Protected or restart-bound source config/routing edits that have not been
+accepted remain person-only. The replacement validates the captured inputs
+before adapter imports and uses the sealed source fallback for startup routing.
 
-Captured TUI terminal restoration remains person-only: a delayed native launcher cannot re-prove the conductor at its eventual spawn. Conductor plans containing captured terminal launches refuse before staging or runtime holds; headless restoration uses the target-owned snapshot through a tools connection.
+Captured TUI terminal restoration remains person-only: a delayed native
+launcher cannot re-prove the conductor at its eventual spawn. Headless
+restoration uses the target-owned snapshot through a tools connection.
 
 
 Only the conductor that created the restart or authorized upgrade may run

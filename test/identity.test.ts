@@ -282,15 +282,15 @@ const consoleClassForms: readonly [string, readonly string[], PeerCommandAccess]
   ["watch", ["kimi"], "console"],
   ["recovery", ["reattach", "op-1", "codex"], "console"],
   ["no-such-command", [], "console"],
-  ["restart", ["--yes"], "console"], // #900
-  ["task", ["unassign", "1"], "console"], // #900
+  ["restart", ["--yes"], "conductor"], // #900 continuation proof
+  ["task", ["unassign", "1"], "conductor"], // #900 keeps the actual actor
   ["route", ["set", "x"], "console"], // route has no form beyond explain
   ["route", ["explain", "1"], "allowed"],
   // conductor: operational, audited once by the daemon
   ["research", ["backfill"], "conductor"],
   ["bench", ["run", "suite.json", "--arm", "x"], "conductor"],
   ["board", ["import", "github", "--label", "ready"], "conductor"],
-  ["upgrade", ["--to", "1.2.3", "--yes"], "console"], // its recovery runner and every running project: with restart in #900
+  ["upgrade", ["--to", "1.2.3", "--yes"], "conductor"], // #900 continuation proof; parser validates the target
   ["upgrade", ["--to", "1.2.3", "--yes", "--dry-run"], "console"],
   ["upgrade", ["--dry-run"], "allowed"],
   ["jcode", [], "conductor"],

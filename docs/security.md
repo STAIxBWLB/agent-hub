@@ -389,23 +389,42 @@ remain Console for ordinary agents.
 The recovery continuation is a separate, narrow capability, not a generic
 console command. Only the configured conductor currently connected to the source
 hub may receive a proof while creating that project's restart or authorized
-upgrade. The source stores a private operation record sealed by its host HMAC
+upgrade. The source stores a bounded, fixed-shape private operation record sealed by its host HMAC
 key, separate from public recovery JSON and actor/audit fields. It binds the
 initiating peer, operation, canonical project root/id, source instance, target
-root and package digest, plan fingerprint, and current authority/privacy
-digests. The source and target must both advertise `conductor_recovery`; an old,
-missing, mismatched or unsupported newer coordinator refuses before a hold,
-staging or other operation effect. In particular, upgrade handoff to a newer
-coordinator is person-only until that coordinator is known to support this
-contract.
+root and package digest, plan fingerprint, and a version-neutral digest of
+bounded source inputs plus fresh actor/privacy evidence. The digest covers raw
+config-layer and routing-file texts, and the source-resolved public routing
+template bytes only when the project has no routing file. It does not hash
+expanded defaults, default roles or parsed routing. The public
+`conductorRoutingDefaults` map is advisory; the target inherits the sealed
+source fallback. The private record stores digests, not raw config, routing
+contents or the HMAC key. Every planned project's source capability and authority are
+preflighted before staging. An upgrade then stages and verifies its exact
+target; restart has no package stage. The source issues the HMAC record after
+target bytes and feature support are verified, before the public operation
+receipt, lock or runtime holds. A source preflight refusal prevents staging; a
+target mismatch or failed proof prevents the public operation and its holds. A
+target requiring a newer-coordinator handoff is person-only.
 
-Recovery cannot apply an unpublished protected configuration or routing edit. The source compares the fresh candidate with its accepted running policy. A conductor bootstrap verifies the same captured config/routing inputs against the private grant before module imports, then starts from that snapshot; a later file edit cannot replace it. A person may explicitly take over recovery to adopt a changed policy.
+Recovery cannot apply an unpublished protected configuration or routing edit.
+The source compares the fresh candidate and raw source inputs with its accepted
+running config/routing inputs. A conductor bootstrap verifies those same inputs
+against the private grant before module imports and uses the sealed source
+fallback when the project had no routing file; a later file edit cannot replace
+it. A person may explicitly take over recovery to adopt a changed policy.
 
-The coordinator must match the source-start package digest or the same authorized, verified upgrade target. Another source tree or an invalid target version cannot obtain a continuation.
+The coordinator must match the source-start package digest or the same
+authorized, verified upgrade target. Upgrade identity includes the exact
+hoisted `@staix/agent-mem` package; restart verifies the source package's own
+dependency. Another source tree or an invalid target version cannot obtain a
+continuation.
 
 Target compatibility labels are read from the sealed target bytes; a tools request or public receipt cannot waive a target feature floor. Computed or unreadable feature metadata remains person-only.
 
-Captured TUI terminal restoration remains person-only: a delayed native launcher cannot re-prove the conductor at its eventual spawn. Conductor plans containing captured terminal launches refuse before staging or runtime holds; headless restoration uses the target-owned snapshot through a tools connection.
+Captured TUI terminal restoration remains person-only: a delayed native
+launcher cannot re-prove the conductor at its eventual spawn. Headless
+restoration uses the target-owned snapshot through a tools connection.
 
 
 Before each effect and after awaits, the host rechecks the same initiating
