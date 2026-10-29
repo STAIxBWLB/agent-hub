@@ -496,6 +496,7 @@ test("the real CLI as the person: list, accept and reject round-trip against a d
   const accepted = await cli(f.cwd, ["learn", "accept", String(card.id)]);
   expect(accepted.code, accepted.stderr).toBe(0);
   expect(accepted.stdout).toContain("accepted"); expect(accepted.stdout).toContain("config.local.json"); expect(accepted.stdout).toContain("restart");
+  expect(accepted.stdout).toContain("put it back with ahub settings undo"); // the way back reaches the person, in the real process output
   expect(JSON.parse(bytes(f.local)!)).toEqual({ profile_overrides: { review_checklist: [...SHIPPED_DEV, LINE] } });
   const repeat = await cli(f.cwd, ["learn", "accept", String(card.id), "--json"]);
   expect(repeat.code).toBe(1); expect(repeat.stderr).toContain("already closed");
