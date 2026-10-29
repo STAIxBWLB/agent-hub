@@ -115,7 +115,10 @@ export class RoomCommands {
     if (typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) refuse("invalid_input");
     const store = await this.inboxStore(check); this.current(check);
     const item = store?.disposePersonInbox(id, action, () => { this.current(check); return true; }); this.current(check);
-    if (item) await this.options.chat?.retryPending();
+    if (item) {
+      store?.expirePersonInbox(); // This explicit opportunity consumes any cleanup signal before its direct retry.
+      await this.options.chat?.retryPending();
+    }
     this.current(check); return item;
   }
   /** Loaded-state housekeeping only, including rooms that have been left. */

@@ -1396,6 +1396,8 @@ A person done/discard and an actual TTL purge create one capacity-release
 opportunity for existing X4 deferred traffic. The disposed or expired entry gets
 no new outcome or receipt; unrelated authenticated pending chats may resume.
 Idle expiry ticks never retry or poll retained plaintext.
+Cleanup performed during show or admission retains a committed purge signal until
+the host consumes it once; rollback restores the prior signal.
 
 Limits are 100 unread messages per room, 64 KiB decoded body per message and
 4 MiB retained decoded body bytes globally. The existing 64 KiB entire

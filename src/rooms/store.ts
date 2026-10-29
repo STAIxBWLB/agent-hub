@@ -127,6 +127,7 @@ export class RoomStore {
   readonly replay: ReplayPort;
   private readonly rooms = new Map<string, RoomState>();
   private closed = false;
+  private pendingPersonPurge = false;
   private constructor(private readonly db: Database, readonly identity: HubIdentity, private readonly clock: () => number) {
     this.sequence = { reserve: async input => this.reserve(input), isCurrent: input => this.isCurrent(input) };
     this.replay = { accept: async input => this.accept(input) };
@@ -501,12 +502,16 @@ export class RoomStore {
   }
   private transaction<T>(fn: (now: number) => T): T {
     this.assertOpen();
+    const priorPersonPurge = this.pendingPersonPurge;
     try { return this.db.transaction(() => {
       const now = this.now();
       const result = fn(now);
       this.db.query("INSERT INTO meta(key,value) VALUES('clock',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(now));
       return result;
-    })(); } catch (e) { if (e instanceof RoomStoreError) throw e; throw new RoomStoreError(code(e)); }
+    })(); } catch (e) {
+      this.pendingPersonPurge = priorPersonPurge; // Includes a successful nested savepoint rolled back by its outer transaction.
+      if (e instanceof RoomStoreError) throw e; throw new RoomStoreError(code(e));
+    }
   }
   private snapshot(value: RoomState): RoomState {
     return { ...value, wire: copy(value.wire), ...(value.previous ? { previous: { ...value.previous } } : {}) };
@@ -946,18 +951,24 @@ export class RoomStore {
       receivedAt: row.received_at, expiresAt: row.expires_at, bytes: row.bytes, state: row.state };
   }
   private prunePersonInbox(now: number): void {
-    this.db.query("UPDATE person_inbox SET body=NULL,state='expired',settled_at=expires_at WHERE state='unread' AND expires_at<=?").run(now);
-    this.db.query("DELETE FROM person_inbox WHERE state!='unread' AND settled_at<=?").run(now - ROOM_PERSON_INBOX_LIMITS.ttlMs);
-    for (const state of this.rooms.values()) this.db.query("DELETE FROM person_inbox WHERE room=? AND state!='unread' AND id NOT IN (SELECT id FROM person_inbox WHERE room=? AND state!='unread' ORDER BY settled_at DESC,id DESC LIMIT ?)")
-      .run(state.current.room, state.current.room, ROOM_PERSON_INBOX_LIMITS.stubsPerRoom);
+    const expired = this.db.query("UPDATE person_inbox SET body=NULL,state='expired',settled_at=expires_at WHERE state='unread' AND expires_at<=?").run(now).changes;
+    const removed = this.db.query("DELETE FROM person_inbox WHERE state!='unread' AND settled_at<=?").run(now - ROOM_PERSON_INBOX_LIMITS.ttlMs).changes;
+    if (expired > 0 || removed > 0) this.pendingPersonPurge = true;
+    for (const state of this.rooms.values()) {
+      const capped = this.db.query("DELETE FROM person_inbox WHERE room=? AND state!='unread' AND id NOT IN (SELECT id FROM person_inbox WHERE room=? AND state!='unread' ORDER BY settled_at DESC,id DESC LIMIT ?)")
+        .run(state.current.room, state.current.room, ROOM_PERSON_INBOX_LIMITS.stubsPerRoom).changes;
+      if (capped > 0) this.pendingPersonPurge = true;
+    }
   }
   expirePersonInbox(): boolean {
     const now = this.now();
     // Idle ticks inspect indexed metadata only, with no transaction or durable clock write.
     const due = this.db.query("SELECT 1 FROM person_inbox WHERE (state='unread' AND expires_at<=?) OR (state!='unread' AND settled_at<=?) LIMIT 1").get(now, now - ROOM_PERSON_INBOX_LIMITS.ttlMs);
-    if (!due && !this.db.query("SELECT room FROM person_inbox WHERE state!='unread' GROUP BY room HAVING COUNT(*)>1000 LIMIT 1").get()) return false;
-    this.transaction(current => this.prunePersonInbox(current));
-    return true;
+    if (due || this.db.query("SELECT room FROM person_inbox WHERE state!='unread' GROUP BY room HAVING COUNT(*)>1000 LIMIT 1").get()) this.transaction(current => this.prunePersonInbox(current));
+    // Indirect cleanup (show/admission/capacity) reports its committed wake once,
+    // even when this tick has nothing left to prune. No body or clock write is needed.
+    const purged = this.pendingPersonPurge; this.pendingPersonPurge = false;
+    return purged;
   }
   /** A person inbox and its immutable admission receipt commit together. No Bus or network effect occurs here. */
   admitPersonInbox(name: string, digestValue: string, current?: () => boolean): RoomPersonInboxAdmission {

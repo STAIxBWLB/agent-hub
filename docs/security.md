@@ -807,3 +807,7 @@ Person disposition and actual TTL purge can wake existing X4 deferred traffic
 once, without a new outcome or receipt for the purged entry. Idle expiry ticks
 never poll plaintext; all resumed traffic retains the existing trust and role
 checks.
+
+Indirect TTL cleanup retains one committed wake signal until the host consumes
+it; a rolled-back cleanup cannot create a signal. This adds no body to the wake
+path and no polling when no real cleanup occurred.

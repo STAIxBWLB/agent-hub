@@ -289,3 +289,27 @@ test("shared identity pressure evicts older settled native work before a newly d
   expect(f.guest.readPersonInbox(admitted.id!, () => true)).toMatchObject({ state: "done" });
   expect(f.guest.applicationReceipt("work", human.digest)).toMatchObject({ outcome: "completed", reason: "inbox_admitted" });
 });
+
+test("a show-induced TTL purge leaves one pending host wake without another write", async () => {
+  const f = await pair(), item = await incoming(f), result = f.guest.admitPersonInbox("work", item.digest);
+  f.advance(ROOM_PERSON_INBOX_LIMITS.ttlMs);
+  expect(f.guest.readPersonInbox(result.id!, () => true)).toMatchObject({ state: "expired" });
+  const db = dbOf(f.guest), writes = db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n;
+  expect(f.guest.expirePersonInbox()).toBe(true);
+  expect(f.guest.expirePersonInbox()).toBe(false);
+  expect(db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n).toBe(writes);
+});
+
+for (const rollback of ["inner", "outer"] as const) test(`a ${rollback} transaction rollback cannot retain a person-purge wake`, async () => {
+  const f = await pair(), item = await incoming(f), result = f.guest.admitPersonInbox("work", item.digest);
+  const internal = f.guest as unknown as { transaction<T>(fn: (now: number) => T): T; prunePersonInbox(now: number): void };
+  const prune = () => internal.prunePersonInbox(f.now() + ROOM_PERSON_INBOX_LIMITS.ttlMs);
+  if (rollback === "outer") {
+    expect(() => internal.transaction(() => { internal.transaction(prune); throw new Error("fixture outer rollback"); })).toThrow();
+  } else {
+    internal.transaction(() => { expect(() => internal.transaction(() => { prune(); throw new Error("fixture inner rollback"); })).toThrow(); });
+  }
+  expect(f.guest.expirePersonInbox()).toBe(false);
+  expect(f.guest.readPersonInbox(result.id!, () => true)).toMatchObject({ state: "unread", body: item.envelope.body });
+  expect(f.guest.expirePersonInbox()).toBe(false);
+});

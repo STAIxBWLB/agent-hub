@@ -371,7 +371,10 @@ test("only an actual inbox TTL purge retries capacity blocked work and late send
   f.control.now = inbox.expiresAt + 1;
   f.a.chat.tick(); // The sender's old ACK deadline is uncertainty, not a new completion.
   await f.event.wait(async () => (await outbound(f.a, native.id))?.state === "needs_review", "native sender ACK deadline becomes uncertain");
-  f.b.commands.expireInbox();
+  const expiredItem = await f.b.commands.inboxShow(inbox.id, () => true);
+  expect(expiredItem).toMatchObject({ state: "expired" }); expect(expiredItem).not.toHaveProperty("body");
+  f.b.commands.expireInbox(); // Consume the committed purge signal left by show, even though no rows remain due.
+  f.b.commands.expireInbox(); // An already consumed signal cannot schedule a second retry.
   await f.event.wait(() => nativeReceives === 2 && f.b.peer.got.some(row => row.id === native.id)
     && f.b.store!.pendingInbox("work").length === 0, "actual TTL purge retries the retained native chat once");
   expect(f.b.peer.got.filter(row => row.id === native.id)).toHaveLength(1);
