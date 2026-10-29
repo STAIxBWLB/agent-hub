@@ -1068,6 +1068,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (unattended) console.error(UNATTENDED_WARNING);
     const status = await startProject(registeredProject(), { unattended, liveTest, ...(recoveryLauncherCurrent ? { current: recoveryLauncherCurrent, env: { ...personEnv(process.env), AGENTHUB_RECOVERY_OPERATION: continuationId } } : {}) });
     console.log(`ahub up (ws://127.0.0.1:${status.controlPort}), state in ${stateDir}`);
+    if (recoveryLauncherCurrent) { recoveryLauncherCurrent(); return; }
     try { if (loadPetConfig(cwd).window) console.log(await startPetWindow(stateDir, cwd)); }
     catch { console.error("Pet window was not started; run ahub pet --window to inspect it."); }
     if (process.stdin.isTTY && process.stdout.isTTY && !args.includes("--no-console")) await runConsole({ client: await connect(), cwd, stateDir, liveTest });
