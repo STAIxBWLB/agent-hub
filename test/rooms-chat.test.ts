@@ -309,6 +309,7 @@ test("ambiguous exposed remote ids remain inert and show unknown rather than emp
   expect(f.a.chat.peersForStatus("work")?.map(row => row.id)).toEqual(["codex@beta"]);
   await command(f.a, "create", { name: "other", broker: f.broker.publicUrl, label: "alpha" });
   await command(f.a, "expose", { name: "other", peers: ["codex"] });
+  writeFileSync(join(f.b.cwd, ".agenthub/config.local.json"), JSON.stringify({ rooms: { work: { expose: ["codex"] }, other: { expose: ["codex"] } } }));
   const token = await command(f.a, "invite", { name: "other" });
   const request = await command(f.b, "join", { name: "other", token: token.artifact, label: "beta" });
   const roster = await command(f.a, "invite", { name: "other", request: request.artifact });
