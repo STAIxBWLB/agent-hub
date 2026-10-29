@@ -74,6 +74,8 @@ async function side(root: string, label: string, notify: ReturnType<typeof signa
     roster: ids => { roster.clear(); roster.add("codex"); for (const id of ids) roster.add(id); notify.notify(); }, changed: notify.notify });
   let context: RoomLinkContext | undefined, lastChat: CapturedChat | undefined;
   const members = chat.application.members, receive = chat.application.receive;
+  const transportAcks = new Set<string>(), transportAck = chat.application.transportAck;
+  chat.application.transportAck = (context, value) => { transportAcks.add(value.digest); transportAck?.(context, value); notify.notify(); };
   chat.application.members = value => { context = value; members(value); };
   chat.application.receive = async (value, input) => {
     if (input.message?.type === "chat") {
@@ -90,7 +92,7 @@ async function side(root: string, label: string, notify: ReturnType<typeof signa
   bus.onMemoryDelivery = (...args) => memory.push(args);
   bus.tap(event => { events.push(event); notify.notify(); });
   const close = async () => { commands.stop(); await peer.stop(); bus.closeJournal(); };
-  return { cwd, stateDir, journal, bus, peer, commands, chat, events, condensed, memory, close, get context() { return context; }, get lastChat() { return lastChat; }, get screenCalls() { return screenCalls; }, signals: notify };
+  return { cwd, stateDir, journal, bus, peer, commands, chat, events, condensed, memory, close, transportAcks, get context() { return context; }, get lastChat() { return lastChat; }, get screenCalls() { return screenCalls; }, signals: notify };
 }
 
 async function command(side: Side, action: string, input: unknown) { return (await side.commands.preview(action, input, () => true)).commit(); }
@@ -228,13 +230,14 @@ test("pre-admission expiry, unexposed senders, FYI priority and oversized bodies
     expect(f.a.context!.store.listPersonInbox("work")).toEqual([]);
     expect(f.a.chat.metrics("work")).toMatchObject({ inbound: 0 });
 
-    for (const [message, reason] of [
-      [personChat("qwen", "unexposed sender"), "not_exposed"],
-      [personChat("codex", "FYI refusal", "fyi"), "boundary_refused"],
-    ] as const) {
-      const captured = await sendWire(f, message);
-      await waitReceipt(f, captured, reason);
-    }
+    // Sender exposure is verified before the application callback: no business NACK can be fabricated.
+    const unexposed = personChat("qwen", "unexposed sender");
+    const rejected = await source.link.publishApplication(unexposed, recipient, undefined, source.current);
+    await f.b.signals.wait(() => f.b.transportAcks.has(rejected), "unexposed frame retired at the crypto boundary");
+    expect(f.a.lastChat?.message.envelope.id).not.toBe(unexposed.envelope.id);
+    expect(f.a.context!.store.applicationReceipt("work", rejected)).toBeUndefined();
+    const fyi = await sendWire(f, personChat("codex", "FYI refusal", "fyi"));
+    await waitReceipt(f, fyi, "boundary_refused");
     const oversized = personChat("codex", "x".repeat(BODY_LIMIT + 1));
     expect(() => encodeRoomMessage(oversized)).toThrow("Room application: limit");
     expect(f.a.lastChat?.message.envelope.id).not.toBe(oversized.envelope.id);
