@@ -264,7 +264,7 @@ type InvocationFixture<P> = ReturnType<typeof fixture> & { payload: P };
 function invocationFixture(kind?: "invocation"): InvocationFixture<RoomReadInvocationRequest>;
 function invocationFixture(kind: "invocation_result"): InvocationFixture<RoomReadInvocationResult>;
 function invocationFixture(kind: "invocation" | "invocation_result"): InvocationFixture<RoomReadInvocationRequest | RoomReadInvocationResult>;
-function invocationFixture(kind: "invocation" | "invocation_result" = "invocation") {
+function invocationFixture(kind: "invocation" | "invocation_result" = "invocation"): InvocationFixture<RoomReadInvocationRequest | RoomReadInvocationResult> {
   const f = fixture();
   f.envelope.from = "hub"; f.envelope.kind = kind;
   const payload = kind === "invocation"
