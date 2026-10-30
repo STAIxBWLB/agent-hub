@@ -187,6 +187,7 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   // #334: intake names its two subcommands in the audit and a refusal, never the request text (it can carry a secret).
   if (command === "intake") return ["approve", "discard"].includes(args.find(arg => arg !== "--json") ?? "") ? `intake ${args.find(arg => arg !== "--json")}` : "intake";
   // #514b: the audit and a refusal name the subcommand only, never the card id or any text.
+  if (command === "capabilities") return "capabilities"; // #445 C1: no argument is ever echoed into the audit
   if (command === "learn") return ["list", "accept", "reject"].includes(args.find(arg => arg !== "--json") ?? "") ? `learn ${args.find(arg => arg !== "--json")}` : "learn";
   if (command === "source") return ["add", "list"].includes(args.find(arg => arg !== "--json") ?? "") ? `source ${args.find(arg => arg !== "--json")}` : "source";
   if (command === "release") return ["new", "list", "show", "plan", "activate", "freeze", "ship", "drop"].includes(args[0] ?? "") ? `release ${args[0]}` : "release";

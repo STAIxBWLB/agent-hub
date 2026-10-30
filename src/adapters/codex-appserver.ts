@@ -6,6 +6,8 @@ import { BasePeer, type FrontendProxyPort } from "../hub/peers.ts";
 import { codexContext, type ContextReading } from "../hub/context-window.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import type { ContextReader } from "./registry-types.ts";
+import type { CapabilityManifest } from "../hub/capabilities.ts";
+import { codexSkillsManifest, NATIVE_PINS } from "./native-capabilities.ts";
 import { ACTION_BUDGET_OPTION, type ActionGateVerdict, type PermissionRequest } from "./acp.ts";
 
 const UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery";
@@ -774,6 +776,23 @@ export class CodexPeer extends BasePeer {
     });
   }
   revertTurn(nativeTurn: string): Promise<void> { return this.revert(nativeTurn); }
+
+  /**
+   * #445 C1: `skills/list` through the attached connection with a hub id (the answer never reaches the TUI). Only the probed version lists (C0 proved 0.166.0;
+   * the pin is older, so a pinned install lists nothing until a receipt covers it). Offline, unattached or unanswered rejects: the caller shows no list, never a stale one.
+   */
+  capabilityManifest(): Promise<CapabilityManifest> {
+    if (this.version !== NATIVE_PINS.codex.version) return Promise.resolve({ capabilities: [], observedAt: Date.now() });
+    const link = this.link;
+    if (this.state === "offline" || !link || link.up.readyState !== WebSocket.OPEN) return Promise.reject(new Error(`${this.id} has no attached app-server`));
+    const id = this.nextId--;
+    return new Promise<CapabilityManifest>((resolve, reject) => {
+      const timer = setTimeout(() => this.pending.delete(id) && reject(new Error("skills/list got no answer")), 10_000);
+      timer.unref?.();
+      this.pending.set(id, { resolve: (result) => (clearTimeout(timer), resolve(codexSkillsManifest(this.version, result, Date.now()))), reject: (e) => (clearTimeout(timer), reject(e)) });
+      link.up.send(JSON.stringify({ method: "skills/list", id, params: { cwds: [this.opts.cwd], forceReload: false } }));
+    });
+  }
 
   /** account/rateLimits/read through the TUI's connection, with a hub id so the answer never reaches the TUI. */
   private readUsage(): void {

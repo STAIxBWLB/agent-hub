@@ -217,7 +217,7 @@ const schema: Record<string, Check> = {
   terminal: (v, k) => { block({ open: strings })(v, k); terminalTemplate(object(v, k).open); },
   limits: block({ sender_per_min: number(0), pair_per_min: number(0), important_per_hour: number(0), repeat_window_s: number(0) }),
   review: block({ adaptive: bool, min_reviews: number(1, Number.MAX_SAFE_INTEGER, true), pool: v => { reviewerPoolConfig({ pool: v }, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS); }, rerotate: bool, same_family: words(["fallback", "never"]) }), recovery: block({ auto_resume_after_crash: bool, reconnect_wait_s: operationalNumberCheck("recovery.reconnect_wait_s"), unmanaged_reconnect_wait_s: operationalNumberCheck("recovery.unmanaged_reconnect_wait_s"), control_timeout_s: operationalNumberCheck("recovery.control_timeout_s"), shutdown_wait_s: operationalNumberCheck("recovery.shutdown_wait_s"), terminal_idle_wait_s: operationalNumberCheck("recovery.terminal_idle_wait_s") }),
-  capabilities: map(strings), coordination: words(["advisory", "turn-free"]), experiments: block({ stale_notices: words(["drop", "deliver"]) }),
+  capabilities: map(strings), invocation: block({ share: map(map(() => {})) }), coordination: words(["advisory", "turn-free"]), experiments: block({ stale_notices: words(["drop", "deliver"]) }),
 };
 export const SCHEMA_KEYS: readonly string[] = Object.freeze(Object.keys(schema));
 export function validateRawConfig(raw: unknown, declarations?: InstancesConfig, context?: ProjectAdapterCatalog, inertModuleRoster = false): asserts raw is Record<string, unknown> {
@@ -258,7 +258,7 @@ const restart: Record<string, string> = {
   profile: "Session tool schemas and profile contracts are bound at startup", profile_overrides: "Session tool schemas and profile contracts are bound at startup",
   text_projection: "Converter and cache ownership are bound at startup", corpus: "The corpus index is bound to its roots at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
 };
-const live = new Set(["action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "pet"]);
+const live = new Set(["action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "pet"]);
 const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges"]);
 /** Closed top-level schema; leaf overrides retain the existing session/runtime boundaries. */
 export function configApply(key: string, scopes: readonly ConfigIdentityScope[] = []): ApplyRule {

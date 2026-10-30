@@ -99,6 +99,10 @@ test("configured read-only instances acknowledge their native mode and refuse ta
     const before = await f.client.request({ t: "task", op: "hub_task_list", args: {} });
     const result = await tools.request({ t: "task", op: "hub_task_propose", args: { title: "must never be recorded", class: "implement" } });
     expect(result.ok).toBe(false); expect(result.error).toContain("read-only");
+    // #445 C1: a read-only instance may read what the person shared, and never publish.
+    expect((await tools.request({ t: "task", op: "hub_capabilities", args: {} })).ok).toBe(true);
+    const publish = await tools.request({ t: "task", op: "hub_capabilities_publish", args: { capabilities: [{ kind: "skill", name: "lint", description: "Lint.", sideEffect: "read" }] } });
+    expect(publish.ok).toBe(false); expect(publish.error).toContain("read-only");
     const after = await f.client.request({ t: "task", op: "hub_task_list", args: {} });
     expect(JSON.parse(after.text)).toEqual(JSON.parse(before.text));
     expect((await f.client.request({ t: "permission", peer: "fixture-check", mode: "never-ask", confirmed: true })).ok).toBe(false);
@@ -196,7 +200,7 @@ test("the bundled MCP server publishes configured targets and enforces read-only
 
     const readOnly = await session("fixture-check");
     const names = (await readOnly.listTools()).tools.map(tool => tool.name);
-    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"];
+    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_capabilities"];
     expect(names.length).toBeGreaterThan(0);
     expect(names.every(name => allowed.includes(name))).toBe(true);
     expect(names).toContain("hub_review"); expect(names).toContain("hub_task_list");

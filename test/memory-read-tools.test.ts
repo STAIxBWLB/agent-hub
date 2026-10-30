@@ -118,7 +118,7 @@ test("memory tools appear in all shared catalogs and never capture arguments or 
   const client = { appendCapture: (...args: unknown[]) => { calls.push(args); return Promise.resolve(); } } as unknown as MemoryClient;
   const capture = new Capture(client, { project: "agent-hub", cwd: import.meta.dir });
   capture.init("test-session", "prompt"); calls.length = 0;
-  for (const name of ["hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_memory_correct", "hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]) {
+  for (const name of ["hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_memory_correct", "hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel", "hub_capabilities", "hub_capabilities_publish"]) { // #445 C1: a peer's own words, never captured
     expect(TASK_TOOLS.some(t => t.name === name)).toBe(true);
     expect(profileTaskTools("dev").some(t => t.name === name)).toBe(true);
     for (const tool of [name, `mcp__agent-hub__${name}`]) capture.observe({ tool, args: "private query", output: "private result", id: "call", paths: [] });

@@ -2,6 +2,7 @@ import type { Envelope, EnvelopeOpts, PeerId, PeerState } from "./envelope.ts";
 import type { PermissionMode } from "./permission-mode.ts";
 import type { StartForm } from "../adapters/registry-types.ts";
 import type { DoingKind } from "./peer-doing.ts";
+import type { CapabilityManifest } from "./capabilities.ts";
 
 export interface DeliveryReceipt {
   id: string;
@@ -66,6 +67,8 @@ export interface PeerAdapter {
   readonly statusNotice?: { code: "unidentified-cancellation" | "qwen-detached" | "qwen-stalled"; message: string };
   /** Fixed builtins with session.nativeRevert only. Native conversation effects remain in the adapter. */
   revertTurn?(nativeTurn: string): Promise<void>;
+  /** #445 C1: what this peer's native source lists right now (a probed version only), or an empty manifest. Never throws for an unprobed version; a transport failure rejects. */
+  capabilityManifest?(): Promise<CapabilityManifest>;
   /** Leave the roster without stopping a person's terminal. */
   detachForRoster?(resetMode: PermissionMode): void | Promise<void>;
   /** Return to the roster after detachForRoster. */

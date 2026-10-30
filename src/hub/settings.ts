@@ -87,7 +87,7 @@ export const SETTINGS: readonly SettingDef[] = [
  * Never editable from settings, whatever the session: these choose what the hub executes or where secrets and task
  * text go. A key equal to an entry, or below it, is refused by name.
  */
-export const NEVER_EDITABLE = ["kimi_cmd", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "codex_bin", "pi.cmd", "checks", "mlx", "omniroute", "memory.worker_url", "local.read_allow", "local.bash_network", "local.network_allow", "bench.enabled", "terminal", "schedules", "folder_triggers", "corpus", "rooms", "instances", "adapters", "adapter_modules", "local.doc_read", "local.web_fetch"] as const;
+export const NEVER_EDITABLE = ["invocation", "kimi_cmd", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "codex_bin", "pi.cmd", "checks", "mlx", "omniroute", "memory.worker_url", "local.read_allow", "local.bash_network", "local.network_allow", "bench.enabled", "terminal", "schedules", "folder_triggers", "corpus", "rooms", "instances", "adapters", "adapter_modules", "local.doc_read", "local.web_fetch"] as const;
 
 /**
  * The one key `ahub learn accept` writes (#514b): the active profile's review checklist, which replaces as a unit. It is NOT a row of `SETTINGS` and `settingDef` does NOT resolve it, so

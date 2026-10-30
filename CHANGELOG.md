@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Capability discovery (#445 C1, task 178): `ahub capabilities [--json]` (person only) lists what each attached peer offers, and agents read what you share with `hub_capabilities { peer? }`. Kimi 2.3.2 and Qwen 0.26.1 give their ACP `available_commands_update` skills (builtins never), Codex 0.166.0 gives its enabled `skills/list` entries; any other version, an offline peer and an unanswered list give nothing. Sharing is `invocation.share` in `.agenthub/config.local.json` only, pinned by a digest of kind, name, schema, class, source and invoke form, with an optional person `class`; an entry with no class anywhere counts as `destructive`. `hub_capabilities_publish` lets a session the hub cannot read publish its own list (forced to `invoke: prompt`, bound to its connection). Neither tool runs in a PII turn or reaches memory. This slice only lists: nothing can be invoked yet (C2). The `exec` side-effect class is gone: arbitrary execution is `destructive`.
+
 ## 0.22.0
 
 - Five bus and delivery limits are settings (#489 H3, task 444, #975): `bus.max_attempts` (1-100, default 3), `bus.digest_max` (1-10, default 10), `bus.pull_budget_bytes` (1-65536, default 65536), `bus.notes_kept` (1-10, default 10) and `bus.terminal_history_limit` (1-2048, default 2048), live from `config.local.json` at their next use. Unset behaves as before; only `bus.max_attempts` may rise above what shipped, and a reload never trims queues, resets attempts or prunes history.
