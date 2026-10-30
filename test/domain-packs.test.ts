@@ -32,7 +32,7 @@ for (const item of cases) test(`${item.name} loads its roles/rubric, previews an
   expect(catalog.errors).toEqual([]); expect(loaded.errors).toEqual([]);
   const pack = loaded.packs.get(item.name)!;
   expect(pack).toMatchObject({ name: item.name, profile: item.profile, layer: "shipped" });
-  expect(readFileSync(path(item.data), "utf8")).toBe(SHIPPED_PACKS[item.name]);
+  expect(readFileSync(path(item.data), "utf8")).toBe(SHIPPED_PACKS[item.name]!);
   expect(pack.roles.length).toBeGreaterThan(0);
   for (const id of pack.roles) expect(catalog.roles.get(id)?.layer).toBe("shipped");
   expect(pack.checks).toHaveLength(1);
