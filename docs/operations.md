@@ -1175,7 +1175,7 @@ a reviewable path unaccounted is refused, and advise notes the gap in the verdic
 (#520). The hub
 records how each review turned out, per implementer, reviewer and class:
 approved; caught (changes were requested and the owner's redo was approved);
-contradicted (within a week, work on the same file or symbol failed its check
+contradicted (within `tasks.contradiction_window_days`, default 7, work on the same file or symbol failed its check
 or review); escalated (after the reviewer asked for changes). A record counts
 tasks, not verdicts. `ahub task show <id>` lists a task's outcomes and `ahub
 route explain` shows each reviewer's record with the implementer. `ahub route explain <id>` also prints the planner walk (`planner candidate X: ...` lines, then `planner: X (rotation | named | kept)`): the same planner walk used when a new or pulled task records its planner (#525-2, #525-3). The task detail, dashboard and console show the recorded planner and selection reason; only that effective planner or the person may change its planning. A peer that accepted or finished a task never reviews it; when every eligible reviewer did, the person reviews and the trace says so. With
@@ -1707,8 +1707,8 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   other owner, while the overlapping task is not started; the routing record,
   and a cohort record formed as a task is assigned, are taken before the task is
   sent, so a busy routed peer is not available then) with no other open work (an overlapping task its owner
-  has started counts), and each has five measured tasks with no more than 30%
-  failures and comparable work times. The work stage of a task ends at its first
+  has started counts), and each has `tasks.split_min_observations` (default five) measured tasks with no more
+  than `tasks.split_max_failure_share` (default 30%) failures and comparable work times. The work stage of a task ends at its first
   `hub_task_done`, and the task itself is never one of its own observations.
 - `"experiments": {"stale_notices": "deliver"}` in `.agenthub/config.json`
   turns the stale-notice drop off, for a controlled comparison only (the #106
@@ -2321,10 +2321,10 @@ Quota also shapes routing and handoffs:
   while it waits (a week window crosses the gate), its work is handed over after
   all. `ahub budget` shows each decision and why in the pause reason.
 - A peer whose recent failures in a class (failed checks, changes requested,
-  escalations by hand) reach 1.5 after decay, and outweigh its recent
+  escalations by hand) reach `tasks.demote_at` (default 1.5) after decay, and outweigh its recent
   approvals there (a task without a reviewer counts when done), goes behind the
   other candidates in the same state for that class, `local` and `pi` included.
-  A failure counts half after a day. `ahub route explain` names demoted peers.
+  A failure counts half after `tasks.demotion_half_life_h` (default 24 hours). `ahub route explain` names demoted peers.
 
 ## Durable delivery and queue resolution
 
