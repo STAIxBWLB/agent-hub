@@ -21,6 +21,7 @@ class Callee extends BasePeer {
   got: Envelope[][] = [];
   /** Test control of the state, which BasePeer keeps protected. */
   force(state: "idle" | "busy") { this.setState(state); }
+  receipt(id: string, state: "accepted" | "completed" | "failed_safe" | "needs_review", reason?: string) { this.delivery({ id, state, ...(reason ? { reason } : {}) }); }
   answer: (envs: Envelope[]) => string | undefined = () => "answer";
   manifest: CapabilityManifest = { capabilities: [], observedAt: 1 };
   receipts = true;
@@ -219,16 +220,25 @@ test("a request delivered with no result by its deadline is a timeout for a read
   expect(results(f.codex)).toHaveLength(1); expect(f.rows()[0]!.outcome).toBe("timeout");
 });
 
-test("only the target's own answer settles a row: another peer's message on the same trace does nothing", async () => {
+test("only the target's own answer settles a row: another peer's reply_to the same request does nothing and reaches nobody", async () => {
   const f = await fixture();
   f.kimi.answer = () => undefined; f.kimi.receipts = false;
   await invoke(f);
   await until(() => f.kimi.got.length === 1, "delivered");
   const request = f.kimi.got[0]![0]!;
-  f.pi.onMessage?.("I am not the target", { inReplyTo: request, to: ["hub"] });
-  f.codex.onMessage?.("neither am I", { inReplyTo: request, to: ["hub"] });
+  for (const by of ["pi", "codex"]) {
+    const client = await ControlClient.connect(f.stateDir, { role: "tools", peer: by }); cleanups.push(() => client.close());
+    const sent = await client.request({ t: "send", body: `IMPOSTOR-MARKER from ${by}`, reply_to: request.id });
+    expect(sent.ok, by).toBe(true); // accepted and dropped: it is never broadcast
+  }
   await Bun.sleep(150);
-  expect(f.rows()[0]!.outcome).not.toBe("completed"); expect(results(f.codex)).toEqual([]);
+  expect(f.rows()[0]!.outcome).toBe("delivered"); expect(results(f.codex)).toEqual([]);
+  expect(JSON.stringify(f.pi.got)).not.toContain("IMPOSTOR-MARKER"); expect(JSON.stringify(f.codex.got)).not.toContain("IMPOSTOR-MARKER"); expect(JSON.stringify(f.kimi.got)).not.toContain("IMPOSTOR-MARKER");
+  expect(JSON.stringify(f.events())).not.toContain("IMPOSTOR-MARKER"); expect(f.log()).not.toContain("IMPOSTOR-MARKER");
+  // the real target still settles it afterwards
+  f.kimi.onMessage?.("the real answer", { inReplyTo: request, to: ["codex"] });
+  await until(() => results(f.codex).length === 1, "the target's answer settles");
+  expect(results(f.codex)[0]!.body).toContain("the real answer"); expect(results(f.codex)[0]!.body).not.toContain("IMPOSTOR");
 });
 
 test("the caller going offline before the result leaves the row as the record and sends nothing", async () => {
@@ -507,4 +517,78 @@ test("the class on the row is the effective one: a person's higher class is reco
   await invoke(f); await until(() => results(f.codex).length === 1, "result");
   expect(f.rows()[0]!.class).toBe("read");
   expect(f.events().find(e => e.type === "invocation")!.class).toBe("read");
+});
+
+test("a settled row is not settled again: a repeated answer changes neither the row nor what the caller was told", async () => {
+  const f = await fixture();
+  f.kimi.answer = () => "first answer";
+  await invoke(f); await until(() => results(f.codex).length === 1, "first result");
+  const request = f.kimi.got[0]![0]!;
+  f.kimi.onMessage?.("second answer SECOND-MARKER", { inReplyTo: request, to: ["codex"] });
+  await Bun.sleep(200);
+  expect(results(f.codex)).toHaveLength(1); expect(results(f.codex)[0]!.body).not.toContain("SECOND-MARKER");
+  expect(f.rows()[0]).toMatchObject({ outcome: "completed", result_bytes: Buffer.byteLength("first answer") });
+  expect(f.events().filter(e => e.type === "invocation" && e.outcome !== "queued")).toHaveLength(1);
+});
+
+test("a result for a caller that is gone is not published, and one for a caller that stayed is sent at the ordinary status priority", async () => {
+  const f = await fixture();
+  f.kimi.answer = () => "fine";
+  await invoke(f); await until(() => results(f.codex).length === 1, "result");
+  expect(results(f.codex)[0]!.priority).toBe("status");
+  const gone = await fixture();
+  gone.kimi.answer = () => undefined; gone.kimi.receipts = false;
+  await invoke(gone); await until(() => gone.kimi.got.length === 1, "delivered");
+  await gone.codex.stop();
+  gone.kimi.onMessage?.("late but settled", { inReplyTo: gone.kimi.got[0]![0]!, to: ["codex"] });
+  await until(() => gone.rows()[0]?.outcome === "completed", "settled with nobody to read it");
+  expect(gone.codex.got.flat().filter(e => e.kind === "invocation_result")).toEqual([]);
+});
+
+test("a result is marked private when the caller's context is private, so no log or console shows its body", async () => {
+  const f = await fixture();
+  f.kimi.answer = () => undefined; f.kimi.receipts = false;
+  await invoke(f); await until(() => f.kimi.got.length === 1, "delivered");
+  const board = new Board(join(f.stateDir, "hub.db")); cleanups.push(() => board.close());
+  board.update(board.propose("user", { title: "private 900101-1234567", class: "implement", signals: ["pii"] } as never).id, "user", "accepted", { owner: "codex", state: "in_progress" });
+  f.kimi.onMessage?.("RESULT-FOR-A-PRIVATE-CALLER", { inReplyTo: f.kimi.got[0]![0]!, to: ["codex"] });
+  await until(() => f.rows()[0]?.outcome === "completed" || f.rows()[0]?.outcome === "withheld", "settled");
+  await Bun.sleep(100);
+  const result = results(f.codex)[0];
+  if (result) expect(result.private).toBe(true);
+  expect(f.log()).not.toContain("RESULT-FOR-A-PRIVATE-CALLER"); expect(JSON.stringify(f.events())).not.toContain("RESULT-FOR-A-PRIVATE-CALLER");
+});
+
+test("invocation.timeout_s is honoured: the deadline of a new row is the configured number of seconds", async () => {
+  const f = await fixture({ timeoutS: 90 });
+  const before = Date.now(); await invoke(f); const row = f.rows()[0]!;
+  expect(row.deadline - row.created).toBe(90_000); expect(row.created).toBeGreaterThanOrEqual(before);
+  const d = await fixture(); await invoke(d); expect(d.rows()[0]!.deadline - d.rows()[0]!.created).toBe(600_000);
+  const low = await fixture({ timeoutS: 5 }); await invoke(low); expect(low.rows()[0]!.deadline - low.rows()[0]!.created).toBe(600_000); // below the bound: the default, never a shorter wait
+});
+
+test("a request the bus gives up on is settled failed for the caller, and nothing ran", async () => {
+  const f = await fixture();
+  // a refusal the adapter can PROVE touched nothing (failed_safe) is retried, then given up on after the bus's attempt limit
+  f.kimi.deliver = async (_envs: Envelope[], deliveryId?: string) => { if (deliveryId) f.kimi.receipt(deliveryId, "failed_safe", "kimi refused it before running"); };
+  await invoke(f);
+  await until(() => results(f.codex).length === 1, "the caller hears it failed", 15_000);
+  expect(results(f.codex)[0]!.body).toContain("outcome failed"); expect(results(f.codex)[0]!.body).toContain("could not be delivered to the target after retries; nothing ran");
+  expect(f.rows()[0]).toMatchObject({ outcome: "failed" });
+});
+
+test("recovery refuses a target without the invocation feature while a row is open, and allows one that has it, or none open", async () => {
+  const f = await fixture({ instanceId: "invoke-guard" });
+  const person = await ControlClient.connect(f.stateDir, { role: "console" }); cleanups.push(() => person.close());
+  const without = DAEMON_FEATURES.filter(x => x !== "invocation");
+  // nothing open: a target without the feature is fine
+  expect((await person.request({ t: "recovery", op: "inspect", expectedInstanceId: "invoke-guard", targetFeatures: without })).ok).toBe(true);
+  f.kimi.answer = () => undefined; f.kimi.receipts = false;
+  await invoke(f); await until(() => f.rows()[0]?.outcome === "delivered", "open row");
+  const refused = await person.request({ t: "recovery", op: "prepare", operationId: "g-op", expectedInstanceId: "invoke-guard", targetFeatures: without });
+  expect(refused.ok).toBe(false); expect(String((refused as { error?: string }).error)).toBe("target lacks invocation; open invocations: 1");
+  const absent = await person.request({ t: "recovery", op: "prepare", operationId: "g-op2", expectedInstanceId: "invoke-guard" });
+  expect(absent.ok).toBe(false); expect(String((absent as { error?: string }).error)).toContain("target lacks invocation");
+  const allowed = await person.request({ t: "recovery", op: "prepare", operationId: "g-op3", expectedInstanceId: "invoke-guard", targetFeatures: DAEMON_FEATURES });
+  expect(allowed.ok, String((allowed as { error?: string }).error)).toBe(true);
 });
