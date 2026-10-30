@@ -103,6 +103,9 @@ test("configured read-only instances acknowledge their native mode and refuse ta
     expect((await tools.request({ t: "task", op: "hub_capabilities", args: {} })).ok).toBe(true);
     const publish = await tools.request({ t: "task", op: "hub_capabilities_publish", args: { capabilities: [{ kind: "skill", name: "lint", description: "Lint.", sideEffect: "read" }] } });
     expect(publish.ok).toBe(false); expect(publish.error).toContain("read-only");
+    // #445 C2: and never invoke: hub_invoke is not a read-only tool, so the generic gate refuses it before any capability code runs
+    const invoked = await tools.request({ t: "task", op: "hub_invoke", args: { peer: "fixture", capability: "command:skill:review" } });
+    expect(invoked.ok).toBe(false); expect(invoked.error).toContain("read-only instance cannot mutate hub state");
     const after = await f.client.request({ t: "task", op: "hub_task_list", args: {} });
     expect(JSON.parse(after.text)).toEqual(JSON.parse(before.text));
     expect((await f.client.request({ t: "permission", peer: "fixture-check", mode: "never-ask", confirmed: true })).ok).toBe(false);

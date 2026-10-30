@@ -3287,7 +3287,6 @@ export async function startDaemon(opts: DaemonOptions) {
       if (op === "hub_invoke") {
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !["peer", "capability", "args", "task"].includes(key))) throw new PreEffectToolRefusal("hub_invoke takes peer, capability, optional args and optional task");
         need("invoke", "invoke capabilities");
-        if (readOnlyPeer(by)) throw new PreEffectToolRefusal("a read-only instance cannot invoke capabilities");
         const target = peerArg(a.peer, "peer");
         if (!target) throw new PreEffectToolRefusal("peer is required");
         if (typeof a.capability !== "string" || !/^(command|skill|mcp_tool):[A-Za-z0-9_.:-]{1,64}$/.test(a.capability)) throw new PreEffectToolRefusal("capability must be an id from hub_capabilities, like command:skill:review");

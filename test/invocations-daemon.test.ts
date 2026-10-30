@@ -49,14 +49,14 @@ const update = { availableCommands: [{ name: "skill:review", description: "Revie
 const manifestOf = () => acpManifest("Kimi Code CLI", "2.3.2", update, 5);
 const cap = () => manifestOf().capabilities[0]!;
 
-async function fixture(opts: { roster?: Record<string, boolean>; shareOverride?: Record<string, Record<string, { digest: string; class?: string }>>; share?: boolean; cls?: string; timeoutS?: number; sweepMs?: number; state?: string; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }>; limits?: Record<string, number> } = {}) {
+async function fixture(opts: { capabilities?: Record<string, string[]>; roster?: Record<string, boolean>; shareOverride?: Record<string, Record<string, { digest: string; class?: string }>>; share?: boolean; cls?: string; timeoutS?: number; sweepMs?: number; state?: string; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }>; limits?: Record<string, number> } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-invoke-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   if (hubGitSync(["-C", root, "init", "-q"], { encoding: "utf8" }).status) throw new Error("fixture git failed");
   const stateDir = opts.state ?? join(root, "state");
   if (opts.screen) { mkdirSync(join(root, ".agenthub"), { recursive: true }); writeFileSync(join(root, ".agenthub/routing.toml"), '[local]\nroute = "hub/stage"\nfixed_model = "coding"\n[signals]\npii_screen = "local"\n[constraints]\npii = "local_only"\n'); }
   const share = opts.shareOverride ?? (opts.share === false ? undefined : { kimi: { [cap().id]: { digest: cap().digest, ...(opts.cls === undefined ? { class: "read" } : opts.cls ? { class: opts.cls } : {}) } } });
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, invocationSweepMs: opts.sweepMs ?? 50, ...(opts.screen ? { piiScreen: opts.screen } : {}),
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, native: false, enabled: false }, snapshots: { enabled: false, keep: 1 }, ...(opts.roster ? { roster: { ...DEFAULT_CONFIG.roster, ...opts.roster } } : {}), ...(opts.limits ? { limits: { ...DEFAULT_CONFIG.limits, ...opts.limits } } : {}),
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, native: false, enabled: false }, snapshots: { enabled: false, keep: 1 }, ...(opts.roster ? { roster: { ...DEFAULT_CONFIG.roster, ...opts.roster } } : {}), ...(opts.capabilities ? { capabilities: opts.capabilities } : {}), ...(opts.limits ? { limits: { ...DEFAULT_CONFIG.limits, ...opts.limits } } : {}),
       invocation: { ...(share ? { share } : {}), ...(opts.timeoutS ? { timeout_s: opts.timeoutS } : {}) } } });
   cleanups.push(() => daemon.stop());
   const kimi = new Callee("kimi"), codex = new Caller("codex"), pi = new Caller("pi");
@@ -392,4 +392,80 @@ test("containment with a real headless ACP callee: its final answer, normally sh
   expect(JSON.stringify(f.events())).not.toContain("REAL-ACP-ANSWER-MARKER"); expect(f.log()).not.toContain("REAL-ACP-ANSWER-MARKER");
   expect(readFileSync(join(f.stateDir, "hub.db")).toString("latin1").includes("REAL-ACP-ANSWER-MARKER")).toBe(false);
   expect(f.rows()[0]).toMatchObject({ target: "qwen", outcome: "completed" });
+});
+
+test("the invoke hub capability is enforced: a peer whose capabilities leave it out cannot invoke, and an unlisted peer can", async () => {
+  const f = await fixture({ capabilities: { codex: ["propose"], pi: ["invoke"] } });
+  const denied = await invoke(f); expect(denied.ok).toBe(false); expect(denied.error).toContain('codex may not invoke capabilities (no "invoke" in capabilities.codex');
+  expect(f.kimi.got).toEqual([]); expect(f.rows()).toEqual([]);
+  const allowed = await invoke(f, {}, "pi"); expect(allowed.ok, String((allowed as { error?: string }).error)).toBe(true);
+  const open = await fixture(); expect((await invoke(open)).ok).toBe(true); // no capabilities listed for codex at all: it has every capability
+});
+
+test("a target held by the person's pause, by a conductor hold or by an exhausted quota window is refused with the paused reason, and builds nothing", async () => {
+  const manual = await fixture();
+  const person = await ControlClient.connect(manual.stateDir, { role: "console" }); cleanups.push(() => person.close());
+  expect((await person.request({ t: "pause", peer: "kimi" })).ok).toBe(true); // the person's own pause, over the wire
+  // the bus pause is lifted behind the daemon's back so that ONLY the person's record is left to refuse
+  manual.daemon.bus.resume("kimi");
+  const m = await invoke(manual); expect(m.ok).toBe(false); expect(m.error).toMatch(/kimi is paused/);
+  expect(manual.kimi.got).toEqual([]); expect(manual.rows()).toEqual([]);
+
+  const held = await fixture();
+  const { ConductorHolds } = await import("../src/hub/conductor.ts");
+  const holds = new ConductorHolds(join(held.stateDir, "hub.db")); cleanups.push(() => holds.close());
+  holds.hold("kimi", "claude");
+  // the daemon read its holds at start; the live check is the helper, so the bus pause is not set by this row
+  const c = await invoke(held); expect(c.ok).toBe(false); expect(c.error).toMatch(/kimi is paused/);
+  expect(held.rows()).toEqual([]);
+
+  const quota = await fixture();
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(join(quota.stateDir, "hub.db")); db.run("PRAGMA busy_timeout = 3000");
+  db.query("INSERT OR REPLACE INTO budget_pauses (peer, since, resets_at, reason, summary, handed_off, moved) VALUES (?, ?, ?, ?, NULL, 0, '[]')").run("kimi", Date.now(), Date.now() + 3_600_000, "quota"); db.close();
+  const q = await invoke(quota); expect(q.ok).toBe(false); expect(q.error).toMatch(/kimi is paused/);
+  expect(quota.kimi.got).toEqual([]); expect(quota.rows()).toEqual([]);
+});
+
+test("a capability that changes while the arguments are screened refuses the call, and nothing was built", async () => {
+  let release!: () => void; const gate = new Promise<void>(r => (release = r));
+  let entered!: () => void; const inside = new Promise<void>(r => (entered = r));
+  const f = await fixture({ screen: async () => { entered(); await gate; return { label: "clear", ms: 1 }; } });
+  const pending = invoke(f); // stops in the screen
+  await inside;
+  // while it waits, the target's list changes under the same share: the entry's digest no longer matches
+  f.kimi.manifest = acpManifest("Kimi Code CLI", "2.3.2", { availableCommands: [{ name: "skill:review", description: "x" }, { name: "skill:other", description: "y" }] }, 9);
+  f.kimi.manifest = { capabilities: f.kimi.manifest.capabilities.filter(c => c.name !== "skill:review"), observedAt: 10 }; // the shared entry is gone
+  release();
+  const r = await pending; expect(r.ok).toBe(false); expect(r.error).toMatch(/offers no shared capability|changed while the call was checked/);
+  expect(f.kimi.got).toEqual([]); expect(f.rows()).toEqual([]);
+});
+
+test("a peer that goes offline while its arguments are screened is refused too, and a PII task opened meanwhile is read again", async () => {
+  let release!: () => void; const gate = new Promise<void>(r => (release = r));
+  let entered!: () => void; const inside = new Promise<void>(r => (entered = r));
+  const f = await fixture({ screen: async () => { entered(); await gate; return { label: "clear", ms: 1 }; } });
+  const pending = invoke(f); await inside;
+  const board = new Board(join(f.stateDir, "hub.db")); cleanups.push(() => board.close());
+  board.update(board.propose("user", { title: "private 900101-1234567", class: "implement", signals: ["pii"] } as never).id, "user", "accepted", { owner: "codex", state: "in_progress" });
+  release();
+  const r = await pending; expect(r.ok).toBe(false); expect(r.error).toMatch(/PII turn/);
+  expect(f.kimi.got).toEqual([]); expect(f.rows()).toEqual([]);
+});
+
+test("a request that cannot be queued settles refused for the caller and leaves a row that says so", async () => {
+  const f = await fixture();
+  const original = f.daemon.bus.publish.bind(f.daemon.bus);
+  (f.daemon.bus as unknown as { publish: (env: Envelope) => string[] }).publish = (env: Envelope) => { if (env.kind === "invocation") throw new Error("queue unavailable"); return original(env); };
+  const r = await invoke(f); expect(r.ok).toBe(false); expect(r.error).toContain("queue unavailable");
+  expect(f.rows()).toHaveLength(1); expect(f.rows()[0]).toMatchObject({ outcome: "refused", result_bytes: 0 });
+  await until(() => results(f.codex).length === 1, "the caller is told once");
+  expect(results(f.codex)[0]!.body).toContain("outcome refused");
+});
+
+test("the person's class decides: a read share lets a no-class native entry run, and the class on the row is the effective one", async () => {
+  const f = await fixture({ cls: "read" });
+  f.kimi.answer = () => "ok";
+  await invoke(f); await until(() => results(f.codex).length === 1, "result");
+  expect(f.rows()[0]!.class).toBe("read");
 });
