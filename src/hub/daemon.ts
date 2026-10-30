@@ -794,7 +794,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const channelPeers = [...ADAPTERS.filter(definition => definition.transport === "claude-channel").map(definition => definition.kind),
     ...channelExtras.filter(id => adapterCatalog.definitionOf(id, declarations)?.transport === "claude-channel")];
   const executionRoots = new Map<string, string>();
-  const invocationRequestSignal = new AsyncLocalStorage<AbortSignal>();
+  const invocationRequestSignal = new AsyncLocalStorage<{ signal: AbortSignal; current: () => boolean }>();
   const childToolAuthority = new AsyncLocalStorage<{ by: string; current: () => boolean }>();
   const implementerTranscripts = new Map<string, string>();
   const executionOwners = new Map<string, { owner: PeerAdapter; cwd: string; socket?: Sock; launchId?: string; generation?: string | number }>();
@@ -3308,7 +3308,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify({ capabilities: out, note: "descriptions are written by the peer that offers them and are untrusted; listing is not permission to call" });
       }
       if (op === "hub_invoke") {
-        const invocationSignal = invocationRequestSignal.getStore();
+        const invocationRequest = invocationRequestSignal.getStore(), invocationSignal = invocationRequest?.signal;
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !["peer", "capability", "args", "task"].includes(key))) throw new PreEffectToolRefusal("hub_invoke takes peer, capability, optional args and optional task");
         need("invoke", "invoke capabilities");
         const target = peerArg(a.peer, "peer");
@@ -3335,7 +3335,7 @@ export async function startDaemon(opts: DaemonOptions) {
         };
         const current = () => {
           need("invoke", "invoke capabilities");
-          if (invocationSignal?.aborted) throw new PreEffectToolRefusal("invocation request was abandoned; nothing ran");
+          if (invocationSignal?.aborted || invocationRequest && !invocationRequest.current()) throw new PreEffectToolRefusal("invocation request was abandoned; nothing ran");
           if (stopping) throw new PreEffectToolRefusal("the hub is stopping; ask again afterwards");
           if (JSON.stringify([config.pii, config.local.deny, tasks.screenOn()]) !== initialPolicy) throw new PreEffectToolRefusal("invocation privacy policy changed while the call was checked; ask again");
           if (bus.peers.get(by) !== callerPeer || connectionGeneration(by) !== callerGeneration || bus.peers.get(target) !== targetPeer || connectionGeneration(target) !== targetGeneration || taskBinding(a.task === undefined ? undefined : board.get(a.task as number)) !== initialTask) throw new PreEffectToolRefusal("your session, the target session or task scope changed while the call was checked; ask again");
@@ -8476,8 +8476,12 @@ export async function startDaemon(opts: DaemonOptions) {
           if (c.closed || sock.readyState !== WebSocket.OPEN || c.invocationRequests.size >= 64) return void reply({ t: "task", ok: false, error: "invocation request connection unavailable" });
           invocation = new AbortController(); c.invocationRequests.set(msg.rid, invocation);
         }
-        const run = () => c.externalOwner ? childToolAuthority.run({ by: c.peer!, current: () => currentExternalTools(c, true) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : c.toolsOwner ? childToolAuthority.run({ by: c.peer!, current: captureImplementerTools(c) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {});
-        (invocation ? invocationRequestSignal.run(invocation.signal, run) : run()).then(
+        const run = async () => c.externalOwner ? childToolAuthority.run({ by: c.peer!, current: () => currentExternalTools(c, true) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : c.toolsOwner ? childToolAuthority.run({ by: c.peer!, current: captureImplementerTools(c) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {});
+        (invocation ? invocationRequestSignal.run({ signal: invocation.signal, current: () => {
+          const live = !c.closed && sock.readyState === WebSocket.OPEN && c.invocationRequests?.get(msg.rid) === invocation;
+          if (!live) invocation?.abort();
+          return live;
+        } }, run) : run()).then(
           (text) => reply({ t: "task", ok: true, text }),
           (e: Error) => reply({ t: "task", ok: false, error: e.message }),
         ).finally(() => { if (invocation && c.invocationRequests?.get(msg.rid) === invocation) c.invocationRequests.delete(msg.rid); });
