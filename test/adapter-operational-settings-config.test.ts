@@ -31,7 +31,7 @@ const timing = (cwd: string) => (loadConfig(cwd) as unknown as { adapter_timing:
 const localJson = (file: string) => JSON.parse(readFileSync(file, "utf8"));
 
 test("#489 H5 three accepted settings share bounds/apply metadata and preserve default units", () => {
-  expect(settings.map(row => row.key)).toEqual(leaves.map(leaf => `adapter_timing.${leaf}`));
+  expect(settings.map(row => row.key)).toEqual(leaves.map(leaf => `adapter_timing.${leaf}` as const));
   expect(settings.map(row => [row.defaultValue, row.min, row.max])).toEqual([[30, 1, 30], [50, 10, 50], [5, 5, 60]]);
   const unset: AdapterTimingConfig = { adapter_timing: {} };
   const readers = adapterOperationalReaders(() => unset);
