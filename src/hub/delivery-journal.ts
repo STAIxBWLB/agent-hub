@@ -709,10 +709,8 @@ export class DeliveryJournal {
       updatedAt: delivery.createdAt,
     });
     return this.queueMetadataTransaction(trackQueuePressure, () => {
-      // Grouped parents are not linked until the handoff INSERT. Keep the whole
-      // synchronous transaction intact; ordinary settlement prunes afterward.
-      this.pruningDeferred++;
-      try {
+      // Grouped parents are not linked until the handoff INSERT.
+      return this.withPruningDeferred(() => {
         const evidence = this.retryEvidence(delivery.peer, delivery.originals);
         if (evidence === "used") {
           // Inheritance commits with the handoff, before safe failure or pruning can erase a grouped parent.
@@ -760,7 +758,7 @@ export class DeliveryJournal {
           );
         this.harden();
         return { ...delivery, revision, updatedAt: now };
-      } finally { this.pruningDeferred--; }
+      });
     });
   }
   createDelivery(
@@ -812,9 +810,14 @@ export class DeliveryJournal {
     return this.db.transaction((): JournalDelivery => {
       const row = this.get(deliveryId);
       if (!row || row.peer !== peer || !["dispatching", "accepted"].includes(row.state)) throw new Error("delivery is not active for this peer");
-      const completed = this.transition(deliveryId, "completed", reason, row.revision);
-      const put = this.db.query("INSERT OR IGNORE INTO task_offer_reads (project_id,peer,envelope_id,delivery_id,source,offer_revision) VALUES (?,?,?,?,?,?)");
-      for (const env of row.originals) if (env.from === HUB && env.kind === "task" && Number.isSafeInteger(env.refs?.taskOffer) && env.refs!.taskOffer! >= 1) put.run(this.projectId, peer, env.id, deliveryId, source, env.refs!.taskOffer!);
+      const completed = this.withPruningDeferred(() => {
+        const result = this.transition(deliveryId, "completed", reason, row.revision);
+        const put = this.db.query("INSERT OR IGNORE INTO task_offer_reads (project_id,peer,envelope_id,delivery_id,source,offer_revision) VALUES (?,?,?,?,?,?)");
+        for (const env of row.originals) if (env.from === HUB && env.kind === "task" && Number.isSafeInteger(env.refs?.taskOffer) && env.refs!.taskOffer! >= 1) put.run(this.projectId, peer, env.id, deliveryId, source, env.refs!.taskOffer!);
+        return result;
+      });
+      // Proof is now durable in this transaction, and the return receipt is captured.
+      this.pruneTerminal("completed", "");
       return completed;
     })();
   }
@@ -1040,6 +1043,10 @@ export class DeliveryJournal {
   resolution(id: string): { action: JournalResolution; reason: string; observedRevision: number; actor: string } | undefined {
     const row = this.db.query("SELECT action,reason,observed_revision,actor FROM resolution_history WHERE project_id=? AND delivery_id=? ORDER BY id DESC LIMIT 1").get(this.projectId, id) as { action: JournalResolution; reason: string; observed_revision: number; actor: string } | null;
     return row ? { action: row.action, reason: row.reason, observedRevision: row.observed_revision, actor: row.actor } : undefined;
+  }
+  private withPruningDeferred<T>(body: () => T): T {
+    this.pruningDeferred++;
+    try { return body(); } finally { this.pruningDeferred--; }
   }
   private pruneTerminal(state: JournalDeliveryState, currentId: string): void {
     if (this.pruningDeferred) return;
