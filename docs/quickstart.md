@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.21.0
+bun add -g github:STAIxBWLB/agent-hub#v0.22.0
 ahub setup
 ```
 
@@ -29,6 +29,10 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
+
+## Upgrading to 0.22.0
+
+Nothing changes until you set something. Ten operational numbers became settings: five bus and delivery limits (`bus.*`, #975) and five upgrade-recovery waits (`recovery.*`, #979). Unset, each keeps the value it had. `ahub learn list|accept|reject` (#514b, person only) is your verdict on the recurring-unmet-criterion cards. The macOS PTY bridge no longer hangs under load or outlives its caller (#560). The `@staix/agent-mem` pin stays 0.13.0. Upgrade running hubs with `ahub upgrade` and restart Claude sessions so they load the 0.22.0 plugin.
 
 ## Upgrading to 0.21.0
 
