@@ -1763,6 +1763,8 @@ Qwen recovery source/fake proof: saved ids pass through the driver and CLI to AC
 
 Source/fixture proof is recorded in verification/2026-10-11-jcode-peer-contract.md; the live owned-daemon and ACP handshake on 0.94.0 and 0.98.1 in verification/2026-10-19-jcode-0.98.1.md. Unverified: real provider/model, native project MCP discovery and hub-tool receipt, native tool policy and stop/child teardown. Native automatic restoration is withheld because the pinned ACP load does not prove the id. No benchmark comparison or default replacement ran.
 
+Historical native-owned hub-tool effects are now recorded in the [ids-only AC4 receipt](verification/2026-10-30-jcode-ac4.md). The [fresh isolated 0.99.1 AC6 re-probe](verification/2026-10-30-jcode-ac6.md) still finds no `session/load` identity echo, so automatic recovery remains withheld; no fresh model turn or persisted-conversation restoration is claimed.
+
 ### Extra Jcode instances (#685, #368)
 
 Source and fixture coverage: `test/jcode-instances.test.ts` (declaration refusals, the bound of 8, home uniqueness, no relay or credential fields), `test/jcode-instance-peer.test.ts` (separate groups, sockets and homes, stopping one leaves the other, argv is the base argv plus the instance's `-p`, `--model` and `--provider-profile`, launch id per owned process, launcher, doctor) and `test/jcode-instance-daemon.test.ts` (home preflight, no file written under the home, status, hub-tools admission only for an owned launch, a forged `AGENTHUB_PEER_ID` refused, the MCP server with no peer id refusing every tool).
