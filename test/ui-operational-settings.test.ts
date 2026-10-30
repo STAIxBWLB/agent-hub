@@ -77,10 +77,11 @@ test("#489 H7 console captures once, preserves initial tail subscription and kee
     const f = fixture(async () => ({ ok: true, rows }), { pollMs: override });
     try {
       expect(f.sent).toEqual([{ t: "tail" }]); await tick();
-      expect(f.intervals.map(item => item.ms)).toEqual([1000, override === undefined ? 8000 : Math.max(2000, override)]);
+      expect(f.intervals.filter(item => item.active).map(item => item.ms)).toEqual([1000, override === undefined ? 8000 : Math.max(2000, override)]);
       expect(f.requests.some(item => item.msg.t === "settings_get" && item.timeout === 3000)).toBe(true);
-      rows = values({ "console.poll_ms": 12_000 }); f.intervals[1]!.fn(); await tick();
-      expect(f.intervals).toHaveLength(2); expect(f.intervals[1]!.ms).toBe(override === undefined ? 8000 : Math.max(2000, override));
+      const count = f.intervals.length, poll = f.intervals.find(item => item.active && item.ms !== 1000)!;
+      rows = values({ "console.poll_ms": 12_000 }); poll.fn(); await tick();
+      expect(f.intervals).toHaveLength(count); expect(poll.ms).toBe(override === undefined ? 8000 : Math.max(2000, override));
     } finally { await f.stop(); }
   }
 });
@@ -108,14 +109,14 @@ test("#489 H7 a held startup settings read preserves permission handling and cou
   } finally { release({ ok: false }); await f.stop(); }
 });
 
-test("#489 H7 close during startup clears the fixed redraw timer and prevents late poll startup", async () => {
+test("#489 H7 close during startup clears both legacy timers and prevents late configured poll startup", async () => {
   let release!: (value: any) => void;
   const held = new Promise(resolve => { release = resolve; });
   const f = fixture(() => held);
   try {
-    expect(f.intervals.map(item => item.ms)).toEqual([1000]);
+    expect(f.intervals.map(item => item.ms)).toEqual([1000, 4000]);
     f.signal(); await f.stop(); expect(f.closed()).toBe(1); expect(f.intervals.filter(item => item.active)).toEqual([]);
-    release({ ok: true, rows: values() }); await tick(); expect(f.intervals).toHaveLength(1); expect(f.intervals.filter(item => item.active)).toEqual([]);
+    release({ ok: true, rows: values() }); await tick(); expect(f.intervals).toHaveLength(2); expect(f.intervals.filter(item => item.active)).toEqual([]);
   } finally { release?.({ ok: false }); await f.stop(); }
 });
 

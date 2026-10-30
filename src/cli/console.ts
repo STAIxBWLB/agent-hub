@@ -458,6 +458,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     removers.push(terminal.onSignal(() => stop()));
     if (terminal.onError) removers.push(terminal.onError(error => { process.exitCode = 1; stop(`Console error: ${error.message}`); }));
     timers.push(setInterval(() => { try { state = pruneApprovals(state, Date.now()); draw(); } catch (error) { stop(`Console error: ${String((error as Error).message)}`); } }, 1000));
+    const initialPollMs = Math.max(2000, options.pollMs ?? CONSOLE_POLL_MS);
+    const initialPoll = setInterval(() => void refresh(), initialPollMs); timers.push(initialPoll);
     // Subscribe and render synchronously as before; close, signal and permission handlers stay live during this bounded read.
     draw(); client.send({ t: "tail" }); void refresh();
     const startup = client.request({ t: "settings_get" }, 3000).catch(() => undefined);
@@ -471,7 +473,11 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     state.attentionMessages = state.attentionMessages?.slice(-presentation.attentionLimit);
     const forgotten = Math.max(0, state.history.length - presentation.historyLimit);
     if (forgotten) { state.history.splice(0, forgotten); state.historyIndex = Math.max(0, state.historyIndex - forgotten); }
-    timers.push(setInterval(() => void refresh(), Math.max(2000, options.pollMs ?? presentation.pollMs)));
+    const capturedPollMs = Math.max(2000, options.pollMs ?? presentation.pollMs);
+    if (capturedPollMs !== initialPollMs) {
+      clearInterval(initialPoll);
+      timers.push(setInterval(() => void refresh(), capturedPollMs));
+    }
     draw(); await done;
   } catch (error) { stop(`Console error: ${String((error as Error).message)}`); }
   finally { stop(); }

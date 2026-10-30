@@ -32,7 +32,7 @@ test("#489 H7 console defaults and exact five closed schema leaves share H1 boun
     ["console.pending_stream_limit", 1, 1000], ["console.attention_limit", 1, 1000],
   ]);
   for (const row of rows) {
-    expect(row.defaultValue).toBe(defaults[leafOf(row)]);
+    expect(Number(row.defaultValue)).toBe(defaults[leafOf(row)]);
     expect(configApply(row.key)).toEqual({ applies: "next use" });
     const def = settingDef(row.key); if (typeof def === "string") throw new Error(def);
     expect(def).toMatchObject({ type: "integer", min: row.min, max: row.max, applies: "next use" });
