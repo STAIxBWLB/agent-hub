@@ -19,6 +19,8 @@ const until = async (check: () => boolean, label: string, ms = 4000) => { for (l
 /** A peer that records each delivery and answers like an adapter: `answer` returns the text of its reply (or undefined for no reply). */
 class Callee extends BasePeer {
   got: Envelope[][] = [];
+  /** Test control of the state, which BasePeer keeps protected. */
+  force(state: "idle" | "busy") { this.setState(state); }
   answer: (envs: Envelope[]) => string | undefined = () => "answer";
   manifest: CapabilityManifest = { capabilities: [], observedAt: 1 };
   receipts = true;
@@ -46,13 +48,14 @@ const update = { availableCommands: [{ name: "skill:review", description: "Revie
 const manifestOf = () => acpManifest("Kimi Code CLI", "2.3.2", update, 5);
 const cap = () => manifestOf().capabilities[0]!;
 
-async function fixture(opts: { share?: boolean; cls?: string; timeoutS?: number; sweepMs?: number; state?: string } = {}) {
+async function fixture(opts: { share?: boolean; cls?: string; timeoutS?: number; sweepMs?: number; state?: string; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }>; limits?: Record<string, number> } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-invoke-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   if (hubGitSync(["-C", root, "init", "-q"], { encoding: "utf8" }).status) throw new Error("fixture git failed");
   const stateDir = opts.state ?? join(root, "state");
+  if (opts.screen) { mkdirSync(join(root, ".agenthub"), { recursive: true }); writeFileSync(join(root, ".agenthub/routing.toml"), '[signals]\npii_screen = "local"\n[constraints]\npii = "local_only"\n'); }
   const share = opts.share === false ? undefined : { kimi: { [cap().id]: { digest: cap().digest, ...(opts.cls === undefined ? { class: "read" } : opts.cls ? { class: opts.cls } : {}) } } };
-  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, invocationSweepMs: opts.sweepMs ?? 50,
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, native: false, enabled: false }, snapshots: { enabled: false, keep: 1 },
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, invocationSweepMs: opts.sweepMs ?? 50, ...(opts.screen ? { piiScreen: opts.screen } : {}),
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, native: false, enabled: false }, snapshots: { enabled: false, keep: 1 }, ...(opts.limits ? { limits: { ...DEFAULT_CONFIG.limits, ...opts.limits } } : {}),
       invocation: { ...(share ? { share } : {}), ...(opts.timeoutS ? { timeout_s: opts.timeoutS } : {}) } } });
   cleanups.push(() => daemon.stop());
   const kimi = new Callee("kimi"), codex = new Caller("codex"), pi = new Caller("pi");
@@ -140,7 +143,7 @@ test("an unavailable target is refused with its own reason: offline, paused, hel
   const off = await fixture(); await off.kimi.stop();
   expect((await invoke(off)).error).toMatch(/offers no shared capability|offline/); // an offline native peer lists nothing, so it is also not shared
   const paused = await fixture(); paused.daemon.bus.pause("kimi");
-  expect((await invoke(paused)).error).toMatch(/paused/);
+  expect((await invoke(paused)).error).toMatch(/paused/); // a budget, manual or conductor pause all reach the same bus pause
   const pull = await fixture(); (pull.kimi as unknown as { pullOnly: boolean }).pullOnly = true;
   expect((await invoke(pull)).error).toMatch(/pull-only/);
   for (const f of [paused, pull]) { expect(f.kimi.got).toEqual([]); expect(f.rows()).toEqual([]); }
@@ -187,14 +190,16 @@ test("the result is cut at 8 KiB, a forged hub header in it is quoted, and the c
 
 test("a request still queued at its deadline is withdrawn: expired, no effect, and the target never sees it", async () => {
   const f = await fixture({ timeoutS: 10, sweepMs: 20 });
-  f.daemon.bus.pause("kimi"); // the target cannot take it; it stays queued
+  f.kimi.force("busy"); // the target is mid-turn, so the request waits behind it
   const r = await invoke(f); expect(r.ok).toBe(true);
-  expect(f.rows()[0]!.outcome).toBe("queued");
+  f.daemon.bus.pause("kimi"); // a pause that starts while it is queued leaves it queued (D5); the deadline still runs
+  await Bun.sleep(60);
+  expect(f.rows()[0]!.outcome).toBe("queued"); expect(f.kimi.got).toEqual([]);
   // move the deadline into the past rather than wait ten seconds
   const l = new InvocationLedger(join(f.stateDir, "hub.db")); (l as any).db.run("UPDATE invocations SET deadline = 1"); l.close();
   await until(() => results(f.codex).length === 1, "the caller hears it expired");
   expect(results(f.codex)[0]!.body).toContain("outcome expired"); expect(f.rows()[0]!.outcome).toBe("expired");
-  f.daemon.bus.resume("kimi"); await Bun.sleep(150);
+  f.daemon.bus.resume("kimi"); f.kimi.force("idle"); await Bun.sleep(150);
   expect(f.kimi.got).toEqual([]); // withdrawn: it never ran
 });
 
@@ -260,4 +265,94 @@ test("neither tool nor the result reaches memory capture, and the hub_invoke too
 
 test("the feature is advertised so a client without it is refused, and the control protocol is unchanged", () => {
   expect(DAEMON_FEATURES).toContain("invocation");
+});
+
+test("containment: the callee's answer reaches nobody except through the one result, whatever way the adapter addresses it", async () => {
+  const f = await fixture();
+  const watcher = new Caller("qwen"); f.daemon.bus.add(watcher); await watcher.start();
+  // an adapter that, like a headless ACP agent, shares its final answer with the senders of the delivery and ALSO broadcasts when it has nothing to reply to
+  f.kimi.answer = envs => { expect(envs.map(e => e.kind)).toEqual(["invocation"]); return "ANSWER-MARKER one"; };
+  const reply = await invoke(f); expect(reply.ok).toBe(true);
+  await until(() => results(f.codex).length === 1, "result");
+  // a second answer in the same turn, addressed every way an adapter might: to everyone, to a peer, to the sender, as a digest reply
+  const request = f.kimi.got[0]![0]!;
+  for (const to of [undefined, ["codex"], ["pi", "qwen"], ["digest"], ["hub"], ["user"]]) f.kimi.onMessage?.("ANSWER-MARKER late " + String(to), { inReplyTo: request, ...(to ? { to } : {}) });
+  f.kimi.onMessage?.("ANSWER-MARKER unaddressed", {});
+  await Bun.sleep(200);
+  for (const peer of [f.codex, f.pi, watcher]) expect(JSON.stringify(peer.got), peer.id).not.toContain("ANSWER-MARKER late");
+  expect(JSON.stringify(f.pi.got)).not.toContain("ANSWER-MARKER"); expect(JSON.stringify(watcher.got)).not.toContain("ANSWER-MARKER");
+  expect(results(f.codex)).toHaveLength(1); expect(results(f.codex)[0]!.body).toContain("ANSWER-MARKER one");
+  expect(f.codex.got.flat().filter(e => e.kind !== "invocation_result")).toEqual([]);
+  // no event, log line, journal row, bus snapshot or memory path carries any later answer
+  expect(JSON.stringify(f.events())).not.toContain("ANSWER-MARKER"); expect(f.log()).not.toContain("ANSWER-MARKER");
+  expect(f.daemon.bus.get(request.id)?.body ?? "").not.toContain("ANSWER-MARKER");
+  const journal = readFileSync(join(f.stateDir, "hub.db")).toString("latin1");
+  expect(journal.includes("ANSWER-MARKER late")).toBe(false); expect(journal.includes("ANSWER-MARKER unaddressed")).toBe(false);
+});
+
+test("containment: an explicit hub_send reply to the request is the answer too, and is published nowhere", async () => {
+  const f = await fixture();
+  f.kimi.answer = () => undefined; f.kimi.receipts = false;
+  await invoke(f);
+  await until(() => f.kimi.got.length === 1, "delivered");
+  const sent = await f.call("kimi", "hub_send", { text: "SENT-ANSWER-MARKER", reply_to: f.kimi.got[0]![0]!.id });
+  expect(sent.ok).toBe(true);
+  await until(() => results(f.codex).length === 1, "result");
+  expect(results(f.codex)[0]!.body).toContain("SENT-ANSWER-MARKER");
+  await Bun.sleep(100);
+  for (const peer of [f.pi]) expect(JSON.stringify(peer.got)).not.toContain("SENT-ANSWER-MARKER");
+  expect(JSON.stringify(f.events())).not.toContain("SENT-ANSWER-MARKER"); expect(f.log()).not.toContain("SENT-ANSWER-MARKER");
+});
+
+test("result privacy: an answer the screen does not clear, or cannot decide on, is withheld with fixed text and no body is kept", async () => {
+  for (const label of ["pii", "unknown"] as const) {
+    const f = await fixture({ screen: async () => ({ label, ms: 1 }) });
+    f.kimi.answer = () => "PRIVATE-ANSWER-MARKER";
+    const r = await invoke(f); expect(r.ok, String((r as { error?: string }).error)).toBe(true);
+    await until(() => results(f.codex).length === 1, "withheld result");
+    const body = results(f.codex)[0]!.body;
+    expect(body).toContain("outcome withheld"); expect(body).toContain("the result was withheld because it may contain private data; it was not kept"); expect(body).not.toContain("PRIVATE-ANSWER-MARKER");
+    expect(f.rows()[0]).toMatchObject({ outcome: "withheld", result_bytes: 0 });
+    expect(JSON.stringify(f.events())).not.toContain("PRIVATE-ANSWER-MARKER"); expect(f.log()).not.toContain("PRIVATE-ANSWER-MARKER");
+    expect(readFileSync(join(f.stateDir, "hub.db")).toString("latin1").includes("PRIVATE-ANSWER-MARKER")).toBe(false);
+  }
+  const clear = await fixture({ screen: async () => ({ label: "clear", ms: 1 }) });
+  clear.kimi.answer = () => "fine";
+  await invoke(clear); await until(() => results(clear.codex).length === 1, "clear result");
+  expect(results(clear.codex)[0]!.body).toContain("outcome completed");
+  const throwing = await fixture({ screen: async () => { throw new Error("screen down"); } });
+  throwing.kimi.answer = () => "fine";
+  await invoke(throwing); await until(() => results(throwing.codex).length === 1, "screen failure result");
+  expect(results(throwing.codex)[0]!.body).toContain("outcome withheld");
+});
+
+test("result privacy: a pattern in the answer, a secret, or a callee whose turn turned private all withhold it, with no screen at all", async () => {
+  for (const answer of ["id 900101-1234567 inside", "the key is sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]) {
+    const f = await fixture(); f.kimi.answer = () => answer;
+    await invoke(f); await until(() => results(f.codex).length === 1, "result");
+    expect(results(f.codex)[0]!.body, answer).toContain("outcome withheld"); expect(results(f.codex)[0]!.body).not.toContain("900101");
+  }
+  const g = await fixture();
+  const board = new Board(join(g.stateDir, "hub.db")); cleanups.push(() => board.close());
+  g.kimi.answer = () => { board.update(board.propose("user", { title: "private 900101-1234567", class: "implement", signals: ["pii"] } as never).id, "user", "accepted", { owner: "kimi", state: "in_progress" }); return "innocent words"; };
+  await invoke(g); await until(() => results(g.codex).length === 1, "result");
+  expect(results(g.codex)[0]!.body).toContain("outcome withheld"); expect(results(g.codex)[0]!.body).not.toContain("innocent");
+});
+
+test("budget: a target that is paused is refused at call time and builds nothing", async () => {
+  const f = await fixture();
+  f.daemon.bus.pause("kimi");
+  const r = await invoke(f); expect(r.ok).toBe(false); expect(r.error).toMatch(/paused/);
+  expect(f.kimi.got).toEqual([]); expect(f.rows()).toEqual([]);
+});
+
+test("limits: an invocation is charged to the caller like a message to the target, so a burst is rate limited before any envelope", async () => {
+  const f = await fixture({ limits: { pair_per_min: 2, sender_per_min: 100, repeat_window_s: 0 } });
+  f.kimi.answer = () => "ok";
+  const outcomes: boolean[] = [];
+  for (let i = 0; i < 4; i++) outcomes.push((await invoke(f, { args: { input: `n${i}` } })).ok);
+  expect(outcomes.filter(Boolean).length).toBe(2);
+  const refused = await invoke(f, { args: { input: "again" } });
+  expect(refused.ok).toBe(false); expect(refused.error).toMatch(/rate limited/);
+  expect(f.rows().length).toBe(2);
 });

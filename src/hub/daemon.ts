@@ -1810,14 +1810,39 @@ export async function startDaemon(opts: DaemonOptions) {
       event({ type: "envelope", id: env.id, from: env.from, ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, kind: env.kind, ...(env.refs?.task ? { task: env.refs.task } : {}) });
       return true;
     }
-    if (env.from === HUB || env.from === USER || !env.to || !env.to.includes(HUB) || env.hop < 1) return false;
-    const row = invocations.byTrace(env.trace);
-    if (!row || row.target !== env.from || (row.outcome !== "queued" && row.outcome !== "delivered")) return false;
-    const refused = refusedBy(env.body);
-    if (refused !== undefined) finishInvocation(row, "refused", { reason: `${row.target} declined: ${refused}` });
-    else finishInvocation(row, "completed", { body: env.body });
+    return false;
+  };
+  /**
+   * #445 C2: a callee's answer, taken over BEFORE the bus builds anything from it (`Bus.onAnswer`). It is found by what the peer was handed, never by how the
+   * answer is addressed, so an agent whose final answer is normally shared with every peer cannot leak it. Nothing here publishes, logs, cites or stores the text:
+   * it goes to the screens below and then, if it passes, into the one result for the caller. Returns true whenever the answer belongs to an invocation, even a
+   * settled one (a late answer after a timeout is dropped, not broadcast).
+   */
+  bus.onAnswer = (peer, text, handed) => {
+    const request = handed.find(e => e.kind === "invocation" && e.from === HUB && e.refs?.invocation === e.id);
+    if (!request) return false;
+    const row = invocations.get(request.id);
+    if (!row || row.target !== peer) return true; // not ours to settle, and never a broadcast
+    if (row.outcome !== "queued" && row.outcome !== "delivered") return true;
+    void settleAnswer(row, text);
     return true;
   };
+  const settleAnswer = async (row: InvocationRow, text: string): Promise<void> => {
+    try {
+      const refused = refusedBy(text);
+      if (refused !== undefined) return void finishInvocation(row, "refused", { reason: `${row.target} declined: ${refused}` });
+      // The callee's turn may have turned private while it worked, and its words may carry PII: either withholds the whole result and keeps no body (AGENTS.md, PII during a PII turn).
+      const privateNow = () => !!turns.get(row.target)?.private || contextPii(row.target) || (row.task !== null && (() => { const t = board.get(row.task!); return !!t && tasks.isPii(t); })());
+      let clear = !privateNow() && tasks.nameable(text) && !looksSecret(text) && boundedSafe(text);
+      if (clear && tasks.screenOn()) {
+        const verdict = await (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text.slice(0, 20_000)).catch(() => undefined);
+        clear = verdict?.label === "clear" && !privateNow(); // unknown is PII, and it is read again after the await
+      }
+      finishInvocation(row, clear ? "completed" : "withheld", clear ? { body: text } : {});
+    } catch { finishInvocation(row, "withheld"); } // a failure to decide is a withhold, never a pass
+  };
+  /** A target that is paused by the person, the conductor or the budget, or whose quota window is exhausted, is refused at call time (D5, quota). A pause that starts later leaves a queued request queued under its deadline. */
+  const invocationPaused = (target: PeerId): boolean => bus.isPaused(target) || manualPaused.has(target) || conductorHolds.has(target) || !!budget.record(definitionOf(target)?.budget?.account ?? target);
   const invocationTimeoutMs = () => (typeof config.invocation?.timeout_s === "number" && config.invocation.timeout_s >= 10 ? config.invocation.timeout_s : DEFAULT_TIMEOUT_S) * 1000;
   /** The deadline pass: a request still queued is withdrawn (`expired`, no effect); one delivered with no result is a `timeout` (reads only in C2). */
   const sweepInvocations = (): void => {
@@ -3277,7 +3302,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const facts = {
           caller: by, target, capabilityId: a.capability as string,
           piiContext: piiTurn || !!turns.get(by)?.private || contextPii(by),
-          attached: !!targetPeer && targetPeer.state !== "offline", onRoster: !!targetPeer && membershipAllowed(target), paused: bus.isPaused(target), held: bus.isHeld(target),
+          attached: !!targetPeer && targetPeer.state !== "offline", onRoster: !!targetPeer && membershipAllowed(target), paused: invocationPaused(target), held: bus.isHeld(target),
           pullOnly: targetPeer?.pullOnly === true,
           capability: view ? { id: view.id, state: view.state, class: view.class } : undefined,
           depth: invocations.answering(by), openByCaller: invocations.countOpenBy("caller", by), openByTarget: invocations.countOpenBy("target", target),
@@ -3303,13 +3328,16 @@ export async function startDaemon(opts: DaemonOptions) {
         const taskAgain = a.task === undefined ? undefined : board.get(a.task as number);
         const recheck = invocationRefusal({ ...facts,
           piiContext: piiTurn || !!turns.get(by)?.private || contextPii(by),
-          attached: !!again && again.state !== "offline", onRoster: !!again && membershipAllowed(target), paused: bus.isPaused(target), held: bus.isHeld(target), pullOnly: again?.pullOnly === true,
+          attached: !!again && again.state !== "offline", onRoster: !!again && membershipAllowed(target), paused: invocationPaused(target), held: bus.isHeld(target), pullOnly: again?.pullOnly === true,
           capability: stillView ? { id: stillView.id, state: stillView.state, class: stillView.class } : undefined,
           depth: invocations.answering(by), openByCaller: invocations.countOpenBy("caller", by), openByTarget: invocations.countOpenBy("target", target),
           ...(a.task === undefined ? {} : { task: { id: a.task as number, ok: !!taskAgain && (taskAgain.owner === by || taskAgain.reviewer === by) && !isClosedTaskState(taskAgain.state) && taskAgain.state !== "backlog", pii: !!taskAgain && tasks.isPii(taskAgain), reason: `task #${a.task} is not open work of yours` } }),
         });
         if (recheck || !stillFound || stillFound.digest !== found!.digest || connectionGeneration(by) === undefined) throw new PreEffectToolRefusal(recheck ?? "the capability or your session changed while the call was checked; ask again");
         if (stopping || recoveryActive()) throw new PreEffectToolRefusal("the hub is stopping or recovering; ask again afterwards");
+        // The request is sent by the hub, which no limit applies to, so the CALLER is charged: the same per-sender and per-pair limits as a message from it to the target (priority status, never important).
+        const limited = admit(newEnvelope(by, `invoke ${found!.id} ${JSON.stringify(checked.args)}`, { to: [target], kind: "invocation", priority: "status" }));
+        if (limited) throw new PreEffectToolRefusal(limited);
         const request = newEnvelope(HUB, "", { to: [target], kind: "invocation", priority: "status" });
         request.body = requestText({ caller: by, capabilityId: found!.id, name: found!.name, kind: found!.kind, args: checked.args, id: request.id });
         request.refs = { invocation: request.id, ...(a.task === undefined ? {} : { task: String(a.task) }) };
@@ -7749,6 +7777,12 @@ export async function startDaemon(opts: DaemonOptions) {
         const unknown = to?.filter((id) => !bus.knownPeers().includes(id) && membershipAllowed(id)) ?? [];
         if (unknown.length) return void reply({ t: "sent", ok: false, error: `unknown peer: ${unknown.join(", ")}` });
         const inReplyTo = msg.reply_to ? bus.get(String(msg.reply_to)) : undefined;
+        // #445 C2: an explicit hub_send that answers an invocation request is the answer, not a message: it is settled like any other answer and published nowhere.
+        if (c.peer && inReplyTo?.kind === "invocation" && inReplyTo.from === HUB) {
+          bus.onAnswer?.(c.peer, body, [inReplyTo]);
+          bus.completeReply(c.peer, inReplyTo.id);
+          return void reply({ t: "sent", ok: true, targets: [], recorded: false });
+        }
         // Built first: limits count the audience it really has (a reply goes to the parent's sender).
         let env = newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) });
         try { bus.checkRemotePublication(env); }

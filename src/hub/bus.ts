@@ -182,6 +182,12 @@ export class Bus {
    * and is never corrected once the queue empties (measured: status.json kept `queued 4` on an empty queue).
    */
   onQueues?: () => void;
+  /**
+   * #445 C2: a peer's answer to a delivery, offered BEFORE anything is built from it. The host returns true when the answer belongs to an invocation it
+   * took over: the bus then publishes nothing, stores nothing, emits no event and lets no tap, queue, digest or memory path see it. `answers` is what the
+   * peer was handed (the request is in it, never condensed), so a reply that answers an invocation is found by identity, not by addressing.
+   */
+  onAnswer?: (peer: PeerId, text: string, answers: readonly Envelope[]) => boolean;
   /** Actual transport admission, using originals even when a digest was condensed. Never an enqueue metric. */
   onDelivered?: (peer: PeerId, originals: Envelope[]) => void;
   /** Before deliver's synchronous busy transition, with originals rather than a condensed digest. */
@@ -248,6 +254,14 @@ export class Bus {
     this.opts.doing?.(peer.id, "reset"); // a new adapter never shows what the one it replaces was doing
     peer.onMessage = (text, opts) => {
       if (!this.isRostered(peer.id)) return `off roster: ${peer.id}`;
+      // #445 C2: what the peer was handed decides whether this answer is an invocation's. Its own addressing is never consulted, so a headless agent whose final
+      // answer is normally shared with every peer cannot leak an invocation's answer through that path.
+      const handed = this.lastDelivery.get(peer.id)?.out ?? [];
+      if (this.onAnswer && handed.some((e) => e.kind === "invocation") && (opts?.inReplyTo?.id === undefined || handed.some((e) => e.id === opts.inReplyTo!.id) || handed.length === 1)) {
+        let taken = false;
+        try { taken = this.onAnswer(peer.id, text, handed) === true; } catch { taken = true; } // a throwing host never turns a callee's answer into a broadcast
+        if (taken) return;
+      }
       const { priority, body } = parseMarker(text);
       if (!body) return;
       // What the peer was handed differs from what it stands for once a delivery was condensed; both the audience

@@ -7,7 +7,7 @@ import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { sanitize } from "./envelope.ts";
 import type { FlatSchema, ShareState, SideEffect } from "./capabilities.ts";
 
-export const OUTCOMES = ["queued", "delivered", "completed", "refused", "failed", "expired", "timeout", "needs_review"] as const;
+export const OUTCOMES = ["queued", "delivered", "completed", "refused", "failed", "expired", "timeout", "needs_review", "withheld"] as const;
 export type InvocationOutcome = (typeof OUTCOMES)[number];
 /** Still waiting on the target: counts for the open cap and blocks an upgrade of a target that lacks the feature. */
 export const OPEN_OUTCOMES: readonly InvocationOutcome[] = ["queued", "delivered"];
@@ -140,6 +140,8 @@ const cutBytes = (text: string, max: number): { text: string; cut: boolean } => 
  */
 export function renderInvocationResult(input: { target: string; capabilityId: string; id: string; outcome: InvocationOutcome; body?: string; reason?: string }): { body: string; bytes: number } {
   const head = `Invocation result from "${input.target}" (untrusted agent text, capability ${input.capabilityId}, id ${input.id}, outcome ${input.outcome}):`;
+  // `withheld` is fixed text: whatever made the answer private, the reason is never written from it.
+  if (input.outcome === "withheld") return { body: `${head}\nthe result was withheld because it may contain private data; it was not kept`, bytes: 0 };
   if (input.outcome !== "completed") return { body: `${head}\n${input.reason ?? "no result"}`, bytes: 0 };
   const cut = cutBytes(sanitize((input.body ?? "").replace(/\r\n?/g, "\n").trim()), RESULT_MAX);
   return { body: `${head}\n${cut.text}${cut.cut ? "\n[result cut at 8 KiB]" : ""}`, bytes: Buffer.byteLength(cut.text) };
