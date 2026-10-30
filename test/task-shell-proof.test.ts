@@ -17,7 +17,10 @@ function fixture() {
   const globalConfig = join(hostBin, "gitconfig"); writeFileSync(globalConfig, "");
   const env = hostShellEnvironment({ HOME: hostBin, PATH: `${hostBin}:${process.env.PATH ?? "/usr/bin:/bin"}`, GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_GLOBAL: globalConfig });
   const git = (...args: string[]) => {
-    const out = hubGitSync(["-C", project, ...args], { env, encoding: "utf8", timeout: 1000 });
+    // Setup hang guard, not a product proof deadline: hosted macOS hit the 1 s cutoff
+    // in a 2.60 s case (#564); 5 s gives about 2x that observed whole-case tail.
+    // Local Mac: 480 calls, 20 copies (at most 2 concurrent), max 39.8 ms; not a hosted reproduction.
+    const out = hubGitSync(["-C", project, ...args], { env, encoding: "utf8", timeout: 5000 });
     expect(out.status, out.stderr).toBe(0); return out.stdout.trim();
   };
   git("init", "-q"); git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture");
