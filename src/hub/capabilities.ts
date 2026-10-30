@@ -232,14 +232,14 @@ export function acpManifest(agent: unknown, version: unknown, update: unknown, o
   return buildManifest(candidates, observedAt);
 }
 
-/** A Codex `skills/list` answer as capabilities, on the probed version only. Disabled skills and skills with errors are not listed. */
+/** A Codex `skills/list` answer as capabilities, on the probed version only. Only a skill that says `enabled: true` is listed: a flag that is missing or unreadable is not consent. */
 export function codexSkillsManifest(version: unknown, result: unknown, observedAt: number): CapabilityManifest {
   const candidates: Candidate[] = [];
   if (version === NATIVE_PINS.codex.version && object(result) && Array.isArray(result.data)) {
     for (const entry of result.data) {
       if (!object(entry) || !Array.isArray(entry.skills)) continue;
       for (const skill of entry.skills) {
-        if (!object(skill) || skill.enabled === false) continue;
+        if (!object(skill) || skill.enabled !== true) continue;
         candidates.push({ kind: "skill", name: skill.name, description: skill.shortDescription ?? skill.description, inputSchema: STRING_INPUT, source: "codex-skills", invoke: "native" });
       }
     }
