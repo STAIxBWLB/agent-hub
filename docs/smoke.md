@@ -2100,6 +2100,10 @@ The new receipt must be a previously absent file directly under the fixture root
 
 Real-account Q2 receipt: **UNVERIFIED**. The conductor runs this leg with the person after merge. Fake PTY/protocol tests are implementation evidence only. Q3 approvals, Q5 FIFO and Q6 resume are later executable legs. Q4 remains the known native Qwen turn-stop limitation documented in the 2026-10-25 T0 receipt; the runner's owned-group timeout cleanup does not claim a supported in-session turn interruption.
 
+## Capability source probes (#445 C0)
+
+The 2026-10-30 [receipt](verification/2026-10-30-445-capability-probes.md) records what Kimi 2.3.2, Qwen 0.26.1 and Codex 0.166.0 expose for capability discovery, probed in isolated, credential-free homes with a network-denied profile and real config files checked unchanged. Listing legs are live; skill execution on each agent needs an account and stays **UNVERIFIED** until #445 C4. Design consequences: [Capability invocation (#445)](specs/2026-09-19-agent-hub-design.md#capability-invocation-445).
+
 ## Model and effort capability verification (#266 AC1)
 
 The 2026-10-29 [version-bound capability table](specs/2026-09-19-agent-hub-design.md#vendor-model-and-effort-controls-266-ac1)
