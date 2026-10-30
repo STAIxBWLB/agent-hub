@@ -12,7 +12,9 @@ import { join } from "node:path";
  * ponytail: ceiling and upgrade path. The gate exists only because of oven-sh/bun#45300 on Bun up to 1.4.3 (this repo pins 1.4.2 in `.bun-version`); the upgrade path is to delete GATE_SCRIPT, `gate` and `gateDir` once the pinned Bun is 1.4.4 or newer, which is its own task because it
  * touches CI and every OS leg. The parent-death stop below stays whatever the Bun version: an orphaned bridge is this repository's bug, not Bun's. The gate costs about one shell start (a few ms).
  */
-const GATE_SCRIPT = 'n=0; while [ ! -e "$0" ]; do n=$((n+1)); [ "$n" -gt 1000 ] && exit 125; sleep 0.01; done; exec "$@"';
+// The shell removes its own gate (file, then directory) once released, when its bounded wait ends, and when it is hung up or terminated (a bridge killed with SIGKILL runs no cleanup, and the pty closing
+// sends the shell SIGHUP), so no path leaves a directory behind. `exec` resets the traps for the real command.
+const GATE_SCRIPT = 'd=${0%/*}; trap "rm -f \\"$0\\"; rmdir \\"$d\\" 2>/dev/null; exit 125" HUP TERM INT; n=0; while [ ! -e "$0" ]; do n=$((n+1)); if [ "$n" -gt 1000 ]; then rmdir "$d" 2>/dev/null; exit 125; fi; sleep 0.01; done; rm -f "$0"; rmdir "$d" 2>/dev/null; exec "$@"';
 /** A bridge whose caller died is stopped instead of running on: its child holds a terminal nobody reads and, under launchd, nothing else would ever stop it. */
 const PARENT_POLL_MS = 250;
 const PARENT_TERM_GRACE_MS = 1_000;
