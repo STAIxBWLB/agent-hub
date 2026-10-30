@@ -30,9 +30,13 @@ class Peer extends BasePeer {
   async start() { this.setState("idle"); }
   async stop() { this.setState("offline"); }
   set(state: PeerState) { this.setState(state); }
-  async deliver(envs: Envelope[]) {
+  async deliver(envs: Envelope[], deliveryId?: string) {
     this.setState("busy"); this.batches.push(envs);
-    if (this.fail) { this.beforeFailure?.(); this.onFailed?.(envs, this.quota ? { quota: true } : undefined); }
+    if (this.fail) {
+      this.beforeFailure?.();
+      if (deliveryId) this.onDelivery?.({ id: deliveryId, state: "failed_safe", ...(this.quota ? { quota: true as const } : {}) });
+      else this.onFailed?.(envs, this.quota ? { quota: true } : undefined);
+    }
   }
 }
 function bus(config: () => BusOperationalConfig, pullOnly = false) {
@@ -151,7 +155,7 @@ test("#489 a failed in-flight preface merges under the current note limit withou
   await p.start();
   const env = newEnvelope("user", "safe failure", { to: [p.id] }); b.publish(env);
   await until(() => b.attemptState()[`${p.id}:${env.id}`] === 1);
-  expect(b.snapshot(false).prefaces[p.id]!.body).toBe("retained recall\n\nnote from codex [finding]: arrived during delivery");
+  expect(b.snapshot(false).prefaces[p.id]!.body).toBe("retained recall\n\n\nnote from codex [finding]: arrived during delivery");
 });
 
 test("#489 terminal history reload prunes only at settlement and preserves unresolved retry ancestry", () => {
