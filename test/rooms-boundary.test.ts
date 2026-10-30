@@ -260,6 +260,10 @@ test("an explicit user@label target crosses the outbound boundary for a receivin
 });
 
 
+type InvocationFixture<P> = ReturnType<typeof fixture> & { payload: P };
+function invocationFixture(kind?: "invocation"): InvocationFixture<RoomReadInvocationRequest>;
+function invocationFixture(kind: "invocation_result"): InvocationFixture<RoomReadInvocationResult>;
+function invocationFixture(kind: "invocation" | "invocation_result"): InvocationFixture<RoomReadInvocationRequest | RoomReadInvocationResult>;
 function invocationFixture(kind: "invocation" | "invocation_result" = "invocation") {
   const f = fixture();
   f.envelope.from = "hub"; f.envelope.kind = kind;
