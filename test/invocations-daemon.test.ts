@@ -543,6 +543,9 @@ test("a result for a caller that is gone is not published, and one for a caller 
   gone.kimi.onMessage?.("late but settled", { inReplyTo: gone.kimi.got[0]![0]!, to: ["codex"] });
   await until(() => gone.rows()[0]?.outcome === "completed", "settled with nobody to read it");
   expect(gone.codex.got.flat().filter(e => e.kind === "invocation_result")).toEqual([]);
+  await gone.codex.start(); await Bun.sleep(150); // the session that asked is gone: a peer that comes back is not handed a result for a question it no longer holds
+  expect(gone.codex.got.flat().filter(e => e.kind === "invocation_result")).toEqual([]);
+  expect(gone.daemon.bus.queueIds("codex")).toEqual([]);
 });
 
 test("a result is marked private when the caller's context is private, so no log or console shows its body", async () => {
@@ -596,7 +599,7 @@ test("recovery refuses a target without the invocation feature while a row is op
 test("result privacy: a scoped task that is PII withholds the answer even though the answer itself is clean", async () => {
   const f = await fixture();
   const board = new Board(join(f.stateDir, "hub.db")); cleanups.push(() => board.close());
-  const task = board.update(board.propose("user", { title: "ordinary work", class: "implement" } as never).id, "user", "accepted", { owner: "codex", reviewer: "kimi", state: "in_progress" });
+  const task = board.update(board.propose("user", { title: "ordinary work", class: "implement" } as never).id, "user", "accepted", { owner: "codex", reviewer: "pi", state: "in_progress" }); // the target is neither owner nor reviewer, so only the row's task can make it private
   f.kimi.answer = () => undefined; f.kimi.receipts = false;
   const r = await invoke(f, { task: task.id }); expect(r.ok, String((r as { error?: string }).error)).toBe(true);
   await until(() => f.kimi.got.length === 1, "delivered");
@@ -643,4 +646,30 @@ test("a withheld result is stored as nothing: the row, the event and the journal
   const bytes = readFileSync(join(f.stateDir, "hub.db")).toString("latin1");
   expect(bytes.includes("WITHHELD-STORAGE-MARKER")).toBe(false); expect(bytes.includes("900101-1234567")).toBe(false);
   expect(f.rows()[0]).toMatchObject({ outcome: "withheld", result_bytes: 0 });
+});
+
+test("a screen that throws outright (not a rejected promise) withholds the answer: a failure to decide is never a pass", async () => {
+  let calls = 0;
+  const f = await fixture({ screen: ((text: string) => { if (++calls === 1) return Promise.resolve({ label: "clear" as const, ms: 1 }); throw new Error("screen exploded: " + text.length); }) as never });
+  f.kimi.answer = () => "DECISION-FAILURE-MARKER";
+  await invoke(f); await until(() => results(f.codex).length === 1, "withheld result");
+  expect(results(f.codex)[0]!.body).toContain("outcome withheld"); expect(results(f.codex)[0]!.body).not.toContain("DECISION-FAILURE-MARKER");
+  expect(f.rows()[0]).toMatchObject({ outcome: "withheld", result_bytes: 0 });
+});
+
+test("two paths that settle the same row at once (the deadline sweep and a screened answer) tell the caller exactly once", async () => {
+  let release!: () => void; const gate = new Promise<void>(r => (release = r));
+  let entered!: () => void; const inside = new Promise<void>(r => (entered = r));
+  let calls = 0;
+  const f = await fixture({ sweepMs: 20, screen: async () => { if (++calls === 1) return { label: "clear", ms: 1 }; entered(); await gate; return { label: "clear", ms: 1 }; } });
+  f.kimi.answer = () => undefined; f.kimi.receipts = false;
+  await invoke(f); await until(() => f.kimi.got.length === 1, "delivered"); await until(() => f.rows()[0]?.outcome === "delivered", "open");
+  f.kimi.onMessage?.("ANSWER-RACING-THE-DEADLINE", { inReplyTo: f.kimi.got[0]![0]!, to: ["codex"] });
+  await inside; // the answer is in the screen
+  const l = new InvocationLedger(join(f.stateDir, "hub.db")); (l as any).db.run("UPDATE invocations SET deadline = 1"); l.close();
+  await until(() => results(f.codex).length === 1, "the sweep times it out first");
+  release(); await Bun.sleep(200);
+  expect(results(f.codex)).toHaveLength(1); expect(results(f.codex)[0]!.body).toContain("outcome timeout"); expect(results(f.codex)[0]!.body).not.toContain("ANSWER-RACING");
+  expect(f.rows()[0]!.outcome).toBe("timeout");
+  expect(f.events().filter(e => e.type === "invocation" && e.outcome !== "queued")).toHaveLength(1);
 });
