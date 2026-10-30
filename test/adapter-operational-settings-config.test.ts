@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { realPath } from "../src/hub/project.ts";
+import { hubGitSync } from "../src/hub/git.ts";
 import { settingDef, undoSetting, writeConfigSetting, type SettingRow } from "../src/hub/settings.ts";
 import { configApply, validateOperationalConfig, validateRawConfig } from "../src/hub/config-apply.ts";
 import {
@@ -95,6 +96,8 @@ test("#489 H5 local inherit and undo preserve sibling settings and unrelated loc
 
 async function host(peer: "kimi" | "jcode") {
   const f = project(), nativeHome = join(f.cwd, `${peer}-home`);
+  // Executable/home overrides require Git-proven untracked config.local.json, just as real launches do.
+  expect(hubGitSync(["-C", f.cwd, "init", "-q"], { encoding: "utf8", timeout: 5000 }).status).toBe(0);
   mkdirSync(nativeHome); writeFileSync(join(nativeHome, "mcp.json"), "{}");
   const shared = JSON.stringify({ batch_ms: 0, adapter_timing: defaults, roster: { [peer]: true },
     memory: { enabled: false, native: false }, inference: { enabled: false }, mlx: { enabled: false },
