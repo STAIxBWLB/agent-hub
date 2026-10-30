@@ -12,6 +12,7 @@ import { BasePeer } from "../hub/peers.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { AcpOwnedGroup } from "./acp-owned-group.ts";
 import type { StartForm } from "./registry-types.ts";
+import { acpManifest, type CapabilityManifest } from "../hub/capabilities.ts";
 
 export interface PermissionOption {
   optionId: string;
@@ -235,6 +236,11 @@ export class AcpPeer extends BasePeer {
   private modeUnknown = false;
   private kimiAgent = false;
   private qwenAgent = false;
+  /** #445 C1: the agent identity from `initialize`, and the latest `available_commands_update` of the CURRENT session (an update that arrives before the session id is bound waits in `earlyCommands`). */
+  private agentIdentity: { name: unknown; version: unknown } | undefined;
+  private commands: { sessionId: string; update: unknown; at: number } | undefined;
+  private binding = false;
+  private earlyCommands: { sessionId: string; update: unknown; at: number } | undefined;
   private availableModes = new Set<string>();
   private proc: ChildProcessWithoutNullStreams | undefined;
   private ownedGroup: { proc: ChildProcessWithoutNullStreams; proof: AcpOwnedGroup } | undefined;
@@ -332,6 +338,7 @@ export class AcpPeer extends BasePeer {
     managedLaunches.delete(this);
     if (this.opts.requireOwnedGroup && this.proc) throw new Error("Configured ACP still has a process; stop it before starting another");
     this.stopping = false;
+    this.binding = true; this.commands = undefined; this.earlyCommands = undefined; // #445 C1: a new process starts a new session; the old list is not its list
     const launchedId = this.id;
     const launchedCwd = this.opts.cwd;
     const [bin, ...args] = this.opts.cmd;
@@ -353,6 +360,7 @@ export class AcpPeer extends BasePeer {
       // The configured peer id and command are labels, not an agent-specific mode contract.
       // Installed Kimi Code CLI's ACP initialize advertises this exact name.
       this.kimiAgent = this.nativePolicy === undefined && init?.agentInfo?.name === "Kimi Code CLI";
+      this.agentIdentity = { name: init?.agentInfo?.name, version: init?.agentInfo?.version };
       const expected = this.opts.expectedAgent, version = init?.agentInfo?.version;
       if (expected && (init?.agentInfo?.name !== expected.name || !(typeof expected.version === "function" ? expected.version(version) : version === expected.version))) throw new Error("native ACP identity is not verified for this production adapter");
       const qwen = qwenNativeIdentity(this.id, this.opts.qwen025, init, this.opts.kind);
@@ -382,6 +390,8 @@ export class AcpPeer extends BasePeer {
         throw new Error("Configured ACP did not provide a valid native session identity");
       }
       this.sessionId = session.sessionId;
+      this.binding = false;
+      this.adoptEarlyCommands(session.sessionId);
       this.onDoing?.("reset");
       const modes: unknown = session.modes?.availableModes;
       this.availableModes = new Set(Array.isArray(modes) ? modes.flatMap((mode) => typeof mode?.id === "string" ? [mode.id] : []) : []);
@@ -460,6 +470,20 @@ export class AcpPeer extends BasePeer {
     if (this.cancelWait?.reported) await this.cancelWait.released;
     if (this.modeUnknown) throw new Error(`${this.id} permission mode unknown; restart the peer`);
     this.permissionMode = mode;
+  }
+
+  /** The command list that arrived while the session was being bound counts only when it names the session that was bound. */
+  private adoptEarlyCommands(sessionId: string): void {
+    const early = this.earlyCommands;
+    this.commands = early?.sessionId === sessionId ? early : undefined;
+    this.earlyCommands = undefined;
+  }
+
+  /** #445 C1: the capabilities of the current session's last command list, on a probed Kimi or Qwen version only. Offline or no list yet is empty. */
+  async capabilityManifest(): Promise<CapabilityManifest> {
+    const held = this.commands;
+    if (this.state === "offline" || !held || held.sessionId !== this.sessionId) return { capabilities: [], observedAt: Date.now() };
+    return acpManifest(this.agentIdentity?.name, this.agentIdentity?.version, held.update, held.at);
   }
 
   async stop(reason?: string): Promise<void> {
@@ -696,6 +720,13 @@ export class AcpPeer extends BasePeer {
     if (this.state === "busy" && !this.cancelWait) { this.lastSignAt = Date.now(); this.touch(); }
 
     if (msg.method === "session/update") {
+      // #445 C1: the command list is the session's, sent right after `session/new` and again when skills change, whatever the turn state. Only the current session's counts.
+      if (msg.params?.update?.sessionUpdate === "available_commands_update" && typeof msg.params.sessionId === "string") {
+        const held = { sessionId: msg.params.sessionId, update: msg.params.update, at: Date.now() };
+        if (this.binding) this.earlyCommands = held;
+        else if (held.sessionId === this.sessionId) this.commands = held;
+        return;
+      }
       if (msg.params?.sessionId && msg.params.sessionId !== this.sessionId) return;
       const u = msg.params?.update;
       // Occupancy is the session's, not the turn's: 2.1.1's source text emits usage_update after the prompt

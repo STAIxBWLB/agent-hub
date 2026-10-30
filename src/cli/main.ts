@@ -27,6 +27,7 @@ import { renderSourceAdd, renderSourceList } from "./source-output.ts";
 import { renderScheduleChange, renderScheduleList, renderScheduleRun } from "./schedule-output.ts";
 import { renderIntake, renderIntakeChange } from "./intake-output.ts";
 import { renderLearnChange, renderLearnList } from "./learn-output.ts";
+import { renderCapabilities } from "./capabilities-output.ts";
 import { terminalText } from "./console-state.ts";
 import { parseSettingsEditArgs, runSettingsEdit, SETTINGS_EDIT_USAGE } from "./settings-edit.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
@@ -1451,6 +1452,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     return showToolText(data => renderScheduleChange(sub as "pause" | "resume", data, present.columns, Date.now()), await taskOp(sub === "pause" ? "schedule_pause" : "schedule_resume", { id }), present);
   },
 
+  capabilities: async () => {
+    // #445 C1: what each attached peer offers and which of it you share. Person only, like `learn`: `capabilities` has no entry in classifyPeerCommand, so an agent shell is refused before this runs and the daemon refuses any caller but the person again. It lists; it never calls anything.
+    const split = splitPresentation(args);
+    const present = outputOptions(split.flags);
+    if (split.operands.length) return fail("usage: ahub capabilities [--json] [--color=auto|always|never]");
+    return showToolText(data => renderCapabilities(data, present.columns), await taskOp("capabilities_list", {}), present);
+  },
   learn: async () => {
     // #514b: the person's verdict on a recurring-criterion candidate (#514a). Person only, end to end: `learn` is a `console` command for an agent shell (classifyPeerCommand has no entry for it, so the
     // identity layer refuses it before this runs), and the daemon refuses any caller but the person again. `accept` writes ONE key (profile_overrides.review_checklist) to the machine-local
