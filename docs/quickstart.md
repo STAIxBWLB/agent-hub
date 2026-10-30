@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.22.0
+bun add -g github:STAIxBWLB/agent-hub#v0.23.0
 ahub setup
 ```
 
@@ -29,6 +29,10 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
+
+## Upgrading to 0.23.0
+
+Nothing changes until you set something. Thirteen more operational numbers became settings in `config.local.json`, each keeping its old value when unset: three `adapter_timing.*` (at the next Kimi, ACP or Jcode launch, #982), four `model_relay.*` and `inference.backoff_min` (at the next daemon restart, #984) and five `console.*` (at the next console launch, #987). Capability sharing is new and opt-in. `ahub capabilities` (person only) lists the skills an attached Kimi 2.3.2, Qwen 0.26.1 or Codex 0.166.0 offers; nothing is offered to other agents until you pin an entry's digest under `invocation.share` in `.agenthub/config.local.json` (#985). Agents then call a shared `read` capability with `hub_invoke`. A `write` or `external` one needs an open task of the caller and your allow-once approval on every call, and one with no class is never invoked (#986, #991; see [invoking a shared capability](operations.md#invoking-a-shared-capability-445-c2c3)). Across a room, only a read capability both persons pinned crosses (#992). `ahub init --profile writing-pack|analysis|ops` applies the new shipped domain packs (#993). The `@staix/agent-mem` pin stays 0.13.0. Upgrade running hubs with `ahub upgrade` (an older hub refuses `hub_invoke`) and restart Claude sessions so they load the 0.23.0 plugin.
 
 ## Upgrading to 0.22.0
 
