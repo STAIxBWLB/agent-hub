@@ -679,7 +679,7 @@
       "search": "sanitize(body).length > 2000",
       "replacement": "false",
       "testFile": "test/roles.test.ts",
-      "testName": "role lint accepts eleven shipped definitions and rejects every schema/limit rule (#295)"
+      "testName": "role lint accepts all shipped definitions and rejects every schema/limit rule (#295)"
     },
     {
       "id": "catalog-render-sanitize",

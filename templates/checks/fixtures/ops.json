@@ -1,0 +1,4 @@
+[
+  { "id": "prepare-review", "owner": "project-owner", "due": "2026-11-10", "status": "in_progress" },
+  { "id": "confirm-evidence", "owner": "reviewer", "due": "2026-11-12", "status": "open" }
+]

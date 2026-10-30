@@ -1,0 +1,14 @@
+{
+  "name": "ops",
+  "profile": "general",
+  "summary": "Traceable project and meeting action records with explicit ownership, status and human follow-up review.",
+  "roles": ["project-manager", "meeting-actions-owner"],
+  "rubric": [
+    { "id": "ops-records", "text": "Action records pass the local schema, identity, ownership and status checks, with observed results retained.", "required": true },
+    { "id": "ops-coverage", "text": "Person review checks coverage against the source meeting or project record and identifies missing or duplicated actions.", "required": true },
+    { "id": "ops-followup", "text": "Person review confirms assignments and follow-up dates were agreed, or marks them proposed or unknown; completion requires evidence.", "required": true }
+  ],
+  "checks": [
+    { "id": "ops-records", "note": "Manual, advisory example only: bun templates/checks/ops.mjs <actions.json>. A schema pass does not prove meeting coverage or agreement." }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "analysis",
+  "profile": "research",
+  "summary": "Reproducible analysis of declared inputs, with separate person review of provenance and method.",
+  "roles": ["analyst"],
+  "rubric": [
+    { "id": "analysis-reproduce", "text": "The local reproduction check compares the declared program and input against the expected output and records its observed result.", "required": true },
+    { "id": "analysis-inputs", "text": "Person review confirms input provenance, selection and limits, with unknowns and missing data stated explicitly.", "required": true },
+    { "id": "analysis-method", "text": "Person review assesses method suitability, assumptions and interpretation; output equality alone does not establish validity.", "required": true }
+  ],
+  "checks": [
+    { "id": "analysis-reproduce", "note": "Manual, advisory example only: bun templates/checks/analysis.mjs <program.mjs> <input.json> <expected-output>. A match proves reproduction, not method validity." }
+  ]
+}

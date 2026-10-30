@@ -1,0 +1,14 @@
+{
+  "name": "writing-pack",
+  "profile": "writing",
+  "summary": "Scoped editing and translation with explicit metadata, terminology and style evidence.",
+  "roles": ["editor", "translator", "style-checker", "terminology-checker"],
+  "rubric": [
+    { "id": "writing-metadata", "text": "Required document metadata is present and agrees with the supplied rules.", "required": true },
+    { "id": "writing-terms", "text": "The document passes the supplied terminology rules; unresolved usage decisions are identified for person review.", "required": true },
+    { "id": "writing-style", "text": "The document passes the supplied mechanical style rules; readability and audience fit have a separate reviewer judgment.", "required": true }
+  ],
+  "checks": [
+    { "id": "writing-check", "note": "Manual, advisory example only: bun templates/checks/writing.mjs <document.json> <rules.json>. Output is evidence, not publication approval." }
+  ]
+}
