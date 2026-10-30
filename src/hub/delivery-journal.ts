@@ -1045,9 +1045,7 @@ export class DeliveryJournal {
     if (this.pruningDeferred) return;
     const terminal = state === "completed" || state === "discarded" || state === "failed";
     const terminalCap = terminal ? this.terminalHistoryLimit?.() ?? TERMINAL_CAP : TERMINAL_CAP;
-    // A tighter target must not delete the receipt this mutation/resolve is still using.
-    // Empty ids are invalid, so the legacy target keeps its exact previous eligible set.
-    const retainedId = terminalCap < TERMINAL_CAP ? currentId : "";
+    // Never delete the receipt this mutation/resolve is still using, at any target.
     const count = Number(
       (
         this.db
@@ -1062,7 +1060,7 @@ export class DeliveryJournal {
       .query(
         "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded','failed') AND d.id != ? AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
       )
-      .run(this.projectId, retainedId, count - terminalCap);
+      .run(this.projectId, currentId, count - terminalCap);
   }
   importSnapshot(snapshot: JournalSnapshot, operationId: string, trackQueuePressure = false): boolean {
     this.ensureOpen();

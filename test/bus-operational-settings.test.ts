@@ -212,6 +212,30 @@ test("#489 grouped handoff keeps both parents and retry ancestry open at history
   expect(journal.retryEvidence("claude", [first, second])).toBe("used");
 });
 
+test("#489 default history target also retains the current grouped receipt behind protected ancestry", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-grouped-default-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i" });
+  cleanup.push(() => journal.close());
+  const first = newEnvelope("user", "first grouped"), second = newEnvelope("user", "second grouped");
+  journal.transaction(() => {
+    for (let n = 0; n < TERMINAL_CAP - 1; n++) {
+      const id = `protected-${n}`;
+      journal.createDelivery({ id, peer: "claude", state: "completed", createdAt: first.ts, originals: [first], out: [first] });
+      journal.createDelivery({ id: `open-${n}`, peer: "claude", state: "needs_review", previousId: id, createdAt: first.ts, originals: [first], out: [first] });
+    }
+  });
+  journal.createDelivery({ id: "group-a", peer: "claude", state: "queued", createdAt: first.ts + 1, originals: [first], out: [first] });
+  journal.createDelivery({ id: "group-b", peer: "claude", state: "queued", createdAt: first.ts + 2, originals: [second], out: [second] });
+  const snapshot = { schemaVersion: 1 as const, queues: { claude: [] }, prefaces: {}, seen: [], attempts: {}, withdrawn: [] };
+  const handoff = journal.checkpointDelivery(snapshot, { id: "handoff", peer: "claude", state: "dispatching", createdAt: first.ts + 3, originals: [first, second], out: [first, second] });
+  expect(journal.get("group-a")?.state).toBe("discarded");
+  expect(journal.get("group-b")?.state).toBe("discarded");
+  expect(journal.resolve(handoff.id, handoff.revision, "completed", "verified grouped work").state).toBe("completed");
+  expect(journal.get(handoff.id)?.state).toBe("completed");
+  expect(journal.get(handoff.previousId!)?.state).toBe("discarded");
+  expect(journal.list().filter(row => row.state === "needs_review")).toHaveLength(TERMINAL_CAP - 1);
+}, 20_000);
+
 test("#489 failed grouped handoff rolls back parents and restores ordinary pruning", () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-grouped-rollback-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i", terminalHistoryLimit: () => 1 });
