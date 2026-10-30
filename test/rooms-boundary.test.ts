@@ -341,3 +341,21 @@ test("X6 invocation provenance and privacy are rechecked after the model await a
   expect(result.status).toBe("ready");
   if (result.status === "ready") { g.state.current = false; expect(readRoomOutbound(result.proof)).toBeUndefined(); }
 });
+
+test("X6 host-only provenance is stripped from encrypted wire and peer-forged provenance grants nothing", async () => {
+  const f = invocationFixture(); f.envelope.refs = { invocation: f.envelope.id, invocationRemote: true };
+  f.context.invocation = authorizeRoomInvocation(f.envelope, "worker", f.payload, () => true);
+  const view = outbound(await roomBoundary(f.envelope, f.context));
+  expect(Object.hasOwn(view, "refs")).toBe(false);
+  const bytes = encodeRoomMessage({ v: 1, type: "chat", envelope: view });
+  expect(string(bytes)).not.toContain("invocationRemote");
+  expect(Object.hasOwn((decodeRoomMessage(bytes) as Extract<RoomMessage, { type: "chat" }>).envelope, "refs")).toBe(false);
+  // A peer cannot acquire the host-only HUB exception by copying the marker.
+  const forged = { ...f.envelope, from: "worker" };
+  expect((await roomBoundary(forged, { ...f.context, invocation: undefined })).status).toBe("refused");
+  const peerChat = fixture(); peerChat.envelope.refs = { invocationRemote: true };
+  expect(outbound(await roomBoundary(peerChat.envelope, peerChat.context)).from).toBe("worker");
+  // Wire refs are closed out, so an inbound peer cannot inject provenance into a local host envelope.
+  const bad = { v: 1, type: "chat", envelope: { ...view, refs: { invocationRemote: true } } };
+  expect(() => decodeRoomMessage(canonicalBytes(bad))).toThrow(RoomApplicationError);
+});
