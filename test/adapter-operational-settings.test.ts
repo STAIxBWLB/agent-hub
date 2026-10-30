@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { AcpPeer, ACTIVITY_BATCH_MS, TOOL_CEILING_MS, type AcpOptions } from "../src/adapters/acp.ts";
+import { AcpPeer, ACTIVITY_BATCH_MS, TOOL_CEILING_MS } from "../src/adapters/acp.ts";
 import { JcodePeer, STEER_TIMEOUT_MS } from "../src/adapters/jcode.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
@@ -75,14 +75,13 @@ for (const ceilingMin of [1, 5]) test(`#489 configured ACP ceiling ${ceilingMin}
   cleanup.push(() => peer.stop()); peer.onDelivery = receipt => receipts.push(receipt);
   await peer.start(); await peer.deliver([newEnvelope("user", "TOOL_SLOW", { to: ["kimi"] })], "ceiling");
   await until(() => peer.nativeActivity);
-  const now = Date.now, start = now(), effective = Math.max(120_000, ceilingMin * 60_000);
+  const now = Date.now, start = (peer as unknown as { lastSignAt: number }).lastSignAt, effective = Math.max(120_000, ceilingMin * 60_000);
   try {
     config = { adapter_timing: { acp_tool_ceiling_min: 1 } }; // never retroactively retime this peer
     Date.now = () => start + effective - 30_000;
     peer.expire();
     expect(peer.state).toBe("busy");
-    expect(peer.armed.at(-1)!).toBeGreaterThan(29_000);
-    expect(peer.armed.at(-1)!).toBeLessThanOrEqual(30_000);
+    expect(peer.armed.at(-1)).toBe(30_000);
     expect(receipts.some(receipt => receipt.state === "needs_review")).toBe(false);
     Date.now = () => start + effective + 1000;
     peer.expire();
