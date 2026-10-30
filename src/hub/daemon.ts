@@ -3910,7 +3910,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const nativeUnattended = (peer: string): boolean => startingUnattended.get(peer) ?? unattendedPeers.has(peer);
   const permissions = new Map<string, { push: string; peer: string; tool?: string; createdAt: number; expiresAt: number; done: (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason?: "expired" | "cancelled") => boolean }>();
   let stopping = false;
-  const roomInvocations = new RoomInvocations({ bus, ledger: invocations, shares: () => readShare(config.invocation?.share), identity: (peer, sender) => roomChat.invocationIdentity(peer, sender),
+  const roomInvocations: RoomInvocations = new RoomInvocations({ bus, ledger: invocations, shares: () => readShare(config.invocation?.share), identity: (peer, sender) => roomChat.invocationIdentity(peer, sender),
     target: async (input, request) => { await invokeCapability(input.remotePeer, { peer: input.envelope.to, capability: request.capability, args: request.args }, false, () => { if (!input.current()) throw new PreEffectToolRefusal("remote invocation authority changed"); }, { ...input, request }); },
     safeResult: async (body, current) => {
       const policy = JSON.stringify([config.pii, config.local.deny, tasks.screenOn()]);
@@ -3923,7 +3923,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }, finish: finishInvocation });
   bus.onInvocationReceipt = (id, state) => roomInvocations.receipt(id, state);
   roomInvocations.reconcile();
-  const roomChat = new RoomChat({ bus, cwd: opts.cwd, routing: activeRouting, piiPaths: () => config.pii?.paths ?? [],
+  const roomChat: RoomChat = new RoomChat({ bus, cwd: opts.cwd, routing: activeRouting, piiPaths: () => config.pii?.paths ?? [],
     senderPrivate: peer => peer === USER ? false : bus.peers.has(peer) && !peer.includes("@") ? !!turns.get(peer)?.private || contextPii(peer) : undefined,
     taskPrivate: id => { const task = board.get(id); return task ? tasks.isPii(task) : undefined; },
     modelScreenOn: () => tasks.screenOn(),
