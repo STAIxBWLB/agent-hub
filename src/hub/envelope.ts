@@ -3,7 +3,9 @@ import { randomUUID } from "node:crypto";
 export type PeerId = string;
 export type PeerState = "idle" | "busy" | "paused" | "offline";
 export type Priority = "important" | "status" | "fyi";
-export type Kind = "chat" | "task" | "review" | "status" | "budget" | "presence";
+/** Every envelope kind, once: the journal, the restart reader, the deferred-notice check and the held-delivery hints all read this list. `invocation` and `invocation_result` are #445 C2. */
+export const KINDS = ["chat", "task", "review", "status", "budget", "presence", "invocation", "invocation_result"] as const;
+export type Kind = (typeof KINDS)[number];
 
 export interface Envelope {
   id: string;
@@ -14,7 +16,7 @@ export interface Envelope {
   kind: Kind;
   priority: Priority;
   body: string; // agent conclusions only, never tool noise
-  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string; reviewRevision?: string; taskOffer?: number; taskCancelled?: number; taskRecipient?: "owner" | "reviewer" | "planner"; planReview?: number; planReviewFlow?: number; planAuthor?: string; backlog?: number[]; supervision?: boolean; supervisionKey?: string; completedFor?: number; boundedCheck?: string; budgetResume?: string; budgetResumeMoves?: { id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]; budgetResumeEarlier?: string[] };
+  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string; reviewRevision?: string; taskOffer?: number; taskCancelled?: number; taskRecipient?: "owner" | "reviewer" | "planner"; planReview?: number; planReviewFlow?: number; planAuthor?: string; backlog?: number[]; supervision?: boolean; supervisionKey?: string; completedFor?: number; boundedCheck?: string; budgetResume?: string; budgetResumeMoves?: { id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]; budgetResumeEarlier?: string[]; invocation?: string };
   /** The body must not be shown outside its recipients: console tail and log print a stub instead (PII tasks). */
   private?: boolean;
   ts: number;
@@ -103,6 +105,9 @@ export function renderDigest(envs: Envelope[], primed: boolean): string {
   const items = envs.map(frame).join("\n\n");
   return primed ? items : `${STANDING_INSTRUCTION}\n\n${items}`;
 }
+
+/** #445 C2: an invocation request or its result. Each is delivered alone and never condensed, so a turn's reply maps to exactly one invocation. */
+export const isInvocationKind = (env: Pick<Envelope, "kind">): boolean => env.kind === "invocation" || env.kind === "invocation_result";
 
 /** Who a reply to a delivery is for: everyone whose message it answers, each once, in the order they arrived. */
 export function replyAudience(envs: Envelope[]): PeerId[] {

@@ -1,4 +1,4 @@
-import { HUB, MAX_HOP, type Envelope } from "./envelope.ts";
+import { HUB, KINDS, MAX_HOP, type Envelope } from "./envelope.ts";
 
 /** ponytail: cap recovery at 2048 unpublished hub originals; replace with a paged durable outbox if measured recovery workloads exceed it. */
 export const MAX_DEFERRED_HUB = 2048;
@@ -22,7 +22,7 @@ export function validateDeferredEnvelope(value: unknown, name: string): Envelope
       typeof env.body !== "string" || env.body.length > 1_000_000 ||
       !Number.isSafeInteger(env.hop) || (env.hop as number) < 0 || (env.hop as number) > MAX_HOP ||
       !Number.isSafeInteger(env.ts) || (env.ts as number) < 0 ||
-      !["chat", "task", "review", "status", "budget", "presence"].includes(env.kind as string) ||
+      !(KINDS as readonly string[]).includes(env.kind as string) ||
       !["important", "status", "fyi"].includes(env.priority as string) ||
       (!Array.isArray(env.to) || env.to.length > 256 || !env.to.every(peer => text(peer, 256))) ||
       (env.private !== undefined && typeof env.private !== "boolean"))

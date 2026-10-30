@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
 import type { BusSnapshot } from "./bus.ts";
 import type { QueuePressure } from "./queue-backpressure.ts";
-import { HUB, USER, type Envelope, type Kind } from "./envelope.ts";
+import { HUB, KINDS, USER, type Envelope, type Kind } from "./envelope.ts";
 import { heldDeliveryHints } from "./delivery-hints.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
@@ -120,9 +120,7 @@ function validateEnvelope(value: unknown, name: string, seen = false): Envelope 
   if (typeof e.body !== "string" || e.body.length > MAX_ENVELOPE_BODY) fail(`${name}.body is invalid`);
   integer(e.ts, `${name}.ts`);
   if (
-    !new Set(["chat", "task", "review", "status", "budget", "presence"]).has(
-      e.kind as string,
-    )
+    !(KINDS as readonly string[]).includes(e.kind as string)
   )
     fail(`${name}.kind is invalid`);
   if (!new Set(["important", "status", "fyi"]).has(e.priority as string))

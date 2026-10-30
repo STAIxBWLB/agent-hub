@@ -1,4 +1,4 @@
-import { appendNote, DIGEST, frame, HUB, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
+import { appendNote, DIGEST, frame, HUB, isInvocationKind, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
 import type { DoingKind } from "./peer-doing.ts";
 import type { QueuePressure } from "./queue-backpressure.ts";
@@ -1331,6 +1331,9 @@ export class Bus {
   }
 
   /** Holds on a peer's queue, for a drain and a pull alike: off roster, recovery, an uncertain delivery, a pause (console, budget, conductor). */
+  /** #445 C2: whether a delivery to this peer would wait on a hold (roster, recovery, pause or a lifecycle fence). */
+  isHeld(id: PeerId): boolean { return this.held(id); }
+
   private held(id: PeerId): boolean {
     return !this.isRostered(id) || this.recoveryHeld || this.recoveryHeldPeers.has(id) || this.paused.has(id) || this.opts.deliveryHeld?.(id) === true;
   }
@@ -1516,8 +1519,10 @@ export class Bus {
     for (const env of ordered) {
       const failedBefore = this.attempts.has(`${id}:${env.id}`);
       if (failedBefore && batch.length) break;
+      // #445 C2: an invocation or its result goes alone, so the reply to the turn answers exactly one of them.
+      if (isInvocationKind(env) && batch.length) break;
       batch.push(env);
-      if (failedBefore || remoteId(id) || batch.length === digestMax) break;
+      if (failedBefore || remoteId(id) || batch.length === digestMax || isInvocationKind(env)) break;
     }
     if (remove) for (const env of batch) queue.splice(queue.indexOf(env), 1);
     return batch;
@@ -1537,8 +1542,9 @@ export class Bus {
       if (failedBefore && batch.length) break;
       const size = Buffer.byteLength(frame(env)) + 2;
       if (batch.length && bytes + size > pullBudgetBytes) break;
+      if (isInvocationKind(env) && batch.length) break; // #445 C2: alone, as in `take`
       batch.push(env); bytes += size;
-      if (failedBefore) break;
+      if (failedBefore || isInvocationKind(env)) break;
     }
     for (const env of batch) queue.splice(queue.indexOf(env), 1);
     return batch;
