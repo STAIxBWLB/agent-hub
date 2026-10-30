@@ -1038,7 +1038,7 @@ export class Bus {
       try { for (const id of targets) {
         const peer = this.peers.get(id);
         if (!peer) { this.enqueue(id, env); continue; }
-        if (!this.journal && !this.held(id) && env.priority === "important" && !remoteId(id) && peer.steer && this.stateOf(id) === "busy") {
+        if (!this.journal && !this.held(id) && env.priority === "important" && !remoteId(id) && peer.steer && this.stateOf(id) === "busy" && !this.invocationTurnOpen(id)) {
           // Not queued while the steer is in flight, or an idle transition would deliver it a second time.
           this.steering++;
           const deliveryId = crypto.randomUUID();
@@ -1058,7 +1058,7 @@ export class Bus {
         if (!this.flushingHub) this.onQueues?.();
         for (const id of targets) {
           const peer = this.peers.get(id);
-          if (!this.held(id) && env.priority === "important" && !remoteId(id) && peer?.steer && this.stateOf(id) === "busy") void this.steerQueued(id, env);
+          if (!this.held(id) && env.priority === "important" && !remoteId(id) && peer?.steer && this.stateOf(id) === "busy" && !this.invocationTurnOpen(id)) void this.steerQueued(id, env);
           else void this.drain(id);
         }
       }
@@ -1105,10 +1105,11 @@ export class Bus {
   /**
    * #445 C2: whether the peer's current turn is one that holds an invocation request. With a journal that is a delivery of the peer's own that has not reached a
    * terminal receipt and whose payload holds the request (the receipt paths delete it from `activeDeliveries`); without one it is the peer being busy, which is the
-   * best the bus can know (the daemon always has a journal).
+   * best the bus can know (the daemon always has a journal). A steer is never sent into such a turn (the two steer sites and `steerQueued` ask this first): an adapter answers the highest-hop envelope of
+   * everything its turn holds, and a steered one would become what the answer names instead of the request.
    */
   private invocationTurnOpen(peer: PeerId): boolean {
-    if (!this.journal) return this.stateOf(peer) === "busy";
+    if (!this.journal) return this.stateOf(peer) === "busy" && (this.lastDelivery.get(peer)?.out ?? []).some((e) => e.kind === "invocation");
     for (const [deliveryId, owner] of this.activeDeliveries) {
       if (owner === peer && this.journal.get(deliveryId)?.out.some((e) => e.kind === "invocation")) return true;
     }
@@ -1340,6 +1341,8 @@ export class Bus {
     const peer = this.peers.get(id);
     const queue = this.queues.get(id);
     if (!this.journal || !peer?.steer || !queue || this.storageError) return;
+    // #445 C2: an invocation's turn answers the request alone. Joining it with a steer would change what its answer names, so the envelope waits in the queue for the next delivery.
+    if (this.invocationTurnOpen(id)) { void this.drain(id); return; }
     const index = queue.findIndex((item) => item.id === env.id);
     if (index < 0) return;
     this.steering++;

@@ -218,3 +218,65 @@ test("a journal-less bus keeps capturing for as long as the peer is busy, and pu
   callee.onMessage?.("once idle", {}); await Bun.sleep(60);
   expect(taken).toBe(1); expect(other.batches.flat().map(e => e.body)).toEqual(["once idle"]);
 });
+
+// ---- a steer never joins an invocation's turn ----
+class SteerRecorder extends Recorder {
+  steered: Envelope[][] = [];
+  steer = async (envs: Envelope[]) => { this.steered.push(envs); };
+}
+
+test("an important envelope is not steered into an invocation's open turn: it waits for the next delivery (journalled)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-bus-steer-"));
+  try {
+    const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i", operationId: "o" });
+    const bus = new Bus({ batchMs: 0, journal }), callee = new SteerRecorder("kimi"); bus.add(callee); await callee.start();
+    let deliveryId = ""; callee.deliver = async (envs: Envelope[], id?: string) => { callee.batches.push(envs); deliveryId = id ?? ""; callee.force("busy"); };
+    const req = request("kimi"); bus.publish(req);
+    for (let i = 0; i < 100 && !callee.batches.length; i++) await Bun.sleep(5);
+    const urgent = newEnvelope(USER, "urgent, interrupt", { to: ["kimi"], priority: "important" }); bus.publish(urgent);
+    await Bun.sleep(80);
+    expect(callee.steered).toEqual([]); expect(bus.queueIds("kimi")).toEqual([urgent.id]); // waiting, not lost, not joined to the turn
+    bus.deliveryReceipt("kimi", { id: deliveryId, state: "completed" }); callee.force("idle");
+    for (let i = 0; i < 100 && callee.batches.length < 2; i++) { await Bun.sleep(5); if (callee.state === "idle") callee.force("idle"); }
+    expect(callee.batches[1]!.map(e => e.id)).toEqual([urgent.id]); // delivered in its own turn once the invocation's has ended
+    bus.closeJournal();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("an important envelope is still steered into an ordinary busy turn, as before", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-bus-steer-"));
+  try {
+    const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i", operationId: "o" });
+    const bus = new Bus({ batchMs: 0, journal }), peer = new SteerRecorder("kimi"); bus.add(peer); await peer.start();
+    peer.deliver = async (envs: Envelope[]) => { peer.batches.push(envs); peer.force("busy"); };
+    bus.publish(chat("kimi", "ordinary work"));
+    for (let i = 0; i < 100 && !peer.batches.length; i++) await Bun.sleep(5);
+    const urgent = newEnvelope(USER, "urgent", { to: ["kimi"], priority: "important" }); bus.publish(urgent);
+    for (let i = 0; i < 100 && !peer.steered.length; i++) await Bun.sleep(5);
+    expect(peer.steered.flat().map(e => e.id)).toEqual([urgent.id]);
+    bus.closeJournal();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("without a journal an important envelope is not steered into an invocation's busy turn either, and is steered once that turn is not an invocation's", async () => {
+  const bus = new Bus({ batchMs: 0 }), callee = new SteerRecorder("kimi"); bus.add(callee); await callee.start();
+  callee.deliver = async (envs: Envelope[]) => { callee.batches.push(envs); callee.force("busy"); };
+  bus.publish(request("kimi"));
+  for (let i = 0; i < 100 && !callee.batches.length; i++) await Bun.sleep(5);
+  const urgent = newEnvelope(USER, "urgent", { to: ["kimi"], priority: "important" }); bus.publish(urgent);
+  await Bun.sleep(80);
+  expect(callee.steered).toEqual([]); expect(bus.queueIds("kimi")).toEqual([urgent.id]);
+});
+
+test("the request is the envelope an answer names even when a recall preface rode in front of it", async () => {
+  const bus = new Bus({ batchMs: 0 }), callee = new Recorder("kimi"); bus.add(callee);
+  bus.preface("kimi", "Hub memory: a recall block");
+  await callee.start();
+  const req = request("kimi"); bus.publish(req);
+  for (let i = 0; i < 100 && !callee.batches.length; i++) await Bun.sleep(5);
+  const handed = callee.batches[0]!;
+  expect(handed.some(e => e.kind === "presence")).toBe(true); expect(handed.filter(e => e.kind === "invocation")).toHaveLength(1);
+  // what every push adapter passes as inReplyTo: replyParent of what it was handed
+  const { replyParent } = await import("../src/hub/envelope.ts");
+  expect(replyParent(handed).id).toBe(req.id);
+});
