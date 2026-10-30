@@ -1828,20 +1828,21 @@ export async function startDaemon(opts: DaemonOptions) {
     return true;
   };
   const settleAnswer = async (row: InvocationRow, text: string): Promise<void> => {
+    let refused: string | undefined;
+    const withhold = () => finishInvocation(row, refused === undefined ? "withheld" : "refused", refused === undefined ? {} : { reason: `${row.target} declined; the reason was withheld` });
     try {
-      // The callee's turn may have turned private while it worked, and its words may carry PII: either withholds the whole result and keeps no body (AGENTS.md, PII during a PII turn).
+      refused = refusedBy(text); // Classify only; no callee-authored reason is forwarded until the complete answer clears every screen.
+      // The callee's turn may have turned private while it worked, and its words may carry PII: withhold all its text while preserving an explicit refusal outcome.
       const privateNow = () => !!turns.get(row.target)?.private || contextPii(row.target) || (row.task !== null && (() => { const t = board.get(row.task!); return !!t && tasks.isPii(t); })());
       let clear = !privateNow() && boundedSafe(text); // boundedSafe is the PII-pattern, secret and private-path screen the bounded tools use
       if (clear && tasks.screenOn()) {
         const verdict = await (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text.slice(0, 20_000)).catch(() => undefined);
         clear = verdict?.label === "clear" && !privateNow() && boundedSafe(text); // unknown is PII; recheck current privacy after the await
       }
-      if (!clear) return void finishInvocation(row, "withheld");
-      // A refusal reason is callee-authored text too: screen the complete answer before refusedBy sanitizes and cuts it.
-      const refused = refusedBy(text);
+      if (!clear) return void withhold();
       if (refused !== undefined) return void finishInvocation(row, "refused", { reason: `${row.target} declined: ${refused}` });
       finishInvocation(row, "completed", { body: text });
-    } catch { finishInvocation(row, "withheld"); } // a failure to decide is a withhold, never a pass
+    } catch { withhold(); } // A failure to decide never releases callee text, including a refusal reason.
   };
   /** A target that is paused by the person, the conductor or the budget, or whose quota window is exhausted, is refused at call time (D5, quota). A pause that starts later leaves a queued request queued under its deadline. */
   const invocationPaused = (target: PeerId): boolean => bus.isPaused(target) || manualPaused.has(target) || conductorHolds.has(target) || !!budget.record(definitionOf(target)?.budget?.account ?? target);

@@ -180,14 +180,14 @@ test("a callee that starts with [REFUSED] is a refusal, with the reason and none
   expect(f.rows()[0]).toMatchObject({ outcome: "refused", result_bytes: 0 });
 });
 
-/** A withheld refusal retains only fixed hub text, never the callee reason in any public or durable result. */
-function expectWithheldRefusal(f: Awaited<ReturnType<typeof fixture>>, marker: string) {
+/** An unsafe refusal keeps its refused outcome with only the exact fixed hub reason, never callee text. */
+function expectPrivateRefusal(f: Awaited<ReturnType<typeof fixture>>, marker: string) {
   const delivered = results(f.codex);
   expect(delivered).toHaveLength(1);
-  expect(delivered[0]!.body).toContain("outcome withheld");
-  expect(delivered[0]!.body).toContain("the result was withheld because it may contain private data; it was not kept");
+  expect(delivered[0]!.body).toContain("outcome refused");
+  expect(delivered[0]!.body.split("\n").slice(1).join("\n")).toBe("kimi declined; the reason was withheld");
   expect(delivered[0]!.body).not.toContain(marker);
-  expect(f.rows()[0]).toMatchObject({ outcome: "withheld", result_bytes: 0 });
+  expect(f.rows()[0]).toMatchObject({ outcome: "refused", result_bytes: 0 });
   expect(JSON.stringify(f.pi.got)).not.toContain(marker);
   expect(JSON.stringify(f.events())).not.toContain(marker);
   expect(f.log()).not.toContain(marker);
@@ -198,14 +198,14 @@ for (const [kind, sensitive] of [
   ["PII pattern", "900101-1234567"],
   ["secret", "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
   ["private path", "private/key.txt"],
-] as const) test(`refusal privacy: the full ${kind} reason is withheld before refusal sanitization or truncation`, async () => {
+] as const) test(`refusal privacy: the full ${kind} reason is screened before forwarding a refused result`, async () => {
   const f = await fixture({ denyPrivate: kind === "private path" });
   const marker = `REFUSAL-PRIVATE-${kind}`;
   // The unsafe suffix is beyond refusedBy's 300-character cut: screening only its rendered reason would miss it.
   f.kimi.answer = () => `[REFUSED] ${marker} ${"ordinary ".repeat(40)}${sensitive}`;
   expect((await invoke(f)).ok).toBe(true);
-  await until(() => results(f.codex).length === 1, "private refusal is withheld");
-  expectWithheldRefusal(f, marker);
+  await until(() => results(f.codex).length === 1, "private refusal retains only the fixed reason");
+  expectPrivateRefusal(f, marker);
   expect(results(f.codex)[0]!.body).not.toContain(sensitive);
 });
 
@@ -217,11 +217,11 @@ test("refusal privacy: a callee whose context turned private cannot forward even
     return `[REFUSED] ${marker}: I cannot run this.`;
   };
   expect((await invoke(f)).ok).toBe(true);
-  await until(() => results(f.codex).length === 1, "private callee refusal is withheld");
-  expectWithheldRefusal(f, marker);
+  await until(() => results(f.codex).length === 1, "private callee refusal retains only the fixed reason");
+  expectPrivateRefusal(f, marker);
 });
 
-for (const mode of ["pii", "unknown", "rejected promise", "synchronous throw"] as const) test(`refusal privacy: a ${mode} model-screen result withholds the complete refusal`, async () => {
+for (const mode of ["pii", "unknown", "rejected promise", "synchronous throw"] as const) test(`refusal privacy: a ${mode} model-screen result preserves refusal with a fixed withheld reason`, async () => {
   const marker = `REFUSAL-SCREEN-${mode}`, answer = `[REFUSED] ${marker}: I will not run this.`;
   let answerScreens = 0;
   const f = await fixture({ screen: text => {
@@ -233,9 +233,9 @@ for (const mode of ["pii", "unknown", "rejected promise", "synchronous throw"] a
   } });
   f.kimi.answer = () => answer;
   expect((await invoke(f)).ok).toBe(true);
-  await until(() => results(f.codex).length === 1, "uncleared refusal is withheld");
+  await until(() => results(f.codex).length === 1, "uncleared refusal retains only the fixed reason");
   expect(answerScreens).toBe(1);
-  expectWithheldRefusal(f, marker);
+  expectPrivateRefusal(f, marker);
 });
 
 test("refusal privacy: a model-cleared clean refusal retains its reason and refused outcome", async () => {
@@ -269,8 +269,8 @@ test("refusal privacy: becoming private while the full refusal is screened is re
     expect(results(f.codex)).toEqual([]);
     board.update(board.propose("user", { title: "private work", class: "implement", signals: ["pii"] } as never).id, "user", "accepted", { owner: "kimi", state: "in_progress" });
     release();
-    await until(() => results(f.codex).length === 1, "the now-private refusal is withheld");
-    expectWithheldRefusal(f, marker);
+    await until(() => results(f.codex).length === 1, "the now-private refusal retains only the fixed reason");
+    expectPrivateRefusal(f, marker);
   } finally { release(); }
 });
 
