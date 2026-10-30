@@ -6,7 +6,7 @@ import { canonicalBytes, ROOM_WIRE_LIMITS } from "./wire.ts";
 export const ROOM_APPLICATION_MAX_BYTES = ROOM_WIRE_LIMITS.plaintext;
 export interface RoomChatEnvelope {
   id: string; trace: string; hop: number; from: string; to: string;
-  kind: "chat" | "status"; priority: Priority; body: string; ts: number;
+  kind: "chat" | "status" | "invocation" | "invocation_result"; priority: Priority; body: string; ts: number;
 }
 export type RoomReceiptReason = "admitted" | "inbox_admitted" | "inbox_full" | "inbox_oversize" | "inbox_expired" | "inbox_age_unavailable" | "not_exposed" | "boundary_refused" | "invalid_message" | "rate_limited" | "hop" | "person_inbox_unsupported";
 export type RoomMessage =
@@ -64,10 +64,75 @@ function text(value: unknown): string {
   if (encoder.encode(value).length > ROOM_APPLICATION_MAX_BYTES) fail("limit");
   return value;
 }
+export type RoomInvocationKind = "invocation" | "invocation_result";
+export interface RoomReadInvocationRequest {
+  invocation: string; capability: string; digest: string; class: "read"; depth: 1;
+  args: Record<string, string | number | boolean>;
+}
+export interface RoomReadInvocationResult {
+  invocation: string; capability: string; digest: string; class: "read";
+  outcome: "completed" | "refused" | "failed" | "expired" | "timeout" | "needs_review" | "withheld";
+  body: string;
+}
+export type RoomInvocationPayload = RoomReadInvocationRequest | RoomReadInvocationResult;
+/** Wire contract bounds; the target still validates the capability's actual schema. */
+const INVOCATION_ARGS_MAX = 4096, INVOCATION_STRING_MAX = 2000, INVOCATION_RESULT_MAX = 8192;
+const CAPABILITY_ID = /^(command|skill|mcp_tool):[A-Za-z0-9_.:-]{1,64}$/;
+const CAPABILITY_DIGEST = /^sha256:[0-9a-f]{64}$/;
+export function roomInvocationArgs(value: unknown): Record<string, string | number | boolean> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail();
+  const keys = Object.keys(value).sort();
+  if (keys.length > 16) fail("limit");
+  const raw = object(value, keys), args = Object.create(null) as Record<string, string | number | boolean>;
+  for (const key of keys) {
+    if (/^[A-Za-z0-9_.:-]{1,64}$/.exec(key)?.[0] !== key) fail();
+    const arg = raw[key];
+    if (typeof arg === "string") { if (!arg.isWellFormed() || arg.length > INVOCATION_STRING_MAX) fail("limit"); }
+    else if (typeof arg !== "boolean" && (typeof arg !== "number" || !Number.isFinite(arg))) fail();
+    Object.defineProperty(args, key, { value: arg, enumerable: true });
+  }
+  if (JSON.stringify(args).length > INVOCATION_ARGS_MAX) fail("limit");
+  return Object.fromEntries(Object.entries(args));
+}
+function invocationPayload(kind: RoomInvocationKind, value: unknown): RoomInvocationPayload {
+  const row = object(value, kind === "invocation" ? ["invocation", "capability", "digest", "class", "depth", "args"] : ["invocation", "capability", "digest", "class", "outcome", "body"]);
+  if (row.class !== "read" || typeof row.capability !== "string" || CAPABILITY_ID.exec(row.capability)?.[0] !== row.capability
+    || typeof row.digest !== "string" || CAPABILITY_DIGEST.exec(row.digest)?.[0] !== row.digest) fail();
+  const common = { invocation: uuid(row.invocation), capability: row.capability, digest: row.digest, class: "read" as const };
+  if (kind === "invocation") {
+    if (row.depth !== 1) fail();
+    return { ...common, depth: 1, args: roomInvocationArgs(row.args) };
+  }
+  if (typeof row.outcome !== "string" || !["completed", "refused", "failed", "expired", "timeout", "needs_review", "withheld"].includes(row.outcome)) fail();
+  const body = text(row.body);
+  if (encoder.encode(body).length > INVOCATION_RESULT_MAX) fail("limit");
+  if (row.outcome === "withheld" && body !== "") fail();
+  return { ...common, outcome: row.outcome as RoomReadInvocationResult["outcome"], body };
+}
+/** Closed canonical JSON inside the encrypted envelope: no refs, approvals or extra authority fields. */
+export function encodeRoomInvocationBody(kind: RoomInvocationKind, value: RoomInvocationPayload): string {
+  try { return decoder.decode(canonicalBytes(invocationPayload(kind, value))); }
+  catch (error) { return applicationError(error); }
+}
+export function decodeRoomInvocationBody(kind: "invocation", body: string): RoomReadInvocationRequest;
+export function decodeRoomInvocationBody(kind: "invocation_result", body: string): RoomReadInvocationResult;
+export function decodeRoomInvocationBody(kind: RoomInvocationKind, body: string): RoomInvocationPayload;
+export function decodeRoomInvocationBody(kind: RoomInvocationKind, body: string): RoomInvocationPayload {
+  try {
+    const parsed = invocationPayload(kind, JSON.parse(text(body)));
+    if (decoder.decode(canonicalBytes(parsed)) !== body) fail();
+    return parsed;
+  } catch (error) { return applicationError(error); }
+}
+
 function parseEnvelope(value: unknown): RoomChatEnvelope {
   const row = object(value, ["id", "trace", "hop", "from", "to", "kind", "priority", "body", "ts"]);
-  if (row.kind !== "chat" && row.kind !== "status") fail();
+  if (row.kind !== "chat" && row.kind !== "status" && row.kind !== "invocation" && row.kind !== "invocation_result") fail();
   if (row.priority !== "important" && row.priority !== "status" && row.priority !== "fyi") fail();
+  if (row.kind === "invocation" || row.kind === "invocation_result") {
+    const payload = decodeRoomInvocationBody(row.kind, text(row.body));
+    if (row.from === "user" || row.to === "user" || row.priority !== "status" || row.kind === "invocation" && payload.invocation !== row.id) fail();
+  }
   return { id: uuid(row.id), trace: uuid(row.trace), hop: integer(row.hop, 0, MAX_HOP), from: localPeer(row.from), to: localPeer(row.to), kind: row.kind, priority: row.priority, body: text(row.body), ts: integer(row.ts, 0) };
 }
 function frameDigest(value: unknown): string {

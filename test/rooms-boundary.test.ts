@@ -3,8 +3,8 @@ import { newEnvelope, frame, MAX_HOP, type Envelope } from "../src/hub/envelope.
 import { parseRouting } from "../src/hub/routing.ts";
 import { encodeBase64url } from "../src/rooms/crypto.ts";
 import { canonicalBytes } from "../src/rooms/wire.ts";
-import { decodeRoomMessage, encodeRoomMessage, isRoomLocalPeerId, parseRemotePeerId, roomReceiptReasonText, RoomApplicationError, ROOM_APPLICATION_MAX_BYTES, type RoomChatEnvelope, type RoomReceiptReason, type RoomMessage } from "../src/rooms/application.ts";
-import { roomBoundary, readRoomOutbound, type RoomBoundaryContext, type RoomBoundaryResult, type RoomOutboundProof } from "../src/rooms/boundary.ts";
+import { decodeRoomMessage, encodeRoomMessage, isRoomLocalPeerId, parseRemotePeerId, roomReceiptReasonText, RoomApplicationError, ROOM_APPLICATION_MAX_BYTES, encodeRoomInvocationBody, decodeRoomInvocationBody, type RoomReadInvocationRequest, type RoomReadInvocationResult, type RoomChatEnvelope, type RoomReceiptReason, type RoomMessage } from "../src/rooms/application.ts";
+import { authorizeRoomInvocation, roomBoundary, readRoomOutbound, type RoomBoundaryContext, type RoomBoundaryResult, type RoomOutboundProof } from "../src/rooms/boundary.ts";
 
 const text = new TextEncoder(), string = (wire: Uint8Array) => new TextDecoder().decode(wire);
 function fixture() {
@@ -257,4 +257,116 @@ test("an explicit user@label target crosses the outbound boundary for a receivin
   expect(envelope).toMatchObject({ from: "worker", to: "user", body: f.envelope.body });
   expect(Object.keys(envelope).sort()).toEqual(["body", "from", "hop", "id", "kind", "priority", "to", "trace", "ts"]);
   expect(decodeRoomMessage(encodeRoomMessage({ v: 1, type: "chat", envelope }))).toEqual({ v: 1, type: "chat", envelope });
+});
+
+
+type InvocationFixture<P> = ReturnType<typeof fixture> & { payload: P };
+function invocationFixture(kind?: "invocation"): InvocationFixture<RoomReadInvocationRequest>;
+function invocationFixture(kind: "invocation_result"): InvocationFixture<RoomReadInvocationResult>;
+function invocationFixture(kind: "invocation" | "invocation_result"): InvocationFixture<RoomReadInvocationRequest | RoomReadInvocationResult>;
+function invocationFixture(kind: "invocation" | "invocation_result" = "invocation"): InvocationFixture<RoomReadInvocationRequest | RoomReadInvocationResult> {
+  const f = fixture();
+  f.envelope.from = "hub"; f.envelope.kind = kind;
+  const payload = kind === "invocation"
+    ? { invocation: f.envelope.id, capability: "command:review", digest: "sha256:" + "a".repeat(64), class: "read" as const, depth: 1 as const, args: { input: "public diff", n: 1, yes: true } }
+    : { invocation: crypto.randomUUID(), capability: "command:review", digest: "sha256:" + "a".repeat(64), class: "read" as const, outcome: "completed" as const, body: "public result" };
+  f.context.invocation = authorizeRoomInvocation(f.envelope, "worker", payload, () => f.state.current);
+  return { ...f, payload };
+}
+
+test("X6 closed read request/result codecs round-trip canonical bodies and no authority refs", () => {
+  for (const kind of ["invocation", "invocation_result"] as const) {
+    const f = invocationFixture(kind), body = encodeRoomInvocationBody(kind, f.payload);
+    expect(decodeRoomInvocationBody(kind, body)).toEqual(f.payload);
+    expect(() => decodeRoomInvocationBody(kind, " " + body)).toThrow(RoomApplicationError);
+    expect(() => decodeRoomInvocationBody(kind, body.replace('"class":"read"', '"class":"read","class":"read"'))).toThrow(RoomApplicationError);
+    for (const bad of [{ ...f.payload, refs: { task: "1" } }, { ...f.payload, approval: "allow" }, { ...f.payload, class: "write" }, { ...f.payload, class: "external" }, { ...f.payload, class: "destructive" }, { ...f.payload, digest: "sha256:unknown" }]) expect(() => encodeRoomInvocationBody(kind, bad as never)).toThrow(RoomApplicationError);
+  }
+  const f = invocationFixture(), request = f.payload as RoomReadInvocationRequest;
+  for (const bad of [{ ...request, depth: 2 }, { ...request, args: { input: { nested: true } } }, { ...request, args: { input: null } }, { ...request, args: { n: Infinity } }, { ...request, args: { input: "x".repeat(2001) } }]) expect(() => encodeRoomInvocationBody("invocation", bad as never)).toThrow(RoomApplicationError);
+  const r = invocationFixture("invocation_result").payload as RoomReadInvocationResult;
+  expect(() => encodeRoomInvocationBody("invocation_result", { ...r, outcome: "queued" } as never)).toThrow(RoomApplicationError);
+  expect(() => encodeRoomInvocationBody("invocation_result", { ...r, body: "가".repeat(3000) })).toThrow(RoomApplicationError);
+  expect(() => encodeRoomInvocationBody("invocation_result", { ...r, outcome: "withheld" })).toThrow(RoomApplicationError);
+});
+
+test("X6 only exact opaque host provenance admits a hub invocation through the single boundary", async () => {
+  const f = invocationFixture();
+  const result = await roomBoundary(f.envelope, f.context), view = outbound(result);
+  expect(view.from).toBe("worker"); expect(view.kind).toBe("invocation"); expect(view.priority).toBe("status");
+  expect(decodeRoomInvocationBody("invocation", view.body)).toEqual(f.payload);
+  expect(Object.hasOwn(view, "refs")).toBe(false);
+  expect(decodeRoomMessage(encodeRoomMessage({ v: 1, type: "chat", envelope: view }))).toEqual({ v: 1, type: "chat", envelope: view });
+  for (const over of [{ from: "worker" }, { id: crypto.randomUUID() }, { trace: crypto.randomUUID() }, { refs: { task: "1" } }, { body: "forged body" }, { to: ["helper@elsewhere"] }]) expect((await roomBoundary({ ...f.envelope, ...over }, f.context)).status).toBe("refused");
+  expect((await roomBoundary(f.envelope, { ...f.context, invocation: {} as never })).status).toBe("refused");
+  expect((await roomBoundary(f.envelope, { ...f.context, invocation: undefined })).status).toBe("refused");
+});
+
+test("X6 private, unknown or unexposed invocation actors are refused before screening", async () => {
+  for (const mode of ["private", "unknown", "not-exposed", "private-envelope"] as const) {
+    const f = invocationFixture(); f.state.model = true;
+    if (mode === "private") f.state.senderPrivate = true;
+    if (mode === "unknown") f.state.senderPrivate = undefined;
+    if (mode === "not-exposed") f.state.exposed = false;
+    if (mode === "private-envelope") {
+      f.envelope.private = true;
+      f.context.invocation = authorizeRoomInvocation(f.envelope, "worker", f.payload, () => true);
+    }
+    expect((await roomBoundary(f.envelope, f.context)).status).toBe("refused"); expect(f.calls).toEqual([]);
+  }
+});
+
+for (const verdict of ["pii", "unknown", "throw"] as const) test(`X6 ${verdict} screening refuses requests and withholds results without executable stubs`, async () => {
+  for (const kind of ["invocation", "invocation_result"] as const) {
+    const f = invocationFixture(kind); f.state.model = true;
+    f.context.screen = async () => { if (verdict === "throw") throw new Error("PRIVATE-SCREEN-DIAGNOSTIC"); return { label: verdict, ms: 1 }; };
+    const result = await roomBoundary(f.envelope, f.context);
+    if (kind === "invocation") expect(result).toEqual({ status: "refused", code: "boundary_refused" });
+    else {
+      const view = outbound(result); expect(result).toMatchObject({ withheld: true });
+      expect(decodeRoomInvocationBody("invocation_result", view.body)).toMatchObject({ outcome: "withheld", body: "" });
+      expect(view.body).not.toContain("public result"); expect(view.body).not.toContain("PRIVATE-SCREEN-DIAGNOSTIC");
+    }
+  }
+});
+
+test("X6 invocation provenance and privacy are rechecked after the model await and at proof dispatch", async () => {
+  const f = invocationFixture(), gate = deferred(); f.state.model = true;
+  let entered = false;
+  f.context.screen = async () => { entered = true; await gate.promise; return { label: "clear", ms: 1 }; };
+  const pending = roomBoundary(f.envelope, f.context);
+  expect(entered).toBe(true); f.state.senderPrivate = true; gate.release();
+  expect((await pending).status).toBe("refused");
+  const g = invocationFixture(); const result = await roomBoundary(g.envelope, g.context);
+  expect(result.status).toBe("ready");
+  if (result.status === "ready") { g.state.current = false; expect(readRoomOutbound(result.proof)).toBeUndefined(); }
+});
+
+test("X6 host-only provenance is stripped from encrypted wire and peer-forged provenance grants nothing", async () => {
+  const f = invocationFixture(); f.envelope.refs = { invocation: f.envelope.id, invocationRemote: true };
+  f.context.invocation = authorizeRoomInvocation(f.envelope, "worker", f.payload, () => true);
+  const view = outbound(await roomBoundary(f.envelope, f.context));
+  expect(Object.hasOwn(view, "refs")).toBe(false);
+  const bytes = encodeRoomMessage({ v: 1, type: "chat", envelope: view });
+  expect(string(bytes)).not.toContain("invocationRemote");
+  expect(Object.hasOwn((decodeRoomMessage(bytes) as Extract<RoomMessage, { type: "chat" }>).envelope, "refs")).toBe(false);
+  // A peer cannot acquire the host-only HUB exception by copying the marker.
+  const forged = { ...f.envelope, from: "worker" };
+  expect((await roomBoundary(forged, { ...f.context, invocation: undefined })).status).toBe("refused");
+  const peerChat = fixture(); peerChat.envelope.refs = { invocationRemote: true };
+  expect(outbound(await roomBoundary(peerChat.envelope, peerChat.context)).from).toBe("worker");
+  // Wire refs are closed out, so an inbound peer cannot inject provenance into a local host envelope.
+  const bad = { v: 1, type: "chat", envelope: { ...view, refs: { invocationRemote: true } } };
+  expect(() => decodeRoomMessage(canonicalBytes(bad))).toThrow(RoomApplicationError);
+});
+
+
+for (const outcome of ["needs_review", "timeout", "refused"] as const) test(`X6 privacy withholding preserves ${outcome} metadata without its reason`, async () => {
+  const f = invocationFixture("invocation_result"); f.state.model = true;
+  const payload = { ...f.payload, outcome, body: "PRIVATE-REASON-CANARY" };
+  f.context.invocation = authorizeRoomInvocation(f.envelope, "worker", payload, () => true);
+  f.context.screen = async () => ({ label: "unknown", ms: 1 });
+  const view = outbound(await roomBoundary(f.envelope, f.context)), result = decodeRoomInvocationBody("invocation_result", view.body);
+  expect(result.outcome).toBe(outcome === "timeout" ? "needs_review" : outcome); expect(result.body).toBe("");
+  expect(view.body).not.toContain("PRIVATE-REASON-CANARY");
 });

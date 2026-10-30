@@ -1,4 +1,4 @@
-import { appendNote, DIGEST, frame, HUB, isInvocationKind, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
+import { remoteEnvelope, appendNote, DIGEST, frame, HUB, isInvocationKind, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
 import type { DoingKind } from "./peer-doing.ts";
 import type { QueuePressure } from "./queue-backpressure.ts";
@@ -191,6 +191,9 @@ export class Bus {
   /** Host ledger authority; absent or unknown never permits invocation replay. */
   canRetryInvocation?: (id: string) => boolean;
   onInvocationUncertain?: (id: string) => void;
+  /** Validated transport receipts, ids only; application admission is not a capability result. */
+  onInvocationReceipt?: (id: string, state: "completed" | "failed_safe" | "needs_review") => void;
+  hasInvocationTurn(peer: PeerId): boolean { return this.invocationTurnOpen(peer); }
   private readonly invocationDeliveries = new Map<string, string>();
 
   releaseInvocation(id: string): void { this.invocationDeliveries.delete(id); }
@@ -725,6 +728,7 @@ export class Bus {
       const last = this.lastDelivery.get(peer);
       if (before && last && last.out.length === before.out.length && last.out.every((env, index) => env.id === before.out[index]!.id)) this.lastDelivery.delete(peer);
       this.refreshRecoveryHold(peer);
+      for (const env of before?.originals ?? []) if (isInvocationKind(env)) this.onInvocationReceipt?.(env.id, "failed_safe");
       this.onQueues?.();
       void this.drain(peer);
       return;
@@ -743,6 +747,7 @@ export class Bus {
     if (state === "completed") { this.failureStreak.delete(peer); this.lastFailure.delete(peer); }
     if (state === "completed" || state === "failed" || state === "needs_review") this.activeDeliveries.delete(id);
     if (state === "completed" || state === "failed") { this.refreshRecoveryHold(peer); void this.drain(peer); }
+    if (receipt.state === "completed" || receipt.state === "needs_review") for (const env of before?.originals ?? []) if (isInvocationKind(env)) this.onInvocationReceipt?.(env.id, receipt.state);
     if (state === "needs_review") {
       this.recoveryHeldPeers.add(peer);
       for (const env of before?.originals ?? []) if (env.kind === "invocation") this.onInvocationUncertain?.(env.id);
@@ -1679,7 +1684,7 @@ export class Bus {
 
   private emit(e: BusEvent): void {
     if (this.flushingHub) { this.deferredEvents.push(e); return; }
-    if ("env" in e && (remoteId(e.env.from) || e.env.to?.some(remoteId) || ("peer" in e && remoteId(e.peer)))) {
+    if ("env" in e && (remoteEnvelope(e.env) || e.env.to?.some(remoteId) || ("peer" in e && remoteId(e.peer)))) {
       const { refs: _, ...env } = e.env;
       e = { ...e, env: { ...env, body: "[remote room message withheld]", ...(env.to ? { to: env.to.filter(id => /^[a-z][a-z0-9-]{0,31}$/.test(id) || !!parseRemotePeerId(id)) } : {}) }, ...("reason" in e ? { reason: "remote room delivery" } : {}) };
     }

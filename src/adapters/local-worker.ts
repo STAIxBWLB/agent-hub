@@ -4,7 +4,7 @@ import type { RouteLabelEvent, RouteTurnOutcome } from "../models/route/labels.t
 import type { StaySwitchPolicy } from "../models/route/stage.ts";
 import type { ToolObservation } from "../models/route/signals.ts";
 import { randomUUID } from "node:crypto";
-import { MAX_HOP, renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
+import { MAX_HOP, remoteEnvelope, renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
 import { CONDUCTOR_TOOL_NAMES, CONDUCTOR_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
 import { BasePeer } from "../hub/peers.ts";
 import type { PublishResult } from "../hub/bus.ts";
@@ -169,7 +169,7 @@ export class LocalPeer extends BasePeer {
     const progress = { sideEffects: 0, last: "" };
     const requestedPolicy = this.opts.turnPolicy?.(envs);
     const policy = envs.some(env => env.private) ? { ...requestedPolicy, pii: true } : requestedPolicy;
-    const remoteTurn = envs.some(env => env.from.includes("@"));
+    const remoteTurn = envs.some(remoteEnvelope);
     const preserveHistory = !policy?.pii && !remoteTurn;
     const labelTurn = this.beginRouteTurn(turn, !!policy?.pii || envs.some(env => env.private), policy?.task);
     let completed = false;
@@ -244,7 +244,7 @@ export class LocalPeer extends BasePeer {
     const { maxSteps = 30 } = this.opts;
     const turnSignal = this.abort!.signal;
     // Remote text/tool output is never memory evidence, even beside ordinary local work in the same turn.
-    const remoteTurn = envs.some(env => env.from.includes("@"));
+    const remoteTurn = envs.some(remoteEnvelope);
     const capture = policy?.pii || remoteTurn ? undefined : this.opts.capture;
     // Unknown gateway state is never permission to send PII.
     if (policy?.pii && !(await this.opts.omni.onCampus())) {

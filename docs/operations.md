@@ -786,6 +786,22 @@ Private envelopes and PII tasks stay redacted. Local-worker and Pi tool details 
 allow decisions stay in `ahub tail` / `ahub permit`; the page can deny them.
 No dashboard port is opened until requested. See [the session security model](security.md#local-dashboard-sessions-issue-6).
 
+### Cross-hub read invocations (#446 X6)
+
+Both persons consent by pinning. On the target hub, use the existing `ahub capabilities` to obtain the local capability id and digest and pin its effective class to `read`. Transfer that digest out of band. On the source hub, add an exact remote entry in its machine-local file:
+
+```json
+{ "invocation": { "share": { "kimi@beta": { "command:review": { "digest": "sha256:<64 hex>", "class": "read" } } } } }
+```
+
+The target independently retains its own local `kimi` entry for the same capability/digest/read class. Room peer exposure alone grants no invocation. There is no inheritance between labels/peers, and no remote discovery RPC. `hub_capabilities` lists local observed manifests; callers obtain remote capability ids/schema information manually.
+
+`hub_invoke` can name the exact `peer@label`. The source validates bounded flat scalar arguments; the target applies its actual schema, current share/digest/effective-read class and privacy/availability gates before building a native request. Source task scope remains local and is not interpreted on the target. Task/approval refs and write/external/destructive requests never cross.
+
+A signed room admission receipt is not a capability result. Native execution outcome and result transport state are recorded separately. Result correlation binds room/member/epoch/request/peer/digest, and duplicate or mismatched frames cannot trigger another native invocation. Nested invocation turns refuse depth 2, including before native acceptance is reported. Unknown handoff, receipt, result deadline or restart publication is `needs_review` under the existing journal hold and never silently replays. Inspect the retained invocation and room queue before explicit person disposition.
+
+Remote-origin host envelopes retain the existing remote-turn memory/capture/history/telemetry exclusions even though the local native request is hub-authored. Live native account and two-Mac X7 receipts remain separate from the two-daemon broker/crypto fixtures.
+
 ### Dashboard design tokens (#469 R1)
 
 The page's style block starts with one token block that owns every colour, the 4px spacing scale (4, 8, 12, 16, 24, 32), the

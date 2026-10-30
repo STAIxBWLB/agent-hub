@@ -172,12 +172,13 @@ export function readShare(raw: unknown): ShareConfig {
   const out: ShareConfig = {};
   if (!object(raw)) return out;
   for (const [peer, entries] of Object.entries(raw)) {
-    if (!object(entries) || !/^[a-z][a-z0-9-]{0,31}$/.test(peer)) continue;
+    const address = /^[a-z][a-z0-9-]{0,31}(?:@[a-z][a-z0-9-]{0,31})?$/.exec(peer);
+    if (!object(entries) || address?.[0] !== peer || peer.includes("@") && ["hub", "digest"].includes(peer.split("@")[0]!)) continue;
     const kept: Record<string, ShareEntry> = {};
     for (const [id, entry] of Object.entries(entries)) {
       if (!/^(command|skill|mcp_tool):[A-Za-z0-9_.:-]{1,64}$/.test(id) || !object(entry) || typeof entry.digest !== "string" || !DIGEST_RE.test(entry.digest)) continue;
       const cls = entry.class === undefined ? undefined : (SIDE_EFFECTS as readonly unknown[]).includes(entry.class) ? entry.class as SideEffect : null;
-      if (cls === null) continue;
+      if (cls === null || peer.includes("@") && cls !== "read") continue;
       kept[id] = { digest: entry.digest, ...(cls ? { class: cls } : {}) };
     }
     if (Object.keys(kept).length) out[peer] = kept;

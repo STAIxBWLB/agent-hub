@@ -1,6 +1,8 @@
 /** Host integration for X4. Remote identities carry chat, never local control authority. */
 import type { Bus } from "../hub/bus.ts";
 import { USER, MAX_HOP, type Envelope, type PeerState } from "../hub/envelope.ts";
+import type { RoomInvocationAuthorization } from "./boundary.ts";
+import { roomInvocationHash } from "../hub/room-invocations.ts";
 import { Limiter, PROJECT_LIMITS, type LimitsConfig } from "../hub/limits.ts";
 import type { PiiVerdict } from "../hub/inference.ts";
 import type { Routing } from "../hub/routing.ts";
@@ -8,9 +10,14 @@ import { roomMembers } from "./wire.ts";
 import { RoomStore, RoomStoreError, RoomApplicationLimitError, type RoomOutgoing } from "./store.ts";
 import { RoomPolicy } from "./policy.ts";
 import { RemotePeer } from "./remote-peer.ts";
-import { parseRemotePeerId, roomReceiptReasonText, type RoomMessage, type RoomReceiptReason } from "./application.ts";
+import { parseRemotePeerId, roomReceiptReasonText, type RoomMessage, type RoomReceiptReason, type RoomChatEnvelope } from "./application.ts";
 import { RoomApplicationDeferredError, type RoomLink, type RoomLinkApplication, type RoomLinkContext, type RoomLinkState, type RoomPresencePeer } from "./link.ts";
 
+export interface RoomInvocationIdentity { room: string; member: string; epoch: string; current: () => boolean }
+export interface RoomInvocationIngress {
+  envelope: RoomChatEnvelope; room: string; member: string; epoch: string; remotePeer: string; hash: string;
+  current: () => boolean; claim: () => boolean;
+}
 export interface RoomChatOptions {
   bus: Bus; cwd: string; now?: () => number;
   routing: () => Routing; piiPaths: () => readonly string[];
@@ -18,6 +25,8 @@ export interface RoomChatOptions {
   taskPrivate: (id: number) => boolean | undefined;
   modelScreenOn: () => boolean; screen: (text: string) => Promise<PiiVerdict>;
   policyVersion: () => string | number;
+  invocationAuthorization?: (env: Envelope, identity: RoomInvocationIdentity) => RoomInvocationAuthorization | undefined;
+  invocation?: (input: RoomInvocationIngress) => Promise<"admitted" | "refused">;
   roster?: (ids: readonly string[]) => void;
   changed?: () => void;
   limits?: () => LimitsConfig;
@@ -109,6 +118,15 @@ export class RoomChat {
     this.bindings.set(name, binding);
     this.refreshTargets(); this.refreshOutgoing(binding); this.queueChanged();
   }
+  invocationIdentity(id: string, sender?: string): RoomInvocationIdentity | undefined {
+    const target = this.targets.get(id), state = target?.binding.store.get(target.binding.name);
+    if (!target || !state || !this.valid(target.binding) || sender !== undefined && !this.exposed(target.binding, sender)) return undefined;
+    const epoch = state.current.digest, room = state.current.room, member = target.member;
+    return { room, member, epoch, current: () => {
+      const next = this.targets.get(id), current = target.binding.store.get(target.binding.name);
+      return (sender === undefined || this.exposed(target.binding, sender)) && this.valid(target.binding) && next?.binding === target.binding && next.member === member && current?.current.room === room && current.current.digest === epoch;
+    } };
+  }
   private refreshTargets(): void {
     const candidates = new Map<string, Target[]>();
     for (const binding of this.bindings.values()) {
@@ -146,7 +164,9 @@ export class RoomChat {
             const digest = state?.current.digest;
             const current = () => this.valid(binding) && this.targets.get(id)?.binding === binding && this.targets.get(id)?.member === target.member && this.options.policyVersion() === version
               && binding.store.get(binding.name)?.current.digest === digest;
-            return { cwd: this.options.cwd, target: id, current,
+            const identity = this.invocationIdentity(id);
+            const invocation = identity ? this.options.invocationAuthorization?.(env, identity) : undefined;
+            return { cwd: this.options.cwd, target: id, current, ...(invocation ? { invocation } : {}),
               senderExposed: peer => this.exposed(binding, peer), senderPrivate: this.options.senderPrivate,
               taskPrivate: this.options.taskPrivate, routing: this.options.routing, piiPaths: this.options.piiPaths,
               modelScreenOn: this.options.modelScreenOn, screen: this.options.screen };
@@ -299,6 +319,24 @@ export class RoomChat {
     else if (chat.to !== USER && this.options.bus.hushed(env).some(row => row.peer === chat.to)) refusal = "boundary_refused";
     else if (!this.rate(from, incoming.sender, chat.to, chat.body)) refusal = "rate_limited";
     if (refusal) context.store.finishApplication(context.name, input.digest, "failed_safe", refusal, context.current);
+    else if (chat.kind === "invocation" || chat.kind === "invocation_result") {
+      if (!this.options.invocation) context.store.finishApplication(context.name, input.digest, "failed_safe", "boundary_refused", context.current);
+      else {
+        const epoch = state.current.digest;
+        const current = () => context.current() && this.valid(binding) && binding.store.get(binding.name)?.current.digest === epoch
+          && this.sourceUnambiguous(binding, incoming.sender, member!.label) && member!.exposedPeers.includes(chat.from) && this.exposed(binding, chat.to)
+          && !this.options.bus.hushed(env).some(row => row.peer === chat.to);
+        try {
+          const admitted = await this.options.invocation({ envelope: chat, room: state.current.room, member: incoming.sender, epoch, remotePeer: from,
+            hash: roomInvocationHash(chat), current, claim: () => current() && context.store.claimApplication(context.name, input.digest, current) });
+          if (!current()) throw new Error("room: state_changed");
+          context.store.finishApplication(context.name, input.digest, admitted === "admitted" ? "completed" : "failed_safe", admitted === "admitted" ? "admitted" : "boundary_refused", current);
+          if (admitted === "admitted") this.count(binding, "inbound");
+        } catch (error) {
+          context.store.quarantineApplication(context.name, input.digest); this.capacityChanged(); this.options.changed?.(); throw error;
+        }
+      }
+    }
     else if (chat.to === USER) {
       if (!context.current() || !this.valid(binding)) throw new Error("room: state_changed");
       const admission = context.store.admitPersonInbox(context.name, input.digest, context.current);
