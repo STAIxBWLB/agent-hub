@@ -189,6 +189,14 @@ test("a bridge whose caller died asks its child to stop first: a child that hand
   expect(existsSync(marker), "the child was killed without being asked to stop first").toBe(true);
 }, 20_000);
 
+test("a bridge whose caller died asks its child to stop exactly once, however long the child takes to go", async () => {
+  const cwd = temp(), terms = join(cwd, "terms");
+  // the child counts every SIGTERM it gets and ignores them, so it stays up through the grace period and the bridge keeps its watch running as long as it can
+  const result = await killCaller(cwd, `process.on("SIGTERM", () => { require("node:fs").appendFileSync(${JSON.stringify(terms)}, "T\\n"); }); setInterval(() => {}, 1000)`);
+  expect(result.gone).toBe(true);
+  expect(readFileSync(terms, "utf8").trim().split("\n"), "the child was asked to stop more than once: the watch kept firing after the caller was found gone").toEqual(["T"]);
+}, 20_000);
+
 test("a bridge whose caller died kills a child that ignores SIGTERM and SIGHUP, after a grace period", async () => {
   const result = await killCaller(temp(), 'process.on("SIGTERM", () => {}); process.on("SIGHUP", () => {}); setInterval(() => {}, 1000)');
   expect(result.gone, `a child that ignores SIGTERM survived: ${result.left.join(", ")}`).toBe(true);
