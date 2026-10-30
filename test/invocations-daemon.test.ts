@@ -49,14 +49,14 @@ const update = { availableCommands: [{ name: "skill:review", description: "Revie
 const manifestOf = () => acpManifest("Kimi Code CLI", "2.3.2", update, 5);
 const cap = () => manifestOf().capabilities[0]!;
 
-async function fixture(opts: { capabilities?: Record<string, string[]>; roster?: Record<string, boolean>; shareOverride?: Record<string, Record<string, { digest: string; class?: string }>>; share?: boolean; cls?: string; timeoutS?: number; sweepMs?: number; state?: string; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }>; limits?: Record<string, number> } = {}) {
+async function fixture(opts: { denyPrivate?: boolean; instanceId?: string; capabilities?: Record<string, string[]>; roster?: Record<string, boolean>; shareOverride?: Record<string, Record<string, { digest: string; class?: string }>>; share?: boolean; cls?: string; timeoutS?: number; sweepMs?: number; state?: string; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }>; limits?: Record<string, number> } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-invoke-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   if (hubGitSync(["-C", root, "init", "-q"], { encoding: "utf8" }).status) throw new Error("fixture git failed");
   const stateDir = opts.state ?? join(root, "state");
   if (opts.screen) { mkdirSync(join(root, ".agenthub"), { recursive: true }); writeFileSync(join(root, ".agenthub/routing.toml"), '[local]\nroute = "hub/stage"\nfixed_model = "coding"\n[signals]\npii_screen = "local"\n[constraints]\npii = "local_only"\n'); }
   const share = opts.shareOverride ?? (opts.share === false ? undefined : { kimi: { [cap().id]: { digest: cap().digest, ...(opts.cls === undefined ? { class: "read" } : opts.cls ? { class: opts.cls } : {}) } } });
-  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, invocationSweepMs: opts.sweepMs ?? 50, ...(opts.screen ? { piiScreen: opts.screen } : {}),
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, native: false, enabled: false }, snapshots: { enabled: false, keep: 1 }, ...(opts.roster ? { roster: { ...DEFAULT_CONFIG.roster, ...opts.roster } } : {}), ...(opts.capabilities ? { capabilities: opts.capabilities } : {}), ...(opts.limits ? { limits: { ...DEFAULT_CONFIG.limits, ...opts.limits } } : {}),
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, ...(opts.instanceId ? { instanceId: opts.instanceId } : {}), invocationSweepMs: opts.sweepMs ?? 50, ...(opts.screen ? { piiScreen: opts.screen } : {}),
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, native: false, enabled: false }, snapshots: { enabled: false, keep: 1 }, ...(opts.roster ? { roster: { ...DEFAULT_CONFIG.roster, ...opts.roster } } : {}), ...(opts.capabilities ? { capabilities: opts.capabilities } : {}), ...(opts.denyPrivate ? { local: { ...DEFAULT_CONFIG.local, deny: [...DEFAULT_CONFIG.local.deny, "private/"] } } : {}), ...(opts.limits ? { limits: { ...DEFAULT_CONFIG.limits, ...opts.limits } } : {}),
       invocation: { ...(share ? { share } : {}), ...(opts.timeoutS ? { timeout_s: opts.timeoutS } : {}) } } });
   cleanups.push(() => daemon.stop());
   const kimi = new Callee("kimi"), codex = new Caller("codex"), pi = new Caller("pi");
@@ -468,4 +468,43 @@ test("the person's class decides: a read share lets a no-class native entry run,
   f.kimi.answer = () => "ok";
   await invoke(f); await until(() => results(f.codex).length === 1, "result");
   expect(f.rows()[0]!.class).toBe("read");
+});
+
+test("free-text arguments that match a PII or secret pattern are refused before any envelope, with no screen at all", async () => {
+  for (const input of ["id 900101-1234567 please", "use sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "read private/key.txt"]) {
+    const f = await fixture({ denyPrivate: true });
+    const r = await invoke(f, { args: { input } });
+    expect(r.ok, input).toBe(false); expect(r.error, input).toContain("the arguments match a PII or secret pattern, so they are not sent to another peer");
+    expect(f.kimi.got, input).toEqual([]); expect(f.rows(), input).toEqual([]);
+  }
+});
+
+test("a hub in recovery refuses a new invocation before anything is built (the control path holds it first; the branch keeps its own fence for a race)", async () => {
+  const f = await fixture({ instanceId: "invoke-source" });
+  const person = await ControlClient.connect(f.stateDir, { role: "console" }); cleanups.push(() => person.close());
+  // a prepared recovery fences new work, exactly as it fences the other tools
+  expect((await person.request({ t: "recovery", op: "prepare", operationId: "invoke-op", expectedInstanceId: "invoke-source", targetFeatures: DAEMON_FEATURES })).ok).toBe(true);
+  const r = await invoke(f); expect(r.ok).toBe(false); expect(r.error).toBe("recovery is holding mutations");
+  expect(f.kimi.got).toEqual([]); expect(f.rows()).toEqual([]);
+});
+
+test("a recovery that starts while the arguments are screened refuses the call at the held gate, and nothing was built", async () => {
+  let release!: () => void; const gate = new Promise<void>(r => (release = r));
+  let entered!: () => void; const inside = new Promise<void>(r => (entered = r));
+  const f = await fixture({ instanceId: "invoke-race", screen: async () => { entered(); await gate; return { label: "clear", ms: 1 }; } });
+  const pending = invoke(f); await inside;
+  const person = await ControlClient.connect(f.stateDir, { role: "console" }); cleanups.push(() => person.close());
+  expect((await person.request({ t: "recovery", op: "prepare", operationId: "race-op", expectedInstanceId: "invoke-race", targetFeatures: DAEMON_FEATURES })).ok).toBe(true);
+  release();
+  const r = await pending; expect(r.ok).toBe(false); expect(r.error).toBe("kimi is held (recovery or a lifecycle hold)");
+  expect(f.kimi.got).toEqual([]); expect(f.rows()).toEqual([]);
+});
+
+test("the class on the row is the effective one: a person's higher class is recorded, never the lower declaration", async () => {
+  // a read share is the lowest that runs; the row must carry exactly what the gates used
+  const f = await fixture({ cls: "read" });
+  f.kimi.answer = () => "ok";
+  await invoke(f); await until(() => results(f.codex).length === 1, "result");
+  expect(f.rows()[0]!.class).toBe("read");
+  expect(f.events().find(e => e.type === "invocation")!.class).toBe("read");
 });

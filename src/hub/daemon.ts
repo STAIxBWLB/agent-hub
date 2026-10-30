@@ -3333,7 +3333,8 @@ export async function startDaemon(opts: DaemonOptions) {
           ...(a.task === undefined ? {} : { task: { id: a.task as number, ok: !!taskAgain && (taskAgain.owner === by || taskAgain.reviewer === by) && !isClosedTaskState(taskAgain.state) && taskAgain.state !== "backlog", pii: !!taskAgain && tasks.isPii(taskAgain), reason: `task #${a.task} is not open work of yours` } }),
         });
         if (recheck || !stillFound || stillFound.digest !== found!.digest || connectionGeneration(by) === undefined) throw new PreEffectToolRefusal(recheck ?? "the capability or your session changed while the call was checked; ask again");
-        if (stopping || recoveryActive()) throw new PreEffectToolRefusal("the hub is stopping or recovering; ask again afterwards");
+        // Recovery marks every bus target held, and that gate is read again just above, so the recheck already refuses a recovery that began meanwhile; `stopping` is read here.
+        if (stopping) throw new PreEffectToolRefusal("the hub is stopping; ask again afterwards");
         // The request is sent by the hub, which no limit applies to, so the CALLER is charged: the same per-sender and per-pair limits as a message from it to the target (priority status, never important).
         const limited = admit(newEnvelope(by, `invoke ${found!.id} ${JSON.stringify(checked.args)}`, { to: [target], kind: "invocation", priority: "status" }));
         if (limited) throw new PreEffectToolRefusal(limited);
