@@ -1170,7 +1170,18 @@ local hub work available. Fake-hub/broker tests are not a live TLS/proxy or X7 r
 
 This implements frozen D3/D5 from issue #446, comment 6242775004, with the
 approved X4 refinements and R1 clarifications. X5 metadata views are described
-below; X6 invocations and X7 live two-machine receipts remain separate.
+below; X7 live two-machine receipts remain separate.
+
+### X6 as built (#446, task 187)
+
+- Cross-hub invocations are read-only and require consent by pinning on both hubs. The source person pins the exact `peer@label`, capability id, digest and class `read` in the existing machine-local `invocation.share`; the target independently requires its current local share pin, effective read class, native schema and every #445 D4 gate. There is no inheritance between peers, instances or labels.
+- Discovery stays manual: the target person's existing `ahub capabilities` provides the digest out of band. X6 adds no remote discovery RPC or implicit sharing from room exposure alone.
+- Both sides validate arguments: bounded flat scalar shape at source, actual capability schema at target. Task, approval and other local refs never cross. Write, external and destructive invocations and approval/permission messages remain excluded.
+- Requests and results use closed, bounded encrypted application envelopes and opaque host provenance at the single room boundary. Generic hub/digest or raw agent invocation envelopes remain refused. A private or uncleared request is refused, never converted into an executable stub; an uncleared result is withheld without its body.
+- Target admission is bound to the signed room/member and current local capability. Durable invocation identity and result correlation include room, member fingerprint, peer ids, request id and digest. Dedupe never dispatches the same invocation twice; a mismatched or forged result cannot settle another call.
+- Local and remote nested calls retain the invocation turn identity and refuse depth 2 before another dispatch. Uncertain handoff, lost acknowledgement/result or restored uncertainty stays `needs_review`, never a silent retry. Signed application admission is distinct from a capability result.
+- Automated proof uses two fake hubs with the real built-in broker and crypto. Native account execution and live two-Mac X7 receipts remain separate and unverified.
+
 
 ### Egress and authority
 
@@ -6307,6 +6318,8 @@ safety floor must allow tightening only in schema bounds and have its own test;
 wire/storage/protocol contracts remain constants.
 
 ## Capability invocation (#445)
+
+X6 remote reads require an exact source `peer@label` capability/digest/`read` pin plus the target's independent current local read pin and schema/D4 admission. The target person's `ahub capabilities` supplies the digest out of band; discovery remains manual, with no remote listing RPC. Room exposure alone grants no invocation, and no task or approval refs cross. See "X6 as built" under #446.
 
 Plan of record: the #445 C0 freeze (issue comment of 2026-10-17, owner decisions O1-O5 of 2026-10-18, go-ahead 2026-10-25). Phases C1-C4 implement it in order and amend this section when they differ. C1 (discovery) and C2 (read invocations) are implemented, see "C1 as built" and "C2 as built" below; C3 adds the write/external approval and audit path below; live receipts (C4) remain unverified. The [C0 receipt](../verification/2026-10-30-445-capability-probes.md) records what the native sources actually expose.
 

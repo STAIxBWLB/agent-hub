@@ -3868,8 +3868,8 @@
     {
       "id": "room-x4-private-envelope-boundary",
       "file": "src/rooms/boundary.ts",
-      "search": "    if (env.kind !== \"chat\" && env.kind !== \"status\" || env.private === true) return refused(\"boundary_refused\");",
-      "replacement": "    if (env.kind !== \"chat\" && env.kind !== \"status\") return refused(\"boundary_refused\");",
+      "search": "    if (!invocation && env.kind !== \"chat\" && env.kind !== \"status\" || env.private === true) return refused(\"boundary_refused\");",
+      "replacement": "    if (!invocation && env.kind !== \"chat\" && env.kind !== \"status\") return refused(\"boundary_refused\");",
       "testFile": "test/rooms-boundary.test.ts",
       "testName": "forbidden classes, hub/digest/remote senders, private flags and implicit broadcasts never reach the model"
     },

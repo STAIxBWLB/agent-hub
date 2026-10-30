@@ -298,3 +298,19 @@ test("the person's view reads only a peer's own entries: an instance id never in
   expect(shareView("kimi", manifest(a), inheritedEntry)[0]!.state).toBe("unshared");
   expect(listedCapabilities("kimi", manifest(a), inheritedEntry)).toEqual([]);
 });
+
+
+test("X6 source read shares pin exact peer@label without inheriting peer, instance or label entries", () => {
+  const c = cap(), pinned = readShare({ "kimi@alpha": { [c.id]: { digest: c.digest, class: "read" } } });
+  expect(listedCapabilities("kimi@alpha", manifest(c), pinned)).toHaveLength(1);
+  for (const other of ["kimi", "kimi@beta", "kimi-2@alpha", "qwen@alpha"]) expect(listedCapabilities(other, manifest(c), pinned)).toEqual([]);
+  expect(listedCapabilities("kimi@alpha", manifest(cap({ name: "changed" })), pinned)).toEqual([]);
+  expect(shareView("kimi@alpha", manifest({ ...c, digest: sha("changed") }), pinned)[0]?.state).toBe("digest-changed");
+});
+
+test("X6 remote share keys are strict full addresses and only explicitly pinned read class is retained", () => {
+  const c = cap();
+  for (const cls of [undefined, "write", "external", "destructive"]) expect(readShare({ "kimi@alpha": { [c.id]: { digest: c.digest, ...(cls ? { class: cls } : {}) } } })).toEqual({});
+  for (const id of ["kimi@alpha\n", "kimi@alpha@beta", "Kimi@alpha", "kimi@Alpha", "kimi@", "@alpha", "hub@alpha", "digest@alpha", `kimi@${"a".repeat(33)}`]) expect(readShare({ [id]: { [c.id]: { digest: c.digest, class: "read" } } })).toEqual({});
+  expect(readShare({ kimi: { [c.id]: { digest: c.digest, class: "write" } } }).kimi?.[c.id]?.class).toBe("write");
+});
