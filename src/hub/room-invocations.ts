@@ -98,12 +98,15 @@ export class RoomInvocations {
     if (!input.current()) throw new Error("room: invocation trust changed");
     safe &&= current();
     if (!input.claim()) throw new Error("room: invocation claim unavailable");
-    if (result.outcome === "needs_review") this.p.bus.holdInvocation(row.id, "target hub reports an uncertain invocation", row.target);
+    const uncertain = result.outcome === "needs_review" || result.outcome === "timeout";
+    if (uncertain) this.p.bus.holdInvocation(row.id, "target hub reports an uncertain invocation", row.target);
     this.p.ledger.updateRelay(row.id, route.state, env.id);
-    this.p.finish(row, safe ? result.outcome : result.outcome === "refused" ? "refused" : "withheld", safe
-      ? result.outcome === "completed" ? { body: result.body } : { reason: result.body }
-      : result.outcome === "refused" ? { reason: "the target declined; the reason was withheld" } : {});
-    this.p.ledger.updateRelay(row.id, "completed", env.id);
+    const outcome = uncertain ? "needs_review" : safe ? result.outcome : result.outcome === "refused" ? "refused" : "withheld";
+    const visible = safe ? result.outcome === "completed" ? { body: result.body } : { reason: boundedInvocationBody(result.body) }
+      : uncertain ? { reason: "the target reports an uncertain outcome; remote details were withheld" }
+      : result.outcome === "refused" ? { reason: "the target declined; the reason was withheld" } : {};
+    this.p.finish(row, outcome, visible);
+    this.p.ledger.updateRelay(row.id, uncertain ? "needs_review" : "completed", env.id);
     return "admitted";
   }
   receipt(id: string, state: "completed" | "failed_safe" | "needs_review"): void {

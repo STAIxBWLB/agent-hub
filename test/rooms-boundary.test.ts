@@ -359,3 +359,14 @@ test("X6 host-only provenance is stripped from encrypted wire and peer-forged pr
   const bad = { v: 1, type: "chat", envelope: { ...view, refs: { invocationRemote: true } } };
   expect(() => decodeRoomMessage(canonicalBytes(bad))).toThrow(RoomApplicationError);
 });
+
+
+for (const outcome of ["needs_review", "timeout", "refused"] as const) test(`X6 privacy withholding preserves ${outcome} metadata without its reason`, async () => {
+  const f = invocationFixture("invocation_result"); f.state.model = true;
+  const payload = { ...f.payload, outcome, body: "PRIVATE-REASON-CANARY" };
+  f.context.invocation = authorizeRoomInvocation(f.envelope, "worker", payload, () => true);
+  f.context.screen = async () => ({ label: "unknown", ms: 1 });
+  const view = outbound(await roomBoundary(f.envelope, f.context)), result = decodeRoomInvocationBody("invocation_result", view.body);
+  expect(result.outcome).toBe(outcome === "timeout" ? "needs_review" : outcome); expect(result.body).toBe("");
+  expect(view.body).not.toContain("PRIVATE-REASON-CANARY");
+});

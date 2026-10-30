@@ -112,7 +112,8 @@ export async function roomBoundary(input: Envelope, ctx: RoomBoundaryContext): P
     let outgoingBody = withheld ? `[room message ${envelope.id} withheld]` : sanitize(envelope.body);
     if (invocation?.kind === "invocation_result") {
       const result = decodeRoomInvocationBody("invocation_result", body);
-      outgoingBody = encodeRoomInvocationBody("invocation_result", withheld ? { ...result, outcome: "withheld", body: "" } : { ...result, body: sanitize(result.body) });
+      const hiddenOutcome = result.outcome === "needs_review" || result.outcome === "timeout" ? "needs_review" : result.outcome === "refused" ? "refused" : "withheld";
+      outgoingBody = encodeRoomInvocationBody("invocation_result", withheld ? { ...result, outcome: hiddenOutcome, body: "" } : { ...result, body: sanitize(result.body) });
     } else if (invocation) outgoingBody = body; // Canonical structured args, sanitized only when the target renders them.
     const outgoing = Object.freeze({ ...envelope, body: outgoingBody });
     encodeRoomMessage({ v: 1, type: "chat", envelope: outgoing });
