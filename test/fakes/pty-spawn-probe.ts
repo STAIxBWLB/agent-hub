@@ -19,7 +19,11 @@ const realSpawn = Bun.spawn.bind(Bun) as (...args: unknown[]) => { exited: Promi
   if (mode === "spawn-throws") throw new Error("simulated spawn failure");
   const proc = realSpawn(...args);
   note(`returned gate=${gateOpen() ? "open" : "absent"}`);
-  if (mode === "spawn-delay" && delay > 0) { Bun.sleepSync(delay); note(`after-delay child=${process.env.PTY_PROBE_MARKER && existsSync(process.env.PTY_PROBE_MARKER) ? "ran" : "waiting"}`); }
+  if (mode === "spawn-delay" && delay > 0) {
+    Bun.sleepSync(delay); note(`after-delay child=${process.env.PTY_PROBE_MARKER && existsSync(process.env.PTY_PROBE_MARKER) ? "ran" : "waiting"}`);
+    // what a caller that died inside the hold looks like from here: the parent this process has now
+    if (process.env.PTY_PROBE_PPID_LOG) appendFileSync(process.env.PTY_PROBE_PPID_LOG, `${process.ppid}\n`);
+  }
   if (mode === "exited-never") Object.defineProperty(proc, "exited", { get: () => new Promise<number>(() => {}) });
   return proc;
 };
