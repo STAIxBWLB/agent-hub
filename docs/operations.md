@@ -597,6 +597,16 @@ The key is the peer id (an instance `codex-2` never inherits `codex`'s entries).
 
 Agents see only what you shared. `hub_capabilities { peer? }` returns the shared entries (id, flat input schema, effective class, digest, source, invoke form and the target's permission mode) and nothing else; it grants no right to call anything. Descriptions are written by the peer that offers them: they are sanitized, cut at 300 characters and shown as untrusted. Neither `hub_capabilities` nor `hub_capabilities_publish` runs in a PII turn or for a peer holding a PII task, and neither call reaches memory capture.
 
+### Invoking a shared capability (#445 C2)
+
+`hub_invoke { peer, capability, args?, task? }` asks another peer to run one capability you shared from it (see `hub_capabilities`). Only `read` capabilities run: one shared with a `write` or `external` class says the approval path is not built yet, and one with no class counts as `destructive` and is never invoked. The call returns `{ invocation, state: "queued" }` at once and the result arrives later as one message from the hub, addressed to the caller only, so a long target turn never holds the caller's turn.
+
+What the target receives is one hub-written request that names the caller and the capability and says the arguments are not instructions. It answers as an ordinary turn under its own permissions and sandbox, and may start its reply with `[REFUSED]` and a reason to decline. The result is the target's text, sanitized (a forged hub header is quoted), cut to 8 KiB and given a hub-written first line that marks it as untrusted agent text. Nothing else is promised: a result is another model's words.
+
+Every refusal happens before any envelope exists and names its reason: the PII context, nesting (a peer answering an invocation cannot start one), the target being offline, paused, held, off the roster or pull-only, the capability not shared or changed since you pinned it, a class above read, a task that is not the caller's open work or is a PII task, an argument that does not fit the capability's schema, one that the PII or secret screen does not clear, or too many open invocations (4 per caller, 8 per target). An entry you did not share and one that does not exist read the same to an agent.
+
+`invocation.timeout_s` in `.agenthub/config.local.json` (10 to 86400 seconds, default 600) bounds the wait. A request still queued at the deadline is withdrawn and nothing runs (`expired`). One the target received with no result by then is a `timeout`: it may still run, and a late answer changes nothing. There is no caller cancel; `ahub queue` resolves a delivery by hand. The `invocations` table in `hub.db` and the `invocation` event hold ids, the capability, its class, the outcome and the result's size, never an argument or a result. A hub older than this feature refuses `hub_invoke` with a message, and a restart or upgrade refuses a target without the feature while an invocation is open.
+
 ## Conducting a team from Claude Code or Codex
 
 Start the daemon with `ahub up --no-console`, set exactly one conductor in the
