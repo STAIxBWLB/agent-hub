@@ -17,6 +17,15 @@ export interface RoomInvocationPorts {
 }
 export class RoomInvocations {
   constructor(private readonly p: RoomInvocationPorts) {}
+  localActor(env: Envelope): string | undefined {
+    const local = env.kind === "invocation" ? env.id : env.refs?.invocation;
+    const row = local && this.p.ledger.get(local), route = local && this.p.ledger.relay(local);
+    if (!row || !route) return undefined;
+    try {
+      const identity = this.p.identity(route.remotePeer);
+      return identity && this.authorization(env, identity) ? route.direction === "outbound" ? row.caller : row.target : undefined;
+    } catch { return undefined; }
+  }
   authorization(env: Envelope, identity: RoomInvocationIdentity): RoomInvocationAuthorization | undefined {
     const local = env.kind === "invocation" ? env.id : env.refs?.invocation;
     const row = local && this.p.ledger.get(local), route = local && this.p.ledger.relay(local);

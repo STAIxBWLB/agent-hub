@@ -1340,7 +1340,8 @@ export async function startDaemon(opts: DaemonOptions) {
         if (typeof task !== "string" || !/^[1-9][0-9]*$/.test(task) || !Number.isSafeInteger(Number(task))) return true;
         const row = board.get(Number(task)); if (!row || tasks.isPii(row)) return true;
       }
-      return env.from === USER ? false : !bus.peers.has(env.from) || !!turns.get(env.from)?.private || contextPii(env.from);
+      const sender = env.from === HUB ? roomInvocations.localActor(env) ?? HUB : env.from;
+      return sender === USER ? false : !bus.peers.has(sender) || !!turns.get(sender)?.private || contextPii(sender);
     },
     doing: (peer, kind, text) => observeDoing(peer, kind, text),
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (isWsPeer(p)) p.notifyQueued(counts); } });
@@ -3221,6 +3222,13 @@ export async function startDaemon(opts: DaemonOptions) {
       && policyKey === JSON.stringify({ signals: activeRouting().signals, constraints: activeRouting().constraints, paths: config.pii?.paths ?? [], mlx: config.mlx, model: activeRouting().local.fixed_model });
   }
   const sourceRegistry = new SourceRegistry(opts.stateDir);
+  const answeringInvocation = (peer: PeerId): boolean => {
+    if (invocations.answering(peer)) return true;
+    if (!bus.hasInvocationTurn(peer)) return false;
+    const request = bus.lastDeliveredTo(peer).find(env => env.kind === "invocation" && env.refs?.invocation === env.id);
+    const row = request && invocations.get(request.id);
+    return !!row && ["queued", "delivered", "timeout", "needs_review"].includes(row.outcome);
+  };
   async function invokeCapability(by: PeerId, a: Record<string, any>, piiTurn: boolean, requireInvoke: () => void, room?: RoomInvocationIngress & { request: RoomReadInvocationRequest }): Promise<string> {
         const invocationRequest = invocationRequestSignal.getStore(), invocationSignal = invocationRequest?.signal;
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !["peer", "capability", "args", "task"].includes(key))) throw new PreEffectToolRefusal("hub_invoke takes peer, capability, optional args and optional task");
@@ -3246,7 +3254,7 @@ export async function startDaemon(opts: DaemonOptions) {
             piiContext: piiTurn || !!turns.get(by)?.private || contextPii(by),
             attached: !!peer && peer.state !== "offline", onRoster: !!peer && membershipAllowed(target), paused: invocationPaused(target), held: bus.isHeld(target), pullOnly: peer?.pullOnly === true,
             capability: view ? { id: view.id, state: view.state, class: view.class } : undefined,
-            depth: invocations.answering(by) || bus.hasInvocationTurn(by), openByCaller: invocations.countOpenBy("caller", by), openByTarget: invocations.countOpenBy("target", target),
+            depth: answeringInvocation(by), openByCaller: invocations.countOpenBy("caller", by), openByTarget: invocations.countOpenBy("target", target),
             ...(a.task === undefined ? {} : { task: { id: a.task as number, ok: !!task && (task.owner === by || task.reviewer === by) && !isClosedTaskState(task.state) && task.state !== "backlog", pii: !!task && tasks.isPii(task), reason: `task #${a.task} is not open work of yours` } }),
           };
         };

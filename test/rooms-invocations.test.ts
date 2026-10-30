@@ -26,11 +26,12 @@ class Probe extends Sink {
   readonly manifest: CapabilityManifest = { capabilities: [capability], observedAt: 1 };
   answer: string | undefined = "X6_PUBLIC_RESULT";
   uncertain = false;
+  accept = true;
   onRequest?: (envs: Envelope[]) => void | Promise<void>;
   async capabilityManifest() { return this.manifest; }
   override async deliver(envs: Envelope[], id?: string) {
     this.got.push(...envs); this.setState("busy");
-    if (id) this.delivery({ id, state: "accepted" });
+    if (id && this.accept) this.delivery({ id, state: "accepted" });
     await this.onRequest?.(envs);
     if (this.answer !== undefined) this.onMessage?.(this.answer, { inReplyTo: replyParent(envs), to: replyAudience(envs) });
     if (id) this.delivery({ id, state: this.uncertain ? "needs_review" : "completed" });
@@ -101,12 +102,13 @@ test("X6 target validates its actual native schema before any native dispatch", 
   await until(() => f.a.ledger.get(id)?.outcome === "refused", "actual target schema refusal"); expect(f.callee.got).toEqual([]);
 });
 
-test("X6 depth two is refused while a remote invocation turn is open", async () => {
-  const f = await mesh(); let nested: Promise<any> | undefined;
+for (const accept of [true, false]) test(`X6 depth two is refused while a remote invocation turn is open, nativeAccepted=${accept}`, async () => {
+  const f = await mesh(); f.callee.accept = accept; let nested: Promise<any> | undefined;
   f.callee.onRequest = async () => { nested = f.b.tools.request({ t: "task", op: "hub_invoke", args: { peer: "codex@alpha", capability: capability.id, args: { input: "nested" } } }); await nested; };
   const first = await f.invoke(); expect(first.ok).toBe(true);
   await until(() => !!nested, "target attempts nested remote call");
   const response = await nested!; expect(response.ok).toBe(false); expect(response.error).toMatch(/do not nest/);
+  const id = JSON.parse(first.text).invocation; await until(() => f.a.ledger.get(id)?.outcome === "completed", "original read completes after nested refusal");
 });
 
 
