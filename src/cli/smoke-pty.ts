@@ -54,14 +54,22 @@ function waitForExit(proc: ChildProcess): Promise<{ code: number | null }> {
 }
 
 /** Run an argv vector inside a fixed-size PTY, always stopping its owned process group before returning. */
-export async function runPty(argv: readonly string[], options: PtyOptions): Promise<PtyResult> {
+export function runPty(argv: readonly string[], options: PtyOptions): Promise<PtyResult> {
+  return runPtyWith(commandFor, argv, options);
+}
+
+/**
+ * `runPty` with the launcher named by the caller. Only code can reach it (a test names a bridge that ignores SIGTERM or never exits); no config key, request or environment variable does, so the
+ * bridge a hub runs is always `commandFor`'s.
+ */
+export async function runPtyWith(launcher: (argv: readonly string[]) => string[], argv: readonly string[], options: PtyOptions): Promise<PtyResult> {
   validate(argv, options);
   const started = Date.now();
   if (options.signal?.aborted) return { outcome: "aborted", exitCode: null, outputBytes: 0, elapsedMs: Date.now() - started, cleaned: true };
 
   let proc: ChildProcess;
   try {
-    const command = commandFor(argv);
+    const command = launcher(argv);
     proc = spawn(command[0]!, command.slice(1), {
       cwd: options.cwd,
       env: { ...options.env, TERM: "xterm-256color" },
