@@ -24,7 +24,7 @@ Use existing fixed H1 metadata/schema/settings/default pins and a3s-bounded cons
 
 ## Startup, ownership and budget constraints
 
-- Close/signal handlers AND normal push/permission handlers must be installed before awaiting startup settings. No prompt may disappear during the3s wait. Begin intervals after capture.
+- Close/signal handlers AND normal push/permission handlers must be installed before awaiting startup settings. No prompt may disappear during the3s wait. Keep the fixed1s redraw/approval-prune interval active during capture; begin the configurable poll interval after capture.
 - Pushes can populate local presentation buffers before capture at their default limits. If policy lowers a limit, perform a cold-start-only bounded trim of pendingStream with the exact added droppedStream count, and keep the newest attention refs. Existing one-shift append logic cannot repair a buffer already far above its new cap. Never discard approvals, control messages or daemon work.
 - Refresh uses polling/refreshPending serialization with3s status/budget/task/settings requests and a possible additional5s Usage round. Preserve serialization on a2s poll; no duplicate in-flight request loop. The1s redraw/approval-prune cadence stays fixed.
 - appendEvent cap1000 is an existing test/host seam and stays fixed. Usage limits query1000 belongs to its existing Usage-only read path, not event retention. Local preferences never trim bus queues, journals, task state or approval records.

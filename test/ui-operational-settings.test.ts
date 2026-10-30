@@ -43,9 +43,10 @@ test("#489 H7 snapshots accepted row.value only, uses fixed bounds and falls bac
 });
 
 test("#489 H7 both history paths tighten locally and notices preserve their captured visibility boundary", () => {
-  for (const input of ["status", "task assign 3 pi"]) {
+  for (const input of ["status", "queue discard --peer pi --reason fixture"]) {
     const state = initialConsoleState(); state.historyLimit = 1; state.history = ["old"]; state.editing = true; state.input = input;
-    const next = reduceConsole(state, "\r", 1000).state;
+    const result = reduceConsole(state, "\r", 1000), next = result.state;
+    if (input.startsWith("queue")) { expect(result.effects).toEqual([]); expect(next.confirm?.type).toBe("command"); }
     expect(next.history).toEqual([input]); expect(next.historyIndex).toBe(1);
   }
   const state = initialConsoleState(); state.notice = "fixture"; state.noticeAt = 1000;
@@ -56,9 +57,10 @@ test("#489 H7 both history paths tighten locally and notices preserve their capt
 
 function fixture(startup: () => Promise<any>, options: { pollMs?: number; noPet?: boolean } = {}) {
   let input = (_text: string) => {}, signal = () => {}, closed = 0;
-  const output: string[] = [], requests: { msg: any; timeout?: number }[] = [], sent: any[] = [], intervals: { fn: () => void; ms: number }[] = [];
-  const interval = globalThis.setInterval;
-  globalThis.setInterval = ((fn: () => void, ms: number) => { intervals.push({ fn, ms }); return interval(() => {}, 60_000); }) as typeof setInterval;
+  const output: string[] = [], requests: { msg: any; timeout?: number }[] = [], sent: any[] = [], intervals: { fn: () => void; ms: number; id: ReturnType<typeof setInterval>; active: boolean }[] = [];
+  const interval = globalThis.setInterval, clear = globalThis.clearInterval;
+  globalThis.setInterval = ((fn: () => void, ms: number) => { const id = interval(() => {}, 60_000); intervals.push({ fn, ms, id, active: true }); return id; }) as typeof setInterval;
+  globalThis.clearInterval = ((id: ReturnType<typeof setInterval>) => { const timer = intervals.find(item => item.id === id); if (timer) timer.active = false; clear(id); }) as typeof clearInterval;
   const terminal: ConsoleTerminal = { columns: 160, rows: 30, isTTY: true, write: text => { output.push(text); }, raw: () => {}, onData: listener => { input = listener; return () => {}; }, onResize: () => () => {}, onSignal: listener => { signal = listener; return () => {}; } };
   const client = { onPush: (_message: any) => {}, onClose: (_code: number, _reason: string) => {}, send: (msg: any) => { sent.push(msg); }, close: () => { closed++; }, request: async (msg: any, timeout?: number) => {
     requests.push({ msg, timeout });
@@ -66,7 +68,7 @@ function fixture(startup: () => Promise<any>, options: { pollMs?: number; noPet?
     return { ok: true, status: { peers: {} }, budget: {}, text: "[]", deliveries: [] };
   } };
   const running = runConsole({ client, cwd: "/tmp/ahub-presentation-fixture-does-not-exist", stateDir: "/tmp/ahub-presentation-fixture-does-not-exist", terminal, panels: true, color: false, noPet: options.noPet ?? true, ...(options.pollMs === undefined ? {} : { pollMs: options.pollMs }) });
-  return { output, requests, sent, intervals, client, input: (text: string) => input(text), signal: () => signal(), closed: () => closed, stop: async () => { signal(); try { await running; } finally { globalThis.setInterval = interval; } } };
+  return { output, requests, sent, intervals, client, input: (text: string) => input(text), signal: () => signal(), closed: () => closed, stop: async () => { signal(); try { await running; } finally { globalThis.setInterval = interval; globalThis.clearInterval = clear; } } };
 }
 
 test("#489 H7 console captures once, preserves initial tail subscription and keeps the poll seam and floor", async () => {
@@ -106,13 +108,14 @@ test("#489 H7 a held startup settings read preserves permission handling and cou
   } finally { release({ ok: false }); await f.stop(); }
 });
 
-test("#489 H7 close during startup exits without timers or a late startup effect", async () => {
+test("#489 H7 close during startup clears the fixed redraw timer and prevents late poll startup", async () => {
   let release!: (value: any) => void;
   const held = new Promise(resolve => { release = resolve; });
   const f = fixture(() => held);
   try {
-    f.signal(); await f.stop(); expect(f.closed()).toBe(1); expect(f.intervals).toEqual([]);
-    release({ ok: true, rows: values() }); await tick(); expect(f.intervals).toEqual([]);
+    expect(f.intervals.map(item => item.ms)).toEqual([1000]);
+    f.signal(); await f.stop(); expect(f.closed()).toBe(1); expect(f.intervals.filter(item => item.active)).toEqual([]);
+    release({ ok: true, rows: values() }); await tick(); expect(f.intervals).toHaveLength(1); expect(f.intervals.filter(item => item.active)).toEqual([]);
   } finally { release?.({ ok: false }); await f.stop(); }
 });
 
