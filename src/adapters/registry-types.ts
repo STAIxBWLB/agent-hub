@@ -1,6 +1,7 @@
 import type { ClaudeImplementerOptions } from "./claude-implementer.ts";
 import type { ReviewerBackend, ReviewerPrintOptions } from "./reviewer-print.ts";
 import type { SettingDef } from "../hub/settings.ts";
+import type { CapabilityManifest } from "../hub/capabilities.ts";
 import type { Addon } from "../hub/tooling.ts";
 import type { RecoveryContinuityBookmark } from "../hub/recovery-continuity.ts";
 import type { RecoveryPeer } from "../cli/upgrade.ts";
@@ -117,16 +118,8 @@ export interface ContextReader {
   read(value: unknown, sessionId: string, measuredAt: number): ContextReading;
 }
 
-export interface CapabilityManifest {
-  capabilities: {
-    id: string;
-    kind: "command" | "skill" | "mcp_tool";
-    name: string;
-    description: string;
-    inputSchema?: unknown;
-    sideEffect: "read" | "write" | "exec" | "external";
-  }[];
-}
+/** #445 C1: the manifest shape lives with its digest, sanitizer and share rules in `src/hub/capabilities.ts`; the `exec` class is gone (arbitrary execution is `destructive`). */
+export type { Capability, CapabilityManifest, SideEffect } from "../hub/capabilities.ts";
 
 export interface NativeFactsInput {
   event: "SessionStart" | "PreInvocation" | "PostInvocation" | "PreToolUse" | "PostToolUse" | "Stop";
