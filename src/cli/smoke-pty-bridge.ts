@@ -9,7 +9,8 @@ import { join } from "node:path";
  * event loop thread blocks in wait4 while the exiting session leader waits for that same thread to drain its pty. Measured here with a bare Bun script and no agent-hub code: 26 of 96 runs hung
  * at 12 in parallel on 1.4.3 and 0 of 180 on 1.4.4. The child therefore starts behind a gate: a shell that waits for a file the bridge writes right after `Bun.spawn` has returned, then `exec`s the
  * real command (same pid, same session, same terminal). The wait is bounded, so a bridge that dies before it opens the gate leaves no waiting shell behind.
- * ponytail: remove the gate when `.bun-version` and the engines floor are 1.4.4 or later; the bounded gate costs about one shell start (a few ms).
+ * ponytail: ceiling and upgrade path. The gate exists only because of oven-sh/bun#45300 on Bun up to 1.4.3 (this repo pins 1.4.2 in `.bun-version`); the upgrade path is to delete GATE_SCRIPT, `gate` and `gateDir` once the pinned Bun is 1.4.4 or newer, which is its own task because it
+ * touches CI and every OS leg. The parent-death stop below stays whatever the Bun version: an orphaned bridge is this repository's bug, not Bun's. The gate costs about one shell start (a few ms).
  */
 const GATE_SCRIPT = 'n=0; while [ ! -e "$0" ]; do n=$((n+1)); [ "$n" -gt 1000 ] && exit 125; sleep 0.01; done; exec "$@"';
 /** A bridge whose caller died is stopped instead of running on: its child holds a terminal nobody reads and, under launchd, nothing else would ever stop it. */

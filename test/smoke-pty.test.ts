@@ -160,7 +160,8 @@ test("the real bridge stops its terminal child when its caller is killed: neithe
   }
 }, 40_000);
 
-test("the bridge starts its child behind a gate that is opened once Bun.spawn has returned, keeps a fast child's output and exit code, and removes the gate afterwards", async () => {
+// The bridge, and so its gate, is the macOS launcher: Linux runs the child under script(1) and never starts the bridge.
+test.skipIf(process.platform !== "darwin")("the bridge starts its child behind a gate that is opened once Bun.spawn has returned, keeps a fast child's output and exit code, and removes the gate afterwards", async () => {
   const cwd = temp(), tmp = join(cwd, "tmp");
   mkdirSync(tmp);
   const gates = () => readdirSync(tmp).filter(name => name.startsWith("ahub-pty-gate-"));
