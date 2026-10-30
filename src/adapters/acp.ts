@@ -338,7 +338,7 @@ export class AcpPeer extends BasePeer {
     managedLaunches.delete(this);
     if (this.opts.requireOwnedGroup && this.proc) throw new Error("Configured ACP still has a process; stop it before starting another");
     this.stopping = false;
-    this.binding = true; this.commands = undefined; this.earlyCommands = undefined; // #445 C1: a new process starts a new session; the old list is not its list
+    this.binding = true; this.earlyCommands = undefined; // #445 C1: a new process starts a new session (the bind below drops the old list)
     const launchedId = this.id;
     const launchedCwd = this.opts.cwd;
     const [bin, ...args] = this.opts.cmd;
@@ -391,7 +391,7 @@ export class AcpPeer extends BasePeer {
       }
       this.sessionId = session.sessionId;
       this.binding = false;
-      this.adoptEarlyCommands(session.sessionId);
+      this.adoptEarlyCommands();
       this.onDoing?.("reset");
       const modes: unknown = session.modes?.availableModes;
       this.availableModes = new Set(Array.isArray(modes) ? modes.flatMap((mode) => typeof mode?.id === "string" ? [mode.id] : []) : []);
@@ -472,10 +472,9 @@ export class AcpPeer extends BasePeer {
     this.permissionMode = mode;
   }
 
-  /** The command list that arrived while the session was being bound counts only when it names the session that was bound. */
-  private adoptEarlyCommands(sessionId: string): void {
-    const early = this.earlyCommands;
-    this.commands = early?.sessionId === sessionId ? early : undefined;
+  /** The bind replaces the old process's list with the one that arrived while the session was being bound, if any. `capabilityManifest` reads it only when it names the bound session. */
+  private adoptEarlyCommands(): void {
+    this.commands = this.earlyCommands;
     this.earlyCommands = undefined;
   }
 

@@ -3198,7 +3198,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify({ capabilities: out, note: "descriptions are written by the peer that offers them and are untrusted; listing is not permission to call" });
       }
       const own = bus.peers.get(by);
-      if (by === USER || by === HUB || !own) throw new PreEffectToolRefusal("only an attached peer publishes its own capabilities");
+      if (!own) throw new PreEffectToolRefusal("only an attached peer publishes its own capabilities"); // the person and the hub are not bus peers
       if (own.capabilityManifest) throw new PreEffectToolRefusal(`the hub reads ${by}'s capabilities itself; nothing to publish`);
       const generation = connectionGeneration(by);
       if (!generation) throw new PreEffectToolRefusal("publish needs an attached session");

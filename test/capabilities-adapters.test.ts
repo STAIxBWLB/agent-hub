@@ -127,4 +127,8 @@ test("Codex with no attached connection, or a refused or unanswered list, gives 
   expect((await unattached.peer.capabilityManifest()).capabilities).toEqual([]);
   const refused = await codexRig("0.166.0", { refuse: true });
   expect(await refused.peer.capabilityManifest().then(() => "listed", e => (e as Error).message)).toBe("method not found");
+  const stopped = await codexRig("0.166.0");
+  expect((await stopped.peer.capabilityManifest()).capabilities).toHaveLength(1);
+  await stopped.peer.stop();
+  expect(await stopped.peer.capabilityManifest().then(() => "listed", e => (e as Error).message)).toContain("no attached app-server");
 });

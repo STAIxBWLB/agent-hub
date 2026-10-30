@@ -22,7 +22,8 @@ class Peer extends BasePeer {
 class Native extends Peer {
   manifest: CapabilityManifest = { capabilities: [], observedAt: 1 };
   failing = false;
-  async capabilityManifest() { if (this.failing) throw new Error("no answer"); return this.manifest; }
+  asked = 0;
+  async capabilityManifest() { this.asked++; if (this.failing) throw new Error("no answer"); return this.manifest; }
 }
 const update = { availableCommands: [{ name: "skill:review", description: "Review the diff." }, { name: "skill:deploy", description: "Ship it." }] };
 const nativeManifest = () => acpManifest("Kimi Code CLI", "2.3.2", update, 5);
@@ -77,6 +78,17 @@ test("the person sees every entry with its share state, and an agent shell canno
   expect(view.peers.map((p: any) => p.peer)).toEqual(["kimi"]); // codex and pi list nothing
   expect(view.peers[0].entries.map((e: any) => [e.id, e.state, e.class])).toEqual([["command:skill:review", "listed", "write"], ["command:skill:deploy", "digest-changed", "destructive"]]);
   for (const by of ["codex", "kimi", "pi"]) { const r = await f.call(by, "capabilities_list"); expect(r.ok, by).toBe(false); expect(r.error).toContain("console command"); }
+});
+
+test("an agent's listing never asks a native peer the person has not shared anything from", async () => {
+  const f = await fixture({ kimi: { [review().id]: { digest: review().digest } } });
+  const qwen = new Native("qwen"); f.daemon.bus.add(qwen); await qwen.start(); qwen.manifest = nativeManifest();
+  await f.call("codex", "hub_capabilities");
+  expect(f.kimi.asked).toBe(1); expect(qwen.asked).toBe(0); // qwen has a list, and nobody shared it: it is not even read for an agent
+  await f.call("codex", "hub_capabilities", { peer: "qwen" });
+  expect(qwen.asked).toBe(1); // a named peer is read, and still lists nothing
+  expect(JSON.parse((await f.call("codex", "hub_capabilities", { peer: "qwen" })).text).capabilities).toEqual([]);
+  expect(JSON.parse((await f.call("user", "capabilities_list")).text).peers.map((p: any) => p.peer)).toEqual(["kimi", "qwen"]); // the person sees both
 });
 
 test("hub_capabilities is strict about its input", async () => {
