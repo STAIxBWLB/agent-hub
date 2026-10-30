@@ -30,7 +30,7 @@
 
 # Current scope and remaining slices
 
-- Peer guidance and profile-specific task schemas use existing MCP/native/local paths. Research defaults use the #295 dev/research catalog, with bases already held. Writing/general do not add catalog groups before measurement.
+- Peer guidance and profile-specific task schemas use existing MCP/native/local paths. Research defaults use the #295 dev/research catalog, with bases already held. Writing and ops catalog groups are available through the domain packs below; profile defaults do not automatically assign them to peers.
 - Board/public projections, route explain, terminal/dashboard cards and #247 events/records carry the profile alias and base. Native model ingestion and context retention remain unverified.
 - Bounded rich-document facts/review/undo projections and declared pii.paths/data.readonly policy are supported. Opt-in shadow git supports non-git folders; project profile overrides are supported; bounded glob policy and deeper lifecycle integration are tracked in #259. Native ingestion and research measurement remain unverified.
 
@@ -61,13 +61,38 @@
 
 # Domain packs (#513a)
 
-A pack bundles a profile with the roles it expects, a review rubric and example checks in one file, so a project can adopt a way of working with one command. The format and the loader are here; the shipped writing, analysis and ops packs are a later slice (#513b).
+A pack bundles a profile with the roles it expects, a review rubric and example checks in one file, so a project can adopt a way of working with one command. The shipped writing, analysis and ops packs use this format (#513b).
 
-- A pack comes from two layers: the shipped one (`templates/packs/`, bundled; only a format example, `example`, until the writing, analysis and ops packs of #513b), and the project one, `.agenthub/roles/<name>.pack.json`, which replaces a shipped pack of the same name. The project layer is in the directory the role catalog already reads (the catalog takes only `.md`, so the two never collide). At most 16 packs of 8192 bytes each, plain regular files that are not links, in a directory that is not a link. A pack that is oversize, malformed or names a role that is not in the catalog (shipped or project) is refused with the reason, never loaded half usable.
+- A pack comes from two layers: the shipped one (`templates/packs/`, bundled; `example`, `writing-pack`, `analysis` and `ops`), and the project one, `.agenthub/roles/<name>.pack.json`, which replaces a shipped pack of the same name. The project layer is in the directory the role catalog already reads (the catalog takes only `.md`, so the two never collide). At most 16 packs of 8192 bytes each, plain regular files that are not links, in a directory that is not a link. A pack that is oversize, malformed or names a role that is not in the catalog (shipped or project) is refused with the reason, never loaded half usable.
 - The file holds exactly `name` (equal to the file name, and never a profile's name), `profile` (one of dev, research, writing, general), `summary` (160 characters), `roles` (at most 8 distinct role ids), `rubric` (1 to 12 criteria, each `id`, `text` of at most 300 characters and `required`) and `checks` (at most 8, each `id` and a `note` of at most 500 characters). Any other field is refused. Text is plain ASCII punctuation with no control characters.
 - Rubric ids are #507's criterion ids (a letter, then letters, digits or `-`, at most 48 characters), the same shape a task's recorded criteria use, so a reviewer names an unmet item with the id at the start of the line. The rubric only changes the wording of the review checklist; it never adds or removes a task's recorded criteria.
 - A pack is data, never authority. A check is display text exactly like `example_checks`: nothing selects, runs or trusts a command from a pack, and there is no field that could. Roles are named, not created: the pack asks for catalog roles by id and the project assigns them with `catalog_roles` as before.
 - `ahub init --profile <profile|pack>` takes a shipped profile or a project pack. `--dry-run` (add `--json` for rows) previews the config row with the pack's id, base profile, rubric criterion ids, check ids and expected role ids, and never their text. The apply writes the pack's rubric as `profile_overrides.review_checklist` (each line `<id>: <text>`, optional criteria marked, then the `{check}` line) and its checks as `profile_overrides.example_checks`, into a new `.agenthub/config.json` or the existing one, keeping every other key. Applying the same pack again changes nothing. A project whose `profile` differs from the pack's, or whose `profile_overrides` already hold different data (compared with sorted keys, so key order never matters), is refused with the reason rather than overwritten. Init does not copy role files and a check is a note, not a command: the spec amendment "domain packs (#513a)" records why.
+
+# Shipped domain packs and checks (#513b)
+
+| Pack | Base profile | Catalog roles | Deterministic check |
+| --- | --- | --- | --- |
+| `writing-pack` | writing | editor, translator, style-checker, terminology-checker | writing-metadata, writing-terms, writing-style |
+| `analysis` | research | analyst | analysis-reproduce |
+| `ops` | general | project-manager, meeting-actions-owner | ops-records |
+
+Use `ahub init --profile writing-pack --dry-run` (or `analysis`/`ops`) to preview, then omit `--dry-run` to apply. `writing` remains the existing plain profile; the pack uses `writing-pack` because pack names cannot shadow profiles. Expected roles are already in the shipped catalog; assign them deliberately through the existing role flow. Neither init nor pack loading copies or executes a checker, adds trusted `checks` commands, or grants permissions.
+
+From an agent-hub source checkout, these commands run the shipped synthetic examples:
+
+```sh
+bun templates/checks/writing.mjs templates/checks/fixtures/writing.json templates/checks/fixtures/writing-rules.json
+bun templates/checks/analysis.mjs templates/checks/fixtures/analysis.mjs templates/checks/fixtures/analysis-input.json templates/checks/fixtures/analysis-expected.json
+bun templates/checks/ops.mjs templates/checks/fixtures/ops.json
+```
+
+The npm package includes these files under `templates/checks/`; when installed, use their absolute installed-package paths or copy the reviewed examples into the project. Only an explicitly selected, trusted analysis program is executed. A project that wants an automatic task check must separately review and configure a command through the existing `checks` policy. A pack note remains advisory.
+
+- Writing takes a JSON document with nonempty `title`, `language` and `text`, and JSON rules with literal `requiredTerms` and `bannedPhrases` arrays. Required terms must occur in text; banned phrases are absent from title/text. The mechanical style check refuses TODO/TBD placeholders and trailing whitespace. These checks do not assess translation fidelity, source support, readability or audience fit.
+- Analysis takes a program, JSON input and an exact expected stdout file. It invokes the selected program twice with the input path as its first argument, without a shell, compares stdout bytes including the final newline, and refuses changes to any declared file after either run. Each run has a 5-second/1-MiB stdout bound; its stderr is withheld. Equality does not prove method suitability, input provenance or reproducibility of undeclared environment/dependencies.
+- Ops takes an array of exact `{id, owner, due, status}` records. IDs must be unique and nonempty, owners nonempty, due dates real `YYYY-MM-DD` values, and status one of `open`, `in_progress`, `blocked`, `done`. It does not compare to the current clock. An empty array passes structure only; it does not establish that a meeting had no actions or that all actions were captured.
+- All input files are bounded to 1 MiB. JSON inputs must be valid UTF-8/JSON; symbolic links and missing files refuse. Analysis expected output is compared as raw bytes rather than parsed JSON. Results contain stable criterion ids and a final `writing: OK`, `analysis: OK` or `ops: OK` (or FAIL), never artifact text. Exit codes are 0 for pass, 1 for refusal and 2 for incorrect arguments. Human rubric items remain separate from these mechanical results. Fixture success is not live workflow or publication approval.
 
 # Profile scorecard (#799)
 

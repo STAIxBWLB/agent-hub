@@ -77,7 +77,7 @@ test("project packs load from .agenthub/roles, the role catalog ignores them, an
   expect(loaded.errors.find(error => error.id === "ghost-pack")!.reason).toContain("no-such-role");
   expect(JSON.stringify(loaded.errors)).not.toContain("rm -rf");
   expect(loadRoleCatalog(dir).errors).toEqual([]);
-  expect([...loadPacks(undefined).packs.keys()]).toEqual(["example"]);
+  expect([...loadPacks(undefined).packs.keys()].sort()).toEqual(Object.keys(SHIPPED_PACKS).sort());
 });
 
 test("a project role file can satisfy a pack's role, and a pack file that is a link or a hardlink is refused", () => {
@@ -260,11 +260,11 @@ test("canonicalJson sorts keys at every depth, keeps array order, and tells diff
 });
 
 test("the shipped layer carries the format example, it parses and loads without a project, and its roles are in the shipped catalog", () => {
-  expect(Object.keys(SHIPPED_PACKS)).toEqual(["example"]);
+  expect(Object.keys(SHIPPED_PACKS).sort()).toEqual(["analysis", "example", "ops", "writing-pack"]);
   const parsed = parsePack(SHIPPED_PACKS.example!, "example", "shipped");
   expect(parsed).toMatchObject({ name: "example", profile: "writing", layer: "shipped" });
   const shipped = loadPacks();
-  expect([...shipped.packs.keys()]).toEqual(["example"]);
+  expect([...shipped.packs.keys()].sort()).toEqual(Object.keys(SHIPPED_PACKS).sort());
   expect(shipped.errors).toEqual([]);
   expect(shipped.packs.get("example")!.roles.every(role => loadRoleCatalog().roles.has(role))).toBe(true);
   expect(readFileSync(join(import.meta.dir, "../templates/packs/example.pack.json"), "utf8")).toBe(SHIPPED_PACKS.example!);

@@ -1,6 +1,6 @@
 # Role catalog attribution
 
-Selected role guidance is adapted from msitarzewski/agency-agents at f99f6aa910a442b0197b768ce0ea7751e35e2060. Each adapted definition names its upstream path. The other three research definitions are original agent-hub guidance. Upstream persona, code samples and autonomy claims are excluded.
+Selected role guidance is adapted from msitarzewski/agency-agents at f99f6aa910a442b0197b768ce0ea7751e35e2060. Each adapted definition names its upstream path. The other three research definitions and the writing and ops definitions are original agent-hub guidance. Upstream persona, code samples and autonomy claims are excluded.
 
 MIT License
 

@@ -17,8 +17,8 @@ const root = () => { const dir = mkdtempSync(join(tmpdir(), "ahub-roles-")); cle
 const base = SHIPPED_ROLES["code-reviewer"]!;
 const until = async (f: () => boolean) => { for (let i = 0; i < 300 && !f(); i++) await Bun.sleep(10); expect(f()).toBe(true); };
 
-test("role lint accepts eleven shipped definitions and rejects every schema/limit rule (#295)", () => {
-  const catalog = loadRoleCatalog(); expect(catalog.errors).toEqual([]); expect(catalog.roles.size).toBe(11);
+test("role lint accepts all shipped definitions and rejects every schema/limit rule (#295)", () => {
+  const catalog = loadRoleCatalog(); expect(catalog.errors).toEqual([]); expect([...catalog.roles.keys()].sort()).toEqual(Object.keys(SHIPPED_ROLES).sort());
   const bad = [base.replace("id: code-reviewer", "id: other"), base.replace("base: reviewer", "base: conductor"), base.replace("classes: review", "classes: unknown"), base.replace("## Evidence", "## Personality"), base.replace("## Evidence", "## Evidence\n" + "x".repeat(2001)), base + "\n```sh\nexample\n```", base + "\n$ unsafe-command", base + "\n😀", base + "x".repeat(8193), base.replace(/## Scope[\s\S]*?## Not in scope/, "## Scope\n\n## Not in scope"), base + "\n### Personality\nPersona", base.replace("summary:", "summary: first\nsummary:"), base.replace("summary:", "unknown:"), base.replace("Scope\n", "Scope\n\n## Extra\n"), base.replace("Review correctness", "Review correctness — carefully")];
   for (const text of bad) expect(() => parseRole(text, "code-reviewer", "project")).toThrow();
   expect(() => parseRole(base, "different-stem", "project")).toThrow();
