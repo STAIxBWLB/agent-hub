@@ -168,3 +168,53 @@ test("a journalled bus settles an invocation request through the journal like an
     bus.closeJournal();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ---- the capture ends with the invocation's own turn ----
+test("a journalled bus captures an unnamed message only while the invocation's delivery is open, and publishes it once the delivery has completed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-bus-capture-"));
+  try {
+    const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i", operationId: "o" });
+    const bus = new Bus({ batchMs: 0, journal }), callee = new Recorder("kimi"), other = new Recorder("pi");
+    for (const p of [callee, other]) { bus.add(p); await p.start(); }
+    let taken = 0; bus.onAnswer = () => { taken++; return true; };
+    let deliveryId = ""; callee.deliver = async (envs: Envelope[], id?: string) => { callee.batches.push(envs); deliveryId = id ?? ""; callee.force("busy"); };
+    const req = request("kimi"); bus.publish(req);
+    for (let i = 0; i < 100 && !callee.batches.length; i++) await Bun.sleep(5);
+    callee.onMessage?.("unnamed, inside the turn", {});
+    expect(taken).toBe(1); expect(other.batches).toEqual([]);
+    bus.deliveryReceipt("kimi", { id: deliveryId, state: "completed" }); callee.force("idle");
+    callee.onMessage?.("unnamed, after the turn", {});
+    await Bun.sleep(60);
+    expect(taken).toBe(1); // not offered again
+    expect(other.batches.flat().map(e => e.body)).toEqual(["unnamed, after the turn"]);
+    callee_say(callee, "named, after the turn", req, ["pi"]); // naming the request is always the invocation's answer
+    await Bun.sleep(60);
+    expect(taken).toBe(2); expect(other.batches.flat().map(e => e.body)).toEqual(["unnamed, after the turn"]);
+    bus.closeJournal();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a message naming something else while the invocation is the last delivery is an ordinary message", async () => {
+  const bus = new Bus({ batchMs: 0 }), callee = new Recorder("kimi"), other = new Recorder("pi");
+  for (const p of [callee, other]) { bus.add(p); await p.start(); }
+  let taken = 0; bus.onAnswer = () => { taken++; return true; };
+  const req = request("kimi"); bus.publish(req);
+  for (let i = 0; i < 100 && !callee.batches.length; i++) await Bun.sleep(5);
+  const unrelated = chat("kimi", "unrelated"); bus.publish(unrelated);
+  callee_say(callee, "about something else", unrelated, ["pi"]);
+  await Bun.sleep(60);
+  expect(taken).toBe(0); expect(other.batches.flat().map(e => e.body)).toEqual(["about something else"]);
+});
+
+test("a journal-less bus keeps capturing for as long as the peer is busy, and publishes once it is idle", async () => {
+  const bus = new Bus({ batchMs: 0 }), callee = new Recorder("kimi"), other = new Recorder("pi");
+  for (const p of [callee, other]) { bus.add(p); await p.start(); }
+  let taken = 0; bus.onAnswer = () => { taken++; return true; };
+  callee.deliver = async (envs: Envelope[]) => { callee.batches.push(envs); callee.force("busy"); };
+  bus.publish(request("kimi"));
+  for (let i = 0; i < 100 && !callee.batches.length; i++) await Bun.sleep(5);
+  callee.onMessage?.("while busy", {}); expect(taken).toBe(1);
+  callee.force("idle");
+  callee.onMessage?.("once idle", {}); await Bun.sleep(60);
+  expect(taken).toBe(1); expect(other.batches.flat().map(e => e.body)).toEqual(["once idle"]);
+});

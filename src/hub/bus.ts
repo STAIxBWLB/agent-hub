@@ -254,10 +254,13 @@ export class Bus {
     this.opts.doing?.(peer.id, "reset"); // a new adapter never shows what the one it replaces was doing
     peer.onMessage = (text, opts) => {
       if (!this.isRostered(peer.id)) return `off roster: ${peer.id}`;
-      // #445 C2: what the peer was handed decides whether this answer is an invocation's. Its own addressing is never consulted, so a headless agent whose final
-      // answer is normally shared with every peer cannot leak an invocation's answer through that path.
+      // #445 C2: an answer to an invocation is found by what the peer was handed, never by how the answer is addressed, so a headless agent whose final answer is
+      // normally shared with every peer cannot leak it. It is the invocation's answer when it names the request itself (an adapter may report its delivery complete before
+      // it answers, so the receipt cannot decide), or when it names nothing while that invocation's own delivery is still the peer's open turn. Once that turn has ended,
+      // `lastDelivery` still holds the request until the next delivery replaces it, and a later message from the peer is an ordinary message: it must be published.
       const handed = this.lastDelivery.get(peer.id)?.out ?? [];
-      if (this.onAnswer && handed.some((e) => e.kind === "invocation") && (opts?.inReplyTo?.id === undefined || handed.some((e) => e.id === opts.inReplyTo!.id) || handed.length === 1)) {
+      const named = opts?.inReplyTo?.id !== undefined && handed.some((e) => e.kind === "invocation" && e.id === opts.inReplyTo!.id);
+      if (this.onAnswer && handed.some((e) => e.kind === "invocation") && (named || opts?.inReplyTo?.id === undefined && this.invocationTurnOpen(peer.id))) {
         let taken = false;
         try { taken = this.onAnswer(peer.id, text, handed) === true; } catch { taken = true; } // a throwing host never turns a callee's answer into a broadcast
         if (taken) return;
@@ -1097,6 +1100,19 @@ export class Bus {
   /** A recently published envelope, for resolving `reply_to`. */
   get(id: string): Envelope | undefined {
     return this.seen.get(id) ?? this.deferredHub.get(id);
+  }
+
+  /**
+   * #445 C2: whether the peer's current turn is one that holds an invocation request. With a journal that is a delivery of the peer's own that has not reached a
+   * terminal receipt and whose payload holds the request (the receipt paths delete it from `activeDeliveries`); without one it is the peer being busy, which is the
+   * best the bus can know (the daemon always has a journal).
+   */
+  private invocationTurnOpen(peer: PeerId): boolean {
+    if (!this.journal) return this.stateOf(peer) === "busy";
+    for (const [deliveryId, owner] of this.activeDeliveries) {
+      if (owner === peer && this.journal.get(deliveryId)?.out.some((e) => e.kind === "invocation")) return true;
+    }
+    return false;
   }
 
   /** The envelopes most recently handed to a peer, used to distinguish a received request from an unread queue. */

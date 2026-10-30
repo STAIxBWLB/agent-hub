@@ -25,11 +25,12 @@ class Callee extends BasePeer {
   answer: (envs: Envelope[]) => string | undefined = () => "answer";
   manifest: CapabilityManifest = { capabilities: [], observedAt: 1 };
   receipts = true;
+  lastDeliveryId: string | undefined;
   async start() { this.setState("idle"); }
   async stop() { this.setState("offline"); }
   async capabilityManifest() { return this.manifest; }
   async deliver(envs: Envelope[], deliveryId?: string) {
-    this.got.push(envs);
+    this.got.push(envs); this.lastDeliveryId = deliveryId;
     this.setState("busy");
     if (deliveryId) this.delivery({ id: deliveryId, state: "accepted" }); // a real adapter accepts at the first sign of its turn
     queueMicrotask(() => {
@@ -282,6 +283,7 @@ test("containment: the callee's answer reaches nobody except through the one res
   const f = await fixture();
   const watcher = new Caller("qwen"); f.daemon.bus.add(watcher); await watcher.start();
   // an adapter that, like a headless ACP agent, shares its final answer with the senders of the delivery and ALSO broadcasts when it has nothing to reply to
+  f.kimi.receipts = false; // the turn stays open, as an adapter's does until it reports it complete; messages after it ended are a separate test
   f.kimi.answer = envs => { expect(envs.map(e => e.kind)).toEqual(["invocation"]); return "ANSWER-MARKER one"; };
   const reply = await invoke(f); expect(reply.ok).toBe(true);
   await until(() => results(f.codex).length === 1, "result");
@@ -672,4 +674,69 @@ test("two paths that settle the same row at once (the deadline sweep and a scree
   expect(results(f.codex)).toHaveLength(1); expect(results(f.codex)[0]!.body).toContain("outcome timeout"); expect(results(f.codex)[0]!.body).not.toContain("ANSWER-RACING");
   expect(f.rows()[0]!.outcome).toBe("timeout");
   expect(f.events().filter(e => e.type === "invocation" && e.outcome !== "queued")).toHaveLength(1);
+});
+
+test("after an invocation's turn has ended, the peer's next message is an ordinary message and is published, not swallowed", async () => {
+  const f = await fixture();
+  f.kimi.answer = () => "the invocation's answer";
+  await invoke(f); await until(() => results(f.codex).length === 1, "result");
+  await until(() => f.daemon.bus.queueIds("kimi").length === 0 && f.kimi.state === "idle", "the turn ended");
+  // the person starts a turn in the peer's own terminal: its shared final answer is not a reply to anything the hub handed it
+  f.kimi.onMessage?.("UNPROMPTED-AFTER-THE-TURN hello everyone", {});
+  await until(() => JSON.stringify(f.pi.got).includes("UNPROMPTED-AFTER-THE-TURN") && JSON.stringify(f.codex.got).includes("UNPROMPTED-AFTER-THE-TURN"), "published to the other peers");
+  expect(f.events().some(e => e.type === "envelope" && e.from === "kimi" && e.bytes > 0)).toBe(true);
+  expect(f.log()).toContain("UNPROMPTED-AFTER-THE-TURN"); // an ordinary message is logged like any other
+  expect(f.rows()[0]).toMatchObject({ outcome: "completed" }); expect(results(f.codex)).toHaveLength(1); // and it did not touch the settled row
+});
+
+test("a message that names the request after its turn ended is still the invocation's answer: dropped, never broadcast", async () => {
+  const f = await fixture();
+  f.kimi.answer = () => "first";
+  await invoke(f); await until(() => results(f.codex).length === 1, "result");
+  await until(() => f.kimi.state === "idle", "the turn ended");
+  f.kimi.onMessage?.("NAMED-AFTER-THE-TURN-MARKER", { inReplyTo: f.kimi.got[0]![0]!, to: ["pi", "codex"] });
+  await Bun.sleep(200);
+  expect(JSON.stringify(f.pi.got)).not.toContain("NAMED-AFTER"); expect(JSON.stringify(f.codex.got)).not.toContain("NAMED-AFTER");
+  expect(f.log()).not.toContain("NAMED-AFTER"); expect(results(f.codex)).toHaveLength(1);
+});
+
+test("an unnamed message inside the invocation's own open turn is captured, and the turn's end releases the peer", async () => {
+  const f = await fixture();
+  f.kimi.answer = () => undefined; f.kimi.receipts = false; // accepted and still working
+  await invoke(f); await until(() => f.rows()[0]?.outcome === "delivered", "open turn");
+  f.kimi.onMessage?.("UNNAMED-INSIDE-THE-TURN", {});
+  await until(() => f.rows()[0]?.outcome === "completed", "taken as the answer");
+  expect(JSON.stringify(f.pi.got)).not.toContain("UNNAMED-INSIDE"); expect(f.log()).not.toContain("UNNAMED-INSIDE");
+  // the adapter now reports the turn complete: from here the same kind of message is published
+  f.kimi.receipt(f.kimi.lastDeliveryId!, "completed");
+  await Bun.sleep(100);
+  f.kimi.onMessage?.("UNNAMED-AFTER-COMPLETION", {});
+  await until(() => JSON.stringify(f.pi.got).includes("UNNAMED-AFTER-COMPLETION"), "published once the turn is over");
+});
+
+test("with a real headless ACP callee, a late answer inside a timed-out turn is still dropped, and its next turn's message is published", async () => {
+  const { AcpPeer } = await import("../src/adapters/acp.ts");
+  const probe = new AcpPeer("qwen", { cmd: [process.execPath, join(import.meta.dir, "fakes/commands-acp.ts"), "--qwen"], cwd: process.cwd() });
+  await probe.start();
+  for (let i = 0; i < 300 && !(await probe.capabilityManifest()).capabilities.length; i++) await Bun.sleep(10);
+  const listed = (await probe.capabilityManifest()).capabilities[0]!; await probe.stop();
+  const f = await fixture({ roster: { qwen: true }, sweepMs: 20, shareOverride: { qwen: { [listed.id]: { digest: listed.digest, class: "read" } } } });
+  const real = new AcpPeer("qwen", { cmd: [process.execPath, join(import.meta.dir, "fakes/commands-acp.ts"), "--qwen", "--answer", "LATE-REAL-ACP-ANSWER", "--delay", "900"], cwd: f.root });
+  cleanups.push(() => real.stop());
+  await real.start(); f.daemon.bus.add(real);
+  for (let i = 0; i < 300 && !(await real.capabilityManifest()).capabilities.length; i++) await Bun.sleep(10);
+  const r = await f.call("codex", "hub_invoke", { peer: "qwen", capability: "command:review", args: { input: "x" } });
+  expect(r.ok, String((r as { error?: string }).error)).toBe(true);
+  await until(() => f.rows()[0]?.outcome === "delivered", "the slow turn started");
+  const l = new InvocationLedger(join(f.stateDir, "hub.db")); (l as any).db.run("UPDATE invocations SET deadline = 1"); l.close();
+  await until(() => results(f.codex).length === 1, "the deadline passes inside the turn");
+  expect(results(f.codex)[0]!.body).toContain("outcome timeout");
+  await until(() => real.state === "idle", "the slow turn ended and its answer arrived late", 6000);
+  await Bun.sleep(200);
+  // the late answer was the invocation's: dropped, never broadcast, the row stays a timeout
+  expect(JSON.stringify(f.pi.got)).not.toContain("LATE-REAL-ACP-ANSWER"); expect(JSON.stringify(f.codex.got)).not.toContain("LATE-REAL-ACP-ANSWER");
+  expect(f.log()).not.toContain("LATE-REAL-ACP-ANSWER"); expect(f.rows()[0]!.outcome).toBe("timeout"); expect(results(f.codex)).toHaveLength(1);
+  // a message after that turn is an ordinary message
+  real.onMessage?.("ORDINARY-AFTER-THE-LATE-TURN", {});
+  await until(() => JSON.stringify(f.pi.got).includes("ORDINARY-AFTER-THE-LATE-TURN"), "published once the turn is over");
 });
