@@ -129,6 +129,10 @@ test("Codex with no attached connection, or a refused or unanswered list, gives 
   expect(await refused.peer.capabilityManifest().then(() => "listed", e => (e as Error).message)).toBe("method not found");
   const stopped = await codexRig("0.166.0");
   expect((await stopped.peer.capabilityManifest()).capabilities).toHaveLength(1);
+  // A peer the hub holds offline while its connection is still open (an unidentified cancellation does this) lists nothing either.
+  const held = await codexRig("0.166.0");
+  (held.peer as unknown as { setState(s: string): void }).setState("offline");
+  expect(await held.peer.capabilityManifest().then(() => "listed", e => (e as Error).message)).toContain("no attached app-server");
   await stopped.peer.stop();
   expect(await stopped.peer.capabilityManifest().then(() => "listed", e => (e as Error).message)).toContain("no attached app-server");
 });

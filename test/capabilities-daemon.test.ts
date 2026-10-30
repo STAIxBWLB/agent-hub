@@ -142,7 +142,8 @@ test("a bad publish stores nothing, replaces the earlier list when good, and a d
   await f.pi.stop();
   await f.pi.start();
   expect(await names()).toEqual([]); // the new connection never published
-  expect((await f.call("user", "hub_capabilities_publish", published)).ok).toBe(false); // the person is not a peer with a session
+  const person = await f.call("user", "hub_capabilities_publish", published); // the person is not a peer with a session
+  expect(person.ok).toBe(false); expect(person.error).toBe("only an attached peer publishes its own capabilities");
 });
 
 test("a published list is bound to its connection: a replaced peer object, or an offline peer, neither lists nor publishes", async () => {
