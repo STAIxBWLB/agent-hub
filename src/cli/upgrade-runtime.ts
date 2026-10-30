@@ -3,6 +3,7 @@ import { resolveAcceptedBinding } from "./recovery-guidance.ts";
 import { claudeStateFile } from "../hub/claude-state.ts";
 import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import { readInstanceConfig, readInstanceConfigLayers } from "../hub/instance-config.ts";
+import { readRecoveryWaits } from "./recovery-waits.ts";
 import { readAdapterModuleDeclarations } from "../adapters/external-modules.ts";
 import { configRefusal } from "../hub/config-trust.ts";
 import { validExternalInstanceBinding } from "../hub/external-instance.ts";
@@ -26,10 +27,9 @@ import { decodeRestoreReceipt, restoreTransition, type RestoreReceipt, type Rest
 import { RecoveryDeferredHubError } from "../hub/deferred-hub.ts";
 import { RecoveryPreservationError, RecoveryPresentationError, type RecoveryNativeCause } from "./upgrade-presentation-data.ts";
 
-/** An unmanaged Claude's plugin retries with a backoff of at most 30 s; three of those bound the reconnect wait (#206). */
-const UNMANAGED_RECONNECT_WAIT_MS = 90_000;
-/** Managed TUI startup can include resume and MCP handshakes; match createTerminal's ten-minute readiness ceiling. */
-const RECONNECT_WAIT_MS = 600_000;
+// #489 H4: the reconnect, unmanaged reconnect, control request, terminal idle and shutdown waits are settings now (`recovery.*`, src/hub/operational-settings.ts), read by `readRecoveryWaits` at the start of
+// each wait. Their defaults are the constants that stood here: an unmanaged Claude's plugin retries with a backoff of at most 30 s and three of those bound its reconnect wait (#206, 90 s); managed TUI startup
+// can include resume and MCP handshakes, so its wait matches createTerminal's ten-minute readiness ceiling (600 s, which is also the setting's floor).
 class AttachmentLauncherGone extends Error {
   constructor(readonly transition: RestoreTransition) { super("chosen attachment launcher exited"); }
 }
@@ -80,12 +80,12 @@ export function restoredTerminalArgv(entrypoint: string, projectRoot: string, bi
   return [process.execPath, entrypoint, "--project", projectRoot, ...tail];
 }
 
-const RECOVERY_CONTROL_TIMEOUT_MS = 30_000;
 
 async function rpc(project: Project, message: Record<string, unknown>, protocol = PROTOCOL, conductorPeer?: string): Promise<any> {
-  const client = await ControlClient.connect(project.stateDir, { ...(conductorPeer ? { role: "tools" as const, peer: conductorPeer } : { role: "console" as const }), projectRoot: project.root, projectId: project.id }, RECOVERY_CONTROL_TIMEOUT_MS, protocol);
+  const controlTimeoutMs = readRecoveryWaits(project.root).controlTimeoutMs;
+  const client = await ControlClient.connect(project.stateDir, { ...(conductorPeer ? { role: "tools" as const, peer: conductorPeer } : { role: "console" as const }), projectRoot: project.root, projectId: project.id }, controlTimeoutMs, protocol);
   try {
-    const reply = await client.request(message, RECOVERY_CONTROL_TIMEOUT_MS);
+    const reply = await client.request(message, controlTimeoutMs);
     if (reply.ok === false) {
       // An older hub has only its exact SQLite message; preserve compatibility without trusting arbitrary text.
       if (isDatabaseBusyReply(reply)) throw new RecoveryDatabaseBusy();
@@ -215,7 +215,7 @@ export async function inspectRecovery(project: Project, targetFeatures?: readonl
   // pid from planning time (after a reboot another process may hold it). A registry that cannot be read throws: the
   // caller reads that as not inspected, never as stopped.
   const claim = registeredProjects().find((p) => p.id === project.id);
-  const base = await inspectProject({ ...project, instanceId: claim?.instanceId ?? null, pid: claim?.pid ?? null, pidSignature: claim?.pidSignature ?? null }, RECOVERY_CONTROL_TIMEOUT_MS, conductorPeer);
+  const base = await inspectProject({ ...project, instanceId: claim?.instanceId ?? null, pid: claim?.pid ?? null, pidSignature: claim?.pidSignature ?? null }, readRecoveryWaits(project.root).controlTimeoutMs, conductorPeer);
   if (base.failure?.code === "database_busy") throw new RecoveryDatabaseBusy();
   const control = readControl(project.stateDir);
   const sourceProtocol = control?.protocol;
@@ -469,7 +469,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     if (found.manualRequired || !current || (exact && (current.handle !== saved.handle || current.incarnationId !== saved.incarnationId || current.worktreeId !== saved.worktreeId || current.projectRoot !== saved.projectRoot))) {
       throw nativeFailure(planned, saved.peer, "terminal_unverified", `${saved.peer}: saved terminal identity changed or is not verified; manual-required`, { handle: saved.handle });
     }
-    const idle = await waitForIdle(exact ? saved : current, 120_000, options);
+    const idle = await waitForIdle(exact ? saved : current, readRecoveryWaits(planned.project.root).terminalIdleWaitMs, options);
     if (!idle.satisfied) throw nativeFailure(planned, saved.peer, "terminal_unverified", `${saved.peer}: terminal is not idle; manual-required`, { handle: saved.handle });
     const observed = await inspectRecovery(planned.project);
     if (observed.instanceId !== progress.instanceId) throw nativeFailure(planned, saved.peer, "target_unavailable", `${saved.peer}: daemon instance changed during terminal revalidation`, { handle: saved.handle, targetState: observed.state });
@@ -567,7 +567,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (seen !== "absent") throw new Error(closeUnsettled(retired, seen));
       progress.terminals[key] = true; save(); return;
     }
-    const idle = await waitForIdle(retired, 120_000, terminalOptions(run));
+    const idle = await waitForIdle(retired, readRecoveryWaits(retired.projectRoot).terminalIdleWaitMs, terminalOptions(run));
     if (!idle.satisfied) throw new Error(`${peer}: terminal ${retired.handle} of the stopped target's session is not verified idle; finish or cancel its turn, or close that terminal by hand, first`);
     progress.terminals[key] = "pending"; save();
     await recoveryCurrent();
@@ -583,7 +583,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     };
     const binding = waiting.binding;
     const matchesTerminal = (terminal: Pick<TerminalBinding, "handle" | "incarnationId" | "worktreeId">) => terminal.handle === binding.handle && terminal.incarnationId === binding.incarnationId && terminal.worktreeId === binding.worktreeId;
-    const startedAt = now(), deadline = startedAt + RECONNECT_WAIT_MS;
+    const reconnectWaitMs = readRecoveryWaits(planned.project.root).reconnectWaitMs; // read once, at the start: a wait already running keeps the deadline the receipt records
+    const startedAt = now(), deadline = startedAt + reconnectWaitMs;
     const waitStep = op.step;
     if (waitStep) {
       (op.waits ??= {})[waitStep] = { waitStartedAt: new Date(startedAt).toISOString(), deadlineAt: new Date(deadline).toISOString() };
@@ -656,7 +657,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       hub: { state: live.state, ...(live.instanceId ? { instanceId: live.instanceId } : {}), ...(peer ? { peerState: peer.state } : {}), ...(session ? { sessionId: session } : {}) },
       lastHubConnectAttempt: "unknown" };
     save();
-    throw nativeFailure(planned, binding.peer, "attachment_timeout", `${binding.peer}: attachment not verified within ${RECONNECT_WAIT_MS / 1000} s; terminal ${binding.handle} retained; resume after it attaches (native-start diagnostic recorded; last hub connect attempt unknown)`, { handle: binding.handle, timeoutMs: RECONNECT_WAIT_MS });
+    throw nativeFailure(planned, binding.peer, "attachment_timeout", `${binding.peer}: attachment not verified within ${reconnectWaitMs / 1000} s; terminal ${binding.handle} retained; resume after it attaches (native-start diagnostic recorded; last hub connect attempt unknown)`, { handle: binding.handle, timeoutMs: reconnectWaitMs });
     } catch (error) { waitFailed = true; throw error; }
     finally {
       const finish = () => {
@@ -1030,9 +1031,10 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       }
       if (group !== "native" && !onlyPeer) for (const id of planned.reconnectOnly ?? []) {
         // #206: nothing is launched for an unmanaged session; its plugin reconnects by itself, within a bound.
-        const deadline = now() + UNMANAGED_RECONNECT_WAIT_MS;
+        const unmanagedWaitMs = readRecoveryWaits(planned.project.root).unmanagedReconnectWaitMs;
+        const deadline = now() + unmanagedWaitMs;
         while (!(await inspectRecovery(planned.project)).peers.some((p) => p.id === id && p.state !== "offline")) {
-          if (now() >= deadline) throw nativeFailure(planned, id, "attachment_timeout", `${id}: the unmanaged session did not reconnect within ${UNMANAGED_RECONNECT_WAIT_MS / 1000} s; if that Claude session was closed, start Claude in the project again (its plugin reconnects) first`, { timeoutMs: UNMANAGED_RECONNECT_WAIT_MS });
+          if (now() >= deadline) throw nativeFailure(planned, id, "attachment_timeout", `${id}: the unmanaged session did not reconnect within ${unmanagedWaitMs / 1000} s; if that Claude session was closed, start Claude in the project again (its plugin reconnects) first`, { timeoutMs: unmanagedWaitMs });
           await sleep(1000);
         }
       }

@@ -1969,6 +1969,11 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Routing | `bus.pull_budget_bytes` (1-65536 bytes, default 65536) | `config.local.json` | live; next pull-only read, oldest first; the first oversized item still goes |
 | Routing | `bus.notes_kept` (1-10 notes, default 10) | `config.local.json` | live; next shared-note or failed-preface merge; existing prefaces remain unchanged on reload |
 | Routing | `bus.terminal_history_limit` (1-2048 rows, default 2048) | `config.local.json` | live; next normal terminal settlement; unresolved rows and retry ancestry stay protected |
+| Routing | `recovery.reconnect_wait_s` (600-3600 seconds, default 600) | `config.local.json` | next use; the next managed-terminal attachment wait of an upgrade recovery reads it once, at its start |
+| Routing | `recovery.unmanaged_reconnect_wait_s` (90-900 seconds, default 90) | `config.local.json` | next use; the next unmanaged Claude reconnect wait reads it once, at its start |
+| Routing | `recovery.control_timeout_s` (30-300 seconds, default 30) | `config.local.json` | next use; the next control request of the recovery coordinator to a hub reads it |
+| Routing | `recovery.shutdown_wait_s` (30-300 seconds, default 30) | `config.local.json` | next use; the next wait for a committed source to stop reads it once, at its start |
+| Routing | `recovery.terminal_idle_wait_s` (30-600 seconds, default 120) | `config.local.json` | next use; the next wait for a terminal to go idle before it is closed reads it |
 
 ### Operational numeric settings (#489 H1)
 
@@ -2035,6 +2040,24 @@ can only tighten today's ceilings. A reload does not trim/reorder queues or
 prefaces, reset attempts, re-arm batch deadlines, prune history, or change a pause
 or in-flight delivery. Terminal history is a target: protected retry parents and the current mutation receipt may
 keep the count above it. The settings add no conductor authority.
+
+#### Recovery and upgrade waits (#489 H4)
+
+The five `recovery.*` rows extend the existing `recovery` block (`auto_resume_after_crash` is unchanged) and use
+the H1 descriptor, schema and settings writer. They are read by the upgrade coordinator, a CLI process and not the
+daemon, from the project it is acting on, at the start of each wait: the shared `config.json` first and the
+machine-local `config.local.json` over it (ignored when git tracks it). The apply class is `next use`: a wait that is
+already running keeps the deadline the receipt records in `waits`, and a resume reads the file again. Unset defaults
+equal `RECONNECT_WAIT_MS`, `UNMANAGED_RECONNECT_WAIT_MS`, `RECOVERY_CONTROL_TIMEOUT_MS`, the 30 s shutdown wait and
+the 120 s terminal idle wait. A value outside a row's bounds, or a file the coordinator cannot read, is the default:
+a recovery never fails on its configuration.
+
+Every minimum is today's constant except `recovery.terminal_idle_wait_s`: a person-visible wait can be raised and
+never shortened below what ships, and a control request that times out may already have applied. A shorter terminal
+idle wait only ends in manual-required, which retains the terminal. The 600 s wait for the source to become quiet is
+not a setting: the source's preparation lease is a fixed ten minutes, so no other value is valid. The 180 s global
+install timeout has no project to own it, and the 610 s Orca command timeout follows terminal recovery's own ten-minute
+ceiling. See the [H4 ledger](verification/2026-10-30-recovery-wait-settings.md) for every item in the group.
 
 The [H3 H0 ledger](verification/2026-10-30-bus-delivery-operational-settings.md)
 lists all 59 unique inventory identities (5 converted and 54 excluded). The

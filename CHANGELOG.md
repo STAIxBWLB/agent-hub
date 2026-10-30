@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Five upgrade-recovery waits are settings (#489 H4, task 445, Refs #489): `recovery.reconnect_wait_s`, `recovery.unmanaged_reconnect_wait_s`, `recovery.control_timeout_s`, `recovery.shutdown_wait_s` and `recovery.terminal_idle_wait_s`. Unset behaves as before; every person-visible wait can be raised and never cut below what shipped, a bad or unreadable file is the default, and a wait already running keeps its deadline.
 - `ahub learn list [--all] | accept <id> | reject <id> [--json]` (#514b, person only, refused for agent shells and the configured conductor): the verdict on the recurring-unmet-criterion cards #514a files. `accept` adds that card's one `review_checklist` line to your current checklist in `.agenthub/config.local.json` through the settings writer (this machine only, never a tracked file, `ahub settings undo` puts it back, applies after a restart) and closes the card; `reject` only closes it. The line and its task count are rebuilt from the card's key line and the board, never parsed from the card's text. The #514a card sentence "nothing in the hub writes it" is amended to say the hub writes it only on `accept` (earlier cards keep the old sentence). The settings event and undo reply for this key carry a line count, not your lines.
 ## 0.21.0
 
