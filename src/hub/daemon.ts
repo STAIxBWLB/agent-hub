@@ -81,6 +81,7 @@ import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { CONTRADICTION_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SETTING, GROOM_FYI_WINDOW_SETTING, RESCREEN_MAX_SETTING, SPLIT_FAILURE_SHARE_SETTING, SPLIT_MIN_SETTING, taskOperationalReaders } from "./operational-settings.ts";
+import { CONSOLE_POLL_SETTING, CONSOLE_NOTICE_SETTING, CONSOLE_HISTORY_SETTING, CONSOLE_PENDING_STREAM_SETTING, CONSOLE_ATTENTION_SETTING, type ConsoleOperationalConfig } from "./operational-settings.ts";
 import { MODEL_COOLDOWN_FAILURES_SETTING, MODEL_COOLDOWN_SETTING, MODEL_COOLDOWN_CAP_SETTING, MODEL_TERMINAL_HISTORY_SETTING, modelOperationalReaders, type ModelOperationalConfig } from "./operational-settings.ts";
 import { ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEOUT_SETTING, adapterOperationalReaders, type AdapterTimingConfig } from "./operational-settings.ts";
 import { BUS_DIGEST_MAX_SETTING, BUS_MAX_ATTEMPTS_SETTING, BUS_NOTES_KEPT_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING, busOperationalReaders, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING } from "./operational-settings.ts";
@@ -230,6 +231,8 @@ export interface HubConfig {
   adapter_timing?: AdapterTimingConfig["adapter_timing"];
   /** #489 H6: relay policy is captured from restart-bound accepted configuration. */
   model_relay?: ModelOperationalConfig["model_relay"];
+  /** #489 H7: accepted presentation preferences read by a new console through settings_get. */
+  console?: ConsoleOperationalConfig["console"];
   /** `native` (#258): the hub's own store in ~/.agenthub/memory, on with any project config; `short_ttl_days`: short-term lifetime after approval; `sync_interval_min`: machine sync while a remote is set (default 10, 0 off). */
   memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number; native?: boolean; short_ttl_days?: number; sync_interval_min?: number; suggest_edges?: boolean };
   roster: PeerRoster;
@@ -320,6 +323,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   budget: DEFAULT_BUDGET,
   context: DEFAULT_CONTEXT,
   model_relay: { cooldown_failures: MODEL_COOLDOWN_FAILURES_SETTING.defaultValue, cooldown_s: MODEL_COOLDOWN_SETTING.defaultValue, cooldown_cap_s: MODEL_COOLDOWN_CAP_SETTING.defaultValue, terminal_history_limit: MODEL_TERMINAL_HISTORY_SETTING.defaultValue },
+  console: { poll_ms: CONSOLE_POLL_SETTING.defaultValue, notice_ms: CONSOLE_NOTICE_SETTING.defaultValue, history_limit: CONSOLE_HISTORY_SETTING.defaultValue, pending_stream_limit: CONSOLE_PENDING_STREAM_SETTING.defaultValue, attention_limit: CONSOLE_ATTENTION_SETTING.defaultValue },
   inference: DEFAULT_INFERENCE,
   omniroute: DEFAULT_OMNIROUTE,
   ...nativeDefaults.rpc,
@@ -356,7 +360,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "corpus", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
+const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
 export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[], scope: Pick<ReturnType<typeof readInstanceConfig>, "instances" | "catalog"> = readInstanceConfig(cwd, layers)): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string | string[]; notices?: string[] } {
@@ -552,6 +556,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     bus: { ...DEFAULT_CONFIG.bus, ...file.bus },
     adapter_timing: { ...DEFAULT_CONFIG.adapter_timing, ...file.adapter_timing },
     model_relay: { ...DEFAULT_CONFIG.model_relay, ...file.model_relay },
+    console: { ...DEFAULT_CONFIG.console, ...file.console },
     task_sweep: taskSweepConfig(file.task_sweep),
     schedules: schedulesConfig(file.schedules),
     folder_triggers: foldersConfig(file.folder_triggers),

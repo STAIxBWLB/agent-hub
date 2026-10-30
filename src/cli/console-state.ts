@@ -29,6 +29,8 @@ export interface SettingsEdit {
   text: string; value?: SettingValue; reason?: string; lines?: string[]; confirm?: string; undoDigest?: string;
 }
 export interface ConsoleState {
+  /** Launch-captured local presentation only; absent on legacy pure-state callers. */
+  noticeMs?: number; historyLimit?: number;
   /** #689: the structural config form (Settings panel, key c) and the file revisions the hub last reported. */
   configForm?: ConfigForm; configRevisions?: Record<string, string>; configInstances?: string[];
   settingsRows?: SettingRow[]; settingsKnown?: boolean; settingsUndo?: string; settingsProblem?: string;
@@ -637,7 +639,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
           if (!peer || !reason) throw new Error("queue discard needs --peer and --reason (it is recorded on every discarded delivery)");
           const count = s.queue.filter(row => row.peer === peer && row.state === state).length;
           const args = ["queue", "discard", "--peer", peer, ...(parsed.includes("--state") ? ["--state", state] : []), "--reason", reason, "--yes"];
-          s.history = [...s.history, input].slice(-100); s.historyIndex = s.history.length;
+          s.history = [...s.history, input].slice(-(s.historyLimit ?? CONSOLE_HISTORY_LIMIT)); s.historyIndex = s.history.length;
           s.confirm = { type: "command", args, prompt: `discard all ${count} ${state} deliver${count === 1 ? "y" : "ies"} of ${peer}; no task or native turn is cancelled, other peers are untouched` };
           return done();
         }
@@ -655,7 +657,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
           if (lock.syntax === "planning" && args.length < (lock.prefix[1] === "plan" ? 6 : 5)) throw new Error("backlog row actions require a reason");
           if (lock.prefix[0] === "task" && !["owner", "reviewer"].includes(commandFlag(args, "--role") ?? "owner")) throw new Error("role must be owner or reviewer");
         }
-        s.history = [...s.history, input].slice(-100); s.historyIndex = s.history.length;
+        s.history = [...s.history, input].slice(-(s.historyLimit ?? CONSOLE_HISTORY_LIMIT)); s.historyIndex = s.history.length;
         if (commandNeedsConfirmation(args)) s.confirm = { type: "command", args, ...(lock ? { prompt: lockedCommandPrompt(lock, args), ...(lock.revisionField ? { lock } : {}) } : {}) };
         else effects.push({ type: "command", args });
       } catch (error) { notify(s, String((error as Error).message), now); }
@@ -900,9 +902,10 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
 export function renderConsole(s: ConsoleState, columns: number, rows = 24, now = Date.now()): string[] {
   return renderConsoleLines(s, columns, rows, now).map(line => paint(line, false));
 }
-const NOTICE_MS = 10_000;
-export function activeNotice(s: Pick<ConsoleState, "notice" | "noticeAt">, now = Date.now()): boolean {
-  return !!s.notice && now - (s.noticeAt ?? now) < NOTICE_MS;
+export const NOTICE_MS = 10_000;
+export const CONSOLE_HISTORY_LIMIT = 100;
+export function activeNotice(s: Pick<ConsoleState, "notice" | "noticeAt" | "noticeMs">, now = Date.now()): boolean {
+  return !!s.notice && now - (s.noticeAt ?? now) < (s.noticeMs ?? NOTICE_MS);
 }
 export const TABLES: Record<number, string[]> = {
   1: ["PEER", "STATE", "LINK", "Q", "!", "WIP", "REVIEW", "PAUSE", "QUOTA", "MODEL", "DOING"],

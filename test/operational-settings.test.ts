@@ -52,6 +52,11 @@ test("#489 every operational row has an independent legacy default pin and an op
     "inference.backoff_min": { legacy: 300_000, scale: 60_000 },
     "inference.digest_min_items": { legacy: 5, scale: 1 },
     "inference.digest_min_chars": { legacy: 8000, scale: 1 },
+    "console.poll_ms": { legacy: 4000, scale: 1 },
+    "console.notice_ms": { legacy: 10_000, scale: 1 },
+    "console.history_limit": { legacy: 100, scale: 1 },
+    "console.pending_stream_limit": { legacy: 1000, scale: 1 },
+    "console.attention_limit": { legacy: 1000, scale: 1 },
   };
   const inventory = readFileSync(join(import.meta.dir, "../docs/verification/2026-10-24-hardcoded-values.md"), "utf8").split("\n");
   const docs = readFileSync(join(import.meta.dir, "../docs/operations.md"), "utf8");
@@ -59,7 +64,8 @@ test("#489 every operational row has an independent legacy default pin and an op
     const pin = pins[def.key]; expect(pin).toBeDefined();
     expect(def.defaultValue * pin!.scale).toBe(pin!.legacy);
     expect(at(DEFAULT_CONFIG, def.path)).toBe(def.defaultValue);
-    const [file, symbol] = def.inventory.split(":");
+    const separator = def.inventory.indexOf(":");
+    const file = def.inventory.slice(0, separator), symbol = def.inventory.slice(separator + 1);
     const row = inventory.find(line => line.startsWith(`| ${file}:`) && line.includes(`| \`${symbol}\` |`));
     expect(row?.endsWith("| operational |")).toBe(true);
     expect(docs).toContain(`\`${def.key}\``);
