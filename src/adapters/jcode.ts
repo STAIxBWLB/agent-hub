@@ -81,7 +81,7 @@ export const jcodeVersionSupported = (version: unknown): boolean => assessVersio
 class SteerRefused extends Error {}
 /** A native steer that was sent but not acknowledged: it may have gone in, so it is never requeued as if it had not. */
 class SteerUncertain extends Error {}
-const STEER_TIMEOUT_MS = 5000;
+export const STEER_TIMEOUT_MS = 5000;
 
 /**
  * #572 AC1: a second client on the hub's own private server socket queues a soft interrupt into the running session

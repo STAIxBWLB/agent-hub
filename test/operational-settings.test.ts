@@ -42,6 +42,9 @@ test("#489 every operational row has an independent legacy default pin and an op
     "recovery.control_timeout_s": { legacy: 30_000, scale: 1000 },
     "recovery.shutdown_wait_s": { legacy: 30_000, scale: 1000 },
     "recovery.terminal_idle_wait_s": { legacy: 120_000, scale: 1000 },
+    "adapter_timing.acp_tool_ceiling_min": { legacy: 1_800_000, scale: 60_000 },
+    "adapter_timing.acp_activity_batch_ms": { legacy: 50, scale: 1 },
+    "adapter_timing.jcode_steer_timeout_s": { legacy: 5000, scale: 1000 },
   };
   const inventory = readFileSync(join(import.meta.dir, "../docs/verification/2026-10-24-hardcoded-values.md"), "utf8").split("\n");
   const docs = readFileSync(join(import.meta.dir, "../docs/operations.md"), "utf8");

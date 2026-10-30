@@ -107,10 +107,25 @@ export const RECOVERY_TERMINAL_IDLE_WAIT_SETTING = recoveryNumber({
   min: 30, max: 600, defaultValue: 120, unit: "seconds", inventory: "src/cli/upgrade-runtime.ts:waitForIdle",
 });
 
+const adapterNumber = <const T extends Omit<OperationalNumberSetting, "group" | "store" | "risk" | "applies" | "type">>(def: T) => ({ group: "Start", store: "config", risk: "raises", applies: "next use", type: "integer", ...def }) as const satisfies OperationalNumberSetting;
+export const ACP_TOOL_CEILING_SETTING = adapterNumber({
+  key: "adapter_timing.acp_tool_ceiling_min", path: ["adapter_timing", "acp_tool_ceiling_min"], label: "Next ACP launch: open-tool ceiling (minutes, at least the watchdog)",
+  min: 1, max: 30, defaultValue: 30, unit: "minutes", inventory: "src/adapters/acp.ts:TOOL_CEILING_MS",
+});
+export const ACP_ACTIVITY_BATCH_SETTING = adapterNumber({
+  key: "adapter_timing.acp_activity_batch_ms", path: ["adapter_timing", "acp_activity_batch_ms"], label: "Next ACP launch: activity display batch delay (milliseconds)",
+  min: 10, max: 50, defaultValue: 50, unit: "milliseconds", inventory: "src/adapters/acp.ts:setTimeout",
+});
+export const JCODE_STEER_TIMEOUT_SETTING = adapterNumber({
+  key: "adapter_timing.jcode_steer_timeout_s", path: ["adapter_timing", "jcode_steer_timeout_s"], label: "Next Jcode launch: total native steer deadline (seconds)",
+  min: 5, max: 60, defaultValue: 5, unit: "seconds", inventory: "src/adapters/jcode.ts:STEER_TIMEOUT_MS",
+});
+
 /** Fixed metadata; never registration from a file, request, adapter or environment variable. */
 export const OPERATIONAL_NUMBERS: readonly OperationalNumberSetting[] = [GROOM_FYI_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SETTING, CONTRADICTION_WINDOW_SETTING, RESCREEN_MAX_SETTING, SPLIT_MIN_SETTING, SPLIT_FAILURE_SHARE_SETTING,
   BUS_MAX_ATTEMPTS_SETTING, BUS_DIGEST_MAX_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_NOTES_KEPT_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING,
-  RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING];
+  RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING,
+  ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEOUT_SETTING];
 /** The `tasks` leaves the six #489 H2 readers need; `HubConfig.tasks` has them all. */
 export interface TaskOperationalConfig { tasks: { demote_at?: number; demotion_half_life_h?: number; contradiction_window_days?: number; rescreen_max?: number; split_min_observations?: number; split_max_failure_share?: number } }
 /**
@@ -151,4 +166,11 @@ export const recoveryWaits = (config: () => RecoveryOperationalConfig | undefine
     terminalIdleWaitMs: recoveryMs(RECOVERY_TERMINAL_IDLE_WAIT_SETTING, leaf?.terminal_idle_wait_s),
   };
 };
+export interface AdapterTimingConfig { adapter_timing?: { acp_tool_ceiling_min?: number; acp_activity_batch_ms?: number; jcode_steer_timeout_s?: number } }
+/** The host captures primitive option values for a new adapter; an accepted edit never retimes an existing launch. */
+export const adapterOperationalReaders = (config: () => AdapterTimingConfig) => ({
+  acpToolCeilingMs: () => (config().adapter_timing?.acp_tool_ceiling_min ?? ACP_TOOL_CEILING_SETTING.defaultValue) * 60_000,
+  acpActivityBatchMs: () => config().adapter_timing?.acp_activity_batch_ms ?? ACP_ACTIVITY_BATCH_SETTING.defaultValue,
+  jcodeSteerTimeoutMs: () => (config().adapter_timing?.jcode_steer_timeout_s ?? JCODE_STEER_TIMEOUT_SETTING.defaultValue) * 1000,
+});
 export const operationalNumber = (key: string): OperationalNumberSetting | undefined => OPERATIONAL_NUMBERS.find(def => def.key === key);

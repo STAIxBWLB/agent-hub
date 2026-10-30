@@ -121,6 +121,8 @@ export interface AcpOptions {
   watchdogMs?: number;
   /** #542 D4: how long an open tool call keeps a silent turn alive; defaults to 30 minutes, never below the watchdog. */
   toolCeilingMs?: number;
+  /** Activity display coalescing; captured by the host at the next adapter start. */
+  activityBatchMs?: number;
   /** Bound for a journal-less watchdog cancellation to report its prompt; defaults to the 30 s ACP handshake cap. */
   cancelWaitMs?: number;
   /** ACP stdio MCP servers for the session (the hub's task tools). */
@@ -157,7 +159,8 @@ export interface AcpOptions {
 const HANDSHAKE_MS = 30_000;
 /** Tool calls whose arguments are remembered until their permission request arrives. */
 const TOOL_INPUT_CAP = 64;
-const TOOL_CEILING_MS = 30 * 60_000;
+export const TOOL_CEILING_MS = 30 * 60_000;
+export const ACTIVITY_BATCH_MS = 50;
 
 export interface ManagedAcpLaunch {
   readonly generation: string;
@@ -284,7 +287,7 @@ export class AcpPeer extends BasePeer {
       if (this.activityPending?.kind !== item.kind || (this.activityPending.text.length + item.text.length > 4096)) this.flushActivity();
       if (this.activityPending) this.activityPending.text += item.text;
       else this.activityPending = { kind: item.kind, text: item.text };
-      this.activityTimer ??= setTimeout(() => this.flushActivity(), 50);
+      this.activityTimer ??= setTimeout(() => this.flushActivity(), this.opts.activityBatchMs ?? ACTIVITY_BATCH_MS);
       this.activityTimer.unref?.();
     } else { this.flushActivity(); this.emitActivity(item.kind, item.text); }
   }
