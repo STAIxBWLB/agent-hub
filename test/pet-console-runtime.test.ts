@@ -23,7 +23,8 @@ test("actual console advertises all characters while full footer resize and off 
     terminal.columns=80;terminal.rows=24;output="";resize();expect(output).toContain("(O O) z asleep");expect(output).toContain("\x1b[1;20r");
     output="";key("?");expect(output).toContain("P next character/off");
     expect(readFileSync(config,"utf8")).toBe(raw);
-    expect(requests.every(t=>["status","budget"].includes(t))).toBe(true);
+    // refs #489 H7: one startup settings_get read
+    expect(requests).toEqual(["status", "budget", "settings_get"]);
   }finally{stop();await running;rmSync(root,{recursive:true});}
 });
 
