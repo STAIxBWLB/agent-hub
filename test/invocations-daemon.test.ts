@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
+import { ControlClient, DAEMON_FEATURES, PROTOCOL, readControl } from "../src/hub/control-client.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { Board } from "../src/hub/board.ts";
 import { InvocationLedger, RESULT_MAX } from "../src/hub/invocations.ts";
@@ -1109,5 +1109,23 @@ test("C3 a disconnected request still in its argument screen cannot register an 
   // A subsequent console request is a transport turn barrier, not a guessed cancellation sleep.
   await p.client.request({ t: "status" });
   expect(p.asks()).toEqual([]); expect(f.rows()).toEqual([]); expect(f.kimi.got).toEqual([]);
+  expect(t.board.get(t.id)!.history.filter(entry => entry.invocation)).toEqual([]);
+});
+
+
+test("C3 abrupt control disconnect withdraws a pending permission without client cancellation frames", async () => {
+  const f = await fixture({ cls: "external" }), t = scope(f), p = await person(f);
+  const descriptor = readControl(f.stateDir)!;
+  const socket = new WebSocket(descriptor.url), replies: any[] = [];
+  cleanups.push(() => socket.close()); socket.onmessage = event => replies.push(JSON.parse(String(event.data)));
+  await until(() => socket.readyState === WebSocket.OPEN, "raw tools connection");
+  socket.send(JSON.stringify({ t: "hello", rid: 100, v: PROTOCOL, token: descriptor.token, role: "tools", peer: "codex" }));
+  await until(() => replies.some(value => value.t === "welcome"), "raw tools welcome");
+  socket.send(JSON.stringify({ t: "task", rid: 101, op: "hub_invoke", args: { peer: "kimi", capability: cap().id, task: t.id } }));
+  await until(() => p.asks().length === 1, "pending permission before disconnect");
+  const id = p.asks()[0].id; socket.close(); // No ControlClient.close(), and no request_cancel message.
+  await until(() => p.pushes.some(value => value.t === "permission_closed" && value.id === id), "daemon close handler aborts permission");
+  expect((await p.client.request({ t: "permit", id, option: "allow" })).ok).toBe(false);
+  expect(f.codex.state).toBe("idle"); expect(f.rows()).toEqual([]); expect(f.kimi.got).toEqual([]);
   expect(t.board.get(t.id)!.history.filter(entry => entry.invocation)).toEqual([]);
 });

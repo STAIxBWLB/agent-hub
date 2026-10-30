@@ -100,7 +100,7 @@ export class ControlClient {
   private welcomeInstanceId?: string;
   /** Identity from the authenticated welcome, never the unauthenticated descriptor alone. */
   get instanceId(): string | undefined { return this.welcomeInstanceId; }
-  get isOpen(): boolean { return this.ws.readyState === WebSocket.OPEN; }
+  get isOpen(): boolean { return !this.closing && this.ws.readyState === WebSocket.OPEN; }
   private nextRid = 1;
   private readonly pending = new Map<number, (msg: any) => void>();
   private readonly invocations = new Set<number>();
