@@ -121,11 +121,44 @@ export const JCODE_STEER_TIMEOUT_SETTING = adapterNumber({
   min: 5, max: 60, defaultValue: 5, unit: "seconds", inventory: "src/adapters/jcode.ts:STEER_TIMEOUT_MS",
 });
 
+/** #489 H6: relay policy is captured at construction; inference consumers are daemon-start bound. */
+const modelNumber = <const T extends Omit<OperationalNumberSetting, "group" | "store" | "risk" | "type">>(def: T) => ({ group: "Routing", store: "config", risk: "raises", type: "integer", ...def }) as const satisfies OperationalNumberSetting;
+export const MODEL_COOLDOWN_FAILURES_SETTING = modelNumber({
+  key: "model_relay.cooldown_failures", path: ["model_relay", "cooldown_failures"], label: "Model relay: consecutive transport failures before cooldown",
+  min: 1, max: 100, defaultValue: 3, applies: "restart", restartReason: "Model relays and their health state persist until daemon shutdown", unit: "failures", inventory: "src/models/relay.ts:COOLDOWN_FAILURES",
+});
+export const MODEL_COOLDOWN_SETTING = modelNumber({
+  key: "model_relay.cooldown_s", path: ["model_relay", "cooldown_s"], label: "Model relay: initial cooldown and recent-failure window (seconds)",
+  min: 1, max: 300, defaultValue: 30, applies: "restart", restartReason: "Model relays and their health state persist until daemon shutdown", unit: "seconds", inventory: "src/models/relay.ts:COOLDOWN_MS",
+});
+export const MODEL_COOLDOWN_CAP_SETTING = modelNumber({
+  key: "model_relay.cooldown_cap_s", path: ["model_relay", "cooldown_cap_s"], label: "Model relay: maximum cooldown (seconds)",
+  min: 300, max: 3600, defaultValue: 300, applies: "restart", restartReason: "Model relays and their health state persist until daemon shutdown", unit: "seconds", inventory: "src/models/relay.ts:COOLDOWN_CAP_MS",
+});
+export const MODEL_TERMINAL_HISTORY_SETTING = modelNumber({
+  key: "model_relay.terminal_history_limit", path: ["model_relay", "terminal_history_limit"], label: "Model relay: retained completed request records",
+  min: 1, max: 1000, defaultValue: 1000, applies: "restart", restartReason: "Model relays and their health state persist until daemon shutdown", unit: "records", inventory: "src/models/relay.ts:JOURNAL_LIMIT",
+});
+const inferenceRestart = "The inference consumer captures its configuration at daemon startup";
+export const INFERENCE_BACKOFF_SETTING = modelNumber({
+  key: "inference.backoff_min", path: ["inference", "backoff_min"], label: "Inference: cooldown after a failed optional call (minutes)",
+  min: 1, max: 60, defaultValue: 5, applies: "restart", restartReason: inferenceRestart, unit: "minutes", inventory: "src/hub/inference.ts:BACKOFF_MS",
+});
+export const INFERENCE_DIGEST_ITEMS_SETTING = modelNumber({
+  key: "inference.digest_min_items", path: ["inference", "digest_min_items"], label: "Inference: condense status chatter above this item count",
+  min: 1, max: 100_000, defaultValue: 5, applies: "restart", restartReason: inferenceRestart, unit: "items", inventory: "src/hub/inference.ts:digest_min_items",
+});
+export const INFERENCE_DIGEST_CHARS_SETTING = modelNumber({
+  key: "inference.digest_min_chars", path: ["inference", "digest_min_chars"], label: "Inference: condense status chatter above this character count",
+  min: 1, max: 10_000_000, defaultValue: 8000, applies: "restart", restartReason: inferenceRestart, unit: "characters", inventory: "src/hub/inference.ts:digest_min_chars",
+});
+
 /** Fixed metadata; never registration from a file, request, adapter or environment variable. */
 export const OPERATIONAL_NUMBERS: readonly OperationalNumberSetting[] = [GROOM_FYI_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SETTING, CONTRADICTION_WINDOW_SETTING, RESCREEN_MAX_SETTING, SPLIT_MIN_SETTING, SPLIT_FAILURE_SHARE_SETTING,
   BUS_MAX_ATTEMPTS_SETTING, BUS_DIGEST_MAX_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_NOTES_KEPT_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING,
   RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING,
-  ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEOUT_SETTING];
+  ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEOUT_SETTING,
+  MODEL_COOLDOWN_FAILURES_SETTING, MODEL_COOLDOWN_SETTING, MODEL_COOLDOWN_CAP_SETTING, MODEL_TERMINAL_HISTORY_SETTING, INFERENCE_BACKOFF_SETTING, INFERENCE_DIGEST_ITEMS_SETTING, INFERENCE_DIGEST_CHARS_SETTING];
 /** The `tasks` leaves the six #489 H2 readers need; `HubConfig.tasks` has them all. */
 export interface TaskOperationalConfig { tasks: { demote_at?: number; demotion_half_life_h?: number; contradiction_window_days?: number; rescreen_max?: number; split_min_observations?: number; split_max_failure_share?: number } }
 /**
@@ -174,3 +207,12 @@ export const adapterOperationalReaders = (config: () => AdapterTimingConfig) => 
   jcodeSteerTimeoutMs: () => (config().adapter_timing?.jcode_steer_timeout_s ?? JCODE_STEER_TIMEOUT_SETTING.defaultValue) * 1000,
 });
 export const operationalNumber = (key: string): OperationalNumberSetting | undefined => OPERATIONAL_NUMBERS.find(def => def.key === key);
+
+export interface ModelOperationalConfig { model_relay?: { cooldown_failures?: number; cooldown_s?: number; cooldown_cap_s?: number; terminal_history_limit?: number } }
+/** The host captures these primitives when it constructs a relay. No current request, cooldown or journal is rewritten by reload. */
+export const modelOperationalReaders = (config: () => ModelOperationalConfig) => ({
+  cooldownFailures: () => config().model_relay?.cooldown_failures ?? MODEL_COOLDOWN_FAILURES_SETTING.defaultValue,
+  cooldownMs: () => (config().model_relay?.cooldown_s ?? MODEL_COOLDOWN_SETTING.defaultValue) * 1000,
+  cooldownCapMs: () => (config().model_relay?.cooldown_cap_s ?? MODEL_COOLDOWN_CAP_SETTING.defaultValue) * 1000,
+  terminalHistoryLimit: () => config().model_relay?.terminal_history_limit ?? MODEL_TERMINAL_HISTORY_SETTING.defaultValue,
+});

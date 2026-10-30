@@ -1977,6 +1977,13 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Start | `adapter_timing.acp_tool_ceiling_min` (1-30 minutes, default 30) | `config.local.json` | next use; a new ACP launch captures it; effective ceiling is at least the watchdog |
 | Start | `adapter_timing.acp_activity_batch_ms` (10-50 ms, default 50) | `config.local.json` | next use; a new ACP launch captures its activity batch delay; pending flushes are unchanged |
 | Start | `adapter_timing.jcode_steer_timeout_s` (5-60 seconds, default 5) | `config.local.json` | next use; a new Jcode launch captures one total native steer deadline |
+| Routing | `model_relay.cooldown_failures` (1-100, default 3) | `config.local.json` | restart; consecutive transport/startup failures before cooling an alias |
+| Routing | `model_relay.cooldown_s` (1-300 seconds, default 30) | `config.local.json` | restart; initial cooldown and recent-failure window |
+| Routing | `model_relay.cooldown_cap_s` (300-3600 seconds, default 300) | `config.local.json` | restart; cooldown cap, never below the initial cooldown |
+| Routing | `model_relay.terminal_history_limit` (1-1000 records, default 1000) | `config.local.json` | restart; only tightens retained closed-request history |
+| Routing | `inference.backoff_min` (1-60 minutes, default 5) | `config.local.json` | restart; failure backoff for optional inference, interactive calls exempt |
+| Routing | `inference.digest_min_items` (1-100000 items, default 5) | `config.local.json` | restart; existing condensation threshold |
+| Routing | `inference.digest_min_chars` (1-10000000 characters, default 8000) | `config.local.json` | restart; existing condensation threshold |
 
 ### Operational numeric settings (#489 H1)
 
@@ -2093,6 +2100,34 @@ would fail slow healthy launches. The shared MCP server's reconnect cap stays
 fixed at 30 seconds; no daemon-to-plugin projection, raw-config reader, RPC or
 environment knob is introduced. Cleanup/identity proofs, wire/storage/safety caps,
 existing settings and test seams remain at their current owners.
+
+#### Model relay and inference (#489 H6)
+
+The seven rows above use the same H1 descriptors, validation, settings writer and
+undo path. All require a daemon restart: an inference consumer captures its
+configuration at daemon start, and each relay captures its policy at creation.
+A relay remains cached across a native peer stop/start, so restarting that peer
+alone does not adopt these values. Pending edits never retime current cooldowns,
+backoff deadlines or requests, or trim the running relay's journal.
+
+The initial cooldown and its recent-failure window share one setting. Cooldowns
+still start only after consecutive transport/startup failures, double by the
+same fixed factor and end on expiry or an HTTP answer. The cap's minimum equals
+the initial cooldown's maximum, so it can never fall below that delay. The
+history setting can only tighten the legacy 1000 closed records; it does not
+change active-request evidence or suppress terminal observers.
+
+`inference.backoff_min` preserves fail-open delivery and interactive-call
+exemption. The two digest thresholds were already configurable; their H1 rows
+retain those keys, defaults and existing schema bounds. No new model selection,
+PII screening, conductor authority or cross-process configuration path is added.
+The 180-second request deadline, 15-second moved-attempt first-byte deadline and
+8-second inference timeout stay fixed under their current caller budgets.
+
+The [H6 ledger](verification/2026-10-30-model-operational-settings.md) accounts for
+all 169 H0 identities: seven registered and 162 left out with individual reasons.
+PII policy, route scoring, protocol contracts, existing model/routing settings
+and test seams remain with their current owners.
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
   the machine-local files (`ahub init` ignores both in git). The shared
