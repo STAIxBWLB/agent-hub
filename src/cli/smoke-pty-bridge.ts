@@ -8,13 +8,14 @@ import { join } from "node:path";
  * #560: Bun up to 1.4.3 can hang for good inside `Bun.spawn({ terminal })` on macOS when the child writes and starts exiting before the call returns (oven-sh/bun#45300, fixed in 1.4.4): the
  * event loop thread blocks in wait4 while the exiting session leader waits for that same thread to drain its pty. Measured here with a bare Bun script and no agent-hub code: 26 of 96 runs hung
  * at 12 in parallel on 1.4.3 and 0 of 180 on 1.4.4. The child therefore starts behind a gate: a shell that waits for a file the bridge writes right after `Bun.spawn` has returned, then `exec`s the
- * real command (same pid, same session, same terminal). The wait is bounded, so a bridge that dies before it opens the gate leaves no waiting shell behind.
+ * real command (same pid, same session, same terminal). The wait has no bound of its own: a bridge that dies before it opens the gate closes the pty, which hangs the shell up (the trap below), and a bridge
+ * that is alive but never opens it is a hung bridge, which `runPty` stops with its group.
  * ponytail: ceiling and upgrade path. The gate exists only because of oven-sh/bun#45300 on Bun up to 1.4.3 (this repo pins 1.4.2 in `.bun-version`); the upgrade path is to delete GATE_SCRIPT, `gate` and `gateDir` once the pinned Bun is 1.4.4 or newer, which is its own task because it
  * touches CI and every OS leg. The parent-death stop below stays whatever the Bun version: an orphaned bridge is this repository's bug, not Bun's. The gate costs about one shell start (a few ms).
  */
-// The shell removes its own gate (file, then directory) once released, when its bounded wait ends, and when it is hung up or terminated (a bridge killed with SIGKILL runs no cleanup, and the pty closing
+// The shell removes its own gate (file, then directory) once released and when it is hung up or terminated (a bridge killed with SIGKILL runs no cleanup, and the pty closing
 // sends the shell SIGHUP), so no path leaves a directory behind. `exec` resets the traps for the real command.
-const GATE_SCRIPT = 'd=${0%/*}; trap "rm -f \\"$0\\"; rmdir \\"$d\\" 2>/dev/null; exit 125" HUP TERM INT; n=0; while [ ! -e "$0" ]; do n=$((n+1)); if [ "$n" -gt 1000 ]; then rmdir "$d" 2>/dev/null; exit 125; fi; sleep 0.01; done; rm -f "$0"; rmdir "$d" 2>/dev/null; exec "$@"';
+const GATE_SCRIPT = 'd=${0%/*}; trap "rm -f \\"$0\\"; rmdir \\"$d\\" 2>/dev/null; exit 125" HUP TERM INT; while [ ! -e "$0" ]; do sleep 0.01; done; rm -f "$0"; rmdir "$d" 2>/dev/null; exec "$@"';
 /** A bridge whose caller died is stopped instead of running on: its child holds a terminal nobody reads and, under launchd, nothing else would ever stop it. */
 const PARENT_POLL_MS = 250;
 const PARENT_TERM_GRACE_MS = 1_000;
