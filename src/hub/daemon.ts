@@ -1829,16 +1829,18 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const settleAnswer = async (row: InvocationRow, text: string): Promise<void> => {
     try {
-      const refused = refusedBy(text);
-      if (refused !== undefined) return void finishInvocation(row, "refused", { reason: `${row.target} declined: ${refused}` });
       // The callee's turn may have turned private while it worked, and its words may carry PII: either withholds the whole result and keeps no body (AGENTS.md, PII during a PII turn).
       const privateNow = () => !!turns.get(row.target)?.private || contextPii(row.target) || (row.task !== null && (() => { const t = board.get(row.task!); return !!t && tasks.isPii(t); })());
       let clear = !privateNow() && boundedSafe(text); // boundedSafe is the PII-pattern, secret and private-path screen the bounded tools use
       if (clear && tasks.screenOn()) {
         const verdict = await (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text.slice(0, 20_000)).catch(() => undefined);
-        clear = verdict?.label === "clear" && !privateNow(); // unknown is PII, and it is read again after the await
+        clear = verdict?.label === "clear" && !privateNow() && boundedSafe(text); // unknown is PII; recheck current privacy after the await
       }
-      finishInvocation(row, clear ? "completed" : "withheld", clear ? { body: text } : {});
+      if (!clear) return void finishInvocation(row, "withheld");
+      // A refusal reason is callee-authored text too: screen the complete answer before refusedBy sanitizes and cuts it.
+      const refused = refusedBy(text);
+      if (refused !== undefined) return void finishInvocation(row, "refused", { reason: `${row.target} declined: ${refused}` });
+      finishInvocation(row, "completed", { body: text });
     } catch { finishInvocation(row, "withheld"); } // a failure to decide is a withhold, never a pass
   };
   /** A target that is paused by the person, the conductor or the budget, or whose quota window is exhausted, is refused at call time (D5, quota). A pause that starts later leaves a queued request queued under its deadline. */
