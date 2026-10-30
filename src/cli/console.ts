@@ -1,3 +1,4 @@
+import { consoleOperationalSnapshot } from "../hub/operational-settings.ts";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
@@ -24,6 +25,8 @@ export interface ConsoleTerminal {
   onSignal(listener: () => void): () => void;
   onError?(listener: (error: Error) => void): () => void;
 }
+/** Legacy startup defaults, independently pinned against the H1 rows. */
+export const CONSOLE_POLL_MS = 4000, CONSOLE_PENDING_STREAM_LIMIT = 1000, CONSOLE_ATTENTION_LIMIT = 1000;
 export interface ConsoleOptions {
   client: Pick<ControlClient, "request" | "send" | "close" | "onPush" | "onClose">;
   cwd: string; stateDir: string; panels?: boolean; columns?: number; rows?: number;
@@ -101,6 +104,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   const removers: (() => void)[] = []; const timers: ReturnType<typeof setInterval>[] = [];
   let resolveDone: () => void = () => {}; const done = new Promise<void>(resolve => { resolveDone = resolve; });
   let pendingStream: ConsoleEvent[] = []; let droppedStream = 0;
+  let presentation = consoleOperationalSnapshot(undefined);
   let priorStreamFooterStart: number | undefined;
   let lastExpandedNotice = "";
   const notice = (text: string, tone: Tone = "failure") => notify(state, text, Date.now(), tone);
@@ -123,7 +127,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       terminal.write(paint([...(color ? streamTokens(header ?? "", event.tone, event.kind) : [{ text: header ?? "" }]), ...body.map(text => ({ text: "\n" + text }))], color) + "\n");
     }
     else if (state.mode === "stream") writeStream(event);
-    else { pendingStream.push(event); if (pendingStream.length > 1000) { pendingStream.shift(); droppedStream++; } }
+    else { pendingStream.push(event); if (pendingStream.length > presentation.pendingStreamLimit) { pendingStream.shift(); droppedStream++; } }
   };
   const draw = () => {
     if (!active) return;
@@ -389,7 +393,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     if (!active) return;
     try {
       if (msg.t === "event") {
-        if (state.petEnabled && msg.e.t === "envelope" && !msg.e.dropped && msg.e.env.to?.includes("user")) state.attentionMessages = [...(state.attentionMessages ?? []), { id: msg.e.env.id, peer: msg.e.env.from, important: msg.e.env.priority === "important", since: msg.e.env.ts }].slice(-1000);
+        if (state.petEnabled && msg.e.t === "envelope" && !msg.e.dropped && msg.e.env.to?.includes("user")) state.attentionMessages = [...(state.attentionMessages ?? []), { id: msg.e.env.id, peer: msg.e.env.from, important: msg.e.env.priority === "important", since: msg.e.env.ts }].slice(-presentation.attentionLimit);
         stream({ text: renderTailEvent(msg.e), peer: msg.e.peer ?? msg.e.env?.from, kind: msg.e.env?.kind ?? msg.e.t, tone: eventTone(msg.e) });
       }
       else if (msg.t === "context") stream({ text: `  ${msg.peer}: ${contextLine(msg.reading, at => new Date(at).toLocaleTimeString())}`, peer: msg.peer, kind: "context" });
@@ -454,8 +458,27 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     removers.push(terminal.onSignal(() => stop()));
     if (terminal.onError) removers.push(terminal.onError(error => { process.exitCode = 1; stop(`Console error: ${error.message}`); }));
     timers.push(setInterval(() => { try { state = pruneApprovals(state, Date.now()); draw(); } catch (error) { stop(`Console error: ${String((error as Error).message)}`); } }, 1000));
-    timers.push(setInterval(() => void refresh(), Math.max(2000, options.pollMs ?? 4000)));
-    draw(); client.send({ t: "tail" }); void refresh(); await done;
+    const initialPollMs = Math.max(2000, options.pollMs ?? CONSOLE_POLL_MS);
+    const initialPoll = setInterval(() => void refresh(), initialPollMs); timers.push(initialPoll);
+    // Subscribe and render synchronously as before; close, signal and permission handlers stay live during this bounded read.
+    draw(); client.send({ t: "tail" }); void refresh();
+    const startup = client.request({ t: "settings_get" }, 3000).catch(() => undefined);
+    const accepted = await Promise.race([startup, done]);
+    if (!active) return;
+    presentation = consoleOperationalSnapshot(accepted?.ok === false ? undefined : accepted?.rows);
+    state.noticeMs = presentation.noticeMs; state.historyLimit = presentation.historyLimit;
+    // Only this launch's pre-capture presentation buffers can need trimming. Never touch approvals or delivery queues.
+    const omitted = Math.max(0, pendingStream.length - presentation.pendingStreamLimit);
+    if (omitted) { pendingStream.splice(0, omitted); droppedStream += omitted; }
+    state.attentionMessages = state.attentionMessages?.slice(-presentation.attentionLimit);
+    const forgotten = Math.max(0, state.history.length - presentation.historyLimit);
+    if (forgotten) { state.history.splice(0, forgotten); state.historyIndex = Math.max(0, state.historyIndex - forgotten); }
+    const capturedPollMs = Math.max(2000, options.pollMs ?? presentation.pollMs);
+    if (capturedPollMs !== initialPollMs) {
+      clearInterval(initialPoll);
+      timers.push(setInterval(() => void refresh(), capturedPollMs));
+    }
+    draw(); await done;
   } catch (error) { stop(`Console error: ${String((error as Error).message)}`); }
   finally { stop(); }
 }

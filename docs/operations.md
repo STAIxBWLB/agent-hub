@@ -2000,6 +2000,11 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Routing | `inference.backoff_min` (1-60 minutes, default 5) | `config.local.json` | restart; failure backoff for optional inference, interactive calls exempt |
 | Routing | `inference.digest_min_items` (1-100000 items, default 5) | `config.local.json` | restart; existing condensation threshold |
 | Routing | `inference.digest_min_chars` (1-10000000 characters, default 8000) | `config.local.json` | restart; existing condensation threshold |
+| Start | `console.poll_ms` (2000-60000 ms, default 4000) | `config.local.json` | next use; next console launch captures its refresh interval |
+| Start | `console.notice_ms` (10000-60000 ms, default 10000) | `config.local.json` | next use; notice visibility may only lengthen |
+| Start | `console.history_limit` (1-100 commands, default 100) | `config.local.json` | next use; only tightens transient command history |
+| Start | `console.pending_stream_limit` (1-1000 events, default 1000) | `config.local.json` | next use; only tightens offscreen stream buffering, with omitted counts |
+| Start | `console.attention_limit` (1-1000 messages, default 1000) | `config.local.json` | next use; only tightens transient message attention entries |
 
 ### Operational numeric settings (#489 H1)
 
@@ -2144,6 +2149,35 @@ The [H6 ledger](verification/2026-10-30-model-operational-settings.md) accounts 
 all 169 H0 identities: seven registered and 162 left out with individual reasons.
 PII policy, route scoring, protocol contracts, existing model/routing settings
 and test seams remain with their current owners.
+
+#### UI and console (#489 H7)
+
+Five `console.*` rows use H1 and apply at the next console launch. The console
+reads accepted `settings_get` row values once through its existing authenticated
+control connection, under the existing 3-second read bound. It uses fixed H1
+bounds, ignores pending/file values, and retains legacy defaults for an older,
+refusing or unreachable hub. A running console keeps its captured preferences.
+The existing `options.pollMs` test seam still wins, with the fixed 2000 ms floor;
+refresh serialization and its pending-refresh coalescing remain unchanged.
+
+Notice visibility may only lengthen. The other retention settings only tighten
+local presentation memory: command history, offscreen stream events and message
+attention references. They never trim bus queues, delivery records or approvals.
+Close/signal and permission handlers remain active while the startup read waits.
+If pushes arrived before capture, only cold-start presentation buffers are
+trimmed, preserving accurate omitted counts and every approval/control message.
+
+The 1-second redraw/approval countdown interval, `appendEvent` cap test seam,
+Usage history query bound, browser toast/poll/office timings, authentication
+lifetimes and action budgets remain fixed. The multi-project manager owns the
+browser page; this change adds no per-project configuration projection or RPC.
+
+The [H7 ledger](verification/2026-10-30-ui-console-operational-settings.md) covers
+all 1007 H0 UI/console fallback identities, with 81 in these UI/console paths and
+926 outside them. The additional `task-progress.ts` initializer is classified
+under tasks/routing by the inventory's precedence and is recorded separately.
+Five rows cover six H0 identities (the two command-history paths share one key).
+Deferred support/CLI/memory items remain for a follow-up; issue #489 stays open.
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
   the machine-local files (`ahub init` ignores both in git). The shared

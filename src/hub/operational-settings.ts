@@ -153,12 +153,36 @@ export const INFERENCE_DIGEST_CHARS_SETTING = modelNumber({
   min: 1, max: 10_000_000, defaultValue: 8000, applies: "restart", restartReason: inferenceRestart, unit: "characters", inventory: "src/hub/inference.ts:digest_min_chars",
 });
 
+/** #489 H7: accepted presentation values are captured once by the next console launch. */
+const consoleNumber = <const T extends Omit<OperationalNumberSetting, "group" | "store" | "risk" | "applies" | "type">>(def: T) => ({ group: "Start", store: "config", risk: "raises", applies: "next use", type: "integer", ...def }) as const satisfies OperationalNumberSetting;
+export const CONSOLE_POLL_SETTING = consoleNumber({
+  key: "console.poll_ms", path: ["console", "poll_ms"], label: "Next console launch: refresh interval (milliseconds)",
+  min: 2000, max: 60_000, defaultValue: 4000, unit: "milliseconds", inventory: "src/cli/console.ts:options.pollMs ?? 4000",
+});
+export const CONSOLE_NOTICE_SETTING = consoleNumber({
+  key: "console.notice_ms", path: ["console", "notice_ms"], label: "Next console launch: notice visibility (milliseconds)",
+  min: 10_000, max: 60_000, defaultValue: 10_000, unit: "milliseconds", inventory: "src/cli/console-state.ts:NOTICE_MS",
+});
+export const CONSOLE_HISTORY_SETTING = consoleNumber({
+  key: "console.history_limit", path: ["console", "history_limit"], label: "Next console launch: retained command history",
+  min: 1, max: 100, defaultValue: 100, unit: "commands", inventory: "src/cli/console-state.ts:[...s.history, input].slice",
+});
+export const CONSOLE_PENDING_STREAM_SETTING = consoleNumber({
+  key: "console.pending_stream_limit", path: ["console", "pending_stream_limit"], label: "Next console launch: buffered offscreen stream events",
+  min: 1, max: 1000, defaultValue: 1000, unit: "events", inventory: "src/cli/console.ts:pendingStream.length > 1000",
+});
+export const CONSOLE_ATTENTION_SETTING = consoleNumber({
+  key: "console.attention_limit", path: ["console", "attention_limit"], label: "Next console launch: retained message attention entries",
+  min: 1, max: 1000, defaultValue: 1000, unit: "messages", inventory: "src/cli/console.ts:[...(state.attentionMessages ?? []), { id: msg.e.env.id, peer: msg.e.env.from, important: msg.e.env.priority === important, since: msg.e.env.ts }].slice",
+});
+
 /** Fixed metadata; never registration from a file, request, adapter or environment variable. */
 export const OPERATIONAL_NUMBERS: readonly OperationalNumberSetting[] = [GROOM_FYI_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SETTING, CONTRADICTION_WINDOW_SETTING, RESCREEN_MAX_SETTING, SPLIT_MIN_SETTING, SPLIT_FAILURE_SHARE_SETTING,
   BUS_MAX_ATTEMPTS_SETTING, BUS_DIGEST_MAX_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_NOTES_KEPT_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING,
   RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING,
   ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEOUT_SETTING,
-  MODEL_COOLDOWN_FAILURES_SETTING, MODEL_COOLDOWN_SETTING, MODEL_COOLDOWN_CAP_SETTING, MODEL_TERMINAL_HISTORY_SETTING, INFERENCE_BACKOFF_SETTING, INFERENCE_DIGEST_ITEMS_SETTING, INFERENCE_DIGEST_CHARS_SETTING];
+  MODEL_COOLDOWN_FAILURES_SETTING, MODEL_COOLDOWN_SETTING, MODEL_COOLDOWN_CAP_SETTING, MODEL_TERMINAL_HISTORY_SETTING, INFERENCE_BACKOFF_SETTING, INFERENCE_DIGEST_ITEMS_SETTING, INFERENCE_DIGEST_CHARS_SETTING,
+  CONSOLE_POLL_SETTING, CONSOLE_NOTICE_SETTING, CONSOLE_HISTORY_SETTING, CONSOLE_PENDING_STREAM_SETTING, CONSOLE_ATTENTION_SETTING];
 /** The `tasks` leaves the six #489 H2 readers need; `HubConfig.tasks` has them all. */
 export interface TaskOperationalConfig { tasks: { demote_at?: number; demotion_half_life_h?: number; contradiction_window_days?: number; rescreen_max?: number; split_min_observations?: number; split_max_failure_share?: number } }
 /**
@@ -216,3 +240,16 @@ export const modelOperationalReaders = (config: () => ModelOperationalConfig) =>
   cooldownCapMs: () => (config().model_relay?.cooldown_cap_s ?? MODEL_COOLDOWN_CAP_SETTING.defaultValue) * 1000,
   terminalHistoryLimit: () => config().model_relay?.terminal_history_limit ?? MODEL_TERMINAL_HISTORY_SETTING.defaultValue,
 });
+
+export interface ConsoleOperationalConfig { console?: { poll_ms?: number; notice_ms?: number; history_limit?: number; pending_stream_limit?: number; attention_limit?: number } }
+/** Existing authenticated settings_get rows only: pending file values and client-supplied bounds never choose a value. */
+export function consoleOperationalSnapshot(rows: unknown) {
+  const read = (def: OperationalNumberSetting): number => {
+    if (!Array.isArray(rows)) return def.defaultValue;
+    const matches = rows.filter(row => row && typeof row === "object" && !Array.isArray(row) && row.key === def.key);
+    if (matches.length !== 1) return def.defaultValue;
+    const value: unknown = matches[0].value;
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= def.min && value <= def.max ? value : def.defaultValue;
+  };
+  return Object.freeze({ pollMs: read(CONSOLE_POLL_SETTING), noticeMs: read(CONSOLE_NOTICE_SETTING), historyLimit: read(CONSOLE_HISTORY_SETTING), pendingStreamLimit: read(CONSOLE_PENDING_STREAM_SETTING), attentionLimit: read(CONSOLE_ATTENTION_SETTING) });
+}
