@@ -273,6 +273,7 @@ export class DeliveryJournal {
   private closed = false;
   private queueMetadataTracking = false;
   private queueMetadataInvalidated = false;
+  private pruningDeferred = 0;
   private readonly operationId?: string;
   private readonly terminalHistoryLimit?: () => number;
   constructor(options: DeliveryJournalOptions) {
@@ -708,53 +709,58 @@ export class DeliveryJournal {
       updatedAt: delivery.createdAt,
     });
     return this.queueMetadataTransaction(trackQueuePressure, () => {
-      const evidence = this.retryEvidence(delivery.peer, delivery.originals);
-      if (evidence === "used") {
-        // Inheritance commits with the handoff, before safe failure or pruning can erase a grouped parent.
-        this.recordRetryEvidence(delivery.peer, delivery.originals, delivery.id, this.retryWarning(delivery.peer, delivery.originals));
-        delivery = { ...delivery, attempt: Math.max(1, delivery.attempt ?? 0) };
-      } else if (evidence === "unknown") this.markRetryUnknown([{ ...delivery, revision: 0, updatedAt: delivery.createdAt }], {});
-      const ids = new Set(delivery.originals.map((env) => env.id)), immutableIds = new Set(retryOriginals(delivery.originals).map(env => env.id));
-      for (const row of this.list(delivery.peer)) {
-        if (row.state !== "queued" || !row.originals.some((env) => ids.has(env.id))) continue;
-        this.transition(row.id, "discarded", `grouped into delivery ${delivery.id}`);
-        if (retryOriginals(row.originals).some(env => immutableIds.has(env.id))) {
-          delivery = { ...delivery, previousId: delivery.previousId ?? row.id };
-          if ((row.attempt ?? 0) > 0) delivery = { ...delivery, attempt: Math.max(delivery.attempt ?? 0, row.attempt!) };
+      // Grouped parents are not linked until the handoff INSERT. Keep the whole
+      // synchronous transaction intact; ordinary settlement prunes afterward.
+      this.pruningDeferred++;
+      try {
+        const evidence = this.retryEvidence(delivery.peer, delivery.originals);
+        if (evidence === "used") {
+          // Inheritance commits with the handoff, before safe failure or pruning can erase a grouped parent.
+          this.recordRetryEvidence(delivery.peer, delivery.originals, delivery.id, this.retryWarning(delivery.peer, delivery.originals));
+          delivery = { ...delivery, attempt: Math.max(1, delivery.attempt ?? 0) };
+        } else if (evidence === "unknown") this.markRetryUnknown([{ ...delivery, revision: 0, updatedAt: delivery.createdAt }], {});
+        const ids = new Set(delivery.originals.map((env) => env.id)), immutableIds = new Set(retryOriginals(delivery.originals).map(env => env.id));
+        for (const row of this.list(delivery.peer)) {
+          if (row.state !== "queued" || !row.originals.some((env) => ids.has(env.id))) continue;
+          this.transition(row.id, "discarded", `grouped into delivery ${delivery.id}`);
+          if (retryOriginals(row.originals).some(env => immutableIds.has(env.id))) {
+            delivery = { ...delivery, previousId: delivery.previousId ?? row.id };
+            if ((row.attempt ?? 0) > 0) delivery = { ...delivery, attempt: Math.max(delivery.attempt ?? 0, row.attempt!) };
+          }
         }
-      }
-      const revision = this.bump();
-      const now = Date.now();
-      this.db
-        .query(
-          "UPDATE delivery_meta SET bus_snapshot = ?, manual_paused = ? WHERE project_id = ?",
-        )
-        .run(
-          JSON.stringify(bus),
-          JSON.stringify(bus.manualPaused ?? []),
-          this.projectId,
-        );
-      this.writeQueueMetadata(bus, revision, trackQueuePressure);
-      this.db
-        .query(
-          "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .run(
-          delivery.id,
-          this.projectId,
-          delivery.peer,
-          delivery.state,
-          revision,
-          delivery.createdAt,
-          now,
-          JSON.stringify(delivery.originals),
-          JSON.stringify(delivery.out),
-          delivery.reason ?? null,
-          delivery.attempt ?? null,
-          delivery.previousId ?? null,
-        );
-      this.harden();
-      return { ...delivery, revision, updatedAt: now };
+        const revision = this.bump();
+        const now = Date.now();
+        this.db
+          .query(
+            "UPDATE delivery_meta SET bus_snapshot = ?, manual_paused = ? WHERE project_id = ?",
+          )
+          .run(
+            JSON.stringify(bus),
+            JSON.stringify(bus.manualPaused ?? []),
+            this.projectId,
+          );
+        this.writeQueueMetadata(bus, revision, trackQueuePressure);
+        this.db
+          .query(
+            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          )
+          .run(
+            delivery.id,
+            this.projectId,
+            delivery.peer,
+            delivery.state,
+            revision,
+            delivery.createdAt,
+            now,
+            JSON.stringify(delivery.originals),
+            JSON.stringify(delivery.out),
+            delivery.reason ?? null,
+            delivery.attempt ?? null,
+            delivery.previousId ?? null,
+          );
+        this.harden();
+        return { ...delivery, revision, updatedAt: now };
+      } finally { this.pruningDeferred--; }
     });
   }
   createDelivery(
@@ -1036,6 +1042,7 @@ export class DeliveryJournal {
     return row ? { action: row.action, reason: row.reason, observedRevision: row.observed_revision, actor: row.actor } : undefined;
   }
   private pruneTerminal(state: JournalDeliveryState, currentId: string): void {
+    if (this.pruningDeferred) return;
     const terminal = state === "completed" || state === "discarded" || state === "failed";
     const terminalCap = terminal ? this.terminalHistoryLimit?.() ?? TERMINAL_CAP : TERMINAL_CAP;
     // A tighter target must not delete the receipt this mutation/resolve is still using.

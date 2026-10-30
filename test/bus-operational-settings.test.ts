@@ -186,6 +186,49 @@ test("#489 terminal history reload prunes only at settlement and preserves unres
   expect(journal.get("pending")?.state).toBe("needs_review");
 });
 
+test("#489 grouped handoff keeps both parents and retry ancestry open at history limit one", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-grouped-history-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i", terminalHistoryLimit: () => 1 });
+  cleanup.push(() => journal.close());
+  const first = newEnvelope("user", "previously retried"), second = newEnvelope("user", "grouped neighbor");
+  const ancestor = journal.createDelivery({ id: "ancestor", peer: "claude", state: "needs_review", createdAt: first.ts, originals: [first], out: [first] });
+  journal.resolve(ancestor.id, ancestor.revision, "retry", "person inspected the first attempt");
+  const parent = journal.list("claude").find(row => row.previousId === ancestor.id)!;
+  const neighbor = journal.createDelivery({ id: "neighbor", peer: "claude", state: "queued", createdAt: parent.createdAt + 1, originals: [second], out: [second] });
+  const snapshot = { schemaVersion: 1 as const, queues: { claude: [] }, prefaces: {}, seen: [], attempts: {}, withdrawn: [] };
+  const handoff = journal.checkpointDelivery(snapshot, { id: "handoff", peer: "claude", state: "dispatching", createdAt: neighbor.createdAt + 1, originals: [first, second], out: [first, second] });
+  expect(handoff.previousId).toBe(parent.id);
+  for (const state of ["dispatching", "accepted", "needs_review"] as const) {
+    if (state !== "dispatching") journal.transition(handoff.id, state);
+    expect(journal.get(parent.id)?.state).toBe("discarded");
+    expect(journal.get(neighbor.id)?.state).toBe("discarded");
+    expect(journal.get(handoff.previousId!)?.previousId).toBe(ancestor.id);
+    expect(journal.get(ancestor.id)?.state).toBe("failed");
+  }
+  const held = journal.get(handoff.id)!;
+  expect(journal.resolve(held.id, held.revision, "completed", "verified the grouped work").state).toBe("completed");
+  expect(journal.get(handoff.previousId!)?.previousId).toBe(ancestor.id);
+  expect(journal.get(ancestor.id)?.state).toBe("failed");
+  expect(journal.retryEvidence("claude", [first, second])).toBe("used");
+});
+
+test("#489 failed grouped handoff rolls back parents and restores ordinary pruning", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-grouped-rollback-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i", terminalHistoryLimit: () => 1 });
+  cleanup.push(() => journal.close());
+  const envs = [newEnvelope("user", "first"), newEnvelope("user", "second")];
+  for (const [n, env] of envs.entries()) journal.createDelivery({ id: `parent-${n}`, peer: "claude", state: "queued", createdAt: env.ts + n, originals: [env], out: [env] });
+  const before = journal.snapshot();
+  const snapshot = { schemaVersion: 1 as const, queues: { claude: [] }, prefaces: {}, seen: [], attempts: {}, withdrawn: [] };
+  expect(() => journal.checkpointDelivery(snapshot, { id: "parent-0", peer: "claude", state: "dispatching", createdAt: Date.now(), originals: envs, out: envs })).toThrow();
+  expect(journal.snapshot()).toEqual(before);
+  for (const id of ["terminal-a", "terminal-b"]) journal.createDelivery({ id, peer: "claude", state: "completed", createdAt: Date.now(), originals: envs, out: envs });
+  expect(journal.get("terminal-a")).toBeUndefined();
+  expect(journal.get("terminal-b")?.state).toBe("completed");
+  expect(journal.get("parent-0")?.state).toBe("queued");
+  expect(journal.get("parent-1")?.state).toBe("queued");
+});
+
 test("#489 five real daemon settings rows write, inherit and undo through the existing local file", async () => {
   const cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-bus-config-"))), state = join(cwd, ".agenthub/state");
   cleanup.push(() => rmSync(cwd, { recursive: true, force: true })); mkdirSync(join(cwd, ".agenthub"));
