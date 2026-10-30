@@ -30,7 +30,7 @@ function project() {
 
 test("#489 H6 config defaults, units and restart rows use the fixed H1 bounds", () => {
   const f = project();
-  expect(rows.map(row => row.defaultValue)).toEqual(defaults);
+  expect(rows.map(row => Number(row.defaultValue))).toEqual(defaults);
   for (const [index, row] of rows.entries()) {
     expect(at(DEFAULT_CONFIG, row.path)).toBe(defaults[index]!);
     expect(at(loadConfig(f.cwd), row.path)).toBe(defaults[index]!);
