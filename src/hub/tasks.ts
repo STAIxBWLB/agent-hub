@@ -35,7 +35,16 @@ import type { MemoryScreen } from "./read-tools.ts";
 import { withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
 import { criteriaView, unmetCriteriaIds, workflowHash } from "./workflow.ts";
-import { candidateCard, criterionKey, groupUnmetCriteria, LEARNING_DEFAULTS, selectGroups, type CriterionGroup } from "./learning.ts";
+import { candidateCard, criterionKey, groupUnmetCriteria, LEARNING_DEFAULTS, overridesDiff, parseCandidateCard, selectGroups, type CriterionGroup } from "./learning.ts";
+/** #514b: how a closed candidate card says what the person decided; `learnCandidates` reads them back. */
+const LEARN_ACCEPTED = "candidate accepted", LEARN_REJECTED = "candidate rejected";
+/** What the person decided on a candidate card, read from its cancellation: only an entry the person wrote counts, so no other note can pass for a verdict. Undefined while it is open or closed for another reason. */
+const learnVerdict = (card: Pick<Task, "state" | "history">): "accepted" | "rejected" | undefined => {
+  if (card.state !== "cancelled") return undefined;
+  const closed = card.history.findLast(entry => entry.event === "cancelled");
+  if (!closed || closed.by !== USER) return undefined;
+  return closed.note?.startsWith(LEARN_ACCEPTED) ? "accepted" : closed.note?.startsWith(LEARN_REJECTED) ? "rejected" : undefined;
+};
 import { approvedDeliverables, latestDeliverables, parseDeliverableClaims, publicDeliverables, type DeliverableRecord, type DeliverableStatus } from "./deliverables.ts";
 import { checkDeliverables, DeliverableRefusal, hashDeliverables, vetDeliverables, type DeliverablePorts } from "./deliverable-files.ts";
 import { isAbsolute, relative } from "node:path";
@@ -705,6 +714,74 @@ export class Tasks {
       if (ids.has(next)) join(row.id, next);
     }
     return new Set(rows.map(row => find(row.id))).size;
+  }
+  /**
+   * #514b: the person's view of the recurring-criterion candidates (`ahub learn list`). The person only: a conductor or an agent gets a refusal, never a list. A card that does not parse as the
+   * hub's own is not listed. Ids, counts and the key parts only: the card's text is never echoed, and a PII row is never reached because the cards are already screened when filed.
+   */
+  learnCandidates(by: PeerId, opts: { all?: boolean } = {}): Record<string, unknown>[] {
+    if (by !== USER) throw new PreEffectToolRefusal("ahub learn is a person's command");
+    const rows: Record<string, unknown>[] = [];
+    for (const card of this.d.board.list()) {
+      const parsed = parseCandidateCard(card);
+      if ("refused" in parsed) continue;
+      const open = card.state === "backlog" || card.state === "proposed";
+      const closed = card.history.findLast(entry => entry.event === "cancelled");
+      const verdict = learnVerdict(card) ?? (closed ? "closed" : undefined);
+      if (!open && !opts.all) continue;
+      if (!open && !closed) continue;
+      rows.push({ id: card.id, state: card.state, ...parsed, status: open ? "open" : verdict, tasks: this.learnEvidence(parsed).tasks, line: overridesDiff({ ...parsed, tasks: this.learnEvidence(parsed).tasks }).profile_overrides.review_checklist[0] });
+    }
+    return rows;
+  }
+  /** The distinct tasks that name this criterion unmet on this profile and class in the window, from the board as it is now: the count the written line states is recomputed, never read from the card. */
+  private learnEvidence(card: { profile: string; class: string; criterion: string }): { tasks: number[] } {
+    const eligible = this.d.board.list().filter(row => this.candidateTextAllowed(`${row.profile ?? ""} ${row.profileClass ?? ""} ${row.class}`, row));
+    const group = groupUnmetCriteria(eligible, { windowMs: LEARNING_DEFAULTS.windowMs, now: Date.now() }).find(g => g.profile === card.profile && g.class === card.class && g.criterion === card.criterion);
+    return { tasks: group?.tasks ?? [] };
+  }
+  /**
+   * #514b: what `ahub learn accept` would write for card `id`, or why not. Person only. It reads ONLY the card's key line (`parseCandidateCard`), requires the card to be open, and builds the
+   * line from the board's own evidence with `overridesDiff`: nothing of the card's text is parsed as a value. The daemon adds the line to the stored checklist and writes it through the settings path.
+   */
+  learnAcceptPlan(by: PeerId, id: unknown): { id: number; profile: string; class: string; criterion: string; line: string; tasks: number } {
+    if (by !== USER) throw new PreEffectToolRefusal("ahub learn accept is a person's command");
+    const card = this.learnCard(id);
+    const evidence = this.learnEvidence(card);
+    if (!evidence.tasks.length) throw new PreEffectToolRefusal(`no task in the window still names ${card.criterion} unmet on ${card.profile}/${card.class}: nothing to accept; reject the card to close it`);
+    const line = overridesDiff({ ...card, tasks: evidence.tasks }).profile_overrides.review_checklist[0]!;
+    return { id: card.id, profile: card.profile, class: card.class, criterion: card.criterion, line, tasks: evidence.tasks.length };
+  }
+  /**
+   * #514b: whether `ahub learn accept` already decided this card. Person only. A card the person accepted answers `"accepted"`, so a repeat accept is a no-write success (the plan's idempotency);
+   * a rejected card, a card closed some other way and an open one answer undefined and take the normal path, which refuses the closed ones.
+   */
+  learnAccepted(by: PeerId, id: unknown): { id: number; profile: string; class: string; criterion: string } | undefined {
+    if (by !== USER) throw new PreEffectToolRefusal("ahub learn accept is a person's command");
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return undefined;
+    const task = this.d.board.get(id);
+    if (!task || learnVerdict(task) !== "accepted") return undefined;
+    const parsed = parseCandidateCard(task);
+    return "refused" in parsed ? undefined : { id, ...parsed };
+  }
+  /** The card, which must be an open candidate the hub filed. */
+  private learnCard(id: unknown): { id: number; profile: string; class: string; criterion: string } {
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) throw new PreEffectToolRefusal("id must be a positive task number");
+    const task = this.d.board.get(id);
+    if (!task) throw new PreEffectToolRefusal(`no task #${id}`);
+    const parsed = parseCandidateCard(task);
+    if ("refused" in parsed) throw new PreEffectToolRefusal(`task #${id}: ${parsed.refused}`);
+    if (task.state !== "backlog" && task.state !== "proposed") throw new PreEffectToolRefusal(`task #${id} is already ${task.state === "cancelled" ? "closed" : task.state}`);
+    return { id, ...parsed };
+  }
+  /**
+   * #514b: closes a candidate card after the person's verdict, through `cancel` (never a direct board write): the row stays, the verdict is in its history, and because the dedupe key is the card's
+   * detail the same criterion is never filed again. `accepted` is recorded only after the write succeeded (the daemon calls this last); a repeat of either verdict is refused by `learnCard`.
+   */
+  async learnClose(by: PeerId, id: unknown, verdict: "accepted" | "rejected"): Promise<Task> {
+    if (by !== USER) throw new PreEffectToolRefusal("ahub learn is a person's command");
+    const card = this.learnCard(id);
+    return this.cancel(card.id, USER, { reason: verdict === "accepted" ? `${LEARN_ACCEPTED} by the person: its review checklist line was written to config.local.json` : `${LEARN_REJECTED} by the person` });
   }
   /**
    * #514a: the same recurrence path for recurring UNMET CRITERIA. A criterion id that reviews keep naming unmet on the same profile and class, on at least

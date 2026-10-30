@@ -78,8 +78,40 @@ export function candidateCard(group: CriterionGroup, windowDays: number, workUni
     detail: [
       criterionKey(group),
       `Criterion ${group.criterion} was named unmet ${group.count} time(s) on ${group.tasks.length} ${group.profile}/${group.class} task(s) in the last ${windowDays} days (${workUnits} separate piece(s) of work): ${group.tasks.slice(0, 8).map(id => `#${id}`).join(", ")}.`,
-      "This is a candidate for a person to review. Nothing was applied, and nothing in the hub writes it. profile_overrides is not machine-local: it is read from the shared .agenthub/config.json (tracked, so a change there reaches every checkout) and from .agenthub/config.local.json (this machine only), and the layers merge. Put it where you want it to apply. If you agree, add the line below to profile_overrides.review_checklist; that list replaces as a unit, so add it to your current checklist, do not paste it over it:",
+      "This is a candidate for a person to review. Nothing was applied: the hub writes it only when the person runs ahub learn accept <id> (to .agenthub/config.local.json, this machine only, added to your current checklist; ahub settings undo puts it back), or ahub learn reject <id> to close this card. By hand: profile_overrides is not machine-local: it is read from the shared .agenthub/config.json (tracked, so a change there reaches every checkout) and from .agenthub/config.local.json (this machine only), and the layers merge. Put it where you want it to apply. If you agree, add the line below to profile_overrides.review_checklist; that list replaces as a unit, so add it to your current checklist, do not paste it over it:",
       JSON.stringify(diff, null, 2),
     ].join("\n"),
   };
+}
+
+/** The cap `resolveProfile` puts on a review checklist (`profiles.ts`): the learn writer never builds a list the loader would refuse. */
+export const CHECKLIST_MAX_LINES = 16;
+const PROFILE = /^[a-z][a-z0-9_-]{0,31}$/, CLASS = /^[a-z][a-z0-9_]{0,47}$/, CRITERION = /^[A-Za-z][A-Za-z0-9-]{0,47}$/;
+
+/**
+ * What `ahub learn accept` may act on (#514b), read from a card the hub itself filed. ONLY the key line is read: `Criterion candidate key: <profile>:<class>:<criterion>`, as the
+ * FIRST line of the detail, on a backlog card the hub filed in the `plan` class. The three parts are re-checked against the shapes the loaders accept, and the line to write is
+ * REGENERATED from them by `overridesDiff` with a count the caller recomputes from the board, so no text of the card (the diff it prints, a count it states, a title) is ever
+ * parsed as a value or written. A card that does not match is refused with a reason, never half read.
+ */
+export type CandidateCard = { profile: string; class: string; criterion: string } | { refused: string };
+export function parseCandidateCard(task: Pick<Task, "class" | "detail" | "history" | "title">): CandidateCard {
+  if (task.class !== "plan" || task.history[0]?.by !== "hub") return { refused: "not a candidate the hub filed" };
+  const first = task.detail.split("\n", 1)[0] ?? "";
+  const match = /^Criterion candidate key: ([^:\s]+):([^:\s]+):([^:\s]+)$/.exec(first);
+  if (!match) return { refused: "not a recurring-criterion candidate (no key line first)" };
+  const [, profile, cls, criterion] = match as unknown as [string, string, string, string];
+  if (!PROFILE.test(profile) || !CLASS.test(cls) || !CRITERION.test(criterion)) return { refused: "the key line names a profile, class or criterion the loaders would not accept" };
+  if (task.title !== `Review checklist candidate for ${profile}/${cls} criterion ${criterion}`) return { refused: "the card's title does not match its key line" };
+  return { profile, class: cls, criterion };
+}
+
+/**
+ * The checklist to store after accepting: the person's CURRENT checklist (what the profile uses now) with the one regenerated line added, because `review_checklist` replaces as a
+ * unit. The line is skipped when it is already there, so a repeated accept writes nothing new. Refused, not trimmed, when the list would pass `CHECKLIST_MAX_LINES`.
+ */
+export function withChecklistLine(current: readonly string[], line: string): { list: string[] } | { refused: string } {
+  if (current.includes(line)) return { list: [...current] };
+  if (current.length + 1 > CHECKLIST_MAX_LINES) return { refused: `the checklist already has ${current.length} lines and the profile allows ${CHECKLIST_MAX_LINES}; remove one in .agenthub/config.local.json first` };
+  return { list: [...current, line] };
 }
