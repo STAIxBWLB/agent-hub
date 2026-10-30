@@ -3,7 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// #548: the macOS CI leg is shards of the full suite. The partition itself is Bun's (`bun test --shard=i/n --timings=...`); what the repository owns, and what is pinned here, is that
+// #548: both OS CI legs are shards of the full suite. The partition itself is Bun's (`bun test --shard=i/n --timings=...`); what the repository owns, and what is pinned here, is that
 // the workflow keeps the names the merge gate reads, that every shard runs under the Linux hang bound, that the once-only steps run exactly once, and that check.sh refuses a bad shard.
 type Step = { name?: string; uses?: string; run?: string; if?: string; env?: Record<string, string> };
 type Job = { name?: string; needs?: string | string[]; if?: string; "runs-on"?: string; "timeout-minutes"?: number; strategy?: { matrix: Record<string, unknown[]> }; steps: Step[] };
@@ -27,48 +27,58 @@ function shownNames(): string[] {
 test("#548 the names the merge gate and the reuse proof read are all still produced: check (ubuntu-latest), check (macos-latest) and seeded guards", () => {
   const names = shownNames();
   for (const required of ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"]) expect(names.filter(name => name === required)).toHaveLength(1);
-  // the sources of the two platform names: one real Linux job, and an aggregator over the macOS shards (the same shape as `seeded` over `seeded-shard`)
-  expect(jobs.check!.strategy!.matrix.os).toEqual(["ubuntu-latest"]);
-  expect(jobs.macos!.name).toBe("check (macos-latest)");
-  expect(needs(jobs.macos!)).toEqual(["decision", "macos-shard"]);
+  for (const os of ["ubuntu", "macos"]) {
+    expect(jobs[os]!.name).toBe(`check (${os}-latest)`);
+    expect(needs(jobs[os]!)).toEqual(["decision", `${os}-shard`]);
+  }
   expect(needs(jobs.seeded!)).toEqual(["decision", "seeded-shard"]);
 });
 
-test("#548 the macOS aggregator fails unless every shard succeeded, and carries the identical-tree reuse marker like the other gate jobs", () => {
-  const steps = jobs.macos!.steps;
-  const reuse = steps.find(step => step.name === "Reuse verified identical-tree full gate");
-  expect(reuse?.if).toBe("needs.decision.outputs.admission == 'reuse'");
-  expect(reuse?.run).toContain("Reused identical-tree full gate run");
-  const all = steps.find(step => step.name === "Every macOS shard passed");
-  expect(all?.if).toBe("needs.decision.outputs.run_gate == 'true'");
-  expect(all?.env?.SHARDS).toBe("${{ needs.macos-shard.result }}");
-  expect(all?.run).toContain('test "$SHARDS" = success');
-  // it must still run when a shard failed or was skipped, or the failure would read as "check (macos-latest)" missing instead of failed
-  expect(jobs.macos!.if).toContain("always()");
-  expect(jobs["macos-shard"]!.if).toBe("needs.decision.outputs.run_gate == 'true'");
-});
+for (const [os, label] of [["ubuntu", "Ubuntu"], ["macos", "macOS"]] as const) {
+  test(`#548 the ${label} aggregator fails unless every shard succeeded, and carries the identical-tree reuse marker`, () => {
+    const aggregate = jobs[os!]!, shard = jobs[`${os}-shard`]!;
+    const reuse = aggregate.steps.find(step => step.name === "Reuse verified identical-tree full gate");
+    expect(reuse?.if).toBe("needs.decision.outputs.admission == 'reuse'");
+    expect(reuse?.env?.VERIFIED_RUN).toBe("${{ needs.decision.outputs.verified_run }}");
+    expect(reuse?.run).toContain('test -n "$VERIFIED_RUN"');
+    expect(reuse?.run).toContain("Reused identical-tree full gate run");
+    const all = aggregate.steps.find(step => step.name === `Every ${label} shard passed`);
+    expect(all?.if).toBe("needs.decision.outputs.run_gate == 'true'");
+    expect(all?.env?.SHARDS).toBe(`\${{ needs.${os}-shard.result }}`);
+    expect(all?.run).toContain('test "$SHARDS" = success');
+    for (const status of ["success", "failure", "cancelled", "skipped", ""]) {
+      const run = Bun.spawnSync(["bash", "-c", all!.run!], { env: { ...process.env, SHARDS: status } });
+      expect(run.exitCode === 0, `${os} aggregate: ${status}`).toBe(status === "success");
+    }
+    for (const proof of ["", "123"]) {
+      const run = Bun.spawnSync(["bash", "-c", reuse!.run!], { env: { ...process.env, VERIFIED_RUN: proof } });
+      expect(run.exitCode === 0, `${os} reuse: ${proof}`).toBe(proof !== "");
+    }
+    expect(aggregate.if).toBe("always() && needs.decision.result == 'success' && (needs.decision.outputs.admission == 'run' || needs.decision.outputs.admission == 'reuse')");
+    expect(shard.if).toBe("needs.decision.outputs.run_gate == 'true'");
+  });
 
-test("#548 every macOS shard runs on macOS under the Linux hang bound and the same quiet bound, with a job limit that fits a shard", () => {
-  const shard = jobs["macos-shard"]!, linux = jobs.check!;
-  expect(shard["runs-on"]).toBe("macos-latest");
-  expect(needs(shard)).toEqual(["decision"]);
-  const mac = gateEnv(shard), lin = gateEnv(linux);
-  expect(mac.AHUB_CHECK_HANG_S).toBe("1500"); expect(mac.AHUB_CHECK_HANG_S).toBe(lin.AHUB_CHECK_HANG_S); // the third raise (2400) is retired: Linux's bound
-  expect(mac.AHUB_CHECK_QUIET_S).toBe(lin.AHUB_CHECK_QUIET_S); expect(mac.AHUB_CHECK_QUIET_S).toBe("300");
-  expect(shard["timeout-minutes"]!).toBeLessThanOrEqual(25); // a shard is expected well under 15 minutes
-  expect(linux["timeout-minutes"]).toBe(35); // Linux is untouched
-  expect(readFileSync(new URL("../.github/workflows/check.yml", import.meta.url), "utf8")).not.toContain("'2400'");
-});
+  test(`#548 every ${label} shard retains 1500 s total and 300 s quiet bounds`, () => {
+    const shard = jobs[`${os}-shard`]!;
+    expect(shard["runs-on"]).toBe(`${os}-latest`);
+    expect(needs(shard)).toEqual(["decision"]);
+    expect(gateEnv(shard).AHUB_CHECK_HANG_S).toBe("1500");
+    expect(gateEnv(shard).AHUB_CHECK_QUIET_S).toBe("300");
+    expect(shard["timeout-minutes"]!).toBeLessThanOrEqual(25);
+    expect(readFileSync(new URL("../.github/workflows/check.yml", import.meta.url), "utf8")).not.toContain("'2400'");
+  });
 
-test("#548 the shard matrix covers 1..N exactly and N is the denominator every shard passes to check.sh", () => {
-  const shard = jobs["macos-shard"]!;
-  const count = shard.strategy!.matrix.shard!.length;
-  expect(shard.strategy!.matrix.shard).toEqual(Array.from({ length: count }, (_, index) => index + 1));
-  expect(count).toBeGreaterThanOrEqual(2);
-  expect(gateEnv(shard).AHUB_CHECK_SHARD).toBe(`\${{ matrix.shard }}/${count}`);
-  expect(shard.name).toBe(`check (macos-latest) shard \${{ matrix.shard }}/${count}`);
-  expect(shard.steps.some(step => step.uses?.startsWith("actions/checkout@"))).toBe(true);
-});
+  test(`#548 the ${label} shard matrix covers 1..N exactly with matching check.sh denominator`, () => {
+    const shard = jobs[`${os}-shard`]!;
+    const count = shard.strategy!.matrix.shard!.length;
+    expect(shard.strategy!.matrix.shard).toEqual(Array.from({ length: count }, (_, index) => index + 1));
+    expect(count).toBeGreaterThanOrEqual(2);
+    expect(gateEnv(shard).AHUB_CHECK_SHARD).toBe(`\${{ matrix.shard }}/${count}`);
+    expect(shard.name).toBe(`check (${os}-latest) shard \${{ matrix.shard }}/${count}`);
+    expect(shard.steps.some(step => step.uses?.startsWith("actions/checkout@"))).toBe(true);
+    expect(shard.steps.find(step => step.uses?.startsWith("actions/upload-artifact@"))?.if).toContain("failure()");
+  });
+}
 
 test("#548 the committed per-file timings have bun's shape, name only test files, and positive whole milliseconds", () => {
   const timings = JSON.parse(readFileSync(new URL("../scripts/test-timings.json", import.meta.url), "utf8")) as { version: number; files: Record<string, number> };
