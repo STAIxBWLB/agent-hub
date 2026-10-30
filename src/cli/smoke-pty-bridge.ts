@@ -46,19 +46,19 @@ if (!argv.length) {
     const stop = () => { try { child.kill("SIGTERM"); } catch { /* exit readback decides */ } };
     process.on("SIGINT", stop); process.on("SIGTERM", stop);
     /** The caller is gone: stop the child now, kill it after a grace period, and exit even if its exit is never reported. */
-    let abandoned = false;
     const abandon = () => {
-      if (abandoned) return;
-      abandoned = true;
       clearInterval(watch);
       stop();
       setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, PARENT_TERM_GRACE_MS).unref();
       setTimeout(() => process.exit(129), PARENT_HARD_EXIT_MS).unref();
     };
     // A caller that died while Bun.spawn ran never gets its command run: the gate stays shut and the gate shell takes the SIGTERM (its trap removes the gate and exits).
+    // Abandoning once is enough: the interval below exists only while the caller is still there, and clears itself the first time it is not.
     if (callerGone()) abandon();
-    else if (gate) writeFileSync(gate, "");
-    watch = setInterval(() => { if (callerGone()) abandon(); }, PARENT_POLL_MS);
+    else {
+      if (gate) writeFileSync(gate, "");
+      watch = setInterval(() => { if (callerGone()) abandon(); }, PARENT_POLL_MS);
+    }
     try {
       const code = await child.exited;
       // Drain the PTY before closing it; a descendant holding a slave cannot make the bridge wait forever.
