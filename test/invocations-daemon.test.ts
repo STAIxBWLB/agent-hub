@@ -128,7 +128,7 @@ test("every gate refuses with its reason and builds no envelope, no row and no e
 });
 
 test("a shared entry with no class, a write or external class, and an unshared or stale entry are all refused before anything is built", async () => {
-  for (const [cls, re] of [["", /destructive/], ["write", /approval path/], ["external", /approval path/], ["destructive", /destructive/]] as const) {
+  for (const [cls, re] of [["", /counts as destructive .* never invoked/], ["write", /counts as write: write and external invocations need the person's approval path/], ["external", /counts as external: write and external invocations need/], ["destructive", /counts as destructive .* never invoked/]] as const) {
     const f = await fixture({ cls });
     const r = await invoke(f); expect(r.ok, cls).toBe(false); expect(r.error, cls).toMatch(re);
     expect(f.kimi.got).toEqual([]); expect(f.rows()).toEqual([]);

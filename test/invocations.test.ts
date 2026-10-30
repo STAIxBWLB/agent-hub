@@ -24,7 +24,7 @@ test("each gate refuses with its own reason, in the order a person would fix the
     [{ capability: undefined }, /offers no shared capability command:skill:review/],
     [{ capability: { id: "command:skill:review", state: "unshared", class: "read" } }, /offers no shared capability/],
     [{ capability: { id: "command:skill:review", state: "digest-changed", class: "read" } }, /changed since the person shared it/],
-    [{ capability: { id: "command:skill:review", state: "listed", class: "destructive" } }, /destructive/],
+    [{ capability: { id: "command:skill:review", state: "listed", class: "destructive" } }, /counts as destructive .* and is never invoked/], // not the write/external reason
     [{ capability: { id: "command:skill:review", state: "listed", class: "write" } }, /write and external invocations need the person's approval/],
     [{ capability: { id: "command:skill:review", state: "listed", class: "external" } }, /counts as external/],
     [{ task: { id: 7, ok: false, pii: false } }, /task #7 is not available to you/],
@@ -84,7 +84,8 @@ test("arguments: types, enums, required keys, control characters and size are al
   expect(checkArgs(s, { mode: "fast", note: "x".repeat(ARG_STRING_MAX + 1) }, false)).toMatchObject({ ok: false });
   expect(checkArgs(s, { mode: "fast", __proto__x: 1 } as never, false)).toMatchObject({ ok: false });
   expect(checkArgs(s, JSON.parse('{"mode":"fast","__proto__":{"x":1}}'), false)).toMatchObject({ ok: false }); // an own key named __proto__ is not an input
-  expect(checkArgs(s, { mode: "fast", constructor: "x" }, false)).toMatchObject({ ok: false });
+  // a key that exists only on the prototype is refused AS an unknown input, by name (not caught later by a type check of something that is not a property)
+  for (const key of ["constructor", "toString", "hasOwnProperty", "valueOf", "__proto__"]) expect(checkArgs(s, JSON.parse(`{"mode":"fast","${key}":"x"}`), false), key).toEqual({ ok: false, reason: `args.${key} is not an input of this capability` });
 });
 
 test("arguments: a native form refuses a newline, because the text would become a second command", () => {
@@ -148,6 +149,11 @@ test("a result that is not a completion carries the hub's reason and none of the
     expect(r.body).toContain(`outcome ${outcome}`); expect(r.body).toContain("the hub's reason"); expect(r.body).not.toContain("SECRET"); expect(r.bytes).toBe(0);
   }
   expect(renderInvocationResult({ target: "kimi", capabilityId: "c:x", id: "i", outcome: "failed" }).body).toContain("no result");
+  // withheld is FIXED text: whatever reason or body is passed in, none of it appears, and the text is the same every time
+  const w1 = renderInvocationResult({ target: "kimi", capabilityId: "c:x", id: "i", outcome: "withheld", body: "SECRET callee text", reason: "REASON-FROM-THE-ANSWER" });
+  const w2 = renderInvocationResult({ target: "kimi", capabilityId: "c:x", id: "i", outcome: "withheld" });
+  expect(w1).toEqual(w2); expect(w1.body).not.toContain("SECRET"); expect(w1.body).not.toContain("REASON-FROM-THE-ANSWER"); expect(w1.bytes).toBe(0);
+  expect(w1.body).toBe('Invocation result from "kimi" (untrusted agent text, capability c:x, id i, outcome withheld):\nthe result was withheld because it may contain private data; it was not kept');
   expect(renderInvocationResult({ target: "kimi", capabilityId: "c:x", id: "i", outcome: "completed" }).body.endsWith(":\n")).toBe(true); // an empty completion is empty, not "no result"
 });
 
