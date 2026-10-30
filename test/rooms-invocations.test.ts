@@ -7,7 +7,7 @@ import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { buildCapability, type CapabilityManifest } from "../src/hub/capabilities.ts";
-import { InvocationLedger } from "../src/hub/invocations.ts";
+import { argsDigest, InvocationLedger } from "../src/hub/invocations.ts";
 import { replyParent, replyAudience, type Envelope } from "../src/hub/envelope.ts";
 import { RoomLink } from "../src/rooms/link.ts";
 import { RoomStore } from "../src/rooms/store.ts";
@@ -17,7 +17,7 @@ const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 const until = async (condition: () => boolean, label: string) => { for (let i = 0; i < 1000 && !condition(); i++) await Bun.sleep(5); expect(condition(), label).toBe(true); };
 const capability = buildCapability({ kind: "command", name: "probe", source: "published", invoke: "prompt", sideEffect: "read", description: "Public read probe",
-  inputSchema: { type: "object", properties: { input: { type: "string" } }, required: ["input"], additionalProperties: false } })!;
+  inputSchema: { type: "object", properties: { input: { type: "string" }, z: { type: "string" } }, required: ["input"], additionalProperties: false } })!;
 class Sink extends BasePeer {
   got: Envelope[] = [];
   async start() { this.setState("idle"); }
@@ -91,6 +91,21 @@ test("X6 real broker/crypto with two daemons relays one double-pinned read and o
   expect(f.a.daemon.bus.isHeld("kimi@beta")).toBe(false);
   expect(f.caller.got[0]!.body).toContain("X6_PUBLIC_RESULT"); expect(f.caller.got[0]!.body).toContain("kimi@beta");
   for (const side of [f.a, f.b]) for (const name of ["events.jsonl", "hub.log", "status.json"]) expect(readFileSync(join(side.stateDir, name), "utf8")).not.toContain("X6_PUBLIC_RESULT");
+});
+
+test("X6 non-alphabetical argument insertion order relays once with matching source and target digests", async () => {
+  const f = await mesh(), args = { z: "last", input: "first" };
+  expect(Object.keys(args)).toEqual(["z", "input"]);
+  const response = await f.invoke(args); expect(response.ok, JSON.stringify(response)).toBe(true);
+  const id = JSON.parse(response.text).invocation;
+  await until(() => f.a.ledger.get(id)?.outcome === "completed", "source result for unsorted args");
+  const requests = f.callee.got.filter(env => env.kind === "invocation"); expect(requests).toHaveLength(1);
+  expect(requests[0]!.body).toContain('Arguments: {"input":"first","z":"last"}');
+  const digest = argsDigest({ input: "first", z: "last" });
+  expect(f.a.ledger.get(id)?.argsSha256).toBe(digest); expect(f.b.ledger.get(requests[0]!.id)?.argsSha256).toBe(digest);
+  await until(() => f.caller.got.some(env => env.kind === "invocation_result"), "unsorted argument caller result");
+  expect(f.caller.got.filter(env => env.kind === "invocation_result")).toHaveLength(1);
+  expect(f.caller.got.find(env => env.kind === "invocation_result")!.body).toContain("X6_PUBLIC_RESULT");
 });
 
 for (const options of [{ sourcePin: false }, { targetPin: false }, { targetClass: "write" }, { targetClass: "external" }, { digest: "sha256:" + "d".repeat(64) }]) test(`X6 requires both current read pins ${JSON.stringify(options)}`, async () => {

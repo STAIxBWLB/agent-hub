@@ -81,7 +81,7 @@ const CAPABILITY_ID = /^(command|skill|mcp_tool):[A-Za-z0-9_.:-]{1,64}$/;
 const CAPABILITY_DIGEST = /^sha256:[0-9a-f]{64}$/;
 export function roomInvocationArgs(value: unknown): Record<string, string | number | boolean> {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail();
-  const keys = Object.keys(value);
+  const keys = Object.keys(value).sort();
   if (keys.length > 16) fail("limit");
   const raw = object(value, keys), args = Object.create(null) as Record<string, string | number | boolean>;
   for (const key of keys) {
