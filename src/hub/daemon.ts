@@ -152,7 +152,7 @@ import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, profileTaskTools } from "./hub-tools.ts";
 import { effectiveClass, listedCapabilities, PublishRefusal, readShare, shareView, validatePublished, type CapabilityManifest } from "./capabilities.ts";
-import { checkArgs, DEFAULT_TIMEOUT_S, InvocationLedger, invocationRefusal, refusedBy, renderInvocationResult, requestText, type InvocationOutcome, type InvocationRow } from "./invocations.ts";
+import { invocationApproval, checkArgs, DEFAULT_TIMEOUT_S, InvocationLedger, invocationRefusal, refusedBy, renderInvocationResult, requestText, type InvocationOutcome, type InvocationRow } from "./invocations.ts";
 import { Conductor, ConductorHolds, conductorPeer, requireConductor, conductorProgressSink, publicConductorTask, publicPeerBudget, taskShowAllowed, type ConductEvent } from "./conductor.ts";
 import { SupervisionFeed } from "./supervision.ts";
 import { drainCliAudits } from "../cli/identity-audit.ts";
@@ -1701,6 +1701,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const board = new Board(join(opts.stateDir, "hub.db"));
   const invocations = new InvocationLedger(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => invocations.close());
+  bus.canRetryInvocation = id => invocations.get(id)?.class === "read";
+  bus.onInvocationUncertain = id => { const row = invocations.get(id); if (row && row.class !== "read") finishInvocation(row, "needs_review", { reason: "delivery outcome is uncertain; check it by hand" }); };
   const codeFacts = new CodeFacts();
   const reviewSymbols = new Map<string, CodeFactResult<CodeSymbol[]>>();
   const memorySymbols = new Map<string, MemorySymbolNodes>();
@@ -1791,6 +1793,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const rendered = renderInvocationResult({ target: row.target, capabilityId: row.capability, id: row.id, outcome, ...input });
     const settled = invocations.settle(row.id, outcome, rendered.bytes);
     if (!settled) return;
+    if (settled.task !== null) { try { tasks.recordInvocation(settled.task, settled); } catch { log(`invocation ${settled.id}: terminal audit unavailable; ledger retains outcome`); } }
+    bus.releaseInvocation(settled.id);
     event({ type: "invocation", id: settled.id, caller: settled.caller, target: settled.target, capability: settled.capability, class: settled.class, outcome, ...(settled.task === null ? {} : { task: settled.task }), ...(rendered.bytes ? { bytes: rendered.bytes } : {}) });
     if (!bus.peers.has(settled.caller) || bus.peers.get(settled.caller)!.state === "offline") return; // nobody to read it; the row is the record
     try { bus.publish(newEnvelope(HUB, rendered.body, { to: [settled.caller], kind: "invocation_result", priority: "status", refs: { invocation: settled.id, ...(settled.task === null ? {} : { task: String(settled.task) }) }, ...(turns.get(settled.caller)?.private || contextPii(settled.caller) ? { private: true } : {}) })); }
@@ -1849,12 +1853,19 @@ export async function startDaemon(opts: DaemonOptions) {
   const invocationTimeoutMs = () => (typeof config.invocation?.timeout_s === "number" && config.invocation.timeout_s >= 10 ? config.invocation.timeout_s : DEFAULT_TIMEOUT_S) * 1000;
   /** The deadline pass: a request still queued is withdrawn (`expired`, no effect); one delivered with no result is a `timeout` (reads only in C2). */
   const sweepInvocations = (): void => {
+    for (const row of invocations.pending()) if (row.class !== "read" && bus.invocationUncertain(row.id)) {
+      bus.holdInvocation(row.id, "restored invocation delivery outcome is uncertain", row.target);
+      finishInvocation(row, "needs_review", { reason: "delivery outcome is uncertain; check it by hand" });
+    }
     for (const row of invocations.due()) {
       // A row is `queued` until the adapter reports it accepted, which an ACP agent does only at its first activity: a request already handed to the target (it left the queue, and a
       // delivery that failed safely puts it back) may be running, so it times out like a delivered one. Only a request still waiting, or not yet handed over, expires with no effect.
       const handedOver = row.outcome === "queued" && !bus.queueIds(row.target).includes(row.id);
       if (row.outcome === "queued" && !handedOver) withdrawInvocation(row, "expired", "the target did not receive it before the deadline; nothing ran");
-      else finishInvocation(row, row.class === "read" ? "timeout" : "needs_review", { reason: row.class === "read" ? "the target received it but gave no result before the deadline; it may still run" : "the target received it but gave no result before the deadline; check it by hand" });
+      else {
+        if (row.class !== "read") bus.holdInvocation(row.id, "invocation result deadline passed; outcome is uncertain", row.target);
+        finishInvocation(row, row.class === "read" ? "timeout" : "needs_review", { reason: row.class === "read" ? "the target received it but gave no result before the deadline; it may still run" : "the target received it but gave no result before the deadline; check it by hand" });
+      }
     }
   };
   const currentCheck = (receipt: { task: number; owner: string; updated: number | string; generation: number | string; revision?: number }) => {
@@ -3297,28 +3308,49 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!target) throw new PreEffectToolRefusal("peer is required");
         if (typeof a.capability !== "string" || !/^(command|skill|mcp_tool):[A-Za-z0-9_.:-]{1,64}$/.test(a.capability)) throw new PreEffectToolRefusal("capability must be an id from hub_capabilities, like command:skill:review");
         if (a.task !== undefined && (!Number.isSafeInteger(a.task) || (a.task as number) < 1)) throw new PreEffectToolRefusal("task must be a task id");
-        const callerPeer = bus.peers.get(by);
-        if (!callerPeer) throw new PreEffectToolRefusal("only an attached peer invokes capabilities");
-        const targetPeer = bus.peers.get(target);
-        const share = readShare(config.invocation?.share);
-        const found = targetPeer && targetPeer.state !== "offline" ? (await manifestOf(target))?.capabilities.find(c => c.id === a.capability) : undefined;
-        const view = found ? shareView(target, { capabilities: [found], observedAt: 0 }, share)[0] : undefined;
-        const taskRow = a.task === undefined ? undefined : board.get(a.task as number);
-        const facts = {
-          caller: by, target, capabilityId: a.capability as string,
-          piiContext: piiTurn || !!turns.get(by)?.private || contextPii(by),
-          attached: !!targetPeer && targetPeer.state !== "offline", onRoster: !!targetPeer && membershipAllowed(target), paused: invocationPaused(target), held: bus.isHeld(target),
-          pullOnly: targetPeer?.pullOnly === true,
-          capability: view ? { id: view.id, state: view.state, class: view.class } : undefined,
-          depth: invocations.answering(by), openByCaller: invocations.countOpenBy("caller", by), openByTarget: invocations.countOpenBy("target", target),
-          ...(a.task === undefined ? {} : { task: { id: a.task as number, ok: !!taskRow && (taskRow.owner === by || taskRow.reviewer === by) && !isClosedTaskState(taskRow.state) && taskRow.state !== "backlog", pii: !!taskRow && tasks.isPii(taskRow), reason: `task #${a.task} is not open work of yours` } }),
+        const callerPeer = bus.peers.get(by), callerGeneration = connectionGeneration(by);
+        const targetPeer = bus.peers.get(target), targetGeneration = connectionGeneration(target);
+        if (!callerPeer || !callerGeneration) throw new PreEffectToolRefusal("only an attached peer invokes capabilities");
+        const boundTask = a.task === undefined ? undefined : board.get(a.task as number);
+        const taskBinding = (task: typeof boundTask) => task ? JSON.stringify([task.owner, task.reviewer, task.state, task.history.length]) : "";
+        const initialTask = taskBinding(boundTask);
+        const initialPolicy = JSON.stringify([config.pii, config.local.deny, tasks.screenOn()]);
+        const readFacts = (view: ReturnType<typeof shareView>[number] | undefined) => {
+          const peer = bus.peers.get(target), task = a.task === undefined ? undefined : board.get(a.task as number);
+          return {
+            caller: by, target, capabilityId: a.capability as string, unattended: !!opts.unattended,
+            piiContext: piiTurn || !!turns.get(by)?.private || contextPii(by),
+            attached: !!peer && peer.state !== "offline", onRoster: !!peer && membershipAllowed(target), paused: invocationPaused(target), held: bus.isHeld(target), pullOnly: peer?.pullOnly === true,
+            capability: view ? { id: view.id, state: view.state, class: view.class } : undefined,
+            depth: invocations.answering(by), openByCaller: invocations.countOpenBy("caller", by), openByTarget: invocations.countOpenBy("target", target),
+            ...(a.task === undefined ? {} : { task: { id: a.task as number, ok: !!task && (task.owner === by || task.reviewer === by) && !isClosedTaskState(task.state) && task.state !== "backlog", pii: !!task && tasks.isPii(task), reason: `task #${a.task} is not open work of yours` } }),
+          };
         };
-        const refusal = invocationRefusal(facts);
+        const current = () => {
+          need("invoke", "invoke capabilities");
+          if (stopping) throw new PreEffectToolRefusal("the hub is stopping; ask again afterwards");
+          if (JSON.stringify([config.pii, config.local.deny, tasks.screenOn()]) !== initialPolicy) throw new PreEffectToolRefusal("invocation privacy policy changed while the call was checked; ask again");
+          if (bus.peers.get(by) !== callerPeer || connectionGeneration(by) !== callerGeneration || bus.peers.get(target) !== targetPeer || connectionGeneration(target) !== targetGeneration || taskBinding(a.task === undefined ? undefined : board.get(a.task as number)) !== initialTask) throw new PreEffectToolRefusal("your session, the target session or task scope changed while the call was checked; ask again");
+        };
+        const found = targetPeer && targetPeer.state !== "offline" ? (await manifestOf(target))?.capabilities.find(c => c.id === a.capability) : undefined;
+        current();
+        const shared = (capability: typeof found) => capability ? shareView(target, { capabilities: [capability], observedAt: 0 }, readShare(config.invocation?.share))[0] : undefined;
+        const view = shared(found);
+        const refusal = invocationRefusal(readFacts(view));
         if (refusal) throw new PreEffectToolRefusal(refusal);
+        const pinnedDigest = found!.digest, pinnedClass = view!.class;
         const checked = checkArgs(found!.inputSchema, a.args, found!.invoke === "native");
         if (!checked.ok) throw new PreEffectToolRefusal(checked.reason);
-        // Free-text arguments are a peer's words headed for another peer: the pattern check, then the model screen, and unknown is private (D4).
         const argText = Object.values(checked.args).filter((v): v is string => typeof v === "string").join("\n");
+        const revalidate = async () => {
+          current();
+          const capability = (await manifestOf(target))?.capabilities.find(c => c.id === a.capability);
+          current();
+          const live = shared(capability), rejected = invocationRefusal(readFacts(live));
+          if (rejected) throw new PreEffectToolRefusal(rejected);
+          if (!capability || capability.digest !== pinnedDigest || live?.class !== pinnedClass) throw new PreEffectToolRefusal("the capability digest or class changed while the call was checked; ask again");
+          if (argText && !boundedSafe(argText)) throw new PreEffectToolRefusal("the arguments match a PII or secret pattern, so they are not sent to another peer");
+        };
         if (argText) {
           if (!boundedSafe(argText)) throw new PreEffectToolRefusal("the arguments match a PII or secret pattern, so they are not sent to another peer");
           if (tasks.screenOn()) {
@@ -3326,28 +3358,31 @@ export async function startDaemon(opts: DaemonOptions) {
             if (verdict?.label !== "clear") throw new PreEffectToolRefusal("the PII screen did not clear the arguments, so they are not sent to another peer");
           }
         }
-        // The world may have moved across the screen's await: every fact that gates the request is read again, and the same gates run again.
-        const again = bus.peers.get(target);
-        const stillFound = again && again.state !== "offline" ? (await manifestOf(target))?.capabilities.find(c => c.id === a.capability) : undefined;
-        const stillView = stillFound ? shareView(target, { capabilities: [stillFound], observedAt: 0 }, readShare(config.invocation?.share))[0] : undefined;
-        const taskAgain = a.task === undefined ? undefined : board.get(a.task as number);
-        const recheck = invocationRefusal({ ...facts,
-          piiContext: piiTurn || !!turns.get(by)?.private || contextPii(by),
-          attached: !!again && again.state !== "offline", onRoster: !!again && membershipAllowed(target), paused: invocationPaused(target), held: bus.isHeld(target), pullOnly: again?.pullOnly === true,
-          capability: stillView ? { id: stillView.id, state: stillView.state, class: stillView.class } : undefined,
-          depth: invocations.answering(by), openByCaller: invocations.countOpenBy("caller", by), openByTarget: invocations.countOpenBy("target", target),
-          ...(a.task === undefined ? {} : { task: { id: a.task as number, ok: !!taskAgain && (taskAgain.owner === by || taskAgain.reviewer === by) && !isClosedTaskState(taskAgain.state) && taskAgain.state !== "backlog", pii: !!taskAgain && tasks.isPii(taskAgain), reason: `task #${a.task} is not open work of yours` } }),
-        });
-        if (recheck || !stillFound || stillFound.digest !== found!.digest || connectionGeneration(by) === undefined) throw new PreEffectToolRefusal(recheck ?? "the capability or your session changed while the call was checked; ask again");
-        // Recovery marks every bus target held, and that gate is read again just above, so the recheck already refuses a recovery that began meanwhile; `stopping` is read here.
-        if (stopping) throw new PreEffectToolRefusal("the hub is stopping; ask again afterwards");
+        await revalidate();
+        current();
+        const finalRefusal = () => invocationRefusal(readFacts(shared(found)));
+        if (finalRefusal()) throw new PreEffectToolRefusal(finalRefusal()!);
+        let approval: string | undefined;
+        if (pinnedClass !== "read") {
+          const picked = await requestPermission({ peer: by, personOnly: true, tool: "hub_invoke", title: invocationApproval({ caller: by, target, capability: found!.id, digest: pinnedDigest, class: pinnedClass, task: a.task as number, args: checked.args }), options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] });
+          await revalidate();
+          current();
+          if (finalRefusal()) throw new PreEffectToolRefusal(finalRefusal()!);
+          if (shared(found)?.class !== pinnedClass) throw new PreEffectToolRefusal("the capability class changed during approval; ask again");
+          if (picked.outcome !== "answered" || picked.optionId !== "allow" || !picked.approvalId) throw new PreEffectToolRefusal(`invocation approval ${picked.outcome === "expired" ? "expired" : "was denied or cancelled"}; nothing ran`);
+          approval = picked.approvalId;
+        }
         // The request is sent by the hub, which no limit applies to, so the CALLER is charged: the same per-sender and per-pair limits as a message from it to the target (priority status, never important).
         const limited = admit(newEnvelope(by, `invoke ${found!.id} ${JSON.stringify(checked.args)}`, { to: [target], kind: "invocation", priority: "status" }));
         if (limited) throw new PreEffectToolRefusal(limited);
         const request = newEnvelope(HUB, "", { to: [target], kind: "invocation", priority: "status" });
         request.body = requestText({ caller: by, capabilityId: found!.id, name: found!.name, kind: found!.kind, args: checked.args, id: request.id });
         request.refs = { invocation: request.id, ...(a.task === undefined ? {} : { task: String(a.task) }) };
-        const row = invocations.open({ id: request.id, trace: request.trace, caller: by, target, capability: found!.id, digest: found!.digest, class: stillView!.class, ...(a.task === undefined ? {} : { task: a.task as number }), args: checked.args, timeoutMs: invocationTimeoutMs() });
+        const row = invocations.open({ id: request.id, trace: request.trace, caller: by, target, capability: found!.id, digest: found!.digest, class: pinnedClass, ...(a.task === undefined ? {} : { task: a.task as number }), args: checked.args, timeoutMs: invocationTimeoutMs(), ...(approval ? { approval } : {}) });
+        if (row.task !== null) {
+          try { tasks.recordInvocation(row.task, row); }
+          catch { invocations.settle(row.id, "refused"); throw new PreEffectToolRefusal("invocation audit unavailable; nothing ran"); }
+        }
         event({ type: "invocation", id: row.id, caller: by, target, capability: row.capability, class: row.class, outcome: "queued", ...(row.task === null ? {} : { task: row.task }) });
         try { bus.publish(request); }
         catch (error) { finishInvocation(row, "refused", { reason: "the hub could not queue the request; nothing ran" }); throw new PreEffectToolRefusal(error instanceof Error ? error.message : "the request could not be queued"); }
@@ -4747,7 +4782,7 @@ export async function startDaemon(opts: DaemonOptions) {
 
   const permissionAnswerEpochs = new Map<string, number>();
   const permissionAnswerEpoch = (peer: string) => permissionAnswerEpochs.get(peer) ?? 0;
-  type PermissionResult = { outcome: "answered" | "expired" | "cancelled"; optionId?: string };
+  type PermissionResult = { outcome: "answered" | "expired" | "cancelled"; optionId?: string; approvalId?: string };
   async function onPermission(req: PermissionRequest, signal?: AbortSignal): Promise<string | undefined> {
     const external = isExternalInstance(req.peer) ? currentExecutionOwner(req.peer, true) : undefined;
     if (isExternalInstance(req.peer) && !external) return undefined;
@@ -4777,15 +4812,16 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return !gate.denyOnly && picked.optionId === "allow";
   }
-  async function requestPermission(req: PermissionRequest, signal?: AbortSignal, observe?: ApprovalObserver, requirePerson = false, lifecycle?: { registered(id: string): void; expired(id: string): void }): Promise<PermissionResult> {
+  async function requestPermission(req: PermissionRequest & { personOnly?: boolean }, signal?: AbortSignal, observe?: ApprovalObserver, requirePerson = false, lifecycle?: { registered(id: string): void; expired(id: string): void }): Promise<PermissionResult> {
     const requestEpoch = permissionAnswerEpoch(req.peer);
     const observed = (source: "person" | "automatic" | "expired" | "aborted") => {
       try { observe?.({ source, answerEpoch: permissionAnswerEpoch(req.peer), ...(source === "expired" ? { eligibleExpiry: requestEpoch === permissionAnswerEpoch(req.peer) } : {}) }); }
       catch { try { log(`permission observer failed for ${req.peer}`); } catch { /* settlement is authoritative */ } }
     };
     if (stopping || signal?.aborted) { observed("aborted"); return { outcome: "cancelled" }; }
+    if (req.personOnly && opts.unattended) { observed("aborted"); return { outcome: "cancelled" }; }
     // Always-ask (#636): a classed call is never answered for the person, `--unattended` included; it waits for a person and expires as a denial.
-    if (opts.unattended && !req.classed && !requirePerson) { observed("automatic"); return { outcome: "answered", optionId: req.options.find((o) => o.kind === "allow_once")?.optionId }; }
+    if (opts.unattended && !req.classed && !requirePerson && !req.personOnly) { observed("automatic"); return { outcome: "answered", optionId: req.options.find((o) => o.kind === "allow_once")?.optionId }; }
     const id = randomUUID().slice(0, 8);
     // The title is written by an agent and read by the person approving it: escape sequences and carriage returns
     // could repaint the terminal line, so everything but newline and tab is made visible.
@@ -4825,7 +4861,7 @@ export async function startDaemon(opts: DaemonOptions) {
         try { event({ type: "permission", id, peer: req.peer, event: outcome, latencyMs, ...(surface ? { surface } : {}), ...(optionKind ? { option: optionKind } : {}) }); } catch { try { log(`permission event recording failed at settlement for ${req.peer}`); } catch { /* settlement remains authoritative */ } }
         try { notify(`permission ${id} from ${req.peer} ${outcome} option ${optionKind ?? "none"} by ${surface ?? "hub"} (${latencyMs}ms)`); } catch { /* no reporting failure strands the caller */ }
         for (const c of consoles) if (c.data.tail) { try { c.send(JSON.stringify({ t: "permission_closed", id, peer: req.peer, outcome: outcome === "expired" ? "cancelled" : outcome, ...(outcome === "expired" ? { reason: "expired" } : {}), latencyMs })); } catch { /* another surface can still observe the closure */ } }
-        resolve({ outcome, ...(option ? { optionId: option.optionId } : {}) });
+        resolve({ outcome, ...(option ? { optionId: option.optionId, ...(surface ? { approvalId: id } : {}) } : {}) });
         return true;
       };
       permissions.set(id, { push, done, peer: req.peer, ...(publicTool ? { tool: publicTool } : {}), createdAt, expiresAt });

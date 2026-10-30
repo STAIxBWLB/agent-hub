@@ -188,6 +188,33 @@ export class Bus {
    * peer was handed (the request is in it, never condensed), so a reply that answers an invocation is found by identity, not by addressing.
    */
   onAnswer?: (peer: PeerId, text: string, answers: readonly Envelope[]) => boolean;
+  /** Host ledger authority; absent or unknown never permits invocation replay. */
+  canRetryInvocation?: (id: string) => boolean;
+  onInvocationUncertain?: (id: string) => void;
+  private readonly invocationDeliveries = new Map<string, string>();
+
+  releaseInvocation(id: string): void { this.invocationDeliveries.delete(id); }
+  invocationUncertain(id: string): boolean {
+    const delivery = this.invocationDeliveries.get(id), row = delivery && this.journal?.get(delivery);
+    return !!row && (row.state === "needs_review" || ["dispatching", "accepted"].includes(row.state) && !this.activeDeliveries.has(row.id));
+  }
+
+
+  /** Hold the existing delivery rather than cancelling native work or replaying an uncertain effect. */
+  holdInvocation(id: string, reason: string, target?: PeerId): void {
+    const delivery = this.invocationDeliveries.get(id), row = delivery && this.journal?.get(delivery);
+    if (!row || !this.journal) {
+      this.storageError = "uncertain invocation delivery evidence unavailable; inspect the invocation ledger before recovery";
+      if (target) this.recoveryHeldPeers.add(target);
+      this.onQueues?.();
+      return;
+    }
+    this.journal.transition(row.id, "needs_review", reason);
+    this.activeDeliveries.delete(row.id);
+    this.recoveryHeldPeers.add(row.peer);
+    this.onQueues?.();
+  }
+
   /** Actual transport admission, using originals even when a digest was condensed. Never an enqueue metric. */
   onDelivered?: (peer: PeerId, originals: Envelope[]) => void;
   /** Before deliver's synchronous busy transition, with originals rather than a condensed digest. */
@@ -219,6 +246,7 @@ export class Bus {
       if (state.revision > 0 && bus && bus.schemaVersion === 1) this.loadSnapshot(bus);
       for (const id of state.manualPaused) { this.manualPaused.add(id); this.paused.add(id); }
       for (const row of this.journal.list()) {
+        for (const env of row.originals) if (env.kind === "invocation") this.invocationDeliveries.set(env.id, row.id);
         if (row.state === "needs_review" || row.state === "dispatching" || row.state === "accepted") this.recoveryHeldPeers.add(row.peer);
       }
     }
@@ -333,6 +361,9 @@ export class Bus {
             this.deliveryReceipt(peer.id, { id: deliveryId, state: "needs_review", reason: "adapter reported delivery failure without safe-failure evidence" });
           }
         }
+      } else if (envs.some(env => env.kind === "invocation")) {
+        this.recoveryHeldPeers.add(peer.id);
+        for (const env of envs) if (env.kind === "invocation") this.onInvocationUncertain?.(env.id);
       } else this.failed(peer.id, same ? last.originals : envs, undefined, failure?.quota === true);
     };
     peer.onState = () => {
@@ -512,6 +543,7 @@ export class Bus {
       }
     }
     this.loadSnapshot(snapshot);
+    if (this.journal) for (const row of this.journal.list()) for (const env of row.originals) if (env.kind === "invocation") this.invocationDeliveries.set(env.id, row.id);
     this.persist();
   }
 
@@ -579,6 +611,7 @@ export class Bus {
     if (this.closed || this.recoveryHeld || this.storageError || peer === "user" || peer === HUB) return refuse();
     const row = this.queueShow(id);
     if (!row || row.peer !== peer || row.state !== "needs_review" || !this.journal || this.journal.retryEvidence(peer, row.originals) !== "unused") return refuse();
+    if (row.originals.some(env => env.kind === "invocation")) return refuse();
     this.resolveDelivery(id, row.revision, "retry", "recipient requested one uncertain redelivery", `peer:${peer}`);
   }
 
@@ -711,7 +744,10 @@ export class Bus {
     if (state === "completed") { this.failureStreak.delete(peer); this.lastFailure.delete(peer); }
     if (state === "completed" || state === "failed" || state === "needs_review") this.activeDeliveries.delete(id);
     if (state === "completed" || state === "failed") { this.refreshRecoveryHold(peer); void this.drain(peer); }
-    if (state === "needs_review") this.recoveryHeldPeers.add(peer);
+    if (state === "needs_review") {
+      this.recoveryHeldPeers.add(peer);
+      for (const env of before?.originals ?? []) if (env.kind === "invocation") this.onInvocationUncertain?.(env.id);
+    }
     this.onQueues?.();
   }
 
@@ -1486,6 +1522,7 @@ export class Bus {
           this.activeDeliveries.set(deliveryId, id);
         } else this.remember(out);
         this.lastDelivery.set(id, { out, originals: delivery });
+        for (const env of delivery) if (env.kind === "invocation") this.invocationDeliveries.set(env.id, deliveryId);
         if (remoteId(id)) this.remoteTransport.set(deliveryId, { peer: id, originals: delivery });
         this.preparing.delete(id); // from here on the transport/journal owns settlement
         try {
@@ -1499,7 +1536,10 @@ export class Bus {
           else { await peer.deliver(out); this.delivered(id, delivery); }
         } catch {
           if (this.journal) this.uncertain(id, deliveryId, "adapter delivery outcome is uncertain");
-          else this.failed(id, delivery);
+          else if (delivery.some(env => env.kind === "invocation")) {
+            this.recoveryHeldPeers.add(id);
+            for (const env of delivery) if (env.kind === "invocation") this.onInvocationUncertain?.(env.id);
+          } else this.failed(id, delivery);
           break;
         } finally { this.remoteTransport.delete(deliveryId); }
       }
@@ -1613,6 +1653,15 @@ export class Bus {
       // Only the recall block is a preface. The hub also sends task and review envelopes, and those are retried like any other.
       if (env.from === HUB && env.kind === "presence") {
         this.restorePreface(id, env); // rides again on the next delivery, without counting as a failed envelope
+        return false;
+      }
+      if (env.kind === "invocation") {
+        const key = `${id}:${env.id}`, n = (this.attempts.get(key) ?? 0) + 1;
+        let read = false;
+        try { read = this.canRetryInvocation?.(env.id) === true; } catch { /* Unknown refuses replay. */ }
+        if (read && n < 2) { this.attempts.set(key, n); return true; }
+        this.attempts.delete(key);
+        this.emit({ t: "undeliverable", env, peer: id, reason: "invocation safe delivery refusal; no further automatic retry" });
         return false;
       }
       if (quotaPaused) return true;

@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,13 +52,13 @@ const update = { availableCommands: [{ name: "skill:review", description: "Revie
 const manifestOf = () => acpManifest("Kimi Code CLI", "2.3.2", update, 5);
 const cap = () => manifestOf().capabilities[0]!;
 
-async function fixture(opts: { denyPrivate?: boolean; instanceId?: string; capabilities?: Record<string, string[]>; roster?: Record<string, boolean>; shareOverride?: Record<string, Record<string, { digest: string; class?: string }>>; share?: boolean; cls?: string; timeoutS?: number; sweepMs?: number; state?: string; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }>; limits?: Record<string, number> } = {}) {
+async function fixture(opts: { denyPrivate?: boolean; instanceId?: string; capabilities?: Record<string, string[]>; roster?: Record<string, boolean>; shareOverride?: Record<string, Record<string, { digest: string; class?: string }>>; share?: boolean; cls?: string; timeoutS?: number; sweepMs?: number; unattended?: boolean; permissionTimeoutMs?: number; state?: string; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }>; limits?: Record<string, number> } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-invoke-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   if (hubGitSync(["-C", root, "init", "-q"], { encoding: "utf8" }).status) throw new Error("fixture git failed");
   const stateDir = opts.state ?? join(root, "state");
   if (opts.screen) { mkdirSync(join(root, ".agenthub"), { recursive: true }); writeFileSync(join(root, ".agenthub/routing.toml"), '[local]\nroute = "hub/stage"\nfixed_model = "coding"\n[signals]\npii_screen = "local"\n[constraints]\npii = "local_only"\n'); }
   const share = opts.shareOverride ?? (opts.share === false ? undefined : { kimi: { [cap().id]: { digest: cap().digest, ...(opts.cls === undefined ? { class: "read" } : opts.cls ? { class: opts.cls } : {}) } } });
-  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, ...(opts.instanceId ? { instanceId: opts.instanceId } : {}), invocationSweepMs: opts.sweepMs ?? 50, ...(opts.screen ? { piiScreen: opts.screen } : {}),
+  const daemon = await startDaemon({ unattended: opts.unattended, permissionTimeoutMs: opts.permissionTimeoutMs, cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, ...(opts.instanceId ? { instanceId: opts.instanceId } : {}), invocationSweepMs: opts.sweepMs ?? 50, ...(opts.screen ? { piiScreen: opts.screen } : {}),
     config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, native: false, enabled: false }, snapshots: { enabled: false, keep: 1 }, ...(opts.roster ? { roster: { ...DEFAULT_CONFIG.roster, ...opts.roster } } : {}), ...(opts.capabilities ? { capabilities: opts.capabilities } : {}), ...(opts.denyPrivate ? { local: { ...DEFAULT_CONFIG.local, deny: [...DEFAULT_CONFIG.local.deny, "private/"] } } : {}), ...(opts.limits ? { limits: { ...DEFAULT_CONFIG.limits, ...opts.limits } } : {}),
       invocation: { ...(share ? { share } : {}), ...(opts.timeoutS ? { timeout_s: opts.timeoutS } : {}) } } });
   cleanups.push(() => daemon.stop());
@@ -130,7 +131,7 @@ test("every gate refuses with its reason and builds no envelope, no row and no e
 });
 
 test("a shared entry with no class, a write or external class, and an unshared or stale entry are all refused before anything is built", async () => {
-  for (const [cls, re] of [["", /counts as destructive .* never invoked/], ["write", /counts as write: write and external invocations need the person's approval path/], ["external", /counts as external: write and external invocations need/], ["destructive", /counts as destructive .* never invoked/]] as const) {
+  for (const [cls, re] of [["", /counts as destructive .* never invoked/], ["write", /counts as write: an open task scope is required/], ["external", /counts as external: an open task scope is required/], ["destructive", /counts as destructive .* never invoked/]] as const) {
     const f = await fixture({ cls });
     const r = await invoke(f); expect(r.ok, cls).toBe(false); expect(r.error, cls).toMatch(re);
     expect(f.kimi.got).toEqual([]); expect(f.rows()).toEqual([]);
@@ -871,4 +872,137 @@ test("a request handed over and then followed by another delivery to the target 
   const l = new InvocationLedger(join(f.stateDir, "hub.db")); (l as any).db.run("UPDATE invocations SET deadline = 1"); l.close();
   await until(() => results(f.codex).length === 1, "settled at the deadline");
   expect(results(f.codex)[0]!.body).toContain("outcome timeout"); expect(f.rows()[0]!.outcome).toBe("timeout");
+});
+
+
+function scope(f: Awaited<ReturnType<typeof fixture>>, over: Record<string, unknown> = {}) {
+  const board = new Board(join(f.stateDir, "hub.db")); cleanups.push(() => board.close());
+  const task = board.propose("user", { title: "invocation task", class: "implement", signals: [] } as never);
+  board.update(task.id, "user", "accepted", { owner: "codex", state: "in_progress", ...over } as never);
+  return { board, id: task.id };
+}
+async function person(f: Awaited<ReturnType<typeof fixture>>) {
+  const client = await ControlClient.connect(f.stateDir, { role: "console" }); cleanups.push(() => client.close());
+  const pushes: any[] = []; client.onPush = value => pushes.push(value); client.send({ t: "tail" });
+  return { client, pushes, asks: () => pushes.filter(value => value.t === "permission") };
+}
+
+for (const cls of ["write", "external"]) test(`C3 ${cls} requires a separate person approval and records only bound metadata`, async () => {
+  const f = await fixture({ cls }), t = scope(f), p = await person(f);
+  const marker = "C3-PERSON-PREVIEW";
+  for (let i = 0; i < 2; i++) {
+    const pending = invoke(f, { task: t.id, args: { input: marker + "x".repeat(230) } });
+    await until(() => p.asks().length === i + 1, "person-only invocation prompt");
+    const ask = p.asks()[i];
+    expect(ask.title).toContain(marker); expect(ask.title).toContain("[cut at 200 characters]");
+    expect(ask.title).toContain(`Task: #${t.id}`); expect(ask.title).toContain("Arguments digest: sha256:");
+    expect(ask.options.map((option: any) => option.kind)).toEqual(["allow_once", "reject_once"]);
+    expect(f.rows()).toHaveLength(i); expect(f.kimi.got).toHaveLength(i);
+    const peer = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex" }); cleanups.push(() => peer.close());
+    expect((await peer.request({ t: "permit", id: ask.id, option: "allow" })).ok).toBe(false);
+    expect((await p.client.request({ t: "permit", id: ask.id, option: "allow" })).ok).toBe(true);
+    expect((await pending).ok).toBe(true);
+    await until(() => f.rows()[i]?.outcome === "completed", "invocation completion");
+    expect(f.rows()[i].approval).toBe(ask.id);
+  }
+  const history = t.board.get(t.id)!.history.filter(entry => entry.invocation);
+  expect(history.map(entry => entry.invocation!.outcome)).toEqual(["queued", "completed", "queued", "completed"]);
+  expect(t.board.get(t.id)!.state).toBe("in_progress");
+  for (const text of [JSON.stringify(f.events()), f.log(), JSON.stringify(history), JSON.stringify(f.rows()), readFileSync(join(f.stateDir, "status.json"), "utf8"), JSON.stringify(results(f.codex))]) expect(text).not.toContain(marker);
+});
+
+for (const mode of ["unattended", "deny", "expire"] as const) test(`C3 ${mode} leaves no invocation, history or delivery`, async () => {
+  const f = await fixture({ cls: "external", unattended: mode === "unattended", permissionTimeoutMs: 300 }), t = scope(f), p = await person(f);
+  const pending = invoke(f, { task: t.id });
+  if (mode !== "unattended") {
+    await until(() => p.asks().length === 1, "approval prompt");
+    if (mode === "deny") await p.client.request({ t: "permit", id: p.asks()[0].id, option: "deny" });
+  }
+  const result = await pending; expect(result.ok).toBe(false);
+  expect(result.error).toMatch(mode === "unattended" ? /unattended/ : /approval/);
+  expect(f.rows()).toEqual([]); expect(f.kimi.got).toEqual([]);
+  expect(t.board.get(t.id)!.history.filter(entry => entry.invocation)).toEqual([]);
+  if (mode === "unattended") expect(p.asks()).toEqual([]);
+});
+
+for (const drift of ["task", "pii", "paused", "target", "class", "digest"] as const) test(`C3 rechecks ${drift} after person approval before any effect`, async () => {
+  const f = await fixture({ cls: "write" }), t = scope(f), p = await person(f);
+  const pending = invoke(f, { task: t.id }); await until(() => p.asks().length === 1, "approval barrier");
+  if (drift === "task") t.board.update(t.id, "user", "reassigned", { owner: "pi" });
+  if (drift === "pii") t.board.update(t.id, "user", "private", { signals: ["pii"] });
+  if (drift === "paused") f.daemon.bus.pause("kimi");
+  if (drift === "target") { f.daemon.bus.add(new Callee("kimi")); }
+  if (drift === "class" || drift === "digest") {
+    const source = f.kimi.manifest.capabilities[0]!;
+    f.kimi.manifest = { capabilities: [{ ...source, ...(drift === "class" ? { sideEffect: "external" as const } : { digest: "sha256:changed" }) }], observedAt: 9 };
+  }
+  await p.client.request({ t: "permit", id: p.asks()[0].id, option: "allow" });
+  expect((await pending).ok).toBe(false);
+  expect(f.rows()).toEqual([]); expect(f.kimi.got).toEqual([]);
+  expect(t.board.get(t.id)!.history.filter(entry => entry.invocation)).toEqual([]);
+});
+
+for (const cls of ["write", "external"]) test(`C3 ${cls} safe refusal never replays, uncertainty holds the journal`, async () => {
+  for (const receipt of ["failed_safe", "needs_review"] as const) {
+    const f = await fixture({ cls }), t = scope(f), p = await person(f);
+    f.kimi.deliver = async (envs, id) => { f.kimi.got.push(envs); if (id) f.kimi.receipt(id, receipt, "controlled refusal"); };
+    const pending = invoke(f, { task: t.id }); await until(() => p.asks().length === 1, "approval");
+    await p.client.request({ t: "permit", id: p.asks()[0].id, option: "allow" }); expect((await pending).ok).toBe(true);
+    await until(() => f.rows()[0]?.settled_at != null, "settled failure");
+    expect(f.rows()[0].outcome).toBe(receipt === "failed_safe" ? "failed" : "needs_review");
+    expect(f.kimi.got).toHaveLength(1); expect(f.daemon.bus.queueIds("kimi")).toEqual([]);
+    if (receipt === "needs_review") {
+      expect(f.daemon.bus.isHeld("kimi")).toBe(true);
+      const held = f.daemon.bus.queueList("kimi", true).find(row => row.state === "needs_review")!;
+      expect(() => f.daemon.bus.retryDelivery("kimi", held.id)).toThrow(/retry unavailable/);
+    }
+  }
+});
+
+
+test("C3 an audit write failure refuses admission before publication", async () => {
+  const f = await fixture({ cls: "write" }), t = scope(f), p = await person(f);
+  const db = new Database(join(f.stateDir, "hub.db")); cleanups.push(() => db.close());
+  db.run("CREATE TRIGGER refuse_invocation_audit BEFORE UPDATE OF history ON tasks WHEN json_extract(NEW.history, '$[#-1].event') = 'invocation' BEGIN SELECT RAISE(FAIL, 'audit storage unavailable'); END");
+  const pending = invoke(f, { task: t.id }); await until(() => p.asks().length === 1, "person approval");
+  await p.client.request({ t: "permit", id: p.asks()[0].id, option: "allow" });
+  const result = await pending; expect(result.ok).toBe(false); expect(result.error).toMatch(/audit unavailable/);
+  expect(f.kimi.got).toEqual([]); expect(t.board.get(t.id)!.history.filter(row => row.invocation)).toEqual([]);
+  expect(f.rows()[0]?.outcome).toBe("refused");
+});
+
+for (const state of ["in_review", "cancelled", "backlog", "foreign", "pii"] as const) test(`C3 task scope ${state} follows current owner/reviewer and privacy gates`, async () => {
+  const f = await fixture({ cls: "write" }), t = scope(f), p = await person(f);
+  let taskId = t.id;
+  if (state === "backlog") taskId = t.board.propose("user", { title: "backlog invocation", class: "implement", backlog: true }).id;
+  if (state === "foreign") t.board.update(t.id, "user", "reassigned", { owner: "pi", reviewer: "kimi" });
+  else if (state === "pii") t.board.update(t.id, "user", "private", { signals: ["pii"] });
+  else if (state !== "in_review" && state !== "backlog") t.board.update(t.id, "user", "scope changed", { state } as never);
+  else if (state === "in_review") { t.board.update(t.id, "codex", "done", { state: "in_review", reviewer: "codex" }); }
+  const pending = invoke(f, { task: taskId });
+  if (state === "in_review") {
+    await until(() => p.asks().length === 1, "reviewer allowed to request approval");
+    await p.client.request({ t: "permit", id: p.asks()[0].id, option: "deny" });
+  }
+  expect((await pending).ok).toBe(false); expect(f.rows()).toEqual([]); expect(f.kimi.got).toEqual([]);
+  if (state !== "in_review") expect(p.asks()).toEqual([]);
+});
+
+for (const input of ["patient 900101-1234567", "OPENAI_API_KEY=sk-" + "abc".repeat(16)]) test("C3 unsafe arguments never reach a person prompt or the target", async () => {
+  const f = await fixture({ cls: "write" }), t = scope(f), p = await person(f);
+  expect((await invoke(f, { task: t.id, args: { input } })).ok).toBe(false);
+  expect(p.asks()).toEqual([]); expect(f.rows()).toEqual([]); expect(f.kimi.got).toEqual([]);
+  expect(f.log()).not.toContain(input); expect(JSON.stringify(f.events())).not.toContain(input);
+});
+
+for (const handed of [false, true]) test(`C3 effect deadline after handoff=${handed} distinguishes expired from journal needs_review`, async () => {
+  const f = await fixture({ cls: "write" }), t = scope(f), p = await person(f);
+  if (handed) { f.kimi.answer = () => undefined; f.kimi.receipts = false; } else f.kimi.force("busy");
+  const pending = invoke(f, { task: t.id }); await until(() => p.asks().length === 1, "approval");
+  await p.client.request({ t: "permit", id: p.asks()[0].id, option: "allow" }); expect((await pending).ok).toBe(true);
+  if (handed) await until(() => f.rows()[0]?.outcome === "delivered", "native acceptance");
+  const db = new Database(join(f.stateDir, "hub.db")); db.run("UPDATE invocations SET deadline=1"); db.close();
+  await until(() => f.rows()[0]?.outcome === (handed ? "needs_review" : "expired"), "deadline outcome");
+  if (handed) { expect(f.daemon.bus.isHeld("kimi")).toBe(true); expect(f.daemon.bus.queueList("kimi", true).some(row => row.state === "needs_review")).toBe(true); }
+  else { expect(f.kimi.got).toEqual([]); expect(f.daemon.bus.queueIds("kimi")).toEqual([]); }
 });

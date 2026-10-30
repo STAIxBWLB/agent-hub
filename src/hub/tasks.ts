@@ -1,3 +1,4 @@
+import type { InvocationRow } from "./invocations.ts";
 import type { ContextAdmission } from "./context-window.ts";
 import { queueBackpressure, queueBackpressurePolicy, type QueueBackpressureCode, type QueueBackpressurePolicy, type QueueBackpressureStatus, type QueuePressure } from "./queue-backpressure.ts";
 import { canonicalMemorySymbolNode, normalizeMemorySymbolInput, MEMORY_SYMBOL_LIMIT, type MemorySymbolNodes } from "./memory-symbols.ts";
@@ -262,6 +263,7 @@ QUIET_EVENTS.add("ready held"); // #655: the hub's note that a ready task waits 
 QUIET_EVENTS.add("plan observed"); // Host observation does not move the task or replace completion intent.
 QUIET_EVENTS.add("planner changed"); // Planning authority does not move the execution owner or revoke its handoff.
 QUIET_EVENTS.add("claim verdict"); // #901: a person's bookkeeping on a plan claim moves nothing, so it must not turn a running check into "check finished late".
+QUIET_EVENTS.add("invocation");
 QUIET_EVENTS.add("shell branch bound"); // #880: the hub's host-observed branch binding (#845) is bookkeeping; it neither moves nor settles the task.
 /** The records of the `done (checking)` entry a passed check now completes: what the owner delivered then (#509a). */
 const latestPendingDeliverables = (task: Task): DeliverableRecord[] | undefined => {
@@ -609,6 +611,17 @@ export class Tasks {
     });
   }
 
+  /** Host-only audit: no tool accepts this record and no task state or notification changes. */
+  recordInvocation(id: number, row: InvocationRow): void {
+    const task = this.d.board.get(id);
+    if (!task) throw new Error("invocation audit task is unavailable");
+    if (row.task !== id) throw new Error("invocation audit task mismatch");
+    if (row.outcome === "queued" && (this.isPii(task) || this.d.privateTurn?.(row.caller) || isClosedTaskState(task.state) || task.state === "backlog" || task.owner !== row.caller && task.reviewer !== row.caller)) throw new Error("invocation audit task scope changed");
+    if (task.history.some(entry => entry.invocation?.id === row.id && entry.invocation.outcome === row.outcome)) return;
+    const { id: invocationId, caller, target, capability, digest, class: sideEffect, approval, argsSha256, outcome } = row;
+    this.d.board.update(id, HUB, "invocation", {}, undefined, { invocation: { id: invocationId, caller, target, capability, digest, class: sideEffect, approval, argsSha256, outcome } });
+  }
+
   recordOwnerTurn(peer: PeerId, bindings: readonly { id: number; acceptance: number }[], changed: boolean | undefined, effect: boolean): void {
     requireLocalTaskPeer(peer);
     this.noWriteTurns.retain(this.d.board.list("in_progress").filter(task => ["implement", "bulk_edit"].includes(task.class)).map(task => task.id));
@@ -865,6 +878,7 @@ export class Tasks {
       ...(h.reviewFindings ? { reviewFindings: !h.withheld && this.findingTextAllowed(task, h.reviewFindings.items) ? h.reviewFindings
         : { ...(h.reviewFindings.head ? { head: h.reviewFindings.head } : {}), tally: findingTally(h.reviewFindings.items), withheld: true } } : {}),
       ...(h.supersededBy === undefined ? {} : { supersededBy: screenHistoryText(h.supersededBy, "supersession", h.withheld) }),
+      ...(h.invocation ? { invocation: h.invocation } : {}),
       ...(h.profile === undefined ? {} : { profile: screenHistoryText(h.profile, "profile") }),
       ...(h.owner === undefined ? {} : { owner: h.owner }),
       ...(h.planner === undefined ? {} : { planner: h.planner }),

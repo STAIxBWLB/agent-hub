@@ -1,3 +1,4 @@
+import { InvocationLedger } from "../src/hub/invocations.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { supersededDeliveryReason } from "../src/hub/delivery-superseded.ts";
 import { Database } from "bun:sqlite";
@@ -3871,4 +3872,28 @@ test("normalized symbol overlap: Tasks.offerReady matches offerReady(), and A.ru
     paths: ["src/d.ts"], symbols: ["B.run"],
   });
   expect(r2.tasks.overlaps(acc4)).toBe("");
+});
+
+
+test("C3 Tasks records host-only ids audit once per outcome, never changes task state or shares arguments", async () => {
+  const f = await setup();
+  const ledger = new InvocationLedger(join(f.dir, "hub.db"));
+  try {
+    const task = f.board.propose("user", { title: "invocation audit", class: "implement" });
+    f.board.update(task.id, "user", "accepted", { owner: "codex", state: "in_progress" });
+    const row = ledger.open({ id: "call-1", trace: "trace-1", caller: "codex", target: "kimi", capability: "command:review", digest: "sha256:cap", class: "write", task: task.id, approval: "person-1", args: { input: "AUDIT-ARG-MARKER" }, timeoutMs: 60000 });
+    const before = { notices: f.notices.length, told: f.told.length, shared: f.shared.length, saves: f.saves().length };
+    f.tasks.recordInvocation(task.id, row); f.tasks.recordInvocation(task.id, row);
+    const settled = ledger.settle(row.id, "needs_review")!;
+    f.tasks.recordInvocation(task.id, settled); f.tasks.recordInvocation(task.id, settled);
+    const current = f.board.get(task.id)!;
+    expect(current.state).toBe("in_progress");
+    expect(current.history.filter(entry => entry.invocation).map(entry => entry.invocation!.outcome)).toEqual(["queued", "needs_review"]);
+    expect(JSON.stringify(current.history)).not.toContain("AUDIT-ARG-MARKER");
+    expect({ notices: f.notices.length, told: f.told.length, shared: f.shared.length, saves: f.saves().length }).toEqual(before);
+    expect(() => f.board.update(task.id, "codex", "invocation", {}, undefined, { invocation: current.history.at(-1)!.invocation })).toThrow(/host-only/);
+    f.board.update(task.id, "user", "private", { signals: ["pii"] });
+    expect(f.tasks.publicView(f.board.get(task.id)!).history).toBeUndefined();
+    expect(() => f.tasks.recordInvocation(task.id, { ...row, id: "call-2" })).toThrow(/scope changed/);
+  } finally { ledger.close(); f.board.close(); rmSync(f.dir, { recursive: true, force: true }); }
 });
