@@ -160,6 +160,8 @@ export interface AcpOptions {
 
 const HANDSHAKE_MS = 30_000;
 /** Tool calls whose arguments are remembered until their permission request arrives. */
+/** Sessions whose command list may wait for the bind (see `earlyCommands`). */
+const EARLY_COMMANDS_MAX = 8;
 const TOOL_INPUT_CAP = 64;
 export const TOOL_CEILING_MS = 30 * 60_000;
 export const ACTIVITY_BATCH_MS = 50;
@@ -241,7 +243,13 @@ export class AcpPeer extends BasePeer {
   private agentIdentity: { name: unknown; version: unknown } | undefined;
   private commands: { sessionId: string; update: unknown; at: number } | undefined;
   private binding = false;
-  private earlyCommands: { sessionId: string; update: unknown; at: number } | undefined;
+  /**
+   * Lists that arrive while the session is being bound, by the session they name. `readline` hands every line of one stdout chunk to `onLine` before `start()` resumes
+   * from `await session/new`, so on a loaded machine the reply, the bound session's list and another session's list can all arrive while `binding` is still true. A
+   * single slot let the last of them win; keyed by session, a list for another session can neither replace nor stand in for the bound one. Bounded: an agent that names
+   * more sessions than this only loses the oldest.
+   */
+  private earlyCommands = new Map<string, { sessionId: string; update: unknown; at: number }>();
   private availableModes = new Set<string>();
   private proc: ChildProcessWithoutNullStreams | undefined;
   private ownedGroup: { proc: ChildProcessWithoutNullStreams; proof: AcpOwnedGroup } | undefined;
@@ -339,7 +347,7 @@ export class AcpPeer extends BasePeer {
     managedLaunches.delete(this);
     if (this.opts.requireOwnedGroup && this.proc) throw new Error("Configured ACP still has a process; stop it before starting another");
     this.stopping = false;
-    this.binding = true; this.earlyCommands = undefined; // #445 C1: a new process starts a new session (the bind below drops the old list)
+    this.binding = true; this.earlyCommands.clear(); // #445 C1: a new process starts a new session (the bind below drops the old list)
     const launchedId = this.id;
     const launchedCwd = this.opts.cwd;
     const [bin, ...args] = this.opts.cmd;
@@ -392,7 +400,7 @@ export class AcpPeer extends BasePeer {
       }
       this.sessionId = session.sessionId;
       this.binding = false;
-      this.adoptEarlyCommands();
+      this.adoptEarlyCommands(session.sessionId);
       this.onDoing?.("reset");
       const modes: unknown = session.modes?.availableModes;
       this.availableModes = new Set(Array.isArray(modes) ? modes.flatMap((mode) => typeof mode?.id === "string" ? [mode.id] : []) : []);
@@ -473,10 +481,10 @@ export class AcpPeer extends BasePeer {
     this.permissionMode = mode;
   }
 
-  /** The bind replaces the old process's list with the one that arrived while the session was being bound, if any. `capabilityManifest` reads it only when it names the bound session. */
-  private adoptEarlyCommands(): void {
-    this.commands = this.earlyCommands;
-    this.earlyCommands = undefined;
+  /** The bind replaces the old process's list with the one that arrived for THIS session while it was being bound, if any; lists for other sessions are dropped with the rest. */
+  private adoptEarlyCommands(sessionId: string): void {
+    this.commands = this.earlyCommands.get(sessionId);
+    this.earlyCommands.clear();
   }
 
   /** #445 C1: the capabilities of the current session's last command list, on a probed Kimi or Qwen version only. Offline or no list yet is empty. */
@@ -723,7 +731,11 @@ export class AcpPeer extends BasePeer {
       // #445 C1: the command list is the session's, sent right after `session/new` and again when skills change, whatever the turn state. Only the current session's counts.
       if (msg.params?.update?.sessionUpdate === "available_commands_update" && typeof msg.params.sessionId === "string") {
         const held = { sessionId: msg.params.sessionId, update: msg.params.update, at: Date.now() };
-        if (this.binding) this.earlyCommands = held;
+        if (this.binding) {
+          this.earlyCommands.delete(held.sessionId); // the newest list of a session replaces its earlier one, and moves it to the newest end
+          this.earlyCommands.set(held.sessionId, held);
+          while (this.earlyCommands.size > EARLY_COMMANDS_MAX) this.earlyCommands.delete(this.earlyCommands.keys().next().value as string);
+        }
         else if (held.sessionId === this.sessionId) this.commands = held;
         return;
       }
