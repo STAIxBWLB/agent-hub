@@ -48,12 +48,12 @@ const update = { availableCommands: [{ name: "skill:review", description: "Revie
 const manifestOf = () => acpManifest("Kimi Code CLI", "2.3.2", update, 5);
 const cap = () => manifestOf().capabilities[0]!;
 
-async function fixture(opts: { share?: boolean; cls?: string; timeoutS?: number; sweepMs?: number; state?: string; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }>; limits?: Record<string, number> } = {}) {
+async function fixture(opts: { shareOverride?: Record<string, Record<string, { digest: string; class?: string }>>; share?: boolean; cls?: string; timeoutS?: number; sweepMs?: number; state?: string; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }>; limits?: Record<string, number> } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-invoke-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   if (hubGitSync(["-C", root, "init", "-q"], { encoding: "utf8" }).status) throw new Error("fixture git failed");
   const stateDir = opts.state ?? join(root, "state");
   if (opts.screen) { mkdirSync(join(root, ".agenthub"), { recursive: true }); writeFileSync(join(root, ".agenthub/routing.toml"), '[signals]\npii_screen = "local"\n[constraints]\npii = "local_only"\n'); }
-  const share = opts.share === false ? undefined : { kimi: { [cap().id]: { digest: cap().digest, ...(opts.cls === undefined ? { class: "read" } : opts.cls ? { class: opts.cls } : {}) } } };
+  const share = opts.shareOverride ?? (opts.share === false ? undefined : { kimi: { [cap().id]: { digest: cap().digest, ...(opts.cls === undefined ? { class: "read" } : opts.cls ? { class: opts.cls } : {}) } } });
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, invocationSweepMs: opts.sweepMs ?? 50, ...(opts.screen ? { piiScreen: opts.screen } : {}),
     config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, native: false, enabled: false }, snapshots: { enabled: false, keep: 1 }, ...(opts.limits ? { limits: { ...DEFAULT_CONFIG.limits, ...opts.limits } } : {}),
       invocation: { ...(share ? { share } : {}), ...(opts.timeoutS ? { timeout_s: opts.timeoutS } : {}) } } });
@@ -355,4 +355,33 @@ test("limits: an invocation is charged to the caller like a message to the targe
   const refused = await invoke(f, { args: { input: "again" } });
   expect(refused.ok).toBe(false); expect(refused.error).toMatch(/rate limited/);
   expect(f.rows().length).toBe(2);
+});
+
+test("containment with a real headless ACP callee: its final answer, normally shared with every sender, reaches only the one result", async () => {
+  const { AcpPeer } = await import("../src/adapters/acp.ts");
+  const { createHash } = await import("node:crypto");
+  // learn the digest the real adapter will list, from a throwaway peer with the same fake, so the person's share can pin it
+  const probe = new AcpPeer("qwen", { cmd: [process.execPath, join(import.meta.dir, "fakes/commands-acp.ts"), "--qwen"], cwd: process.cwd() });
+  await probe.start();
+  for (let i = 0; i < 300 && !(await probe.capabilityManifest()).capabilities.length; i++) await Bun.sleep(10);
+  const listed = (await probe.capabilityManifest()).capabilities[0]!; await probe.stop();
+  expect(listed.id).toBe("command:review"); void createHash;
+  const f = await fixture({ shareOverride: { qwen: { [listed.id]: { digest: listed.digest, class: "read" } } } });
+  const real = new AcpPeer("qwen", { cmd: [process.execPath, join(import.meta.dir, "fakes/commands-acp.ts"), "--qwen", "--answer", "REAL-ACP-ANSWER-MARKER"], cwd: f.root });
+  cleanups.push(() => real.stop());
+  await real.start();
+  f.daemon.bus.add(real);
+  const watcher = new Caller("claude"); f.daemon.bus.add(watcher); await watcher.start();
+  for (let i = 0; i < 300 && !(await real.capabilityManifest()).capabilities.length; i++) await Bun.sleep(10);
+  const reply = await f.call("codex", "hub_invoke", { peer: "qwen", capability: "command:review", args: { input: "HEAD~1" } });
+  expect(reply.ok, String((reply as { error?: string }).error)).toBe(true);
+  await until(() => results(f.codex).length === 1, "the real callee's answer becomes the one result");
+  expect(results(f.codex)[0]!.body).toContain("REAL-ACP-ANSWER-MARKER"); expect(results(f.codex)[0]!.body).toContain("Capability: command:review");
+  await Bun.sleep(300);
+  // nobody else got a thing: not the other caller, not a watcher, not through a digest, an event, the log or the journal
+  expect(f.pi.got.flat()).toEqual([]); expect(watcher.got.flat()).toEqual([]);
+  expect(f.codex.got.flat().filter(e => e.kind !== "invocation_result")).toEqual([]);
+  expect(JSON.stringify(f.events())).not.toContain("REAL-ACP-ANSWER-MARKER"); expect(f.log()).not.toContain("REAL-ACP-ANSWER-MARKER");
+  expect(readFileSync(join(f.stateDir, "hub.db")).toString("latin1").includes("REAL-ACP-ANSWER-MARKER")).toBe(false);
+  expect(f.rows()[0]).toMatchObject({ target: "qwen", outcome: "completed" });
 });
