@@ -2689,6 +2689,140 @@ var nonnegative = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0, 
 // src/hub/context-window.ts
 var init_context_window = () => {};
 
+// src/hub/capabilities.ts
+import { createHash as createHash4 } from "crypto";
+function canonical2(value) {
+  if (Array.isArray(value))
+    return `[${value.map(canonical2).join(",")}]`;
+  if (object5(value))
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical2(value[key])}`).join(",")}}`;
+  return JSON.stringify(value) ?? "null";
+}
+function capabilityDigest(c) {
+  return `sha256:${createHash4("sha256").update(canonical2({ kind: c.kind, name: c.name, inputSchema: c.inputSchema ?? null, sideEffect: c.sideEffect ?? null, source: c.source, invoke: c.invoke })).digest("hex")}`;
+}
+function cleanDescription(raw) {
+  const text = typeof raw === "string" ? raw : "";
+  return Array.from(sanitize(text.replace(CONTROL, " ")).replace(/\s+/g, " ").trim()).slice(0, DESCRIPTION_MAX).join("");
+}
+function flatSchema(raw) {
+  if (!object5(raw) || raw.type !== "object" || raw.additionalProperties !== false || !object5(raw.properties))
+    return;
+  const names = Object.keys(raw.properties);
+  if (names.length === 0 || names.length > MAX_SCHEMA_PROPERTIES)
+    return;
+  const properties = {};
+  for (const name of names) {
+    const prop = raw.properties[name];
+    if (!NAME_RE.test(name) || !object5(prop) || !["string", "number", "boolean"].includes(prop.type))
+      return;
+    const extra = Object.keys(prop).filter((key) => !["type", "enum", "description"].includes(key));
+    if (extra.length)
+      return;
+    const out = { type: prop.type };
+    if (prop.enum !== undefined) {
+      if (prop.type !== "string" || !Array.isArray(prop.enum) || prop.enum.length === 0 || prop.enum.length > MAX_SCHEMA_ENUM || !prop.enum.every((value) => typeof value === "string" && value.length >= 1 && value.length <= MAX_ENUM_VALUE && !HAS_CONTROL.test(value)))
+        return;
+      out.enum = [...prop.enum];
+    }
+    if (prop.description !== undefined)
+      out.description = cleanDescription(prop.description);
+    properties[name] = out;
+  }
+  let required;
+  if (raw.required !== undefined) {
+    if (!Array.isArray(raw.required) || !raw.required.every((name) => typeof name === "string" && Object.hasOwn(properties, name)))
+      return;
+    required = [...new Set(raw.required)];
+  }
+  return { type: "object", properties, ...required?.length ? { required } : {}, additionalProperties: false };
+}
+function declaredClass(raw) {
+  if (raw === undefined)
+    return;
+  return typeof raw === "string" && SIDE_EFFECTS.includes(raw) ? raw : "destructive";
+}
+function buildCapability(candidate) {
+  if (!CAPABILITY_KINDS.includes(candidate.kind) || typeof candidate.name !== "string" || !NAME_RE.test(candidate.name))
+    return;
+  let inputSchema;
+  if (candidate.inputSchema !== undefined) {
+    inputSchema = flatSchema(candidate.inputSchema);
+    if (!inputSchema)
+      return;
+  }
+  const kind = candidate.kind, sideEffect = declaredClass(candidate.sideEffect);
+  const base = { kind, name: candidate.name, ...inputSchema ? { inputSchema } : {}, ...sideEffect ? { sideEffect } : {}, source: candidate.source, invoke: candidate.invoke };
+  return { id: `${kind}:${candidate.name}`, ...base, description: cleanDescription(candidate.description), digest: capabilityDigest(base) };
+}
+function buildManifest(raw, observedAt) {
+  const seen = new Set, capabilities = [];
+  for (const candidate of raw) {
+    const built = buildCapability(candidate);
+    if (!built || seen.has(built.id))
+      continue;
+    seen.add(built.id);
+    capabilities.push(built);
+    if (capabilities.length >= MAX_CAPABILITIES)
+      break;
+  }
+  return { capabilities, observedAt };
+}
+var SIDE_EFFECTS, CAPABILITY_KINDS, NAME_RE, DESCRIPTION_MAX = 300, MAX_CAPABILITIES = 128, MAX_SCHEMA_PROPERTIES = 16, MAX_SCHEMA_ENUM = 32, MAX_ENUM_VALUE = 64, MAX_PUBLISH_BYTES, object5 = (value) => !!value && typeof value === "object" && !Array.isArray(value), CONTROL_CHARS = "[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]", CONTROL, HAS_CONTROL;
+var init_capabilities = __esm(() => {
+  init_envelope();
+  SIDE_EFFECTS = ["read", "write", "external", "destructive"];
+  CAPABILITY_KINDS = ["command", "skill", "mcp_tool"];
+  NAME_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+  MAX_PUBLISH_BYTES = 64 * 1024;
+  CONTROL = new RegExp(CONTROL_CHARS, "g");
+  HAS_CONTROL = new RegExp(CONTROL_CHARS);
+});
+
+// src/adapters/native-capabilities.ts
+function acpManifest(agent, version, update, observedAt) {
+  const empty = { capabilities: [], observedAt };
+  const kind = agent === NATIVE_PINS.kimi.agent && version === NATIVE_PINS.kimi.version ? "kimi" : agent === NATIVE_PINS.qwen.agent && version === NATIVE_PINS.qwen.version ? "qwen" : undefined;
+  if (!kind || !object6(update) || !Array.isArray(update.availableCommands))
+    return empty;
+  const candidates = [];
+  for (const command of update.availableCommands) {
+    if (!object6(command) || typeof command.name !== "string")
+      continue;
+    const meta = object6(command._meta) ? command._meta : {};
+    const skill = kind === "kimi" ? command.name.startsWith("skill:") : typeof meta.source === "string" && QWEN_SKILL_SOURCES.includes(meta.source);
+    if (skill)
+      candidates.push({ kind: "command", name: command.name, description: command.description, inputSchema: STRING_INPUT, source: "acp", invoke: "native" });
+  }
+  return buildManifest(candidates, observedAt);
+}
+function codexSkillsManifest(version, result, observedAt) {
+  const candidates = [];
+  if (version === NATIVE_PINS.codex.version && object6(result) && Array.isArray(result.data)) {
+    for (const entry of result.data) {
+      if (!object6(entry) || !Array.isArray(entry.skills))
+        continue;
+      for (const skill of entry.skills) {
+        if (!object6(skill) || skill.enabled !== true)
+          continue;
+        candidates.push({ kind: "skill", name: skill.name, description: skill.shortDescription ?? skill.description, inputSchema: STRING_INPUT, source: "codex-skills", invoke: "native" });
+      }
+    }
+  }
+  return buildManifest(candidates, observedAt);
+}
+var object6 = (value) => !!value && typeof value === "object" && !Array.isArray(value), NATIVE_PINS, STRING_INPUT, QWEN_SKILL_SOURCES;
+var init_native_capabilities = __esm(() => {
+  init_capabilities();
+  NATIVE_PINS = Object.freeze({
+    kimi: { agent: "Kimi Code CLI", version: "2.3.2" },
+    qwen: { agent: "qwen-code", version: "0.26.1" },
+    codex: { agent: "codex", version: "0.166.0" }
+  });
+  STRING_INPUT = { type: "object", properties: { input: { type: "string" } }, additionalProperties: false };
+  QWEN_SKILL_SOURCES = ["bundled-skill", "skill-dir-command"];
+});
+
 // src/hub/activity.ts
 function activityText(value) {
   return typeof value === "string" ? value.slice(0, TEXT_CAP) : "";
@@ -2963,6 +3097,7 @@ var init_acp = __esm(() => {
   init_qwen_native();
   init_child_process();
   init_acp_owned_group();
+  init_native_capabilities();
   TOOL_CEILING_MS = 30 * 60000;
   managedLaunches = new WeakMap;
   RpcTimeoutError = class RpcTimeoutError extends Error {
@@ -2977,6 +3112,10 @@ var init_acp = __esm(() => {
     modeUnknown = false;
     kimiAgent = false;
     qwenAgent = false;
+    agentIdentity;
+    commands;
+    binding = false;
+    earlyCommands;
     availableModes = new Set;
     proc;
     ownedGroup;
@@ -3097,6 +3236,8 @@ var init_acp = __esm(() => {
       if (this.opts.requireOwnedGroup && this.proc)
         throw new Error("Configured ACP still has a process; stop it before starting another");
       this.stopping = false;
+      this.binding = true;
+      this.earlyCommands = undefined;
       const launchedId = this.id;
       const launchedCwd = this.opts.cwd;
       const [bin, ...args] = this.opts.cmd;
@@ -3120,6 +3261,7 @@ var init_acp = __esm(() => {
           clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
         });
         this.kimiAgent = this.nativePolicy === undefined && init?.agentInfo?.name === "Kimi Code CLI";
+        this.agentIdentity = { name: init?.agentInfo?.name, version: init?.agentInfo?.version };
         const expected = this.opts.expectedAgent, version = init?.agentInfo?.version;
         if (expected && (init?.agentInfo?.name !== expected.name || !(typeof expected.version === "function" ? expected.version(version) : version === expected.version)))
           throw new Error("native ACP identity is not verified for this production adapter");
@@ -3151,6 +3293,8 @@ var init_acp = __esm(() => {
           throw new Error("Configured ACP did not provide a valid native session identity");
         }
         this.sessionId = session.sessionId;
+        this.binding = false;
+        this.adoptEarlyCommands();
         this.onDoing?.("reset");
         const modes = session.modes?.availableModes;
         this.availableModes = new Set(Array.isArray(modes) ? modes.flatMap((mode) => typeof mode?.id === "string" ? [mode.id] : []) : []);
@@ -3251,6 +3395,16 @@ var init_acp = __esm(() => {
       if (this.modeUnknown)
         throw new Error(`${this.id} permission mode unknown; restart the peer`);
       this.permissionMode = mode;
+    }
+    adoptEarlyCommands() {
+      this.commands = this.earlyCommands;
+      this.earlyCommands = undefined;
+    }
+    async capabilityManifest() {
+      const held = this.commands;
+      if (this.state === "offline" || !held || held.sessionId !== this.sessionId)
+        return { capabilities: [], observedAt: Date.now() };
+      return acpManifest(this.agentIdentity?.name, this.agentIdentity?.version, held.update, held.at);
     }
     async stop(reason) {
       managedLaunches.delete(this);
@@ -3537,6 +3691,14 @@ ${renderDigest(envs, false)}` }] });
         this.touch();
       }
       if (msg.method === "session/update") {
+        if (msg.params?.update?.sessionUpdate === "available_commands_update" && typeof msg.params.sessionId === "string") {
+          const held = { sessionId: msg.params.sessionId, update: msg.params.update, at: Date.now() };
+          if (this.binding)
+            this.earlyCommands = held;
+          else if (held.sessionId === this.sessionId)
+            this.commands = held;
+          return;
+        }
         if (msg.params?.sessionId && msg.params.sessionId !== this.sessionId)
           return;
         const u = msg.params?.update;
@@ -3726,6 +3888,7 @@ var init_codex_appserver = __esm(() => {
   init_envelope();
   init_context_window();
   init_child_process();
+  init_native_capabilities();
   init_acp();
   TRACKED = new Set(["thread/start", "thread/resume"]);
   CodexPeer = class CodexPeer extends BasePeer {
@@ -4476,6 +4639,20 @@ ${renderDigest(envs, false)}`;
     }
     revertTurn(nativeTurn) {
       return this.revert(nativeTurn);
+    }
+    capabilityManifest() {
+      if (this.version !== NATIVE_PINS.codex.version)
+        return Promise.resolve({ capabilities: [], observedAt: Date.now() });
+      const link = this.link;
+      if (this.state === "offline" || !link || link.up.readyState !== WebSocket.OPEN)
+        return Promise.reject(new Error(`${this.id} has no attached app-server`));
+      const id = this.nextId--;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => this.pending.delete(id) && reject(new Error("skills/list got no answer")), 1e4);
+        timer.unref?.();
+        this.pending.set(id, { resolve: (result) => (clearTimeout(timer), resolve(codexSkillsManifest(this.version, result, Date.now()))), reject: (e) => (clearTimeout(timer), reject(e)) });
+        link.up.send(JSON.stringify({ method: "skills/list", id, params: { cwds: [this.opts.cwd], forceReload: false } }));
+      });
     }
     readUsage() {
       const link = this.link;
@@ -9218,7 +9395,7 @@ var init_signals = __esm(() => {
 });
 
 // src/models/route/labels.ts
-import { createHash as createHash4, randomUUID as randomUUID6 } from "crypto";
+import { createHash as createHash5, randomUUID as randomUUID6 } from "crypto";
 
 class RouteLabelTracker {
   sink;
@@ -9368,7 +9545,7 @@ function safeJson(value) {
     return "";
   }
 }
-var discreteSeverity = (value) => value >= 1 ? 1 : value >= 0.7 ? 0.7 : value >= 0.3 ? 0.3 : 0, sha256 = (value) => createHash4("sha256").update(value).digest("hex");
+var discreteSeverity = (value) => value >= 1 ? 1 : value >= 0.7 ? 0.7 : value >= 0.3 ? 0.3 : 0, sha256 = (value) => createHash5("sha256").update(value).digest("hex");
 var init_labels = __esm(() => {
   init_signals();
 });
@@ -10336,7 +10513,7 @@ var init_shipped_roles = __esm(() => {
 });
 
 // src/hub/roles.ts
-import { createHash as createHash5 } from "crypto";
+import { createHash as createHash6 } from "crypto";
 import { constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync11, openSync as openSync6, readSync as readSync4, readdirSync as readdirSync2 } from "fs";
 import { join as join15 } from "path";
 function parseRole(text, stem, layer) {
@@ -10382,7 +10559,7 @@ function parseRole(text, stem, layer) {
   }
   const reviewStart = sections[4].index + sections[4][0].length;
   const review = body.slice(reviewStart, sections[5].index).trim();
-  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES2), classes: list("classes", CLASSES2), body, review, layer, hash: createHash5("sha256").update(text).digest("hex") };
+  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES2), classes: list("classes", CLASSES2), body, review, layer, hash: createHash6("sha256").update(text).digest("hex") };
 }
 function projectRole(file) {
   const fd = openSync6(file, constants5.O_RDONLY | constants5.O_NOFOLLOW | constants5.O_NONBLOCK);
@@ -10668,7 +10845,7 @@ var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_
   name,
   description,
   inputSchema: { type: "object", properties, required, additionalProperties: false }
-}), BOUNDED_TASK_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
+}), BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
 var init_hub_tools = __esm(() => {
   init_test_integrity();
   init_sdlc();
@@ -10731,6 +10908,7 @@ var init_hub_tools = __esm(() => {
   };
   acceptPlan = { ...plan, properties: { ...plan.properties, sections: list("document heading anchors, such as report.md#methods"), sources: list("citation ids, DOI or source URL ids"), claims: list("short claim ids to verify") } };
   BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
+  CAPABILITY_TOOLS = new Set(["hub_capabilities", "hub_capabilities_publish"]);
   TASK_TOOLS = [
     tool("hub_task_spec", "Read complete assigned GitHub issue contracts through the bounded hub boundary. Owner/reviewer only; no repository or URL input. Refuses withheld or oversized specs.", { id }, ["id"]),
     tool("hub_check_start", "Run an exact-head isolated Linux check for your in-progress task. Trusted opt-in runner only; no host shell or credentials. Tests require one to 32 test/*.test.ts paths. Receipt is Linux evidence.", { id, check: { type: "string", enum: ["test", "typecheck"] }, files: { type: "array", minItems: 1, maxItems: 32, items: str2 } }, ["id", "check"]),
@@ -10762,7 +10940,17 @@ var init_hub_tools = __esm(() => {
     tool("hub_memory_show", "Read up to 8 visible memory ids or unique prefixes (6..64 UTF-8 bytes each). Original ids redirect; unavailable ids share one refusal. Whole output <=8 KB.", { ids: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 6, maxLength: 64, description: "6 to 64 UTF-8 bytes" } } }, ["ids"]),
     tool("hub_memory_graph", "Read screened memory neighbourhoods, fails first. Symbol starts also include optional current-head one-hop code neighbours as derived SHA-stamped edges; unknown coverage is explicit. Up to 8 starts (<=200 UTF-8 bytes each), 1 or 2 hops; default 60/max 120 nodes, max 240 edges, whole output <=6 KB. No project argument.", { starts: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 1, maxLength: 200, description: "At most 200 UTF-8 bytes" } }, hops: { type: "integer", enum: [1, 2] }, limit: { type: "integer", minimum: 1, maximum: 120 } }, ["starts"]),
     tool("hub_memory_correct", "Propose a correction to a visible memory entry. This creates a machine-local candidate only; a person accepts or rejects it with amem review. It never edits a note. id is an exact id or unique visible prefix; text and reason must each fit 4000 UTF-8 bytes.", { id: str2, text: str2, reason: str2 }, ["id", "text", "reason"]),
-    tool("hub_remember", "Save a decision, finding, contract or fail to the memory all agents share (the hub's amem curated store); the other agents also get it with their next message. A fail is an approach you tried that does not work, and why: the most useful note, it stops the others spending their quota on it. Do not retry what a fail note rules out without new evidence. Conclusions worth recalling, not chatter. For kind fail, optional approach, symptom, cause, evidence and retry_when strings compose fixed labeled text; text may be omitted when structured fields are supplied. The complete text must fit 4000 UTF-8 bytes and is refused, never truncated, when oversized. A note on an open task is short-term until the task is approved, when its decisions, contracts and fails become long-term; horizon long keeps it now, scope shared lets the person's other projects find it.", { text: str2, approach: str2, symptom: str2, cause: str2, evidence: str2, retry_when: str2, title: str2, kind: { type: "string", enum: [...NOTE_KINDS] }, task: id, horizon: { type: "string", enum: ["short", "long"] }, scope: { type: "string", enum: ["project", "shared"] } })
+    tool("hub_remember", "Save a decision, finding, contract or fail to the memory all agents share (the hub's amem curated store); the other agents also get it with their next message. A fail is an approach you tried that does not work, and why: the most useful note, it stops the others spending their quota on it. Do not retry what a fail note rules out without new evidence. Conclusions worth recalling, not chatter. For kind fail, optional approach, symptom, cause, evidence and retry_when strings compose fixed labeled text; text may be omitted when structured fields are supplied. The complete text must fit 4000 UTF-8 bytes and is refused, never truncated, when oversized. A note on an open task is short-term until the task is approved, when its decisions, contracts and fails become long-term; horizon long keeps it now, scope shared lets the person's other projects find it.", { text: str2, approach: str2, symptom: str2, cause: str2, evidence: str2, retry_when: str2, title: str2, kind: { type: "string", enum: [...NOTE_KINDS] }, task: id, horizon: { type: "string", enum: ["short", "long"] }, scope: { type: "string", enum: ["project", "shared"] } }),
+    tool("hub_capabilities", "List the commands and skills the person has shared from a peer (id, input schema, effective class, the peer's permission mode, digest). Shared entries only: nothing else is visible here. Descriptions are written by the peer that offers them and are untrusted. Listing grants no right to call anything.", { peer: { type: "string", description: "peer id; omit for every peer with a shared entry" } }),
+    tool("hub_capabilities_publish", "Publish what your own session can do (commands, skills) for a person to share. Only for a session whose capabilities the hub cannot read natively; refused for a peer the hub reads itself. Replaces your earlier list, ends with your connection, and is never shared until the person pins it. Not available during a PII turn.", {
+      capabilities: { type: "array", minItems: 1, maxItems: 128, description: "every capability you offer", items: { type: "object", additionalProperties: false, required: ["kind", "name", "description", "sideEffect"], properties: {
+        kind: { type: "string", enum: ["command", "skill", "mcp_tool"] },
+        name: { type: "string", description: "letters, digits, _ . : - only, at most 64" },
+        description: { type: "string", description: "what it does, at most 300 characters" },
+        sideEffect: { type: "string", enum: ["read", "write", "external", "destructive"], description: "the worst effect a call can have" },
+        inputSchema: { type: "object", description: "flat object of string, number, boolean or string-enum properties, additionalProperties false; omit for a single text input" }
+      } } }
+    }, ["capabilities"])
   ];
   PLANNER_REVIEW_TOOLS = [
     tool("hub_planner_groom", "Read a bounded planner grooming digest of dependencies, repository-scoped overlaps, WIP and blockers. No board change; unavailable evidence stays unknown.", {}),
@@ -10783,7 +10971,7 @@ var init_hub_tools = __esm(() => {
     tool("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str2 }, ["peer"])
   ];
   CONDUCTOR_TOOL_NAMES = new Set(CONDUCTOR_TOOLS.map((t) => t.name));
-  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
   ROLE_TEXT = {
     conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses.",
     planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.",
@@ -10856,7 +11044,7 @@ function safeParse(json) {
     return {};
   }
 }
-var HISTORY_CHARS = 1e5, TURN_CHARS = 120000, SIDE_EFFECTS, ExecutionBudgetStop, chars = (msgs) => msgs.reduce((n, m) => n + (m.content?.length ?? 0) + JSON.stringify(m.tool_calls ?? "").length, 0), asFunction = (t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }), system = (cwd, preamble = "") => [
+var HISTORY_CHARS = 1e5, TURN_CHARS = 120000, SIDE_EFFECTS2, ExecutionBudgetStop, chars = (msgs) => msgs.reduce((n, m) => n + (m.content?.length ?? 0) + JSON.stringify(m.tool_calls ?? "").length, 0), asFunction = (t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }), system = (cwd, preamble = "") => [
   `You are "local", a coding agent run by agent-hub on a self-hosted model, working in ${cwd}.`,
   "You take bulk and low-stakes work (mechanical edits, summaries, test runs) from the other agents and the hub console user.",
   STANDING_INSTRUCTION,
@@ -10873,7 +11061,7 @@ var init_local_worker = __esm(() => {
   init_sandbox();
   init_tools();
   init_routing();
-  SIDE_EFFECTS = new Set(["write", "edit", "bash", "git", "hub_send"]);
+  SIDE_EFFECTS2 = new Set(["write", "edit", "bash", "git", "hub_send"]);
   ExecutionBudgetStop = class ExecutionBudgetStop extends Error {
     budgetStop = true;
   };
@@ -11094,7 +11282,7 @@ var init_local_worker = __esm(() => {
               return "";
             this.touch();
             usedTools = true;
-            if (SIDE_EFFECTS.has(call.function.name) && !output.startsWith("error:"))
+            if (SIDE_EFFECTS2.has(call.function.name) && !output.startsWith("error:"))
               progress.sideEffects++;
             const result = { role: "tool", tool_call_id: call.id, content: output, is_error: toolResultFailed(name, output) };
             msgs.push(result);
@@ -12155,7 +12343,7 @@ var init_reviewer_variants = __esm(() => {
 import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, lstatSync as lstatSync13, openSync as openSync7, readSync as readSync5 } from "fs";
 import { homedir as homedir5 } from "os";
 import { isAbsolute as isAbsolute6, join as join18, relative as relative5 } from "path";
-import { createHash as createHash6 } from "crypto";
+import { createHash as createHash7 } from "crypto";
 function decodeAgyHook(event, value) {
   if (!EVENTS2.includes(event) || !record3(value) || typeof value.conversationId !== "string" || !UUID2.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute6(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute6(path)))
     return;
@@ -12237,7 +12425,7 @@ function readAgyTranscript(session, transcript) {
             out.factIds.push(match[1]);
         }
         if (row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0))
-          out.completion = { id: createHash6("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index };
+          out.completion = { id: createHash7("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index };
       }
       if (out.completion || start === 0 || window === cap)
         return out;
@@ -13422,7 +13610,7 @@ var rolloutState = (binding) => {
 }, transcriptState = (binding) => {
   const state = recordedFileState(checkedSessionPath(binding, "transcript"));
   return state === "unknown" ? "unknown" : state === "found";
-}, startupArgs = (peer) => Object.fromEntries(["mode", "backend", "model", "route"].flatMap((key) => typeof peer.args?.[key] === "string" ? [[key, peer.args[key]]] : [])), text2 = (value) => typeof value === "string" && value.length > 0, object5 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}, CODEX_RECOVERY_SESSION, CLAUDE_RECOVERY_SESSION, PI_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION, QWEN_RECOVERY_SESSION;
+}, startupArgs = (peer) => Object.fromEntries(["mode", "backend", "model", "route"].flatMap((key) => typeof peer.args?.[key] === "string" ? [[key, peer.args[key]]] : [])), text2 = (value) => typeof value === "string" && value.length > 0, object7 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}, CODEX_RECOVERY_SESSION, CLAUDE_RECOVERY_SESSION, PI_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION, QWEN_RECOVERY_SESSION;
 var init_native_recovery = __esm(() => {
   init_events();
   init_recovery_session_file();
@@ -13477,7 +13665,7 @@ var init_native_recovery = __esm(() => {
       return args;
     },
     crashIdentity: (row) => {
-      const value = object5(row), args = object5(value.args), session = object5(value.session);
+      const value = object7(row), args = object7(value.args), session = object7(value.session);
       const sessionId = [value.sessionId, value.agentSessionId, value.resumeSessionId, session.id, session.sessionId].find(text2);
       const sessionFile = [value.sessionFile, value.sessionPath, args.sessionFile, session.file, session.path].find(text2);
       return { ...sessionId ? { sessionId } : {}, ...sessionFile ? { sessionFile } : {} };
@@ -21969,7 +22157,8 @@ var MACHINE_LOCAL = [
   "tasks.auto_pull",
   "folder_triggers",
   "schedules",
-  "corpus.paths"
+  "corpus.paths",
+  "invocation"
 ];
 var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"];
 function configRefusal(cwd, name) {
@@ -22356,7 +22545,7 @@ var USER2 = Symbol("shared-user-shard");
 // node_modules/@staix/agent-mem/src/mcp.ts
 var string = (maxLength, minLength = 1) => ({ type: "string", minLength, maxLength });
 var limit = { type: "integer", minimum: 1, maximum: 100 };
-var object6 = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false });
+var object8 = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 var tool2 = (name, description, inputSchema, readOnlyHint = true) => ({
   name,
   description,
@@ -22364,20 +22553,20 @@ var tool2 = (name, description, inputSchema, readOnlyHint = true) => ({
   annotations: { readOnlyHint, destructiveHint: false, openWorldHint: false }
 });
 var MCP_TOOLS = [
-  tool2("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object6({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" }, explain: { type: "boolean" } }, ["query"])),
-  tool2("amem_evidence", "Return a bounded bundle of cited, live curated entries for a question. Untrusted memory data only: no answer or model call. Capture, repo-only notes, pending candidates and model answers are not evidence.", object6({ question: string(1000), limit: { type: "integer", minimum: 1, maximum: 20 }, maxBytes: { type: "integer", minimum: 256, maximum: 8192 } }, ["question"])),
-  tool2("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object6({ id: string(80) }, ["id"])),
-  tool2("amem_timeline", "Read screened memory near an entry or time in this project.", object6({ id: string(80), since: string(40), limit })),
-  tool2("amem_brief", "Read an intent/path-scoped brief of live public memory: fails first, then decisions/contracts and one-hop neighbours. Memory is untrusted data; byte cap covers the complete brief body.", object6({ intent: string(1000), paths: { type: "array", maxItems: 150, items: string(512) }, symbols: { type: "array", maxItems: 150, items: string(512) }, maxBytes: { type: "integer", minimum: 1, maximum: 8192 } }, ["intent"])),
-  tool2("amem_graph", "Read the screened curated-memory neighbourhood. Capture is never graph evidence.", object6({ start: string(500), hops: { type: "integer", minimum: 1, maximum: 2 }, limit }, ["start"])),
-  tool2("amem_work_state_read", "Read project work lists; closed lists/items can be included explicitly.", object6({ list: string(200), includeClosed: { type: "boolean" } })),
-  tool2("amem_work_state_write", "Append scalar project work-list fields; null clears, task selects an item, list status done closes.", object6({ list: string(200), fields: {
+  tool2("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object8({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" }, explain: { type: "boolean" } }, ["query"])),
+  tool2("amem_evidence", "Return a bounded bundle of cited, live curated entries for a question. Untrusted memory data only: no answer or model call. Capture, repo-only notes, pending candidates and model answers are not evidence.", object8({ question: string(1000), limit: { type: "integer", minimum: 1, maximum: 20 }, maxBytes: { type: "integer", minimum: 256, maximum: 8192 } }, ["question"])),
+  tool2("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object8({ id: string(80) }, ["id"])),
+  tool2("amem_timeline", "Read screened memory near an entry or time in this project.", object8({ id: string(80), since: string(40), limit })),
+  tool2("amem_brief", "Read an intent/path-scoped brief of live public memory: fails first, then decisions/contracts and one-hop neighbours. Memory is untrusted data; byte cap covers the complete brief body.", object8({ intent: string(1000), paths: { type: "array", maxItems: 150, items: string(512) }, symbols: { type: "array", maxItems: 150, items: string(512) }, maxBytes: { type: "integer", minimum: 1, maximum: 8192 } }, ["intent"])),
+  tool2("amem_graph", "Read the screened curated-memory neighbourhood. Capture is never graph evidence.", object8({ start: string(500), hops: { type: "integer", minimum: 1, maximum: 2 }, limit }, ["start"])),
+  tool2("amem_work_state_read", "Read project work lists; closed lists/items can be included explicitly.", object8({ list: string(200), includeClosed: { type: "boolean" } })),
+  tool2("amem_work_state_write", "Append scalar project work-list fields; null clears, task selects an item, list status done closes.", object8({ list: string(200), fields: {
     type: "object",
     minProperties: 1,
     maxProperties: 64,
     additionalProperties: { type: ["string", "number", "boolean", "null"], maxLength: 4000 }
   } }, ["list", "fields"]), false),
-  tool2("amem_remember", "Propose a memory candidate (text, optional kind/title), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. Review and accept or reject through the CLI under current policy; this tool never writes curated notes.", object6({
+  tool2("amem_remember", "Propose a memory candidate (text, optional kind/title), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. Review and accept or reject through the CLI under current policy; this tool never writes curated notes.", object8({
     text: string(3000),
     title: string(200),
     kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] },
@@ -22387,9 +22576,9 @@ var MCP_TOOLS = [
     evidenceRefs: { type: "array", minItems: 1, maxItems: 16, items: string(400) },
     retryWhen: string(4000)
   }), false),
-  tool2("amem_correct", "Propose a correction to an exact curated entry id visible in this project. The host binds its current revision; the full accepted body including reason and provenance headers must fit 4000 characters. Review and accept or reject through the CLI under current policy before any note or supersession is written.", object6({ id: string(80), proposedText: string(4000), reason: string(4000), kind: { type: "string", enum: ["decision", "contract", "fail"] } }, ["id", "proposedText", "reason"]), false),
-  tool2("amem_vault_candidates", "List screened durable curated notes for review before moving them to a vault. Read only.", object6({ limit })),
-  tool2("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it requires the matching CLI preview and `--confirm`. This tool has no apply operation.", object6({}))
+  tool2("amem_correct", "Propose a correction to an exact curated entry id visible in this project. The host binds its current revision; the full accepted body including reason and provenance headers must fit 4000 characters. Review and accept or reject through the CLI under current policy before any note or supersession is written.", object8({ id: string(80), proposedText: string(4000), reason: string(4000), kind: { type: "string", enum: ["decision", "contract", "fail"] } }, ["id", "proposedText", "reason"]), false),
+  tool2("amem_vault_candidates", "List screened durable curated notes for review before moving them to a vault. Read only.", object8({ limit })),
+  tool2("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it requires the matching CLI preview and `--confirm`. This tool has no apply operation.", object8({}))
 ];
 // node_modules/@staix/agent-mem/src/memory/evidence.ts
 init_policy();
@@ -28710,7 +28899,7 @@ var ZodObject = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
     return required(ZodNonOptional, this, args[0]);
   }
 });
-function object8(shape, params) {
+function object10(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -29055,31 +29244,31 @@ var TaskCreationParamsSchema = looseObject({
   ttl: number2().optional(),
   pollInterval: number2().optional()
 });
-var TaskMetadataSchema = object8({
+var TaskMetadataSchema = object10({
   ttl: number2().optional()
 });
-var RelatedTaskMetadataSchema = object8({
+var RelatedTaskMetadataSchema = object10({
   taskId: string3()
 });
 var RequestMetaSchema = looseObject({
   progressToken: ProgressTokenSchema.optional(),
   [RELATED_TASK_META_KEY]: RelatedTaskMetadataSchema.optional()
 });
-var BaseRequestParamsSchema = object8({
+var BaseRequestParamsSchema = object10({
   _meta: RequestMetaSchema.optional()
 });
 var TaskAugmentedRequestParamsSchema = BaseRequestParamsSchema.extend({
   task: TaskMetadataSchema.optional()
 });
 var isTaskAugmentedRequestParams = (value) => TaskAugmentedRequestParamsSchema.safeParse(value).success;
-var RequestSchema = object8({
+var RequestSchema = object10({
   method: string3(),
   params: BaseRequestParamsSchema.loose().optional()
 });
-var NotificationsParamsSchema = object8({
+var NotificationsParamsSchema = object10({
   _meta: RequestMetaSchema.optional()
 });
-var NotificationSchema = object8({
+var NotificationSchema = object10({
   method: string3(),
   params: NotificationsParamsSchema.loose().optional()
 });
@@ -29087,18 +29276,18 @@ var ResultSchema = looseObject({
   _meta: RequestMetaSchema.optional()
 });
 var RequestIdSchema = union([string3(), number2().int()]);
-var JSONRPCRequestSchema = object8({
+var JSONRPCRequestSchema = object10({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   ...RequestSchema.shape
 }).strict();
 var isJSONRPCRequest = (value) => JSONRPCRequestSchema.safeParse(value).success;
-var JSONRPCNotificationSchema = object8({
+var JSONRPCNotificationSchema = object10({
   jsonrpc: literal(JSONRPC_VERSION),
   ...NotificationSchema.shape
 }).strict();
 var isJSONRPCNotification = (value) => JSONRPCNotificationSchema.safeParse(value).success;
-var JSONRPCResultResponseSchema = object8({
+var JSONRPCResultResponseSchema = object10({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   result: ResultSchema
@@ -29115,10 +29304,10 @@ var ErrorCode;
   ErrorCode[ErrorCode["InternalError"] = -32603] = "InternalError";
   ErrorCode[ErrorCode["UrlElicitationRequired"] = -32042] = "UrlElicitationRequired";
 })(ErrorCode || (ErrorCode = {}));
-var JSONRPCErrorResponseSchema = object8({
+var JSONRPCErrorResponseSchema = object10({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema.optional(),
-  error: object8({
+  error: object10({
     code: number2().int(),
     message: string3(),
     data: unknown().optional()
@@ -29141,16 +29330,16 @@ var CancelledNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/cancelled"),
   params: CancelledNotificationParamsSchema
 });
-var IconSchema = object8({
+var IconSchema = object10({
   src: string3(),
   mimeType: string3().optional(),
   sizes: array(string3()).optional(),
   theme: _enum(["light", "dark"]).optional()
 });
-var IconsSchema = object8({
+var IconsSchema = object10({
   icons: array(IconSchema).optional()
 });
-var BaseMetadataSchema = object8({
+var BaseMetadataSchema = object10({
   name: string3(),
   title: string3().optional()
 });
@@ -29161,7 +29350,7 @@ var ImplementationSchema = BaseMetadataSchema.extend({
   websiteUrl: string3().optional(),
   description: string3().optional()
 });
-var FormElicitationCapabilitySchema = intersection(object8({
+var FormElicitationCapabilitySchema = intersection(object10({
   applyDefaults: boolean2().optional()
 }), record4(string3(), unknown()));
 var ElicitationCapabilitySchema = preprocess((value) => {
@@ -29171,7 +29360,7 @@ var ElicitationCapabilitySchema = preprocess((value) => {
     }
   }
   return value;
-}, intersection(object8({
+}, intersection(object10({
   form: FormElicitationCapabilitySchema.optional(),
   url: AssertObjectSchema.optional()
 }), record4(string3(), unknown()).optional()));
@@ -29196,14 +29385,14 @@ var ServerTasksCapabilitySchema = looseObject({
     }).optional()
   }).optional()
 });
-var ClientCapabilitiesSchema = object8({
+var ClientCapabilitiesSchema = object10({
   experimental: record4(string3(), AssertObjectSchema).optional(),
-  sampling: object8({
+  sampling: object10({
     context: AssertObjectSchema.optional(),
     tools: AssertObjectSchema.optional()
   }).optional(),
   elicitation: ElicitationCapabilitySchema.optional(),
-  roots: object8({
+  roots: object10({
     listChanged: boolean2().optional()
   }).optional(),
   tasks: ClientTasksCapabilitySchema.optional(),
@@ -29218,18 +29407,18 @@ var InitializeRequestSchema = RequestSchema.extend({
   method: literal("initialize"),
   params: InitializeRequestParamsSchema
 });
-var ServerCapabilitiesSchema = object8({
+var ServerCapabilitiesSchema = object10({
   experimental: record4(string3(), AssertObjectSchema).optional(),
   logging: AssertObjectSchema.optional(),
   completions: AssertObjectSchema.optional(),
-  prompts: object8({
+  prompts: object10({
     listChanged: boolean2().optional()
   }).optional(),
-  resources: object8({
+  resources: object10({
     subscribe: boolean2().optional(),
     listChanged: boolean2().optional()
   }).optional(),
-  tools: object8({
+  tools: object10({
     listChanged: boolean2().optional()
   }).optional(),
   tasks: ServerTasksCapabilitySchema.optional(),
@@ -29249,12 +29438,12 @@ var PingRequestSchema = RequestSchema.extend({
   method: literal("ping"),
   params: BaseRequestParamsSchema.optional()
 });
-var ProgressSchema = object8({
+var ProgressSchema = object10({
   progress: number2(),
   total: optional(number2()),
   message: optional(string3())
 });
-var ProgressNotificationParamsSchema = object8({
+var ProgressNotificationParamsSchema = object10({
   ...NotificationsParamsSchema.shape,
   ...ProgressSchema.shape,
   progressToken: ProgressTokenSchema
@@ -29273,7 +29462,7 @@ var PaginatedResultSchema = ResultSchema.extend({
   nextCursor: CursorSchema.optional()
 });
 var TaskStatusSchema = _enum(["working", "input_required", "completed", "failed", "cancelled"]);
-var TaskSchema = object8({
+var TaskSchema = object10({
   taskId: string3(),
   status: TaskStatusSchema,
   ttl: union([number2(), _null3()]),
@@ -29317,7 +29506,7 @@ var CancelTaskRequestSchema = RequestSchema.extend({
   })
 });
 var CancelTaskResultSchema = ResultSchema.merge(TaskSchema);
-var ResourceContentsSchema = object8({
+var ResourceContentsSchema = object10({
   uri: string3(),
   mimeType: optional(string3()),
   _meta: record4(string3(), unknown()).optional()
@@ -29337,12 +29526,12 @@ var BlobResourceContentsSchema = ResourceContentsSchema.extend({
   blob: Base64Schema
 });
 var RoleSchema = _enum(["user", "assistant"]);
-var AnnotationsSchema = object8({
+var AnnotationsSchema = object10({
   audience: array(RoleSchema).optional(),
   priority: number2().min(0).max(1).optional(),
   lastModified: datetime2({ offset: true }).optional()
 });
-var ResourceSchema = object8({
+var ResourceSchema = object10({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   uri: string3(),
@@ -29352,7 +29541,7 @@ var ResourceSchema = object8({
   annotations: AnnotationsSchema.optional(),
   _meta: optional(looseObject({}))
 });
-var ResourceTemplateSchema = object8({
+var ResourceTemplateSchema = object10({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   uriTemplate: string3(),
@@ -29405,12 +29594,12 @@ var ResourceUpdatedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/resources/updated"),
   params: ResourceUpdatedNotificationParamsSchema
 });
-var PromptArgumentSchema = object8({
+var PromptArgumentSchema = object10({
   name: string3(),
   description: optional(string3()),
   required: optional(boolean2())
 });
-var PromptSchema = object8({
+var PromptSchema = object10({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   description: optional(string3()),
@@ -29431,34 +29620,34 @@ var GetPromptRequestSchema = RequestSchema.extend({
   method: literal("prompts/get"),
   params: GetPromptRequestParamsSchema
 });
-var TextContentSchema = object8({
+var TextContentSchema = object10({
   type: literal("text"),
   text: string3(),
   annotations: AnnotationsSchema.optional(),
   _meta: record4(string3(), unknown()).optional()
 });
-var ImageContentSchema = object8({
+var ImageContentSchema = object10({
   type: literal("image"),
   data: Base64Schema,
   mimeType: string3(),
   annotations: AnnotationsSchema.optional(),
   _meta: record4(string3(), unknown()).optional()
 });
-var AudioContentSchema = object8({
+var AudioContentSchema = object10({
   type: literal("audio"),
   data: Base64Schema,
   mimeType: string3(),
   annotations: AnnotationsSchema.optional(),
   _meta: record4(string3(), unknown()).optional()
 });
-var ToolUseContentSchema = object8({
+var ToolUseContentSchema = object10({
   type: literal("tool_use"),
   name: string3(),
   id: string3(),
   input: record4(string3(), unknown()),
   _meta: record4(string3(), unknown()).optional()
 });
-var EmbeddedResourceSchema = object8({
+var EmbeddedResourceSchema = object10({
   type: literal("resource"),
   resource: union([TextResourceContentsSchema, BlobResourceContentsSchema]),
   annotations: AnnotationsSchema.optional(),
@@ -29474,7 +29663,7 @@ var ContentBlockSchema = union([
   ResourceLinkSchema,
   EmbeddedResourceSchema
 ]);
-var PromptMessageSchema = object8({
+var PromptMessageSchema = object10({
   role: RoleSchema,
   content: ContentBlockSchema
 });
@@ -29486,26 +29675,26 @@ var PromptListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/prompts/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ToolAnnotationsSchema = object8({
+var ToolAnnotationsSchema = object10({
   title: string3().optional(),
   readOnlyHint: boolean2().optional(),
   destructiveHint: boolean2().optional(),
   idempotentHint: boolean2().optional(),
   openWorldHint: boolean2().optional()
 });
-var ToolExecutionSchema = object8({
+var ToolExecutionSchema = object10({
   taskSupport: _enum(["required", "optional", "forbidden"]).optional()
 });
-var ToolSchema = object8({
+var ToolSchema = object10({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   description: string3().optional(),
-  inputSchema: object8({
+  inputSchema: object10({
     type: literal("object"),
     properties: record4(string3(), AssertObjectSchema).optional(),
     required: array(string3()).optional()
   }).catchall(unknown()),
-  outputSchema: object8({
+  outputSchema: object10({
     type: literal("object"),
     properties: record4(string3(), AssertObjectSchema).optional(),
     required: array(string3()).optional()
@@ -29540,7 +29729,7 @@ var ToolListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/tools/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ListChangedOptionsBaseSchema = object8({
+var ListChangedOptionsBaseSchema = object10({
   autoRefresh: boolean2().default(true),
   debounceMs: number2().int().nonnegative().default(300)
 });
@@ -29561,23 +29750,23 @@ var LoggingMessageNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/message"),
   params: LoggingMessageNotificationParamsSchema
 });
-var ModelHintSchema = object8({
+var ModelHintSchema = object10({
   name: string3().optional()
 });
-var ModelPreferencesSchema = object8({
+var ModelPreferencesSchema = object10({
   hints: array(ModelHintSchema).optional(),
   costPriority: number2().min(0).max(1).optional(),
   speedPriority: number2().min(0).max(1).optional(),
   intelligencePriority: number2().min(0).max(1).optional()
 });
-var ToolChoiceSchema = object8({
+var ToolChoiceSchema = object10({
   mode: _enum(["auto", "required", "none"]).optional()
 });
-var ToolResultContentSchema = object8({
+var ToolResultContentSchema = object10({
   type: literal("tool_result"),
   toolUseId: string3().describe("The unique identifier for the corresponding tool call."),
   content: array(ContentBlockSchema).default([]),
-  structuredContent: object8({}).loose().optional(),
+  structuredContent: object10({}).loose().optional(),
   isError: boolean2().optional(),
   _meta: record4(string3(), unknown()).optional()
 });
@@ -29589,7 +29778,7 @@ var SamplingMessageContentBlockSchema = discriminatedUnion("type", [
   ToolUseContentSchema,
   ToolResultContentSchema
 ]);
-var SamplingMessageSchema = object8({
+var SamplingMessageSchema = object10({
   role: RoleSchema,
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)]),
   _meta: record4(string3(), unknown()).optional()
@@ -29622,13 +29811,13 @@ var CreateMessageResultWithToolsSchema = ResultSchema.extend({
   role: RoleSchema,
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)])
 });
-var BooleanSchemaSchema = object8({
+var BooleanSchemaSchema = object10({
   type: literal("boolean"),
   title: string3().optional(),
   description: string3().optional(),
   default: boolean2().optional()
 });
-var StringSchemaSchema = object8({
+var StringSchemaSchema = object10({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
@@ -29637,7 +29826,7 @@ var StringSchemaSchema = object8({
   format: _enum(["email", "uri", "date", "date-time"]).optional(),
   default: string3().optional()
 });
-var NumberSchemaSchema = object8({
+var NumberSchemaSchema = object10({
   type: _enum(["number", "integer"]),
   title: string3().optional(),
   description: string3().optional(),
@@ -29645,24 +29834,24 @@ var NumberSchemaSchema = object8({
   maximum: number2().optional(),
   default: number2().optional()
 });
-var UntitledSingleSelectEnumSchemaSchema = object8({
+var UntitledSingleSelectEnumSchemaSchema = object10({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
   enum: array(string3()),
   default: string3().optional()
 });
-var TitledSingleSelectEnumSchemaSchema = object8({
+var TitledSingleSelectEnumSchemaSchema = object10({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
-  oneOf: array(object8({
+  oneOf: array(object10({
     const: string3(),
     title: string3()
   })),
   default: string3().optional()
 });
-var LegacyTitledEnumSchemaSchema = object8({
+var LegacyTitledEnumSchemaSchema = object10({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
@@ -29671,26 +29860,26 @@ var LegacyTitledEnumSchemaSchema = object8({
   default: string3().optional()
 });
 var SingleSelectEnumSchemaSchema = union([UntitledSingleSelectEnumSchemaSchema, TitledSingleSelectEnumSchemaSchema]);
-var UntitledMultiSelectEnumSchemaSchema = object8({
+var UntitledMultiSelectEnumSchemaSchema = object10({
   type: literal("array"),
   title: string3().optional(),
   description: string3().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object8({
+  items: object10({
     type: literal("string"),
     enum: array(string3())
   }),
   default: array(string3()).optional()
 });
-var TitledMultiSelectEnumSchemaSchema = object8({
+var TitledMultiSelectEnumSchemaSchema = object10({
   type: literal("array"),
   title: string3().optional(),
   description: string3().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object8({
-    anyOf: array(object8({
+  items: object10({
+    anyOf: array(object10({
       const: string3(),
       title: string3()
     }))
@@ -29703,7 +29892,7 @@ var PrimitiveSchemaDefinitionSchema = union([EnumSchemaSchema, BooleanSchemaSche
 var ElicitRequestFormParamsSchema = TaskAugmentedRequestParamsSchema.extend({
   mode: literal("form").optional(),
   message: string3(),
-  requestedSchema: object8({
+  requestedSchema: object10({
     type: literal("object"),
     properties: record4(string3(), PrimitiveSchemaDefinitionSchema),
     required: array(string3()).optional()
@@ -29731,21 +29920,21 @@ var ElicitResultSchema = ResultSchema.extend({
   action: _enum(["accept", "decline", "cancel"]),
   content: preprocess((val) => val === null ? undefined : val, record4(string3(), union([string3(), number2(), boolean2(), array(string3())])).optional())
 });
-var ResourceTemplateReferenceSchema = object8({
+var ResourceTemplateReferenceSchema = object10({
   type: literal("ref/resource"),
   uri: string3()
 });
-var PromptReferenceSchema = object8({
+var PromptReferenceSchema = object10({
   type: literal("ref/prompt"),
   name: string3()
 });
 var CompleteRequestParamsSchema = BaseRequestParamsSchema.extend({
   ref: union([PromptReferenceSchema, ResourceTemplateReferenceSchema]),
-  argument: object8({
+  argument: object10({
     name: string3(),
     value: string3()
   }),
-  context: object8({
+  context: object10({
     arguments: record4(string3(), string3()).optional()
   }).optional()
 });
@@ -29760,7 +29949,7 @@ var CompleteResultSchema = ResultSchema.extend({
     hasMore: optional(boolean2())
   })
 });
-var RootSchema = object8({
+var RootSchema = object10({
   uri: string3().startsWith("file://"),
   name: string3().optional(),
   _meta: record4(string3(), unknown()).optional()
