@@ -28,6 +28,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     reply(m.id, { sessionId: session, modes: { currentModeId: "default", availableModes: ["default", "yolo", "auto", "auto-edit"].map(id => ({ id, name: id })) } });
     if (!process.argv.includes("--early") && !silent) list(session, commands);
     if (process.argv.includes("--foreign-after")) list("some-other-session", [{ name: "skill:intruder", description: "not ours, and late" }]);
+    for (let i = 0, n = Number(arg("--foreign-after-many") ?? 0); i < n; i++) list(`late-session-${i}`, [{ name: `skill:late-${i}`, description: "another session, after ours" }]);
     if (held) { const chunk = held.join(""); held = undefined; process.stdout.write(chunk); }
   }
   else if (m.method === "session/set_mode") reply(m.id, {});

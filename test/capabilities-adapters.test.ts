@@ -34,6 +34,7 @@ test("when the reply and a foreign list arrive in one chunk AFTER ours, the fore
   expect((await settled(peer, 1)).capabilities.map(c => c.id)).toEqual(["command:skill:review"]);
 });
 
+// A guard, not a reproduction: with ours LAST even main's single slot adopts it.
 test("when the reply, a foreign list FIRST and ours arrive in one chunk, ours is the one adopted", async () => {
   const peer = await started("--burst", "--foreign-first");
   expect((await settled(peer, 1)).capabilities.map(c => c.id)).toEqual(["command:skill:review"]);
@@ -47,8 +48,9 @@ test("a foreign list on both sides of ours in one chunk changes nothing, and a f
   expect((await only.capabilityManifest()).capabilities).toEqual([]);
 });
 
+// Ours sits in the MIDDLE: 40 other sessions before it overflow the cap of 8 (the oldest go), and 3 after it must not push ours out nor stand in for it. Main's single slot ends on a foreign list.
 test("a burst of lists for many other sessions is bounded and still adopts the bound session's list", async () => {
-  const peer = await started("--burst", "--foreign-first", "--foreign-many", "40");
+  const peer = await started("--burst", "--foreign-many", "40", "--foreign-after-many", "3");
   expect((await settled(peer, 1)).capabilities.map(c => c.id)).toEqual(["command:skill:review"]);
 });
 
