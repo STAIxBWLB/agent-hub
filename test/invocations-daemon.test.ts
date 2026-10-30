@@ -727,7 +727,8 @@ test("with a real headless ACP callee, a late answer inside a timed-out turn is 
   for (let i = 0; i < 300 && !(await real.capabilityManifest()).capabilities.length; i++) await Bun.sleep(10);
   const r = await f.call("codex", "hub_invoke", { peer: "qwen", capability: "command:review", args: { input: "x" } });
   expect(r.ok, String((r as { error?: string }).error)).toBe(true);
-  await until(() => f.rows()[0]?.outcome === "delivered", "the slow turn started");
+  await until(() => real.state === "busy", "the slow turn started"); // the agent says nothing for 900 ms, so the row is still queued: it has not reported the request accepted
+  expect(f.rows()[0]!.outcome).toBe("queued");
   const l = new InvocationLedger(join(f.stateDir, "hub.db")); (l as any).db.run("UPDATE invocations SET deadline = 1"); l.close();
   await until(() => results(f.codex).length === 1, "the deadline passes inside the turn");
   expect(results(f.codex)[0]!.body).toContain("outcome timeout");
@@ -739,4 +740,16 @@ test("with a real headless ACP callee, a late answer inside a timed-out turn is 
   // a message after that turn is an ordinary message
   real.onMessage?.("ORDINARY-AFTER-THE-LATE-TURN", {});
   await until(() => JSON.stringify(f.pi.got).includes("ORDINARY-AFTER-THE-LATE-TURN"), "published once the turn is over");
+});
+
+test("a request already handed to a slow-to-start agent times out instead of expiring: it may be running, so 'nothing ran' would be false", async () => {
+  const f = await fixture({ sweepMs: 20 });
+  f.kimi.answer = () => undefined; f.kimi.receipts = false;
+  f.kimi.deliver = async (envs: Envelope[]) => { f.kimi.got.push(envs); f.kimi.force("busy"); }; // took the request, reported nothing yet (no accepted receipt)
+  await invoke(f); await until(() => f.kimi.got.length === 1, "handed over");
+  expect(f.rows()[0]!.outcome).toBe("queued");
+  const l = new InvocationLedger(join(f.stateDir, "hub.db")); (l as any).db.run("UPDATE invocations SET deadline = 1"); l.close();
+  await until(() => results(f.codex).length === 1, "settled at the deadline");
+  expect(results(f.codex)[0]!.body).toContain("outcome timeout"); expect(results(f.codex)[0]!.body).not.toContain("nothing ran");
+  expect(f.rows()[0]!.outcome).toBe("timeout");
 });
