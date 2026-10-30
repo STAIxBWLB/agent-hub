@@ -32,7 +32,7 @@ class Peer extends BasePeer {
   set(state: PeerState) { this.setState(state); }
   async deliver(envs: Envelope[]) {
     this.setState("busy"); this.batches.push(envs);
-    if (this.fail) { this.beforeFailure?.(); this.onFailed?.(envs, { quota: this.quota }); }
+    if (this.fail) { this.beforeFailure?.(); this.onFailed?.(envs, this.quota ? { quota: true } : undefined); }
   }
 }
 function bus(config: () => BusOperationalConfig, pullOnly = false) {
