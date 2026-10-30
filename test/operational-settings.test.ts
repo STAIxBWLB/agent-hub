@@ -31,6 +31,11 @@ test("#489 every operational row has an independent legacy default pin and an op
     "tasks.rescreen_max": { legacy: 10, scale: 1 },
     "tasks.split_min_observations": { legacy: 5, scale: 1 },
     "tasks.split_max_failure_share": { legacy: 0.3, scale: 1 },
+    "bus.max_attempts": { legacy: 3, scale: 1 },
+    "bus.digest_max": { legacy: 10, scale: 1 },
+    "bus.pull_budget_bytes": { legacy: 65_536, scale: 1 },
+    "bus.notes_kept": { legacy: 10, scale: 1 },
+    "bus.terminal_history_limit": { legacy: 2048, scale: 1 },
   };
   const inventory = readFileSync(join(import.meta.dir, "../docs/verification/2026-10-24-hardcoded-values.md"), "utf8").split("\n");
   const docs = readFileSync(join(import.meta.dir, "../docs/operations.md"), "utf8");

@@ -1964,6 +1964,11 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Switches | `tasks.auto_pull` (default off: pull the top explicitly reserved ready card when a planner slot frees) | `config.local.json` | live; the next freed planner slot uses it |
 | Routing | `tasks.queue_backpressure.max_queued` (0-10000), `.max_oldest_s` (0-604800); 0, the default, disables each ([backpressure](#queue-backpressure-on-automatic-task-offers-800)) | `config.local.json` | live |
 | Roles | `planner` (one or up to eight planner holders) | `config.local.json` | at once |
+| Routing | `bus.max_attempts` (1-100 attempts, default 3) | `config.local.json` | live; next safe-failure retry evaluation, retaining existing counts and quota pauses |
+| Routing | `bus.digest_max` (1-10 originals, default 10) | `config.local.json` | live; next push/attached-channel take, with poison-alone and remote-singleton rules |
+| Routing | `bus.pull_budget_bytes` (1-65536 bytes, default 65536) | `config.local.json` | live; next pull-only read, oldest first; the first oversized item still goes |
+| Routing | `bus.notes_kept` (1-10 notes, default 10) | `config.local.json` | live; next shared-note or failed-preface merge; existing prefaces remain unchanged on reload |
+| Routing | `bus.terminal_history_limit` (1-2048 rows, default 2048) | `config.local.json` | live; next normal terminal settlement; unresolved rows and retry ancestry stay protected |
 
 ### Operational numeric settings (#489 H1)
 
@@ -2020,6 +2025,23 @@ The H0 operational items of `tasks.ts`, `routing.ts` and `task-sweep.ts` that st
 - Host deadlines for the `gh` reads (1_000, 4_000 and 20_000 ms in five places) and the 5 000 ms release-window
   freshness check. They bound a whole call, a refusal of a stale host window protects the release, and none is
   independently tunable without changing what a partial result means.
+
+#### Bus and delivery conversions (#489 H3)
+
+The five `bus.*` rows above use the H1 descriptor, schema, settings writer and live
+reload path. Unset defaults equal `MAX_ATTEMPTS`, `DIGEST_MAX`, `PULL_BUDGET_BYTES`,
+`NOTES_KEPT` and `TERMINAL_CAP`. Only `bus.max_attempts` may rise; the other four
+can only tighten today's ceilings. A reload does not trim/reorder queues or
+prefaces, reset attempts, re-arm batch deadlines, prune history, or change a pause
+or in-flight delivery. Terminal history is a target: protected retry parents and the current mutation receipt may
+keep the count above it. The settings add no conductor authority.
+
+The [H3 H0 ledger](verification/2026-10-30-bus-delivery-operational-settings.md)
+lists all 59 unique inventory identities (5 converted and 54 excluded). The
+persisted `SEEN_CAP`/dedupe contract and withdrawn cancellation evidence stay
+fixed; recovery fence polling goes to H4, expired-limit-record cleanup remains
+maintenance, existing limits/watchdog/batching knobs remain in their current
+configuration path, and wire/storage/safety/test-seam values remain constants.
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
   the machine-local files (`ahub init` ignores both in git). The shared

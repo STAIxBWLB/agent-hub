@@ -20,8 +20,8 @@ export type JournalDeliveryState =
   | "discarded";
 export type JournalResolution = "completed" | "retry" | "discard";
 export const MAX_ENVELOPE_BODY = 1_000_000;
+export const TERMINAL_CAP = 2048;
 const SCHEMA_VERSION = 1,
-  TERMINAL_CAP = 2048,
   MAX_ROWS = 100_000,
   MAX_JSON = 20 * 1024 * 1024;
 const STATES = new Set<JournalDeliveryState>([
@@ -56,6 +56,8 @@ export interface DeliveryJournalOptions {
   projectId: string;
   instanceId: string;
   operationId?: string;
+  /** Accepted live history target; only terminal mutations apply it, other pruning keeps the legacy cap. */
+  terminalHistoryLimit?: () => number;
 }
 export interface JournalSnapshot {
   schemaVersion: number;
@@ -271,13 +273,16 @@ export class DeliveryJournal {
   private closed = false;
   private queueMetadataTracking = false;
   private queueMetadataInvalidated = false;
+  private pruningDeferred = 0;
   private readonly operationId?: string;
+  private readonly terminalHistoryLimit?: () => number;
   constructor(options: DeliveryJournalOptions) {
     this.file = options.file;
     this.projectRoot = text(options.projectRoot, "projectRoot", 4096);
     this.projectId = text(options.projectId, "projectId", 256);
     this.instanceId = text(options.instanceId, "instanceId", 256);
     this.operationId = options.operationId;
+    this.terminalHistoryLimit = options.terminalHistoryLimit;
     mkdirSync(dirname(options.file), { recursive: true, mode: 0o700 });
     this.db = new Database(options.file, { create: true });
     this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
@@ -704,53 +709,56 @@ export class DeliveryJournal {
       updatedAt: delivery.createdAt,
     });
     return this.queueMetadataTransaction(trackQueuePressure, () => {
-      const evidence = this.retryEvidence(delivery.peer, delivery.originals);
-      if (evidence === "used") {
-        // Inheritance commits with the handoff, before safe failure or pruning can erase a grouped parent.
-        this.recordRetryEvidence(delivery.peer, delivery.originals, delivery.id, this.retryWarning(delivery.peer, delivery.originals));
-        delivery = { ...delivery, attempt: Math.max(1, delivery.attempt ?? 0) };
-      } else if (evidence === "unknown") this.markRetryUnknown([{ ...delivery, revision: 0, updatedAt: delivery.createdAt }], {});
-      const ids = new Set(delivery.originals.map((env) => env.id)), immutableIds = new Set(retryOriginals(delivery.originals).map(env => env.id));
-      for (const row of this.list(delivery.peer)) {
-        if (row.state !== "queued" || !row.originals.some((env) => ids.has(env.id))) continue;
-        this.transition(row.id, "discarded", `grouped into delivery ${delivery.id}`);
-        if (retryOriginals(row.originals).some(env => immutableIds.has(env.id))) {
-          delivery = { ...delivery, previousId: delivery.previousId ?? row.id };
-          if ((row.attempt ?? 0) > 0) delivery = { ...delivery, attempt: Math.max(delivery.attempt ?? 0, row.attempt!) };
+      // Grouped parents are not linked until the handoff INSERT.
+      return this.withPruningDeferred(() => {
+        const evidence = this.retryEvidence(delivery.peer, delivery.originals);
+        if (evidence === "used") {
+          // Inheritance commits with the handoff, before safe failure or pruning can erase a grouped parent.
+          this.recordRetryEvidence(delivery.peer, delivery.originals, delivery.id, this.retryWarning(delivery.peer, delivery.originals));
+          delivery = { ...delivery, attempt: Math.max(1, delivery.attempt ?? 0) };
+        } else if (evidence === "unknown") this.markRetryUnknown([{ ...delivery, revision: 0, updatedAt: delivery.createdAt }], {});
+        const ids = new Set(delivery.originals.map((env) => env.id)), immutableIds = new Set(retryOriginals(delivery.originals).map(env => env.id));
+        for (const row of this.list(delivery.peer)) {
+          if (row.state !== "queued" || !row.originals.some((env) => ids.has(env.id))) continue;
+          this.transition(row.id, "discarded", `grouped into delivery ${delivery.id}`);
+          if (retryOriginals(row.originals).some(env => immutableIds.has(env.id))) {
+            delivery = { ...delivery, previousId: delivery.previousId ?? row.id };
+            if ((row.attempt ?? 0) > 0) delivery = { ...delivery, attempt: Math.max(delivery.attempt ?? 0, row.attempt!) };
+          }
         }
-      }
-      const revision = this.bump();
-      const now = Date.now();
-      this.db
-        .query(
-          "UPDATE delivery_meta SET bus_snapshot = ?, manual_paused = ? WHERE project_id = ?",
-        )
-        .run(
-          JSON.stringify(bus),
-          JSON.stringify(bus.manualPaused ?? []),
-          this.projectId,
-        );
-      this.writeQueueMetadata(bus, revision, trackQueuePressure);
-      this.db
-        .query(
-          "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .run(
-          delivery.id,
-          this.projectId,
-          delivery.peer,
-          delivery.state,
-          revision,
-          delivery.createdAt,
-          now,
-          JSON.stringify(delivery.originals),
-          JSON.stringify(delivery.out),
-          delivery.reason ?? null,
-          delivery.attempt ?? null,
-          delivery.previousId ?? null,
-        );
-      this.harden();
-      return { ...delivery, revision, updatedAt: now };
+        const revision = this.bump();
+        const now = Date.now();
+        this.db
+          .query(
+            "UPDATE delivery_meta SET bus_snapshot = ?, manual_paused = ? WHERE project_id = ?",
+          )
+          .run(
+            JSON.stringify(bus),
+            JSON.stringify(bus.manualPaused ?? []),
+            this.projectId,
+          );
+        this.writeQueueMetadata(bus, revision, trackQueuePressure);
+        this.db
+          .query(
+            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          )
+          .run(
+            delivery.id,
+            this.projectId,
+            delivery.peer,
+            delivery.state,
+            revision,
+            delivery.createdAt,
+            now,
+            JSON.stringify(delivery.originals),
+            JSON.stringify(delivery.out),
+            delivery.reason ?? null,
+            delivery.attempt ?? null,
+            delivery.previousId ?? null,
+          );
+        this.harden();
+        return { ...delivery, revision, updatedAt: now };
+      });
     });
   }
   createDelivery(
@@ -785,7 +793,7 @@ export class DeliveryJournal {
           input.attempt ?? null,
           input.previousId ?? null,
         );
-      this.pruneTerminal();
+      this.pruneTerminal(input.state, input.id);
       return { ...input, revision, updatedAt };
     })();
   }
@@ -802,9 +810,14 @@ export class DeliveryJournal {
     return this.db.transaction((): JournalDelivery => {
       const row = this.get(deliveryId);
       if (!row || row.peer !== peer || !["dispatching", "accepted"].includes(row.state)) throw new Error("delivery is not active for this peer");
-      const completed = this.transition(deliveryId, "completed", reason, row.revision);
-      const put = this.db.query("INSERT OR IGNORE INTO task_offer_reads (project_id,peer,envelope_id,delivery_id,source,offer_revision) VALUES (?,?,?,?,?,?)");
-      for (const env of row.originals) if (env.from === HUB && env.kind === "task" && Number.isSafeInteger(env.refs?.taskOffer) && env.refs!.taskOffer! >= 1) put.run(this.projectId, peer, env.id, deliveryId, source, env.refs!.taskOffer!);
+      const completed = this.withPruningDeferred(() => {
+        const result = this.transition(deliveryId, "completed", reason, row.revision);
+        const put = this.db.query("INSERT OR IGNORE INTO task_offer_reads (project_id,peer,envelope_id,delivery_id,source,offer_revision) VALUES (?,?,?,?,?,?)");
+        for (const env of row.originals) if (env.from === HUB && env.kind === "task" && Number.isSafeInteger(env.refs?.taskOffer) && env.refs!.taskOffer! >= 1) put.run(this.projectId, peer, env.id, deliveryId, source, env.refs!.taskOffer!);
+        return result;
+      });
+      // Proof is now durable in this transaction, and the return receipt is captured.
+      this.pruneTerminal("completed", "");
       return completed;
     })();
   }
@@ -834,7 +847,7 @@ export class DeliveryJournal {
           "UPDATE deliveries SET state = ?, revision = ?, updated_at = ?, reason = ? WHERE id = ? AND project_id = ?",
         )
         .run(state, revision, Date.now(), reason ?? null, id, this.projectId);
-      this.pruneTerminal();
+      this.pruneTerminal(state, id);
       return this.get(id)!;
     })();
   }
@@ -1023,7 +1036,7 @@ export class DeliveryJournal {
           JSON.stringify(retryOriginals(current.originals).map(env => env.id)),
         );
       if (action === "retry") this.recordRetryEvidence(current.peer, current.originals, id, actor === `peer:${current.peer}`);
-      this.pruneTerminal();
+      this.pruneTerminal(result.state, result.id);
       return result;
     })();
   }
@@ -1031,7 +1044,15 @@ export class DeliveryJournal {
     const row = this.db.query("SELECT action,reason,observed_revision,actor FROM resolution_history WHERE project_id=? AND delivery_id=? ORDER BY id DESC LIMIT 1").get(this.projectId, id) as { action: JournalResolution; reason: string; observed_revision: number; actor: string } | null;
     return row ? { action: row.action, reason: row.reason, observedRevision: row.observed_revision, actor: row.actor } : undefined;
   }
-  private pruneTerminal(): void {
+  private withPruningDeferred<T>(body: () => T): T {
+    this.pruningDeferred++;
+    try { return body(); } finally { this.pruningDeferred--; }
+  }
+  private pruneTerminal(state: JournalDeliveryState, currentId: string): void {
+    if (this.pruningDeferred) return;
+    const terminal = state === "completed" || state === "discarded" || state === "failed";
+    const terminalCap = terminal ? this.terminalHistoryLimit?.() ?? TERMINAL_CAP : TERMINAL_CAP;
+    // Never delete the receipt this mutation/resolve is still using, at any target.
     const count = Number(
       (
         this.db
@@ -1041,12 +1062,12 @@ export class DeliveryJournal {
           .get(this.projectId) as { n: number }
       ).n,
     );
-    if (count <= TERMINAL_CAP) return;
+    if (count <= terminalCap) return;
     this.db
       .query(
-        "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded','failed') AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
+        "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded','failed') AND d.id != ? AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
       )
-      .run(this.projectId, count - TERMINAL_CAP);
+      .run(this.projectId, currentId, count - terminalCap);
   }
   importSnapshot(snapshot: JournalSnapshot, operationId: string, trackQueuePressure = false): boolean {
     this.ensureOpen();

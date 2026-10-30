@@ -81,6 +81,7 @@ import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { CONTRADICTION_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SETTING, GROOM_FYI_WINDOW_SETTING, RESCREEN_MAX_SETTING, SPLIT_FAILURE_SHARE_SETTING, SPLIT_MIN_SETTING, taskOperationalReaders } from "./operational-settings.ts";
+import { BUS_DIGEST_MAX_SETTING, BUS_MAX_ATTEMPTS_SETTING, BUS_NOTES_KEPT_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING, busOperationalReaders } from "./operational-settings.ts";
 import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
 import type { ScannedFile } from "./schedules.ts";
@@ -220,6 +221,8 @@ export interface HubConfig {
   batch_max: number;
   batch_ms: number;
   queue_cap: number;
+  /** #489 H3: accepted delivery policy, read at the next delivery operation without rewriting queued work. */
+  bus?: { max_attempts?: number; digest_max?: number; pull_budget_bytes?: number; notes_kept?: number; terminal_history_limit?: number };
   /** `native` (#258): the hub's own store in ~/.agenthub/memory, on with any project config; `short_ttl_days`: short-term lifetime after approval; `sync_interval_min`: machine sync while a remote is set (default 10, 0 off). */
   memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number; native?: boolean; short_ttl_days?: number; sync_interval_min?: number; suggest_edges?: boolean };
   roster: PeerRoster;
@@ -298,6 +301,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   batch_max: 3,
   batch_ms: 15_000,
   queue_cap: 200,
+  bus: { max_attempts: BUS_MAX_ATTEMPTS_SETTING.defaultValue, digest_max: BUS_DIGEST_MAX_SETTING.defaultValue, pull_budget_bytes: BUS_PULL_BUDGET_BYTES_SETTING.defaultValue, notes_kept: BUS_NOTES_KEPT_SETTING.defaultValue, terminal_history_limit: BUS_TERMINAL_HISTORY_LIMIT_SETTING.defaultValue },
   memory: { enabled: true, inject_tokens: 2000, brief_items: 8 },
   roster: {},
   roles: DEFAULT_ROLES,
@@ -340,7 +344,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "corpus", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
+const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "corpus", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
 export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[], scope: Pick<ReturnType<typeof readInstanceConfig>, "instances" | "catalog"> = readInstanceConfig(cwd, layers)): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string | string[]; notices?: string[] } {
@@ -533,6 +537,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
       notify: typeof file.approvals?.notify === "boolean" ? file.approvals.notify : process.platform === "darwin",
     },
     tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks, ...(file.tasks?.wip_limits !== undefined ? { wip_limits: planningWipLimits(file.tasks.wip_limits) } : {}) },
+    bus: { ...DEFAULT_CONFIG.bus, ...file.bus },
     task_sweep: taskSweepConfig(file.task_sweep),
     schedules: schedulesConfig(file.schedules),
     folder_triggers: foldersConfig(file.folder_triggers),
@@ -1175,7 +1180,8 @@ export async function startDaemon(opts: DaemonOptions) {
 
   // The hub's own model calls (digest condensation, task triage) are wired below, once the gateway client exists.
   let inference: Inference | undefined;
-  const journal = new DeliveryJournal({ file: join(opts.stateDir, "hub.db"), projectRoot: opts.cwd, projectId, instanceId, operationId: recoveryOperation });
+  const { terminalHistoryLimit, ...busReaders } = busOperationalReaders(() => config);
+  const journal = new DeliveryJournal({ file: join(opts.stateDir, "hub.db"), projectRoot: opts.cwd, projectId, instanceId, operationId: recoveryOperation, terminalHistoryLimit });
   // What the crash left in flight, per recipient: opening the journal just marked these needs_review.
   const lost = new Map<PeerId, JournalDelivery[]>();
   if (crashed) for (const d of journal.list()) if (d.state === "needs_review" && d.reason === "daemon stopped during delivery" && d.updatedAt >= startedAt) lost.set(d.peer, [...(lost.get(d.peer) ?? []), d]);
@@ -1295,7 +1301,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const queuePolicy = () => queueBackpressurePolicy(config.tasks.queue_backpressure);
   let remotePending = (_room: string): readonly string[] => [];
   let remoteQueueChanged = () => {};
-  const bus: Bus = new Bus({ rostered: membershipAllowed, trackQueuePressure: () => { const policy = queuePolicy(); return policy.max_queued > 0 || policy.max_oldest_s > 0; }, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
+  const bus: Bus = new Bus({ rostered: membershipAllowed, ...busReaders, trackQueuePressure: () => { const policy = queuePolicy(); return policy.max_queued > 0 || policy.max_oldest_s > 0; }, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
     remotePending: room => remotePending(room),
     remotePrivate: (env): boolean => {
       const task = env.refs?.task;

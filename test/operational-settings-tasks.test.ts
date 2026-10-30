@@ -27,7 +27,8 @@ const def = (key: string) => { const d = settingDef(key); if (typeof d === "stri
 const tasksBlock = (key: string, value: unknown) => ({ tasks: { [key.slice("tasks.".length)]: value } });
 
 test("#489 H2 the six rows exist, are config-store live numbers in the Routing group and carry the H0 operational source", () => {
-  expect(OPERATIONAL_NUMBERS.map(d => d.key)).toEqual(["tasks.groom_fyi_window_min", ...KEYS]);
+  // Later area groups share the registry; H2 still pins every task-group key exactly.
+  expect(OPERATIONAL_NUMBERS.filter(d => d.key.startsWith("tasks.")).map(d => d.key)).toEqual(["tasks.groom_fyi_window_min", ...KEYS]);
   for (const key of KEYS) {
     const row = operationalNumber(key)!;
     expect(row).toMatchObject({ group: "Routing", store: "config", risk: "raises", applies: "live", path: ["tasks", key.slice(6)] });
