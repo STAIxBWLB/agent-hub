@@ -394,6 +394,24 @@ test("recovery driver uses the source manifest protocol for a protocol-9 prepare
   } finally { server.stop(true); rmSync(stateDir, { recursive: true, force: true }); rmSync(projectRoot, { recursive: true, force: true }); }
 });
 
+test("#489 H4 a protocol-9 source is still spoken to in protocol 9 when the control timeout is configured", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-h4-v9-"));
+  const projectRoot = realpathSync(mkdtempSync(join(tmpdir(), "ahub-h4-v9-project-")));
+  gitInit(projectRoot); configureRecovery(projectRoot, { control_timeout_s: 120 });
+  const seenVersions: number[] = [];
+  const server = Bun.serve<any>({
+    hostname: "127.0.0.1", port: 0,
+    fetch(request, srv) { return srv.upgrade(request) ? undefined : new Response("no"); },
+    websocket: { message(ws, data) { const msg = JSON.parse(String(data)); if (msg.t === "hello") { seenVersions.push(msg.v); ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p9", instanceId: "i9", cwd: projectRoot, protocol: 9 })); } else ws.send(JSON.stringify({ rid: msg.rid, t: "recovery", ok: true })); } },
+  });
+  writeFileSync(join(stateDir, "control-token"), "source-v9-token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: 9, projectId: "p9", instanceId: "i9", cwd: projectRoot }));
+  try {
+    await makeRecoveryDriver().prepare({ id: "p9", root: projectRoot, stateDir, basePort: 4600 } as any, "op9", "i9");
+    expect(seenVersions).toEqual([9]); // the configured timeout did not displace the protocol argument
+  } finally { server.stop(true); rmSync(stateDir, { recursive: true, force: true }); rmSync(projectRoot, { recursive: true, force: true }); }
+}, 30_000);
+
 for (const change of ["incarnation", "session"] as const) {
   test(`production recovery verification rejects a changed ${change} without terminal mutation`, async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-review-runtime-")));
