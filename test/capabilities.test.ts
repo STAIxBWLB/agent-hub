@@ -54,6 +54,20 @@ test("an instance id never inherits its kind's entries, in either direction, and
   expect(listedCapabilities("codex", manifest(evil), s)).toEqual([]);
 });
 
+test("a polluted Object.prototype lists nothing: share and entry lookups read own properties only", () => {
+  const c = cap();
+  const proto = Object.prototype as Record<string, unknown>;
+  try {
+    proto.kimi = { [c.id]: { digest: c.digest } };      // what a pollution of the peer key would look like
+    expect(listedCapabilities("kimi", manifest(c), {})).toEqual([]);
+    delete proto.kimi;
+    proto[c.id] = { digest: c.digest };                  // what a pollution of the capability key would look like
+    expect(listedCapabilities("kimi", manifest(c), { kimi: {} })).toEqual([]);
+    expect(listedCapabilities("kimi", manifest(c), share("codex", [c]))).toEqual([]);
+  } finally { delete proto.kimi; delete proto[c.id]; }
+  expect(listedCapabilities("kimi", manifest(c), share("kimi", [c])).map(l => l.id)).toEqual([c.id]); // and the honest entry still lists once the pollution is gone
+});
+
 test("only the capabilities the person listed are shown, not the rest of the manifest", () => {
   const a = cap({ name: "review" }), b = cap({ name: "deploy", sideEffect: "external" });
   expect(listedCapabilities("kimi", manifest(a, b), share("kimi", [a])).map(l => l.id)).toEqual(["command:review"]);
@@ -130,8 +144,10 @@ test("a manifest drops invalid entries one by one, keeps the first of a duplicat
   const built = buildManifest(raw as never, 5);
   expect(built.capabilities.map(c => `${c.id}:${c.description}`)).toEqual(["command:ok:first", "skill:ok:"]);
   expect(built.observedAt).toBe(5);
-  const many = buildManifest(Array.from({ length: MAX_CAPABILITIES + 40 }, (_, i) => ({ kind: "command", name: `c${i}`, source: "acp", invoke: "native" })) as never, 1);
-  expect(many.capabilities).toHaveLength(MAX_CAPABILITIES);
+  const many = buildManifest(Array.from({ length: 168 }, (_, i) => ({ kind: "command", name: `c${i}`, source: "acp", invoke: "native" })) as never, 1);
+  expect(MAX_CAPABILITIES).toBe(128); // written out here, so a change to the cap is a change to this test
+  expect(many.capabilities).toHaveLength(128);
+  expect(many.capabilities.at(-1)!.name).toBe("c127");
 });
 
 const publish = (...entries: Record<string, unknown>[]) => ({ capabilities: entries });
@@ -145,7 +161,8 @@ test("hub_capabilities_publish validates every field, refuses the rest, and forc
   expect(refusal("x")).toContain("array"); expect(refusal(null)).toContain("array"); expect(refusal({})).toContain("array"); expect(refusal({ capabilities: "x" })).toContain("array");
   expect(refusal({ capabilities: [ok], extra: 1 })).toContain("array"); // an unknown top-level field
   expect(refusal(publish())).toContain("not be empty");
-  expect(refusal({ capabilities: Array.from({ length: MAX_CAPABILITIES + 1 }, (_, i) => ({ ...ok, name: `c${i}` })) })).toContain(`at most ${MAX_CAPABILITIES}`);
+  expect(refusal({ capabilities: Array.from({ length: 129 }, (_, i) => ({ ...ok, name: `c${i}` })) })).toContain("at most 128");
+  expect(validatePublished({ capabilities: Array.from({ length: 128 }, (_, i) => ({ ...ok, name: `c${i}` })) }, 1).capabilities).toHaveLength(128); // exactly the cap is accepted
   expect(refusal(publish({ ...ok, description: "x".repeat(70_000) }))).toContain("too large");
   expect(refusal({ capabilities: [7] })).toContain("must be an object");
   expect(refusal(publish({ ...ok, invoke: "native" }))).toContain('unknown field "invoke"'); // a publisher cannot claim a native path
@@ -174,6 +191,11 @@ test("invocation.share as a person wrote it: malformed entries are dropped, and 
   const good = sha("x");
   const read = readShare({ kimi: { "command:review": { digest: good, class: "read" }, "command:bad": { digest: "sha256:short" }, "nope:x": { digest: good }, "command:noclass": { digest: good, class: "exec" }, "command:plain": { digest: good } }, "Bad Peer": { "command:x": { digest: good } }, codex: "x", pi: [] });
   expect(read).toEqual({ kimi: { "command:review": { digest: good, class: "read" }, "command:plain": { digest: good } } });
+  // a digest is exactly sha256: and 64 lowercase hex digits: hex that is too short, too long or uppercase pins nothing
+  for (const bad of ["sha256:abcd", `sha256:${"a".repeat(63)}`, `sha256:${"a".repeat(65)}`, `sha256:${"A".repeat(64)}`, `sha512:${"a".repeat(64)}`, `${"a".repeat(64)}`, ` sha256:${"a".repeat(64)}`, `sha256:${"a".repeat(64)}\n`]) {
+    expect(readShare({ kimi: { "command:x": { digest: bad } } }), JSON.stringify(bad)).toEqual({});
+  }
+  expect(readShare({ kimi: { "command:x": { digest: `sha256:${"0123456789abcdef".repeat(4)}` } } })).toEqual({ kimi: { "command:x": { digest: `sha256:${"0123456789abcdef".repeat(4)}` } } });
   for (const junk of [undefined, null, 7, "x", [], { kimi: null }, { kimi: { "command:x": null } }]) expect(readShare(junk), JSON.stringify(junk)).toEqual({});
   expect(Object.hasOwn(readShare({ __proto__: { x: 1 }, kimi: { "command:r": { digest: good } } }), "x")).toBe(false);
 });
