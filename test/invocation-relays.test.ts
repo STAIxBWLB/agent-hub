@@ -186,3 +186,11 @@ test("X6 a revoked source pin withholds result text instead of granting by the r
   const f = authority(); delete (f.shares as Record<string, unknown>)["kimi@beta"];
   expect(await f.relay.receive(f.input)).toBe("admitted"); expect(f.finished).toEqual(["withheld"]);
 });
+
+
+test("X6 restart quarantines a relay ledger row with no confirmed handoff instead of replaying", () => {
+  const f = authority(); f.relay.reconcile();
+  expect(f.ledger.get(f.row.id)?.outcome).toBe("needs_review");
+  expect(f.ledger.relay(f.row.id)?.state).toBe("needs_review");
+  expect(f.finished).toEqual([]); expect(f.claims()).toBe(0);
+});

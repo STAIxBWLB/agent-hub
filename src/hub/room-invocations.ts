@@ -13,6 +13,7 @@ export interface RoomInvocationPorts {
   identity: (peer: string, sender?: string) => RoomInvocationIdentity | undefined;
   target: (input: RoomInvocationIngress, request: RoomReadInvocationRequest) => Promise<void>;
   safeResult: (body: string, current: () => boolean) => Promise<boolean>;
+  quarantine?: (row: InvocationRow) => void;
   finish: (row: InvocationRow, outcome: InvocationOutcome, input?: { body?: string; reason?: string }) => void;
 }
 export class RoomInvocations {
@@ -123,6 +124,13 @@ export class RoomInvocations {
       if (route.state === "needs_review") continue;
       const row = this.p.ledger.get(route.local);
       if (!row) continue;
+      const request = pending.find(delivery => delivery.originals.some(env => env.id === row.id));
+      if (isOpenOutcome(row.outcome) && (!request || request.state !== "queued")) {
+        this.p.bus.holdInvocation(row.id, "remote invocation handoff is unconfirmed after restart", row.target);
+        this.p.ledger.updateRelay(row.id, "needs_review");
+        if (this.p.quarantine) this.p.quarantine(row); else this.p.ledger.settle(row.id, "needs_review");
+        continue;
+      }
       const result = route.result && pending.find(delivery => delivery.originals.some(env => env.id === route.result));
       if (route.direction === "inbound" && !isOpenOutcome(row.outcome) && (route.state !== "result_queued" || !result || result.state !== "queued")) {
         this.p.ledger.updateRelay(row.id, "needs_review");

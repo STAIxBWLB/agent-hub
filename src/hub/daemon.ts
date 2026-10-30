@@ -1797,16 +1797,16 @@ export async function startDaemon(opts: DaemonOptions) {
    * the caller is still attached, publishes ONE result from the hub to the caller only. The callee's text is sanitized and cut inside renderInvocationResult;
    * it is never logged, never put in an event and never captured to memory.
    */
-  const finishInvocation = (row: InvocationRow, outcome: InvocationOutcome, input: { body?: string; reason?: string } = {}): void => {
+  const finishInvocation = (row: InvocationRow, outcome: InvocationOutcome, input: { body?: string; reason?: string; quarantine?: true } = {}): void => {
     const rendered = renderInvocationResult({ target: row.target, capabilityId: row.capability, id: row.id, outcome, ...input });
     const settled = invocations.settle(row.id, outcome, rendered.bytes);
     if (!settled) return;
     if (settled.task !== null) { try { tasks.recordInvocation(settled.task, settled); } catch { log(`invocation ${settled.id}: terminal audit unavailable; ledger retains outcome`); } }
     if (invocations.relay(settled.id)?.direction === "outbound") invocations.updateRelay(settled.id, outcome === "needs_review" ? "needs_review" : "completed");
-    const relayed = roomInvocations.result(settled, outcome, input);
+    const relayed = !input.quarantine && roomInvocations.result(settled, outcome, input);
     bus.releaseInvocation(settled.id);
     event({ type: "invocation", id: settled.id, caller: settled.caller, target: settled.target, capability: settled.capability, class: settled.class, outcome, ...(settled.task === null ? {} : { task: settled.task }), ...(rendered.bytes ? { bytes: rendered.bytes } : {}) });
-    if (relayed) return;
+    if (relayed || input.quarantine) return;
     if (!bus.peers.has(settled.caller) || bus.peers.get(settled.caller)!.state === "offline") return; // nobody to read it; the row is the record
     try { bus.publish(newEnvelope(HUB, rendered.body, { to: [settled.caller], kind: "invocation_result", priority: "status", refs: { invocation: settled.id, ...(invocations.relay(settled.id) ? { invocationRemote: true as const } : {}), ...(settled.task === null ? {} : { task: String(settled.task) }) }, ...(turns.get(settled.caller)?.private || contextPii(settled.caller) ? { private: true } : {}) })); }
     catch { log(`invocation ${settled.id.slice(0, 8)}: the result could not be published to ${settled.caller}; the row keeps the outcome`); }
@@ -3928,7 +3928,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (verdict?.label !== "clear") return false;
       }
       return current() && boundedSafe(body) && policy === JSON.stringify([config.pii, config.local.deny, tasks.screenOn()]);
-    }, finish: finishInvocation });
+    }, quarantine: row => finishInvocation(row, "needs_review", { reason: "remote invocation handoff is unconfirmed after restart", quarantine: true }), finish: finishInvocation });
   bus.onInvocationReceipt = (id, state) => roomInvocations.receipt(id, state);
   roomInvocations.reconcile();
   const roomChat: RoomChat = new RoomChat({ bus, cwd: opts.cwd, routing: activeRouting, piiPaths: () => config.pii?.paths ?? [],

@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -9,6 +9,8 @@ import { BasePeer } from "../src/hub/peers.ts";
 import { buildCapability, type CapabilityManifest } from "../src/hub/capabilities.ts";
 import { InvocationLedger } from "../src/hub/invocations.ts";
 import { replyParent, replyAudience, type Envelope } from "../src/hub/envelope.ts";
+import { RoomLink } from "../src/rooms/link.ts";
+import { RoomStore } from "../src/rooms/store.ts";
 import { startBroker } from "../src/broker/server.ts";
 
 const cleanup: (() => unknown)[] = [];
@@ -85,6 +87,8 @@ test("X6 real broker/crypto with two daemons relays one double-pinned read and o
   expect(f.b.ledger.relay(target.id)).toMatchObject({ request: id, direction: "inbound", caller: "codex", target: "kimi" });
   await until(() => f.caller.got.some(env => env.kind === "invocation_result"), "caller result delivery");
   expect(f.caller.got.filter(env => env.kind === "invocation_result")).toHaveLength(1);
+  await until(() => f.b.ledger.relay(target.id)?.state === "completed", "result transport signed acknowledgement");
+  expect(f.a.daemon.bus.isHeld("kimi@beta")).toBe(false);
   expect(f.caller.got[0]!.body).toContain("X6_PUBLIC_RESULT"); expect(f.caller.got[0]!.body).toContain("kimi@beta");
   for (const side of [f.a, f.b]) for (const name of ["events.jsonl", "hub.log", "status.json"]) expect(readFileSync(join(side.stateDir, name), "utf8")).not.toContain("X6_PUBLIC_RESULT");
 });
@@ -138,4 +142,31 @@ test("X6 unsafe arguments are refused before relay and private target answers ar
   await until(() => f.caller.got.some(env => env.kind === "invocation_result"), "fixed withheld result");
   expect(JSON.stringify(f.caller.got)).not.toContain("900101-1234567");
   for (const side of [f.a, f.b]) for (const name of ["events.jsonl", "hub.log", "status.json"]) expect(readFileSync(join(side.stateDir, name), "utf8")).not.toContain("900101-1234567");
+});
+
+
+test("X6 authenticated duplicate wire requests do not execute again", async () => {
+  const f = await mesh(); let replay!: () => Promise<string>, requestId = "", duplicate = false;
+  const publish = RoomLink.prototype.publishApplication, incoming = RoomStore.prototype.applicationIncoming;
+  const sender = spyOn(RoomLink.prototype, "publishApplication").mockImplementation(function(this: RoomLink, message, recipient, metadata, current) {
+    if (message.type === "chat" && message.envelope.kind === "invocation" && metadata) {
+      const copy = structuredClone(message), saved = { ...metadata, deliveryId: crypto.randomUUID() };
+      requestId = message.envelope.id;
+      replay = () => publish.call(this, copy, recipient, saved, () => true);
+    }
+    return publish.call(this, message, recipient, metadata, current);
+  });
+  const receiver = spyOn(RoomStore.prototype, "applicationIncoming").mockImplementation(async function(this: RoomStore, ...args) {
+    const result = await incoming.apply(this, args);
+    if (result.chat.id === requestId && !result.primary) duplicate = true;
+    return result;
+  });
+  try {
+    const response = await f.invoke(); expect(response.ok).toBe(true); const id = JSON.parse(response.text).invocation;
+    await until(() => f.a.ledger.get(id)?.outcome === "completed", "first capability result");
+    expect(typeof replay).toBe("function"); await replay();
+    await until(() => duplicate, "durable application dedupe observed the signed duplicate");
+    expect(f.callee.got.filter(env => env.kind === "invocation")).toHaveLength(1);
+    expect(f.caller.got.filter(env => env.kind === "invocation_result")).toHaveLength(1);
+  } finally { receiver.mockRestore(); sender.mockRestore(); }
 });
