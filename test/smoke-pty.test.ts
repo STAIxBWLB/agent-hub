@@ -229,8 +229,12 @@ test("a caller that dies while Bun.spawn is still running gets neither the bridg
     callerProc.kill("SIGKILL");
     expect(await waitFor(() => !up.some(alive), 8_000), `still alive after the caller died inside the spawn: ${up.filter(alive).join(", ")}`).toBe(true);
     expect(readFileSync(ppidLog, "utf8").trim(), "the bridge was not reparented inside the hold: the test did not reach the window").toBe("1");
-    expect(existsSync(ran), "the command ran although its caller was already gone").toBe(false);
-    expect(readdirSync(tmp).filter(name => name.startsWith("ahub-pty-gate-"))).toEqual([]);
+    // The start gate exists only on macOS (Linux runs the child under script(1) and never starts the bridge in production; here it is started directly, so the command has no gate to wait behind
+    // and runs inside the hold). The reaping above holds on both; "the command never ran" and the gate directory are properties of the gate.
+    if (process.platform === "darwin") {
+      expect(existsSync(ran), "the command ran although its caller was already gone").toBe(false);
+      expect(readdirSync(tmp).filter(name => name.startsWith("ahub-pty-gate-"))).toEqual([]);
+    }
   } finally {
     callerProc.kill("SIGKILL");
     for (const pid of up) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
