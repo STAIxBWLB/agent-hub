@@ -57,6 +57,16 @@ export function checkArgs(schema: FlatSchema | undefined, raw: unknown, native: 
 
 export const argsDigest = (args: unknown): string => `sha256:${createHash("sha256").update(JSON.stringify(args ?? {})).digest("hex")}`;
 
+/** Person-only preview, never an event, log, history note or peer-facing permission view. */
+export function invocationApproval(input: { caller: string; target: string; capability: string; digest: string; class: SideEffect; task: number; args: Record<string, string | number | boolean> }): string {
+  const preview = Object.entries(input.args).map(([key, value]) => {
+    const text = sanitize(String(value));
+    const chars = Array.from(text);
+    return `${key}: ${chars.slice(0, 200).join("")}${chars.length > 200 ? " [cut at 200 characters]" : ""}`;
+  });
+  return [`Invocation ${input.class}: ${input.caller} -> ${input.target}`, `Capability: ${input.capability} (${input.digest})`, `Task: #${input.task}`, `Arguments digest: ${argsDigest(input.args)}`, "Arguments (untrusted peer text):", ...preview].join("\n");
+}
+
 /** What the daemon read about one call, as plain values: the gates below never touch the bus, a socket or the board. */
 export interface InvokeFacts {
   caller: string;
@@ -64,6 +74,7 @@ export interface InvokeFacts {
   /** The capability id the caller named, shown back only in the refusals that are about it. */
   capabilityId: string;
   piiContext: boolean;
+  unattended?: boolean;
   /** The target is attached and not offline. */
   attached: boolean;
   onRoster: boolean;
@@ -82,7 +93,7 @@ export interface InvokeFacts {
 
 /**
  * Every refusal that must happen before an envelope exists, one precise reason each, in the order a person would fix them. `undefined` means the call may go
- * on to the argument check and the PII screen of the arguments. C2 invokes `read` only: write and external wait for the person-approval path (C3), and
+ * on to the argument check, PII screen and person approval for effects. Write/external require task scope;
  * destructive is refused for good (O3).
  */
 export function invocationRefusal(f: InvokeFacts): string | undefined {
@@ -99,7 +110,8 @@ export function invocationRefusal(f: InvokeFacts): string | undefined {
   if (!f.capability || f.capability.state === "unshared") return `${f.target} offers no shared capability ${f.capabilityId}`;
   if (f.capability.state === "digest-changed") return `${f.capability.id} changed since the person shared it; it is unlisted until the person pins the new digest`;
   if (f.capability.class === "destructive") return `${f.capability.id} counts as destructive (the person set no class, or the source declared one) and is never invoked`;
-  if (f.capability.class !== "read") return `${f.capability.id} counts as ${f.capability.class}: write and external invocations need the person's approval path, which is not built yet; only read capabilities run now`;
+  if (f.capability.class !== "read" && !f.task) return `${f.capability.id} counts as ${f.capability.class}: an open task scope is required`;
+  if (f.capability.class !== "read" && f.unattended) return "write and external invocations require a person; unattended mode refuses them";
   if (f.task && !f.task.ok) return f.task.reason ?? `task #${f.task.id} is not available to you`;
   if (f.task?.pii) return `task #${f.task.id} is a PII task`;
   if (f.openByCaller >= MAX_OPEN_PER_CALLER) return `you already have ${MAX_OPEN_PER_CALLER} invocations open; wait for a result`;
@@ -187,10 +199,10 @@ export class InvocationLedger {
     this.db.run("CREATE INDEX IF NOT EXISTS invocations_trace ON invocations (trace)");
   }
 
-  open(input: { id: string; trace: string; caller: string; target: string; capability: string; digest: string; class: SideEffect; task?: number; args: unknown; timeoutMs: number }): InvocationRow {
+  open(input: { id: string; trace: string; caller: string; target: string; capability: string; digest: string; class: SideEffect; task?: number; args: unknown; timeoutMs: number; approval?: string }): InvocationRow {
     const id = input.id, now = this.now();
-    this.db.query("INSERT INTO invocations (id, trace, caller, target, capability, digest, class, task, approval, args_sha256, outcome, created, deadline) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 'queued', ?, ?)")
-      .run(id, input.trace, input.caller, input.target, input.capability, input.digest, input.class, input.task ?? null, argsDigest(input.args), now, now + input.timeoutMs);
+    this.db.query("INSERT INTO invocations (id, trace, caller, target, capability, digest, class, task, approval, args_sha256, outcome, created, deadline) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)")
+      .run(id, input.trace, input.caller, input.target, input.capability, input.digest, input.class, input.task ?? null, input.approval ?? null, argsDigest(input.args), now, now + input.timeoutMs);
     return this.get(id)!;
   }
   byTrace(trace: string): InvocationRow | undefined { const r = this.db.query("SELECT * FROM invocations WHERE trace = ?").get(trace) as DbRow | null; return r ? rowOf(r) : undefined; }
@@ -206,6 +218,7 @@ export class InvocationLedger {
     const changed = this.db.query("UPDATE invocations SET outcome = ?, settled_at = ?, result_bytes = ? WHERE id = ? AND outcome IN ('queued', 'delivered')").run(outcome, this.now(), resultBytes, id).changes;
     return changed ? this.get(id) : undefined;
   }
+  pending(): InvocationRow[] { return (this.db.query("SELECT * FROM invocations WHERE outcome IN ('queued', 'delivered') ORDER BY created").all() as DbRow[]).map(rowOf); }
   due(now = this.now()): InvocationRow[] { return (this.db.query("SELECT * FROM invocations WHERE outcome IN ('queued', 'delivered') AND deadline <= ? ORDER BY deadline").all(now) as DbRow[]).map(rowOf); }
   countOpen(): number { return (this.db.query("SELECT COUNT(*) AS n FROM invocations WHERE outcome IN ('queued', 'delivered')").get() as { n: number }).n; }
   countOpenBy(side: "caller" | "target", peer: string): number {

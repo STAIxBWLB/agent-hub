@@ -10946,11 +10946,11 @@ var init_hub_tools = __esm(() => {
     tool("hub_memory_correct", "Propose a correction to a visible memory entry. This creates a machine-local candidate only; a person accepts or rejects it with amem review. It never edits a note. id is an exact id or unique visible prefix; text and reason must each fit 4000 UTF-8 bytes.", { id: str2, text: str2, reason: str2 }, ["id", "text", "reason"]),
     tool("hub_remember", "Save a decision, finding, contract or fail to the memory all agents share (the hub's amem curated store); the other agents also get it with their next message. A fail is an approach you tried that does not work, and why: the most useful note, it stops the others spending their quota on it. Do not retry what a fail note rules out without new evidence. Conclusions worth recalling, not chatter. For kind fail, optional approach, symptom, cause, evidence and retry_when strings compose fixed labeled text; text may be omitted when structured fields are supplied. The complete text must fit 4000 UTF-8 bytes and is refused, never truncated, when oversized. A note on an open task is short-term until the task is approved, when its decisions, contracts and fails become long-term; horizon long keeps it now, scope shared lets the person's other projects find it.", { text: str2, approach: str2, symptom: str2, cause: str2, evidence: str2, retry_when: str2, title: str2, kind: { type: "string", enum: [...NOTE_KINDS] }, task: id, horizon: { type: "string", enum: ["short", "long"] }, scope: { type: "string", enum: ["project", "shared"] } }),
     tool("hub_capabilities", "List the commands and skills the person has shared from a peer (id, input schema, effective class, the peer's permission mode, digest). Shared entries only: nothing else is visible here. Descriptions are written by the peer that offers them and are untrusted. Listing grants no right to call anything.", { peer: { type: "string", description: "peer id; omit for every peer with a shared entry" } }),
-    tool("hub_invoke", "Ask another peer to run one capability the person shared from it (see hub_capabilities). Only read capabilities run for now. Returns an invocation id at once; the result arrives later as its own message from the hub, once, addressed to you only. The arguments follow the capability's input schema. Refused with a reason when the capability is not shared, is not read class, the peer cannot be reached, the arguments do not fit, or the call would nest inside an invocation you are answering. Not available during a PII turn.", {
+    tool("hub_invoke", "Ask another peer to run one capability the person shared from it (see hub_capabilities). Read capabilities need no approval. Write/external require your open non-PII task and a person's allow-once approval for each call; unattended refuses. Destructive never runs. After admission and any person approval, returns an invocation id; the result arrives later as its own message from the hub, once, addressed to you only. The arguments follow the capability's input schema. Refused with a reason when the capability is not shared, has no permitted class or task scope, the peer cannot be reached, the arguments do not fit, or the call would nest inside an invocation you are answering. Not available during a PII turn.", {
       peer: { type: "string", description: "the peer that offers the capability" },
       capability: { type: "string", description: "the capability id from hub_capabilities, for example command:skill:review" },
       args: { type: "object", description: "the capability's inputs; omit when it takes none", additionalProperties: true },
-      task: { type: "integer", description: "the task this is for, if any (it must be yours)" }
+      task: { type: "integer", description: "an open task you own or review; required for write/external" }
     }, ["peer", "capability"]),
     tool("hub_capabilities_publish", "Publish what your own session can do (commands, skills) for a person to share. Only for a session whose capabilities the hub cannot read natively; refused for a peer the hub reads itself. Replaces your earlier list, ends with your connection, and is never shared until the person pins it. Not available during a PII turn.", {
       capabilities: { type: "array", minItems: 1, maxItems: 128, description: "every capability you offer", items: { type: "object", additionalProperties: false, required: ["kind", "name", "description", "sideEffect"], properties: {
@@ -22279,6 +22279,10 @@ function readControl(stateDir) {
   }
 }
 var instancePins = new Map;
+var INVOCATION_CONTROL_TIMEOUT_MS = 3665000;
+function controlRequestTimeout(msg, requested = 30000) {
+  return msg.t === "task" && msg.op === "hub_invoke" && requested !== 0 ? Math.max(Number.isFinite(requested) ? requested : 0, INVOCATION_CONTROL_TIMEOUT_MS) : requested;
+}
 
 class ControlClient {
   ws;
@@ -22288,10 +22292,12 @@ class ControlClient {
     return this.welcomeInstanceId;
   }
   get isOpen() {
-    return this.ws.readyState === WebSocket.OPEN;
+    return !this.closing && this.ws.readyState === WebSocket.OPEN;
   }
   nextRid = 1;
   pending = new Map;
+  invocations = new Set;
+  closing = false;
   onPush = () => {};
   onClose = () => {};
   constructor(ws) {
@@ -22387,21 +22393,62 @@ class ControlClient {
       throw new Error("external instance catalog binding changed");
     return catalog;
   }
-  request(msg, timeoutMs = 30000) {
-    if (this.ws.readyState !== WebSocket.OPEN)
+  request(msg, timeoutMs = 30000, signal) {
+    if (this.ws.readyState !== WebSocket.OPEN || this.closing && msg.t !== "request_cancel")
       return Promise.resolve({ ok: false, error: "hub connection is not open" });
+    const invocation = msg.t === "task" && msg.op === "hub_invoke";
+    timeoutMs = controlRequestTimeout(msg, timeoutMs);
+    if (signal?.aborted)
+      return Promise.resolve({ ok: false, error: "hub request cancelled before sending" });
     const rid = this.nextRid++;
     return new Promise((resolve) => {
-      const timer = timeoutMs ? setTimeout(() => (this.pending.delete(rid), resolve({ ok: false, error: `no answer from the hub within ${Math.round(timeoutMs / 1000)} s` })), timeoutMs) : undefined;
-      this.pending.set(rid, (reply) => (clearTimeout(timer), resolve(reply)));
-      this.ws.send(JSON.stringify({ ...msg, rid }));
+      let timer;
+      const done = (reply) => {
+        this.pending.delete(rid);
+        this.invocations.delete(rid);
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", aborted);
+        resolve(reply);
+      };
+      const abandon = (error) => {
+        if (!this.pending.has(rid))
+          return;
+        if (invocation && this.ws.readyState === WebSocket.OPEN) {
+          try {
+            this.ws.send(JSON.stringify({ t: "request_cancel", request: rid }));
+          } catch {}
+        }
+        done({ ok: false, error: invocation ? `${error}; invocation admission unconfirmed, inspect before retrying` : error });
+      };
+      const aborted = () => abandon("hub request cancelled");
+      this.pending.set(rid, done);
+      if (invocation)
+        this.invocations.add(rid);
+      signal?.addEventListener("abort", aborted, { once: true });
+      if (signal?.aborted) {
+        aborted();
+        return;
+      }
+      timer = timeoutMs ? setTimeout(() => abandon(`no answer from the hub within ${Math.round(timeoutMs / 1000)} s`), timeoutMs) : undefined;
+      try {
+        this.ws.send(JSON.stringify({ ...msg, rid }));
+      } catch {
+        abandon("hub request could not be sent");
+      }
     });
   }
   send(msg) {
     this.ws.send(JSON.stringify(msg));
   }
   close() {
-    this.ws.close();
+    if (this.closing)
+      return;
+    this.closing = true;
+    if (!this.invocations.size || this.ws.readyState !== WebSocket.OPEN) {
+      this.ws.close();
+      return;
+    }
+    Promise.allSettled([...this.invocations].map((request) => this.request({ t: "request_cancel", request }, 3000))).finally(() => this.ws.close());
   }
 }
 
@@ -22891,6 +22938,7 @@ QUIET_EVENTS.add("ready held");
 QUIET_EVENTS.add("plan observed");
 QUIET_EVENTS.add("planner changed");
 QUIET_EVENTS.add("claim verdict");
+QUIET_EVENTS.add("invocation");
 QUIET_EVENTS.add("shell branch bound");
 var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassigned"]);
 var GROOM_FYI_WINDOW_MS = 10 * 60000;
@@ -31992,7 +32040,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   listedTools = toolKey(list);
   return list;
 });
-async function callTool(req) {
+async function callTool(req, signal) {
   const { name, arguments: args } = req.params;
   if (unidentified)
     return { ...text5(UNIDENTIFIED), isError: true };
@@ -32089,12 +32137,12 @@ ${polling}` : body);
       return text5(offline());
     if (name === "hub_invoke" && !hub.features.includes("invocation"))
       return { ...text5("error: this hub does not support invocations; restart it with the current agent-hub release (ahub restart)"), isError: true };
-    const res = await hub.request({ t: "task", op: name, args: args ?? {} });
+    const res = await hub.request({ t: "task", op: name, args: args ?? {} }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" ? signal : undefined);
     return { ...text5(res.ok ? res.text : `error: ${res.error}`), ...res.ok ? {} : { isError: true } };
   }
   return text5(`unknown tool ${name}`);
 }
-server.setRequestHandler(CallToolRequestSchema, async (req) => withPendingHint(await callTool(req), req.params.name !== "hub_inbox" && req.params.name !== "hub_source_read"));
+server.setRequestHandler(CallToolRequestSchema, async (req, extra) => withPendingHint(await callTool(req, extra.signal), req.params.name !== "hub_inbox" && req.params.name !== "hub_source_read"));
 await server.connect(new StdioServerTransport);
 process.stdin.on("end", () => process.exit(0));
 process.stdin.on("close", () => process.exit(0));

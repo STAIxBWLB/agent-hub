@@ -12,7 +12,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ControlClient, stateDirFor } from "../hub/control-client.ts";
+import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS, stateDirFor } from "../hub/control-client.ts";
 import { VERSION } from "../version.ts";
 import { IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION, projectConductorTools, projectToolList, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
 import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
@@ -391,7 +391,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return list;
 });
 
-async function callTool(req: { params: { name: string; arguments?: Record<string, unknown> } }) {
+async function callTool(req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal) {
   const { name, arguments: args } = req.params;
   if (unidentified) return { ...text(UNIDENTIFIED), isError: true };
   if (permissionTool && !IMPLEMENTER_HUB_TOOL_NAMES.includes(name)) return { ...text("tool unavailable to this owned implementer child"), isError: true };
@@ -460,14 +460,14 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     if (!hub) return text(offline());
     // #445 C2: a daemon that predates invocations would answer with a generic unknown-operation error; say what is missing instead.
     if (name === "hub_invoke" && !hub.features.includes("invocation")) return { ...text("error: this hub does not support invocations; restart it with the current agent-hub release (ahub restart)"), isError: true };
-    const res = await hub.request({ t: "task", op: name, args: args ?? {} });
+    const res = await hub.request({ t: "task", op: name, args: args ?? {} }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" ? signal : undefined);
     return { ...text(res.ok ? res.text : `error: ${res.error}`), ...(res.ok ? {} : { isError: true }) };
   }
   return text(`unknown tool ${name}`);
 }
 
 // Inbox results still show fresh counts, without telling a held or refused reader to retry in a loop.
-server.setRequestHandler(CallToolRequestSchema, async (req) => withPendingHint(await callTool(req), req.params.name !== "hub_inbox" && req.params.name !== "hub_source_read"));
+server.setRequestHandler(CallToolRequestSchema, async (req, extra) => withPendingHint(await callTool(req, extra.signal), req.params.name !== "hub_inbox" && req.params.name !== "hub_source_read"));
 
 await server.connect(new StdioServerTransport());
 // The host (Claude Code, Codex, Kimi) talks over stdin; once it is gone nothing can use this server, and a leftover would keep reconnecting.

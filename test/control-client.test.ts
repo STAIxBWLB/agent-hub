@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ControlClient, PROTOCOL, readControl, RECOVERY_SOURCE_PROTOCOLS } from "../src/hub/control-client.ts";
+import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS, controlRequestTimeout, PROTOCOL, readControl, RECOVERY_SOURCE_PROTOCOLS } from "../src/hub/control-client.ts";
 
 const ROOT = "/tmp/agent-hub-control-test";
 const cleanup: (() => void)[] = [];
@@ -84,4 +84,49 @@ test.each([9, 10, 11, 12, 13, 14, 15])("a matching source protocol (%i) can be s
 test("source matching cannot downgrade to unsupported legacy protocols", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "agent-hub-control-unsupported-"));
   await expect(ControlClient.connect(stateDir, { role: "console" }, 200, 5)).rejects.toThrow(/unsupported recovery source protocol/);
+});
+
+
+test("C3 every control-client invocation path covers the supported person approval window plus margin", () => {
+  const invocation = { t: "task", op: "hub_invoke", args: {} };
+  expect(INVOCATION_CONTROL_TIMEOUT_MS).toBeGreaterThan(3_600_000);
+  for (const requested of [undefined, 30_000, 50, -1, Infinity]) expect(controlRequestTimeout(invocation, requested)).toBe(INVOCATION_CONTROL_TIMEOUT_MS);
+  expect(controlRequestTimeout(invocation, INVOCATION_CONTROL_TIMEOUT_MS + 1000)).toBe(INVOCATION_CONTROL_TIMEOUT_MS + 1000);
+  expect(controlRequestTimeout(invocation, 0)).toBe(0);
+  expect(controlRequestTimeout({ t: "task", op: "hub_task_list" })).toBe(30_000);
+  expect(controlRequestTimeout({ t: "send", op: "hub_invoke" }, 100)).toBe(100);
+});
+
+test("C3 invocation deadline uses the approval-sized timer and sends request-scoped cancellation when it expires", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-invocation-control-"));
+  const seen: Record<string, any>[] = [];
+  const srv = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(_req, server) { return server.upgrade(_req) ? undefined : new Response("no"); },
+    websocket: { message(ws, data) {
+      const msg = JSON.parse(String(data)); seen.push(msg);
+      if (msg.t === "hello") ws.send(JSON.stringify({ t: "welcome", rid: msg.rid, ok: true, projectId: "p1", instanceId: "i1", cwd: ROOT }));
+    } },
+  });
+  cleanup.push(() => srv.stop(true));
+  writeFileSync(join(dir, "control-token"), "test-token\n");
+  writeFileSync(join(dir, "status.json"), JSON.stringify({ controlPort: srv.port, protocol: PROTOCOL, projectId: "p1", instanceId: "i1", cwd: ROOT }));
+  const client = await ControlClient.connect(dir, { role: "tools", peer: "codex" }); cleanup.push(() => client.close());
+  const original = globalThis.setTimeout, timers: ReturnType<typeof setTimeout>[] = [];
+  let expire!: () => void, registered = 0;
+  globalThis.setTimeout = ((handler: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    const timer = original(handler, delay, ...args);
+    if (delay === INVOCATION_CONTROL_TIMEOUT_MS) { registered = delay; expire = () => handler(...args); timers.push(timer); }
+    return timer;
+  }) as typeof setTimeout;
+  try {
+    const pending = client.request({ t: "task", op: "hub_invoke", args: {} }, 30_000);
+    expect(registered).toBeGreaterThan(3_600_000); expect(typeof expire).toBe("function");
+    for (let i = 0; i < 800 && !seen.some(msg => msg.t === "task"); i++) await Bun.sleep(5);
+    const request = seen.find(msg => msg.t === "task"); expect(request).toBeDefined();
+    expire(); const result = await pending;
+    expect(result.ok).toBe(false); expect(result.error).toContain("admission unconfirmed");
+    for (let i = 0; i < 800 && !seen.some(msg => msg.t === "request_cancel"); i++) await Bun.sleep(5);
+    expect(seen.find(msg => msg.t === "request_cancel")).toEqual({ t: "request_cancel", request: request!.rid });
+    expect(client.isOpen).toBe(true);
+  } finally { globalThis.setTimeout = original; for (const timer of timers) clearTimeout(timer); }
 });

@@ -280,3 +280,38 @@ test("the request is the envelope an answer names even when a recall preface rod
   const { replyParent } = await import("../src/hub/envelope.ts");
   expect(replyParent(handed).id).toBe(req.id);
 });
+
+
+for (const read of [true, false, undefined]) for (const maxAttempts of [1, 9]) test(`C3 invocation safe retry follows host read policy=${read}, independent of maxAttempts=${maxAttempts}`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-invocation-retry-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i", operationId: "o" });
+  const bus = new Bus({ batchMs: 0, retryMs: 1, maxAttempts: () => maxAttempts, journal });
+  try {
+    bus.canRetryInvocation = read === undefined ? undefined : () => read;
+    const peer = new Recorder("kimi"); let attempts = 0, failed = 0;
+    peer.deliver = async (_envs: Envelope[], deliveryId?: string) => { attempts++; if (deliveryId) bus.deliveryReceipt("kimi", { id: deliveryId, state: "failed_safe" }); };
+    bus.tap(event => { if (event.t === "undeliverable") failed++; });
+    bus.add(peer); await peer.start(); bus.publish(request("kimi"));
+    for (let i = 0; i < 400 && !failed; i++) await Bun.sleep(5);
+    expect(failed).toBe(1); expect(attempts).toBe(read ? 2 : 1); expect(bus.queueIds("kimi")).toEqual([]);
+  } finally { bus.closeJournal(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("C3 an uncertain invocation holds after restart and the recipient cannot replay it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-invocation-hold-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i", operationId: "o" });
+  let bus = new Bus({ batchMs: 0, journal });
+  try {
+    const peer = new Recorder("kimi"), env = request("kimi"); let uncertain = "";
+    bus.onInvocationUncertain = id => { uncertain = id; };
+    peer.deliver = async (_envs: Envelope[], id?: string) => { if (id) bus.deliveryReceipt("kimi", { id, state: "needs_review" }); };
+    bus.add(peer); await peer.start(); bus.publish(env);
+    for (let i = 0; i < 400 && !uncertain; i++) await Bun.sleep(5);
+    expect(uncertain).toBe(env.id); expect(bus.isHeld("kimi")).toBe(true);
+    bus = new Bus({ batchMs: 0, journal });
+    expect(bus.invocationUncertain(env.id)).toBe(true);
+    const row = bus.queueList("kimi", true).find(row => row.state === "needs_review")!;
+    expect(() => bus.retryDelivery("kimi", row.id)).toThrow(/retry unavailable/);
+    expect(bus.isHeld("kimi")).toBe(true); expect(bus.queueIds("kimi")).toEqual([]);
+  } finally { bus.closeJournal(); rmSync(dir, { recursive: true, force: true }); }
+});

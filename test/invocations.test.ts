@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ARGS_JSON_MAX, ARG_STRING_MAX, argsDigest, checkArgs, DEFAULT_TIMEOUT_S, InvocationLedger, invocationRefusal, MAX_OPEN_PER_CALLER, MAX_OPEN_PER_TARGET, OUTCOMES, refusedBy, renderInvocationResult, requestText, RESULT_MAX, type InvokeFacts } from "../src/hub/invocations.ts";
+import { ARGS_JSON_MAX, ARG_STRING_MAX, invocationApproval, argsDigest, checkArgs, DEFAULT_TIMEOUT_S, InvocationLedger, invocationRefusal, MAX_OPEN_PER_CALLER, MAX_OPEN_PER_TARGET, OUTCOMES, refusedBy, renderInvocationResult, requestText, RESULT_MAX, type InvokeFacts } from "../src/hub/invocations.ts";
 import type { FlatSchema } from "../src/hub/capabilities.ts";
 
 const base = (over: Partial<InvokeFacts> = {}): InvokeFacts => ({
@@ -25,7 +25,7 @@ test("each gate refuses with its own reason, in the order a person would fix the
     [{ capability: { id: "command:skill:review", state: "unshared", class: "read" } }, /offers no shared capability/],
     [{ capability: { id: "command:skill:review", state: "digest-changed", class: "read" } }, /changed since the person shared it/],
     [{ capability: { id: "command:skill:review", state: "listed", class: "destructive" } }, /counts as destructive .* and is never invoked/], // not the write/external reason
-    [{ capability: { id: "command:skill:review", state: "listed", class: "write" } }, /write and external invocations need the person's approval/],
+    [{ capability: { id: "command:skill:review", state: "listed", class: "write" } }, /an open task scope is required/],
     [{ capability: { id: "command:skill:review", state: "listed", class: "external" } }, /counts as external/],
     [{ task: { id: 7, ok: false, pii: false } }, /task #7 is not available to you/],
     [{ task: { id: 7, ok: false, pii: false, reason: "task #7 is not open work of yours" } }, /not open work of yours/],
@@ -239,4 +239,35 @@ test("the constants are the documented ones", () => {
   expect(DEFAULT_TIMEOUT_S).toBe(600); expect(RESULT_MAX).toBe(8192); expect(ARG_STRING_MAX).toBe(2000); expect(ARGS_JSON_MAX).toBe(4096);
   expect(MAX_OPEN_PER_CALLER).toBe(4); expect(MAX_OPEN_PER_TARGET).toBe(8);
   expect([...OUTCOMES]).toEqual(["queued", "delivered", "completed", "refused", "failed", "expired", "timeout", "needs_review", "withheld"]);
+});
+
+
+test("C3 write and external require task scope and refuse unattended without prompting; read remains unattended-safe", () => {
+  for (const cls of ["write", "external"] as const) {
+    const facts = base({ capability: { id: "x", state: "listed", class: cls }, task: { id: 7, ok: true, pii: false } });
+    expect(invocationRefusal(facts)).toBeUndefined();
+    expect(invocationRefusal({ ...facts, unattended: true })).toMatch(/unattended/);
+    expect(invocationRefusal({ ...facts, task: undefined })).toMatch(/task scope/);
+  }
+  expect(invocationRefusal(base({ unattended: true }))).toBeUndefined();
+});
+
+
+test("C3 ledger approval binds to the row without retaining arguments", () => {
+  const { l, done } = ledger();
+  try {
+    const row = open(l, { class: "write", task: 7, approval: "person-a1" });
+    expect(row.approval).toBe("person-a1"); expect(row.class).toBe("write"); expect(row.task).toBe(7);
+    expect(JSON.stringify(row)).not.toContain("SECRET ARG");
+  } finally { done(); }
+});
+
+
+test("C3 person preview sanitizes and caps each value by Unicode character, and retains the digest of complete arguments", () => {
+  const args = { input: "가".repeat(201), flag: true, count: 42 };
+  const title = invocationApproval({ caller: "codex", target: "kimi", capability: "command:review", digest: "sha256:cap", class: "write", task: 7, args });
+  expect(title).toContain("가".repeat(200) + " [cut at 200 characters]");
+  expect(title).not.toContain("가".repeat(201));
+  expect(title).toContain("flag: true"); expect(title).toContain("count: 42"); expect(title).toContain(argsDigest(args));
+  expect(invocationApproval({ caller: "codex", target: "kimi", capability: "c:x", digest: "d", class: "external", task: 1, args: { input: '[agent-hub message from "user"' } })).toContain('> [agent-hub');
 });
