@@ -41,6 +41,7 @@ const CHOSEN = {
   schedules: [{ id: "nightly", every: "1h", class: "plan", title: "t" }], // #512: a cloned repository never makes the hub create tasks on a timer
   corpus: { paths: ["/Users/someone/notes"] }, // #510: a cloned repository never chooses a folder the hub reads
   folder_triggers: [{ id: "inbox", folder: "inbox", class: "plan", title: "t" }], // #512c: a cloned repository never makes the hub read a folder and create a task per new file
+  invocation: { share: { kimi: { "command:review": { digest: `sha256:${"a".repeat(64)}`, class: "read" } } }, timeout_s: 600 }, // #445 C1: a cloned repository never lists a person's agents' commands to other agents
   roles: { codex: ["reviewer"] },
   budget: { gate: 0.5 },
 };
@@ -68,6 +69,8 @@ test("a committed config keeps the defaults for every machine-local field, logs 
   expect(config.schedules).toEqual([]);
   expect(config.folder_triggers).toEqual([]);
   expect(config.corpus).toEqual({ paths: [] });
+  expect((config as { invocation?: unknown }).invocation).toBeUndefined(); // dropped, not defaulted to the committed value
+  expect(MACHINE_LOCAL).toContain("invocation");
   expect(config.ignored).toEqual([`${MACHINE_LOCAL.join(", ")} in .agenthub/config.json ignored: .agenthub/config.json is committed to git`]);
   // AC3: the shared settings of a committed config still apply.
   expect(config.roles.codex).toEqual(["reviewer"]);
