@@ -16,7 +16,7 @@ export interface Envelope {
   kind: Kind;
   priority: Priority;
   body: string; // agent conclusions only, never tool noise
-  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string; reviewRevision?: string; taskOffer?: number; taskCancelled?: number; taskRecipient?: "owner" | "reviewer" | "planner"; planReview?: number; planReviewFlow?: number; planAuthor?: string; backlog?: number[]; supervision?: boolean; supervisionKey?: string; completedFor?: number; boundedCheck?: string; budgetResume?: string; budgetResumeMoves?: { id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]; budgetResumeEarlier?: string[]; invocation?: string };
+  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string; reviewRevision?: string; taskOffer?: number; taskCancelled?: number; taskRecipient?: "owner" | "reviewer" | "planner"; planReview?: number; planReviewFlow?: number; planAuthor?: string; backlog?: number[]; supervision?: boolean; supervisionKey?: string; completedFor?: number; boundedCheck?: string; budgetResume?: string; budgetResumeMoves?: { id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]; budgetResumeEarlier?: string[]; invocation?: string; invocationRemote?: true };
   /** The body must not be shown outside its recipients: console tail and log print a stub instead (PII tasks). */
   private?: boolean;
   ts: number;
@@ -29,6 +29,11 @@ export const USER: PeerId = "user";
 export const HUB: PeerId = "hub";
 /** A hub-written condensation of several status messages. Not a peer: a reply to it is for the senders it replaced. */
 export const DIGEST: PeerId = "digest";
+
+/** Host-marked room provenance survives local invocation rewriting; it grants no authority. */
+export function remoteEnvelope(env: Pick<Envelope, "from" | "kind" | "refs">): boolean {
+  return env.from.includes("@") || env.from === HUB && (env.kind === "invocation" || env.kind === "invocation_result") && env.refs?.invocationRemote === true;
+}
 
 export interface EnvelopeOpts {
   to?: PeerId[];

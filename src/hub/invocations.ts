@@ -4,7 +4,7 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
-import { sanitize } from "./envelope.ts";
+import { MAX_HOP, sanitize } from "./envelope.ts";
 import type { FlatSchema, ShareState, SideEffect } from "./capabilities.ts";
 
 export const OUTCOMES = ["queued", "delivered", "completed", "refused", "failed", "expired", "timeout", "needs_review", "withheld"] as const;
@@ -146,6 +146,14 @@ const cutBytes = (text: string, max: number): { text: string; cut: boolean } => 
   return { text: out, cut: true };
 };
 
+/** Room payload budget includes the cut marker; the source adds its own trusted header. */
+export function boundedInvocationBody(text: string): string {
+  const body = sanitize(text.replace(/\r\n?/g, "\n").trim());
+  if (Buffer.byteLength(body) <= RESULT_MAX) return body;
+  const marker = "\n[result cut at 8 KiB]";
+  return cutBytes(body, RESULT_MAX - Buffer.byteLength(marker)).text + marker;
+}
+
 /**
  * The body of the one result the caller reads: a hub-written first line, then the callee's text sanitized (a forged hub header is quoted) and cut to
  * RESULT_MAX bytes by code point. `outcome` other than `completed` carries no callee text, only the reason the hub wrote.
@@ -181,6 +189,40 @@ export interface InvocationRow {
 interface DbRow { id: string; trace: string; caller: string; target: string; capability: string; digest: string; class: string; task: number | null; approval: string | null; args_sha256: string; outcome: string; created: number; deadline: number; delivered_at: number | null; settled_at: number | null; result_bytes: number | null }
 const rowOf = (r: DbRow): InvocationRow => ({ id: r.id, trace: r.trace, caller: r.caller, target: r.target, capability: r.capability, digest: r.digest, class: r.class as SideEffect, task: r.task, approval: r.approval, argsSha256: r.args_sha256, outcome: r.outcome as InvocationOutcome, created: r.created, deadline: r.deadline, deliveredAt: r.delivered_at, settledAt: r.settled_at, resultBytes: r.result_bytes });
 
+/** Host-owned correlation only. Neither arguments nor result bodies belong in this table. */
+export interface InvocationRelay {
+  local: string; request: string; direction: "outbound" | "inbound";
+  room: string; member: string; epoch: string; remotePeer: string; caller: string; target: string;
+  capability: string; digest: string; hash: string; hop: number;
+  state: "prepared" | "admitted" | "result_queued" | "completed" | "needs_review";
+  result: string | null;
+}
+const RELAY_STATES: readonly InvocationRelay["state"][] = ["prepared", "admitted", "result_queued", "completed", "needs_review"];
+const RELAY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const RELAY_PEER = /^[a-z][a-z0-9-]{0,31}$/;
+function relayPeer(value: string): boolean { return RELAY_PEER.exec(value)?.[0] === value && !["user", "hub", "digest"].includes(value); }
+function validateRelay(row: InvocationRow, relay: Omit<InvocationRelay, "local" | "result">): void {
+  const remote = relay.remotePeer.split("@");
+  if (row.id.length !== 36 || relay.request.length !== 36 || !RELAY_UUID.test(row.id) || !RELAY_UUID.test(relay.request)
+    || !["outbound", "inbound"].includes(relay.direction)
+    || relay.room.length !== 43 || !/^[A-Za-z0-9_-]{43}$/.test(relay.room) || relay.member.length !== 64 || !/^[0-9a-f]{64}$/.test(relay.member)
+    || relay.epoch.length !== 43 || !/^[A-Za-z0-9_-]{43}$/.test(relay.epoch)
+    || remote.length !== 2 || !relayPeer(remote[0]!) || RELAY_PEER.exec(remote[1]!)?.[0] !== remote[1]
+    || !relayPeer(relay.caller) || !relayPeer(relay.target)
+    || !/^(command|skill|mcp_tool):[A-Za-z0-9_.:-]{1,64}$/.test(relay.capability)
+    || !/^sha256:[0-9a-f]{64}$/.test(relay.digest)
+    || !/^(sha256:[0-9a-f]{64}|[A-Za-z0-9_-]{43})$/.test(relay.hash)
+    || !Number.isSafeInteger(relay.hop) || relay.hop < 0 || relay.hop > MAX_HOP
+    || !RELAY_STATES.includes(relay.state)
+    || row.class !== "read" || (relay.direction === "inbound" && row.task !== null) || row.approval !== null
+    || row.capability !== relay.capability || row.digest !== relay.digest
+    || (relay.direction === "outbound"
+      ? row.caller !== relay.caller || row.target !== relay.remotePeer || remote[0] !== relay.target || row.id !== relay.request
+      : row.caller !== relay.remotePeer || row.target !== relay.target || remote[0] !== relay.caller || row.id === relay.request)) {
+    throw new Error("invalid invocation relay binding");
+  }
+}
+
 /**
  * The audit table. Ids, digests, classes, times and byte counts only: never an argument, a result or a description. Its own handle on hub.db, as the board has,
  * with the shared busy timeout. A row settles once: a second settle (a late answer after a timeout) changes nothing and returns undefined.
@@ -197,6 +239,12 @@ export class InvocationLedger {
       delivered_at INTEGER, settled_at INTEGER, result_bytes INTEGER)`);
     this.db.run("CREATE INDEX IF NOT EXISTS invocations_open ON invocations (outcome, deadline)");
     this.db.run("CREATE INDEX IF NOT EXISTS invocations_trace ON invocations (trace)");
+    this.db.run(`CREATE TABLE IF NOT EXISTS invocation_relays (
+      local TEXT PRIMARY KEY REFERENCES invocations(id), request TEXT NOT NULL, direction TEXT NOT NULL,
+      room TEXT NOT NULL, member TEXT NOT NULL, epoch TEXT NOT NULL, remotePeer TEXT NOT NULL, caller TEXT NOT NULL, target TEXT NOT NULL,
+      capability TEXT NOT NULL, digest TEXT NOT NULL, hash TEXT NOT NULL, hop INTEGER NOT NULL, state TEXT NOT NULL, result TEXT,
+      UNIQUE(room, member, request, direction))`);
+    this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS invocation_relay_result ON invocation_relays(result) WHERE result IS NOT NULL");
   }
 
   open(input: { id: string; trace: string; caller: string; target: string; capability: string; digest: string; class: SideEffect; task?: number; args: unknown; timeoutMs: number; approval?: string }): InvocationRow {
@@ -204,6 +252,41 @@ export class InvocationLedger {
     this.db.query("INSERT INTO invocations (id, trace, caller, target, capability, digest, class, task, approval, args_sha256, outcome, created, deadline) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)")
       .run(id, input.trace, input.caller, input.target, input.capability, input.digest, input.class, input.task ?? null, input.approval ?? null, argsDigest(input.args), now, now + input.timeoutMs);
     return this.get(id)!;
+  }
+  /** The local audit and room identity become durable together, or neither is retained. */
+  openRelay(input: Parameters<InvocationLedger["open"]>[0], relay: Omit<InvocationRelay, "local" | "result">): InvocationRow {
+    return this.db.transaction(() => {
+      const row = this.open(input);
+      validateRelay(row, relay);
+      this.db.query("INSERT INTO invocation_relays(local,request,direction,room,member,epoch,remotePeer,caller,target,capability,digest,hash,hop,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(row.id, relay.request, relay.direction, relay.room, relay.member, relay.epoch, relay.remotePeer, relay.caller, relay.target, relay.capability, relay.digest, relay.hash, relay.hop, relay.state);
+      return row;
+    })();
+  }
+  relay(local: string): InvocationRelay | undefined {
+    return this.db.query("SELECT * FROM invocation_relays WHERE local=?").get(local) as InvocationRelay | null ?? undefined;
+  }
+  relayByRemote(room: string, member: string, request: string, direction: InvocationRelay["direction"]): InvocationRelay | undefined {
+    return this.db.query("SELECT * FROM invocation_relays WHERE room=? AND member=? AND request=? AND direction=?").get(room, member, request, direction) as InvocationRelay | null ?? undefined;
+  }
+  relayForResult(resultId: string): InvocationRelay | undefined {
+    return this.db.query("SELECT * FROM invocation_relays WHERE result=?").get(resultId) as InvocationRelay | null ?? undefined;
+  }
+  /** Uncertainty and confirmed completion are sticky; result identity can be assigned only once. */
+  updateRelay(local: string, state: InvocationRelay["state"], resultId?: string): InvocationRelay | undefined {
+    if (!RELAY_STATES.includes(state) || resultId !== undefined && (resultId.length !== 36 || !RELAY_UUID.test(resultId))) throw new Error("invalid invocation relay update");
+    return this.db.transaction(() => {
+      const row = this.relay(local);
+      if (!row) return undefined;
+      if (resultId !== undefined && row.result !== null && row.result !== resultId) throw new Error("invocation relay result identity changed");
+      if (row.state === "completed" || row.state === "needs_review") return row;
+      if (RELAY_STATES.indexOf(state) < RELAY_STATES.indexOf(row.state)) return row;
+      this.db.query("UPDATE invocation_relays SET state=?,result=? WHERE local=?").run(state, resultId ?? row.result, local);
+      return this.relay(local);
+    })();
+  }
+  pendingRelays(): InvocationRelay[] {
+    return this.db.query("SELECT * FROM invocation_relays WHERE state!='completed' ORDER BY local").all() as InvocationRelay[];
   }
   byTrace(trace: string): InvocationRow | undefined { const r = this.db.query("SELECT * FROM invocations WHERE trace = ?").get(trace) as DbRow | null; return r ? rowOf(r) : undefined; }
   get(id: string): InvocationRow | undefined { const r = this.db.query("SELECT * FROM invocations WHERE id = ?").get(id) as DbRow | null; return r ? rowOf(r) : undefined; }

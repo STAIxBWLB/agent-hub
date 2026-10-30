@@ -1129,3 +1129,13 @@ test("C3 abrupt control disconnect withdraws a pending permission without client
   expect(f.codex.state).toBe("idle"); expect(f.rows()).toEqual([]); expect(f.kimi.got).toEqual([]);
   expect(t.board.get(t.id)!.history.filter(entry => entry.invocation)).toEqual([]);
 });
+
+
+test("an unrelated quiet task history entry does not invalidate a person's invocation approval", async () => {
+  const f = await fixture({ cls: "write" }), t = scope(f), p = await person(f);
+  const pending = invoke(f, { task: t.id }); await until(() => p.asks().length === 1, "approval barrier");
+  t.board.update(t.id, "hub", "idle sweep", {});
+  expect((await p.client.request({ t: "permit", id: p.asks()[0].id, option: "allow" })).ok).toBe(true);
+  expect((await pending).ok).toBe(true); await until(() => f.rows()[0]?.outcome === "completed", "scope remains current despite quiet bookkeeping");
+  expect(f.kimi.got).toHaveLength(1);
+});

@@ -79,26 +79,29 @@ export type RoomInvocationPayload = RoomReadInvocationRequest | RoomReadInvocati
 const INVOCATION_ARGS_MAX = 4096, INVOCATION_STRING_MAX = 2000, INVOCATION_RESULT_MAX = 8192;
 const CAPABILITY_ID = /^(command|skill|mcp_tool):[A-Za-z0-9_.:-]{1,64}$/;
 const CAPABILITY_DIGEST = /^sha256:[0-9a-f]{64}$/;
+export function roomInvocationArgs(value: unknown): Record<string, string | number | boolean> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail();
+  const keys = Object.keys(value);
+  if (keys.length > 16) fail("limit");
+  const raw = object(value, keys), args = Object.create(null) as Record<string, string | number | boolean>;
+  for (const key of keys) {
+    if (/^[A-Za-z0-9_.:-]{1,64}$/.exec(key)?.[0] !== key) fail();
+    const arg = raw[key];
+    if (typeof arg === "string") { if (!arg.isWellFormed() || arg.length > INVOCATION_STRING_MAX) fail("limit"); }
+    else if (typeof arg !== "boolean" && (typeof arg !== "number" || !Number.isFinite(arg))) fail();
+    Object.defineProperty(args, key, { value: arg, enumerable: true });
+  }
+  if (JSON.stringify(args).length > INVOCATION_ARGS_MAX) fail("limit");
+  return Object.fromEntries(Object.entries(args));
+}
 function invocationPayload(kind: RoomInvocationKind, value: unknown): RoomInvocationPayload {
   const row = object(value, kind === "invocation" ? ["invocation", "capability", "digest", "class", "depth", "args"] : ["invocation", "capability", "digest", "class", "outcome", "body"]);
   if (row.class !== "read" || typeof row.capability !== "string" || CAPABILITY_ID.exec(row.capability)?.[0] !== row.capability
     || typeof row.digest !== "string" || CAPABILITY_DIGEST.exec(row.digest)?.[0] !== row.digest) fail();
   const common = { invocation: uuid(row.invocation), capability: row.capability, digest: row.digest, class: "read" as const };
   if (kind === "invocation") {
-    if (row.depth !== 1 || !row.args || typeof row.args !== "object" || Array.isArray(row.args)) fail();
-    const keys = Object.keys(row.args);
-    if (keys.length > 16) fail("limit");
-    const raw = object(row.args, keys), args = Object.create(null) as Record<string, string | number | boolean>;
-    for (const key of keys) {
-      if (/^[A-Za-z0-9_.:-]{1,64}$/.exec(key)?.[0] !== key) fail();
-      const arg = raw[key];
-      if (typeof arg === "string") { if (!arg.isWellFormed() || arg.length > INVOCATION_STRING_MAX) fail("limit"); }
-      else if (typeof arg !== "boolean" && (typeof arg !== "number" || !Number.isFinite(arg))) fail();
-      Object.defineProperty(args, key, { value: arg, enumerable: true });
-    }
-    if (JSON.stringify(args).length > INVOCATION_ARGS_MAX) fail("limit");
-    // Return a plain object without invoking the __proto__ setter.
-    return { ...common, depth: 1, args: Object.fromEntries(Object.entries(args)) };
+    if (row.depth !== 1) fail();
+    return { ...common, depth: 1, args: roomInvocationArgs(row.args) };
   }
   if (typeof row.outcome !== "string" || !["completed", "refused", "failed", "expired", "timeout", "needs_review", "withheld"].includes(row.outcome)) fail();
   const body = text(row.body);

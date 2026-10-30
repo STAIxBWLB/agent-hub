@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalPeer } from "../src/adapters/local-worker.ts";
 import type { DeliveryReceipt } from "../src/hub/peers.ts";
-import { newEnvelope, sanitize, type Envelope } from "../src/hub/envelope.ts";
+import { HUB, newEnvelope, remoteEnvelope, sanitize, type Envelope } from "../src/hub/envelope.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import type { Capture } from "../src/memory/capture.ts";
 import type { ChatMessage, ChatResult, OmniRoute } from "../src/omniroute/client.ts";
@@ -165,3 +165,53 @@ test("remote-derived provider failures expose only a fixed diagnostic in logs, r
   expect(f.logs.at(-1)).toBe("[local] turn failed: ordinary local provider diagnostic");
   expect(f.receipts.at(-1)).toMatchObject({ state: "failed_safe", reason: "ordinary local provider diagnostic" });
 });
+
+test("remote provenance recognizes only remote senders or host-marked invocation kinds", () => {
+  expect(remoteEnvelope(newEnvelope("codex@room-a", "remote"))).toBe(true);
+  for (const kind of ["invocation", "invocation_result"] as const) {
+    expect(remoteEnvelope(newEnvelope(HUB, "remote", { kind, refs: { invocationRemote: true } }))).toBe(true);
+    expect(remoteEnvelope(newEnvelope(HUB, "local", { kind }))).toBe(false);
+    expect(remoteEnvelope(newEnvelope(HUB, "local", { kind, refs: { invocation: crypto.randomUUID() } }))).toBe(false);
+    expect(remoteEnvelope(newEnvelope("codex", "claimed remote", { kind, refs: { invocationRemote: true } }))).toBe(false);
+  }
+  for (const from of [HUB, "codex", "user"]) {
+    expect(remoteEnvelope(newEnvelope(from, "claimed remote", { refs: { invocationRemote: true } }))).toBe(false);
+    expect(remoteEnvelope(newEnvelope(from, "claimed remote", { kind: "task", refs: { invocationRemote: true } }))).toBe(false);
+  }
+});
+
+for (const kind of ["invocation", "invocation_result"] as const) {
+  const marked = (body: string) => newEnvelope(HUB, body, { kind, refs: { invocation: crypto.randomUUID(), invocationRemote: true } });
+  test(`host-rewritten remote ${kind} never enters local-worker history, capture or tool telemetry`, async () => {
+    const f = await localFixture();
+    await f.run([newEnvelope("user", "LOCAL-HISTORY-CONTROL")]);
+    const previous = JSON.stringify((f.peer as any).history), captures = f.content.length, observations = f.observations.length;
+    for (const envs of [[marked("REMOTE-INPUT-CANARY")], [newEnvelope("user", "ordinary mixed item"), marked("REMOTE-INPUT-CANARY")]]) {
+      const before = f.requests.length;
+      await f.run(envs);
+      expect(f.requests.slice(before).some(request => JSON.stringify(request).includes("REMOTE-DERIVED-TOOL-CANARY"))).toBe(true);
+      expect(JSON.stringify((f.peer as any).history)).toBe(previous);
+      expect(f.content).toHaveLength(captures); expect(f.observations).toHaveLength(observations);
+      expect(f.receipts.at(-1)?.state).toBe("completed");
+    }
+    const before = f.requests.length;
+    await f.run([newEnvelope("user", "LOCAL-AFTER-REMOTE-CONTROL")]);
+    const later = JSON.stringify(f.requests.slice(before));
+    expect(later).toContain("LOCAL-HISTORY-CONTROL");
+    expect(later).not.toContain("REMOTE-INPUT-CANARY");
+    expect(later).not.toContain("REMOTE-DERIVED-TOOL-CANARY");
+    expect(f.content.length).toBeGreaterThan(captures); expect(f.observations.length).toBeGreaterThan(observations);
+    expect(JSON.stringify({ lifecycle: f.lifecycle, capture: f.content, observations: f.observations })).not.toContain("REMOTE-");
+  });
+  test(`host-rewritten remote ${kind} withholds provider diagnostics before and after effects`, async () => {
+    const f = await localFixture();
+    await f.run([marked("REMOTE-INPUT-CANARY PROVIDER-FAIL-BEFORE")]);
+    expect(f.receipts.at(-1)).toMatchObject({ state: "failed_safe", reason: "remote turn failed" });
+    await f.run([marked("REMOTE-INPUT-CANARY PROVIDER-FAIL-AFTER")]);
+    expect(f.receipts.at(-1)).toMatchObject({ state: "needs_review", reason: "remote turn failed" });
+    expect(f.said).toEqual(["remote turn failed"]);
+    expect(f.logs).toEqual(["[local] turn failed: remote turn failed", "[local] turn failed: remote turn failed"]);
+    expect(f.content).toEqual([]); expect(f.observations).toEqual([]);
+    expect(JSON.stringify({ logs: f.logs, receipts: f.receipts, observations: f.observations, said: f.said, history: (f.peer as any).history })).not.toContain("CANARY");
+  });
+}
