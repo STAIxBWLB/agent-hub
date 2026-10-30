@@ -16,8 +16,8 @@ const QWEN_SKILL_SOURCES = ["bundled-skill", "skill-dir-command"];
 /**
  * An ACP `available_commands_update` as the capabilities of a probed Kimi or Qwen. Only entries that can be told apart as skills are listed (Qwen by
  * `_meta.source`, Kimi by its `skill:` prefix): a builtin such as `compact` or `clear` changes session or host state and is never listed. A native
- * listing carries no schema and no class, so each entry takes the one-string input and the lowest class (`read` is the publisher's claim, so the
- * person's share class decides; see O6). Any other agent or version gives an empty manifest.
+ * listing carries no schema and no class, so each entry takes the one-string input and declares no class at all (`sideEffect` is absent, not `read`): the
+ * person's share class is then the only one that counts, and with none it is `destructive` and refused (O6). Any other agent or version gives an empty manifest.
  */
 export function acpManifest(agent: unknown, version: unknown, update: unknown, observedAt: number): CapabilityManifest {
   const empty: CapabilityManifest = { capabilities: [], observedAt };
