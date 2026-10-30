@@ -53,7 +53,8 @@ test("one under each limit passes, and a task that is the caller's and not PII p
 test("the earlier gate wins when two apply (a PII turn beats an offline target; an offline target beats an unshared capability)", () => {
   expect(invocationRefusal(base({ piiContext: true, attached: false }))).toMatch(/PII/);
   expect(invocationRefusal(base({ attached: false, capability: undefined }))).toMatch(/offline/);
-  expect(invocationRefusal(base({ capability: { id: "x", state: "listed", class: "write" }, depth: true }))).toMatch(/approval/);
+  expect(invocationRefusal(base({ capability: { id: "x", state: "listed", class: "write" }, depth: true }))).toMatch(/do not nest/); // depth is asked before anything about the target
+  expect(invocationRefusal(base({ piiContext: true, depth: true }))).toMatch(/PII/);
 });
 
 const flat = (properties: FlatSchema["properties"], required?: string[]): FlatSchema => ({ type: "object", properties, ...(required ? { required } : {}), additionalProperties: false });

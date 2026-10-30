@@ -87,6 +87,8 @@ export interface InvokeFacts {
  */
 export function invocationRefusal(f: InvokeFacts): string | undefined {
   if (f.piiContext) return "invocation is unavailable during a PII turn";
+  // Depth needs no knowledge of the target and tells the caller nothing about it, so it comes before every gate that reads the target.
+  if (f.depth) return "invocations do not nest: you are answering one";
   if (f.caller === f.target) return "a peer cannot invoke its own capability";
   if (!f.onRoster) return `${f.target} is off the roster`;
   if (!f.attached) return `${f.target} is offline`;
@@ -100,7 +102,6 @@ export function invocationRefusal(f: InvokeFacts): string | undefined {
   if (f.capability.class !== "read") return `${f.capability.id} counts as ${f.capability.class}: write and external invocations need the person's approval path, which is not built yet; only read capabilities run now`;
   if (f.task && !f.task.ok) return f.task.reason ?? `task #${f.task.id} is not available to you`;
   if (f.task?.pii) return `task #${f.task.id} is a PII task`;
-  if (f.depth) return "invocations do not nest: you are answering one";
   if (f.openByCaller >= MAX_OPEN_PER_CALLER) return `you already have ${MAX_OPEN_PER_CALLER} invocations open; wait for a result`;
   if (f.openByTarget >= MAX_OPEN_PER_TARGET) return `${f.target} already has ${MAX_OPEN_PER_TARGET} invocations open`;
   return undefined;
