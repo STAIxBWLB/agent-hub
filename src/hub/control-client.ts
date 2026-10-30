@@ -103,6 +103,8 @@ export class ControlClient {
   get isOpen(): boolean { return this.ws.readyState === WebSocket.OPEN; }
   private nextRid = 1;
   private readonly pending = new Map<number, (msg: any) => void>();
+  private readonly invocations = new Set<number>();
+  private closing = false;
   onPush: (msg: any) => void = () => {};
   /** `code`/`reason`: what the hub closed with, e.g. 4000 when another client attached as the same peer. */
   onClose: (code: number, reason: string) => void = () => {};
@@ -188,7 +190,7 @@ export class ControlClient {
 
   /** `timeoutMs`: for calls a person waits on. The hub has its own budget; this one only makes sure the CLI never hangs. */
   request(msg: Record<string, unknown>, timeoutMs = 30_000, signal?: AbortSignal): Promise<any> {
-    if (this.ws.readyState !== WebSocket.OPEN) return Promise.resolve({ ok: false, error: "hub connection is not open" });
+    if (this.ws.readyState !== WebSocket.OPEN || this.closing && msg.t !== "request_cancel") return Promise.resolve({ ok: false, error: "hub connection is not open" });
     const invocation = msg.t === "task" && msg.op === "hub_invoke";
     timeoutMs = controlRequestTimeout(msg, timeoutMs);
     if (signal?.aborted) return Promise.resolve({ ok: false, error: "hub request cancelled before sending" });
@@ -196,7 +198,7 @@ export class ControlClient {
     return new Promise((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const done = (reply: any) => {
-        this.pending.delete(rid); clearTimeout(timer); signal?.removeEventListener("abort", aborted); resolve(reply);
+        this.pending.delete(rid); this.invocations.delete(rid); clearTimeout(timer); signal?.removeEventListener("abort", aborted); resolve(reply);
       };
       const abandon = (error: string) => {
         if (!this.pending.has(rid)) return;
@@ -207,6 +209,7 @@ export class ControlClient {
       };
       const aborted = () => abandon("hub request cancelled");
       this.pending.set(rid, done);
+      if (invocation) this.invocations.add(rid);
       signal?.addEventListener("abort", aborted, { once: true });
       if (signal?.aborted) { aborted(); return; }
       timer = timeoutMs ? setTimeout(() => abandon(`no answer from the hub within ${Math.round(timeoutMs / 1000)} s`), timeoutMs) : undefined;
@@ -220,6 +223,10 @@ export class ControlClient {
   }
 
   close(): void {
-    this.ws.close();
+    if (this.closing) return;
+    this.closing = true;
+    if (!this.invocations.size || this.ws.readyState !== WebSocket.OPEN) { this.ws.close(); return; }
+    // Withdraw admissions before reporting a graceful close to callers. An abrupt transport loss is fenced by the daemon close handler.
+    void Promise.allSettled([...this.invocations].map(request => this.request({ t: "request_cancel", request }, 3000))).finally(() => this.ws.close());
   }
 }
