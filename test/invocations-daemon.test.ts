@@ -1049,3 +1049,65 @@ test("C3 sweep reconciles an existing uncertain effect before its deadline", asy
   expect(f.daemon.bus.isHeld("kimi")).toBe(true); expect(f.kimi.got).toHaveLength(1);
   expect(t.board.get(t.id)!.history.filter(entry => entry.invocation).map(entry => entry.invocation!.outcome)).toEqual(["queued", "needs_review"]);
 });
+
+
+for (const cls of ["write", "external"]) test(`C3 disconnected ${cls} request withdraws approval even while its native peer remains attached`, async () => {
+  const f = await fixture({ cls }), t = scope(f), p = await person(f);
+  const caller = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex" }); cleanups.push(() => caller.close());
+  const pending = caller.request({ t: "task", op: "hub_invoke", args: { peer: "kimi", capability: cap().id, args: { input: "public diff" }, task: t.id } });
+  await until(() => p.asks().length === 1, "person-only approval pending");
+  const id = p.asks()[0].id;
+  caller.close(); expect((await pending).ok).toBe(false);
+  await until(() => p.pushes.some(value => value.t === "permission_closed" && value.id === id), "socket disconnect withdraws approval");
+  expect(f.codex.state).toBe("idle"); // The old peer-generation fence alone does not protect this tools socket.
+  expect((await p.client.request({ t: "permit", id, option: "allow" })).ok).toBe(false);
+  expect(f.rows()).toEqual([]); expect(f.kimi.got).toEqual([]);
+  expect(t.board.get(t.id)!.history.filter(entry => entry.invocation)).toEqual([]);
+});
+
+test("C3 abandoning one request aborts only its approval and keeps the control connection usable", async () => {
+  const f = await fixture({ cls: "write" }), t = scope(f), p = await person(f);
+  const caller = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex" }); cleanups.push(() => caller.close());
+  const args = { peer: "kimi", capability: cap().id, args: { input: "public diff" }, task: t.id };
+  const abort = new AbortController();
+  const abandoned = caller.request({ t: "task", op: "hub_invoke", args }, undefined, abort.signal);
+  await until(() => p.asks().length === 1, "first approval");
+  const kept = caller.request({ t: "task", op: "hub_invoke", args });
+  await until(() => p.asks().length === 2, "second approval");
+  abort.abort(); expect((await abandoned).ok).toBe(false);
+  const old = p.asks()[0].id;
+  await until(() => p.pushes.some(value => value.t === "permission_closed" && value.id === old), "cancel frame withdraws the abandoned request");
+  expect(caller.isOpen).toBe(true);
+  expect((await p.client.request({ t: "permit", id: old, option: "allow" })).ok).toBe(false);
+  expect((await p.client.request({ t: "permit", id: p.asks()[1].id, option: "allow" })).ok).toBe(true);
+  expect((await kept).ok).toBe(true);
+  await until(() => f.rows()[0]?.outcome === "completed", "retained request completes");
+  expect(f.rows()).toHaveLength(1); expect(f.kimi.got).toHaveLength(1);
+  expect(t.board.get(t.id)!.history.filter(entry => entry.invocation)).toHaveLength(2);
+});
+
+test("C3 a different tools connection cannot cancel another connection's invocation request", async () => {
+  const f = await fixture({ cls: "external" }), t = scope(f), p = await person(f);
+  const caller = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex" }); cleanups.push(() => caller.close());
+  const other = await ControlClient.connect(f.stateDir, { role: "tools", peer: "pi" }); cleanups.push(() => other.close());
+  const pending = caller.request({ t: "task", op: "hub_invoke", args: { peer: "kimi", capability: cap().id, task: t.id } });
+  await until(() => p.asks().length === 1, "approval barrier");
+  // Hello consumes rid1; this invocation uses rid2 on caller only.
+  expect(await other.request({ t: "request_cancel", request: 2 })).toMatchObject({ ok: true, cancelled: false });
+  await p.client.request({ t: "permit", id: p.asks()[0].id, option: "allow" });
+  expect((await pending).ok).toBe(true); await until(() => f.rows()[0]?.outcome === "completed", "authorized call completes");
+});
+
+test("C3 a disconnected request still in its argument screen cannot register an approval or dispatch later", async () => {
+  let entered = false, release!: () => void;
+  const screen = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture({ cls: "write", screen: async () => { entered = true; await screen; return { label: "clear", ms: 1 }; } }), t = scope(f), p = await person(f);
+  const caller = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex" }); cleanups.push(() => caller.close());
+  const pending = caller.request({ t: "task", op: "hub_invoke", args: { peer: "kimi", capability: cap().id, args: { input: "public diff" }, task: t.id } });
+  await until(() => entered, "screen barrier"); caller.close(); expect((await pending).ok).toBe(false);
+  release();
+  // A subsequent console request is a transport turn barrier, not a guessed cancellation sleep.
+  await p.client.request({ t: "status" });
+  expect(p.asks()).toEqual([]); expect(f.rows()).toEqual([]); expect(f.kimi.got).toEqual([]);
+  expect(t.board.get(t.id)!.history.filter(entry => entry.invocation)).toEqual([]);
+});

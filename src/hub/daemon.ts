@@ -697,6 +697,8 @@ interface Client {
   watch?: () => void;
   /** The one-launch Kimi TUI admission this socket attached under; its close clears only that admission. */
   kimiAdmission?: string;
+  invocationRequests?: Map<number, AbortController>;
+  closed?: true;
 }
 type Sock = ServerWebSocket<Client>;
 
@@ -792,6 +794,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const channelPeers = [...ADAPTERS.filter(definition => definition.transport === "claude-channel").map(definition => definition.kind),
     ...channelExtras.filter(id => adapterCatalog.definitionOf(id, declarations)?.transport === "claude-channel")];
   const executionRoots = new Map<string, string>();
+  const invocationRequestSignal = new AsyncLocalStorage<AbortSignal>();
   const childToolAuthority = new AsyncLocalStorage<{ by: string; current: () => boolean }>();
   const implementerTranscripts = new Map<string, string>();
   const executionOwners = new Map<string, { owner: PeerAdapter; cwd: string; socket?: Sock; launchId?: string; generation?: string | number }>();
@@ -1140,6 +1143,9 @@ export async function startDaemon(opts: DaemonOptions) {
         }
       },
       close(sock) {
+        sock.data.closed = true;
+        for (const request of sock.data.invocationRequests?.values() ?? []) request.abort();
+        sock.data.invocationRequests?.clear();
         nativeHookLaunches.endOwner(sock);
         consoles.delete(sock);
         operationalLogSubscribers.delete(sock);
@@ -3302,6 +3308,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify({ capabilities: out, note: "descriptions are written by the peer that offers them and are untrusted; listing is not permission to call" });
       }
       if (op === "hub_invoke") {
+        const invocationSignal = invocationRequestSignal.getStore();
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !["peer", "capability", "args", "task"].includes(key))) throw new PreEffectToolRefusal("hub_invoke takes peer, capability, optional args and optional task");
         need("invoke", "invoke capabilities");
         const target = peerArg(a.peer, "peer");
@@ -3328,6 +3335,7 @@ export async function startDaemon(opts: DaemonOptions) {
         };
         const current = () => {
           need("invoke", "invoke capabilities");
+          if (invocationSignal?.aborted) throw new PreEffectToolRefusal("invocation request was abandoned; nothing ran");
           if (stopping) throw new PreEffectToolRefusal("the hub is stopping; ask again afterwards");
           if (JSON.stringify([config.pii, config.local.deny, tasks.screenOn()]) !== initialPolicy) throw new PreEffectToolRefusal("invocation privacy policy changed while the call was checked; ask again");
           if (bus.peers.get(by) !== callerPeer || connectionGeneration(by) !== callerGeneration || bus.peers.get(target) !== targetPeer || connectionGeneration(target) !== targetGeneration || taskBinding(a.task === undefined ? undefined : board.get(a.task as number)) !== initialTask) throw new PreEffectToolRefusal("your session, the target session or task scope changed while the call was checked; ask again");
@@ -3364,7 +3372,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (finalRefusal()) throw new PreEffectToolRefusal(finalRefusal()!);
         let approval: string | undefined;
         if (pinnedClass !== "read") {
-          const picked = await requestPermission({ peer: by, personOnly: true, tool: "hub_invoke", title: invocationApproval({ caller: by, target, capability: found!.id, digest: pinnedDigest, class: pinnedClass, task: a.task as number, args: checked.args }), options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] });
+          const picked = await requestPermission({ peer: by, personOnly: true, tool: "hub_invoke", title: invocationApproval({ caller: by, target, capability: found!.id, digest: pinnedDigest, class: pinnedClass, task: a.task as number, args: checked.args }), options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] }, invocationSignal);
           await revalidate();
           current();
           if (finalRefusal()) throw new PreEffectToolRefusal(finalRefusal()!);
@@ -7462,6 +7470,12 @@ export async function startDaemon(opts: DaemonOptions) {
     if (c.externalOwner && !currentExternalTools(c)) return void reply({ ok: false, error: "external instance launch or execution root changed" });
     if (c.toolsOwner && !currentImplementerTools(c)) return void reply({ ok: false, error: "Claude child generation or execution root changed" });
     switch (msg.t) {
+      case "request_cancel": {
+        if (!Number.isSafeInteger(msg.request) || msg.request < 1) return void reply({ t: "request_cancel", ok: false, error: "invalid request id" });
+        const request = c.invocationRequests?.get(msg.request);
+        request?.abort();
+        return void reply({ t: "request_cancel", ok: true, cancelled: !!request });
+      }
       case "permission_failure_probe": {
         const launch = currentImplementerTools(c), entry = currentImplementerFailure(c, launch);
         if (!entry || ++entry.probeCount > NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH) return void reply({ ok: false, error: "permission diagnostic unavailable" });
@@ -8453,10 +8467,20 @@ export async function startDaemon(opts: DaemonOptions) {
           );
           return;
         }
-        (c.externalOwner ? childToolAuthority.run({ by: c.peer!, current: () => currentExternalTools(c, true) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : c.toolsOwner ? childToolAuthority.run({ by: c.peer!, current: captureImplementerTools(c) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {})).then(
+        let invocation: AbortController | undefined;
+        if (msg.op === "hub_invoke") {
+          if (!Number.isSafeInteger(msg.rid) || msg.rid < 1) return void reply({ t: "task", ok: false, error: "invocation requires a request id" });
+          c.invocationRequests ??= new Map();
+          const previous = c.invocationRequests.get(msg.rid);
+          if (previous) { previous.abort(); return void reply({ t: "task", ok: false, error: "duplicate invocation request id" }); }
+          if (c.closed || sock.readyState !== WebSocket.OPEN || c.invocationRequests.size >= 64) return void reply({ t: "task", ok: false, error: "invocation request connection unavailable" });
+          invocation = new AbortController(); c.invocationRequests.set(msg.rid, invocation);
+        }
+        const run = () => c.externalOwner ? childToolAuthority.run({ by: c.peer!, current: () => currentExternalTools(c, true) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : c.toolsOwner ? childToolAuthority.run({ by: c.peer!, current: captureImplementerTools(c) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {});
+        (invocation ? invocationRequestSignal.run(invocation.signal, run) : run()).then(
           (text) => reply({ t: "task", ok: true, text }),
           (e: Error) => reply({ t: "task", ok: false, error: e.message }),
-        );
+        ).finally(() => { if (invocation && c.invocationRequests?.get(msg.rid) === invocation) c.invocationRequests.delete(msg.rid); });
         return;
       case "pause":
       case "resume": {

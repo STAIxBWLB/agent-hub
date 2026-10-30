@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ControlClient, PROTOCOL, readControl, RECOVERY_SOURCE_PROTOCOLS } from "../src/hub/control-client.ts";
+import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS, controlRequestTimeout, PROTOCOL, readControl, RECOVERY_SOURCE_PROTOCOLS } from "../src/hub/control-client.ts";
 
 const ROOT = "/tmp/agent-hub-control-test";
 const cleanup: (() => void)[] = [];
@@ -84,4 +84,15 @@ test.each([9, 10, 11, 12, 13, 14, 15])("a matching source protocol (%i) can be s
 test("source matching cannot downgrade to unsupported legacy protocols", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "agent-hub-control-unsupported-"));
   await expect(ControlClient.connect(stateDir, { role: "console" }, 200, 5)).rejects.toThrow(/unsupported recovery source protocol/);
+});
+
+
+test("C3 every control-client invocation path covers the supported person approval window plus margin", () => {
+  const invocation = { t: "task", op: "hub_invoke", args: {} };
+  expect(INVOCATION_CONTROL_TIMEOUT_MS).toBeGreaterThan(3_600_000);
+  for (const requested of [undefined, 30_000, 50, -1, Infinity]) expect(controlRequestTimeout(invocation, requested)).toBe(INVOCATION_CONTROL_TIMEOUT_MS);
+  expect(controlRequestTimeout(invocation, INVOCATION_CONTROL_TIMEOUT_MS + 1000)).toBe(INVOCATION_CONTROL_TIMEOUT_MS + 1000);
+  expect(controlRequestTimeout(invocation, 0)).toBe(0);
+  expect(controlRequestTimeout({ t: "task", op: "hub_task_list" })).toBe(30_000);
+  expect(controlRequestTimeout({ t: "send", op: "hub_invoke" }, 100)).toBe(100);
 });
