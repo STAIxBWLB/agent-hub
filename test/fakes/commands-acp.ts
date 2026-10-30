@@ -13,10 +13,14 @@ for await (const line of createInterface({ input: process.stdin })) {
   const m = JSON.parse(line);
   if (m.method === "initialize") reply(m.id, { protocolVersion: 1, agentInfo: qwen ? { name: "qwen-code", version } : { name: "Kimi Code CLI", version } });
   else if (m.method === "session/new") {
-    if (process.argv.includes("--foreign")) list("some-other-session", [{ name: "skill:intruder", description: "not ours" }]);
-    if (process.argv.includes("--early")) list(session, commands);
+    if (process.argv.includes("--foreign") || process.argv.includes("--only-foreign")) list("some-other-session", [{ name: "skill:intruder", description: "not ours" }]);
+    const once = arg("--once"); // send our own list only the first time this file is absent: a restarted process sends none
+    const silent = process.argv.includes("--only-foreign") || (once !== undefined && (await Bun.file(once).exists()));
+    if (once !== undefined) await Bun.write(once, "1");
+    if (process.argv.includes("--early") && !silent) list(session, commands);
     reply(m.id, { sessionId: session, modes: { currentModeId: "default", availableModes: ["default", "yolo", "auto", "auto-edit"].map(id => ({ id, name: id })) } });
-    if (!process.argv.includes("--early")) list(session, commands);
+    if (!process.argv.includes("--early") && !silent) list(session, commands);
+    if (process.argv.includes("--foreign-after")) list("some-other-session", [{ name: "skill:intruder", description: "not ours, and late" }]);
   }
   else if (m.method === "session/set_mode") reply(m.id, {});
   else if (m.method === "session/prompt") reply(m.id, { stopReason: "end_turn" });

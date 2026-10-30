@@ -9,6 +9,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { acpManifest, validatePublished, type CapabilityManifest } from "../src/hub/capabilities.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
+import { projectToolList, profileTaskTools } from "../src/hub/hub-tools.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); });
@@ -84,6 +85,19 @@ test("hub_capabilities is strict about its input", async () => {
   expect((await f.call("codex", "hub_capabilities", { peer: "" })).ok).toBe(true);
 });
 
+test("a native peer that is offline, or whose list is empty, shows nothing to anyone", async () => {
+  const f = await fixture({ kimi: { [review().id]: { digest: review().digest, class: "read" } } });
+  expect(JSON.parse((await f.call("codex", "hub_capabilities")).text).capabilities).toHaveLength(1);
+  f.kimi.manifest = { capabilities: [], observedAt: 2 };
+  expect(JSON.parse((await f.call("user", "capabilities_list")).text).peers).toEqual([]); // a peer with nothing found is not a row
+  expect(JSON.parse((await f.call("codex", "hub_capabilities")).text).capabilities).toEqual([]);
+  f.kimi.manifest = nativeManifest();
+  expect(JSON.parse((await f.call("codex", "hub_capabilities")).text).capabilities).toHaveLength(1);
+  await f.kimi.stop(); // offline: its last list is not offered
+  expect(JSON.parse((await f.call("codex", "hub_capabilities")).text).capabilities).toEqual([]);
+  expect(JSON.parse((await f.call("user", "capabilities_list")).text).peers).toEqual([]);
+});
+
 const published = { capabilities: [{ kind: "skill", name: "lint", description: "Lint the tree.", sideEffect: "read" }] };
 
 test("a session publishes its own capabilities, never shared until pinned, and a native peer cannot publish", async () => {
@@ -117,6 +131,24 @@ test("a bad publish stores nothing, replaces the earlier list when good, and a d
   await f.pi.start();
   expect(await names()).toEqual([]); // the new connection never published
   expect((await f.call("user", "hub_capabilities_publish", published)).ok).toBe(false); // the person is not a peer with a session
+});
+
+test("a published list is bound to its connection: a replaced peer object, or an offline peer, neither lists nor publishes", async () => {
+  const pin = validatePublished(published, 1).capabilities[0]!;
+  const f = await fixture({ pi: { [pin.id]: { digest: pin.digest } } });
+  expect((await f.call("pi", "hub_capabilities_publish", published)).ok).toBe(true);
+  expect(JSON.parse((await f.call("codex", "hub_capabilities", { peer: "pi" })).text).capabilities).toHaveLength(1);
+  const again = new Peer("pi"); f.daemon.bus.add(again); await again.start(); // a new connection for the same id, with no offline event between
+  expect(JSON.parse((await f.call("codex", "hub_capabilities", { peer: "pi" })).text).capabilities).toEqual([]);
+  await again.stop();
+  const refused = await f.call("pi", "hub_capabilities_publish", published);
+  expect(refused.ok).toBe(false); expect(refused.error).toContain("attached session");
+});
+
+test("the read-only project tool list offers the read tool and never the publish tool", () => {
+  expect(projectToolList(profileTaskTools(), true).map(t => t.name)).toContain("hub_capabilities");
+  expect(projectToolList(profileTaskTools(), true).map(t => t.name)).not.toContain("hub_capabilities_publish");
+  expect(projectToolList(profileTaskTools(), false).map(t => t.name)).toContain("hub_capabilities_publish");
 });
 
 test("neither call runs for a peer holding PII, and a read-only status stays unaffected", async () => {

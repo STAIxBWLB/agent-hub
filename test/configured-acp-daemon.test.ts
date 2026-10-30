@@ -99,6 +99,10 @@ test("configured read-only instances acknowledge their native mode and refuse ta
     const before = await f.client.request({ t: "task", op: "hub_task_list", args: {} });
     const result = await tools.request({ t: "task", op: "hub_task_propose", args: { title: "must never be recorded", class: "implement" } });
     expect(result.ok).toBe(false); expect(result.error).toContain("read-only");
+    // #445 C1: a read-only instance may read what the person shared, and never publish.
+    expect((await tools.request({ t: "task", op: "hub_capabilities", args: {} })).ok).toBe(true);
+    const publish = await tools.request({ t: "task", op: "hub_capabilities_publish", args: { capabilities: [{ kind: "skill", name: "lint", description: "Lint.", sideEffect: "read" }] } });
+    expect(publish.ok).toBe(false); expect(publish.error).toContain("read-only");
     const after = await f.client.request({ t: "task", op: "hub_task_list", args: {} });
     expect(JSON.parse(after.text)).toEqual(JSON.parse(before.text));
     expect((await f.client.request({ t: "permission", peer: "fixture-check", mode: "never-ask", confirmed: true })).ok).toBe(false);

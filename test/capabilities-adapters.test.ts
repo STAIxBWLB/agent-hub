@@ -49,6 +49,26 @@ test("an offline peer and a restarted one list nothing until the new session sen
   expect((await settled(peer, 1)).capabilities.map(c => c.id)).toEqual(["command:skill:review"]);
 });
 
+test("a list for another session never counts, whether it comes while the session is being bound or after", async () => {
+  const only = await started("--only-foreign");
+  await Bun.sleep(200);
+  expect((await only.capabilityManifest()).capabilities).toEqual([]); // the only list there was belonged to another session
+  const after = await started("--foreign-after");
+  expect((await settled(after, 1)).capabilities.map(c => c.id)).toEqual(["command:skill:review"]); // a later foreign list does not replace ours
+  await Bun.sleep(150);
+  expect((await after.capabilityManifest()).capabilities.map(c => c.id)).toEqual(["command:skill:review"]);
+});
+
+test("a restarted agent that sends no list lists nothing: the old process's list does not carry over", async () => {
+  const once = join(await Bun.$`mktemp -d`.text().then(s => s.trim()), "sent");
+  const peer = await started("--once", once);
+  expect((await settled(peer, 1)).capabilities.map(c => c.id)).toEqual(["command:skill:review"]);
+  await peer.stop();
+  await peer.start(); // the file exists now, so this process sends no list
+  await Bun.sleep(200);
+  expect((await peer.capabilityManifest()).capabilities).toEqual([]);
+});
+
 // ---- Codex: skills/list through the attached connection ----
 import { CodexPeer } from "../src/adapters/codex-appserver.ts";
 
