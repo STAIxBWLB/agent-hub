@@ -28,6 +28,32 @@ test("a list for another session is never taken, before or after the session is 
   expect(m.capabilities.map(c => c.id)).toEqual(["command:skill:review"]); // not skill:intruder
 });
 
+// #567: a loaded machine delivers the session/new reply and the lists that follow it in ONE stdout chunk. `--burst` forces that on any machine, so these do not depend on timing.
+test("when the reply and a foreign list arrive in one chunk AFTER ours, the foreign one does not replace ours", async () => {
+  const peer = await started("--burst", "--foreign-after");
+  expect((await settled(peer, 1)).capabilities.map(c => c.id)).toEqual(["command:skill:review"]);
+});
+
+// A guard, not a reproduction: with ours LAST even main's single slot adopts it.
+test("when the reply, a foreign list FIRST and ours arrive in one chunk, ours is the one adopted", async () => {
+  const peer = await started("--burst", "--foreign-first");
+  expect((await settled(peer, 1)).capabilities.map(c => c.id)).toEqual(["command:skill:review"]);
+});
+
+test("a foreign list on both sides of ours in one chunk changes nothing, and a foreign-only chunk lists nothing", async () => {
+  const both = await started("--burst", "--foreign-first", "--foreign-after");
+  expect((await settled(both, 1)).capabilities.map(c => c.id)).toEqual(["command:skill:review"]);
+  const only = await started("--burst", "--only-foreign");
+  await Bun.sleep(200);
+  expect((await only.capabilityManifest()).capabilities).toEqual([]);
+});
+
+// Ours sits in the MIDDLE: 40 other sessions before it overflow the cap of 8 (the oldest go), and 3 after it must not push ours out nor stand in for it. Main's single slot ends on a foreign list.
+test("a burst of lists for many other sessions is bounded and still adopts the bound session's list", async () => {
+  const peer = await started("--burst", "--foreign-many", "40", "--foreign-after-many", "3");
+  expect((await settled(peer, 1)).capabilities.map(c => c.id)).toEqual(["command:skill:review"]);
+});
+
 test("a Qwen session lists its skills by source and never a builtin", async () => {
   const peer = new AcpPeer("qwen", { cmd: fake("--qwen"), cwd: process.cwd() });
   cleanups.push(() => peer.stop()); await peer.start();

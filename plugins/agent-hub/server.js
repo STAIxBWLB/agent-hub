@@ -3089,7 +3089,7 @@ function jsonObject(text) {
     return;
   }
 }
-var ACTION_BUDGET_OPTION = "agent-hub:action-budget", HANDSHAKE_MS = 30000, TOOL_INPUT_CAP = 64, TOOL_CEILING_MS, ACTIVITY_BATCH_MS = 50, managedLaunches, RpcTimeoutError, AcpPeer;
+var ACTION_BUDGET_OPTION = "agent-hub:action-budget", HANDSHAKE_MS = 30000, EARLY_COMMANDS_MAX = 8, TOOL_INPUT_CAP = 64, TOOL_CEILING_MS, ACTIVITY_BATCH_MS = 50, managedLaunches, RpcTimeoutError, AcpPeer;
 var init_acp = __esm(() => {
   init_envelope();
   init_kimi_native();
@@ -3115,7 +3115,7 @@ var init_acp = __esm(() => {
     agentIdentity;
     commands;
     binding = false;
-    earlyCommands;
+    earlyCommands = new Map;
     availableModes = new Set;
     proc;
     ownedGroup;
@@ -3237,7 +3237,7 @@ var init_acp = __esm(() => {
         throw new Error("Configured ACP still has a process; stop it before starting another");
       this.stopping = false;
       this.binding = true;
-      this.earlyCommands = undefined;
+      this.earlyCommands.clear();
       const launchedId = this.id;
       const launchedCwd = this.opts.cwd;
       const [bin, ...args] = this.opts.cmd;
@@ -3294,7 +3294,7 @@ var init_acp = __esm(() => {
         }
         this.sessionId = session.sessionId;
         this.binding = false;
-        this.adoptEarlyCommands();
+        this.adoptEarlyCommands(session.sessionId);
         this.onDoing?.("reset");
         const modes = session.modes?.availableModes;
         this.availableModes = new Set(Array.isArray(modes) ? modes.flatMap((mode) => typeof mode?.id === "string" ? [mode.id] : []) : []);
@@ -3396,9 +3396,9 @@ var init_acp = __esm(() => {
         throw new Error(`${this.id} permission mode unknown; restart the peer`);
       this.permissionMode = mode;
     }
-    adoptEarlyCommands() {
-      this.commands = this.earlyCommands;
-      this.earlyCommands = undefined;
+    adoptEarlyCommands(sessionId) {
+      this.commands = this.earlyCommands.get(sessionId);
+      this.earlyCommands.clear();
     }
     async capabilityManifest() {
       const held = this.commands;
@@ -3693,9 +3693,12 @@ ${renderDigest(envs, false)}` }] });
       if (msg.method === "session/update") {
         if (msg.params?.update?.sessionUpdate === "available_commands_update" && typeof msg.params.sessionId === "string") {
           const held = { sessionId: msg.params.sessionId, update: msg.params.update, at: Date.now() };
-          if (this.binding)
-            this.earlyCommands = held;
-          else if (held.sessionId === this.sessionId)
+          if (this.binding) {
+            this.earlyCommands.delete(held.sessionId);
+            this.earlyCommands.set(held.sessionId, held);
+            while (this.earlyCommands.size > EARLY_COMMANDS_MAX)
+              this.earlyCommands.delete(this.earlyCommands.keys().next().value);
+          } else if (held.sessionId === this.sessionId)
             this.commands = held;
           return;
         }
