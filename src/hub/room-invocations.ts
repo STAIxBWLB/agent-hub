@@ -25,8 +25,12 @@ export class RoomInvocations {
     if (env.kind === "invocation" && (route.direction !== "outbound" || !isOpenOutcome(row.outcome) || env.id !== route.request)) return undefined;
     if (env.kind === "invocation_result" && (route.direction !== "inbound" || env.id !== route.result || route.state !== "result_queued")) return undefined;
     if (env.kind !== "invocation" && env.kind !== "invocation_result") return undefined;
+    if (env.trace !== row.trace || env.hop !== route.hop + (env.kind === "invocation_result" ? 1 : 0)) return undefined;
+    if (env.kind === "invocation" && roomInvocationHash({ id: env.id, trace: env.trace, hop: env.hop, from: route.caller, to: route.target,
+      kind: env.kind, priority: "status", body: env.body, ts: env.ts }) !== route.hash) return undefined;
     const payload = decodeRoomInvocationBody(env.kind, env.body);
     if (payload.invocation !== route.request || payload.capability !== route.capability || payload.digest !== route.digest) return undefined;
+    if (env.kind === "invocation_result" && (payload as import("../rooms/application.ts").RoomReadInvocationResult).outcome !== row.outcome) return undefined;
     if (env.kind === "invocation" && argsDigest((payload as RoomReadInvocationRequest).args) !== row.argsSha256) return undefined;
     const current = () => {
       const live = this.p.ledger.relay(row.id), candidate = this.p.ledger.get(row.id);

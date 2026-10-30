@@ -137,3 +137,52 @@ test("bounded room result sanitizes forged headers and keeps its Unicode cut mar
     expect(Buffer.from(body).toString("utf8")).toBe(body);
   }
 });
+
+// Correlation authority is checked again at the receiving host, independently of transport decoding.
+import { RoomInvocations } from "../src/hub/room-invocations.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { encodeRoomInvocationBody, type RoomChatEnvelope } from "../src/rooms/application.ts";
+import type { RoomInvocationIngress } from "../src/rooms/service.ts";
+
+function authority() {
+  const { ledger } = fixture(), call = outbound(), row = ledger.openRelay(call.input, call.relay), bus = new Bus({ batchMs: 0 });
+  const finished: string[] = [], shares = { "kimi@beta": { [capability]: { digest, class: "read" as const } } };
+  const relay = new RoomInvocations({ ledger, bus, shares: () => shares,
+    identity: () => ({ room, member, epoch: call.relay.epoch, current: () => true }), target: async () => { throw new Error("not a target request"); },
+    safeResult: async (_text, current) => current(), finish: (input, outcome) => { if (ledger.settle(input.id, outcome)) finished.push(outcome); },
+  });
+  const env: RoomChatEnvelope = { id: crypto.randomUUID(), trace: row.trace, hop: 1, from: "kimi", to: "codex", kind: "invocation_result", priority: "status", ts: 1,
+    body: encodeRoomInvocationBody("invocation_result", { invocation: row.id, capability, digest, class: "read", outcome: "completed", body: "public result" }) };
+  let claims = 0;
+  const input: RoomInvocationIngress = { room, member, epoch: call.relay.epoch, envelope: env, remotePeer: "kimi@beta", hash: "sha256:" + "c".repeat(64), current: () => true, claim: () => { claims++; return true; } };
+  return { ledger, row, relay, input, finished, shares, claims: () => claims };
+}
+
+test("X6 room/member/epoch/peer/trace/hop/digest mismatch cannot settle a source invocation", async () => {
+  for (const field of ["room", "member", "epoch", "peer", "from", "to", "trace", "hop", "digest"] as const) {
+    const f = authority(), input = { ...f.input, envelope: { ...f.input.envelope } };
+    if (field === "room") input.room = "x".repeat(43);
+    if (field === "member") input.member = "d".repeat(64);
+    if (field === "epoch") input.epoch = "x".repeat(43);
+    if (field === "peer") input.remotePeer = "kimi@other";
+    if (field === "from") input.envelope.from = "other";
+    if (field === "to") input.envelope.to = "other";
+    if (field === "trace") input.envelope.trace = crypto.randomUUID();
+    if (field === "hop") input.envelope.hop = 0;
+    if (field === "digest") input.envelope.body = encodeRoomInvocationBody("invocation_result", { invocation: f.row.id, capability, digest: "sha256:" + "e".repeat(64), class: "read", outcome: "completed", body: "untrusted" });
+    expect(await f.relay.receive(input), field).toBe("refused"); expect(f.claims(), field).toBe(0);
+    expect(f.finished, field).toEqual([]); expect(f.ledger.get(f.row.id)?.outcome, field).toBe("queued");
+  }
+});
+
+test("X6 matching duplicate or late results never settle a row twice or revive needs_review", async () => {
+  const f = authority(); expect(await f.relay.receive(f.input)).toBe("admitted"); expect(await f.relay.receive(f.input)).toBe("admitted");
+  expect(f.finished).toEqual(["completed"]);
+  const g = authority(); g.ledger.settle(g.row.id, "needs_review"); g.ledger.updateRelay(g.row.id, "needs_review");
+  expect(await g.relay.receive(g.input)).toBe("admitted"); expect(g.finished).toEqual([]); expect(g.ledger.get(g.row.id)?.outcome).toBe("needs_review");
+});
+
+test("X6 a revoked source pin withholds result text instead of granting by the remote label", async () => {
+  const f = authority(); delete (f.shares as Record<string, unknown>)["kimi@beta"];
+  expect(await f.relay.receive(f.input)).toBe("admitted"); expect(f.finished).toEqual(["withheld"]);
+});
