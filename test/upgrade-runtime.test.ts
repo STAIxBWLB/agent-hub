@@ -394,6 +394,24 @@ test("recovery driver uses the source manifest protocol for a protocol-9 prepare
   } finally { server.stop(true); rmSync(stateDir, { recursive: true, force: true }); rmSync(projectRoot, { recursive: true, force: true }); }
 });
 
+test("#489 H4 a protocol-9 source is still spoken to in protocol 9 when the control timeout is configured", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-h4-v9-"));
+  const projectRoot = realpathSync(mkdtempSync(join(tmpdir(), "ahub-h4-v9-project-")));
+  gitInit(projectRoot); configureRecovery(projectRoot, { control_timeout_s: 120 });
+  const seenVersions: number[] = [];
+  const server = Bun.serve<any>({
+    hostname: "127.0.0.1", port: 0,
+    fetch(request, srv) { return srv.upgrade(request) ? undefined : new Response("no"); },
+    websocket: { message(ws, data) { const msg = JSON.parse(String(data)); if (msg.t === "hello") { seenVersions.push(msg.v); ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p9", instanceId: "i9", cwd: projectRoot, protocol: 9 })); } else ws.send(JSON.stringify({ rid: msg.rid, t: "recovery", ok: true })); } },
+  });
+  writeFileSync(join(stateDir, "control-token"), "source-v9-token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: 9, projectId: "p9", instanceId: "i9", cwd: projectRoot }));
+  try {
+    await makeRecoveryDriver().prepare({ id: "p9", root: projectRoot, stateDir, basePort: 4600 } as any, "op9", "i9");
+    expect(seenVersions).toEqual([9]); // the configured timeout did not displace the protocol argument
+  } finally { server.stop(true); rmSync(stateDir, { recursive: true, force: true }); rmSync(projectRoot, { recursive: true, force: true }); }
+}, 30_000);
+
 for (const change of ["incarnation", "session"] as const) {
   test(`production recovery verification rejects a changed ${change} without terminal mutation`, async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-review-runtime-")));
@@ -1357,12 +1375,13 @@ test("a headless agent is stopped through peer_stop, and a hub that does not kno
 });
 
 /** Capture only the control caps; real transport still uses consumed hello/status barriers. */
-function inspectionTimerClock() {
+/** `captured` names the timer durations the fake clock holds back (the 3 s and 30 s caps by default); any other timer is a real one. */
+function inspectionTimerClock(captured: readonly number[] = [3000, 30_000]) {
   const set = globalThis.setTimeout, clear = globalThis.clearTimeout;
   const timers: { handle: ReturnType<typeof setTimeout>; ms: number; due: number; run: () => void; cleared: boolean; fired: boolean }[] = [];
   let now = 0;
   globalThis.setTimeout = ((callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
-    if (ms !== 3000 && ms !== 30_000) return set(callback, ms, ...args);
+    if (ms === undefined || !captured.includes(ms)) return set(callback, ms, ...args);
     const handle = set(() => {}, 60_000);
     timers.push({ handle, ms, due: now + ms, run: () => callback(...args), cleared: false, fired: false });
     return handle;
@@ -1525,6 +1544,7 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pendi
   mkdirSync(join(codeHome, "sessions"), { recursive: true });
   writeFileSync(join(codeHome, "sessions", `${session}.jsonl`), "{}\n");
   let created = !!pending, attached = false, creates = 0, postCreateReads = 0, pulseReads = 0;
+  const idleWaits: number[] = [];
   const server = fakeHub(root, stateDir, "i-target", () => {
     const visible = elapsed >= control.pulseAtMs ? ++pulseReads >= 4 || pulseReads % 2 === 0 : attached;
     const state = visible ? "idle" : "offline";
@@ -1567,7 +1587,7 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pendi
     } else if (!control.noRecord) recordLauncher(); if (control.wrongInstance) progress.instanceId = "wrong-instance"; result = { terminal: shown }; }
     else if (argv[2] === "list") result = { terminals: created ? [shown] : [] };
     else if (argv[2] === "show") result = { terminal: shown };
-    else if (argv[2] === "wait") result = { wait: { satisfied: true } };
+    else if (argv[2] === "wait") { idleWaits.push(Number(argv[argv.indexOf("--timeout-ms") + 1])); result = { wait: { satisfied: true } }; } // #489 H4: what each idle wait asked Orca for
     else throw new Error("unexpected terminal mutation");
     return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
   };
@@ -1582,7 +1602,7 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pendi
     progress.terminals[`restored:${peer}`] = pending;
     recordLauncher();
   }
-  return { root, stateDir, planned, progress, op, control, removeClaudeTranscript: () => rmSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`)), setAttached: (value: boolean) => { attached = value; }, elapsed: () => elapsed,
+  return { root, stateDir, planned, progress, op, control, idleWaits, removeClaudeTranscript: () => rmSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`)), setAttached: (value: boolean) => { attached = value; }, elapsed: () => elapsed,
     driver: makeRecoveryDriver(run, undefined, { now: () => elapsed, sleep: async (ms) => { elapsed += ms; if (elapsed >= control.unavailableAtMs) { server.stop(true); control.unavailableAtMs = Infinity; } if (elapsed >= control.exitAtMs) { recordLauncher(false); control.exitAtMs = Infinity; } if (elapsed >= control.interruptAtMs) throw new Error("fixture coordinator interrupted"); } }), creates: () => creates,
     endLauncher: () => recordLauncher(false),
     resetPostCreateReads: () => { postCreateReads = 0; },
@@ -2568,3 +2588,164 @@ test("#466 an interrupted repair preserves its actual wrong-session cause inside
     expect(f.creates()).toBe(1);
   } finally { f.cleanup(); }
 });
+
+// ---- #489 H4: the recovery waits are settings, read from the project's own config at the start of each wait ----
+const configureRecovery = (root: string, recovery: Record<string, unknown>, file: "config.json" | "config.local.json" = "config.local.json") => {
+  mkdirSync(join(root, ".agenthub"), { recursive: true });
+  writeFileSync(join(root, ".agenthub", file), JSON.stringify({ recovery }));
+};
+const gitInit = (root: string) => { const result = Bun.spawnSync(["git", "-C", root, "init", "-q"]); if (result.exitCode !== 0) throw new Error("git init failed"); };
+
+test("#489 H4 a configured managed attachment wait is the one the real driver waits, records and names, and a raised deadline is the receipt's", async () => {
+  const f = delayedManagedFixture("claude"); f.control.attachAfterRead = false; // the terminal never attaches: only the wait ends it
+  gitInit(f.root); configureRecovery(f.root, { reconnect_wait_s: 700 });
+  f.op.step = "restore:p-215";
+  try {
+    const error = await f.driver.restore(f.planned, f.progress, f.op, "claude", () => {}).catch(caught => caught);
+    expect(error).toBeInstanceOf(Error); expect(error.message).toContain("attachment not verified within 700 s");
+    // the typed cause the presentation reads carries the wait that applied, not the default
+    expect(error.presentationCause).toMatchObject({ kind: "native_recovery", reason: "attachment_timeout", peer: "claude", timeoutMs: 700_000 });
+    expect(f.elapsed()).toBe(700_000);
+    expect((f.op as any).waits?.[f.op.step]).toEqual({ waitStartedAt: new Date(0).toISOString(), deadlineAt: new Date(700_000).toISOString(), waitEndedAt: new Date(700_000).toISOString() });
+  } finally { f.cleanup(); }
+}, 90_000);
+
+// Each case waits out a simulated 600 s against a real hub socket (a few seconds idle, slower on a shard), so each is its own test with an explicit bound.
+for (const [name, recovery] of [["nothing configured", undefined], ["a value below its floor", { reconnect_wait_s: 100 }], ["a string", { reconnect_wait_s: "700" }], ["a non-integer", { reconnect_wait_s: 700.5 }]] as const) {
+  test(`#489 H4 the managed attachment wait is exactly the old 600 seconds with ${name} in the file`, async () => {
+    const f = delayedManagedFixture("claude"); f.control.attachAfterRead = false;
+    gitInit(f.root); if (recovery) configureRecovery(f.root, recovery);
+    try {
+      await expect(f.driver.restore(f.planned, f.progress, f.op, "claude", () => {})).rejects.toThrow("attachment not verified within 600 s");
+      expect(f.elapsed()).toBe(600_000);
+    } finally { f.cleanup(); }
+  }, 90_000);
+}
+
+test("#489 H4 an attachment wait already running keeps its deadline when the file changes meanwhile, and the next wait reads the new value", async () => {
+  const f = delayedManagedFixture("claude"); f.control.attachAfterRead = false;
+  gitInit(f.root); configureRecovery(f.root, { reconnect_wait_s: 700 });
+  let editedAt = -1;
+  // The fixture's clock is its own `elapsed`: edit the file the first time the fake clock passes 100 s, which is inside a 700 s wait and never before it starts.
+  const watch = setInterval(() => { if (editedAt < 0 && f.elapsed() >= 100_000) { editedAt = f.elapsed(); configureRecovery(f.root, { reconnect_wait_s: 3600 }); } }, 1);
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "claude", () => {})).rejects.toThrow("attachment not verified within 700 s");
+    expect(editedAt).toBeGreaterThanOrEqual(100_000); expect(editedAt).toBeLessThan(700_000); // the edit really landed inside the wait
+    expect(f.elapsed()).toBe(700_000); // and did not move the running wait's deadline
+  } finally { clearInterval(watch); f.cleanup(); }
+  // the next wait, in the same project, reads the edited file
+  const next = delayedManagedFixture("claude"); next.control.attachAfterRead = false;
+  gitInit(next.root); configureRecovery(next.root, { reconnect_wait_s: 700 });
+  configureRecovery(next.root, { reconnect_wait_s: 900 });
+  try {
+    await expect(next.driver.restore(next.planned, next.progress, next.op, "claude", () => {})).rejects.toThrow("attachment not verified within 900 s");
+  } finally { next.cleanup(); }
+}, 120_000);
+
+test("#489 H4 a configured unmanaged reconnect wait is the one the real driver waits and names, and unset it is the old 90 seconds", async () => {
+  const f = delayedManagedFixture("claude"); f.control.attachAfterRead = false; // the terminal never attaches: only the wait ends it
+  gitInit(f.root); configureRecovery(f.root, { unmanaged_reconnect_wait_s: 200 });
+  f.planned.terminals = []; f.planned.reconnectOnly = ["claude"];
+  try {
+    const error = await f.driver.restore(f.planned, f.progress, f.op, "claude", () => {}).catch(error => error);
+    expect(error.message).toContain("unmanaged session did not reconnect within 200 s");
+    expect(error.presentationCause).toEqual({ kind: "native_recovery", reason: "attachment_timeout", projectId: "p-215", peer: "claude", timeoutMs: 200_000 });
+    expect(f.elapsed()).toBe(200_000); expect(f.creates()).toBe(0);
+  } finally { f.cleanup(); }
+});
+
+test("#489 H4 a machine-local recovery wait that git tracks is refused: the real driver waits the shared file's value", async () => {
+  const f = delayedManagedFixture("claude"); f.control.attachAfterRead = false; // the terminal never attaches: only the wait ends it
+  gitInit(f.root);
+  configureRecovery(f.root, { reconnect_wait_s: 650 }, "config.json");
+  configureRecovery(f.root, { reconnect_wait_s: 900 }, "config.local.json");
+  expect(Bun.spawnSync(["git", "-C", f.root, "add", "-f", ".agenthub/config.local.json"]).exitCode).toBe(0);
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "claude", () => {})).rejects.toThrow("attachment not verified within 650 s");
+    expect(f.elapsed()).toBe(650_000);
+  } finally { f.cleanup(); }
+}, 90_000);
+
+test("#489 H4 a configured control timeout is the one the real driver gives both the connect and the request, and unset it is the old 30 seconds", async () => {
+  const clock = inspectionTimerClock([30_000, 120_000]);
+  const timeoutsFor = async (configure: ((root: string) => void) | undefined) => {
+    const f = heldInspectionHello(true);
+    gitInit(f.project.root); configure?.(f.project.root);
+    const driver = makeRecoveryDriver(async () => { throw new Error("no command expected"); });
+    const op = { id: "op-489", plan: { version: VERSION, projects: [] }, projects: [] } as unknown as RecoveryOperation;
+    const result = driver.prepare(f.project, op.id, f.project.instanceId!, []).catch(error => error);
+    try { await f.hello; return clock.active().map(timer => timer.ms); }
+    finally { f.close(); await result; f.cleanup(); }
+  };
+  try {
+    expect(await timeoutsFor(undefined)).toEqual([30_000, 30_000]);
+    expect(await timeoutsFor(root => configureRecovery(root, { control_timeout_s: 120 }))).toEqual([120_000, 120_000]);
+    expect(await timeoutsFor(root => configureRecovery(root, { control_timeout_s: 5 }))).toEqual([30_000, 30_000]); // below its floor: the default
+  } finally { clock.restore(); }
+}, 60_000);
+
+test("#489 H4 the real recovery inspection reads the control timeout through the same setting", async () => {
+  const f = heldInspectionHello(), clock = inspectionTimerClock([200_000]); let settled = false;
+  gitInit(f.project.root); configureRecovery(f.project.root, { control_timeout_s: 200 });
+  const result = inspectRecovery(f.project).then(value => { settled = true; return value; });
+  try {
+    await f.hello;
+    expect(clock.active().map(timer => timer.ms)).toEqual([200_000, 200_000]);
+    clock.advance(199_999); await inspectionContinuations(); expect(settled).toBe(false);
+    clock.advance(1);
+    expect(await result).toMatchObject({ state: "unavailable" });
+  } finally { f.close(); await result; clock.restore(); f.cleanup(); }
+}, 60_000);
+
+for (const [name, recovery, expected] of [["nothing configured", undefined, 120_000], ["a configured value", { terminal_idle_wait_s: 300 }, 300_000], ["the shortest allowed", { terminal_idle_wait_s: 30 }, 30_000], ["a value below its floor", { terminal_idle_wait_s: 5 }, 120_000]] as const) {
+  test(`#489 H4 the terminal idle wait the real driver asks Orca for is ${expected / 1000} s with ${name} in the file`, async () => {
+    const f = delayedManagedFixture("claude");
+    gitInit(f.root); if (recovery) configureRecovery(f.root, recovery);
+    try {
+      await f.driver.restore(f.planned, f.progress, f.op, "claude", () => {});
+      await f.driver.verify(f.planned, f.progress, f.op);
+      // 5000 ms is terminal-recovery's own exit-confirmation slice (EXIT_SLICE_MS), a different wait that stays a constant; the idle waits are the rest, and there are two of them
+      const idle = f.idleWaits.filter(ms => ms !== 5000);
+      expect(idle.length).toBeGreaterThanOrEqual(2);
+      expect(new Set(idle)).toEqual(new Set([expected]));
+    } finally { f.cleanup(); }
+  }, 60_000);
+}
+
+// The retired terminal of a restarted target is closed only once it is idle: its wait is the same `recovery.terminal_idle_wait_s`, read from the project the terminal belongs to.
+for (const [name, recovery, expectedMs] of [["nothing configured", undefined, 120_000], ["a configured value", { terminal_idle_wait_s: 240 }, 240_000]] as const) {
+  test(`#489 H4 the retired terminal's idle wait the real driver asks Orca for is ${expectedMs / 1000} s with ${name} in the file`, async () => {
+    const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-h4-retired-")));
+    const stateDir = join(temp, "state"); mkdirSync(stateDir);
+    gitInit(temp); if (recovery) configureRecovery(temp, recovery);
+    const server = fakeHub(temp, stateDir, "i-new", () => ({ operationId: "op-445", phase: "restored", ready: true, peers: {} }));
+    const retired = { handle: "term-retired", incarnationId: "inc-term-retired", worktreeId: "wt", worktreePath: temp, agentIdentity: "codex", sessionId: "thread-accepted", connected: true };
+    let open = true; const waits: number[] = [];
+    const run = async (argv: string[]) => {
+      if (argv[1] === "-e") return { code: 0, stdout: "function\n", stderr: "" };
+      if (argv[2] === "close") open = false;
+      if (argv[2] === "wait") waits.push(Number(argv[argv.indexOf("--timeout-ms") + 1]));
+      const result = argv[2] === "show" ? { terminal: retired } : argv[2] === "wait" ? { wait: { satisfied: true } } : argv[2] === "close" ? {} : { terminals: open ? [retired] : [] };
+      return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+    };
+    const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
+    const planned: PlannedProject = {
+      project: { id: "p-445", root: temp, stateDir, instanceId: "i-source", pid: null, basePort: 4600 },
+      source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "codex", state: "idle", threadId: "thread-T" }], blockers: [] },
+      terminals: [{ peer: "codex", handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch, launchMetadata: launch }], blockers: [],
+    };
+    const progress: ProjectProgress = { id: "p-445", instanceId: "i-new", phase: "started", restarts: [{ instanceId: "i-dead", at: 1 }], fresh: { codex: { lost: "thread-T", reason: "chosen", at: 1 } },
+      terminals: { "closed:codex": true, "retired:codex": { ...planned.terminals[0] as object, handle: "term-retired", incarnationId: "inc-term-retired", sessionId: "thread-accepted" } } };
+    const op = { id: "op-445", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+    const previousHome = process.env.AGENTHUB_HOME; process.env.AGENTHUB_HOME = join(temp, "home");
+    try {
+      // the restoration after the close fails for lack of a rollout; only the retired terminal's close, and the idle wait before it, matter here
+      await makeRecoveryDriver(run).restore(planned, progress, op, "native", () => {}).catch(() => {});
+      expect(progress.terminals["closedRetired:codex"]).toBe(true);
+      expect(waits[0]).toBe(expectedMs);
+    } finally {
+      if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+      server.stop(true); rmSync(temp, { recursive: true, force: true });
+    }
+  }, 60_000);
+}

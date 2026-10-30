@@ -80,9 +80,37 @@ export const BUS_TERMINAL_HISTORY_LIMIT_SETTING = busNumber({
   max: 2048, defaultValue: 2048, unit: "rows", inventory: "src/hub/delivery-journal.ts:TERMINAL_CAP",
 });
 
+/**
+ * #489 H4, recovery and upgrade waits. These are read by the upgrade coordinator (a CLI process) from the project's own config at the START of each wait, so a change applies at the next wait and a wait
+ * already running keeps its deadline. Every row's minimum is today's constant: a person-visible wait can be raised, never cut below what ships (a request that times out may already have applied, and a
+ * shorter reconnect wait fails a recovery earlier than the person was told). The one row that may shorten, `recovery.terminal_idle_wait_s`, only ends a wait in manual-required, which retains the terminal.
+ */
+const recoveryNumber = <const T extends Omit<OperationalNumberSetting, "group" | "store" | "risk" | "applies" | "type">>(def: T) => ({ group: "Routing", store: "config", risk: "raises", applies: "next use", type: "integer", ...def }) as const satisfies OperationalNumberSetting;
+export const RECOVERY_RECONNECT_WAIT_SETTING = recoveryNumber({
+  key: "recovery.reconnect_wait_s", path: ["recovery", "reconnect_wait_s"], label: "Upgrade recovery: wait for a managed terminal to attach (seconds)",
+  min: 600, max: 3600, defaultValue: 600, unit: "seconds", inventory: "src/cli/upgrade-runtime.ts:RECONNECT_WAIT_MS",
+});
+export const RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING = recoveryNumber({
+  key: "recovery.unmanaged_reconnect_wait_s", path: ["recovery", "unmanaged_reconnect_wait_s"], label: "Upgrade recovery: wait for an unmanaged Claude to reconnect (seconds)",
+  min: 90, max: 900, defaultValue: 90, unit: "seconds", inventory: "src/cli/upgrade-runtime.ts:UNMANAGED_RECONNECT_WAIT_MS",
+});
+export const RECOVERY_CONTROL_TIMEOUT_SETTING = recoveryNumber({
+  key: "recovery.control_timeout_s", path: ["recovery", "control_timeout_s"], label: "Upgrade recovery: wait for one control request to a hub (seconds)",
+  min: 30, max: 300, defaultValue: 30, unit: "seconds", inventory: "src/cli/upgrade-runtime.ts:RECOVERY_CONTROL_TIMEOUT_MS",
+});
+export const RECOVERY_SHUTDOWN_WAIT_SETTING = recoveryNumber({
+  key: "recovery.shutdown_wait_s", path: ["recovery", "shutdown_wait_s"], label: "Upgrade recovery: wait for the old hub to stop after commit (seconds)",
+  min: 30, max: 300, defaultValue: 30, unit: "seconds", inventory: "src/cli/upgrade.ts:deadline",
+});
+export const RECOVERY_TERMINAL_IDLE_WAIT_SETTING = recoveryNumber({
+  key: "recovery.terminal_idle_wait_s", path: ["recovery", "terminal_idle_wait_s"], label: "Upgrade recovery: wait for a terminal to go idle before closing it (seconds)",
+  min: 30, max: 600, defaultValue: 120, unit: "seconds", inventory: "src/cli/upgrade-runtime.ts:waitForIdle",
+});
+
 /** Fixed metadata; never registration from a file, request, adapter or environment variable. */
 export const OPERATIONAL_NUMBERS: readonly OperationalNumberSetting[] = [GROOM_FYI_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SETTING, CONTRADICTION_WINDOW_SETTING, RESCREEN_MAX_SETTING, SPLIT_MIN_SETTING, SPLIT_FAILURE_SHARE_SETTING,
-  BUS_MAX_ATTEMPTS_SETTING, BUS_DIGEST_MAX_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_NOTES_KEPT_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING];
+  BUS_MAX_ATTEMPTS_SETTING, BUS_DIGEST_MAX_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_NOTES_KEPT_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING,
+  RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING];
 /** The `tasks` leaves the six #489 H2 readers need; `HubConfig.tasks` has them all. */
 export interface TaskOperationalConfig { tasks: { demote_at?: number; demotion_half_life_h?: number; contradiction_window_days?: number; rescreen_max?: number; split_min_observations?: number; split_max_failure_share?: number } }
 /**
@@ -106,4 +134,21 @@ export const busOperationalReaders = (config: () => BusOperationalConfig) => ({
   notesKept: () => config().bus?.notes_kept ?? BUS_NOTES_KEPT_SETTING.defaultValue,
   terminalHistoryLimit: () => config().bus?.terminal_history_limit ?? BUS_TERMINAL_HISTORY_LIMIT_SETTING.defaultValue,
 });
+export interface RecoveryOperationalConfig { recovery?: { reconnect_wait_s?: unknown; unmanaged_reconnect_wait_s?: unknown; control_timeout_s?: unknown; shutdown_wait_s?: unknown; terminal_idle_wait_s?: unknown } }
+export interface RecoveryWaits { reconnectWaitMs: number; unmanagedReconnectWaitMs: number; controlTimeoutMs: number; shutdownWaitMs: number; terminalIdleWaitMs: number }
+const recoveryMs = (def: OperationalNumberSetting, raw: unknown): number => {
+  // A value outside the row's bounds, a non-integer or a non-number is the default, never an error inside a recovery: the file was validated when it was written, and a recovery must not fail on a later edit.
+  return typeof raw === "number" && Number.isSafeInteger(raw) && raw >= def.min && raw <= def.max ? raw * 1000 : def.defaultValue * 1000;
+};
+/** The one place the coordinator turns the five recovery settings into milliseconds. `config` is asked at each wait, so the next wait reads the file as it is then. */
+export const recoveryWaits = (config: () => RecoveryOperationalConfig | undefined): RecoveryWaits => {
+  const leaf = config()?.recovery;
+  return {
+    reconnectWaitMs: recoveryMs(RECOVERY_RECONNECT_WAIT_SETTING, leaf?.reconnect_wait_s),
+    unmanagedReconnectWaitMs: recoveryMs(RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING, leaf?.unmanaged_reconnect_wait_s),
+    controlTimeoutMs: recoveryMs(RECOVERY_CONTROL_TIMEOUT_SETTING, leaf?.control_timeout_s),
+    shutdownWaitMs: recoveryMs(RECOVERY_SHUTDOWN_WAIT_SETTING, leaf?.shutdown_wait_s),
+    terminalIdleWaitMs: recoveryMs(RECOVERY_TERMINAL_IDLE_WAIT_SETTING, leaf?.terminal_idle_wait_s),
+  };
+};
 export const operationalNumber = (key: string): OperationalNumberSetting | undefined => OPERATIONAL_NUMBERS.find(def => def.key === key);

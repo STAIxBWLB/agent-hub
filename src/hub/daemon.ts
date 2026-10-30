@@ -81,7 +81,7 @@ import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { CONTRADICTION_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SETTING, GROOM_FYI_WINDOW_SETTING, RESCREEN_MAX_SETTING, SPLIT_FAILURE_SHARE_SETTING, SPLIT_MIN_SETTING, taskOperationalReaders } from "./operational-settings.ts";
-import { BUS_DIGEST_MAX_SETTING, BUS_MAX_ATTEMPTS_SETTING, BUS_NOTES_KEPT_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING, busOperationalReaders } from "./operational-settings.ts";
+import { BUS_DIGEST_MAX_SETTING, BUS_MAX_ATTEMPTS_SETTING, BUS_NOTES_KEPT_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING, busOperationalReaders, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING } from "./operational-settings.ts";
 import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
 import type { ScannedFile } from "./schedules.ts";
@@ -273,7 +273,8 @@ export interface HubConfig {
   /** Reviewer choice from recorded review outcomes, once a reviewer has `min_reviews` of an implementer (issue #35). */
   review: { adaptive: boolean; min_reviews: number; pool?: string[]; rerotate?: boolean; same_family?: "fallback" | "never" };
   /** After an unplanned stop, start Kimi, Pi and the local worker again with their recorded sessions (issue #37). */
-  recovery: { auto_resume_after_crash: boolean };
+  /** #489 H4: the five waits the upgrade coordinator reads from this project's config at the start of each wait; the daemon itself only validates and carries them. */
+  recovery: { auto_resume_after_crash: boolean; reconnect_wait_s?: number; unmanaged_reconnect_wait_s?: number; control_timeout_s?: number; shutdown_wait_s?: number; terminal_idle_wait_s?: number };
   /** Per peer, the hub-tool capabilities it has (issue #39); a peer not listed has all of them. */
   capabilities: Record<string, string[]>;
   /**
@@ -329,7 +330,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   terminal: { open: [] },
   limits: DEFAULT_LIMITS,
   review: { adaptive: false, min_reviews: 5 },
-  recovery: { auto_resume_after_crash: false },
+  recovery: { auto_resume_after_crash: false, reconnect_wait_s: RECOVERY_RECONNECT_WAIT_SETTING.defaultValue, unmanaged_reconnect_wait_s: RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING.defaultValue, control_timeout_s: RECOVERY_CONTROL_TIMEOUT_SETTING.defaultValue, shutdown_wait_s: RECOVERY_SHUTDOWN_WAIT_SETTING.defaultValue, terminal_idle_wait_s: RECOVERY_TERMINAL_IDLE_WAIT_SETTING.defaultValue },
   capabilities: {},
   coordination: "advisory",
 };

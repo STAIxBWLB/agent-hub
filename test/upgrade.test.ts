@@ -14,7 +14,7 @@ const homes: string[] = [];
 // The fixture preserves this package as its coordinator, which has every recovery command (#215).
 const C = `bun ${join(PACKAGE_ROOT, "src/cli/main.js")} recovery`;
 afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); });
-function fixture(kind: "restart" | "upgrade" = "upgrade", ids = ["alpha", "beta"]) {
+function fixture(kind: "restart" | "upgrade" = "upgrade", ids = ["alpha", "beta"], rootOf: (id: string) => string = id => `/${id}`) {
   const home = mkdtempSync(join(tmpdir(), "ahub-upgrade-test-")); homes.push(home);
   const calls: string[] = [];
   const states = new Map<string, Inspection>();
@@ -22,7 +22,7 @@ function fixture(kind: "restart" | "upgrade" = "upgrade", ids = ["alpha", "beta"
     projects: ids.map((id) => {
       const source: Inspection = { state: "running", instanceId: `old-${id}`, version: "0.5.0", protocol: 9, peers: [], blockers: [] };
       states.set(id, structuredClone(source));
-      return { project: { id, root: `/${id}`, stateDir: `/${id}/state`, pid: 123, instanceId: `old-${id}`, basePort: 4600 }, source, terminals: [], blockers: [] };
+      return { project: { id, root: rootOf(id), stateDir: `${rootOf(id)}/state`, pid: 123, instanceId: `old-${id}`, basePort: 4600 }, source, terminals: [], blockers: [] };
     }), blockers: [] };
   const plan: UpgradePlan = { ...body, fingerprint: planFingerprint(body) };
   const operation = createOperation(plan, PACKAGE_ROOT, home);
@@ -1647,3 +1647,24 @@ test("#410 external delegation append refuses a held runner without overwriting 
     expect(readOperation<RecoveryOperation>(f.operation.id, f.home).delegatedAudits).toBeUndefined();
   } finally { release(); }
 });
+
+// #489 H4: the wait after a commit for the source to stop is `recovery.shutdown_wait_s` (30 s unset), read from the project's own config when the wait starts.
+for (const [name, recovery, expectedMs] of [["nothing configured", undefined, 30_000], ["a configured value", { shutdown_wait_s: 100 }, 100_000], ["a value below its floor", { shutdown_wait_s: 5 }, 30_000]] as const) {
+  test(`#489 H4 the real runner waits ${expectedMs / 1000} s for a committed source that never stops, with ${name} in the file`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "ahub-h4-shutdown-")); homes.push(root);
+    mkdirSync(join(root, ".agenthub"));
+    expect(Bun.spawnSync(["git", "-C", root, "init", "-q"]).exitCode).toBe(0);
+    if (recovery) writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify({ recovery }));
+    const f = fixture("restart", ["alpha"], () => root), inspect = f.driver.inspect; // the fixture's roots are fake paths; this one holds the config
+    // after the commit request the source never reads as stopped: it answers "running" until the wait ends
+    f.driver.inspect = async (...args) => {
+      const receipt = readOperation<RecoveryOperation>(f.operation.id, f.home);
+      if (receipt.projects[0]!.phase === "prepared" && receipt.projects[0]!.commitSent) return { state: "running", instanceId: "old-alpha", version: "0.5.0", protocol: 9, peers: [], blockers: [] };
+      return inspect(...args);
+    };
+    const result = await runRecovery(f.operation.id, f.driver, f.home);
+    expect(result.phase).toBe("blocked"); expect(result.error).toContain("old shutdown is not verified");
+    expect(f.driver.now()).toBe(expectedMs);
+    expect(f.calls).not.toContain("start:alpha");
+  }, 30_000);
+}

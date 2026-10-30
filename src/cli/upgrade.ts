@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { REGISTRY_DB_BUSY_TIMEOUT_MS, PROJECT_COLUMNS, projectFromRow, type Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
+import { readRecoveryWaits } from "./recovery-waits.ts";
 import { acquireRecoveryLock, claimRunner, coordinatorCurrent, operationIdPattern, readOperation, recoveryCommand, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
 import { resolveAcceptedBinding, piArchiveExit, recordedPeerGuidance, type RecoveryNativePeer } from "./recovery-guidance.ts";
 import type { TerminalBinding } from "./terminal-recovery.ts";
@@ -802,7 +803,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
           throw new Error(`${project.id}: the source stopped while prepared and no commit was requested, so there is nothing to restore`);
         }
         if (awaitShutdown) {
-          const deadline = driver.now() + 30_000;
+          const deadline = driver.now() + readRecoveryWaits(project.root).shutdownWaitMs; // #489 H4: recovery.shutdown_wait_s, 30 s unset
           // An already-sent commit can be between its final reply and the source closing its control server.
           if (resumedShutdown) {
             if (live.instanceId && live.instanceId !== planned.source.instanceId) throw new Error(`${project.id}: another daemon started during shutdown`);

@@ -36,6 +36,12 @@ test("#489 every operational row has an independent legacy default pin and an op
     "bus.pull_budget_bytes": { legacy: 65_536, scale: 1 },
     "bus.notes_kept": { legacy: 10, scale: 1 },
     "bus.terminal_history_limit": { legacy: 2048, scale: 1 },
+    // #489 H4 (group 3): what each wait was before it became a setting, in milliseconds, written out here and never imported from the code under test.
+    "recovery.reconnect_wait_s": { legacy: 600_000, scale: 1000 },
+    "recovery.unmanaged_reconnect_wait_s": { legacy: 90_000, scale: 1000 },
+    "recovery.control_timeout_s": { legacy: 30_000, scale: 1000 },
+    "recovery.shutdown_wait_s": { legacy: 30_000, scale: 1000 },
+    "recovery.terminal_idle_wait_s": { legacy: 120_000, scale: 1000 },
   };
   const inventory = readFileSync(join(import.meta.dir, "../docs/verification/2026-10-24-hardcoded-values.md"), "utf8").split("\n");
   const docs = readFileSync(join(import.meta.dir, "../docs/operations.md"), "utf8");
