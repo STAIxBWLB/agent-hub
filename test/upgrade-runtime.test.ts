@@ -2601,7 +2601,10 @@ test("#489 H4 a configured managed attachment wait is the one the real driver wa
   gitInit(f.root); configureRecovery(f.root, { reconnect_wait_s: 700 });
   f.op.step = "restore:p-215";
   try {
-    await expect(f.driver.restore(f.planned, f.progress, f.op, "claude", () => {})).rejects.toThrow("attachment not verified within 700 s");
+    const error = await f.driver.restore(f.planned, f.progress, f.op, "claude", () => {}).catch(caught => caught);
+    expect(error).toBeInstanceOf(Error); expect(error.message).toContain("attachment not verified within 700 s");
+    // the typed cause the presentation reads carries the wait that applied, not the default
+    expect(error.presentationCause).toMatchObject({ kind: "native_recovery", reason: "attachment_timeout", peer: "claude", timeoutMs: 700_000 });
     expect(f.elapsed()).toBe(700_000);
     expect((f.op as any).waits?.[f.op.step]).toEqual({ waitStartedAt: new Date(0).toISOString(), deadlineAt: new Date(700_000).toISOString(), waitEndedAt: new Date(700_000).toISOString() });
   } finally { f.cleanup(); }
