@@ -41,7 +41,7 @@ const CHOSEN = {
   schedules: [{ id: "nightly", every: "1h", class: "plan", title: "t" }], // #512: a cloned repository never makes the hub create tasks on a timer
   corpus: { paths: ["/Users/someone/notes"] }, // #510: a cloned repository never chooses a folder the hub reads
   folder_triggers: [{ id: "inbox", folder: "inbox", class: "plan", title: "t" }], // #512c: a cloned repository never makes the hub read a folder and create a task per new file
-  invocation: { share: { kimi: { "command:review": { digest: `sha256:${"a".repeat(64)}`, class: "read" } } }, timeout_s: 600 }, // #445 C1: a cloned repository never lists a person's agents' commands to other agents
+  invocation: { share: { kimi: { "command:review": { digest: `sha256:${"a".repeat(64)}`, class: "read" } } } }, // #445 C1: a cloned repository never lists a person's agents' commands to other agents
   roles: { codex: ["reviewer"] },
   budget: { gate: 0.5 },
 };
@@ -94,6 +94,18 @@ test("the same fields in an untracked config.local.json are used, over a committ
   // Committing the local file takes its trust away too.
   git("add", "-f", ".agenthub/config.local.json");
   expect(loadConfig(dir).codex_bin).toBe(DEFAULT_CONFIG.codex_bin);
+});
+
+test("invocation.share is carried from an untracked config.local.json and dropped the moment that file is committed (#445 C1)", () => {
+  const { dir, git } = repo();
+  const share = { kimi: { "command:skill:review": { digest: `sha256:${"b".repeat(64)}`, class: "read" } } };
+  write(dir, "config.local.json", { invocation: { share } });
+  expect(loadConfig(dir).invocation).toEqual({ share });
+  expect(loadConfig(dir).ignored).toBeUndefined();
+  git("add", "-f", ".agenthub/config.local.json");
+  const committed = loadConfig(dir);
+  expect(committed.invocation).toBeUndefined();
+  expect(committed.ignored?.join(" ")).toContain("invocation");
 });
 
 test("an untracked config is used as it is; a committed copy of the template asks git nothing and reports nothing", () => {

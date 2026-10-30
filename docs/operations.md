@@ -581,6 +581,22 @@ authority. All newly admitted reads use the ordinary tools connection and public
 views, never console identity. The person's full readback stays unchanged.
 Conductor operations are listed in [the operational command table](#conductor-operations-812-t2-933-900).
 
+### Capability discovery (#445 C1)
+
+`ahub capabilities [--json]` is Console only: an agent shell is refused, and so is the configured conductor. It lists, for each attached peer, the skills and commands the hub can read from that peer's own session, whether you share each one, its digest, and the class a call would count as. It lists and never calls anything; invoking a capability is a later slice (C2).
+
+What the hub can read is deliberately narrow. A listing is read only from a version whose listing was probed (the [C0 receipt](verification/2026-10-30-445-capability-probes.md)): Kimi 2.3.2, Qwen 0.26.1 and Codex 0.166.0. Any other version lists nothing until a new receipt covers it, and so does a peer that is offline or whose list did not arrive. Codex's pinned 0.154.0 is not probed, so a pinned install lists nothing for now. Only skills are listed: Qwen by its `_meta.source` (`bundled-skill`, `skill-dir-command`), Kimi by the `skill:` prefix of its name, Codex by an enabled entry of `skills/list`. A builtin such as Kimi's `compact` or Qwen's `clear` changes session or host state and is never listed. A session the hub cannot read natively publishes its own list with `hub_capabilities_publish`; that list is bound to the connection that published it, forced to `invoke: prompt`, and gone when the connection ends.
+
+Sharing is a positive allowlist in `.agenthub/config.local.json` only (`invocation` is machine-local: a committed copy is ignored and logged, and it is never editable from settings):
+
+```json
+{ "invocation": { "share": { "kimi": { "command:skill:review": { "digest": "sha256:<64 hex>", "class": "read" } } } } }
+```
+
+The key is the peer id (an instance `codex-2` never inherits `codex`'s entries). The digest is the one `ahub capabilities` prints, and covers the kind, name, input schema, declared class, source and invoke form, not the description: a change to any of those unlists the entry until you pin the new digest, and rewording the description does not. `class` is `read`, `write`, `external` or `destructive`, and the effective class is the higher of what the source declared and what you wrote. No native listing declares a class, so an entry you share with no `class` counts as `destructive`, which a later invocation refuses.
+
+Agents see only what you shared. `hub_capabilities { peer? }` returns the shared entries (id, flat input schema, effective class, digest, source, invoke form and the target's permission mode) and nothing else; it grants no right to call anything. Descriptions are written by the peer that offers them: they are sanitized, cut at 300 characters and shown as untrusted. Neither `hub_capabilities` nor `hub_capabilities_publish` runs in a PII turn or for a peer holding a PII task, and neither call reaches memory capture.
+
 ## Conducting a team from Claude Code or Codex
 
 Start the daemon with `ahub up --no-console`, set exactly one conductor in the

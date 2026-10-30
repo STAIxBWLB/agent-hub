@@ -6308,7 +6308,7 @@ wire/storage/protocol contracts remain constants.
 
 ## Capability invocation (#445)
 
-Plan of record: the #445 C0 freeze (issue comment of 2026-10-17, owner decisions O1-O5 of 2026-10-18, go-ahead 2026-10-25). Phases C1-C4 implement it in order and amend this section when they differ. Nothing below is implemented yet; the [C0 receipt](../verification/2026-10-30-445-capability-probes.md) records what the native sources actually expose.
+Plan of record: the #445 C0 freeze (issue comment of 2026-10-17, owner decisions O1-O5 of 2026-10-18, go-ahead 2026-10-25). Phases C1-C4 implement it in order and amend this section when they differ. C1 (discovery) is implemented, see "C1 as built" below; D3 to D6 and C2 to C4 are not. The [C0 receipt](../verification/2026-10-30-445-capability-probes.md) records what the native sources actually expose.
 
 Delegated execution, never shared execution: a peer publishes capabilities, another peer asks for one, and the target runs it in its own turn with its own permissions and sandbox. The hub never calls a native tool itself (Codex `mcpServer/tool/call` and `command/exec` are excluded) and never hands out credentials or MCP connections.
 
@@ -6335,3 +6335,18 @@ Probed on Kimi 2.3.2, Qwen 0.26.1 and Codex 0.166.0 in isolated, credential-free
 - **Native rejection.** Qwen rejects a command outside its ACP set with `-32603`; Kimi ends the turn normally with an "Unknown ACP command" text chunk (source reading). C2 maps Qwen's error code and matches Kimi's text to `failed`.
 - **Codex.** `skills/list` answers with no thread and no auth. The `skill` input item is in the stable schema; a live skill turn is unverified. `mcpServer/tool/call` has no approval gate in the 0.166.0 source, which confirms its exclusion.
 - **Unverified until C4.** Executing a skill through `/name input` on Kimi or Qwen and a Codex `skill` turn (each needs an account), and listings under a real login.
+
+### C1 as built (#445, task 178)
+
+C1 lists capabilities and nothing else: no `hub_invoke`, no `invoke` capability, no envelope kinds, no `invocations` table. These points are where the build fixes or differs from the freeze above.
+
+- **Where.** `src/hub/capabilities.ts` holds the pure rules (digest, sanitizer, flat schema, publish validation, share listing, the two native parsers and their version pins). `AcpPeer` and `CodexPeer` implement a new optional `PeerAdapter.capabilityManifest()`; the daemon reads it per call, never a cached or probed copy. The per-definition `capabilities.manifest` field of D1 is not used: the port on the adapter is.
+- **No class is declared natively.** `Capability.sideEffect` is optional and absent for every native listing, so the digest carries `null` for it. `effectiveClass` is the higher of the declared and the person's class, a side that names none contributes nothing, and only when neither names one is the class `destructive` (O6). A value that is not one of the four reads as `destructive`. The `exec` class is removed from the manifest type.
+- **Pins.** `NATIVE_PINS` is the one place the probed versions are written: Kimi 2.3.2 (`Kimi Code CLI`), Qwen 0.26.1 (`qwen-code`), Codex 0.166.0. A listing on any other version is empty. The repository's Codex pin is 0.154.0, so a pinned Codex lists nothing until a receipt covers it; this is intended and shown in `ahub help capabilities`.
+- **ACP lists belong to a session.** The `available_commands_update` of the current session is kept whatever the turn state. One that arrives before `session/new` is answered waits and counts only when it names the session that was bound; one for another session is dropped. A restart clears the list. An offline peer lists nothing.
+- **Codex.** `skills/list { cwds: [project], forceReload: false }` goes through the attached app-server connection with a hub id, so the TUI never sees the answer. Enabled skills only; the short description is used when there is one. An unattached, offline or unanswered peer rejects, which the daemon shows as no list.
+- **Config.** `invocation` is a machine-local block validated by the closed schema (`invocation.share` only in C1; `timeout_s` arrives with C2) and applies live. `hub_capabilities` reads the share from the running config on every call.
+- **Tools.** `hub_capabilities { peer? }` is a read tool, exposed to read-only projects; it needs no task and no approval. `hub_capabilities_publish { capabilities }` is the source for a session the hub cannot read natively: a peer whose adapter implements `capabilityManifest` is refused, every field is checked, an unknown field refuses the whole call, the invoke form is forced to `prompt`, the list replaces the last one and is bound to the publishing connection (the daemon's connection generation), and it is dropped when the peer goes offline. Both calls are refused during a PII turn and for a peer holding PII, and neither is captured to memory (`CAPABILITY_TOOLS`).
+- **The person's view.** `ahub capabilities` (op `capabilities_list`, Console only, no `CONDUCTOR_TASK_OPS` entry) shows every found entry with its state (`listed`, `unshared` or `digest-changed`) and the class that would apply, for every peer, shared or not. The audit label is `capabilities` with no argument echoed.
+- **Not decided here.** Whether a Codex skill can be run through a `skill` turn item, and how a Kimi or Qwen `/name input` behaves under a real login, stay C0's unverified list and move to C2 and C4.
+
