@@ -91,19 +91,18 @@ test("API admission distinguishes launched gate jobs from serialized pending con
   }
 });
 
-// #548: the macOS leg is shards named `check (macos-latest) shard i/N` under an aggregator named `check (macos-latest)` that waits for them. In the window where Linux and the seeded
-// shards are done and only macOS shards still run, no required-name job is in progress: the shard names must count as gate jobs, or the run reads as scope unknown and every same-tree
-// rerun is refused (unknown is fail-closed).
-test("API admission treats running macOS shards as a launched full gate, in every mid-run window (#548)", async () => {
+// #548: either OS can be the last gate still running. Its shard names must count as launched full-gate work
+// even when the other OS and seeded guards are done and the required aggregator is only queued.
+for (const os of ["macos", "ubuntu"]) test(`API admission treats running ${os} shards as a launched full gate, in every mid-run window (#548)`, async () => {
   const fn = (gates as Record<string, unknown>).readFullGateAdmission as Function;
   const done = (name: string) => ({ name, status: "completed", conclusion: "success" });
   const windows: Record<string, { name: string; status: string; conclusion: string | null }[]> = {
-    "ubuntu and seeded done, macOS shards running": [done("decision"), done("check (ubuntu-latest)"), ...[1, 2, 3, 4].map(i => done(`seeded-shard (${i})`)), done("seeded guards"),
-      ...[1, 2, 3, 4].map(i => ({ name: `check (macos-latest) shard ${i}/4`, status: "in_progress", conclusion: null })), { name: "check (macos-latest)", status: "queued", conclusion: null }],
-    "everything done but one macOS shard still running": [done("decision"), done("check (ubuntu-latest)"), ...[1, 2, 3, 4].map(i => done(`seeded-shard (${i})`)), done("seeded guards"),
-      ...[1, 2, 3].map(i => done(`check (macos-latest) shard ${i}/4`)), { name: "check (macos-latest) shard 4/4", status: "in_progress", conclusion: null }, { name: "check (macos-latest)", status: "queued", conclusion: null }],
-    "only queued macOS shards after the decision": [done("decision"), done("check (ubuntu-latest)"), ...[1, 2, 3, 4].map(i => ({ name: `check (macos-latest) shard ${i}/4`, status: "queued", conclusion: null }))],
-    "a wider shard count is still a gate job": [done("decision"), done("check (ubuntu-latest)"), { name: "check (macos-latest) shard 11/12", status: "in_progress", conclusion: null }],
+    "other OS and seeded done, shards running": [done("decision"), done(`check (${os === "macos" ? "ubuntu" : "macos"}-latest)`), ...[1, 2, 3, 4].map(i => done(`seeded-shard (${i})`)), done("seeded guards"),
+      ...[1, 2, 3, 4].map(i => ({ name: `check (${os}-latest) shard ${i}/4`, status: "in_progress", conclusion: null })), { name: `check (${os}-latest)`, status: "queued", conclusion: null }],
+    "everything done but one shard still running": [done("decision"), done(`check (${os === "macos" ? "ubuntu" : "macos"}-latest)`), ...[1, 2, 3, 4].map(i => done(`seeded-shard (${i})`)), done("seeded guards"),
+      ...[1, 2, 3].map(i => done(`check (${os}-latest) shard ${i}/4`)), { name: `check (${os}-latest) shard 4/4`, status: "in_progress", conclusion: null }, { name: `check (${os}-latest)`, status: "queued", conclusion: null }],
+    "only queued shards after the decision": [done("decision"), done(`check (${os === "macos" ? "ubuntu" : "macos"}-latest)`), ...[1, 2, 3, 4].map(i => ({ name: `check (${os}-latest) shard ${i}/4`, status: "queued", conclusion: null }))],
+    "a wider shard count is still a gate job": [done("decision"), done(`check (${os === "macos" ? "ubuntu" : "macos"}-latest)`), { name: `check (${os}-latest) shard 11/12`, status: "in_progress", conclusion: null }],
   };
   for (const [window, jobs] of Object.entries(windows)) for (const tree of ["expected", "different"]) {
     const api = async (path: string) => {
@@ -118,7 +117,7 @@ test("API admission treats running macOS shards as a launched full gate, in ever
     expect(await fn(api, "expected", { currentRunId: 99 }), `${window} (${tree} tree)`).toMatchObject({ kind: tree === "expected" ? "duplicate" : "run" });
   }
   // a name that only looks like a shard is not a gate job: with nothing else launched it admits nothing yet, as before
-  for (const name of ["check (macos-latest) shard x/4", "check (macos-latest) shard 1/4 extra", "prefix check (macos-latest) shard 1/4", "check (ubuntu-latest) shard 1/4", "check (macos-latest) shard 0/4", "check (macos-latest) shard 1/", "check (macos-latest) shard 123/4"]) {
+  for (const name of [`check (${os}-latest) shard x/4`, `check (${os}-latest) shard 1/4 extra`, `prefix check (${os}-latest) shard 1/4`, "check (windows-latest) shard 1/4", `check (${os}-latest) shard 0/4`, `check (${os}-latest) shard 1/`, `check (${os}-latest) shard 123/4`]) {
     const lookalike = async (path: string) => {
       if (path.startsWith("actions/workflows/")) return { total_count: path.includes("status=in_progress") ? 1 : 0, workflow_runs: path.includes("status=in_progress") ? [{ id: 1, head_sha: "one", event: "pull_request", status: "in_progress" }] : [] };
       if (path.startsWith("git/")) return { tree: { sha: "expected" } };
@@ -167,7 +166,7 @@ test("#609 PR checks run in a group per PR where a newer pending run replaces th
   expect(workflow).toContain("cancel-in-progress: false"); // GitHub refuses queue max with cancel-in-progress true
   expect(workflow).toContain("queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}");
   expect(workflow).toContain("inputs.timing_runs == '20' && 'macos-timing'");
-  for (const job of ["check:", "seeded:", "decision:"]) expect(workflow).toContain(`\n  ${job}`);
+  for (const job of ["ubuntu:", "ubuntu-shard:", "macos:", "macos-shard:", "seeded:", "decision:"]) expect(workflow).toContain(`\n  ${job}`);
 });
 
 type ProofLoss = "404" | "timeout" | "malformed" | "missing" | "invalid-json";

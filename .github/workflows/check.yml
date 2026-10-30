@@ -71,61 +71,33 @@ jobs:
             plugins/agent-hub/server.js
             plugins/agent-hub/.claude-plugin/plugin.json
 
-  check:
+  ubuntu-shard:
+    # #548: the Ubuntu leg as shards of the full suite, balanced by the recorded per-file times in scripts/test-timings.json (bun test --shard --timings: every file in
+    # exactly one shard). Shard 1 also runs typecheck, roles, bundle freshness, package contents and docs once; the others install and test. Keep the existing timings; verify hosted shard durations before merge.
+    name: check (ubuntu-latest) shard ${{ matrix.shard }}/4
     needs: decision
-    if: needs.decision.outputs.admission == 'run' || needs.decision.outputs.admission == 'reuse'
-    name: check (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    if: needs.decision.outputs.run_gate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        # Ubuntu proves the rest does not depend on macOS. The macOS leg, which runs the seatbelt sandbox tests, is the macos-shard jobs below (#548): a healthy
-        # single macOS leg had reached 26 to 41 minutes, and the hang backstop had been raised three times to follow it.
-        os: [ubuntu-latest]
+        shard: [1, 2, 3, 4]
     steps:
-      - name: Reuse verified identical-tree full gate
-        if: needs.decision.outputs.admission == 'reuse'
-        env:
-          VERIFIED_RUN: ${{ needs.decision.outputs.verified_run }}
-        run: |
-          test -n "$VERIFIED_RUN" || { echo "missing verified full-gate proof"; exit 1; }
-          echo "Reused identical-tree full gate run $VERIFIED_RUN"
       - uses: actions/checkout@v7
-        if: needs.decision.outputs.run_gate == 'true'
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v7
-        if: needs.decision.outputs.run_gate == 'true'
         with:
           node-version: 22
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        if: needs.decision.outputs.run_gate == 'true'
         with:
           bun-version-file: .bun-version
-      - name: Gate (typecheck, bundle and manifest freshness, package contents, tests)
-        if: needs.decision.outputs.run_gate == 'true'
+      - name: Gate shard (once-only steps on shard 1, tests of this shard)
         env:
-          # The expanded suite was still progressing at 600 s on hosted macOS (#378), and by 2026-10-19
-          # its macOS test step ran 650-808 s, so 780 s failed runs that were still passing tests.
-          # Linux also reached 600 s while conformance tests kept passing in both attempts of
-          # run 39304959773 (#542). Give it 780 s; keep per-test bounds at 20 s.
-          # By 2026-10-20 macOS jobs ran 892-1009 s and run 39419130424 was cut at 960 s twice while
-          # still passing tests (#593): macOS gets 1260 s, and the job ceiling rose to 25 minutes with it.
-          # Linux then hit 780 s one second after a passing test (run 39441258200): Linux gets 1080 s.
-          # Run 40028391482 reached 1260 s on macOS while benchmark tests kept passing; allow 1440 s
-          # and 30 minutes for that job, preserving Ubuntu's allowance and the per-test 20 s bound.
-          # #516: a total-time kill cut suites that were still passing tests line by line (ubuntu runs 40264964185
-          # and 40282389019 at 1080 s; PR #857's macOS leg at 1440 s). scripts/hang-watch.sh now stops the suite when
-          # its progress file (one byte per test result line or file header) has not grown for AHUB_CHECK_QUIET_S (300 s), which is the hang detector;
-          # AHUB_CHECK_HANG_S is only the backstop for a run that keeps printing results while hung, so it sits well above
-          # a slow, healthy run: 1500 s on Linux and 1800 s on macOS, with the job limits raised to 35 and 40 minutes.
-          # Healthy macOS legs now run past 1800 s: main f7450129 (run 40677039313) and PR #934 (run 40672988486, attempts 1 and 2 at
-          # 31m34s and 31m47s) were stopped with `hang-watch: cause=total quiet_for=1s` while tests were still printing results, and
-          # recent green legs took about 30 minutes (main 7a1d5cff, 10:46 to 11:17). macOS gets 2400 s and the job limit 50 minutes;
-          # Linux stays at 1500 s. The 300 s quiet bound above remains the hang detector.
-          # #548: the macOS leg is sharded (macos-shard), so each macOS shard runs under the same 1500 s bound as Linux and the macOS raises above are retired.
+          # Keep the existing bounds: the quiet bound is the hang detector, the total is only the backstop for a run that keeps printing while hung.
+          AHUB_CHECK_SHARD: ${{ matrix.shard }}/4
           AHUB_CHECK_HANG_S: '1500'
           AHUB_CHECK_QUIET_S: '300'
           AHUB_RESTART_DIAGNOSTICS_DIR: ${{ runner.temp }}/ahub-restart-diagnostics
@@ -134,10 +106,33 @@ jobs:
         if: failure() && needs.decision.outputs.run_gate == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: restart-diagnostics-${{ matrix.os }}-${{ github.sha }}
+          name: restart-diagnostics-ubuntu-latest-${{ matrix.shard }}-${{ github.sha }}
           path: ${{ runner.temp }}/ahub-restart-diagnostics
           if-no-files-found: ignore
           retention-days: 7
+
+  ubuntu:
+    # The required name stays `check (ubuntu-latest)` (branch protection, scripts/ci-gates.mjs FULL_GATES and the identical-tree reuse proof read it): success means every
+    # shard passed, or an identical-tree full proof was reused. The same shape as `seeded`.
+    name: check (ubuntu-latest)
+    needs: [decision, ubuntu-shard]
+    if: always() && needs.decision.result == 'success' && (needs.decision.outputs.admission == 'run' || needs.decision.outputs.admission == 'reuse')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reuse verified identical-tree full gate
+        if: needs.decision.outputs.admission == 'reuse'
+        env:
+          VERIFIED_RUN: ${{ needs.decision.outputs.verified_run }}
+        run: |
+          test -n "$VERIFIED_RUN" || { echo "missing verified full-gate proof"; exit 1; }
+          echo "Reused identical-tree full gate run $VERIFIED_RUN"
+      - name: Every Ubuntu shard passed
+        if: needs.decision.outputs.run_gate == 'true'
+        env:
+          SHARDS: ${{ needs.ubuntu-shard.result }}
+        run: |
+          test "$SHARDS" = success || { echo "Ubuntu shards: $SHARDS"; exit 1; }
 
   macos-shard:
     # #548: the macOS leg as shards of the full suite, balanced by the recorded per-file times in scripts/test-timings.json (bun test --shard --timings: every file in
