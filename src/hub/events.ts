@@ -20,6 +20,8 @@ export type HubEvent =
   | { type: "settings"; key: string; from: import("./settings.ts").SettingValue; to: import("./settings.ts").SettingValue; source: "dashboard" | "terminal" | "conductor"; peer?: string; undo?: boolean; reason?: string }
   /** A structural config edit (#689): the file, key paths with short hashes of their values before and after (never a value), the file revisions and the person who made it. */
   | { type: "config_edit"; file: "config.local.json" | "sdlc.toml"; paths: { path: string; before: string | null; after: string | null }[]; fileBefore: string; fileAfter: string; tier: 2 | 3; by: "person"; source: "dashboard" | "terminal"; backup?: string; reason?: string }
+  /** #445 C2: an invocation's ids, class and outcome. Never an argument, a result or a description. */
+  | { type: "invocation"; id: string; caller: string; target: string; capability: string; class: string; outcome: string; task?: number; bytes?: number }
   | { type: "envelope"; id: string; from: string; to?: string[]; priority: string; hop: number; kind?: string; task?: string; bytes?: number; private?: boolean; dropped?: string }
   | { type: "overflow" | "undeliverable"; id: string; from: string; peer: string }
   | { type: "stale"; id: string; from: string; peer: string; task?: string }

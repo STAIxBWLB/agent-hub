@@ -458,6 +458,8 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
   }
   if (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) {
     if (!hub) return text(offline());
+    // #445 C2: a daemon that predates invocations would answer with a generic unknown-operation error; say what is missing instead.
+    if (name === "hub_invoke" && !hub.features.includes("invocation")) return { ...text("error: this hub does not support invocations; restart it with the current agent-hub release (ahub restart)"), isError: true };
     const res = await hub.request({ t: "task", op: name, args: args ?? {} });
     return { ...text(res.ok ? res.text : `error: ${res.error}`), ...(res.ok ? {} : { isError: true }) };
   }

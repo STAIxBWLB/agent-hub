@@ -218,7 +218,7 @@ const schema: Record<string, Check> = {
   terminal: (v, k) => { block({ open: strings })(v, k); terminalTemplate(object(v, k).open); },
   limits: block({ sender_per_min: number(0), pair_per_min: number(0), important_per_hour: number(0), repeat_window_s: number(0) }),
   review: block({ adaptive: bool, min_reviews: number(1, Number.MAX_SAFE_INTEGER, true), pool: v => { reviewerPoolConfig({ pool: v }, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS); }, rerotate: bool, same_family: words(["fallback", "never"]) }), recovery: block({ auto_resume_after_crash: bool, reconnect_wait_s: operationalNumberCheck("recovery.reconnect_wait_s"), unmanaged_reconnect_wait_s: operationalNumberCheck("recovery.unmanaged_reconnect_wait_s"), control_timeout_s: operationalNumberCheck("recovery.control_timeout_s"), shutdown_wait_s: operationalNumberCheck("recovery.shutdown_wait_s"), terminal_idle_wait_s: operationalNumberCheck("recovery.terminal_idle_wait_s") }),
-  capabilities: map(strings), invocation: block({ share: map(map(() => {})) }), coordination: words(["advisory", "turn-free"]), experiments: block({ stale_notices: words(["drop", "deliver"]) }),
+  capabilities: map(strings), invocation: block({ share: map(map(() => {})), timeout_s: number(10, 86_400, true) }), coordination: words(["advisory", "turn-free"]), experiments: block({ stale_notices: words(["drop", "deliver"]) }),
 };
 export const SCHEMA_KEYS: readonly string[] = Object.freeze(Object.keys(schema));
 export function validateRawConfig(raw: unknown, declarations?: InstancesConfig, context?: ProjectAdapterCatalog, inertModuleRoster = false): asserts raw is Record<string, unknown> {

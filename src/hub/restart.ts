@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { BusSnapshot } from "./bus.ts";
 import type { Envelope, PeerId, PeerState } from "./envelope.ts";
-import { MAX_HOP } from "./envelope.ts";
+import { KINDS, MAX_HOP } from "./envelope.ts";
 import { validateJournalSnapshot } from "./delivery-journal.ts";
 import { atomicPrivateJSON } from "./recovery-store.ts";
 import { RecoveryDeferredHubError, validateDeferredHub } from "./deferred-hub.ts";
@@ -76,7 +76,7 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
   const isEnvelope = (value: unknown, seen = false): boolean => {
     if (!value || typeof value !== "object") return false;
     const e = value as Record<string, unknown>;
-    return typeof e.id === "string" && e.id.length > 0 && e.id.length <= 256 && typeof e.trace === "string" && e.trace.length > 0 && e.trace.length <= 256 && peerId(e.from) && typeof e.body === "string" && Number.isSafeInteger(e.hop) && (e.hop as number) >= 0 && (seen || (e.hop as number) <= MAX_HOP) && Number.isFinite(e.ts) && ["chat", "task", "review", "status", "budget", "presence"].includes(e.kind as string) && ["important", "status", "fyi"].includes(e.priority as string) && (e.to === undefined || (Array.isArray(e.to) && e.to.every(peerId)));
+    return typeof e.id === "string" && e.id.length > 0 && e.id.length <= 256 && typeof e.trace === "string" && e.trace.length > 0 && e.trace.length <= 256 && peerId(e.from) && typeof e.body === "string" && Number.isSafeInteger(e.hop) && (e.hop as number) >= 0 && (seen || (e.hop as number) <= MAX_HOP) && Number.isFinite(e.ts) && (KINDS as readonly string[]).includes(e.kind as string) && ["important", "status", "fyi"].includes(e.priority as string) && (e.to === undefined || (Array.isArray(e.to) && e.to.every(peerId)));
   };
   const bus = s.bus as Partial<BusSnapshot>;
   if (bus.schemaVersion !== 1 || !bus.queues || typeof bus.queues !== "object" || !bus.prefaces || typeof bus.prefaces !== "object" || !Array.isArray(bus.seen) || !bus.attempts || typeof bus.attempts !== "object" || !Array.isArray(bus.withdrawn)) return undefined;

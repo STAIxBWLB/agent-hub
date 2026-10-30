@@ -1,4 +1,4 @@
-import { sanitize, type Kind } from "./envelope.ts";
+import { KINDS, sanitize, type Kind } from "./envelope.ts";
 
 export const DELIVERY_RETRY_WARNING = sanitize("Hub redelivery warning: An earlier attempt of this delivery is uncertain; check for its effects before acting.");
 export interface HeldDeliveryHints {
@@ -18,7 +18,7 @@ export function heldDeliveryHints(rows: readonly HeldDeliveryHints["rows"][numbe
 export function renderHeldHint(value: unknown, now = Date.now(), recipientRetry = true): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "";
   const held = value as HeldDeliveryHints;
-  const kinds = new Set(["chat", "task", "review", "status", "budget", "presence"]);
+  const kinds = new Set<string>(KINDS);
   try {
     if (!Number.isSafeInteger(held.count) || held.count < 1 || !Array.isArray(held.rows) || held.rows.length > 32 || held.rows.length > held.count || typeof held.truncated !== "boolean" || Buffer.byteLength(JSON.stringify(held), "utf8") > 4096) return "";
     if (held.rows.some(row => !row || typeof row !== "object" || typeof row.id !== "string" || !row.id.length || row.id.length > 256 || !Number.isFinite(row.createdAt) || !Array.isArray(row.senders) || !Array.isArray(row.kinds) || row.senders.some(sender => typeof sender !== "string" || sender.length > 256) || row.kinds.some(kind => !kinds.has(kind)))) return "";

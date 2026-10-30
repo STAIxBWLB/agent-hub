@@ -1,4 +1,4 @@
-import { appendNote, DIGEST, frame, HUB, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
+import { appendNote, DIGEST, frame, HUB, isInvocationKind, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
 import type { DoingKind } from "./peer-doing.ts";
 import type { QueuePressure } from "./queue-backpressure.ts";
@@ -182,6 +182,12 @@ export class Bus {
    * and is never corrected once the queue empties (measured: status.json kept `queued 4` on an empty queue).
    */
   onQueues?: () => void;
+  /**
+   * #445 C2: a peer's answer to a delivery, offered BEFORE anything is built from it. The host returns true when the answer belongs to an invocation it
+   * took over: the bus then publishes nothing, stores nothing, emits no event and lets no tap, queue, digest or memory path see it. `answers` is what the
+   * peer was handed (the request is in it, never condensed), so a reply that answers an invocation is found by identity, not by addressing.
+   */
+  onAnswer?: (peer: PeerId, text: string, answers: readonly Envelope[]) => boolean;
   /** Actual transport admission, using originals even when a digest was condensed. Never an enqueue metric. */
   onDelivered?: (peer: PeerId, originals: Envelope[]) => void;
   /** Before deliver's synchronous busy transition, with originals rather than a condensed digest. */
@@ -248,6 +254,17 @@ export class Bus {
     this.opts.doing?.(peer.id, "reset"); // a new adapter never shows what the one it replaces was doing
     peer.onMessage = (text, opts) => {
       if (!this.isRostered(peer.id)) return `off roster: ${peer.id}`;
+      // #445 C2: an answer to an invocation is found by what the peer was handed, never by how the answer is addressed, so a headless agent whose final answer is
+      // normally shared with every peer cannot leak it. It is the invocation's answer when it names the request itself (an adapter may report its delivery complete before
+      // it answers, so the receipt cannot decide), or when it names nothing while that invocation's own delivery is still the peer's open turn. Once that turn has ended,
+      // `lastDelivery` still holds the request until the next delivery replaces it, and a later message from the peer is an ordinary message: it must be published.
+      const handed = this.lastDelivery.get(peer.id)?.out ?? [];
+      const named = opts?.inReplyTo?.id !== undefined && handed.some((e) => e.id === opts.inReplyTo!.id); // an invocation is delivered alone, so the only envelope in `handed` to name is its request (or the preface that rode with it)
+      if (this.onAnswer && handed.some((e) => e.kind === "invocation") && (named || opts?.inReplyTo?.id === undefined && this.invocationTurnOpen(peer.id))) {
+        let taken = false;
+        try { taken = this.onAnswer(peer.id, text, handed) === true; } catch { taken = true; } // a throwing host never turns a callee's answer into a broadcast
+        if (taken) return;
+      }
       const { priority, body } = parseMarker(text);
       if (!body) return;
       // What the peer was handed differs from what it stands for once a delivery was condensed; both the audience
@@ -1021,7 +1038,7 @@ export class Bus {
       try { for (const id of targets) {
         const peer = this.peers.get(id);
         if (!peer) { this.enqueue(id, env); continue; }
-        if (!this.journal && !this.held(id) && env.priority === "important" && !remoteId(id) && peer.steer && this.stateOf(id) === "busy") {
+        if (!this.journal && !this.held(id) && env.priority === "important" && !remoteId(id) && peer.steer && this.stateOf(id) === "busy" && !this.invocationTurnOpen(id)) {
           // Not queued while the steer is in flight, or an idle transition would deliver it a second time.
           this.steering++;
           const deliveryId = crypto.randomUUID();
@@ -1041,7 +1058,7 @@ export class Bus {
         if (!this.flushingHub) this.onQueues?.();
         for (const id of targets) {
           const peer = this.peers.get(id);
-          if (!this.held(id) && env.priority === "important" && !remoteId(id) && peer?.steer && this.stateOf(id) === "busy") void this.steerQueued(id, env);
+          if (!this.held(id) && env.priority === "important" && !remoteId(id) && peer?.steer && this.stateOf(id) === "busy") void this.steerQueued(id, env); // steerQueued itself refuses to join an invocation's turn
           else void this.drain(id);
         }
       }
@@ -1083,6 +1100,20 @@ export class Bus {
   /** A recently published envelope, for resolving `reply_to`. */
   get(id: string): Envelope | undefined {
     return this.seen.get(id) ?? this.deferredHub.get(id);
+  }
+
+  /**
+   * #445 C2: whether the peer's current turn is one that holds an invocation request. With a journal that is a delivery of the peer's own that has not reached a
+   * terminal receipt and whose payload holds the request (the receipt paths delete it from `activeDeliveries`); without one it is the peer being busy, which is the
+   * best the bus can know (the daemon always has a journal). A steer is never sent into such a turn (the two steer sites and `steerQueued` ask this first): an adapter answers the highest-hop envelope of
+   * everything its turn holds, and a steered one would become what the answer names instead of the request.
+   */
+  private invocationTurnOpen(peer: PeerId): boolean {
+    if (!this.journal) return this.stateOf(peer) === "busy" && (this.lastDelivery.get(peer)?.out ?? []).some((e) => e.kind === "invocation");
+    for (const [deliveryId, owner] of this.activeDeliveries) {
+      if (owner === peer && this.journal.get(deliveryId)?.out.some((e) => e.kind === "invocation")) return true;
+    }
+    return false;
   }
 
   /** The envelopes most recently handed to a peer, used to distinguish a received request from an unread queue. */
@@ -1310,6 +1341,8 @@ export class Bus {
     const peer = this.peers.get(id);
     const queue = this.queues.get(id);
     if (!this.journal || !peer?.steer || !queue || this.storageError) return;
+    // #445 C2: an invocation's turn answers the request alone. Joining it with a steer would change what its answer names, so the envelope waits in the queue for the next delivery.
+    if (this.invocationTurnOpen(id)) { void this.drain(id); return; }
     const index = queue.findIndex((item) => item.id === env.id);
     if (index < 0) return;
     this.steering++;
@@ -1331,6 +1364,9 @@ export class Bus {
   }
 
   /** Holds on a peer's queue, for a drain and a pull alike: off roster, recovery, an uncertain delivery, a pause (console, budget, conductor). */
+  /** #445 C2: whether a delivery to this peer would wait on a hold (roster, recovery, pause or a lifecycle fence). */
+  isHeld(id: PeerId): boolean { return this.held(id); }
+
   private held(id: PeerId): boolean {
     return !this.isRostered(id) || this.recoveryHeld || this.recoveryHeldPeers.has(id) || this.paused.has(id) || this.opts.deliveryHeld?.(id) === true;
   }
@@ -1516,8 +1552,10 @@ export class Bus {
     for (const env of ordered) {
       const failedBefore = this.attempts.has(`${id}:${env.id}`);
       if (failedBefore && batch.length) break;
+      // #445 C2: an invocation or its result goes alone, so the reply to the turn answers exactly one of them.
+      if (isInvocationKind(env) && batch.length) break;
       batch.push(env);
-      if (failedBefore || remoteId(id) || batch.length === digestMax) break;
+      if (failedBefore || remoteId(id) || batch.length === digestMax || isInvocationKind(env)) break;
     }
     if (remove) for (const env of batch) queue.splice(queue.indexOf(env), 1);
     return batch;
@@ -1537,8 +1575,9 @@ export class Bus {
       if (failedBefore && batch.length) break;
       const size = Buffer.byteLength(frame(env)) + 2;
       if (batch.length && bytes + size > pullBudgetBytes) break;
+      if (isInvocationKind(env) && batch.length) break; // #445 C2: alone, as in `take`
       batch.push(env); bytes += size;
-      if (failedBefore) break;
+      if (failedBefore || isInvocationKind(env)) break;
     }
     for (const env of batch) queue.splice(queue.indexOf(env), 1);
     return batch;

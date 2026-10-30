@@ -32,5 +32,15 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (held) { const chunk = held.join(""); held = undefined; process.stdout.write(chunk); }
   }
   else if (m.method === "session/set_mode") reply(m.id, {});
-  else if (m.method === "session/prompt") reply(m.id, { stopReason: "end_turn" });
+  else if (m.method === "session/prompt") {
+    // --answer: stream one text chunk that echoes a marker and the first line of the prompt, then end the turn, as a headless agent does.
+    const answer = arg("--answer"), delay = Number(arg("--delay") ?? 0);
+    if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay)); // a slow turn: the deadline can pass while it works
+    if (answer) {
+      const capability = String(m.params?.prompt?.[0]?.text ?? "").split("\n").find((l: string) => l.startsWith("Capability:")) ?? "no capability line";
+      const content = { type: "text", text: `${answer} (${capability})` };
+      send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: session, update: { sessionUpdate: "agent_message_chunk", content } } });
+    }
+    reply(m.id, { stopReason: "end_turn" });
+  }
 }
