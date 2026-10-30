@@ -592,3 +592,55 @@ test("recovery refuses a target without the invocation feature while a row is op
   const allowed = await person.request({ t: "recovery", op: "prepare", operationId: "g-op3", expectedInstanceId: "invoke-guard", targetFeatures: DAEMON_FEATURES });
   expect(allowed.ok, String((allowed as { error?: string }).error)).toBe(true);
 });
+
+test("result privacy: a scoped task that is PII withholds the answer even though the answer itself is clean", async () => {
+  const f = await fixture();
+  const board = new Board(join(f.stateDir, "hub.db")); cleanups.push(() => board.close());
+  const task = board.update(board.propose("user", { title: "ordinary work", class: "implement" } as never).id, "user", "accepted", { owner: "codex", reviewer: "kimi", state: "in_progress" });
+  f.kimi.answer = () => undefined; f.kimi.receipts = false;
+  const r = await invoke(f, { task: task.id }); expect(r.ok, String((r as { error?: string }).error)).toBe(true);
+  await until(() => f.kimi.got.length === 1, "delivered");
+  // the task turns private between the request and the answer
+  board.update(task.id, "user", "private", { signals: ["pii"] } as never);
+  f.kimi.onMessage?.("CLEAN-ANSWER-TASK-NOW-PRIVATE", { inReplyTo: f.kimi.got[0]![0]!, to: ["codex"] });
+  await until(() => results(f.codex).length === 1, "withheld result");
+  expect(results(f.codex)[0]!.body).toContain("outcome withheld"); expect(results(f.codex)[0]!.body).not.toContain("CLEAN-ANSWER");
+  expect(f.rows()[0]).toMatchObject({ outcome: "withheld", result_bytes: 0 });
+});
+
+test("result privacy: a callee that turns private WHILE its answer is screened is withheld (read again after the await)", async () => {
+  let release!: () => void; const gate = new Promise<void>(r => (release = r));
+  let entered!: () => void; const inside = new Promise<void>(r => (entered = r));
+  let calls = 0;
+  const f = await fixture({ screen: async () => { if (++calls === 1) return { label: "clear", ms: 1 }; entered(); await gate; return { label: "clear", ms: 1 }; } });
+  const board = new Board(join(f.stateDir, "hub.db")); cleanups.push(() => board.close());
+  f.kimi.answer = () => undefined; f.kimi.receipts = false;
+  await invoke(f); await until(() => f.kimi.got.length === 1, "delivered");
+  f.kimi.onMessage?.("ANSWER-SCREENED-WHILE-TURNING-PRIVATE", { inReplyTo: f.kimi.got[0]![0]!, to: ["codex"] });
+  await inside; // the screen has the answer and says clear, but has not returned yet
+  board.update(board.propose("user", { title: "private 900101-1234567", class: "implement", signals: ["pii"] } as never).id, "user", "accepted", { owner: "kimi", state: "in_progress" });
+  release();
+  await until(() => results(f.codex).length === 1, "withheld result");
+  expect(results(f.codex)[0]!.body).toContain("outcome withheld"); expect(results(f.codex)[0]!.body).not.toContain("ANSWER-SCREENED");
+  expect(readFileSync(join(f.stateDir, "hub.db")).toString("latin1").includes("ANSWER-SCREENED-WHILE-TURNING-PRIVATE")).toBe(false);
+});
+
+test("a settled row stays settled even when the answer arrives through the hook again: nothing is re-screened or re-sent", async () => {
+  let screens = 0;
+  const f = await fixture({ screen: async () => { screens++; return { label: "clear", ms: 1 }; } });
+  f.kimi.answer = () => "once";
+  await invoke(f); await until(() => results(f.codex).length === 1, "result");
+  const after = screens;
+  f.daemon.bus.onAnswer?.("kimi", "again", [f.kimi.got[0]![0]!]);
+  await Bun.sleep(150);
+  expect(screens).toBe(after); expect(results(f.codex)).toHaveLength(1);
+});
+
+test("a withheld result is stored as nothing: the row, the event and the journal hold no part of the answer", async () => {
+  const f = await fixture();
+  f.kimi.answer = () => "WITHHELD-STORAGE-MARKER id 900101-1234567";
+  await invoke(f); await until(() => results(f.codex).length === 1, "withheld result");
+  const bytes = readFileSync(join(f.stateDir, "hub.db")).toString("latin1");
+  expect(bytes.includes("WITHHELD-STORAGE-MARKER")).toBe(false); expect(bytes.includes("900101-1234567")).toBe(false);
+  expect(f.rows()[0]).toMatchObject({ outcome: "withheld", result_bytes: 0 });
+});

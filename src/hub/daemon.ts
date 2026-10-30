@@ -1833,7 +1833,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (refused !== undefined) return void finishInvocation(row, "refused", { reason: `${row.target} declined: ${refused}` });
       // The callee's turn may have turned private while it worked, and its words may carry PII: either withholds the whole result and keeps no body (AGENTS.md, PII during a PII turn).
       const privateNow = () => !!turns.get(row.target)?.private || contextPii(row.target) || (row.task !== null && (() => { const t = board.get(row.task!); return !!t && tasks.isPii(t); })());
-      let clear = !privateNow() && tasks.nameable(text) && !looksSecret(text) && boundedSafe(text);
+      let clear = !privateNow() && tasks.nameable(text) && boundedSafe(text); // boundedSafe includes the secret and path checks
       if (clear && tasks.screenOn()) {
         const verdict = await (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text.slice(0, 20_000)).catch(() => undefined);
         clear = verdict?.label === "clear" && !privateNow(); // unknown is PII, and it is read again after the await
@@ -3314,7 +3314,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // Free-text arguments are a peer's words headed for another peer: the pattern check, then the model screen, and unknown is private (D4).
         const argText = Object.values(checked.args).filter((v): v is string => typeof v === "string").join("\n");
         if (argText) {
-          if (!tasks.nameable(argText) || looksSecret(argText) || !boundedSafe(argText)) throw new PreEffectToolRefusal("the arguments match a PII or secret pattern, so they are not sent to another peer");
+          if (!tasks.nameable(argText) || !boundedSafe(argText)) throw new PreEffectToolRefusal("the arguments match a PII or secret pattern, so they are not sent to another peer");
           if (tasks.screenOn()) {
             const verdict = await (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(argText).catch(() => undefined);
             if (verdict?.label !== "clear") throw new PreEffectToolRefusal("the PII screen did not clear the arguments, so they are not sent to another peer");
