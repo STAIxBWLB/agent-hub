@@ -9,7 +9,7 @@ import { hubGitSync } from "../src/hub/git.ts";
 import { Board } from "../src/hub/board.ts";
 import { InvocationLedger, RESULT_MAX } from "../src/hub/invocations.ts";
 import { acpManifest } from "../src/adapters/native-capabilities.ts";
-import { replyAudience, replyParent, type Envelope } from "../src/hub/envelope.ts";
+import { newEnvelope, replyAudience, replyParent, type Envelope } from "../src/hub/envelope.ts";
 import type { CapabilityManifest } from "../src/hub/capabilities.ts";
 
 const cleanups: (() => unknown)[] = [];
@@ -752,4 +752,29 @@ test("a request already handed to a slow-to-start agent times out instead of exp
   await until(() => results(f.codex).length === 1, "settled at the deadline");
   expect(results(f.codex)[0]!.body).toContain("outcome timeout"); expect(results(f.codex)[0]!.body).not.toContain("nothing ran");
   expect(f.rows()[0]!.outcome).toBe("timeout");
+});
+
+test("a request the target refused safely goes back in the queue and still expires with no effect at its deadline", async () => {
+  const f = await fixture({ sweepMs: 20 });
+  let refusals = 0;
+  f.kimi.deliver = async (envs: Envelope[], deliveryId?: string) => { f.kimi.got.push(envs); refusals++; f.daemon.bus.pause("kimi"); if (deliveryId) f.kimi.receipt(deliveryId, "failed_safe", "not now"); }; // refuses once and pauses, so no retry runs
+  await invoke(f); await until(() => refusals === 1, "refused once");
+  await until(() => f.daemon.bus.queueIds("kimi").length === 1, "back in the queue: the target never ran it");
+  const l = new InvocationLedger(join(f.stateDir, "hub.db")); (l as any).db.run("UPDATE invocations SET deadline = 1"); l.close();
+  await until(() => results(f.codex).length === 1, "settled at the deadline");
+  expect(results(f.codex)[0]!.body).toContain("outcome expired"); expect(f.rows()[0]!.outcome).toBe("expired");
+});
+
+test("a request handed over and then followed by another delivery to the target still times out, not expires", async () => {
+  const f = await fixture({ sweepMs: 20 });
+  f.kimi.answer = () => undefined; f.kimi.receipts = false;
+  f.kimi.deliver = async (envs: Envelope[]) => { f.kimi.got.push(envs); f.kimi.force("busy"); }; // takes the request, reports nothing
+  await invoke(f); await until(() => f.kimi.got.length === 1, "handed over");
+  f.kimi.force("idle"); // its turn is over without ever reporting the request, and the next delivery replaces what the bus remembers
+  f.daemon.bus.publish(newEnvelope("user", "another message", { to: ["kimi"] }));
+  await until(() => f.kimi.got.length === 2, "a later delivery replaced the last one");
+  expect(f.daemon.bus.lastDeliveredTo("kimi").some(e => e.kind === "invocation")).toBe(false);
+  const l = new InvocationLedger(join(f.stateDir, "hub.db")); (l as any).db.run("UPDATE invocations SET deadline = 1"); l.close();
+  await until(() => results(f.codex).length === 1, "settled at the deadline");
+  expect(results(f.codex)[0]!.body).toContain("outcome timeout"); expect(f.rows()[0]!.outcome).toBe("timeout");
 });

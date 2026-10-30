@@ -259,7 +259,7 @@ export class Bus {
       // it answers, so the receipt cannot decide), or when it names nothing while that invocation's own delivery is still the peer's open turn. Once that turn has ended,
       // `lastDelivery` still holds the request until the next delivery replaces it, and a later message from the peer is an ordinary message: it must be published.
       const handed = this.lastDelivery.get(peer.id)?.out ?? [];
-      const named = opts?.inReplyTo?.id !== undefined && handed.some((e) => e.kind === "invocation" && e.id === opts.inReplyTo!.id);
+      const named = opts?.inReplyTo?.id !== undefined && handed.some((e) => e.id === opts.inReplyTo!.id); // an invocation is delivered alone, so the only envelope in `handed` to name is its request (or the preface that rode with it)
       if (this.onAnswer && handed.some((e) => e.kind === "invocation") && (named || opts?.inReplyTo?.id === undefined && this.invocationTurnOpen(peer.id))) {
         let taken = false;
         try { taken = this.onAnswer(peer.id, text, handed) === true; } catch { taken = true; } // a throwing host never turns a callee's answer into a broadcast
@@ -1058,7 +1058,7 @@ export class Bus {
         if (!this.flushingHub) this.onQueues?.();
         for (const id of targets) {
           const peer = this.peers.get(id);
-          if (!this.held(id) && env.priority === "important" && !remoteId(id) && peer?.steer && this.stateOf(id) === "busy" && !this.invocationTurnOpen(id)) void this.steerQueued(id, env);
+          if (!this.held(id) && env.priority === "important" && !remoteId(id) && peer?.steer && this.stateOf(id) === "busy") void this.steerQueued(id, env); // steerQueued itself refuses to join an invocation's turn
           else void this.drain(id);
         }
       }

@@ -1847,9 +1847,9 @@ export async function startDaemon(opts: DaemonOptions) {
   /** The deadline pass: a request still queued is withdrawn (`expired`, no effect); one delivered with no result is a `timeout` (reads only in C2). */
   const sweepInvocations = (): void => {
     for (const row of invocations.due()) {
-      // A row is `queued` until the adapter reports it accepted, which an ACP agent does only at its first activity: a request already handed to the target (it left the queue and
-      // is the last thing the target was given) may be running, so it times out like a delivered one. Only a request still waiting, or not yet handed over, expires with no effect.
-      const handedOver = row.outcome === "queued" && !bus.queueIds(row.target).includes(row.id) && bus.lastDeliveredTo(row.target).some(e => e.id === row.id);
+      // A row is `queued` until the adapter reports it accepted, which an ACP agent does only at its first activity: a request already handed to the target (it left the queue, and a
+      // delivery that failed safely puts it back) may be running, so it times out like a delivered one. Only a request still waiting, or not yet handed over, expires with no effect.
+      const handedOver = row.outcome === "queued" && !bus.queueIds(row.target).includes(row.id);
       if (row.outcome === "queued" && !handedOver) withdrawInvocation(row, "expired", "the target did not receive it before the deadline; nothing ran");
       else finishInvocation(row, row.class === "read" ? "timeout" : "needs_review", { reason: row.class === "read" ? "the target received it but gave no result before the deadline; it may still run" : "the target received it but gave no result before the deadline; check it by hand" });
     }
