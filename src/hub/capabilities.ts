@@ -36,7 +36,8 @@ export interface Capability {
   name: string;
   description: string;
   inputSchema?: FlatSchema;
-  sideEffect: SideEffect;
+  /** The publisher's declared class; absent when its source names none (every native listing). */
+  sideEffect?: SideEffect;
   source: (typeof CAPABILITY_SOURCES)[number];
   invoke: (typeof CAPABILITY_INVOKES)[number];
   digest: string;
@@ -60,7 +61,7 @@ export function canonical(value: unknown): string {
  * a source may reword freely, so rewording must not unlist an entry, while a changed schema, class, source or invoke form must.
  */
 export function capabilityDigest(c: Pick<Capability, "kind" | "name" | "inputSchema" | "sideEffect" | "source" | "invoke">): string {
-  return `sha256:${createHash("sha256").update(canonical({ kind: c.kind, name: c.name, inputSchema: c.inputSchema ?? null, sideEffect: c.sideEffect, source: c.source, invoke: c.invoke })).digest("hex")}`;
+  return `sha256:${createHash("sha256").update(canonical({ kind: c.kind, name: c.name, inputSchema: c.inputSchema ?? null, sideEffect: c.sideEffect ?? null, source: c.source, invoke: c.invoke })).digest("hex")}`;
 }
 
 /** Agent text shown to another model: control and bidirectional characters out, header forgery quoted, whitespace collapsed, cut by code point. */
@@ -97,14 +98,17 @@ export function flatSchema(raw: unknown): FlatSchema | undefined {
   return { type: "object", properties, ...(required?.length ? { required } : {}), additionalProperties: false };
 }
 
-/** An undeclared or unknown class reads as the most dangerous one: a declaration only ever lowers what the hub assumes if it is one of the four. */
-export function declaredClass(raw: unknown): SideEffect {
+/** A class a side wrote: absent stays absent (it contributes nothing, O6), but a value that is not one of the four reads as the most dangerous one. */
+export function declaredClass(raw: unknown): SideEffect | undefined {
+  if (raw === undefined) return undefined;
   return typeof raw === "string" && (SIDE_EFFECTS as readonly string[]).includes(raw) ? raw as SideEffect : "destructive";
 }
 const RANK: Record<SideEffect, number> = { read: 0, write: 1, external: 2, destructive: 3 };
 /** The higher of the publisher's declaration and the person's class (owner decision O1): neither side can make a capability look safer than the other said. */
-export function effectiveClass(declared: SideEffect, person: unknown): SideEffect {
-  const chosen = declaredClass(person === undefined ? declared : person);
+export function effectiveClass(declared: SideEffect | undefined, person: unknown): SideEffect {
+  const chosen = declaredClass(person);
+  if (declared === undefined) return chosen ?? "destructive"; // O6: only when neither side names a class
+  if (chosen === undefined) return declared;
   return RANK[chosen] >= RANK[declared] ? chosen : declared;
 }
 
@@ -115,7 +119,7 @@ export function buildCapability(candidate: Candidate): Capability | undefined {
   let inputSchema: FlatSchema | undefined;
   if (candidate.inputSchema !== undefined) { inputSchema = flatSchema(candidate.inputSchema); if (!inputSchema) return undefined; }
   const kind = candidate.kind as Capability["kind"], sideEffect = declaredClass(candidate.sideEffect);
-  const base = { kind, name: candidate.name, ...(inputSchema ? { inputSchema } : {}), sideEffect, source: candidate.source, invoke: candidate.invoke };
+  const base = { kind, name: candidate.name, ...(inputSchema ? { inputSchema } : {}), ...(sideEffect ? { sideEffect } : {}), source: candidate.source, invoke: candidate.invoke };
   return { id: `${kind}:${candidate.name}`, ...base, description: cleanDescription(candidate.description), digest: capabilityDigest(base) };
 }
 
@@ -196,4 +200,60 @@ export function listedCapabilities(peer: string, manifest: CapabilityManifest | 
     out.push({ id: cap.id, kind: cap.kind, name: cap.name, description: cap.description, ...(cap.inputSchema ? { inputSchema: cap.inputSchema } : {}), class: effectiveClass(cap.sideEffect, entry.class), invoke: cap.invoke, source: cap.source, digest: cap.digest });
   }
   return out;
+}
+
+/** The only native versions whose listings were probed (C0 receipt, 2026-10-30). Any other version lists nothing until a new receipt covers it. */
+export const NATIVE_PINS = Object.freeze({
+  kimi: { agent: "Kimi Code CLI", version: "2.3.2" },
+  qwen: { agent: "qwen-code", version: "0.26.1" },
+  codex: { agent: "codex", version: "0.166.0" },
+} as const);
+const STRING_INPUT: FlatSchema = { type: "object", properties: { input: { type: "string" } }, additionalProperties: false };
+const QWEN_SKILL_SOURCES = ["bundled-skill", "skill-dir-command"];
+
+/**
+ * An ACP `available_commands_update` as the capabilities of a probed Kimi or Qwen. Only entries that can be told apart as skills are listed (Qwen by
+ * `_meta.source`, Kimi by its `skill:` prefix): a builtin such as `compact` or `clear` changes session or host state and is never listed. A native
+ * listing carries no schema and no class, so each entry takes the one-string input and the lowest class (`read` is the publisher's claim, so the
+ * person's share class decides; see O6). Any other agent or version gives an empty manifest.
+ */
+export function acpManifest(agent: unknown, version: unknown, update: unknown, observedAt: number): CapabilityManifest {
+  const empty: CapabilityManifest = { capabilities: [], observedAt };
+  const kind = agent === NATIVE_PINS.kimi.agent && version === NATIVE_PINS.kimi.version ? "kimi"
+    : agent === NATIVE_PINS.qwen.agent && version === NATIVE_PINS.qwen.version ? "qwen" : undefined;
+  if (!kind || !object(update) || !Array.isArray(update.availableCommands)) return empty;
+  const candidates: Candidate[] = [];
+  for (const command of update.availableCommands) {
+    if (!object(command) || typeof command.name !== "string") continue;
+    const meta = object(command._meta) ? command._meta : {};
+    const skill = kind === "kimi" ? command.name.startsWith("skill:") : typeof meta.source === "string" && QWEN_SKILL_SOURCES.includes(meta.source);
+    if (skill) candidates.push({ kind: "command", name: command.name, description: command.description, inputSchema: STRING_INPUT, source: "acp", invoke: "native" });
+  }
+  return buildManifest(candidates, observedAt);
+}
+
+/** A Codex `skills/list` answer as capabilities, on the probed version only. Disabled skills and skills with errors are not listed. */
+export function codexSkillsManifest(version: unknown, result: unknown, observedAt: number): CapabilityManifest {
+  const candidates: Candidate[] = [];
+  if (version === NATIVE_PINS.codex.version && object(result) && Array.isArray(result.data)) {
+    for (const entry of result.data) {
+      if (!object(entry) || !Array.isArray(entry.skills)) continue;
+      for (const skill of entry.skills) {
+        if (!object(skill) || skill.enabled === false) continue;
+        candidates.push({ kind: "skill", name: skill.name, description: skill.shortDescription ?? skill.description, inputSchema: STRING_INPUT, source: "codex-skills", invoke: "native" });
+      }
+    }
+  }
+  return buildManifest(candidates, observedAt);
+}
+
+export type ShareState = "listed" | "unshared" | "digest-changed";
+/** For the person's `ahub capabilities`: every manifest entry, whether the person shares it, and the class that would apply. */
+export function shareView(peer: string, manifest: CapabilityManifest | undefined, share: ShareConfig): Array<{ id: string; kind: Capability["kind"]; name: string; description: string; source: Capability["source"]; invoke: Capability["invoke"]; digest: string; state: ShareState; class: SideEffect }> {
+  const entries = Object.hasOwn(share, peer) ? share[peer] : undefined;
+  return (manifest?.capabilities ?? []).map(cap => {
+    const entry = entries && Object.hasOwn(entries, cap.id) ? entries[cap.id] : undefined;
+    const state: ShareState = !entry ? "unshared" : entry.digest === cap.digest ? "listed" : "digest-changed";
+    return { id: cap.id, kind: cap.kind, name: cap.name, description: cap.description, source: cap.source, invoke: cap.invoke, digest: cap.digest, state, class: effectiveClass(cap.sideEffect, entry?.class) };
+  });
 }
