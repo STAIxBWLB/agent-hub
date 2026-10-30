@@ -232,5 +232,5 @@ test("a row is found by its trace, and survives reopening the file", () => {
 test("the constants are the documented ones", () => {
   expect(DEFAULT_TIMEOUT_S).toBe(600); expect(RESULT_MAX).toBe(8192); expect(ARG_STRING_MAX).toBe(2000); expect(ARGS_JSON_MAX).toBe(4096);
   expect(MAX_OPEN_PER_CALLER).toBe(4); expect(MAX_OPEN_PER_TARGET).toBe(8);
-  expect([...OUTCOMES]).toEqual(["queued", "delivered", "completed", "refused", "failed", "expired", "timeout", "needs_review"]);
+  expect([...OUTCOMES]).toEqual(["queued", "delivered", "completed", "refused", "failed", "expired", "timeout", "needs_review", "withheld"]);
 });

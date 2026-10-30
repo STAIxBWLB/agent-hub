@@ -30,6 +30,7 @@ class Callee extends BasePeer {
   async deliver(envs: Envelope[], deliveryId?: string) {
     this.got.push(envs);
     this.setState("busy");
+    if (deliveryId) this.delivery({ id: deliveryId, state: "accepted" }); // a real adapter accepts at the first sign of its turn
     queueMicrotask(() => {
       const text = this.answer(envs);
       if (text !== undefined) this.onMessage?.(text, { inReplyTo: replyParent(envs), to: replyAudience(envs) });
@@ -48,14 +49,14 @@ const update = { availableCommands: [{ name: "skill:review", description: "Revie
 const manifestOf = () => acpManifest("Kimi Code CLI", "2.3.2", update, 5);
 const cap = () => manifestOf().capabilities[0]!;
 
-async function fixture(opts: { shareOverride?: Record<string, Record<string, { digest: string; class?: string }>>; share?: boolean; cls?: string; timeoutS?: number; sweepMs?: number; state?: string; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }>; limits?: Record<string, number> } = {}) {
+async function fixture(opts: { roster?: Record<string, boolean>; shareOverride?: Record<string, Record<string, { digest: string; class?: string }>>; share?: boolean; cls?: string; timeoutS?: number; sweepMs?: number; state?: string; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }>; limits?: Record<string, number> } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-invoke-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   if (hubGitSync(["-C", root, "init", "-q"], { encoding: "utf8" }).status) throw new Error("fixture git failed");
   const stateDir = opts.state ?? join(root, "state");
-  if (opts.screen) { mkdirSync(join(root, ".agenthub"), { recursive: true }); writeFileSync(join(root, ".agenthub/routing.toml"), '[signals]\npii_screen = "local"\n[constraints]\npii = "local_only"\n'); }
+  if (opts.screen) { mkdirSync(join(root, ".agenthub"), { recursive: true }); writeFileSync(join(root, ".agenthub/routing.toml"), '[local]\nroute = "hub/stage"\nfixed_model = "coding"\n[signals]\npii_screen = "local"\n[constraints]\npii = "local_only"\n'); }
   const share = opts.shareOverride ?? (opts.share === false ? undefined : { kimi: { [cap().id]: { digest: cap().digest, ...(opts.cls === undefined ? { class: "read" } : opts.cls ? { class: opts.cls } : {}) } } });
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, invocationSweepMs: opts.sweepMs ?? 50, ...(opts.screen ? { piiScreen: opts.screen } : {}),
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, native: false, enabled: false }, snapshots: { enabled: false, keep: 1 }, ...(opts.limits ? { limits: { ...DEFAULT_CONFIG.limits, ...opts.limits } } : {}),
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, native: false, enabled: false }, snapshots: { enabled: false, keep: 1 }, ...(opts.roster ? { roster: { ...DEFAULT_CONFIG.roster, ...opts.roster } } : {}), ...(opts.limits ? { limits: { ...DEFAULT_CONFIG.limits, ...opts.limits } } : {}),
       invocation: { ...(share ? { share } : {}), ...(opts.timeoutS ? { timeout_s: opts.timeoutS } : {}) } } });
   cleanups.push(() => daemon.stop());
   const kimi = new Callee("kimi"), codex = new Caller("codex"), pi = new Caller("pi");
@@ -114,7 +115,7 @@ test("every gate refuses with its reason and builds no envelope, no row and no e
   await none({ peer: "kimi", capability: "bad id" }, /capability must be an id/);
   await none({ peer: 7 }, /peer must be a peer id/);
   await none({ peer: "" }, /peer is required/);
-  await none({ peer: "ghost" }, /offers no shared capability|offline/);
+  await none({ peer: "ghost" }, /ghost is off the roster/); // an id that is not a peer at all
   await none({ args: { nope: 1 } }, /args.nope is not an input/);
   await none({ args: { input: "a\nb" } }, /one line of plain text/);
   await none({ args: "x" }, /args must be an object/);
@@ -295,8 +296,9 @@ test("containment: an explicit hub_send reply to the request is the answer too, 
   f.kimi.answer = () => undefined; f.kimi.receipts = false;
   await invoke(f);
   await until(() => f.kimi.got.length === 1, "delivered");
-  const sent = await f.call("kimi", "hub_send", { text: "SENT-ANSWER-MARKER", reply_to: f.kimi.got[0]![0]!.id });
-  expect(sent.ok).toBe(true);
+  const client = await ControlClient.connect(f.stateDir, { role: "tools", peer: "kimi" }); cleanups.push(() => client.close());
+  const sent = await client.request({ t: "send", body: "SENT-ANSWER-MARKER", reply_to: f.kimi.got[0]![0]!.id }); // the wire message the plugin's hub_send sends
+  expect(sent.ok, String((sent as { error?: string }).error)).toBe(true);
   await until(() => results(f.codex).length === 1, "result");
   expect(results(f.codex)[0]!.body).toContain("SENT-ANSWER-MARKER");
   await Bun.sleep(100);
@@ -306,7 +308,8 @@ test("containment: an explicit hub_send reply to the request is the answer too, 
 
 test("result privacy: an answer the screen does not clear, or cannot decide on, is withheld with fixed text and no body is kept", async () => {
   for (const label of ["pii", "unknown"] as const) {
-    const f = await fixture({ screen: async () => ({ label, ms: 1 }) });
+    let calls = 0; // the screen reads the arguments first (cleared, or the call is refused) and then the answer
+    const f = await fixture({ screen: async () => ({ label: ++calls === 1 ? "clear" : label, ms: 1 }) });
     f.kimi.answer = () => "PRIVATE-ANSWER-MARKER";
     const r = await invoke(f); expect(r.ok, String((r as { error?: string }).error)).toBe(true);
     await until(() => results(f.codex).length === 1, "withheld result");
@@ -320,10 +323,15 @@ test("result privacy: an answer the screen does not clear, or cannot decide on, 
   clear.kimi.answer = () => "fine";
   await invoke(clear); await until(() => results(clear.codex).length === 1, "clear result");
   expect(results(clear.codex)[0]!.body).toContain("outcome completed");
-  const throwing = await fixture({ screen: async () => { throw new Error("screen down"); } });
+  let seen = 0;
+  const throwing = await fixture({ screen: async () => { if (++seen === 1) return { label: "clear", ms: 1 }; throw new Error("screen down"); } });
   throwing.kimi.answer = () => "fine";
   await invoke(throwing); await until(() => results(throwing.codex).length === 1, "screen failure result");
   expect(results(throwing.codex)[0]!.body).toContain("outcome withheld");
+  // and a screen that refuses the ARGUMENTS stops the call before any envelope exists
+  const blocked = await fixture({ screen: async () => ({ label: "pii", ms: 1 }) });
+  const refused = await invoke(blocked); expect(refused.ok).toBe(false); expect(refused.error).toMatch(/PII screen did not clear the arguments/);
+  expect(blocked.kimi.got).toEqual([]); expect(blocked.rows()).toEqual([]);
 });
 
 test("result privacy: a pattern in the answer, a secret, or a callee whose turn turned private all withhold it, with no screen at all", async () => {
@@ -366,7 +374,7 @@ test("containment with a real headless ACP callee: its final answer, normally sh
   for (let i = 0; i < 300 && !(await probe.capabilityManifest()).capabilities.length; i++) await Bun.sleep(10);
   const listed = (await probe.capabilityManifest()).capabilities[0]!; await probe.stop();
   expect(listed.id).toBe("command:review"); void createHash;
-  const f = await fixture({ shareOverride: { qwen: { [listed.id]: { digest: listed.digest, class: "read" } } } });
+  const f = await fixture({ roster: { qwen: true }, shareOverride: { qwen: { [listed.id]: { digest: listed.digest, class: "read" } } } });
   const real = new AcpPeer("qwen", { cmd: [process.execPath, join(import.meta.dir, "fakes/commands-acp.ts"), "--qwen", "--answer", "REAL-ACP-ANSWER-MARKER"], cwd: f.root });
   cleanups.push(() => real.stop());
   await real.start();
