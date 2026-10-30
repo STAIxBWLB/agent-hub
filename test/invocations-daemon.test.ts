@@ -925,13 +925,14 @@ for (const mode of ["unattended", "deny", "expire"] as const) test(`C3 ${mode} l
   if (mode === "unattended") expect(p.asks()).toEqual([]);
 });
 
-for (const drift of ["task", "pii", "paused", "target", "class", "digest"] as const) test(`C3 rechecks ${drift} after person approval before any effect`, async () => {
+for (const drift of ["task", "pii", "paused", "target", "caller", "class", "digest"] as const) test(`C3 rechecks ${drift} after person approval before any effect`, async () => {
   const f = await fixture({ cls: "write" }), t = scope(f), p = await person(f);
   const pending = invoke(f, { task: t.id }); await until(() => p.asks().length === 1, "approval barrier");
   if (drift === "task") t.board.update(t.id, "user", "reassigned", { owner: "pi" });
   if (drift === "pii") t.board.update(t.id, "user", "private", { signals: ["pii"] });
   if (drift === "paused") f.daemon.bus.pause("kimi");
   if (drift === "target") { f.daemon.bus.add(new Callee("kimi")); }
+  if (drift === "caller") { f.daemon.bus.add(new Caller("codex")); }
   if (drift === "class" || drift === "digest") {
     const source = f.kimi.manifest.capabilities[0]!;
     f.kimi.manifest = { capabilities: [{ ...source, ...(drift === "class" ? { sideEffect: "external" as const } : { digest: "sha256:changed" }) }], observedAt: 9 };
@@ -1005,4 +1006,46 @@ for (const handed of [false, true]) test(`C3 effect deadline after handoff=${han
   await until(() => f.rows()[0]?.outcome === (handed ? "needs_review" : "expired"), "deadline outcome");
   if (handed) { expect(f.daemon.bus.isHeld("kimi")).toBe(true); expect(f.daemon.bus.queueList("kimi", true).some(row => row.state === "needs_review")).toBe(true); }
   else { expect(f.kimi.got).toEqual([]); expect(f.daemon.bus.queueIds("kimi")).toEqual([]); }
+});
+
+
+for (const verdict of ["pii", "unknown", "error"] as const) test(`C3 ${verdict} argument screen refuses before person prompt`, async () => {
+  const f = await fixture({ cls: "write", screen: async () => { if (verdict === "error") throw new Error("screen unavailable"); return { label: verdict, ms: 1 }; } });
+  const t = scope(f), p = await person(f);
+  expect((await invoke(f, { task: t.id })).ok).toBe(false);
+  expect(p.asks()).toEqual([]); expect(f.rows()).toEqual([]); expect(f.kimi.got).toEqual([]);
+});
+
+test("C3 a screen-to-approval barrier rechecks task privacy and never shows newly-private arguments", async () => {
+  let entered = false, release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture({ cls: "external", screen: async () => { entered = true; await gate; return { label: "clear", ms: 1 }; } }), t = scope(f), p = await person(f);
+  const pending = invoke(f, { task: t.id });
+  await until(() => entered, "argument screen barrier");
+  t.board.update(t.id, "user", "private", { signals: ["pii"] }); release();
+  expect((await pending).ok).toBe(false); expect(p.asks()).toEqual([]); expect(f.rows()).toEqual([]);
+});
+
+test("C3 a handed-over effect awaiting native acceptance holds rather than claiming nothing ran", async () => {
+  const f = await fixture({ cls: "external" }), t = scope(f), p = await person(f);
+  f.kimi.deliver = async envs => { f.kimi.got.push(envs); f.kimi.force("busy"); };
+  const pending = invoke(f, { task: t.id }); await until(() => p.asks().length === 1, "approval");
+  await p.client.request({ t: "permit", id: p.asks()[0].id, option: "allow" }); expect((await pending).ok).toBe(true);
+  await until(() => f.kimi.got.length === 1, "handoff before native acceptance"); expect(f.rows()[0].outcome).toBe("queued");
+  const db = new Database(join(f.stateDir, "hub.db")); db.run("UPDATE invocations SET deadline=1"); db.close();
+  await until(() => f.rows()[0].outcome === "needs_review", "uncertain handed effect deadline");
+  expect(f.daemon.bus.isHeld("kimi")).toBe(true); expect(results(f.codex)[0]?.body).not.toContain("nothing ran");
+});
+
+test("C3 sweep reconciles an existing uncertain effect before its deadline", async () => {
+  const f = await fixture({ cls: "write" }), t = scope(f), p = await person(f);
+  // Model the restored journal/ledger boundary: no live receipt observer is left to settle this row.
+  f.daemon.bus.onInvocationUncertain = undefined;
+  f.kimi.deliver = async (envs, id) => { f.kimi.got.push(envs); if (id) f.kimi.receipt(id, "needs_review"); };
+  const pending = invoke(f, { task: t.id }); await until(() => p.asks().length === 1, "approval");
+  await p.client.request({ t: "permit", id: p.asks()[0].id, option: "allow" }); expect((await pending).ok).toBe(true);
+  await until(() => f.rows()[0]?.outcome === "needs_review", "reconcile unresolved journal");
+  expect(f.rows()[0].deadline).toBeGreaterThan(Date.now());
+  expect(f.daemon.bus.isHeld("kimi")).toBe(true); expect(f.kimi.got).toHaveLength(1);
+  expect(t.board.get(t.id)!.history.filter(entry => entry.invocation).map(entry => entry.invocation!.outcome)).toEqual(["queued", "needs_review"]);
 });

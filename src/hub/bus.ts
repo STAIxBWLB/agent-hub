@@ -199,7 +199,6 @@ export class Bus {
     return !!row && (row.state === "needs_review" || ["dispatching", "accepted"].includes(row.state) && !this.activeDeliveries.has(row.id));
   }
 
-
   /** Hold the existing delivery rather than cancelling native work or replaying an uncertain effect. */
   holdInvocation(id: string, reason: string, target?: PeerId): void {
     const delivery = this.invocationDeliveries.get(id), row = delivery && this.journal?.get(delivery);
