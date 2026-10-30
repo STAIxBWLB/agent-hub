@@ -198,6 +198,35 @@ test("#489 five real daemon settings rows write, inherit and undo through the ex
     expect((await set(1)).ok).toBe(true);
     expect((await get()).value).toBe(1);
     expect(loadConfig(cwd).bus?.[row.path[1] as keyof NonNullable<BusOperationalConfig["bus"]>]).toBe(1);
+    // Exercise the daemon's constructor wiring as well as its settings projection.
+    if (row.key === "bus.max_attempts") {
+      const peer = new Peer("claude"), dropped: string[] = [];
+      daemon.bus.add(peer); cleanup.push(() => peer.stop()); peer.fail = true;
+      daemon.bus.tap(event => { if (event.t === "undeliverable") dropped.push(event.env.id); });
+      await peer.start();
+      const env = newEnvelope("user", "one-attempt fixture", { to: [peer.id] }); daemon.bus.publish(env);
+      await until(() => dropped.includes(env.id));
+      expect(peer.batches).toHaveLength(1);
+      expect(daemon.bus.queueIds(peer.id)).not.toContain(env.id);
+      await peer.stop();
+    } else if (row.key === "bus.digest_max" || row.key === "bus.pull_budget_bytes") {
+      if (row.key === "bus.pull_budget_bytes") daemon.bus.add(new Peer("claude", true));
+      const envs = [0, 1].map(n => newEnvelope("user", `${n}: ${"x".repeat(2000)}`, { to: ["claude"] }));
+      envs.forEach(env => daemon.bus.publish(env));
+      const ids = new Set(envs.map(env => env.id));
+      expect(daemon.bus.pull("claude")!.filter(env => ids.has(env.id)).map(env => env.id)).toEqual([envs[0]!.id]);
+      expect(daemon.bus.pull("claude")!.filter(env => ids.has(env.id)).map(env => env.id)).toEqual([envs[1]!.id]);
+    } else if (row.key === "bus.notes_kept") {
+      daemon.bus.preface("claude", "daemon recall");
+      daemon.bus.note("claude", noteLine("codex", "finding", "first"));
+      daemon.bus.note("claude", noteLine("codex", "finding", "second"));
+      expect(daemon.bus.snapshot(false).prefaces.claude!.body).toBe("daemon recall\n\nnote from codex [finding]: second");
+      daemon.bus.pull("claude");
+    } else if (row.key === "bus.terminal_history_limit") {
+      daemon.bus.publish(newEnvelope("user", "terminal fixture", { to: ["claude"] }));
+      daemon.bus.pull("claude");
+      expect(daemon.bus.queueList("claude").filter(delivery => delivery.state === "completed")).toHaveLength(1);
+    }
     const saved = readFileSync(join(cwd, ".agenthub/config.local.json"), "utf8");
     expect((await set(row.max + 1)).ok).toBe(false);
     expect(readFileSync(join(cwd, ".agenthub/config.local.json"), "utf8")).toBe(saved);
