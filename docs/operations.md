@@ -2041,6 +2041,13 @@ prefaces, reset attempts, re-arm batch deadlines, prune history, or change a pau
 or in-flight delivery. Terminal history is a target: protected retry parents and the current mutation receipt may
 keep the count above it. The settings add no conductor authority.
 
+The [H3 H0 ledger](verification/2026-10-30-bus-delivery-operational-settings.md)
+lists all 59 unique inventory identities (5 converted and 54 excluded). The
+persisted `SEEN_CAP`/dedupe contract and withdrawn cancellation evidence stay
+fixed; recovery fence polling goes to H4, expired-limit-record cleanup remains
+maintenance, existing limits/watchdog/batching knobs remain in their current
+configuration path, and wire/storage/safety/test-seam values remain constants.
+
 #### Recovery and upgrade waits (#489 H4)
 
 The five `recovery.*` rows extend the existing `recovery` block (`auto_resume_after_crash` is unchanged) and use
@@ -2058,13 +2065,6 @@ idle wait only ends in manual-required, which retains the terminal. The 600 s wa
 not a setting: the source's preparation lease is a fixed ten minutes, so no other value is valid. The 180 s global
 install timeout has no project to own it, and the 610 s Orca command timeout follows terminal recovery's own ten-minute
 ceiling. See the [H4 ledger](verification/2026-10-30-recovery-wait-settings.md) for every item in the group.
-
-The [H3 H0 ledger](verification/2026-10-30-bus-delivery-operational-settings.md)
-lists all 59 unique inventory identities (5 converted and 54 excluded). The
-persisted `SEEN_CAP`/dedupe contract and withdrawn cancellation evidence stay
-fixed; recovery fence polling goes to H4, expired-limit-record cleanup remains
-maintenance, existing limits/watchdog/batching knobs remain in their current
-configuration path, and wire/storage/safety/test-seam values remain constants.
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
   the machine-local files (`ahub init` ignores both in git). The shared

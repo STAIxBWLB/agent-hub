@@ -18,6 +18,8 @@ The five settings (all `next use`, read from the project's config at the start o
 
 Every minimum is today's constant except the terminal idle wait: a person-visible wait may be raised and never shortened below what ships. A shorter terminal idle wait only ends a wait in manual-required, which retains the terminal.
 
+Handed over from H3 and not in this area's inventory rows: the recovery fence poll in `src/hub/bus.ts` (`fenceRecovery`: a 1 ms initial poll, doubling to a 50 ms cap, bounded by a 5 s deadline). H3's ledger rows `bus.ts:365:17` and `bus.ts:372:35` deferred it to this task. **Left out of H4**, with the reason: the 5 s deadline is already an injectable parameter of `fenceRecovery(timeoutMs = 5_000)` and a fence that times out leaves queues, in-flight deliveries and any hold the caller did not set exactly as they were, so a longer value only delays a refusal the caller retries; the 1 ms and 50 ms poll steps are an implementation detail of that bounded wait, not a wait a person tunes. It stays a constant (H3's row `bus.ts:361:35` records the same `5_000` as a test seam). Both daemon call sites (`recovery prepare` and `recovery restore`) pass no argument. This is a disposition, not a conversion: no setting was added for it.
+
 | Frozen H0 location | Name | Value | H0 class | Disposition | Reason |
 | --- | --- | --- | --- | --- | --- |
 | src/cli/recovery-guidance.ts:89:173 | `[...new Set(recorded.filter((peer): peer is string => typeof` | `64` | contract | keep: contract | A format, protocol or arithmetic constant. |
