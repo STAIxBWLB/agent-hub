@@ -77,7 +77,7 @@ test("project packs load from .agenthub/roles, the role catalog ignores them, an
   expect(loaded.errors.find(error => error.id === "ghost-pack")!.reason).toContain("no-such-role");
   expect(JSON.stringify(loaded.errors)).not.toContain("rm -rf");
   expect(loadRoleCatalog(dir).errors).toEqual([]);
-  expect([...loadPacks(undefined).packs.keys()]).toEqual(["example"]);
+  expect([...loadPacks(undefined).packs.keys()].sort()).toEqual(Object.keys(SHIPPED_PACKS).sort());
 });
 
 test("a project role file can satisfy a pack's role, and a pack file that is a link or a hardlink is refused", () => {
