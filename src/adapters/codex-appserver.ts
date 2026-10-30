@@ -6,7 +6,8 @@ import { BasePeer, type FrontendProxyPort } from "../hub/peers.ts";
 import { codexContext, type ContextReading } from "../hub/context-window.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import type { ContextReader } from "./registry-types.ts";
-import { codexSkillsManifest, NATIVE_PINS, type CapabilityManifest } from "../hub/capabilities.ts";
+import type { CapabilityManifest } from "../hub/capabilities.ts";
+import { codexSkillsManifest, NATIVE_PINS } from "./native-capabilities.ts";
 import { ACTION_BUDGET_OPTION, type ActionGateVerdict, type PermissionRequest } from "./acp.ts";
 
 const UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery";

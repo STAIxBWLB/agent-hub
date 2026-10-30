@@ -12,7 +12,8 @@ import { BasePeer } from "../hub/peers.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { AcpOwnedGroup } from "./acp-owned-group.ts";
 import type { StartForm } from "./registry-types.ts";
-import { acpManifest, type CapabilityManifest } from "../hub/capabilities.ts";
+import type { CapabilityManifest } from "../hub/capabilities.ts";
+import { acpManifest } from "./native-capabilities.ts";
 
 export interface PermissionOption {
   optionId: string;

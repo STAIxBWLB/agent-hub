@@ -7,7 +7,8 @@ import { Board } from "../src/hub/board.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { hubGitSync } from "../src/hub/git.ts";
-import { acpManifest, validatePublished, type CapabilityManifest } from "../src/hub/capabilities.ts";
+import { validatePublished, type CapabilityManifest } from "../src/hub/capabilities.ts";
+import { acpManifest } from "../src/adapters/native-capabilities.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
 import { projectToolList, profileTaskTools } from "../src/hub/hub-tools.ts";
 

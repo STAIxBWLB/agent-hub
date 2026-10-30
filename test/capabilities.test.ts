@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { acpManifest, codexSkillsManifest, NATIVE_PINS, shareView, buildCapability, buildManifest, canonical, capabilityDigest, cleanDescription, declaredClass, DESCRIPTION_MAX, effectiveClass, flatSchema, listedCapabilities, MAX_CAPABILITIES, NAME_RE, PublishRefusal, readShare, validatePublished, type CapabilityManifest, type ShareConfig } from "../src/hub/capabilities.ts";
+import { acpManifest, codexSkillsManifest, NATIVE_PINS } from "../src/adapters/native-capabilities.ts";
+import { shareView, buildCapability, buildManifest, canonical, capabilityDigest, cleanDescription, declaredClass, DESCRIPTION_MAX, effectiveClass, flatSchema, listedCapabilities, MAX_CAPABILITIES, NAME_RE, PublishRefusal, readShare, validatePublished, type CapabilityManifest, type ShareConfig } from "../src/hub/capabilities.ts";
 
 const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 const cap = (over: Record<string, unknown> = {}) => buildCapability({ kind: "command", name: "review", description: "Review the diff.", sideEffect: "read", source: "acp", invoke: "native", ...over } as never)!;
