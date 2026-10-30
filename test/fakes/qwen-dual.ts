@@ -21,11 +21,12 @@ const sessionId = resume ?? process.env.FAKE_QWEN_SESSION ?? randomUUID();
 const tuiAnswerMs = flag("--tui-answer") === undefined ? undefined : Number(flag("--tui-answer"));
 if (args.includes("--version")) { console.log(version); process.exit(0); }
 const out = (event: Record<string, unknown>) => appendFileSync(events, `${JSON.stringify({ uuid: randomUUID(), session_id: sessionId, parent_tool_use_id: null, ...event })}\n`);
+// Capture RemoteInput's initial EOF before announcing readiness: a submit after session_start must be read.
+let offset = existsSync(input) ? statSync(input).size : 0;   // RemoteInput starts at the current end: earlier submits are never replayed
 const system = { type: "system", subtype: "session_start", data: { session_id: sessionId, cwd: process.cwd(), protocol_version: 2, version, supported_events: ["system", "user", "assistant", "stream_event", "result", "control_request", "control_response"] } };
 if (!args.includes("--no-events")) { if (!existsSync(events)) writeFileSync(events, ""); out(system); }
 writeFileSync(`${input}.pid`, String(process.pid));
 
-let offset = existsSync(input) ? statSync(input).size : 0;   // RemoteInput starts at the current end: earlier submits are never replayed
 const queue: string[] = [];
 const waiting = new Map<string, (allowed: boolean) => void>();
 const settled = new Set<string>();
