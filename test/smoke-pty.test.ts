@@ -325,6 +325,36 @@ test.skipIf(process.platform !== "darwin")("a bridge killed with SIGKILL, which 
   }
 }, 40_000);
 
+test.skipIf(process.platform !== "darwin")("a gate shell that is hung up, terminated or interrupted while it waits removes its own gate at once, before its bridge could", async () => {
+  for (const signal of ["SIGHUP", "SIGTERM", "SIGINT"] as const) {
+    const cwd = temp(), tmp = join(cwd, "tmp"), pidFile = join(cwd, "bridge.pid");
+    mkdirSync(tmp);
+    const gates = () => readdirSync(tmp).filter(name => name.startsWith("ahub-pty-gate-"));
+    // the probe holds the bridge for 4 s inside the spawn it just made, so the bridge's own cleanup cannot be what removes the directory in the next second
+    const caller = [
+      "const { spawn } = require('node:child_process'), { writeFileSync } = require('node:fs')",
+      `const argv = ${JSON.stringify(probed([process.execPath, "-e", "setInterval(() => {}, 1000)"]))}`,
+      "const p = spawn(argv[0], argv.slice(1), { detached: true, stdio: ['pipe', 'pipe', 'pipe'] })",
+      "p.stdout.resume(); p.stderr.resume()",
+      `writeFileSync(${JSON.stringify(pidFile)}, String(p.pid))`,
+      "setInterval(() => {}, 1000)",
+    ].join("; ");
+    const callerProc = spawn(process.execPath, ["-e", caller], { stdio: "ignore", env: { ...process.env, TMPDIR: tmp, PTY_PROBE_MODE: "spawn-delay", PTY_PROBE_DELAY_MS: "4000" } });
+    let bridge = 0, members: number[] = [];
+    try {
+      expect(await waitFor(() => existsSync(pidFile) && gates().length === 1 && descendants(Number(readFileSync(pidFile, "utf8"))).length >= 2, 15_000), signal).toBe(true);
+      bridge = Number(readFileSync(pidFile, "utf8"));
+      members = descendants(bridge);
+      const shell = members.find(pid => pid !== bridge)!;
+      process.kill(shell, signal);
+      expect(await waitFor(() => gates().length === 0, 1_500), `${signal}: the gate directory outlived the shell that was signalled while its bridge was still blocked`).toBe(true);
+    } finally {
+      callerProc.kill("SIGKILL");
+      for (const pid of [bridge, ...members]) { if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } } }
+    }
+  }
+}, 60_000);
+
 test("the bridge refuses a missing command with 125 and starts nothing", async () => {
   const cwd = temp();
   const result = await runPtyWith(() => [process.execPath, BRIDGE], ["x"], options(cwd));
