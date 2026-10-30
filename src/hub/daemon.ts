@@ -81,6 +81,7 @@ import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { CONTRADICTION_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SETTING, GROOM_FYI_WINDOW_SETTING, RESCREEN_MAX_SETTING, SPLIT_FAILURE_SHARE_SETTING, SPLIT_MIN_SETTING, taskOperationalReaders } from "./operational-settings.ts";
+import { ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEOUT_SETTING, adapterOperationalReaders, type AdapterTimingConfig } from "./operational-settings.ts";
 import { BUS_DIGEST_MAX_SETTING, BUS_MAX_ATTEMPTS_SETTING, BUS_NOTES_KEPT_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING, busOperationalReaders, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING } from "./operational-settings.ts";
 import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
@@ -223,6 +224,8 @@ export interface HubConfig {
   queue_cap: number;
   /** #489 H3: accepted delivery policy, read at the next delivery operation without rewriting queued work. */
   bus?: { max_attempts?: number; digest_max?: number; pull_budget_bytes?: number; notes_kept?: number; terminal_history_limit?: number };
+  /** #489 H5: accepted timing captured only when a new native adapter is constructed. */
+  adapter_timing?: AdapterTimingConfig["adapter_timing"];
   /** `native` (#258): the hub's own store in ~/.agenthub/memory, on with any project config; `short_ttl_days`: short-term lifetime after approval; `sync_interval_min`: machine sync while a remote is set (default 10, 0 off). */
   memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number; native?: boolean; short_ttl_days?: number; sync_interval_min?: number; suggest_edges?: boolean };
   roster: PeerRoster;
@@ -303,6 +306,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   batch_ms: 15_000,
   queue_cap: 200,
   bus: { max_attempts: BUS_MAX_ATTEMPTS_SETTING.defaultValue, digest_max: BUS_DIGEST_MAX_SETTING.defaultValue, pull_budget_bytes: BUS_PULL_BUDGET_BYTES_SETTING.defaultValue, notes_kept: BUS_NOTES_KEPT_SETTING.defaultValue, terminal_history_limit: BUS_TERMINAL_HISTORY_LIMIT_SETTING.defaultValue },
+  adapter_timing: { acp_tool_ceiling_min: ACP_TOOL_CEILING_SETTING.defaultValue, acp_activity_batch_ms: ACP_ACTIVITY_BATCH_SETTING.defaultValue, jcode_steer_timeout_s: JCODE_STEER_TIMEOUT_SETTING.defaultValue },
   memory: { enabled: true, inject_tokens: 2000, brief_items: 8 },
   roster: {},
   roles: DEFAULT_ROLES,
@@ -345,7 +349,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "corpus", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
+const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "corpus", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
 export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[], scope: Pick<ReturnType<typeof readInstanceConfig>, "instances" | "catalog"> = readInstanceConfig(cwd, layers)): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string | string[]; notices?: string[] } {
@@ -539,6 +543,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     },
     tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks, ...(file.tasks?.wip_limits !== undefined ? { wip_limits: planningWipLimits(file.tasks.wip_limits) } : {}) },
     bus: { ...DEFAULT_CONFIG.bus, ...file.bus },
+    adapter_timing: { ...DEFAULT_CONFIG.adapter_timing, ...file.adapter_timing },
     task_sweep: taskSweepConfig(file.task_sweep),
     schedules: schedulesConfig(file.schedules),
     folder_triggers: foldersConfig(file.folder_triggers),
@@ -1182,6 +1187,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // The hub's own model calls (digest condensation, task triage) are wired below, once the gateway client exists.
   let inference: Inference | undefined;
   const { terminalHistoryLimit, ...busReaders } = busOperationalReaders(() => config);
+  const adapterTiming = adapterOperationalReaders(() => config);
   const journal = new DeliveryJournal({ file: join(opts.stateDir, "hub.db"), projectRoot: opts.cwd, projectId, instanceId, operationId: recoveryOperation, terminalHistoryLimit });
   // What the crash left in flight, per recipient: opening the journal just marked these needs_review.
   const lost = new Map<PeerId, JournalDelivery[]>();
@@ -5021,6 +5027,7 @@ export async function startDaemon(opts: DaemonOptions) {
         providerProfile: (args.providerProfile ?? instance?.provider_profile ?? config.jcode_provider_profile) || undefined,
         ...(instance?.provider ? { provider: instance.provider } : {}),
         ...(args.model ?? instance?.model ? { launchModel: (args.model ?? instance?.model)! } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}), cwd: executionCwd, watchdogMs: config.watchdog_ms,
+        toolCeilingMs: adapterTiming.acpToolCeilingMs(), activityBatchMs: adapterTiming.acpActivityBatchMs(), steerTimeoutMs: adapterTiming.jcodeSteerTimeoutMs(),
         preamble: sessionRoleContract(peer), log: () => log("Jcode native diagnostic: details withheld"),
         // #801: Jcode 0.99.1's usage_update is `{ used, size }`, the live session's context occupancy: a context reading bound to the adapter's own session id, never a tokens event
         // or a quota window. An invalid shape reports a null reading (unknown, not the previous value).
@@ -5051,6 +5058,7 @@ export async function startDaemon(opts: DaemonOptions) {
         isPrivateTurn: () => !!turns.get(peer)?.private || contextPii(peer),
         actionGate: acpActionGate(peer),
         cmd, kind: adapter.kind,
+        toolCeilingMs: adapterTiming.acpToolCeilingMs(), activityBatchMs: adapterTiming.acpActivityBatchMs(),
         permissionMode: permissionMode(peer),
         ...(args.model ? { launchModel: args.model } : {}),
         ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}),
@@ -5106,6 +5114,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const externalLaunchId = externalBinding ? randomUUID() : undefined;
       if (externalLaunchId) for (const server of mcpServers) server.env.push({ name: "AGENTHUB_LAUNCH_ID", value: externalLaunchId });
       const acpOptions: AcpOptions = {
+        toolCeilingMs: adapterTiming.acpToolCeilingMs(), activityBatchMs: adapterTiming.acpActivityBatchMs(),
         onActivity: item => activityRings[peer]?.append(item),
         isPrivateTurn: () => !!turns.get(peer)?.private || contextPii(peer),
         actionGate: acpActionGate(peer),
