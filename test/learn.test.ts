@@ -13,6 +13,7 @@ import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { candidateCard, CHECKLIST_MAX_LINES, overridesDiff, parseCandidateCard, withChecklistLine } from "../src/hub/learning.ts";
 import { checkSettingValue, LEARN_CHECKLIST, SETTINGS, settingDef, undoableDef, writeConfigSetting } from "../src/hub/settings.ts";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
+import { hubGitSync } from "../src/hub/git.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { classifyPeerCommand, cliCommandLabel } from "../src/cli/identity.ts";
@@ -464,6 +465,24 @@ test("a real daemon: when the config files stop loading, accept refuses with the
   writeFileSync(f.shared, JSON.stringify(BASE));
   expect(parse(await person.request({ t: "task", op: "learn_list", args: {} }))).toMatchObject([{ id: card.id, status: "open" }]);
 }, 30_000);
+
+test("a real daemon: undo of a DECLARED instance's setting still resolves through the project-scoped lookup (the review thread on undoableDef)", async () => {
+  const { f, seed } = await daemonWithCandidate();
+  const declared = { instances: { "codex-worker": { kind: "codex", roles: ["implementer"], start_mode: "headless" } }, roles: { "codex-worker": ["implementer"] }, roster: { "codex-worker": false } };
+  expect(hubGitSync(["-C", f.cwd, "init", "-q"], { encoding: "utf8" }).status).toBe(0); // the loader honors a declaration only when git confirms the local file is untracked
+  writeFileSync(f.local, JSON.stringify(declared)); // instances are machine-local declarations
+  const { person } = await openDaemon(f, seed);
+  const key = "permission_modes.codex-worker";
+  const set = await person.request({ t: "settings_set", key, value: "never-ask", confirm: "codex-worker", reason: "test" });
+  expect(set.ok, String(set.error)).toBe(true);
+  expect(JSON.parse(bytes(f.local)!).permission_modes["codex-worker"]).toBe("never-ask");
+  const preview = await person.request({ t: "settings_preview", undo: true });
+  expect(preview.ok, String(preview.error)).toBe(true);
+  expect(JSON.stringify(preview)).not.toContain("nothing to undo");
+  const undone = await person.request({ t: "settings_undo" });
+  expect(undone.ok, String(undone.error)).toBe(true);
+  expect(JSON.parse(bytes(f.local)!)).toEqual(declared); // back to the declaration alone
+}, 60_000);
 
 test("a real daemon: only an ACCEPTED card repeats as a success: a rejected card and a card closed another way are refused on accept, and an accepted card cannot then be rejected", async () => {
   const { f, seed, card } = await daemonWithCandidate();

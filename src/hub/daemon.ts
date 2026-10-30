@@ -156,7 +156,7 @@ import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig, 
 import { taskEvidencePrivacy, type TaskEvidencePrivacy, ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
 import { withChecklistLine } from "./learning.ts";
-import { LEARN_CHECKLIST, undoableDef, NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
+import { LEARN_CHECKLIST, NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { githubOriginRepository } from "./task-repository.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
@@ -912,6 +912,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const found = instanceSettingDef(key, declarations, adapterCatalog), stale = staleRosterKey(key);
     return typeof found === "string" && stale ? { key: `roster.${stale}`, group: "Roster", label: `${stale}: stale roster key (instance no longer declared)`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", stale] } : found;
   };
+  // #514b: undo resolves the managed checklist key, which is not a settings row, and every other key through the project-scoped lookup above (declared instances, the adapter catalog, a stale roster key).
+  const undoableDef = (key: unknown): SettingDef | string => key === LEARN_CHECKLIST.key ? LEARN_CHECKLIST : settingDef(key);
   const accountOf = (peer: string) => definitionOf(peer)?.budget?.account ?? peer;
   const accountMembers = (account: string) => SUPPORTED_PEERS.filter(peer => accountOf(peer) === account);
   let rosterChanging: string | undefined;

@@ -154,7 +154,7 @@ export function projectSettings(instances?: KindMap, adapterCatalog?: ProjectAda
   return extra.length ? Object.freeze([...settings, ...extra]) : settings;
 }
 
-/** What undo may put back: a registry key, or the one managed key `ahub learn accept` writes. Never used to set anything. */
+/** What undo may put back: a registry key, or the one managed key `ahub learn accept` writes. Never used to set anything. The CLI passes its project scope; the daemon has its own wrapper over its project-scoped lookup. */
 export function undoableDef(key: unknown, instances?: KindMap, adapterCatalog?: ProjectAdapterCatalog): SettingDef | string {
   return key === LEARN_CHECKLIST.key ? LEARN_CHECKLIST : settingDef(key, instances, adapterCatalog);
 }
