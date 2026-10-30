@@ -1,3 +1,4 @@
+import { INFERENCE_BACKOFF_SETTING, INFERENCE_DIGEST_ITEMS_SETTING, INFERENCE_DIGEST_CHARS_SETTING } from "./operational-settings.ts";
 import type { MlxHandle } from "../models/mlx.ts";
 import type { ChatMessage, OmniRoute } from "../omniroute/client.ts";
 import { CLASSES, type TaskClass } from "./board.ts";
@@ -12,14 +13,16 @@ export interface InferenceConfig {
   /** ... or with more status text than this */
   digest_min_chars: number;
   triage: boolean;
+  /** Captured with the inference instance; an existing backoff deadline is never rewritten. */
+  backoff_min?: number;
 }
-export const DEFAULT_INFERENCE: InferenceConfig = { enabled: true, digest_min_items: 5, digest_min_chars: 8000, triage: true };
+export const DEFAULT_INFERENCE: InferenceConfig = { enabled: true, digest_min_items: INFERENCE_DIGEST_ITEMS_SETTING.defaultValue, digest_min_chars: INFERENCE_DIGEST_CHARS_SETTING.defaultValue, triage: true, backoff_min: INFERENCE_BACKOFF_SETTING.defaultValue };
 
 /** Sender of a condensed digest. Not the hub's own id: replies to it must keep the hop count of what it replaced. */
 export { DIGEST };
 
 const TIMEOUT_MS = 8000;
-const BACKOFF_MS = 5 * 60_000;
+export const BACKOFF_MS = 5 * 60_000;
 const SUMMARY_CAP = 1500;
 
 export interface InferenceDeps {
@@ -37,11 +40,12 @@ export interface InferenceDeps {
  */
 export class Inference {
   private offUntil = 0;
+  private readonly backoffMs: number;
 
   constructor(
     private readonly cfg: InferenceConfig,
     private readonly d: InferenceDeps,
-  ) {}
+  ) { this.backoffMs = cfg.backoff_min === undefined ? BACKOFF_MS : cfg.backoff_min * 60_000; }
 
   /**
    * `interactive`: a person is waiting for this one answer (`ahub ask`). It gets its own, longer clock and neither obeys
@@ -67,8 +71,9 @@ export class Inference {
 
   private backOff(why: string, quiet = false): undefined {
     if (quiet) return undefined;
-    this.offUntil = Date.now() + BACKOFF_MS; // do not make every delivery wait out the timeout while the model is down
-    this.d.log(`inference: off for ${BACKOFF_MS / 60_000} min (${why.slice(0, 120)})`);
+    const backoffMs = this.backoffMs;
+    this.offUntil = Date.now() + backoffMs; // do not make every delivery wait out the timeout while the model is down
+    this.d.log(`inference: off for ${backoffMs / 60_000} min (${why.slice(0, 120)})`);
     return undefined;
   }
 

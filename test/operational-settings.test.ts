@@ -45,6 +45,13 @@ test("#489 every operational row has an independent legacy default pin and an op
     "adapter_timing.acp_tool_ceiling_min": { legacy: 1_800_000, scale: 60_000 },
     "adapter_timing.acp_activity_batch_ms": { legacy: 50, scale: 1 },
     "adapter_timing.jcode_steer_timeout_s": { legacy: 5000, scale: 1000 },
+    "model_relay.cooldown_failures": { legacy: 3, scale: 1 },
+    "model_relay.cooldown_s": { legacy: 30_000, scale: 1000 },
+    "model_relay.cooldown_cap_s": { legacy: 300_000, scale: 1000 },
+    "model_relay.terminal_history_limit": { legacy: 1000, scale: 1 },
+    "inference.backoff_min": { legacy: 300_000, scale: 60_000 },
+    "inference.digest_min_items": { legacy: 5, scale: 1 },
+    "inference.digest_min_chars": { legacy: 8000, scale: 1 },
   };
   const inventory = readFileSync(join(import.meta.dir, "../docs/verification/2026-10-24-hardcoded-values.md"), "utf8").split("\n");
   const docs = readFileSync(join(import.meta.dir, "../docs/operations.md"), "utf8");

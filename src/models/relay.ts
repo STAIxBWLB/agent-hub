@@ -167,6 +167,11 @@ export interface ModelRelayOptions {
   efficientWaitMs?: number;
   /** A backend alias's cooldown starts or ends. */
   onCooldown?: (event: RelayCooldownEvent) => void;
+  /** Host-validated policy captured when this relay is constructed. */
+  cooldownFailures?: number;
+  cooldownMs?: number;
+  cooldownCapMs?: number;
+  terminalHistoryLimit?: number;
   /** Cooldown clock; tests inject one. */
   now?: () => number;
   /** How long a dispatch waits for a busy MLX slot before it gives up and falls back (default 120 s); tests shorten it. */
@@ -207,8 +212,9 @@ export interface ModelRelay {
 
 export interface RelayCooldownEvent { alias: string; event: "start" | "end"; failures: number; ms?: number }
 
-// ponytail: fixed policy, 3 failures and 30 s doubling up to 5 min; routing.toml keys if a backend needs other values.
-const COOLDOWN_FAILURES = 3, COOLDOWN_MS = 30_000, COOLDOWN_CAP_MS = 300_000;
+/** Legacy defaults, independently pinned by the operational-settings tests. */
+export const COOLDOWN_FAILURES = 3, COOLDOWN_MS = 30_000, COOLDOWN_CAP_MS = 300_000;
+export const RELAY_TERMINAL_HISTORY_LIMIT = 1000;
 /** The longest one upstream request may take. */
 const REQUEST_DEADLINE_MS = 180_000;
 // ponytail: a moved attempt (a load move or an enforced pin, both only optimizations) gets 15 s to its response headers
@@ -222,7 +228,12 @@ const MOVE_FIRST_BYTE_MS = 15_000;
  */
 export class BackendCooldowns {
   private readonly entries = new Map<string, { failures: number; until?: number; failedAt?: number; countedAt?: number }>();
-  constructor(private readonly now: () => number = Date.now, private readonly notify: (event: RelayCooldownEvent) => void = () => {}) {}
+  private readonly policy: { failures: number; cooldownMs: number; capMs: number };
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly notify: (event: RelayCooldownEvent) => void = () => {},
+    policy: { failures: number; cooldownMs: number; capMs: number } = { failures: COOLDOWN_FAILURES, cooldownMs: COOLDOWN_MS, capMs: COOLDOWN_CAP_MS },
+  ) { this.policy = { ...policy }; }
 
   /** The alias's cooldown while it lasts. Its end is recorded when it is first seen to have passed, or at an answer. */
   cooling(alias: string): { until: number; failures: number } | undefined {
@@ -244,11 +255,11 @@ export class BackendCooldowns {
     const entry = this.entry(alias);
     entry.failedAt = this.now();
     if (cooling || !streak) return;
-    if (entry.countedAt !== undefined && this.now() - entry.countedAt > 2 * COOLDOWN_CAP_MS) entry.failures = 0;
+    if (entry.countedAt !== undefined && this.now() - entry.countedAt > 2 * this.policy.capMs) entry.failures = 0;
     entry.countedAt = this.now();
     entry.failures++;
-    if (entry.failures < COOLDOWN_FAILURES) return;
-    const ms = Math.min(COOLDOWN_CAP_MS, COOLDOWN_MS * 2 ** (entry.failures - COOLDOWN_FAILURES));
+    if (entry.failures < this.policy.failures) return;
+    const ms = Math.min(this.policy.capMs, this.policy.cooldownMs * 2 ** (entry.failures - this.policy.failures));
     entry.until = this.now() + ms;
     this.notify({ alias, event: "start", failures: entry.failures, ms });
   }
@@ -265,7 +276,7 @@ export class BackendCooldowns {
   /** Until when the alias's last dispatch counts as failed for a load move, while it does. */
   failing(alias: string): number | undefined {
     const at = this.entries.get(alias)?.failedAt;
-    return at !== undefined && this.now() < at + COOLDOWN_MS ? at + COOLDOWN_MS : undefined;
+    return at !== undefined && this.now() < at + this.policy.cooldownMs ? at + this.policy.cooldownMs : undefined;
   }
 
   private entry(alias: string) {
@@ -430,7 +441,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   const models = relayModelIds(options);
   const efficientWaitMs = options.efficientWaitMs;
   const moveFirstByteMs = options.moveFirstByteMs ?? MOVE_FIRST_BYTE_MS;
-  const cooldowns = new BackendCooldowns(options.now, (event) => { try { options.onCooldown?.(event); } catch { /* observation cannot fail routing */ } });
+  const cooldowns = new BackendCooldowns(options.now, (event) => { try { options.onCooldown?.(event); } catch { /* observation cannot fail routing */ } }, { failures: options.cooldownFailures ?? COOLDOWN_FAILURES, cooldownMs: options.cooldownMs ?? COOLDOWN_MS, capMs: options.cooldownCapMs ?? COOLDOWN_CAP_MS });
   const autoRoute = options.enableHubAuto ? new AutoRouteSelector({ ...options, dgxMaxInputTokens }, defaultBackend, mlxAlias, estimateInputTokens) : undefined;
   let mlx: MlxHandle | undefined;
   let mlxStarting: Promise<MlxHandle> | undefined;
@@ -438,7 +449,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   const activeRequests = new Set<ActiveRequest>();
   const activeByAlias = new Map<string, number>();
   const journal: RelayRequestRecord[] = [];
-  const JOURNAL_LIMIT = 1000;
+  const JOURNAL_LIMIT = options.terminalHistoryLimit ?? RELAY_TERMINAL_HISTORY_LIMIT;
 
   // The record object is the generation fence: every update goes through this entry's own closure,
   // so interleaved requests for the same alias never write into each other's evidence.
