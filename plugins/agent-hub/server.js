@@ -2955,7 +2955,7 @@ function jsonObject(text) {
     return;
   }
 }
-var ACTION_BUDGET_OPTION = "agent-hub:action-budget", HANDSHAKE_MS = 30000, TOOL_INPUT_CAP = 64, TOOL_CEILING_MS, managedLaunches, RpcTimeoutError, AcpPeer;
+var ACTION_BUDGET_OPTION = "agent-hub:action-budget", HANDSHAKE_MS = 30000, TOOL_INPUT_CAP = 64, TOOL_CEILING_MS, ACTIVITY_BATCH_MS = 50, managedLaunches, RpcTimeoutError, AcpPeer;
 var init_acp = __esm(() => {
   init_envelope();
   init_kimi_native();
@@ -3045,7 +3045,7 @@ var init_acp = __esm(() => {
           this.activityPending.text += item.text;
         else
           this.activityPending = { kind: item.kind, text: item.text };
-        this.activityTimer ??= setTimeout(() => this.flushActivity(), 50);
+        this.activityTimer ??= setTimeout(() => this.flushActivity(), this.opts.activityBatchMs ?? ACTIVITY_BATCH_MS);
         this.activityTimer.unref?.();
       } else {
         this.flushActivity();
