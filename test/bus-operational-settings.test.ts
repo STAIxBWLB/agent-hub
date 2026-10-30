@@ -189,7 +189,7 @@ test("#489 terminal history reload prunes only at settlement and preserves unres
 test("#489 five real daemon settings rows write, inherit and undo through the existing local file", async () => {
   const cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-bus-config-"))), state = join(cwd, ".agenthub/state");
   cleanup.push(() => rmSync(cwd, { recursive: true, force: true })); mkdirSync(join(cwd, ".agenthub"));
-  const shared = JSON.stringify({ memory: { enabled: false, native: false }, inference: { enabled: false }, mlx: { enabled: false }, pi: { auto_start: false }, research: { enabled: false }, snapshots: { enabled: false } });
+  const shared = JSON.stringify({ batch_ms: 0, memory: { enabled: false, native: false }, inference: { enabled: false }, mlx: { enabled: false }, pi: { auto_start: false }, research: { enabled: false }, snapshots: { enabled: false } });
   writeFileSync(join(cwd, ".agenthub/config.json"), shared);
   const daemon = await startDaemon({ cwd, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, agentDrift: false, snapshotClock: () => 0 });
   cleanup.push(() => daemon.stop());
