@@ -104,7 +104,7 @@ test("analysis refuses failed programs and changed declared files even when stdo
 
 test("example checks refuse malformed, linked, oversized and missing input files with stable diagnostics", () => {
   const dir = temp(), malformed = join(dir, "malformed.json"), large = join(dir, "large.json"), linked = join(dir, "linked.json");
-  writeFileSync(malformed, Buffer.from([255])); writeFileSync(large, " ".repeat(1024 * 1024 + 1)); symlinkSync(path(cases[2].args[0]), linked);
+  writeFileSync(malformed, Buffer.from([255])); writeFileSync(large, "[]" + " ".repeat(1024 * 1024)); symlinkSync(path(cases[2].args[0]), linked);
   for (const file of [malformed, large, linked, join(dir, "missing.json")]) {
     const result = run(path(cases[2].script), [file]); expect(result).toEqual({ code: 1, out: "ops-records: FAIL\nops: FAIL\n", err: "" });
   }
