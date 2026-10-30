@@ -91,7 +91,8 @@ test("#489 H4 a configured value reaches its own wait and no other, and bad valu
     const raised = operationalNumber(key)!.max;
     const waits = recoveryWaits(() => ({ recovery: { [leaf(key)]: raised } }));
     for (const other of KEYS) expect(waits[FIELD[other]], `${key} -> ${other}`).toBe(other === key ? raised * 1000 : LEGACY[other]);
-    for (const bad of [Number.NaN, Infinity, -1, 0, 0.5, "90", true, null, [], {}, 1e12, raised + 1]) {
+    // 0.5 and raised + 0.5 are inside the bounds as numbers but are not whole seconds: the reader refuses them like the schema does
+    for (const bad of [Number.NaN, Infinity, -1, 0, 0.5, operationalNumber(key)!.min + 0.5, raised - 0.5, "90", true, null, [], {}, 1e12, raised + 1]) {
       expect(recoveryWaits(() => ({ recovery: { [leaf(key)]: bad } }))[FIELD[key]], `${key}=${String(bad)}`).toBe(LEGACY[key]);
     }
   }
@@ -110,6 +111,29 @@ test("#489 H4 the coordinator reads both layers, the machine-local file last, an
   rmSync(f.local);
   expect(readRecoveryWaits(f.cwd).reconnectWaitMs).toBe(700_000);
   expect(readRecoveryWaits(undefined)).toEqual(recoveryWaits(() => undefined));
+});
+
+test("#489 H4 the existing recovery leaf and the five new ones validate together, and the old leaf is still checked", () => {
+  expect(() => validateRawConfig({ recovery: { auto_resume_after_crash: true, reconnect_wait_s: 700, shutdown_wait_s: 40 } })).not.toThrow();
+  expect(() => validateRawConfig({ recovery: { auto_resume_after_crash: "yes" } })).toThrow("recovery.auto_resume_after_crash");
+  expect(() => validateRawConfig({ recovery: { auto_resume_after_crash: true, unknown_wait_s: 5 } })).toThrow("unknown key");
+  expect(() => validateRawConfig({ recovery: { auto_resume_after_crash: true } })).not.toThrow();
+});
+
+test("#489 H4 a block that is an array or sets none of the five is never read, and a layer with no project reads nothing", () => {
+  const f = project();
+  const defaults = recoveryWaits(() => undefined);
+  writeFileSync(f.shared, JSON.stringify({ recovery: { reconnect_wait_s: 700 } }));
+  writeFileSync(f.local, JSON.stringify({ recovery: [{ reconnect_wait_s: 900 }] }));
+  expect(readRecoveryWaits(f.cwd).reconnectWaitMs).toBe(700_000); // an array is not a block: its entries are not leaves
+  writeFileSync(f.local, JSON.stringify({ recovery: { auto_resume_after_crash: true } }));
+  expect(readRecoveryWaits(f.cwd).reconnectWaitMs).toBe(700_000); // a block that sets none of the five leaves the shared value alone
+  // no project root: nothing is read, whatever the working directory holds
+  const here = process.cwd(); mkdirSync(join(f.cwd, "sub")); writeFileSync(join(f.cwd, "sub", "marker"), "");
+  let reads = 0;
+  expect(readRecoveryWaits(undefined, () => { reads++; return [{ name: "config.json", raw: { recovery: { reconnect_wait_s: 900 } } }]; })).toEqual(defaults);
+  expect(reads).toBe(0);
+  expect(process.cwd()).toBe(here);
 });
 
 test("#489 H4 an unreadable, non-object or refused config is the default and never throws", () => {
