@@ -46,6 +46,7 @@ export interface PreparedResearchUnit {
   unitId: string;
   create?: Parameters<Board["propose"]>[1];
   adopt?: { taskId: number; flowRevision: number };
+  reuse?: { taskId: number; flowRevision: number };
 }
 
 interface ResearchCampaignRow {
@@ -461,6 +462,19 @@ export class Board {
     return campaign ? this.researchBindings(campaign) : [];
   }
 
+  /** Most recent persisted association, including a unit omitted from intervening revisions. */
+  researchLatestUnitBinding(campaignId: string, unitId: string): ResearchUnitBinding | undefined {
+    if (!researchId(campaignId) || typeof unitId !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(unitId)) throw researchFailure();
+    const row = this.db.query("SELECT revision FROM research_units WHERE campaign_id=? AND unit_id=? ORDER BY revision DESC LIMIT 1")
+      .get(campaignId, unitId) as { revision: number } | null;
+    if (!row) return undefined;
+    const campaign = this.researchCampaign(campaignId, row.revision);
+    if (!campaign) throw researchFailure();
+    const binding = this.researchBindings(campaign).find(unit => unit.unitId === unitId);
+    if (!binding) throw researchFailure();
+    return binding;
+  }
+
   /** Lifetime unit association, including superseded/closed revisions; never reinterpret a task as another unit. */
   researchTaskBinding(taskId: number): ResearchUnitBinding | undefined {
     if (!researchInteger(taskId)) throw researchFailure();
@@ -506,18 +520,30 @@ export class Board {
       if (this.db.query("SELECT 1 FROM research_campaigns WHERE project=? AND parent_task_id=? AND status='approved' AND id<>? LIMIT 1").get(project, campaign.parentTaskId, id)) throw new Error("another research campaign is active for this parent");
       if (this.researchBindings(campaign).length || prepared.length !== campaign.contract.units.length) throw researchFailure();
       const inputs = new Map<string, PreparedResearchUnit>(), units = new Map(campaign.contract.units.map(unit => [unit.id, unit]));
-      const mapped = new Map<string, number>(), adopted = new Map<string, Task>(), children: Task[] = [];
+      const mapped = new Map<string, number>(), retained = new Map<string, Task>(), children: Task[] = [];
       const isPrivate = campaign.private || privateRecord;
       for (const entry of prepared) {
         const unit = units.get(entry.unitId);
-        if (!unit || inputs.has(entry.unitId) || (entry.create !== undefined) === (entry.adopt !== undefined)) throw researchFailure();
+        if (!unit || inputs.has(entry.unitId) || [entry.create, entry.adopt, entry.reuse].filter(value => value !== undefined).length !== 1) throw researchFailure();
         inputs.set(entry.unitId, entry);
-        if (entry.adopt) {
+        const prior = this.researchLatestUnitBinding(id, unit.id);
+        if (prior) {
+          const previous = this.researchCampaign(id, prior.revision), previousUnit = previous?.contract.units.find(value => value.id === unit.id);
+          if (!entry.reuse || entry.reuse.taskId !== prior.taskId || !researchInteger(entry.reuse.flowRevision, 0) || prior.revision >= revision ||
+            !previous || previous.project !== project || previous.parentTaskId !== campaign.parentTaskId || JSON.stringify(previousUnit) !== JSON.stringify(unit))
+            throw new Error("a bound research unit must retain its task and definition; changed work requires a fresh unit id");
+          const task = this.get(prior.taskId);
+          if (!task || task.history.length !== entry.reuse.flowRevision || isPrivate && !task.signals.some(signal => signal === "pii" || signal === "pii_path")) throw researchFailure();
+          mapped.set(unit.id, task.id); retained.set(unit.id, task);
+        } else if (entry.reuse) {
+          throw researchFailure();
+        } else if (entry.adopt) {
           if (unit.adoptTaskId !== entry.adopt.taskId || !researchInteger(entry.adopt.flowRevision, 0)) throw researchFailure();
           const task = this.get(entry.adopt.taskId);
-          if (!task || task.history.length !== entry.adopt.flowRevision || task.draft || !task.history.some(history => history.event === "draft approved")) throw researchFailure();
+          if (!task || task.history.length !== entry.adopt.flowRevision || task.draft || !task.history.some(history => history.event === "draft approved") ||
+            isPrivate && !task.signals.some(signal => signal === "pii" || signal === "pii_path")) throw researchFailure();
           if (this.db.query("SELECT 1 FROM research_units WHERE task_id=? AND (campaign_id<>? OR unit_id<>?) LIMIT 1").get(task.id, id, unit.id)) throw new Error("intake task is already bound to another research unit");
-          mapped.set(unit.id, task.id); adopted.set(unit.id, task);
+          mapped.set(unit.id, task.id); retained.set(unit.id, task);
         } else {
           const create = entry.create!;
           if (unit.adoptTaskId !== undefined || typeof create.title !== "string" || !create.title.trim() || create.title.length > 300 || !CLASSES.includes(create.class) || create.draft ||
@@ -534,12 +560,12 @@ export class Board {
         const child = this.propose(by, { ...create, deps, backlog: true, draft: false });
         mapped.set(unit.id, child.id); children.push(child);
       }
-      for (const [unitId, task] of adopted) if (units.get(unitId)!.dependsOn.some(dependency => !task.deps?.includes(mapped.get(dependency)!))) throw new Error("adopted intake task dependencies differ from the campaign");
+      for (const [unitId, task] of retained) if (units.get(unitId)!.dependsOn.some(dependency => !task.deps?.includes(mapped.get(dependency)!))) throw new Error("retained research task dependencies differ from the campaign");
       for (const unit of campaign.contract.units) {
         const taskId = mapped.get(unit.id)!;
         if (this.db.query("SELECT 1 FROM research_units WHERE task_id=? AND (campaign_id<>? OR unit_id<>?) LIMIT 1").get(taskId, id, unit.id)) throw researchFailure();
         this.taskWrite(() => this.db.query("INSERT INTO research_units(campaign_id,revision,unit_id,task_id,round,purpose,adopted) VALUES(?,?,?,?,?,?,?)")
-          .run(id, revision, unit.id, taskId, unit.round, unit.purpose, adopted.has(unit.id) ? 1 : 0));
+          .run(id, revision, unit.id, taskId, unit.round, unit.purpose, unit.adoptTaskId !== undefined ? 1 : 0));
       }
       this.taskWrite(() => this.db.query("UPDATE research_campaigns SET status='superseded',private=MAX(private,?) WHERE id=? AND project=? AND status='approved'").run(isPrivate ? 1 : 0, id, project));
       this.taskWrite(() => this.db.query("UPDATE research_campaigns SET status='approved',approved_by=?,approved_at=?,private=? WHERE id=? AND revision=? AND status='draft'")

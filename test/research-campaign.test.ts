@@ -309,3 +309,41 @@ test("#930 a recovery hold raised during screening fences the pending activation
     expect(f.tasks.studiesPending()).toBe(0);
   } finally { release(); f.bus.setRecoveryHold(false); }
 });
+
+test("#930 a revised campaign creates only newly introduced units and never redefines retained work", async () => {
+  const f = await fixture(), draft = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: contract() });
+  const first = await f.tasks.studyApprove(USER, { id: draft.id, revision: 1 });
+  const next = contract(); next.stopPolicy.maxUnits = 3;
+  next.units.push({ id: "analysis", round: 0, question: "Check another explicit perspective", perspective: "analysis", requiredOutput: "An analysis handoff", sourceIds: [SOURCE], dependsOn: ["discover"], purpose: "analysis" });
+  await f.tasks.studyRevise("claude", { id: draft.id, revision: 1, contract: next });
+  const second = await f.tasks.studyApprove(USER, { id: draft.id, revision: 2 });
+  for (const unit of first.units) expect(second.units.find(item => item.unitId === unit.unitId)?.taskId).toBe(unit.taskId);
+  expect(f.board.list()).toHaveLength(4);
+  const changed = { ...next, units: next.units.map(unit => unit.id === "discover" ? { ...unit, question: "Different work needs a new identity" } : unit) };
+  await f.tasks.studyRevise("claude", { id: draft.id, revision: 2, contract: changed });
+  const before = f.board.list();
+  await expect(f.tasks.studyApprove(USER, { id: draft.id, revision: 3 })).rejects.toThrow(/fresh unit id/);
+  expect(f.board.list()).toEqual(before);
+});
+
+test("#930 stopping study admissions drains a pending screen and fences its write without stopping ordinary work", async () => {
+  const f = await fixture(), draft = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: contract() });
+  f.routing.signals.pii_screen = "local"; f.routing.constraints.pii = "local_only";
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+  f.setScreen(async () => { entered(); await gate; return { label: "clear", ms: 0 }; });
+  const before = f.board.researchIntegrity(), rows = f.board.list();
+  const call = f.tasks.studyApprove(USER, { id: draft.id, revision: 1 }), result = call.then(() => undefined, error => error);
+  let stopped: Promise<void> | undefined;
+  try {
+    await Promise.race([started, call.then(() => { throw new Error("activation missed the screen barrier"); })]);
+    stopped = f.tasks.stopStudies();
+    expect(f.tasks.studiesPending()).toBe(1);
+  } finally { release(); }
+  expect(await result).toBeInstanceOf(PreEffectToolRefusal);
+  await stopped;
+  expect(f.tasks.studiesPending()).toBe(0);
+  expect(f.board.researchIntegrity()).toEqual(before); expect(f.board.list()).toEqual(rows);
+  await expect(f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: contract() })).rejects.toThrow(/held/);
+  expect((await f.tasks.propose(USER, { title: "Ordinary dev work still uses its existing path", class: "implement", owner: "codex" })).owner).toBe("codex");
+}, 20_000);

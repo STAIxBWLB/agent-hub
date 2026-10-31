@@ -9025,6 +9025,7 @@ export async function startDaemon(opts: DaemonOptions) {
     stopping = true;
     roomCommands.stop();
     tasks.stopQueuePressureRechecks();
+    const studiesStopped = tasks.stopStudies();
     let implementerShellCleanupFailed = false;
     const implementerShellStopped = implementerShellStart?.then(wrapper => wrapper.close()).catch(() => { implementerShellCleanupFailed = true; log("host shell cleanup failed during shutdown"); });
     terminalLaunches.clear();
@@ -9047,11 +9048,11 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const pending of checkpointWaits.values()) pending.done(undefined);
     for (const p of permissions.values()) p.done(undefined);
     try {
-      // A schedules pass may be inside its PII screen: `stopping` is set, so its fence refuses the write when the screen returns. Wait for it (bounded, the screen has
-      // its own timeout) before the peers stop, the board closes and the store closes, so no pass runs against a closed database.
-      if (schedulesPass || manualSchedulePasses.size) {
+      // A schedule or study admission may be inside its PII screen: `stopping` is set, so its fence refuses the write when the screen returns. Wait for it (bounded, the screen has
+      // its own timeout) before the peers stop, the board closes and the store closes, so no admission runs against a closed database.
+      if (schedulesPass || manualSchedulePasses.size || tasks.studiesPending() !== 0) {
         let timer: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([Promise.all([schedulesPass?.catch(() => undefined), ...manualSchedulePasses]), new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); timer.unref?.(); })]);
+        await Promise.race([Promise.all([schedulesPass?.catch(() => undefined), ...manualSchedulePasses, studiesStopped]), new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); timer.unref?.(); })]);
         clearTimeout(timer);
       }
       await Promise.all([terminalReadsStopped, codeFactsStopped, implementerShellStopped]);

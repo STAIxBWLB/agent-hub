@@ -383,7 +383,7 @@ export const GROOM_FYI_WINDOW_MS = 10 * 60_000;
  */
 /** #694: a PR staged at done with the commit or branch it was read for. */
 export interface ResearchCampaignReceipt { id: string; parentTaskId: number; revision: number; status: ResearchCampaignStatus; unitCount: number; units: ResearchUnitBinding[] }
-interface StudyReferences { parent: Task; adopted: Map<string, Task>; private: boolean; key: string }
+interface StudyReferences { parent: Task; adopted: Map<string, Task>; reused: Map<string, Task>; private: boolean; key: string }
 interface CompletionRefresh { revision: number; commit: string }
 interface IdentityLink { repo: string; pr: number; basis: { commit?: string; branch?: string } }
 
@@ -1237,11 +1237,28 @@ export class Tasks {
   }
 
   private studiesRunning = 0;
+  private studyStopped = false;
+  private readonly studyDrainWaiters = new Set<() => void>();
   studiesPending = (): number => this.studiesRunning;
+
+  async stopStudies(): Promise<void> {
+    this.studyStopped = true;
+    if (this.studiesRunning) await new Promise<void>(resolve => this.studyDrainWaiters.add(resolve));
+  }
+
+  private studyHold(): string | undefined {
+    try {
+      if (this.studyStopped || this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError)
+        return "study writes are held by recovery, shutdown or storage failure";
+    } catch { return "study write admission is unavailable"; }
+    return undefined;
+  }
 
   private async studyWrite<T>(write: () => Promise<T>): Promise<T> {
     this.studiesRunning++;
-    try { return await write(); } finally { this.studiesRunning--; }
+    try { return await write(); } finally {
+      if (--this.studiesRunning === 0) { for (const resolve of this.studyDrainWaiters) resolve(); this.studyDrainWaiters.clear(); }
+    }
   }
 
   private studyFields(input: unknown, allowed: readonly string[]): Record<string, unknown> {
@@ -1352,9 +1369,15 @@ export class Tasks {
       if (binding && (binding.campaignId !== campaignId || binding.unitId !== unit.id)) throw new PreEffectToolRefusal("intake child is already bound to another study unit");
       adopted.set(unit.id, task);
     }
-    const priv = this.isPii(parent) || sources.some(source => source.private) || [...adopted.values()].some(task => this.isPii(task))
+    const reused = new Map<string, Task>();
+    if (campaignId) for (const unit of contract.units) {
+      const previous = this.d.board.researchLatestUnitBinding(campaignId, unit.id);
+      if (previous) reused.set(unit.id, this.studyParent(previous.taskId));
+    }
+    const priv = this.isPii(parent) || sources.some(source => source.private) || [...adopted.values(), ...reused.values()].some(task => this.isPii(task))
       || !this.nameable(JSON.stringify(contract));
-    return { parent, adopted, private: priv, key: JSON.stringify([parent.history.length, sources, [...adopted].map(([unit, task]) => [unit, task.id, task.history.length]), priv]) };
+    const flows = (rows: Map<string, Task>) => [...rows].map(([unit, task]) => [unit, task.id, task.history.length]);
+    return { parent, adopted, reused, private: priv, key: JSON.stringify([parent.history.length, sources, flows(adopted), flows(reused), priv]) };
   }
 
   private studyReplayPrivacy(record: ResearchCampaignRecord, parent: Task): boolean {
@@ -1367,7 +1390,7 @@ export class Tasks {
   }
 
   async studyDraft(by: PeerId, input: unknown): Promise<ResearchCampaignReceipt> {
-    const requestCheck = this.requestCheck(by); this.plannerWriteAuthority(by);
+    const requestCheck = this.requestCheck(by, () => this.studyHold()); this.plannerWriteAuthority(by);
     const fields = this.studyFields(input, ["parentTaskId", "contract"]), parentId = this.studyNumber(fields.parentTaskId, "parentTaskId");
     const contract = this.studyContract(fields.contract);
     if (contract.units.some(unit => unit.round !== 0)) throw new PreEffectToolRefusal("an initial study contains only round zero");
@@ -1390,7 +1413,7 @@ export class Tasks {
   }
 
   async studyRevise(by: PeerId, input: unknown): Promise<ResearchCampaignReceipt> {
-    const requestCheck = this.requestCheck(by); this.plannerWriteAuthority(by);
+    const requestCheck = this.requestCheck(by, () => this.studyHold()); this.plannerWriteAuthority(by);
     const fields = this.studyFields(input, ["id", "revision", "contract"]), id = this.studyId(fields.id), revision = this.studyNumber(fields.revision, "revision");
     const contract = this.studyContract(fields.contract);
     return this.studyWrite(async () => {
@@ -1417,7 +1440,7 @@ export class Tasks {
   }
 
   async studyApprove(by: PeerId, input: unknown): Promise<ResearchCampaignReceipt> {
-    const requestCheck = this.requestCheck(by);
+    const requestCheck = this.requestCheck(by, () => this.studyHold());
     if (by !== USER) throw new PreEffectToolRefusal("study approval requires the person");
     const fields = this.studyFields(input, ["id", "revision"]), id = this.studyId(fields.id), revision = this.studyNumber(fields.revision, "revision");
     return this.studyWrite(async () => {
@@ -1436,6 +1459,8 @@ export class Tasks {
       const prepared: PreparedResearchUnit[] = [];
       for (const unit of original.contract.units) {
         requestCheck();
+        const reused = before.reused.get(unit.id);
+        if (reused) { prepared.push({ unitId: unit.id, reuse: { taskId: reused.id, flowRevision: reused.history.length } }); continue; }
         const adopted = before.adopted.get(unit.id);
         if (adopted) { prepared.push({ unitId: unit.id, adopt: { taskId: adopted.id, flowRevision: adopted.history.length } }); continue; }
         const title = `Study unit ${unit.id}`, detail = `Study: ${id} unit ${unit.id}\nQuestion: ${unit.question}\nPerspective: ${unit.perspective}\nRequired output: ${unit.requiredOutput}\nSources: ${unit.sourceIds.join(", ")}`;
@@ -1451,8 +1476,8 @@ export class Tasks {
       const now = this.studyTime(), deadline = Date.parse(original.contract.stopPolicy.deadline);
       if (deadline <= now || deadline - now > 90 * 86_400_000) throw new PreEffectToolRefusal("study deadline must be in the next ninety days at approval");
       priv ||= latest.private || current.private;
-      if (priv && [...current.adopted.values()].some(task => !this.isPii(task)))
-        throw new PreEffectToolRefusal("a private study cannot adopt a public task without changing its authority");
+      if (priv && [...current.adopted.values(), ...current.reused.values()].some(task => !this.isPii(task)))
+        throw new PreEffectToolRefusal("a private study cannot retain a public task without changing its authority");
       for (const unit of prepared) if (unit.create) {
         if (priv && !unit.create.signals?.includes("pii")) unit.create.signals = [...(unit.create.signals ?? []), "pii"];
         const planner = this.proposalPlanner({ ...parent, ...unit.create, signals: unit.create.signals ?? [], refs: unit.create.refs ?? {}, draft: undefined, state: "backlog", owner: null, reviewer: null });
@@ -1474,7 +1499,7 @@ export class Tasks {
   }
 
   async studyClose(by: PeerId, input: unknown): Promise<ResearchCampaignReceipt> {
-    const requestCheck = this.requestCheck(by); this.plannerWriteAuthority(by);
+    const requestCheck = this.requestCheck(by, () => this.studyHold()); this.plannerWriteAuthority(by);
     const fields = this.studyFields(input, ["id", "revision", "reason"]), id = this.studyId(fields.id), revision = this.studyNumber(fields.revision, "revision");
     if (typeof fields.reason !== "string" || !fields.reason.trim() || Buffer.byteLength(fields.reason, "utf8") > 512) throw new PreEffectToolRefusal("study close needs a bounded reason");
     const reason = fields.reason;
