@@ -2,7 +2,10 @@ import type { InvocationRow } from "./invocations.ts";
 import type { ContextAdmission } from "./context-window.ts";
 import { queueBackpressure, queueBackpressurePolicy, type QueueBackpressureCode, type QueueBackpressurePolicy, type QueueBackpressureStatus, type QueuePressure } from "./queue-backpressure.ts";
 import { canonicalMemorySymbolNode, normalizeMemorySymbolInput, MEMORY_SYMBOL_LIMIT, type MemorySymbolNodes } from "./memory-symbols.ts";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { types } from "node:util";
+import { campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus } from "./research-campaign.ts";
+import type { ResearchCampaignRecord, ResearchUnitBinding, PreparedResearchUnit } from "./board.ts";
 import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-command.ts";
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
@@ -174,6 +177,10 @@ export interface TasksDeps {
   quota?: () => Record<PeerId, { headroom: number; resetsAt?: number }>;
   /** Optional persisted task/run execution limits (issue #102). */
   executionBudget?: ExecutionBudget;
+  /** Project-scoped immutable-source metadata, read only before a study transaction. */
+  studySource?: (id: string) => { id: string; sha256: string; private: boolean } | undefined;
+  /** Host-only fixture clock; never read from model input or project configuration. */
+  studyNow?: () => number;
   /** Reviewer choice from recorded review outcomes (issue #35); off unless the project config turns it on. */
   review?: { adaptive: boolean; min_reviews: number; pool?: readonly string[]; rerotate?: boolean; same_family?: "fallback" | "never" };
   /** Peers whose recent deliveries all failed, with the reason (issue #89); routing skips them. */
@@ -375,6 +382,8 @@ export const GROOM_FYI_WINDOW_MS = 10 * 60_000;
  * PII handling, envelopes, briefs and memory notes are decided in one place.
  */
 /** #694: a PR staged at done with the commit or branch it was read for. */
+export interface ResearchCampaignReceipt { id: string; parentTaskId: number; revision: number; status: ResearchCampaignStatus; unitCount: number; units: ResearchUnitBinding[] }
+interface StudyReferences { parent: Task; adopted: Map<string, Task>; private: boolean; key: string }
 interface CompletionRefresh { revision: number; commit: string }
 interface IdentityLink { repo: string; pr: number; basis: { commit?: string; branch?: string } }
 
@@ -1225,6 +1234,261 @@ export class Tasks {
     requireLocalTaskPeer(by);
     if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("planner writes are unavailable during a private turn");
     this.planningAuthority(by, task);
+  }
+
+  private studiesRunning = 0;
+  studiesPending = (): number => this.studiesRunning;
+
+  private async studyWrite<T>(write: () => Promise<T>): Promise<T> {
+    this.studiesRunning++;
+    try { return await write(); } finally { this.studiesRunning--; }
+  }
+
+  private studyFields(input: unknown, allowed: readonly string[]): Record<string, unknown> {
+    if (!input || typeof input !== "object" || Array.isArray(input) || types.isProxy(input)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) || Object.getOwnPropertySymbols(input).length)
+      throw new PreEffectToolRefusal("study request must be a plain data object");
+    const fields = Object.getOwnPropertyDescriptors(input);
+    if (Object.entries(fields).some(([key, descriptor]) => !allowed.includes(key) || !Object.hasOwn(descriptor, "value")))
+      throw new PreEffectToolRefusal("study request has unknown fields or accessors");
+    return Object.fromEntries(Object.entries(fields).map(([key, descriptor]) => [key, descriptor.value]));
+  }
+
+  private studyId(value: unknown): string {
+    if (typeof value !== "string" || !/^rc-[a-f0-9]{12}$/.test(value)) throw new PreEffectToolRefusal("study id is invalid");
+    return value;
+  }
+
+  private studyNumber(value: unknown, field: string): number {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw new PreEffectToolRefusal(`${field} must be a positive integer`);
+    return value;
+  }
+
+  private studyContract(value: unknown): ResearchCampaignContract {
+    try { return parseResearchCampaign(value); }
+    catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid study contract"); }
+  }
+
+  private studyTime(): number {
+    const now = this.d.studyNow?.() ?? Date.now();
+    if (!Number.isFinite(now)) throw new PreEffectToolRefusal("study clock is unavailable");
+    return now;
+  }
+
+  private studyRecord(id: string, revision?: number): ResearchCampaignRecord {
+    let record: ResearchCampaignRecord | undefined;
+    try { record = this.d.board.researchCampaign(id, revision); }
+    catch { throw new PreEffectToolRefusal("study record is unavailable or invalid"); }
+    if (!record || record.project !== this.d.project) throw new PreEffectToolRefusal("study is unavailable in this project");
+    return record;
+  }
+
+  private studyParent(id: number): Task {
+    const parent = this.need(id, false, true, true);
+    if (this.places(parent).repositoryKey !== this.repositories.scope({}).key) throw new PreEffectToolRefusal("study parent is outside this project");
+    return parent;
+  }
+
+  /** Write receipts expose no contract text; only person-only approval returns the unit mapping. */
+  private studyReceipt(record: ResearchCampaignRecord, includeMapping = false): ResearchCampaignReceipt {
+    const units = this.d.board.researchCampaignBindings(record.id, record.revision);
+    return { id: record.id, parentTaskId: record.parentTaskId, revision: record.revision, status: record.status,
+      unitCount: units.length, units: includeMapping ? units : [] };
+  }
+
+  private studySource(id: string): { id: string; sha256: string; private: boolean } | undefined {
+    try {
+      const source = this.d.studySource?.(id);
+      return source && source.id === id && /^[a-f0-9]{64}$/.test(source.sha256) && typeof source.private === "boolean"
+        ? { id: source.id, sha256: source.sha256, private: source.private } : undefined;
+    } catch { return undefined; }
+  }
+
+  private studyLatest(id: string, revision: number): ResearchCampaignRecord {
+    const record = this.studyRecord(id);
+    if (record.revision !== revision || record.status === "closed") throw new PreEffectToolRefusal("study revision is stale or closed");
+    return record;
+  }
+
+  private studyFamily(parent: Task): Set<number> {
+    if (!parent.history.some(entry => entry.event === "draft approved")) throw new PreEffectToolRefusal("adoption requires an approved intake family");
+    const family = new Set<number>(), pending = [...parent.deps];
+    // ponytail: 512 dependency nodes bound intake provenance walks; a larger family needs indexed family identities.
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (family.has(id)) continue;
+      if (family.size >= 512) throw new PreEffectToolRefusal("study intake family exceeds its bounded scope");
+      const task = this.d.board.get(id);
+      if (!task) throw new PreEffectToolRefusal("study intake family is incomplete");
+      family.add(id); pending.push(...task.deps);
+    }
+    family.delete(parent.id);
+    return family;
+  }
+
+  private studyReferences(parentId: number, contract: ResearchCampaignContract, campaignId?: string): StudyReferences {
+    const parent = this.studyParent(parentId);
+    const profile = parent.profile ?? "dev", storedProfile = profile === (this.d.profile ?? "dev") ? this.d.profileData ?? profile : profile;
+    try {
+      if (profileClass(parent.profileClass ?? parent.class, storedProfile) !== parent.class) throw new Error("changed class");
+    } catch { throw new PreEffectToolRefusal("study parent profile class is unavailable or changed"); }
+    const sources = contract.sourceIds.map(id => {
+      const source = this.studySource(id);
+      if (!source)
+        throw new PreEffectToolRefusal("study source is unavailable in this project");
+      return source;
+    });
+    if (contract.budget) {
+      const budget = this.d.executionBudget?.status(contract.budget.id);
+      if (!budget || Array.isArray(budget)) throw new PreEffectToolRefusal("study budget is unavailable");
+    }
+    const adopted = new Map<string, Task>();
+    const family = contract.units.some(unit => unit.adoptTaskId !== undefined) ? this.studyFamily(parent) : new Set<number>();
+    for (const unit of contract.units) if (unit.adoptTaskId !== undefined) {
+      const task = this.studyParent(unit.adoptTaskId);
+      if (!family.has(task.id) || task.draft || !task.history.some(entry => entry.event === "draft approved"))
+        throw new PreEffectToolRefusal("study unit must adopt an approved intake child");
+      const binding = this.d.board.researchTaskBinding(task.id);
+      if (binding && (binding.campaignId !== campaignId || binding.unitId !== unit.id)) throw new PreEffectToolRefusal("intake child is already bound to another study unit");
+      adopted.set(unit.id, task);
+    }
+    const priv = this.isPii(parent) || sources.some(source => source.private) || [...adopted.values()].some(task => this.isPii(task))
+      || !this.nameable(JSON.stringify(contract));
+    return { parent, adopted, private: priv, key: JSON.stringify([parent.history.length, sources, [...adopted].map(([unit, task]) => [unit, task.id, task.history.length]), priv]) };
+  }
+
+  private studyReplayPrivacy(record: ResearchCampaignRecord, parent: Task): boolean {
+    return record.private || this.isPii(parent) || record.contract.sourceIds.some(id => {
+      const source = this.studySource(id);
+      return !source || source.private;
+    }) || this.d.board.researchCampaignBindings(record.id, record.revision).some(unit => {
+      const task = this.d.board.get(unit.taskId); return !task || this.isPii(task);
+    });
+  }
+
+  async studyDraft(by: PeerId, input: unknown): Promise<ResearchCampaignReceipt> {
+    const requestCheck = this.requestCheck(by); this.plannerWriteAuthority(by);
+    const fields = this.studyFields(input, ["parentTaskId", "contract"]), parentId = this.studyNumber(fields.parentTaskId, "parentTaskId");
+    const contract = this.studyContract(fields.contract);
+    if (contract.units.some(unit => unit.round !== 0)) throw new PreEffectToolRefusal("an initial study contains only round zero");
+    return this.studyWrite(async () => {
+      this.plannerWriteAuthority(by, this.studyParent(parentId));
+      const before = this.studyReferences(parentId, contract);
+      const withheld = await this.withholds("note", JSON.stringify(contract), before.parent);
+      requestCheck();
+      const current = this.studyReferences(parentId, contract); this.plannerWriteAuthority(by, current.parent);
+      if (current.key !== before.key) throw new PreEffectToolRefusal("study references changed during draft screening");
+      const record: ResearchCampaignRecord = { id: `rc-${randomBytes(6).toString("hex")}`, project: this.d.project, parentTaskId: parentId,
+        revision: 1, status: "draft", contract, hash: campaignHash(contract), private: current.private || withheld, createdBy: by, createdAt: this.studyTime() };
+      let saved: ResearchCampaignRecord;
+      try { saved = this.d.board.saveResearchCampaignDraft(record, undefined, current.parent.history.length); }
+      catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "study draft was not saved"); }
+      this.releaseNotice(`study ${saved.id} revision ${saved.revision} drafted`);
+      return this.studyReceipt(saved);
+    });
+  }
+
+  async studyRevise(by: PeerId, input: unknown): Promise<ResearchCampaignReceipt> {
+    const requestCheck = this.requestCheck(by); this.plannerWriteAuthority(by);
+    const fields = this.studyFields(input, ["id", "revision", "contract"]), id = this.studyId(fields.id), revision = this.studyNumber(fields.revision, "revision");
+    const contract = this.studyContract(fields.contract);
+    return this.studyWrite(async () => {
+      const original = this.studyLatest(id, revision);
+      this.plannerWriteAuthority(by, this.studyParent(original.parentTaskId));
+      const before = this.studyReferences(original.parentTaskId, contract, id);
+      // ponytail: #597 adds handoff-backed round advancement; T1 never activates an unverified follow-up.
+      if (contract.units.some(unit => unit.round > 0 && !original.contract.units.some(previous => previous.id === unit.id && previous.round === unit.round)))
+        throw new PreEffectToolRefusal("follow-up rounds require the handoff coverage gate");
+      const withheld = await this.withholds("note", JSON.stringify(contract), before.parent);
+      requestCheck();
+      const latest = this.studyLatest(id, revision), current = this.studyReferences(latest.parentTaskId, contract, id);
+      this.plannerWriteAuthority(by, current.parent);
+      if (latest.hash !== original.hash || current.key !== before.key) throw new PreEffectToolRefusal("study changed during revision screening");
+      const next: ResearchCampaignRecord = { id, project: this.d.project, parentTaskId: latest.parentTaskId, revision: revision + 1, status: "draft",
+        contract, hash: campaignHash(contract), private: latest.private || current.private || withheld, createdBy: by, createdAt: this.studyTime() };
+      let saved: ResearchCampaignRecord;
+      try { saved = this.d.board.saveResearchCampaignDraft(next, revision, current.parent.history.length); }
+      catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "study revision was not saved"); }
+      this.releaseNotice(`study ${id} revision ${saved.revision} drafted`);
+      return this.studyReceipt(saved);
+    });
+  }
+
+  async studyApprove(by: PeerId, input: unknown): Promise<ResearchCampaignReceipt> {
+    const requestCheck = this.requestCheck(by);
+    if (by !== USER) throw new PreEffectToolRefusal("study approval requires the person");
+    const fields = this.studyFields(input, ["id", "revision"]), id = this.studyId(fields.id), revision = this.studyNumber(fields.revision, "revision");
+    return this.studyWrite(async () => {
+      const original = this.studyRecord(id, revision), parent = this.studyParent(original.parentTaskId);
+      if (original.status === "approved") {
+        const replay = this.d.board.activateCampaign(id, revision, this.d.project, by, this.studyTime(), [], parent.history.length, this.studyReplayPrivacy(original, parent));
+        return this.studyReceipt(replay.campaign, true);
+      }
+      this.studyLatest(id, revision);
+      if (original.status !== "draft" || parent.draft) throw new PreEffectToolRefusal("study approval requires a draft and an approved parent input");
+      // ponytail: #597 adds budget-id-specific dispatch fences; T1 refuses a hard cap instead of silently degrading it.
+      if (original.contract.budget?.hardCap.length) throw new PreEffectToolRefusal("hard-cap activation requires the study dispatch budget gate");
+      const before = this.studyReferences(parent.id, original.contract, id);
+      let priv = original.private || before.private || await this.withholds("note", JSON.stringify(original.contract), parent);
+      const prepared: PreparedResearchUnit[] = [];
+      for (const unit of original.contract.units) {
+        requestCheck();
+        const adopted = before.adopted.get(unit.id);
+        if (adopted) { prepared.push({ unitId: unit.id, adopt: { taskId: adopted.id, flowRevision: adopted.history.length } }); continue; }
+        const title = `Study unit ${unit.id}`, detail = `Study: ${id} unit ${unit.id}\nQuestion: ${unit.question}\nPerspective: ${unit.perspective}\nRequired output: ${unit.requiredOutput}\nSources: ${unit.sourceIds.join(", ")}`;
+        priv ||= await this.withholds("task", detail, parent);
+        const refs = cleanRefs(parent.refs), signals = [...new Set([...this.signalsFor({ title, detail, refs }), ...parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal))])];
+        prepared.push({ unitId: unit.id, create: { title, detail, class: parent.class, refs, signals,
+          ...(parent.profile ? { profile: parent.profile } : {}), ...(parent.profileClass ? { profileClass: parent.profileClass } : {}),
+        } });
+      }
+      requestCheck();
+      const latest = this.studyLatest(id, revision), current = this.studyReferences(parent.id, original.contract, id);
+      if (latest.hash !== original.hash || current.key !== before.key) throw new PreEffectToolRefusal("study changed during approval screening");
+      const now = this.studyTime(), deadline = Date.parse(original.contract.stopPolicy.deadline);
+      if (deadline <= now || deadline - now > 90 * 86_400_000) throw new PreEffectToolRefusal("study deadline must be in the next ninety days at approval");
+      priv ||= latest.private || current.private;
+      if (priv && [...current.adopted.values()].some(task => !this.isPii(task)))
+        throw new PreEffectToolRefusal("a private study cannot adopt a public task without changing its authority");
+      for (const unit of prepared) if (unit.create) {
+        if (priv && !unit.create.signals?.includes("pii")) unit.create.signals = [...(unit.create.signals ?? []), "pii"];
+        const planner = this.proposalPlanner({ ...parent, ...unit.create, signals: unit.create.signals ?? [], refs: unit.create.refs ?? {}, state: "backlog", owner: null, reviewer: null });
+        unit.create.planner = planner.planner; unit.create.plannerReason = planner.plannerReason;
+        this.warmRepository(unit.create);
+      }
+      const mode = this.d.coordination?.();
+      let result: ReturnType<Board["activateCampaign"]>;
+      try { result = this.d.board.activateCampaign(id, revision, this.d.project, by, now, prepared, current.parent.history.length, priv); }
+      catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "study approval was not saved"); }
+      for (const child of result.children) {
+        this.incomingBacklog.add(child.id);
+        if (mode !== undefined) this.coordinationModes.set(child.id, mode);
+      }
+      this.releaseNotice(`study ${id} revision ${revision} approved; ${result.bindings.length} units`);
+      return this.studyReceipt(result.campaign, true);
+    });
+  }
+
+  async studyClose(by: PeerId, input: unknown): Promise<ResearchCampaignReceipt> {
+    const requestCheck = this.requestCheck(by); this.plannerWriteAuthority(by);
+    const fields = this.studyFields(input, ["id", "revision", "reason"]), id = this.studyId(fields.id), revision = this.studyNumber(fields.revision, "revision");
+    if (typeof fields.reason !== "string" || !fields.reason.trim() || Buffer.byteLength(fields.reason, "utf8") > 512) throw new PreEffectToolRefusal("study close needs a bounded reason");
+    const reason = fields.reason;
+    return this.studyWrite(async () => {
+      const original = this.studyLatest(id, revision), parent = this.studyParent(original.parentTaskId);
+      this.plannerWriteAuthority(by, parent);
+      const withheld = await this.withholds("note", reason, parent);
+      requestCheck();
+      const latest = this.studyLatest(id, revision), currentParent = this.studyParent(latest.parentTaskId);
+      this.plannerWriteAuthority(by, currentParent);
+      if (latest.hash !== original.hash || currentParent.history.length !== parent.history.length) throw new PreEffectToolRefusal("study changed during close screening");
+      const priv = this.studyReplayPrivacy(latest, currentParent) || withheld || !this.nameable(reason);
+      let closed: ResearchCampaignRecord;
+      try { closed = this.d.board.closeCampaign(id, revision, this.d.project, by, this.studyTime(), reason, currentParent.history.length, priv); }
+      catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "study close was not saved"); }
+      this.releaseNotice(`study ${id} revision ${revision} closed`);
+      return this.studyReceipt(closed);
+    });
   }
 
   /** Every new host proposal, including split children, consumes the same pure walk before its first notification. */
