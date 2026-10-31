@@ -38,7 +38,8 @@ test("action settings validate all configured leaves and require person confirma
     expect(def.store).toBe("config"); expect(configApply(def.key).applies).toBe("live");
     expect(() => checkSettingValue(def, def.type === "boolean" ? "no" : -1)).toThrow();
     const guard = { ...def };
-    const before = def.type === "boolean" ? true : 1, after = def.type === "boolean" ? false : 2;
+    // the weakening direction: floor on is the weaker side of action_policy.floor, and its safe value false
+    const weaker = def.key === "action_policy.floor", before = def.type === "boolean" ? !weaker : 1, after = def.type === "boolean" ? weaker : 2;
     expect(authorizeConfigLeaf({ key: def.key, before, after, source: "config", sourceFile: "config.local.json", tracked: false, authority: "ordinary", guard }).allowed).toBe(false);
     expect(authorizeConfigLeaf({ key: def.key, before, after, source: "config", sourceFile: "config.local.json", tracked: false, authority: "settings", confirmed: true, guard }).allowed).toBe(true);
     expect(authorizeConfigLeaf({ key: def.key, before, after: def.floor, source: "config", sourceFile: "config.local.json", tracked: true, authority: "settings", confirmed: true, guard }).allowed).toBe(false);

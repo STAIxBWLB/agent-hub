@@ -264,7 +264,7 @@ test("with the floor on, every floor class asks whatever always_ask says; withou
 test("a qualified branch source is judged as a branch, and a bare ref-typed or tag source is not", () => {
   expect(classes("git push origin refs/heads/feat/x:feat/y")).toEqual([]);
   expect(classes("git push origin refs/heads/feat/x:refs/heads/feat/y")).toEqual([]);
-  expect(classes("git push origin refs/heads/main:feat/y")).toEqual(["publish"]);        // the default branch as a source is still a plain branch: pushing main's commits to a feature branch writes only that branch
+  expect(classes("git push origin refs/heads/main:feat/y")).toEqual([]);        // the default branch as a source is still a plain branch: pushing main's commits to a feature branch writes only that branch
   expect(classes("git push origin refs/tags/v1:feat/y")).toEqual(["publish"]);
   expect(classes("git push origin feat/x:feat/y", facts({ refIsTag: name => name === "feat/x" }))).toEqual(["publish"]);   // a bare source that is also a local tag is ambiguous
 });

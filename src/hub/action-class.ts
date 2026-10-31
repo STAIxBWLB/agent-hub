@@ -489,7 +489,7 @@ function floorRefspec(spec: string, cwd: string[], floor: FloorFacts): boolean {
   }
   // `src:dst` with an unqualified dst takes its type from src: a source that may be a tag would push a tag. A qualified source is the ref it names (`refs/tags/v1` is a tag, never probed
   // as a branch called `refs/tags/v1`), and a bare source with a ref-type prefix (`tags/v1`, `heads/x`, `remotes/...`) is not a plain branch name either.
-  if (dst !== undefined && !dst.startsWith("refs/") && src !== "HEAD") {
+  if (dst !== undefined && src !== "HEAD" && (!dst.startsWith("refs/") || src.startsWith("refs/"))) {
     if (src.startsWith("refs/")) { if (!src.startsWith("refs/heads/") || !plainBranch(src.slice("refs/heads/".length))) return false; }
     else if (!plainBranch(src) || ["heads", "tags", "remotes", "refs"].includes(src.split("/")[0]!) || cwd.some(at => floor.refIsTag?.(src, at) !== false)) return false;
   }
