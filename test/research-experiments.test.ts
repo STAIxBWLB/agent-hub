@@ -28,7 +28,7 @@ const campaignContract = (): ResearchCampaignContract => ({ question: "What does
   units: [{ id: "measure", round: 0, question: "Measure synthetic inputs", perspective: "measurement", requiredOutput: "Metrics and bounded receipts", sourceIds: [SOURCE], dependsOn: [], purpose: "analysis" }],
   deliverableSections: [], stopPolicy: { maxUnits: 1, maxFollowUpRounds: 0, deadline: new Date(NOW + 86_400_000).toISOString() } });
 
-async function fixture(privateSource = false) {
+async function fixture(privateSource = false, filePolicy: Pick<ConstructorParameters<typeof Tasks>[0], "piiPaths" | "deny" | "executionRoot"> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-experiment-")); clean.push(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "hub.db"); let board = new Board(file); clean.push(() => board.close());
   const budget = new ExecutionBudget(file); clean.push(() => budget.close());
@@ -37,7 +37,7 @@ async function fixture(privateSource = false) {
   const routing = loadRouting(dir), roles = { claude: ["planner", "reviewer"], codex: ["implementer"], local: ["implementer"] };
   const sources = new Map([[SOURCE, { id: SOURCE, sha256: HASH, private: privateSource }]]);
   let screen: ConstructorParameters<typeof Tasks>[0]["piiScreen"], check: (run: string) => Promise<unknown> = async () => undefined;
-  const build = () => new Tasks({ board, bus, cwd: dir, project: "experiment-fixture", routing: () => routing, roles, executionBudget: budget, wipLimit: () => 32,
+  const build = () => new Tasks({ board, bus, cwd: dir, project: "experiment-fixture", routing: () => routing, roles, executionBudget: budget, wipLimit: () => 32, ...filePolicy,
     notify: () => {}, studyNow: () => NOW, piiScreen: text => screen?.(text) ?? Promise.resolve({ label: "clear" as const, ms: 0 }),
     studySource: id => { expect((board as unknown as { db: Database }).db.inTransaction).toBe(false); return sources.get(id); },
     experimentCheck: run => { expect((board as unknown as { db: Database }).db.inTransaction).toBe(false); return check(run); } });
@@ -274,4 +274,17 @@ test("#932 protocol supersession records a new immutable declared body without a
   expect(f.board.experimentProtocol(hash)!.protocol).toEqual(original);
   expect(f.board.experimentProtocol(next)!.protocol).toEqual(changed);
   await expect(saveProtocol(f,"codex",{...changed,lineage:"foreign-lineage"})).rejects.toThrow();
+});
+
+test("#932 a missing output under pii.paths remains private even though its hash is unknown", async () => {
+  const f=await fixture(false,{piiPaths:["private-results"]}), hash=await saveProtocol(f), id=await attempt(f,hash,"missing-private");
+  const path="private-results/missing.csv";
+  expect(existsSync(join(f.dir,path))).toBe(false);
+  await add(f,id,"protected-output",{kind:"output",body:{path,format:"csv"}});
+  const shown=await f.tasks.experimentShow(USER,{attemptId:id}), row=shown.attempts[0]!;
+  expect(row.private).toBe(true);
+  expect(row.events[0]).toMatchObject({kind:"output",body:"[pii]"});
+  expect(JSON.stringify(shown)).not.toContain(path);
+  expect(f.board.experimentEvents(id).rows[0]!.observations).toEqual([]);
+  expect(f.board.experimentAttempt(id)!.private).toBe(true);
 });
