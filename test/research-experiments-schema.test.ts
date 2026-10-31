@@ -150,3 +150,17 @@ test("projections never infer host evidence, environment hashes, output hashes o
   expect(projectExperimentEvidence(p, []).metrics[0]?.latest).toEqual({ value: null, provenance: "unknown" });
   expect(JSON.stringify(view)).not.toContain("host-observed");
 });
+
+test("host check projections require matching finished task/commit and keep absent timing fields unknown", async () => {
+  const { checkRunObservation } = await import("../src/hub/research-experiments.ts");
+  const receipt = {run:RUN,task:2,sha:"b".repeat(40),status:"finished",exit:1,timed_out:false,cancelled:false,duration_ms:42,created:1000,tail:"not evidence"};
+  expect(checkRunObservation(receipt,RUN,2,protocol())).toEqual({source:"check",evidence:RUN,values:{exitStatus:1,timedOut:false,cancelled:false,durationMs:42,queueTime:1000}});
+  for (const patch of [{task:3},{sha:"c".repeat(40)},{status:"running"},{duration_ms:-1},{created:NaN},{cancelled:"false"},{exit:Infinity}]) {
+    expect(checkRunObservation({...receipt,...patch},RUN,2,protocol())).toBeUndefined();
+  }
+  const missing=checkRunObservation({...receipt,exit:null},RUN,2,protocol())!;
+  expect(missing.values.exitStatus).toBeUndefined();
+  expect(Object.keys(missing.values)).not.toContain("startedAt");
+  expect(Object.keys(missing.values)).not.toContain("endedAt");
+  expect(checkRunObservation(new Proxy(receipt,{}),RUN,2,protocol())).toBeUndefined();
+});

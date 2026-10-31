@@ -253,3 +253,23 @@ export function projectExperimentEvidence(protocol: ExperimentProtocolContract, 
       : { id: declared<string>(undefined), sha256: declared<string>(undefined) }]),
   };
 }
+
+/** Independent measured facts, linked to one declared event; caller record bodies never accept this shape. */
+export interface ExperimentHostEvidence {
+  source: "check" | "deliverable";
+  evidence: string;
+  values: Partial<Record<"exitStatus" | "timedOut" | "cancelled" | "durationMs" | "queueTime" | "sha256" | "bytes" | "deliverableId", number | boolean | string>>;
+}
+
+/** Validate only measured fields from the host's receipt reader. This helper grants no authority to a supplied receipt. */
+export function checkRunObservation(input: unknown, run: string, taskId: number, protocol: ExperimentProtocolContract): ExperimentHostEvidence | undefined {
+  try {
+    pattern(run, RUN, "check.run");
+    const row = object(input, undefined, "check");
+    if (!("commit" in protocol.code) || row.run !== run || row.task !== taskId || row.sha !== protocol.code.commit || row.status !== "finished") return undefined;
+    if (row.exit !== null && (typeof row.exit !== "number" || !Number.isSafeInteger(row.exit))) return undefined;
+    if (typeof row.timed_out !== "boolean" || typeof row.cancelled !== "boolean") return undefined;
+    const durationMs = number(row.duration_ms, "check.duration_ms", true), queueTime = number(row.created, "check.created", true);
+    return { source: "check", evidence: run, values: { ...(row.exit === null ? {} : { exitStatus: row.exit }), timedOut: row.timed_out, cancelled: row.cancelled, durationMs, queueTime } };
+  } catch { return undefined; }
+}
