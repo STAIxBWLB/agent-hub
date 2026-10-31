@@ -22,7 +22,10 @@ export type HubEvent =
   | { type: "config_edit"; file: "config.local.json" | "sdlc.toml"; paths: { path: string; before: string | null; after: string | null }[]; fileBefore: string; fileAfter: string; tier: 2 | 3; by: "person"; source: "dashboard" | "terminal"; backup?: string; reason?: string }
   /** #445 C2: an invocation's ids, class and outcome. Never an argument, a result or a description. */
   | { type: "invocation"; id: string; caller: string; target: string; capability: string; class: string; outcome: string; task?: number; bytes?: number }
-  | { type: "envelope"; id: string; from: string; to?: string[]; priority: string; hop: number; kind?: string; task?: string; bytes?: number; private?: boolean; dropped?: string }
+  /** `origin` (#604 PR B): the sending connection's role, peer and launch or instance id. Never a path or text; absent for an envelope the hub itself wrote. */
+  | { type: "envelope"; id: string; from: string; to?: string[]; priority: string; hop: number; kind?: string; task?: string; bytes?: number; private?: boolean; dropped?: string; origin?: import("./provenance.ts").Origin }
+  /** #604 PR B: one per peer-role or tools-role hello, with the same fields an envelope's `origin` carries. No cwd, root or token. */
+  | ({ type: "attach" } & import("./provenance.ts").Origin)
   | { type: "overflow" | "undeliverable"; id: string; from: string; peer: string }
   | { type: "stale"; id: string; from: string; peer: string; task?: string }
   | { type: "quiet"; id: string; from: string; peers: string[] }

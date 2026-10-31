@@ -176,6 +176,7 @@ import { DeliveryJournal } from "./delivery-journal.ts";
 import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { codeGroup } from "./task-code-group.ts";
 import { DAEMON_FEATURES, PROTOCOL, readControl, stateDirFor } from "./control-client.ts";
+import { attachEvent, originOf, type Origin } from "./provenance.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type FrontendProxyPort, type PeerAdapter } from "./peers.ts";
 import { ClaudeTodoSource, DoingTracker, readAiTitle, type DoingKind, type PeerDoing, type TitleCursor } from "./peer-doing.ts";
@@ -805,6 +806,10 @@ export async function startDaemon(opts: DaemonOptions) {
   const childToolAuthority = new AsyncLocalStorage<{ by: string; current: () => boolean }>();
   const implementerTranscripts = new Map<string, string>();
   const executionOwners = new Map<string, { owner: PeerAdapter; cwd: string; socket?: Sock; launchId?: string; generation?: string | number }>();
+  /** #604 PR B: envelope id to the connection that sent it, written where a connection builds an envelope and read once when the envelope event is logged. Bounded: an entry whose event never comes ages out. */
+  const envelopeOrigins = new Map<string, Origin>();
+  const rememberOrigin = (id: string, origin: Origin): void => { envelopeOrigins.set(id, origin); if (envelopeOrigins.size > 1024) envelopeOrigins.delete(envelopeOrigins.keys().next().value as string); };
+  const takeOrigin = (id: string): Origin | undefined => { const origin = envelopeOrigins.get(id); envelopeOrigins.delete(id); return origin; };
   const externalLaunches = new Map<string, { owner: PeerAdapter; options: AcpOptions; launchId: string; binding: ExternalInstanceBinding; workspace: string; generation?: string }>();
   const externalBindings = new Map<string, ExternalInstanceBinding>();
   const externalSessions = new Map<string, string>();
@@ -4976,7 +4981,8 @@ export async function startDaemon(opts: DaemonOptions) {
     } else {
       log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} ${e.env.priority} hop=${e.env.hop}${e.dropped ? ` NOT DELIVERED(${e.dropped})` : ""}: ${e.env.body.slice(0, 200)}`);
       const env = e.env;
-      event({ type: "envelope", id: env.id, from: env.from, ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, ...(env.kind ? { kind: env.kind } : {}), ...(env.refs?.task ? { task: env.refs.task } : {}), ...(env.private ? {} : { bytes: Buffer.byteLength(env.body) }), ...(env.private ? { private: true } : {}), ...(e.dropped ? { dropped: e.dropped } : {}) });
+      const origin = takeOrigin(env.id);
+      event({ type: "envelope", id: env.id, from: env.from, ...(origin ? { origin } : {}), ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, ...(env.kind ? { kind: env.kind } : {}), ...(env.refs?.task ? { task: env.refs.task } : {}), ...(env.private ? {} : { bytes: Buffer.byteLength(env.body) }), ...(env.private ? { private: true } : {}), ...(e.dropped ? { dropped: e.dropped } : {}) });
     }
     if (!stopping) writeStatus();
   });
@@ -7873,6 +7879,8 @@ export async function startDaemon(opts: DaemonOptions) {
           if (important) ws.notifyQueued({ queued: bus.queued(c.peer!), important });
         });
       }
+      // #604 PR B: one attach event per admitted peer or tools hello, with the same fields an envelope's `origin` carries. A refused hello returned above and writes none.
+      if (c.role === "peer" || c.role === "tools") event(attachEvent({ role: c.role, peer: c.peer, launchId: c.launchId }));
       return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL, features: DAEMON_FEATURES });
     }
     const committedSourceProof = c.role === "tools" && msg.t === "recovery_authority" && msg.op === "verify" && recoveryCommitted
@@ -8253,6 +8261,7 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         // Built first: limits count the audience it really has (a reply goes to the parent's sender).
         let env = newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) });
+        rememberOrigin(env.id, originOf({ role: c.role, peer: c.peer, launchId: c.launchId })); // the connection that sent it, for events.jsonl (never a path or text)
         try { bus.checkRemotePublication(env); }
         catch (error) { return void reply({ t: "sent", ok: false, error: error instanceof Error && /^(?:room|remote) /.test(error.message) ? sanitize(error.message).slice(0, 8192) : "message admission unavailable" }); }
         const offRoster = bus.offRosterRecipients(env);
