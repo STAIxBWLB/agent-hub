@@ -317,7 +317,7 @@ var init_compat = __esm(() => {
     },
     "codex-review": {
       label: "Codex reviewer (codex-cli)",
-      verified: ["0.146.0", "0.163.0", "0.164.0", "0.166.0"],
+      verified: ["0.146.0", "0.163.0", "0.164.0"],
       gate: "isolation",
       probe: ["codex", "--version"],
       config: "codex_bin",

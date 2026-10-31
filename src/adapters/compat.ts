@@ -40,7 +40,7 @@ export const COMPAT = {
     trustNote: "The native prompt-tool transport and host-wrapper rewrite, environment isolation and replay contract have isolated receipts. No dontAsk/bypass fallback exists; another version's permission or rewrite behavior is unverified.",
     receipt: "docs/verification/2026-10-31-claude-implementer-2.1.314.md" },
   // 0.163.0 receipt: docs/verification/2026-10-22-codex-reviewer-isolation.md; 0.164.0 receipt: docs/verification/2026-10-24-codex-0164-reviewer-isolation.md; 0.166.0: docs/verification/2026-10-31-codex-0166-reviewer-isolation.md
-  "codex-review": { label: "Codex reviewer (codex-cli)", verified: ["0.146.0", "0.163.0", "0.164.0", "0.166.0"], gate: "isolation", probe: ["codex", "--version"], config: "codex_bin",
+  "codex-review": { label: "Codex reviewer (codex-cli)", verified: ["0.146.0", "0.163.0", "0.164.0"], gate: "isolation", probe: ["codex", "--version"], config: "codex_bin",
     parse: out => plain(out.trim().replace(/^codex-cli /, "")),
     trustNote: "Every launch still proves the MCP inventory, Apps/plugins/hooks disabled, sandbox read/write denial and the binary fence; a failed leg still refuses. Trust covers only the source-level claims those probes cannot see (docs/verification/2026-10-19-reviewer-isolation.md).",
     receipt: "docs/verification/2026-10-31-codex-0166-reviewer-isolation.md" },
