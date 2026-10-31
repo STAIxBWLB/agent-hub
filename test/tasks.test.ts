@@ -4002,7 +4002,7 @@ test("#1000 a re-file preserves current-head local evidence, open findings and r
   const f = await setup(); cleanup.push(() => f.board.close());
   const t = await f.tasks.propose("claude", { title: "carry unresolved obligations", class: "implement", owner: "codex" });
   await f.tasks.done("codex", t.id, "first", { commit: REFILE_OLD });
-  const finding = { id: "still-open", pass: "bugs", severity: "important", disposition: "open" };
+  const finding = { id: "still-open", pass: "bugs", severity: "important", disposition: "open" } as const;
   await f.tasks.review("claude", t.id, "changes_requested", "required behavior", undefined, REFILE_OLD, undefined, [finding]);
   await f.tasks.done("codex", t.id, "candidate", { commit: REFILE_OLD });
   f.board.update(t.id, HUB, "lifecycle", { sdlc: { stage: "build", head: REFILE_OLD, reviewedHead: REFILE_OLD, localHead: REFILE_NEW, localResult: "passed" } });
