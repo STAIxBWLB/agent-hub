@@ -557,7 +557,7 @@ and so is every help entry the gate has no class for yet;
 
 | Command | Class | Why |
 | --- | --- | --- |
-| `ahub doctor [--json] [--full] [--color=...]` | Allowed | a read-only check of tools, daemon, plugin, gateway, models and memory |
+| `ahub doctor [--json] [--full] [--color=...]` | Allowed | a read-only check of tools, daemon, plugin, gateway, models and memory; the `memory capture: codex` and `memory capture: kimi` rows come from agent-mem's setup state (`amem setup <tool> --json`), as set up, `amem setup <tool> --apply` needed, or client missing (#1008) |
 | `ahub doctor --stale-anchors [--json]` | Allowed | a bounded read-only report of memory symbol anchors at current HEAD |
 | `ahub queue list [--peer <id>] [--json] [--full] [--color=...]` | Allowed | public queue metadata only; held bodies and resolution remain conductor operations |
 | `ahub roster [--json] [--color=...]` | Allowed | public roster status; add/remove retain conductor admission |

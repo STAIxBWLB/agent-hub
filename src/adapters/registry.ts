@@ -292,7 +292,7 @@ export function builtinPreviewOf(id: string) {
 }
 
 /** Fixed builtin doctor metadata and pure observed-value projections; the CLI retains all probe effects. */
-export { DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "./definitions/native-cli-doctor.ts";
+export { DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeMemoryCaptureRow, type MemorySetupReading, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "./definitions/native-cli-doctor.ts";
 
 /** Definition-owned CLI entries are restricted to fixed builtins, never config or external execution extensions. */
 export const BUILTIN_CLI_ENTRIES = Object.freeze(builtinCliEntries(ADAPTERS).map(entry => {
