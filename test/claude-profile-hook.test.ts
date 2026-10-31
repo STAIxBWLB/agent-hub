@@ -170,3 +170,13 @@ test("a managed session with both per-launch and installed profile hooks deliver
     expect(outputs.filter(output => output === "")).toHaveLength(1);
   } finally { server.stop(true); }
 }, 20000);
+
+
+test("first-use default home can be created privately, but a disappeared observed default is refused", () => {
+  const f = fixture(false), home: ClaudeHome = { ...f.home, sources: ["default"] };
+  expect(checkClaudeProfileHook({ ...home, exists: true }, options).state).toBe("refused");
+  expect(existsSync(home.path)).toBe(false);
+  expect(installClaudeProfileHook(home, options)).toMatchObject({ state: "installed", changed: true });
+  expect(statSync(home.path).mode & 0o777).toBe(0o700);
+  expect(statSync(f.file).mode & 0o777).toBe(0o600);
+});
