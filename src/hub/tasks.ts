@@ -1447,7 +1447,8 @@ export class Tasks {
       const sources = campaign.contract.sourceIds.map(id => this.studySource(id));
       if (sources.some(source => !source)) throw new PreEffectToolRefusal("study handoff source is unavailable");
       const sourceKey = JSON.stringify(sources);
-      const withheld = await this.withholds("note", JSON.stringify(handoff), task);
+      const text = JSON.stringify(handoff);
+      const withheld = !this.nameable(text) || looksSecret(text) || await this.withholds("note", text, task);
       requestCheck();
       const current = this.studyParent(task.id);
       if (current.history.length !== task.history.length || current.owner !== by || current.state !== "in_progress") throw new PreEffectToolRefusal("study handoff task changed during screening");

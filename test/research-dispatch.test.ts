@@ -6,7 +6,7 @@ import type { Database } from "bun:sqlite";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { USER, type Envelope } from "../src/hub/envelope.ts";
+import { USER, HUB, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { ExecutionBudget } from "../src/hub/execution-budget.ts";
 import { loadRouting } from "../src/hub/routing.ts";
@@ -170,4 +170,12 @@ test("handoffs refuse missing or newly private sources without persisting public
   await expect(f.tasks.studyHandoff("local",handoff(campaign.id,id))).rejects.toThrow(/privacy/);
   expect(f.board.researchHandoffs(campaign.id)).toEqual([]);
   expect(f.tasks.studyShow(USER,{id:campaign.id}).units.every(unit=>unit.sourceIds.length===0)).toBe(true);
+});
+
+test("a queued owner offer is rechecked at delivery after its campaign closes", async () => {
+  const f=await fixture(), campaign=await approve(f), id=await startDiscovery(f,campaign);
+  const env=newEnvelope(HUB,"fixture offer",{to:["local"],kind:"task",refs:{task:String(id),taskOffer:1,taskRecipient:"owner"}});
+  expect(f.tasks.relevant("local",env)).toBe(true);
+  await f.tasks.studyClose(USER,{id:campaign.id,revision:1,reason:"Closed before delivery"});
+  expect(f.tasks.relevant("local",env)).toBe(false);
 });
