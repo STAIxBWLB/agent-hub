@@ -323,7 +323,7 @@ var init_compat = __esm(() => {
       config: "codex_bin",
       parse: (out) => plain(out.trim().replace(/^codex-cli /, "")),
       trustNote: "Every launch still proves the MCP inventory, Apps/plugins/hooks disabled, sandbox read/write denial and the binary fence; a failed leg still refuses. Trust covers only the source-level claims those probes cannot see (docs/verification/2026-10-19-reviewer-isolation.md).",
-      receipt: "docs/verification/2026-10-24-codex-0164-reviewer-isolation.md"
+      receipt: "docs/verification/2026-10-31-codex-0166-reviewer-isolation.md"
     },
     "kimi-review": {
       label: "Kimi reviewer (kimi-code)",

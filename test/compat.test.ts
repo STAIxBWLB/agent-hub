@@ -225,6 +225,11 @@ test("Codex reviewer 0.164.0 is receipt-verified without machine trust, and its 
 });
 
 
+test("Codex reviewer 0.166.0 stays unverified after the incomplete model-backed receipt (#888)", () => {
+  expect(assessVersion("codex-review", "0.166.0", [])).toMatchObject({ ok: false, state: "refused", version: "0.166.0" });
+  for (const near of ["0.165.0", "0.166.1", "0.167.0", "0.166.0-rc.1", "codex-cli 0.166.0"]) expect(assessVersion("codex-review", near, []).ok).toBe(false);
+});
+
 test("Kimi 2.3.0 and Qwen 0.26.0 are receipt-verified without machine trust (#373)", () => {
   expect(assessVersion("kimi-review", "2.3.0", [])).toEqual({ ok: true, state: "verified", version: "2.3.0" });
   expect(assessVersion("qwen", "0.26.0", [])).toEqual({ ok: true, state: "verified", version: "0.26.0" });
