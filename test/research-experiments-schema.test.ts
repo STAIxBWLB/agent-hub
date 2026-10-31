@@ -164,3 +164,21 @@ test("host check projections require matching finished task/commit and keep abse
   expect(Object.keys(missing.values)).not.toContain("endedAt");
   expect(checkRunObservation(new Proxy(receipt,{}),RUN,2,protocol())).toBeUndefined();
 });
+
+test("independent observations retain contradictory declarations side by side without inventing a second end", async () => {
+  const { projectExperimentWithObservations, parseExperimentHostEvidence, deliverableObservation } = await import("../src/hub/research-experiments.ts");
+  const end=event({kind:"end",body:{status:"succeeded",exitStatus:0}},1);
+  const observation=parseExperimentHostEvidence({source:"check",evidence:RUN,values:{exitStatus:1,timedOut:false,cancelled:false,durationMs:20,queueTime:100}});
+  const view=projectExperimentWithObservations(protocol(),[end],[{eventSeq:1,observation}]);
+  expect(view.declared.exitStatus).toEqual({value:0,provenance:"declared"});
+  expect(view.measured[0]!.values.exitStatus).toEqual({value:1,provenance:"host-observed",evidence:RUN});
+  expect(experimentStatus([end],"in_progress")).toBe("succeeded");
+  expect(view.declared.environment.hashOf).toBe("declared descriptor text");
+  expect(view.declared.environment.hash.provenance).toBe("declared");
+  expect(()=>projectExperimentWithObservations(protocol(),[end],[{eventSeq:2,observation}])).toThrow("unavailable");
+  for (const patch of [{source:"runner-attested"},{provenance:"declared"},{values:{...observation.values,startedAt:10}}]) {
+    expect(()=>parseExperimentHostEvidence({...observation,...patch})).toThrow();
+  }
+  const output=deliverableObservation({id:"d-0123456789ab",path:"result.csv",format:"csv",sha256:HASH,bytes:12});
+  expect(output.values.sha256).toBe(HASH); expect(JSON.stringify(output)).not.toContain("result.csv");
+});

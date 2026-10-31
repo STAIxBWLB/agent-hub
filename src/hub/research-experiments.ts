@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { types } from "node:util";
 import { looksSecret } from "@staix/agent-mem";
 import { canonicalJson } from "./packs.ts";
-import { parseDeliverableClaims, type DeliverableClaim } from "./deliverables.ts";
+import { parseDeliverableClaims, parseDeliverableRecords, type DeliverableClaim, type DeliverableRecord } from "./deliverables.ts";
 
 export type ExperimentScalar = string | number | boolean | null;
 export type ExperimentProvenance = "declared" | "host-observed" | "runner-attested" | "person-attested";
@@ -16,6 +16,7 @@ export interface ExperimentProtocolContract {
   claimIds: string[];
   inputs: { sourceId: string; sha256: string }[];
   code: { commit: string } | { deliverable: { id: string; sha256: string } };
+  /** Descriptor and optional text-hash claim are declared, never a measured host environment. */
   environment: { descriptor: string; hash?: string };
   method: string;
   parameters: Record<string, ExperimentScalar | ExperimentScalar[]>;
@@ -114,7 +115,7 @@ function scalar(input: unknown, field: string): ExperimentScalar {
 }
 function environment(input: unknown): ExperimentProtocolContract["environment"] {
   const value = object(input, ["descriptor", "hash"], "protocol.environment"), descriptor = text(value.descriptor, LONG, "protocol.environment.descriptor");
-  // ponytail: lexical exclusion only, not proof that arbitrary prose contains no secret. Reject assignments and known secret shapes; a structured environment manifest can replace this ceiling later.
+  // ponytail: assignment/Bearer/known-secret forms only, never proof of secret absence. Upgrade to structured key/version fields or a #1018 runner receipt; flagged text is refused, never redacted and stored.
   if (/(?:^|[\s,;{])["']?[A-Za-z_][A-Za-z0-9_]*["']?\s*(?:=|:)\s*\S/.test(descriptor) || /\bBearer\s+\S+/i.test(descriptor) || looksSecret(descriptor))
     fail("protocol.environment.descriptor", "environment values and secret-shaped text are unavailable");
   return { descriptor, ...(value.hash !== undefined ? { hash: pattern(value.hash, HASH, "protocol.environment.hash") } : {}) };
@@ -239,7 +240,7 @@ const declared = <T>(value: T | undefined): ExperimentValue<T> => value === unde
 export function projectExperimentEvidence(protocol: ExperimentProtocolContract, events: readonly DeclaredExperimentEvent[]) {
   const rows = ordered(events), starts = rows.filter(row => row.kind === "start"), end = rows.find(row => row.kind === "end");
   return {
-    environment: { descriptor: declared(protocol.environment.descriptor), hash: declared(protocol.environment.hash) }, sealed: declared(protocol.sealed),
+    environment: { descriptor: declared(protocol.environment.descriptor), hash: declared(protocol.environment.hash), hashOf: "declared descriptor text" as const }, sealed: declared(protocol.sealed),
     startedAt: declared(starts.at(-1)?.body.startedAt), endedAt: declared<number>(undefined),
     exitStatus: declared(end?.kind === "end" ? end.body.exitStatus : undefined),
     run: declared(end?.kind === "end" ? end.body.run : undefined),
@@ -272,4 +273,40 @@ export function checkRunObservation(input: unknown, run: string, taskId: number,
     const durationMs = number(row.duration_ms, "check.duration_ms", true), queueTime = number(row.created, "check.created", true);
     return { source: "check", evidence: run, values: { ...(row.exit === null ? {} : { exitStatus: row.exit }), timedOut: row.timed_out, cancelled: row.cancelled, durationMs, queueTime } };
   } catch { return undefined; }
+}
+
+
+/** Validate persisted measured facts. Only host-side Tasks code creates these rows, never an RPC record body. */
+export function parseExperimentHostEvidence(input: unknown): ExperimentHostEvidence {
+  const row = object(input, ["source", "evidence", "values"], "observation");
+  const source = choice(row.source, ["check", "deliverable"], "observation.source");
+  const values = object(row.values, source === "check" ? ["exitStatus", "timedOut", "cancelled", "durationMs", "queueTime"] : ["deliverableId", "sha256", "bytes"], "observation.values");
+  if (source === "check") {
+    if (typeof values.timedOut !== "boolean" || typeof values.cancelled !== "boolean") fail("observation.values", "missing measured check flags");
+    return { source, evidence: pattern(row.evidence, RUN, "observation.evidence"), values: {
+      ...(values.exitStatus === undefined ? {} : { exitStatus: integer(values.exitStatus, "observation.exitStatus", Number.MIN_SAFE_INTEGER) }),
+      timedOut: values.timedOut, cancelled: values.cancelled, durationMs: number(values.durationMs, "observation.durationMs", true), queueTime: number(values.queueTime, "observation.queueTime", true),
+    } };
+  }
+  const deliverableId = pattern(values.deliverableId, DELIVERABLE, "observation.deliverableId");
+  if (row.evidence !== deliverableId) fail("observation.evidence", "must name the measured deliverable");
+  return { source, evidence: deliverableId, values: { deliverableId, sha256: pattern(values.sha256, HASH, "observation.sha256"), bytes: integer(values.bytes, "observation.bytes") } };
+}
+
+/** The record is the result of #509 host hashing, never an agent's output reference. */
+export function deliverableObservation(record: DeliverableRecord): ExperimentHostEvidence {
+  const measured = parseDeliverableRecords([record])[0]!;
+  return parseExperimentHostEvidence({ source: "deliverable", evidence: measured.id, values: { deliverableId: measured.id, sha256: measured.sha256, bytes: measured.bytes } });
+}
+
+/** Keep conflicting declarations and measurements side by side; neither changes the attempt's declared terminal event. */
+export function projectExperimentWithObservations(protocol: ExperimentProtocolContract, events: readonly DeclaredExperimentEvent[], observations: readonly { eventSeq: number; observation: ExperimentHostEvidence }[]) {
+  const declared = projectExperimentEvidence(protocol, events), seqs = new Set(events.map(event => event.seq));
+  return { declared, measured: observations.map(row => {
+    integer(row.eventSeq, "observation.eventSeq", 1);
+    if (!seqs.has(row.eventSeq)) fail("observation.eventSeq", "declared event is unavailable");
+    const observation = parseExperimentHostEvidence(row.observation);
+    return { eventSeq: row.eventSeq, source: observation.source, evidence: observation.evidence,
+      values: Object.fromEntries(Object.entries(observation.values).map(([field, value]) => [field, { value, provenance: "host-observed" as const, evidence: observation.evidence }])) };
+  }) };
 }
