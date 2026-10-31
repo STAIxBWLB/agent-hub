@@ -194,3 +194,30 @@ test("insufficientEvidence settles a discovery round while acceptance still refu
   expect(()=>f.tasks.accept("local",id)).toThrow(/deadline/);
   expect(f.board.get(id)!.state).toBe("in_progress");
 });
+
+test("the dispatch check runs right before the owner write: a revocation or expiry that lands after routing is read there and nothing is written", async () => {
+  // `current` is asked at the start of assignOwner and a second time immediately before the last check and the write (a third is the delivery, after the write). The first call
+  // passes; the second lands the change after the early read and before the write, which is exactly the window a screen, plan review or routing await opens. Remove the last check and
+  // these refuse nothing.
+  const run = (f: Awaited<ReturnType<typeof fixture>>, taskId: number, hook: () => void) => {
+    let calls = 0;
+    const current = () => { calls += 1; if (calls === 2) hook(); };
+    return (f.tasks as unknown as { assignOwner(task: unknown, by: string, opts: Record<string, unknown>): Promise<unknown> })
+      .assignOwner(f.board.get(taskId), USER, { candidates: ["local"], namedOwner: "local", refuseNamed: "pre", current });
+  };
+  const prepared = async () => {
+    const f = await fixture(), c = await approve(f), id = firstId(c);
+    await f.tasks.pullPlanned("claude", { id, revision: 0, reason: "the planner pulls the unit" });
+    return { f, id, before: f.board.get(id)!.history.length };
+  };
+  const a = await prepared();
+  await expect(run(a.f, a.id, () => { (a.f.board as unknown as { db: Database }).db.query("UPDATE research_campaigns SET status='closed',closed_by='user',closed_at=1,closed_reason='late'").run(); })).rejects.toThrow();
+  expect(a.f.board.get(a.id)!.owner).toBeNull(); expect(a.f.board.get(a.id)!.history).toHaveLength(a.before);
+  const b = await prepared();
+  await expect(run(b.f, b.id, () => b.f.setNow(NOW + 2 * 86_400_000))).rejects.toThrow(/deadline/);
+  expect(b.f.board.get(b.id)!.owner).toBeNull(); expect(b.f.board.get(b.id)!.history).toHaveLength(b.before);
+  // with no change at all the same call writes the owner, so the refusals above are the gate and not a broken fixture
+  const c = await prepared();
+  await run(c.f, c.id, () => {});
+  expect(c.f.board.get(c.id)!.owner).toBe("local");
+});
