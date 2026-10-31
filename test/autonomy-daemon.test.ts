@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
@@ -9,6 +9,7 @@ import { hubGitSync } from "../src/hub/git.ts";
 import type { InstancesConfig } from "../src/hub/instances.ts";
 import { Registry } from "../src/hub/registry.ts";
 import { prepareAutonomyProject, runAllProjectAutonomy } from "../src/cli/autonomy-projects.ts";
+import { autonomyConsentStateDir, createAutonomyConsent } from "../src/hub/autonomy-consent.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
@@ -60,6 +61,22 @@ for (const all of [false, true]) test(`offline off${all ? " --all-projects" : ""
   const peer = status.peers.find((row: any) => row.id === "codex");
   expect(peer.effectiveMode).toBe("ask");
   expect(peer.missing.some((line: string) => line.includes("no matching retained consent"))).toBe(true);
+});
+
+test("offline off refuses an A-to-B consent directory alias without clearing another project's state", async () => {
+  const p = await fixture(); expect((await p.on()).ok).toBe(true); await p.stop();
+  const own = autonomyConsentStateDir(p.home, p.project.id), moved = `${own}-retained`, foreign = autonomyConsentStateDir(p.home, "project-b");
+  createAutonomyConsent(foreign, "project-b").confirm({ codex: { "permission_modes.codex": "never-ask" } });
+  const key = join(foreign, "autonomy/autonomy-consent.key"), receipt = join(foreign, "autonomy/autonomy-consent.json");
+  const beforeKey = readFileSync(key), beforeReceipt = readFileSync(receipt);
+  renameSync(own, moved); symlinkSync(foreign, own);
+  const output: string[] = [];
+  await expect(runAllProjectAutonomy(["off", "--all-projects"], { home: p.home, environment: "headless", projects: [p.project], prepare: project => prepareAutonomyProject(project, "headless", false, p.registry), ask: async () => null, print: line => { output.push(line); } })).rejects.toThrow("1 project(s) were not applied");
+  expect(output.some(line => line.includes(p.project.root) && line.includes("consent"))).toBe(true);
+  expect(output.some(line => line.includes("Project autonomy off:"))).toBe(false);
+  expect(readFileSync(key)).toEqual(beforeKey); expect(readFileSync(receipt)).toEqual(beforeReceipt);
+  expect(existsSync(join(moved, "autonomy/autonomy-consent.key"))).toBe(true);
+  expect(p.read().permission_modes.codex).toBe("never-ask");
 });
 
 test("an offline consent-clear failure names the project and cannot report off success", async () => {
