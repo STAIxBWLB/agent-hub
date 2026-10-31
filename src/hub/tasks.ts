@@ -1655,8 +1655,8 @@ export class Tasks {
 
   private experimentHash(input: unknown): string { return createHash("sha256").update(canonicalJson(input)).digest("hex"); }
 
-  private experimentId(input: unknown, protocol = false): string {
-    if (typeof input !== "string" || !(protocol ? /^[a-f0-9]{64}$/ : /^ra-[a-f0-9]{12}$/).test(input)) throw new PreEffectToolRefusal("experiment identity is invalid");
+  private experimentId(input: unknown): string {
+    if (typeof input !== "string" || !/^ra-[a-f0-9]{12}$/.test(input)) throw new PreEffectToolRefusal("experiment identity is invalid");
     return input;
   }
 
@@ -1813,7 +1813,7 @@ export class Tasks {
       const observations = page.rows.flatMap(row => row.observations), events = page.rows.map(row => row.event);
       const evidence = projectExperimentWithObservations(record.protocol, events, observations);
       views.push({ id: attempt.attemptId, protocolHash: record.hash, taskId: attempt.attempt.taskId, phase: attempt.attempt.phase, status, private: privateRecord,
-        protocol: privateRecord ? "[pii]" : record.protocol,
+        protocol: { value: privateRecord ? "[pii]" : record.protocol, provenance: "declared" },
         events: page.rows.map(row => privateRecord ? { seq: row.event.seq, kind: row.event.kind, at: row.event.at, provenance: row.event.provenance, body: "[pii]" } : row.event),
         evidence: privateRecord ? { declared: "[pii]", measured: evidence.measured.map(row => ({ eventSeq: row.eventSeq, source: row.source, provenance: "host-observed", values: "[pii]" })) } : evidence,
         eventsComplete: page.done, ...(!page.done ? { nextEventCursor: page.afterSeq } : {}) });

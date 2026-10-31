@@ -83,6 +83,7 @@ test("#932 records immutable protocols, baseline/variant attempts and events wit
   const shown = await f.tasks.experimentShow(USER, { attemptId: id });
   expect(shown.attempts[0]).toMatchObject({ id, protocolHash: hash, taskId: f.taskId, phase: "final", status: "succeeded", private: false });
   expect(shown.attempts[0]!.events).toHaveLength(3);
+  expect(shown.attempts[0]!.protocol).toMatchObject({provenance:"declared",value:{code:{commit:"b".repeat(40)}}});
   expect(existsSync(marker)).toBe(false);
 });
 
