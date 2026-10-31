@@ -10875,10 +10875,20 @@ var init_packs = __esm(() => {
 });
 
 // src/hub/research-campaign.ts
-var BODY;
+var BODY, STUDY_HOLD_TEXT;
 var init_research_campaign = __esm(() => {
   init_packs();
   BODY = 64 * 1024;
+  STUDY_HOLD_TEXT = Object.freeze({
+    campaign_not_approved: "the campaign's approved revision is superseded, closed or revoked",
+    unit_not_in_revision: "its unit is not part of the approved revision",
+    deadline_passed: "the campaign deadline has passed",
+    round_over_limit: "its unit's round is above the campaign's follow-up limit",
+    unit_count_over_limit: "the approved revision has more units than the campaign allows",
+    owner_not_eligible: "this owner is not in the campaign's budget-eligible set",
+    budget_not_covering: "the named budget does not currently cover this task and owner with every hard-capped resource limited",
+    state_unreadable: "the campaign or its budget could not be read"
+  });
 });
 
 // src/hub/board.ts
@@ -23233,6 +23243,7 @@ var DEMOTION_HALF_LIFE_MS = 24 * 3600000;
 var CONTRADICTION_WINDOW_MS = 7 * 86400000;
 var QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
 QUIET_EVENTS.add("ready held");
+QUIET_EVENTS.add("study held");
 QUIET_EVENTS.add("plan observed");
 QUIET_EVENTS.add("planner changed");
 QUIET_EVENTS.add("claim verdict");
