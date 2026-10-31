@@ -494,8 +494,13 @@ export class Board {
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
     const untouchedReturn = event === "backlog returned untouched" && patch.state === "backlog" && patch.owner === null && patch.reviewer === null
       && ["proposed", "in_progress"].includes(task.state) && expectedFlowRevision !== undefined && !!note?.trim() && !taskHasWorkEvidence(task);
+    // A new delivered head with a configured check is owner work again until that check finishes.
+    const reviewCheck = event === "done (checking)" && task.state === "in_review" && patch.state === "in_progress"
+      && expectedFlowRevision !== undefined && (by === task.owner || by === "user") && patch.owner === undefined && patch.reviewer === undefined
+      && typeof patch.refs?.commit === "string" && /^[a-f0-9]{40}$/.test(patch.refs.commit)
+      && patch.refs.commit !== (task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead);
     if (task.draft && patch.state && patch.state !== "backlog" && patch.state !== "cancelled") throw new Error(`task #${id} is an intake draft; the person approves it first`);
-    if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state) && !untouchedReturn) {
+    if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state) && !untouchedReturn && !reviewCheck) {
       throw new Error(`task #${id} is ${task.state}: cannot move to ${patch.state}`);
     }
     const planner = Object.hasOwn(patch, "planner") ? plannerValue(patch.planner) : task.planner ?? null;
