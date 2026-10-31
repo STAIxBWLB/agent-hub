@@ -210,6 +210,62 @@ test("an owner offer dropped while a newer draft is pending reaches the owner ag
   expect(f.board.get(id)!.owner).toBe("local");
 });
 
+test("a dropped study offer survives a restart: drop, restart, approve, and the owner has the offer", async () => {
+  const f=await fixture(), campaign=await approve(f), id=firstId(campaign), local=f.peers[2]!;
+  const notes:string[]=[]; f.setNotify(line=>notes.push(line));
+  const offers=() => local.got.filter(env=>env.kind==="task"&&env.refs?.task===String(id)&&env.refs?.taskOffer!==undefined).length;
+  await pull(f,id); local.work();
+  await f.tasks.assignTo(id,"local",USER,true);
+  await f.tasks.studyRevise(USER,{id:campaign.id,revision:1,contract:{...contract(),scope:"Changed scope"}});
+  local.rest(); await new Promise(resolve=>setTimeout(resolve,30));
+  expect(notes.filter(line=>/dropped study offer|dropped-offer/.test(line))).toEqual([]);   // nothing refused the record
+  expect(offers()).toBe(0);
+  expect(f.board.researchDroppedOffer(id)).toBe("local");            // written to hub.db, not held in the Tasks instance
+  f.restart();                                                       // a new Board and a new Tasks over the same file: an in-memory record is gone
+  expect(f.board.researchDroppedOffer(id)).toBe("local");
+  await f.tasks.studyApprove(USER,{id:campaign.id,revision:2});
+  await new Promise(resolve=>setTimeout(resolve,30));
+  expect(offers()).toBe(1);
+  expect(f.board.researchDroppedOffer(id)).toBeUndefined();          // consumed once the offer is published
+  await f.tasks.studyRevise(USER,{id:campaign.id,revision:2,contract:{...contract(),scope:"Changed again"}});
+  await f.tasks.studyApprove(USER,{id:campaign.id,revision:3});
+  await new Promise(resolve=>setTimeout(resolve,30));
+  expect(offers()).toBe(1);                                          // not offered a second time
+});
+
+test("a dropped-offer record whose task is no longer proposed to that owner is cleared, never offered", async () => {
+  const f=await fixture(), campaign=await approve(f), id=firstId(campaign), local=f.peers[2]!;
+  const offers=() => local.got.filter(env=>env.kind==="task"&&env.refs?.task===String(id)&&env.refs?.taskOffer!==undefined).length;
+  await pull(f,id); local.work();
+  await f.tasks.assignTo(id,"local",USER,true);
+  await f.tasks.studyRevise(USER,{id:campaign.id,revision:1,contract:{...contract(),scope:"Changed scope"}});
+  local.rest(); await new Promise(resolve=>setTimeout(resolve,30));
+  expect(f.board.researchDroppedOffer(id)).toBe("local");
+  f.board.recordResearchDroppedOffer(id,"codex");                     // the record now names an owner who does not hold the task
+  await f.tasks.studyApprove(USER,{id:campaign.id,revision:2});
+  await new Promise(resolve=>setTimeout(resolve,30));
+  expect(offers()).toBe(0);
+  expect(f.board.researchDroppedOffer(id)).toBeUndefined();
+});
+
+test("dropped-offer rows join the dispatch integrity only when present, and a corrupt or unbound row fails closed", async () => {
+  const f=await fixture(), campaign=await approve(f), id=firstId(campaign);
+  const before=f.board.researchDispatchIntegrity();
+  expect(f.board.researchDispatchIntegrity()).toEqual(before);        // deterministic
+  f.board.recordResearchDroppedOffer(id,"local");
+  const withRow=f.board.researchDispatchIntegrity();
+  expect(withRow.digest).not.toBe(before.digest);
+  expect({activations:withRow.activations,handoffs:withRow.handoffs}).toEqual({activations:before.activations,handoffs:before.handoffs});
+  f.board.clearResearchDroppedOffer(id);
+  expect(f.board.researchDispatchIntegrity()).toEqual(before);        // back to the digest a project without one has
+  expect(()=>f.board.recordResearchDroppedOffer(f.parent.id,"local")).toThrow();   // a task bound to no research unit
+  expect(()=>f.board.recordResearchDroppedOffer(id,"Not A Peer")).toThrow();
+  const db=(f.board as unknown as {db:Database}).db;
+  db.query("INSERT INTO research_dropped_offers(task_id,owner) VALUES(?,?)").run(f.parent.id,"local");   // written behind the Board's back
+  expect(()=>f.board.researchDispatchIntegrity()).toThrow();
+  expect(f.board.hasResearchDispatchState()).toBe(true);
+});
+
 test("insufficientEvidence settles a discovery round while acceptance still refuses an expired task", async () => {
   const f=await fixture(), campaign=await approve(f), id=await startDiscovery(f,campaign);
   await f.tasks.studyHandoff("local",{...handoff(campaign.id,id),evidence:[],insufficientEvidence:"The fixture source provides no measurements"});

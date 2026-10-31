@@ -437,6 +437,8 @@ export class Board {
     this.db.run(`CREATE TABLE IF NOT EXISTS research_dispatch (
       campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, version INTEGER NOT NULL, eligible_owners TEXT,
       PRIMARY KEY(campaign_id,revision))`);
+    // #603: the owner whose queued offer a study hold made the bus discard, kept so approving the study offers the retained task again after a restart.
+    this.db.run("CREATE TABLE IF NOT EXISTS research_dropped_offers (task_id INTEGER PRIMARY KEY, owner TEXT NOT NULL)");
     this.db.run(`CREATE TABLE IF NOT EXISTS research_handoffs (
       campaign_id TEXT NOT NULL, unit_id TEXT NOT NULL, seq INTEGER NOT NULL, revision INTEGER NOT NULL,
       task_id INTEGER NOT NULL, body TEXT NOT NULL, by_peer TEXT NOT NULL, at INTEGER NOT NULL, private INTEGER NOT NULL,
@@ -567,7 +569,7 @@ export class Board {
   }
 
   hasResearchDispatchState(): boolean {
-    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_campaigns) OR EXISTS(SELECT 1 FROM research_units) OR EXISTS(SELECT 1 FROM research_dispatch) OR EXISTS(SELECT 1 FROM research_handoffs) AS present").get() as { present: number }).present === 1;
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_campaigns) OR EXISTS(SELECT 1 FROM research_units) OR EXISTS(SELECT 1 FROM research_dispatch) OR EXISTS(SELECT 1 FROM research_dropped_offers) OR EXISTS(SELECT 1 FROM research_handoffs) AS present").get() as { present: number }).present === 1;
   }
 
   researchDispatchIntegrity(): { activations: number; handoffs: number; digest: string } {
@@ -583,8 +585,36 @@ export class Board {
         const record = this.researchHandoffFromRow(row);
         digest.update(JSON.stringify(record)).update("\n"); handoffs++;
       }
+      // Dropped-offer rows join the digest only when there are any, so a project without one keeps the digest it always had.
+      for (const row of this.db.query("SELECT task_id,owner FROM research_dropped_offers ORDER BY task_id").iterate() as Iterable<{ task_id: number; owner: string }>) {
+        this.droppedOfferRow(row);
+        digest.update("dropped-offer\n").update(JSON.stringify(row)).update("\n");
+      }
       return { activations, handoffs, digest: digest.digest("hex") };
     })();
+  }
+
+  /** A row names a task bound to a research unit in some revision (the drop happens while a newer draft has no binding yet) and a peer id; anything else is corrupt state. */
+  private droppedOfferRow(row: { task_id: number; owner: string }): { taskId: number; owner: string } {
+    if (!researchInteger(row.task_id) || !researchText(row.owner, 64) || !/^[a-z][a-z0-9_-]{0,63}$/.test(row.owner) || !this.db.query("SELECT 1 FROM research_units WHERE task_id=? LIMIT 1").get(row.task_id)) throw researchFailure();
+    return { taskId: row.task_id, owner: row.owner };
+  }
+
+  /** #603: remember that a study hold discarded this owner's queued offer for the task. One row per task; a later drop replaces it. */
+  recordResearchDroppedOffer(taskId: number, owner: string): void {
+    this.droppedOfferRow({ task_id: taskId, owner });
+    this.db.query("INSERT INTO research_dropped_offers(task_id,owner) VALUES(?,?) ON CONFLICT(task_id) DO UPDATE SET owner=excluded.owner").run(taskId, owner);
+  }
+
+  researchDroppedOffer(taskId: number): string | undefined {
+    if (!researchInteger(taskId)) throw researchFailure();
+    const row = this.db.query("SELECT task_id,owner FROM research_dropped_offers WHERE task_id=?").get(taskId) as { task_id: number; owner: string } | null;
+    return row ? this.droppedOfferRow(row).owner : undefined;
+  }
+
+  clearResearchDroppedOffer(taskId: number): void {
+    if (!researchInteger(taskId)) throw researchFailure();
+    this.db.query("DELETE FROM research_dropped_offers WHERE task_id=?").run(taskId);
   }
 
   /** Bodies are append-only; a new revision cannot change its project's or parent's identity or lower privacy. */
