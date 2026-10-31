@@ -71,6 +71,19 @@ test("declared instances use their fixed supported form and preserve locked perm
   expect(plan.find(operation => operation.key === "peers.codex-reader.start_mode")?.value).toBe("headless");
 });
 
+test("resolved unmanaged variants retain start defaults without requiring a permission writer", () => {
+  for (const kind of ["codex", "kimi", "claude"]) {
+    const id = `${kind}-review`, peer = { id, kind, form: "headless" as const, unmanaged: true };
+    const definitions: AutonomySettingLookup = key => key === `permission_modes.${id}` ? undefined : { store: "config", ...(key === `peers.${id}.start_mode` ? { values: ["headless"] } : {}) };
+    const plan = planAutonomy("terminal", definitions, [peer]);
+    expect(plan.some(operation => operation.key === `permission_modes.${id}`)).toBe(false);
+    expect(plan).toContainEqual({ key: `peers.${id}.start_mode`, value: "headless", store: "config" });
+    const [status] = autonomyStatus({ environment: "terminal", peers: [peer] });
+    expect(status).toMatchObject({ effectiveMode: "unmanaged", nextMode: null, nextForm: "headless" });
+    expect(status!.missing).toContain("Native permissions are not managed by the hub in this form; configure them in the native client.");
+  }
+});
+
 test("a kind added to the inventory needs only matching preset data, not another code branch", () => {
   const preset = clone(), matrix = structuredClone(confirmationMatrix());
   matrix.kinds.newpeer = { forms: ["headless"], extraForms: [], conductorStartable: true, pullOnlyForms: [], hubMode: "mapped" };

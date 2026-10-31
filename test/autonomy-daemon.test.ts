@@ -6,16 +6,18 @@ import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { createHash } from "node:crypto";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { hubGitSync } from "../src/hub/git.ts";
+import type { InstancesConfig } from "../src/hub/instances.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
-async function fixture() {
+async function fixture(instances?: InstancesConfig) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-autonomy-daemon-"));
   cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
   mkdirSync(join(cwd, ".agenthub"));
   expect(hubGitSync(["init", "-q"], { cwd, encoding: "utf8", timeout: 1000 }).status).toBe(0);
   writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, research: { enabled: false }, pi: { auto_start: false } }));
   const stateDir = join(cwd, "state"), file = join(cwd, ".agenthub/config.local.json");
+  if (instances) writeFileSync(file, JSON.stringify({ instances }));
   const options = { cwd, stateDir, projectId: `project-${cwd.split("/").at(-1)}`, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false };
   let daemon = await startDaemon({ ...options, config: loadConfig(cwd) });
   cleanups.push(() => daemon.stop());
@@ -61,6 +63,23 @@ test("daemon refuses agents and unconfirmed on; person apply/off and whole-prese
   expect((await p.person.request({ t: "autonomy", action: "status", environment: "headless" })).status.consentedPeers).toEqual([]);
   expect((await p.person.request({ t: "autonomy", action: "off", environment: "terminal" })).ok).toBe(true);
   expect(p.read()._autonomy).toBeUndefined();
+});
+
+test("autonomy plans and applies a declared unmanaged reviewer without a permission default", async () => {
+  const p = await fixture({ "codex-review": { kind: "codex", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } });
+  const preview = await p.person.request({ t: "autonomy", action: "preview", environment: "terminal" });
+  expect(preview.ok, JSON.stringify(preview)).toBe(true);
+  expect(preview.lines.some((line: string) => line.startsWith("permission_modes.codex-review:"))).toBe(false);
+  expect(preview.lines).toContain("peers.codex-review.start_mode: headless (next peer start)");
+  const applied = await p.person.request({ t: "autonomy", action: "on", environment: "terminal", confirmed: true, confirmation: preview.confirmation });
+  expect(applied.ok, JSON.stringify(applied)).toBe(true);
+  expect(p.read().permission_modes["codex-review"]).toBeUndefined();
+  expect(p.read().permission_modes.codex).toBe("never-ask");
+  expect(p.read().peers["codex-review"].start_mode).toBe("headless");
+  const status = (await p.person.request({ t: "autonomy", action: "status", environment: "terminal" })).status;
+  const reviewer = status.peers.find((peer: any) => peer.id === "codex-review");
+  expect(reviewer).toMatchObject({ effectiveMode: "unmanaged", nextMode: null });
+  expect(reviewer.missing).toContain("Native permissions are not managed by the hub in this form; configure them in the native client.");
 });
 
 test("status names current effective evidence and unknown guards without granting a native bypass", async () => {

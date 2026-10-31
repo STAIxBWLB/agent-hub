@@ -6946,7 +6946,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const lockedMode = typeof setting !== "string" && setting.locked ? setting.values?.[0] : undefined;
       const form = owner?.form ?? startMode(id);
       const unmanaged = definition?.permission.unmanaged || definition?.permission.unmanagedForms?.includes(owner ? owner.form ?? "tui" : form);
-      return { id, kind: definition?.kind ?? id, ...(lockedMode ? { lockedMode } : {}), form,
+      return { id, kind: definition?.kind ?? id, unmanaged: !!definition?.permission.unmanaged, ...(lockedMode ? { lockedMode } : {}), form,
         permissionMode: unmanaged && !lockedMode ? "unmanaged" : permissionDisplay(id, owner), actionEnforcement: actionEnforcement(id) };
     });
   }

@@ -27,6 +27,8 @@ export interface AutonomyPeer {
   id: string;
   kind: string;
   form?: AutonomyForm;
+  /** Resolved definition is native-managed in every form, rather than only the current form. */
+  unmanaged?: boolean;
   permissionMode?: string;
   lockedMode?: string;
   actionEnforcement?: { enforced: boolean; reason?: string };
@@ -121,18 +123,18 @@ function checkedPreset(preset: AutonomyPreset, matrix: ConfirmationMatrix): void
   const problems = validateAutonomyPreset(preset, matrix);
   if (problems.length) throw new Error(`autonomy: invalid preset: ${problems.join("; ")}`);
 }
-function nextForm(peer: Pick<AutonomyPeer, "id" | "kind" | "form">, environment: string, preset: AutonomyPreset, matrix: ConfirmationMatrix, lookup?: AutonomySettingLookup): AutonomyForm | null {
+function nextForm(peer: Pick<AutonomyPeer, "id" | "kind" | "form" | "unmanaged">, environment: string, preset: AutonomyPreset, matrix: ConfirmationMatrix, lookup?: AutonomySettingLookup): AutonomyForm | null {
   const entry = preset.kinds[peer.kind], facts = matrix.kinds[peer.kind];
   if (!entry || !facts) return null;
   // Declared variants are explicit; a runtime TUI observation must not defeat a requested headless default.
-  if (peer.form && facts.extraForms.includes(peer.form)) return peer.form;
+  if (peer.form && (facts.extraForms.includes(peer.form) || peer.unmanaged && facts.forms.includes(peer.form))) return peer.form;
   const values = lookup?.(`peers.${peer.id}.start_mode`)?.values;
   if (values?.length === 1 && form(values[0]) && [...facts.forms, ...facts.extraForms].includes(values[0])) return values[0];
   return entry.start[environment] ?? null;
 }
 
 /** Desired CONFIG leaf writes only. The daemon supplies its current setting definitions and owns the transaction/undo. */
-export function planAutonomy(environment: AutonomyEnvironment, lookup?: AutonomySettingLookup, peers?: readonly Pick<AutonomyPeer, "id" | "kind" | "form">[], preset: AutonomyPreset = autonomyPreset(), matrix: ConfirmationMatrix = confirmationMatrix()): AutonomyOperation[] {
+export function planAutonomy(environment: AutonomyEnvironment, lookup?: AutonomySettingLookup, peers?: readonly Pick<AutonomyPeer, "id" | "kind" | "form" | "unmanaged">[], preset: AutonomyPreset = autonomyPreset(), matrix: ConfirmationMatrix = confirmationMatrix()): AutonomyOperation[] {
   checkedPreset(preset, matrix);
   const selected = environmentOf(environment, preset), operations: AutonomyOperation[] = [];
   const add = (key: string, value: unknown, optionalLocked = false) => {
@@ -145,7 +147,7 @@ export function planAutonomy(environment: AutonomyEnvironment, lookup?: Autonomy
   for (const [key, value] of Object.entries(preset.hub)) add(key, value);
   const terminal = preset.environments[selected]!.terminalOpen;
   if (terminal !== null) add("terminal.open", terminal);
-  const targets = peers ?? Object.keys(preset.kinds).map(kind => ({ id: kind, kind }));
+  const targets: readonly AutonomyPeer[] = peers ?? Object.keys(preset.kinds).map(kind => ({ id: kind, kind }));
   const seen = new Set<string>();
   for (const peer of targets) {
     if (!peerId(peer.id) || seen.has(peer.id)) throw new Error(`autonomy: invalid or duplicate peer id ${peer.id}`);
@@ -156,7 +158,7 @@ export function planAutonomy(environment: AutonomyEnvironment, lookup?: Autonomy
     if (!selectedForm) continue;
     const startKey = `peers.${peer.id}.start_mode`;
     if (matrix.keys["peers.<peer>.start_mode"]?.appliesTo?.includes(peer.kind) || lookup?.(startKey)) add(startKey, selectedForm, true);
-    const mode = entry.permission[selectedForm];
+    const mode = peer.unmanaged ? null : entry.permission[selectedForm];
     if (mode !== null) add(`permission_modes.${peer.id}`, mode, true);
   }
   return operations;
@@ -187,9 +189,9 @@ export function autonomyStatus(input: AutonomyStatusInput): AutonomyPeerStatus[]
   return input.peers.map(peer => {
     const facts = matrix.kinds[peer.kind], entry = preset.kinds[peer.kind];
     const desiredForm = nextForm(peer, environment, preset, matrix), currentForm = peer.form ?? desiredForm;
-    const mode = currentForm && entry ? entry.permission[currentForm] : null;
-    const desiredMode = peer.lockedMode ?? (desiredForm && entry ? entry.permission[desiredForm] : null);
-    const effectiveMode = peer.permissionMode ?? (!facts || !entry || !currentForm ? "unknown" : mode === null ? "unmanaged" : "unknown");
+    const mode = !peer.unmanaged && currentForm && entry ? entry.permission[currentForm] : null;
+    const desiredMode = peer.unmanaged ? null : peer.lockedMode ?? (desiredForm && entry ? entry.permission[desiredForm] : null);
+    const effectiveMode = peer.unmanaged ? "unmanaged" : peer.permissionMode ?? (!facts || !entry || !currentForm ? "unknown" : mode === null ? "unmanaged" : "unknown");
     const missing: string[] = [];
     if (peer.lockedMode) missing.push(`The ${peer.lockedMode} permission ceiling is locked; the preset does not change it.`);
     if (!facts || !entry) missing.push(`No autonomy preset or confirmation inventory exists for kind ${peer.kind}.`);
