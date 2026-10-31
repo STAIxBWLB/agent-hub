@@ -19,6 +19,8 @@ const NOW = Date.UTC(2026, 10, 1), SOURCE = "src:0123456789abcdef";
 class Peer extends BasePeer {
   got: Envelope[] = [];
   async start() { this.setState("idle"); }
+  work() { this.setState("busy"); }
+  rest() { this.setState("idle"); }
   async stop() {}
   async deliver(envs: Envelope[]) { this.got.push(...envs); }
 }
@@ -31,7 +33,8 @@ const contract = (): ResearchCampaignContract => ({ question: "What does the fix
 async function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "ahub-study-")); clean.push(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "hub.db"); let board = new Board(file); clean.push(() => board.close());
-  const bus = new Bus({ batchMs: 0 }), peers = [new Peer("claude"), new Peer("codex"), new Peer("local")];
+  const bus: Bus = new Bus({ batchMs: 0, relevant: (peer, env) => tasks.relevant(peer, env) }),   // the daemon wires this too: delivery re-asks the task flow whether an offer still applies
+     peers = [new Peer("claude"), new Peer("codex"), new Peer("local")];
   for (const peer of peers) { bus.add(peer); await peer.start(); }
   const sources = new Map([[SOURCE, { id: SOURCE, sha256: "a".repeat(64), private: false }]]);
   const executionBudget = new ExecutionBudget(file); clean.push(() => executionBudget.close());
@@ -40,10 +43,10 @@ async function fixture() {
   let now = NOW;
   let screen: ConstructorParameters<typeof Tasks>[0]["piiScreen"];
   let notify = (_line: string): void => {};
-  const build = () => new Tasks({ board, bus, cwd: dir, project: "fixture-project", roles, routing: () => routing, notify: line => notify(line), executionBudget, studyNow: () => now,
+  const build = (): Tasks => new Tasks({ board, bus, cwd: dir, project: "fixture-project", roles, routing: () => routing, notify: line => notify(line), executionBudget, studyNow: () => now,
     piiScreen: text => screen?.(text) ?? Promise.resolve({ label: "clear" as const, ms: 0 }),
     studySource: id => { expect((board as unknown as { db: Database }).db.inTransaction).toBe(false); return sources.get(id); } });
-  let tasks = build();
+  let tasks: Tasks = build();
   const parent = await tasks.propose(USER, { title: "Research parent", class: "implement", owner: "codex" });
   return { dir, file, bus, peers, sources, routing, roles, parent, get ledger() { return executionBudget; }, get board() { return board; }, get tasks() { return tasks; },
     setNow(value: number) { now = value; },
@@ -162,6 +165,18 @@ test("only a stored complete handoff or insufficient evidence advances a discove
   expect(f.tasks.studyShow(USER,{id:campaign.id}).discoveryRounds).toEqual([{round:0,complete:true}]);
 });
 
+test("a revision that adds a round-0 discovery and a round-1 unit is refused until the new discovery has a stored handoff; the follow-up alone is accepted", async () => {
+  const f=await fixture(), campaign=await approve(f), id=await startDiscovery(f,campaign);
+  await f.tasks.studyHandoff("local",handoff(campaign.id,id));   // D1 is complete
+  const follow={id:"next",round:1,question:"Next measured question",perspective:"analysis",requiredOutput:"result",sourceIds:[SOURCE],dependsOn:[],purpose:"analysis" as const};
+  const both=contract(); both.stopPolicy.maxUnits=4;
+  both.units.push({id:"discover2",round:0,question:"Inspect a second synthetic source",perspective:"second",requiredOutput:"a bounded handoff",sourceIds:[SOURCE],dependsOn:[],purpose:"discovery"}, follow);
+  await expect(f.tasks.studyRevise(USER,{id:campaign.id,revision:1,contract:both})).rejects.toThrow(/follow-up rounds require/);
+  expect(f.board.researchCampaign(campaign.id)!.revision).toBe(1);
+  const alone=contract(); alone.stopPolicy.maxUnits=3; alone.units.push(follow);
+  expect((await f.tasks.studyRevise(USER,{id:campaign.id,revision:1,contract:alone})).revision).toBe(2);
+});
+
 test("handoffs refuse missing or newly private sources without persisting public text", async () => {
   const f=await fixture(), campaign=await approve(f), id=await startDiscovery(f,campaign);
   f.sources.delete(SOURCE);
@@ -178,6 +193,21 @@ test("a queued owner offer is rechecked at delivery after its campaign closes", 
   expect(f.tasks.relevant("local",env)).toBe(true);
   await f.tasks.studyClose(USER,{id:campaign.id,revision:1,reason:"Closed before delivery"});
   expect(f.tasks.relevant("local",env)).toBe(false);
+});
+
+test("an owner offer dropped while a newer draft is pending reaches the owner again once the draft is approved", async () => {
+  const f=await fixture(), campaign=await approve(f), id=firstId(campaign), local=f.peers[2]!;
+  const offers=() => local.got.filter(env=>env.kind==="task"&&env.refs?.task===String(id)&&env.refs?.taskOffer!==undefined).length;
+  await pull(f,id); local.work();
+  await f.tasks.assignTo(id,"local",USER,true);                       // the offer is queued behind the busy turn
+  expect(f.board.get(id)!.owner).toBe("local"); expect(offers()).toBe(0);
+  await f.tasks.studyRevise(USER,{id:campaign.id,revision:1,contract:{...contract(),scope:"Changed scope"}});   // a newer draft holds the unit
+  local.rest(); await new Promise(resolve=>setTimeout(resolve,30));
+  expect(offers()).toBe(0);                                          // delivery found the unit held and dropped the offer
+  await f.tasks.studyApprove(USER,{id:campaign.id,revision:2});
+  await new Promise(resolve=>setTimeout(resolve,30));
+  expect(offers()).toBe(1);                                          // approval re-offered the retained, unaccepted unit without manual action
+  expect(f.board.get(id)!.owner).toBe("local");
 });
 
 test("insufficientEvidence settles a discovery round while acceptance still refuses an expired task", async () => {

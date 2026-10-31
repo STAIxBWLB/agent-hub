@@ -1428,11 +1428,12 @@ export class Tasks {
     if (!added.length) return;
     const stored = this.d.board.researchCampaignBindings(original.id, original.revision), handoffs = this.d.board.researchHandoffs(original.id, original.revision);
     for (const unit of added) {
-      const previous = stored.filter(value => value.round === unit.round - 1 && value.purpose === "discovery");
+      // The revised contract decides which discovery units precede this round: a discovery added in the same revision has no stored binding, so it has no handoff and refuses.
+      const previous = contract.units.filter(value => value.round === unit.round - 1 && value.purpose === "discovery");
       if (!previous.length || previous.some(value => {
-        const handoff = handoffs.find(handoff => handoff.handoff.unitId === value.unitId);
-        const definition = original.contract.units.find(unit => unit.id === value.unitId)!;
-        return !handoff || !handoff.handoff.insufficientEvidence && definition.sourceIds.some(source => !handoff.handoff.evidence.some(item => item.sourceId === source));
+        const binding = stored.find(bound => bound.unitId === value.id && bound.round === value.round && bound.purpose === "discovery");
+        const handoff = binding && handoffs.find(handoff => handoff.handoff.unitId === value.id);
+        return !handoff || !handoff.handoff.insufficientEvidence && value.sourceIds.some(source => !handoff.handoff.evidence.some(item => item.sourceId === source));
       })) throw new PreEffectToolRefusal("follow-up rounds require complete stored discovery handoffs or insufficientEvidence");
     }
   }
@@ -1592,8 +1593,29 @@ export class Tasks {
         if (mode !== undefined) this.coordinationModes.set(child.id, mode);
       }
       this.releaseNotice(`study ${id} revision ${revision} approved; ${result.bindings.length} units`);
+      await this.studyReoffer(result.bindings.map(unit => unit.taskId));
       return this.studyReceipt(result.campaign, true);
     });
+  }
+
+  /** Task id -> the owner whose queued offer a study hold made the bus discard (#597). */
+  private readonly studyDroppedOffers = new Map<number, PeerId>();
+
+  /**
+   * A unit held only because a newer draft existed lost its queued offer at delivery. Once a revision is approved, each retained unit task whose offer was dropped, that still has
+   * the same owner and has not been accepted, gets a fresh offer through the one offer path (`sendTask`), which re-runs `studyDispatchCheck`. The approval is already saved: a
+   * refusal here is a notice, never a failure of the approval.
+   */
+  private async studyReoffer(taskIds: readonly number[]): Promise<void> {
+    for (const taskId of taskIds) {
+      const owner = this.studyDroppedOffers.get(taskId);
+      if (owner === undefined) continue;
+      this.studyDroppedOffers.delete(taskId);
+      const task = this.d.board.get(taskId);
+      if (!task || task.owner !== owner || task.state !== "proposed") continue;
+      try { await this.sendTask(task, { owner, ...(task.reviewer ? { reviewer: task.reviewer } : {}), trace: [] }); }
+      catch (e) { this.releaseNotice(`task ${this.publicTitle(task)}: could not re-offer after the study was approved: ${e instanceof Error ? e.message : String(e)}`); }
+    }
   }
 
   async studyClose(by: PeerId, input: unknown): Promise<ResearchCampaignReceipt> {
@@ -2884,7 +2906,12 @@ export class Tasks {
     }
     if (env.from === HUB && env.refs?.task) {
       const task = this.d.board.get(Number(env.refs.task));
-      if (env.kind === "task" && env.refs.taskOffer !== undefined && task?.owner === peer && this.studyDispatchReason(task, peer)) return false;
+      if (env.kind === "task" && env.refs.taskOffer !== undefined && task?.owner === peer && this.studyDispatchReason(task, peer)) {
+        // The bus discards a false verdict for good and cannot hold the envelope. Remember the owner it was for, so approving the study again offers the retained task afresh.
+        // ponytail: in memory, so a restart between the drop and the approval loses it; the task sweep (when enabled) re-offers ownerless or stalled work. Upgrade: persist it on the task offer record.
+        this.studyDroppedOffers.set(task.id, peer);
+        return false;
+      }
       if (task?.state === "cancelled") return env.kind === "task" && typeof env.refs.taskCancelled === "number" && env.refs.taskCancelled === task.cancelled?.flowRevision;
       if (env.refs.taskRecipient === "planner") return !!task && this.taskPlanner(task).includes(peer);
       if (env.refs.planReview !== undefined) return !!task && !isClosedTaskState(task.state) && (task.planningRevision ?? 0) === env.refs.planReview
