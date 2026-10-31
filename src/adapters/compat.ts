@@ -44,11 +44,11 @@ export const COMPAT = {
     parse: out => plain(out.trim().replace(/^codex-cli /, "")),
     trustNote: "Every launch still proves the MCP inventory, Apps/plugins/hooks disabled, sandbox read/write denial and the binary fence; a failed leg still refuses. Trust covers only the source-level claims those probes cannot see (docs/verification/2026-10-19-reviewer-isolation.md).",
     receipt: "docs/verification/2026-10-31-codex-0166-reviewer-isolation.md" },
-  // Kimi 2.3.0 / Qwen 0.26.0 receipt: docs/verification/2026-10-22-kimi-qwen-compat.md; Kimi 2.3.1: docs/verification/2026-10-25-kimi-231-reviewer-compat.md; Kimi 2.3.2: docs/verification/2026-10-26-kimi-232-reviewer-compat.md
-  "kimi-review": { label: "Kimi reviewer (kimi-code)", verified: ["2.2.0", "2.3.0", "2.3.1", "2.3.2"], gate: "isolation", probe: ["kimi", "--version"],
+  // Kimi 2.3.0 / Qwen 0.26.0 receipt: docs/verification/2026-10-22-kimi-qwen-compat.md; Kimi 2.3.1: docs/verification/2026-10-25-kimi-231-reviewer-compat.md; Kimi 2.3.2: docs/verification/2026-10-26-kimi-232-reviewer-compat.md; Kimi 2.4.1: docs/verification/2026-10-31-kimi-241-reviewer-compat.md
+  "kimi-review": { label: "Kimi reviewer (kimi-code)", verified: ["2.2.0", "2.3.0", "2.3.1", "2.3.2", "2.4.1"], gate: "isolation", probe: ["kimi", "--version"],
     parse: out => plain(out.trim()),
     trustNote: "Every launch still builds the private config, exact two-tool agent file and task-bound MCP; the native tool allowlist behaviour of an untested version is not re-proven.",
-    receipt: "docs/verification/2026-10-26-kimi-232-reviewer-compat.md" },
+    receipt: "docs/verification/2026-10-31-kimi-241-reviewer-compat.md" },
   jcode: { label: "Jcode", verified: ["0.98.1", "0.99.0", "0.99.1"], line: { min: "0.98.0", below: "1.0.0" }, gate: "contract", probe: ["jcode", "--quiet", "version", "--json"], config: "jcode_cmd",
     parse: out => { try { const v = JSON.parse(out).semver; return typeof v === "string" ? plain(v) : undefined; } catch { return undefined; } },
     trustNote: "The ACP, serve and MCP contract was verified on 0.98.1 and 0.99.1 and steering on 0.99.0 and 0.99.1; an untested version may change them.",
@@ -57,10 +57,10 @@ export const COMPAT = {
     parse: out => plain(out.trim()),
     trustNote: "Only 1.4.2 and 1.4.7 are T0-verified; the plugin MCP and hook contract of another version is unverified.",
     receipt: "docs/verification/2026-10-26-agy-1.4.7.md" },
-  qwen: { label: "Qwen Code", verified: ["0.25.0", "0.26.0", "0.26.1"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
+  qwen: { label: "Qwen Code", verified: ["0.25.0", "0.26.0", "0.26.1", "0.26.4"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
     parse: out => plain(out.trim()),
-    trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.1; its two ACP fixes were judged not to change the hub contract. Another version may change those contracts.",
-    receipt: "docs/verification/2026-10-26-qwen-0261-acp.md" },
+    trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4; real model turns remain unverified. Another version may change those contracts.",
+    receipt: "docs/verification/2026-10-31-qwen-0264-acp.md" },
   // Receipt: docs/verification/2026-10-25-qwen-dual-output-t0.md. The dual-output contract (input file, event file, can_use_tool control requests) is its own entry:
   // the ACP receipts of the headless `qwen` entry say nothing about it, so that entry is not widened and this one carries no `line`.
   "qwen-dual": { label: "Qwen Code dual-output TUI", verified: ["0.26.1"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
