@@ -196,7 +196,7 @@ export function prepareRelease(root: string, opts: { version?: string; dryRun: b
   catch (error) { refusals.push(error instanceof Error ? error.message : String(error)); }
   if (refusals.length) return { ok: false, refusals };
 
-  const added = git("diff", "--name-only", "--diff-filter=A", `${lastTag}..HEAD`, "--", "docs/verification").stdout.split("\n").filter(path => path && !/-\d+\.\d+\.\d+\.md$/.test(path));
+  const added = git("diff", "--name-only", "--diff-filter=A", `${lastTag}..HEAD`, "--", "docs/verification").stdout.split("\n").filter(path => path && !/^docs\/verification\/\d{4}-\d{2}-\d{2}-\d+\.\d+\.\d+\.md$/.test(path));
   const plan: PreparationPlan = { current, version, bump, lastTag, subjects, prs: prNumbers(subjects), receipts: added, branch };
   if (opts.dryRun) return { ok: true, plan, wrote: false, stale: [] };
 

@@ -168,6 +168,6 @@ test("#1004 release preparation retains native version receipts and excludes onl
   expect(result.ok).toBe(true);
   if (!result.ok) return;
   expect(result.plan.receipts).toEqual([receipt]);
-  expect(reportSkeleton(result.plan, "2026-11-01")).toContain(receipt);
+  expect(reportSkeleton(result.plan, r.git("rev-parse", "HEAD"))).toContain(receipt);
   expect(result.plan.receipts).not.toContain(report);
 });
