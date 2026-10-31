@@ -1,0 +1,255 @@
+import { createHash } from "node:crypto";
+import { types } from "node:util";
+import { looksSecret } from "@staix/agent-mem";
+import { canonicalJson } from "./packs.ts";
+import { parseDeliverableClaims, type DeliverableClaim } from "./deliverables.ts";
+
+export type ExperimentScalar = string | number | boolean | null;
+export type ExperimentProvenance = "declared" | "host-observed" | "runner-attested" | "person-attested";
+export type ExperimentValue<T> = { value: T; provenance: ExperimentProvenance; evidence?: string }
+  | { value: null; provenance: "unknown" };
+export interface ExperimentProtocolContract {
+  campaignId: string;
+  campaignRevision: number;
+  lineage: string;
+  supersedes?: string;
+  claimIds: string[];
+  inputs: { sourceId: string; sha256: string }[];
+  code: { commit: string } | { deliverable: { id: string; sha256: string } };
+  environment: { descriptor: string; hash?: string };
+  method: string;
+  parameters: Record<string, ExperimentScalar | ExperimentScalar[]>;
+  seeds: number[];
+  evaluator: { id: string; version: string; hash?: string };
+  metrics: { name: string; unit: string; direction: "higher" | "lower" }[];
+  role: "baseline" | "variant";
+  variantOf?: string;
+  splits: string[];
+  resourceLimits: { name: string; value: number; unit: string }[];
+  sealed: boolean;
+}
+export interface ExperimentAttemptInput {
+  protocolHash: string;
+  taskId: number;
+  phase: "development" | "final";
+  idempotencyKey: string;
+  retryOf?: string;
+  reproducesAttemptId?: string;
+}
+export type ExperimentOutput = { id: string; sha256?: string } | DeliverableClaim;
+export type DeclaredExperimentEventInput =
+  | { kind: "start"; body: { startedAt?: number } }
+  | { kind: "end"; body: { status: "succeeded" | "failed" | "cancelled"; exitStatus?: number; reason?: string; run?: string } }
+  | { kind: "metric"; body: { name: string; value: number } }
+  | { kind: "output"; body: ExperimentOutput }
+  | { kind: "note"; body: { text: string } };
+/** Host supplies ordering/time; this T1 parser never admits caller-written evidence elevation. */
+export type DeclaredExperimentEvent = DeclaredExperimentEventInput & { seq: number; at: number; provenance: "declared" };
+export type ExperimentStatus = "declared" | "running" | "succeeded" | "failed" | "cancelled" | "unknown";
+
+const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/, HASH = /^[0-9a-f]{64}$/, SOURCE = /^src:[0-9a-f]{16}$/;
+const CAMPAIGN = /^rc-[0-9a-f]{12}$/, ATTEMPT = /^ra-[0-9a-f]{12}$/, DELIVERABLE = /^d-[0-9a-f]{12}$/;
+const RUN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SHORT = 512, LONG = 4096, BODY = 64 * 1024;
+function fail(field: string, reason: string): never { throw new Error(`${field}: ${reason}`); }
+function object(input: unknown, keys: readonly string[] | undefined, field: string): Record<string, unknown> {
+  if (!input || typeof input !== "object" || Array.isArray(input) || types.isProxy(input)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) || Object.getOwnPropertySymbols(input).length)
+    fail(field, "expected a plain data object");
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  if (Object.values(descriptors).some(value => !Object.hasOwn(value, "value"))) fail(field, "accessors are unavailable");
+  if (keys && Object.keys(descriptors).some(key => !keys.includes(key))) fail(field, "unknown field");
+  return Object.fromEntries(Object.entries(descriptors).map(([key, value]) => [key, value.value]));
+}
+function array(input: unknown, max: number, field: string): unknown[] {
+  if (!Array.isArray(input) || types.isProxy(input) || Object.getPrototypeOf(input) !== Array.prototype || input.length > max || Object.getOwnPropertySymbols(input).length)
+    fail(field, `expected a list of at most ${max} items`);
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  if (Object.keys(descriptors).some(key => key !== "length" && !/^(0|[1-9][0-9]*)$/.test(key))) fail(field, "unknown list fields");
+  return Array.from({ length: input.length }, (_, index) => {
+    const value = descriptors[String(index)];
+    if (!value || !Object.hasOwn(value, "value")) fail(field, "expected a dense data list");
+    return value.value;
+  });
+}
+function text(input: unknown, max: number, field: string): string {
+  if (typeof input !== "string" || !input.trim() || input.length > max || Buffer.byteLength(input, "utf8") > max
+    || Buffer.from(input, "utf8").toString("utf8") !== input) fail(field, `expected non-empty UTF-8 text of at most ${max} bytes`);
+  return input;
+}
+function pattern(input: unknown, rule: RegExp, field: string): string {
+  if (typeof input !== "string" || rule.exec(input)?.[0] !== input) fail(field, "invalid identifier or hash");
+  return input;
+}
+function integer(input: unknown, field: string, min = 0): number {
+  if (typeof input !== "number" || !Number.isSafeInteger(input) || input < min) fail(field, "expected a bounded integer");
+  return input;
+}
+function number(input: unknown, field: string, nonnegative = false): number {
+  if (typeof input !== "number" || !Number.isFinite(input) || nonnegative && input < 0) fail(field, "expected a finite number");
+  return input;
+}
+function choice<T extends string>(input: unknown, values: readonly T[], field: string): T {
+  if (typeof input !== "string" || !values.includes(input as T)) fail(field, "unsupported value");
+  return input as T;
+}
+function unique<T>(values: T[], key: (value: T) => string | number, field: string): T[] {
+  if (new Set(values.map(key)).size !== values.length) fail(field, "duplicate values");
+  return values;
+}
+function strings(input: unknown, max: number, field: string, rule = ID): string[] {
+  return unique(array(input, max, field).map((value, index) => pattern(value, rule, `${field}[${index}]`)), value => value, field);
+}
+function bounded<T>(value: T, field: string): T {
+  if (Buffer.byteLength(canonicalJson(value), "utf8") > BODY) fail(field, "stored body exceeds 64 KiB");
+  return value;
+}
+function scalar(input: unknown, field: string): ExperimentScalar {
+  if (input === null || typeof input === "boolean") return input;
+  if (typeof input === "number") return number(input, field);
+  // Empty string is a useful scalar parameter, unlike an empty method or descriptor.
+  if (typeof input === "string" && input.length <= SHORT && Buffer.byteLength(input, "utf8") <= SHORT
+    && Buffer.from(input, "utf8").toString("utf8") === input) return input;
+  return fail(field, "expected a finite scalar");
+}
+function environment(input: unknown): ExperimentProtocolContract["environment"] {
+  const value = object(input, ["descriptor", "hash"], "protocol.environment"), descriptor = text(value.descriptor, LONG, "protocol.environment.descriptor");
+  // ponytail: lexical exclusion only, not proof that arbitrary prose contains no secret. Reject assignments and known secret shapes; a structured environment manifest can replace this ceiling later.
+  if (/(?:^|[\s,;{])["']?[A-Za-z_][A-Za-z0-9_]*["']?\s*(?:=|:)\s*\S/.test(descriptor) || looksSecret(descriptor))
+    fail("protocol.environment.descriptor", "environment values and secret-shaped text are unavailable");
+  return { descriptor, ...(value.hash !== undefined ? { hash: pattern(value.hash, HASH, "protocol.environment.hash") } : {}) };
+}
+
+/** Structural validation only; campaign/source/task ownership and evidence reads belong to Tasks. */
+export function parseExperimentProtocol(input: unknown): ExperimentProtocolContract {
+  const raw = object(input, ["campaignId", "campaignRevision", "lineage", "supersedes", "claimIds", "inputs", "code", "environment", "method", "parameters", "seeds", "evaluator", "metrics", "role", "variantOf", "splits", "resourceLimits", "sealed"], "protocol");
+  const inputs = unique(array(raw.inputs, 64, "protocol.inputs").map((value, index) => {
+    const field = `protocol.inputs[${index}]`, row = object(value, ["sourceId", "sha256"], field);
+    return { sourceId: pattern(row.sourceId, SOURCE, `${field}.sourceId`), sha256: pattern(row.sha256, HASH, `${field}.sha256`) };
+  }), value => value.sourceId, "protocol.inputs");
+  const rawCode = object(raw.code, ["commit", "deliverable"], "protocol.code");
+  if ((rawCode.commit !== undefined) === (rawCode.deliverable !== undefined)) fail("protocol.code", "choose one commit or deliverable");
+  let code: ExperimentProtocolContract["code"];
+  if (rawCode.commit !== undefined) code = { commit: pattern(rawCode.commit, /^[0-9a-f]{40}$/, "protocol.code.commit") };
+  else {
+    const value = object(rawCode.deliverable, ["id", "sha256"], "protocol.code.deliverable");
+    code = { deliverable: { id: pattern(value.id, DELIVERABLE, "protocol.code.deliverable.id"), sha256: pattern(value.sha256, HASH, "protocol.code.deliverable.sha256") } };
+  }
+  const rawParameters = object(raw.parameters, undefined, "protocol.parameters");
+  const entries = Object.entries(rawParameters);
+  if (entries.length > 64) fail("protocol.parameters", "at most 64 keys");
+  const parameters = Object.fromEntries(entries.map(([key, value]) => {
+    pattern(key, ID, "protocol.parameters.key");
+    if (["__proto__", "constructor", "prototype"].includes(key)) fail("protocol.parameters.key", "reserved key");
+    return [key, Array.isArray(value) ? array(value, 64, "protocol.parameters.value").map(item => scalar(item, "protocol.parameters.value")) : scalar(value, "protocol.parameters.value")];
+  }));
+  const evaluator = object(raw.evaluator, ["id", "version", "hash"], "protocol.evaluator");
+  const metrics = unique(array(raw.metrics, 32, "protocol.metrics").map((value, index) => {
+    const field = `protocol.metrics[${index}]`, row = object(value, ["name", "unit", "direction"], field);
+    return { name: text(row.name, SHORT, `${field}.name`), unit: text(row.unit, SHORT, `${field}.unit`), direction: choice(row.direction, ["higher", "lower"], `${field}.direction`) };
+  }), value => value.name, "protocol.metrics");
+  const resourceLimits = unique(array(raw.resourceLimits, 16, "protocol.resourceLimits").map((value, index) => {
+    const field = `protocol.resourceLimits[${index}]`, row = object(value, ["name", "value", "unit"], field);
+    return { name: text(row.name, SHORT, `${field}.name`), value: number(row.value, `${field}.value`, true), unit: text(row.unit, SHORT, `${field}.unit`) };
+  }), value => value.name, "protocol.resourceLimits");
+  const role = choice(raw.role, ["baseline", "variant"], "protocol.role");
+  if (raw.variantOf !== undefined && role !== "variant") fail("protocol.variantOf", "only a variant may name a baseline");
+  if (typeof raw.sealed !== "boolean") fail("protocol.sealed", "expected a declared boolean");
+  return bounded({ campaignId: pattern(raw.campaignId, CAMPAIGN, "protocol.campaignId"), campaignRevision: integer(raw.campaignRevision, "protocol.campaignRevision", 1),
+    lineage: pattern(raw.lineage, ID, "protocol.lineage"), ...(raw.supersedes !== undefined ? { supersedes: pattern(raw.supersedes, HASH, "protocol.supersedes") } : {}),
+    claimIds: strings(raw.claimIds, 32, "protocol.claimIds"), inputs, code, environment: environment(raw.environment), method: text(raw.method, LONG, "protocol.method"), parameters,
+    seeds: array(raw.seeds, 256, "protocol.seeds").map(value => integer(value, "protocol.seeds", Number.MIN_SAFE_INTEGER)),
+    evaluator: { id: pattern(evaluator.id, ID, "protocol.evaluator.id"), version: text(evaluator.version, SHORT, "protocol.evaluator.version"), ...(evaluator.hash !== undefined ? { hash: pattern(evaluator.hash, HASH, "protocol.evaluator.hash") } : {}) },
+    metrics, role, ...(raw.variantOf !== undefined ? { variantOf: pattern(raw.variantOf, HASH, "protocol.variantOf") } : {}),
+    splits: strings(raw.splits, 16, "protocol.splits"), resourceLimits, sealed: raw.sealed }, "protocol");
+}
+
+export function protocolHash(contract: ExperimentProtocolContract): string {
+  return createHash("sha256").update(canonicalJson(parseExperimentProtocol(contract))).digest("hex");
+}
+
+export function parseExperimentAttempt(input: unknown): ExperimentAttemptInput {
+  const raw = object(input, ["protocolHash", "taskId", "phase", "idempotencyKey", "retryOf", "reproducesAttemptId"], "attempt");
+  return bounded({ protocolHash: pattern(raw.protocolHash, HASH, "attempt.protocolHash"), taskId: integer(raw.taskId, "attempt.taskId", 1),
+    phase: choice(raw.phase, ["development", "final"], "attempt.phase"), idempotencyKey: text(raw.idempotencyKey, 64, "attempt.idempotencyKey"),
+    ...(raw.retryOf !== undefined ? { retryOf: pattern(raw.retryOf, ATTEMPT, "attempt.retryOf") } : {}),
+    ...(raw.reproducesAttemptId !== undefined ? { reproducesAttemptId: pattern(raw.reproducesAttemptId, ATTEMPT, "attempt.reproducesAttemptId") } : {}) }, "attempt");
+}
+
+/** Caller input cannot set sequence, hub time or provenance; metric membership is checked against the named protocol. */
+export function parseExperimentEvent(input: unknown, protocol?: ExperimentProtocolContract): DeclaredExperimentEventInput {
+  const raw = object(input, ["kind", "body"], "event");
+  switch (raw.kind) {
+    case "start": {
+      const body = object(raw.body, ["startedAt"], "event.start");
+      return { kind: "start", body: { ...(body.startedAt !== undefined ? { startedAt: integer(body.startedAt, "event.start.startedAt") } : {}) } };
+    }
+    case "end": {
+      const body = object(raw.body, ["status", "exitStatus", "reason", "run"], "event.end");
+      return { kind: "end", body: { status: choice(body.status, ["succeeded", "failed", "cancelled"], "event.end.status"),
+        ...(body.exitStatus !== undefined ? { exitStatus: integer(body.exitStatus, "event.end.exitStatus", Number.MIN_SAFE_INTEGER) } : {}),
+        ...(body.reason !== undefined ? { reason: text(body.reason, SHORT, "event.end.reason") } : {}), ...(body.run !== undefined ? { run: pattern(body.run, RUN, "event.end.run") } : {}) } };
+    }
+    case "metric": {
+      const body = object(raw.body, ["name", "value"], "event.metric"), name = text(body.name, SHORT, "event.metric.name");
+      if (protocol && !protocol.metrics.some(metric => metric.name === name)) fail("event.metric.name", "not declared by the protocol");
+      return { kind: "metric", body: { name, value: number(body.value, "event.metric.value") } };
+    }
+    case "output": {
+      const body = object(raw.body, ["id", "sha256", "path", "format", "version"], "event.output");
+      if (body.id !== undefined) {
+        if ([body.path, body.format, body.version].some(value => value !== undefined)) fail("event.output", "choose one declared reference or host hash request");
+        return { kind: "output", body: { id: pattern(body.id, DELIVERABLE, "event.output.id"), ...(body.sha256 !== undefined ? { sha256: pattern(body.sha256, HASH, "event.output.sha256") } : {}) } };
+      }
+      if (body.sha256 !== undefined) fail("event.output", "a host hash request cannot supply a hash");
+      text(body.path, SHORT, "event.output.path"); text(body.format, 32, "event.output.format");
+      if (body.version !== undefined) text(body.version, 64, "event.output.version");
+      const claim = parseDeliverableClaims([body])[0]!;
+      return { kind: "output", body: claim };
+    }
+    case "note": {
+      const body = object(raw.body, ["text"], "event.note");
+      return { kind: "note", body: { text: text(body.text, SHORT, "event.note.text") } };
+    }
+    default: return fail("event.kind", "unsupported declared event; attestation needs a separate authority path");
+  }
+}
+
+function ordered(events: readonly DeclaredExperimentEvent[]): DeclaredExperimentEvent[] {
+  const rows = [...events].sort((a, b) => a.seq - b.seq), seen = new Set<number>();
+  for (const row of rows) {
+    integer(row.seq, "event.seq", 1); integer(row.at, "event.at");
+    if (seen.has(row.seq) || row.provenance !== "declared") fail("event", "invalid ordering or caller evidence elevation");
+    seen.add(row.seq);
+  }
+  if (rows.filter(row => row.kind === "end").length > 1) fail("event.end", "an attempt has at most one terminal event");
+  return rows;
+}
+
+/** Task completion is never experiment success; only a recorded end supplies a terminal experiment status. */
+export function experimentStatus(events: readonly DeclaredExperimentEvent[], taskState: string | undefined): ExperimentStatus {
+  const rows = ordered(events), end = rows.find(row => row.kind === "end");
+  if (end?.kind === "end") return end.body.status;
+  if (["approved", "cancelled", "closed"].includes(taskState ?? "")) return "unknown";
+  return rows.some(row => row.kind === "start") ? "running" : "declared";
+}
+
+const declared = <T>(value: T | undefined): ExperimentValue<T> => value === undefined ? { value: null, provenance: "unknown" } : { value, provenance: "declared" };
+/** Declared-only projection. Verified host observations belong to an independent authority-bound evidence path. */
+export function projectExperimentEvidence(protocol: ExperimentProtocolContract, events: readonly DeclaredExperimentEvent[]) {
+  const rows = ordered(events), starts = rows.filter(row => row.kind === "start"), end = rows.find(row => row.kind === "end");
+  return {
+    environment: { descriptor: declared(protocol.environment.descriptor), hash: declared(protocol.environment.hash) }, sealed: declared(protocol.sealed),
+    startedAt: declared(starts.at(-1)?.body.startedAt), endedAt: declared<number>(undefined),
+    exitStatus: declared(end?.kind === "end" ? end.body.exitStatus : undefined),
+    run: declared(end?.kind === "end" ? end.body.run : undefined),
+    durationMs: declared<number>(undefined), queueTime: declared<number>(undefined), timedOut: declared<boolean>(undefined), cancelled: declared<boolean>(undefined),
+    metrics: protocol.metrics.map(metric => {
+      const observations = rows.flatMap(row => row.kind === "metric" && row.body.name === metric.name ? [declared(row.body.value)] : []);
+      return { name: metric.name, unit: metric.unit, observations, latest: observations.at(-1) ?? declared<number>(undefined) };
+    }),
+    outputs: rows.flatMap(row => row.kind !== "output" ? [] : ["id" in row.body
+      ? { id: declared(row.body.id), sha256: declared(row.body.sha256) }
+      : { id: declared<string>(undefined), sha256: declared<string>(undefined) }]),
+  };
+}
