@@ -48,6 +48,7 @@ export interface RestartSnapshot {
     externalBindingsDigest?: string;
     /** Research state remains part of controlled-recovery integrity when present. */
     research?: { campaigns: number; units: number; revision: number; digest: string };
+    researchDispatch?: { activations: number; handoffs: number; digest: string };
   };
 }
 
@@ -102,6 +103,11 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
     if (!research || typeof research !== "object" || Array.isArray(research)
       || ![research.campaigns, research.units, research.revision].every(value => Number.isSafeInteger(value) && value >= 0)
       || typeof research.digest !== "string" || !/^[a-f0-9]{64}$/.test(research.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "researchDispatch")) {
+    const value = s.integrity.researchDispatch;
+    if (!value || typeof value !== "object" || Array.isArray(value) || ![value.activations, value.handoffs].every(count => Number.isSafeInteger(count) && count >= 0)
+      || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }
   if (bus.journal !== undefined) { try { validateJournalSnapshot(bus.journal); } catch { return undefined; } }
   return s as RestartSnapshot;

@@ -4,7 +4,7 @@ import { queueBackpressure, queueBackpressurePolicy, type QueueBackpressureCode,
 import { canonicalMemorySymbolNode, normalizeMemorySymbolInput, MEMORY_SYMBOL_LIMIT, type MemorySymbolNodes } from "./memory-symbols.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { types } from "node:util";
-import { campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus } from "./research-campaign.ts";
+import { parseResearchHandoff, studyProjection, campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus } from "./research-campaign.ts";
 import type { ResearchCampaignRecord, ResearchUnitBinding, PreparedResearchUnit } from "./board.ts";
 import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-command.ts";
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
@@ -1380,6 +1380,100 @@ export class Tasks {
     return { parent, adopted, reused, private: priv, key: JSON.stringify([parent.history.length, sources, flows(adopted), flows(reused), priv]) };
   }
 
+  /** Always re-read persisted approval and limits at the dispatch write, including after a metadata await. */
+  private studyDispatchReason(task: Task, owner?: PeerId): string | undefined {
+    try {
+      const bound = this.d.board.researchDispatchBinding(task.id);
+      if (!bound) return undefined;
+      const { campaign, binding } = bound;
+      if (campaign.project !== this.d.project || campaign.status !== "approved" || !binding) return "study revision is not approved or its unit was removed";
+      const stop = campaign.contract.stopPolicy;
+      if (Date.parse(stop.deadline) <= this.studyTime()) return "study deadline has expired";
+      const units = this.d.board.researchCampaignBindings(campaign.id, campaign.revision);
+      if (units.length > stop.maxUnits || binding.round > stop.maxFollowUpRounds) return "study stop limit exceeded";
+      const budget = campaign.contract.budget;
+      if (budget?.hardCap.length) {
+        const ledger = this.d.executionBudget, current = ledger?.status(budget.id);
+        if (!ledger || !current || Array.isArray(current) || !campaign.eligibleOwners?.length ||
+          budget.hardCap.some(resource => resource === "tokens" || current.limits[resource] === undefined)) return "study hard-cap budget is unavailable";
+        if (owner && (!campaign.eligibleOwners.includes(owner) || !ledger.covers(budget.id, task.id, owner, budget.hardCap)))
+          return "study owner is not covered by its named hard-cap budget";
+      }
+      return undefined;
+    } catch { return "study dispatch evidence is unavailable"; }
+  }
+
+  private studyDispatchCheck(task: Task, owner?: PeerId): void {
+    const reason = this.studyDispatchReason(task, owner);
+    if (reason) throw new PreEffectToolRefusal(reason);
+  }
+
+  private studyExcludedOwners(task: Task): PeerId[] {
+    return Object.keys(this.states()).filter(peer => this.studyDispatchReason(task, peer) !== undefined);
+  }
+
+  private studyEligibleOwners(contract: ResearchCampaignContract): string[] | undefined {
+    if (!contract.budget?.hardCap.length) return undefined;
+    const ledger = this.d.executionBudget, budget = ledger?.status(contract.budget.id);
+    if (!ledger || !budget || Array.isArray(budget) || contract.budget.hardCap.some(resource => resource === "tokens" || budget.limits[resource] === undefined))
+      throw new PreEffectToolRefusal("study hard cap requires an enabled budget with supported resource limits");
+    const eligible = budget.peers.filter(peer => ledger.instrumented(peer)).sort();
+    if (!eligible.length) throw new PreEffectToolRefusal("study hard cap has no instrumented eligible owner");
+    return eligible;
+  }
+
+  private studyRoundCheck(original: ResearchCampaignRecord, contract: ResearchCampaignContract): void {
+    const added = contract.units.filter(unit => unit.round > 0 && !original.contract.units.some(previous => previous.id === unit.id && previous.round === unit.round));
+    if (!added.length) return;
+    const stored = this.d.board.researchCampaignBindings(original.id, original.revision), handoffs = this.d.board.researchHandoffs(original.id, original.revision);
+    for (const unit of added) {
+      const previous = stored.filter(value => value.round === unit.round - 1 && value.purpose === "discovery");
+      if (!previous.length || previous.some(value => {
+        const handoff = handoffs.find(handoff => handoff.handoff.unitId === value.unitId);
+        const definition = original.contract.units.find(unit => unit.id === value.unitId)!;
+        return !handoff || !handoff.handoff.insufficientEvidence && definition.sourceIds.some(source => !handoff.handoff.evidence.some(item => item.sourceId === source));
+      })) throw new PreEffectToolRefusal("follow-up rounds require complete stored discovery handoffs or insufficientEvidence");
+    }
+  }
+
+  async studyHandoff(by: PeerId, input: unknown): Promise<{ campaignId: string; unitId: string; seq: number }> {
+    const requestCheck = this.requestCheck(by, () => this.studyHold());
+    let handoff: ReturnType<typeof parseResearchHandoff>;
+    try { handoff = parseResearchHandoff(input); } catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid study handoff"); }
+    return this.studyWrite(async () => {
+      const campaign = this.studyRecord(handoff.campaignId, handoff.revision), task = this.studyParent(handoff.taskId);
+      if (by !== task.owner || task.state !== "in_progress" || this.d.privateTurn?.(by) && !this.isPii(task)) throw new PreEffectToolRefusal("handoff requires the current in-progress unit owner");
+      const sourceKey = JSON.stringify(campaign.contract.sourceIds.map(id => this.studySource(id)));
+      const withheld = await this.withholds("note", JSON.stringify(handoff), task);
+      requestCheck();
+      const current = this.studyParent(task.id);
+      if (current.history.length !== task.history.length || current.owner !== by || current.state !== "in_progress") throw new PreEffectToolRefusal("study handoff task changed during screening");
+      if (JSON.stringify(campaign.contract.sourceIds.map(id => this.studySource(id))) !== sourceKey) throw new PreEffectToolRefusal("study handoff sources changed during screening");
+      if (withheld && !this.isPii(current) && !campaign.private) throw new PreEffectToolRefusal("study handoff privacy requires private task authority");
+      requestCheck();
+      try {
+        const saved = this.d.board.recordResearchHandoff(handoff, this.d.project, by, this.studyTime(), current.history.length);
+        return { campaignId: saved.handoff.campaignId, unitId: saved.handoff.unitId, seq: saved.seq };
+      } catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "study handoff was not saved"); }
+    });
+  }
+
+  studyShow(by: PeerId, input: unknown): ReturnType<typeof studyProjection> {
+    requireLocalTaskPeer(by);
+    const fields = this.studyFields(input, ["id"]), campaign = this.studyRecord(this.studyId(fields.id));
+    const bindings = this.d.board.researchCampaignBindings(campaign.id, campaign.revision);
+    const tasks = bindings.map(unit => this.d.board.get(unit.taskId)).filter((task): task is Task => !!task);
+    const ledger = this.d.executionBudget, configured = campaign.contract.budget, budget = configured && ledger?.status(configured.id);
+    const instrumentedPeers = tasks.flatMap(task => task.owner && ledger?.instrumented(task.owner) ? [task.owner] : []);
+    const projection = studyProjection({ campaign, bindings, tasks, handoffs: this.d.board.researchHandoffs(campaign.id), now: this.studyTime(), instrumentedPeers,
+      ...(budget && !Array.isArray(budget) ? { budget: { ...budget, coveredTaskIds: tasks.filter(task => task.owner && ledger?.covers(budget.id, task.id, task.owner, [])).map(task => task.id) } } : {}) });
+    if (this.studyReplayPrivacy(campaign, this.studyParent(campaign.parentTaskId))) {
+      // IDs, counts, states and resource names only. Source references are private view data too.
+      for (const unit of projection.units) { unit.sourceIds = []; unit.duplicateSourceIds = []; unit.handoff.coveredSourceIds = []; }
+    }
+    return projection;
+  }
+
   private studyReplayPrivacy(record: ResearchCampaignRecord, parent: Task): boolean {
     return record.private || this.isPii(parent) || record.contract.sourceIds.some(id => {
       const source = this.studySource(id);
@@ -1420,14 +1514,13 @@ export class Tasks {
       const original = this.studyLatest(id, revision);
       this.plannerWriteAuthority(by, this.studyParent(original.parentTaskId));
       const before = this.studyReferences(original.parentTaskId, contract, id);
-      // ponytail: #597 adds handoff-backed round advancement; T1 never activates an unverified follow-up.
-      if (contract.units.some(unit => unit.round > 0 && !original.contract.units.some(previous => previous.id === unit.id && previous.round === unit.round)))
-        throw new PreEffectToolRefusal("follow-up rounds require the handoff coverage gate");
+      this.studyRoundCheck(original, contract);
       const withheld = await this.withholds("note", JSON.stringify(contract), before.parent);
       requestCheck();
       const latest = this.studyLatest(id, revision), current = this.studyReferences(latest.parentTaskId, contract, id);
       this.plannerWriteAuthority(by, current.parent);
       if (latest.hash !== original.hash || current.key !== before.key) throw new PreEffectToolRefusal("study changed during revision screening");
+      this.studyRoundCheck(latest, contract);
       const next: ResearchCampaignRecord = { id, project: this.d.project, parentTaskId: latest.parentTaskId, revision: revision + 1, status: "draft",
         contract, hash: campaignHash(contract), private: latest.private || current.private || withheld, createdBy: by, createdAt: this.studyTime() };
       let saved: ResearchCampaignRecord;
@@ -1452,8 +1545,7 @@ export class Tasks {
       }
       this.studyLatest(id, revision);
       if (original.status !== "draft" || parent.draft) throw new PreEffectToolRefusal("study approval requires a draft and an approved parent input");
-      // ponytail: #597 adds budget-id-specific dispatch fences; T1 refuses a hard cap instead of silently degrading it.
-      if (original.contract.budget?.hardCap.length) throw new PreEffectToolRefusal("hard-cap activation requires the study dispatch budget gate");
+      this.studyEligibleOwners(original.contract);
       const before = this.studyReferences(parent.id, original.contract, id);
       let priv = original.private || before.private || await this.withholds("note", JSON.stringify(original.contract), parent);
       const prepared: PreparedResearchUnit[] = [];
@@ -1487,7 +1579,7 @@ export class Tasks {
       const mode = this.d.coordination?.();
       let result: ReturnType<Board["activateCampaign"]>;
       requestCheck();
-      try { result = this.d.board.activateCampaign(id, revision, this.d.project, by, now, prepared, current.parent.history.length, priv); }
+      try { result = this.d.board.activateCampaign(id, revision, this.d.project, by, now, prepared, current.parent.history.length, priv, { eligibleOwners: this.studyEligibleOwners(original.contract) }); }
       catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "study approval was not saved"); }
       for (const child of result.children) {
         this.incomingBacklog.add(child.id);
@@ -1744,7 +1836,7 @@ export class Tasks {
     const states = this.states();
     const full = this.plannerFull(task);
     // Preview the To Do transition without routing or offering the persisted backlog row.
-    return assign({ ...task, state: "proposed" }, states, routing, { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task, projectedHealth), ...(queueOverride ? { queueOverride, contextOverride: true } : {}) });
+    return assign({ ...task, state: "proposed" }, states, routing, { exclude: this.excluded(task), excludeOwners: [...full, ...this.studyExcludedOwners(task)], ...(reservedOnly && task.reserved ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task, projectedHealth), ...(queueOverride ? { queueOverride, contextOverride: true } : {}) });
   }
 
   async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }, opts: { onBehalfOf?: PeerId; guard?: () => void } = {}): Promise<Task> {
@@ -1786,6 +1878,7 @@ export class Tasks {
         const refusal = task.reserved ? `reserved peer ${task.reserved} cannot take the planner pull: ${assignment.refusals?.find(row => row.role === "owner" && row.peer === task.reserved)?.reason ?? "not eligible"}; ${this.plannerRefusal(task)}` : this.plannerRefusal(task);
         throw new PreEffectToolRefusal(`${this.hasPersonReservation(task) ? "a person's reservation is retained; " : ""}${refusal}`);
       }
+      this.studyDispatchCheck(task, assignment.owner);
       return { task, owner: assignment.owner, assignment };
     };
     const initial = validate(), withheld = await this.withholds("note", input.reason, initial.task);
@@ -1800,6 +1893,7 @@ export class Tasks {
         } } });
     }
     opts.guard?.();
+    this.studyDispatchCheck(current.task, current.owner);
     const pulled = this.d.board.pullPlanned(current.task.id, by, current.owner, input.revision, input.reason.trim(), withheld, this.plannerBinding(current.task, current.assignment, true));
     this.planningRecorded({ by, task: pulled.id, fields: ["pull", "reserved"], revision: pulled.planningRevision! });
     return pulled;
@@ -3023,6 +3117,12 @@ export class Tasks {
   private async assignOwner(task: Task, by: PeerId, opts: { current?: () => void; conductorManual?: true; queueOverride?: "owner"; candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number; refuseNamed?: "pre" | "plain"; plannerPull?: { revision: number; note: string; withheld: boolean; guard: () => void } } = {}): Promise<Task> {
     opts.current?.();
     if (task.state === "backlog" && !opts.plannerPull) throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
+    const studyReason = this.studyDispatchReason(task, opts.namedOwner);
+    if (studyReason) {
+      if (opts.refuseNamed || opts.plannerPull || opts.claim) throw new PreEffectToolRefusal(studyReason);
+      if (task.state === "proposed" && !task.owner) this.holdReady(task, "study dispatch", studyReason);
+      return task;
+    }
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     let stagedClaimGap: string | undefined;
     if (mode !== "off" && this.isBuildTask(task)) {
@@ -3050,7 +3150,7 @@ export class Tasks {
     const waits = this.waitsFor(task);
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
     const plannerFull = plannedMove ? this.plannerFull(task) : [];
-    const a = assign(opts.plannerPull ? { ...task, state: "proposed" } : task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: plannerFull, ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class, task), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}), // A self-claim hands over no envelope; reviewer admission remains automatic.
+    const a = assign(opts.plannerPull ? { ...task, state: "proposed" } : task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: [...plannerFull, ...this.studyExcludedOwners(task)], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class, task), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}), // A self-claim hands over no envelope; reviewer admission remains automatic.
       contextOverride: !!(opts.queueOverride || opts.claim),
       ...(opts.queueOverride || opts.claim ? { queueOverride: opts.queueOverride ?? "owner" as const } : {}) });
 
@@ -3090,6 +3190,7 @@ export class Tasks {
     const binding = this.plannerBinding(task, a, !!opts.plannerPull);
     const assignmentExtra = { ...this.reviewMetadata(a, task), ...(binding ? { plannerReason: binding.plannerReason } : {}), ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}), ...(opts.conductorManual ? { conductorManual: true as const } : {}) };
     opts.current?.();
+    this.studyDispatchCheck(this.d.board.get(task.id) ?? task, a.owner);
     const next = opts.plannerPull
       ? this.d.board.pullAssigned(task.id, by, a.owner, opts.plannerPull.revision, opts.plannerPull.note, opts.plannerPull.withheld, a.reviewer ?? null, assignmentNote, assignmentExtra, task.history.length, binding)
       : this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(binding ? { planner: binding.planner } : {}), ...(opts.roster && task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, assignmentNote, assignmentExtra, opts.expectedFlowRevision);
@@ -3152,6 +3253,7 @@ export class Tasks {
         this.releaseNotice(this.specText(next, "missing", "advice"));
       }
       if (stagedClaimGap) return next; // An explicit claim may reserve its owner, but no offer or acceptance bypasses review.
+      this.studyDispatchCheck(next, by);
       const claimed = this.d.board.update(next.id, by, "accepted", { state: "in_progress" });
       this.captureOwnerAcceptance(claimed);
       this.releaseNotice(`task ${this.publicTitle(claimed)} claimed by ${by}`);
@@ -3212,6 +3314,7 @@ export class Tasks {
     currentAuthority?.();
     const current = this.d.board.get(task.id);
     if (!current || !this.ownerAssignmentCurrent(task, current)) throw new AssignmentSupersededError(current ?? task);
+    this.studyDispatchCheck(current, current.owner ?? undefined);
     task = current;
     const pii = this.isPii(task), delivery = { ...a, reviewer: task.reviewer ?? undefined };
     const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${this.screen(task, h.note ?? "", "review note", delivery.owner, h.withheld)}`);
@@ -3240,8 +3343,10 @@ export class Tasks {
     const idle = this.d.bus.stateOf(owner) === "idle";
     const env = newEnvelope(HUB, body, { to: [owner], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id), taskRecipient: "owner", taskOffer: task.history.length }, ...(pii ? { private: true } : {}) });
     currentAuthority?.();
+    this.studyDispatchCheck(task, owner);
     this.d.board.recordTaskOffer(task.id, { envelopeId: env.id, owner, assignmentFlowRevision: task.history.length, ...(this.d.offerPullOnly ? { pullOnly: this.d.offerPullOnly(owner) } : {}) }, task.history.length);
     currentAuthority?.();
+    this.studyDispatchCheck(task, owner);
     this.d.bus.publish(env);
     if (idle && this.d.bus.stateOf(owner) === "busy" && !this.d.bus.queueIds(owner).includes(env.id)) this.sent.set(handOver(task, owner), owner);
   }
@@ -4861,6 +4966,7 @@ export class Tasks {
     this.mine(task, by, "owner", true);
     this.ready(task, true);
     if (task.state !== "proposed" && task.state !== "changes_requested" && task.state !== "in_progress") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}: cannot move to in_progress`);
+    this.studyDispatchCheck(task, task.owner ?? undefined);
     this.acceptanceCapacity(task);
     // S1 spec acceptance and S9 plan review are independent prerequisites; retain S1's missing-spec refusal first.
     if (this.specGated(task) && this.d.sdlc?.config().mode === "enforce" && specState(task.sdlc, undefined) === "missing") throw new PreEffectToolRefusal(this.specText(task, "missing", "blocked"));
