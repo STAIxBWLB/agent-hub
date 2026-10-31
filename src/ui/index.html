@@ -1499,7 +1499,9 @@ const USAGE_LIMIT_ROWS = 20;
 const USAGE_COVERAGE_NOTE = 'Coverage: Jcode and Kimi (prior to #285) report hub-counted increments; unrecorded sources are noted as unknown.';
 /** #335: what a schedule row says about its next run. The hub classifies (scheduled, due, waiting, held, paused); the page only words it and never invents a time. */
 function scheduleNextLabel(row) {
-  const at = Number.isSafeInteger(row?.next) && row.next > 0 ? new Date(row.next).toLocaleString() : 'unknown';
+  let at = Number.isSafeInteger(row?.next) && row.next > 0 ? new Date(row.next).toLocaleString() : 'unknown';
+  // A calendar schedule (#1017) names the zone its time is read in, and shows the time in that zone.
+  if (at !== 'unknown' && typeof row?.zone === 'string' && row.zone) { try { at = new Date(row.next).toLocaleString(undefined, { timeZone: row.zone }) + ' ' + row.zone; } catch { at += ' (zone ' + row.zone + ' unknown here)'; } }
   if (row?.state === 'paused') return 'Paused (would be ' + at + ')';
   if (row?.state === 'scheduled') return at;
   if (row?.state === 'due') return 'Due now';
@@ -1515,11 +1517,11 @@ function renderSchedules(schedules) {
   target.replaceChildren();
   if (!rows.length) { empty(target, 'No schedules configured.'); return; }
   const wrap = el('div', undefined, 'usage-table-wrap'), table = el('table', undefined, 'usage-table'), head = el('tr');
-  for (const name of ['Schedule', 'Every', 'Class', 'State', 'Next run', 'Last run', 'Task']) head.append(el('th', name));
+  for (const name of ['Schedule', 'Period', 'Class', 'State', 'Next run', 'Last run', 'Task']) head.append(el('th', name));
   table.append(head);
   for (const row of rows) {
     const line = el('tr');
-    line.append(el('td', String(row.id)), el('td', String(row.every)), el('td', String(row.class) + ' / ' + String(row.queue)), el('td', String(row.state)),
+    line.append(el('td', String(row.id)), el('td', typeof row.cron === 'string' ? 'cron ' + row.cron : String(row.every)), el('td', String(row.class) + ' / ' + String(row.queue)), el('td', String(row.state)),
       el('td', scheduleNextLabel(row)), el('td', Number.isSafeInteger(row.last) ? new Date(row.last).toLocaleString() : 'never'), el('td', Number.isSafeInteger(row.task) ? '#' + row.task : '-'));
     if (row.error) line.setAttribute('title', 'Last run failed: ' + String(row.error));
     table.append(line);

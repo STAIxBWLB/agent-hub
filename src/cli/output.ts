@@ -7,6 +7,7 @@ import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, termin
 import { taskProgress } from "../ui/task-progress.ts";
 import { backendLabel } from "./status-lines.ts";
 import { ownerIsolationText } from "./role-holders.ts";
+import { schedulePeriodText, scheduleWhen } from "../hub/schedules.ts";
 import { formatReport, formatTaskReport, type Report, type TaskReport } from "../hub/report.ts";
 import type { Counter, LimitsResult, TotalResult, UsageResult } from "../hub/usage-rollup.ts";
 
@@ -20,7 +21,7 @@ export interface StatusOutput {
   /** #843 AC3: installed agent CLIs not on a verified version; ids, version, state and a receipt path only. */
   agentDrift?: readonly { id: string; version: string; state: string; receipt: string }[];
   /** #512a: one row per machine-local schedule; ids, times and a state only, never task text. */
-  schedules?: readonly { id: string; every: string; class: string; queue: string; next: number; last?: number; task?: number; state: string; coalesced?: number; error?: string }[];
+  schedules?: readonly { id: string; every?: string; cron?: string; zone?: string; class: string; queue: string; next: number; last?: number; task?: number; state: string; coalesced?: number; error?: string }[];
   taskStalls?: readonly { task: number; cause: { kind: string; peer?: string; dependency?: number; code: string } }[];
   pendingTaskOffers?: readonly { task: number; peer: string }[];
   isolatedChecks?: { pending?: number; orphans?: string[]; unknownReceipts?: readonly string[]; maintenanceUnavailable?: boolean };
@@ -218,8 +219,8 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     for (const pending of data.retainedConfig) out.push(...detail("retained reason", `${pending.key}: ${pending.reason}`, columns, "attention"));
   }
   for (const row of data.schedules ?? []) {
-    const when = (at: number) => new Date(at).toISOString().replace("T", " ").slice(0, 16) + "Z";
-    const text = `${row.state === "paused" ? `paused (ahub schedule resume ${row.id}); would be next ${when(row.next)}` : row.state === "scheduled" ? `next ${when(row.next)}` : row.state === "due" ? "due now" : row.state === "waiting" ? `due, waiting for task #${row.task} to close` : "due, held (the hub is stopping or recovering)"}; every ${row.every}; ${row.class} to ${row.queue}${row.last ? `; last ${when(row.last)}${row.task ? ` as task #${row.task}` : ""}` : "; never run"}${row.coalesced ? `; ${row.coalesced} skipped run${row.coalesced === 1 ? "" : "s"} coalesced` : ""}${row.error ? `; last error: ${row.error}` : ""}`;
+    const when = (at: number) => row.zone ? scheduleWhen(row, at) : new Date(at).toISOString().replace("T", " ").slice(0, 16) + "Z";
+    const text = `${row.state === "paused" ? `paused (ahub schedule resume ${row.id}); would be next ${when(row.next)}` : row.state === "scheduled" ? `next ${when(row.next)}` : row.state === "due" ? "due now" : row.state === "waiting" ? `due, waiting for task #${row.task} to close` : "due, held (the hub is stopping or recovering)"}; ${schedulePeriodText(row)}; ${row.class} to ${row.queue}${row.last ? `; last ${when(row.last)}${row.task ? ` as task #${row.task}` : ""}` : "; never run"}${row.coalesced ? `; ${row.coalesced} skipped run${row.coalesced === 1 ? "" : "s"} coalesced` : ""}${row.error ? `; last error: ${row.error}` : ""}`;
     out.push(...detail(`schedule ${row.id}`, text, columns, row.error ? "attention" : undefined));
   }
   if (data.queueBackpressure) {

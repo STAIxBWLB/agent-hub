@@ -14,7 +14,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { startDaemon } from "../src/hub/daemon.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
-import { scheduleKeyOf, scheduleViews, ScheduleStore } from "../src/hub/schedules.ts";
+import { scheduleKeyOf, scheduleViews, scheduleNext, ScheduleStore } from "../src/hub/schedules.ts";
 import { classifyPeerCommand, cliCommandLabel, liveTestRefusal } from "../src/cli/identity.ts";
 import { renderScheduleChange, renderScheduleList, renderScheduleRun } from "../src/cli/schedule-output.ts";
 import { renderStatus } from "../src/cli/output.ts";
@@ -60,7 +60,9 @@ async function start(clock: { now: number }, extra: Record<string, unknown> = {}
   const db = new Database(join(p.state, "hub.db"), { readonly: true }); cleanup.push(() => db.close());
   const tasks = () => (db.query("SELECT id, title, detail, class, state FROM tasks ORDER BY id").all() as { id: number; title: string; detail: string; class: string; state: string }[]).filter(task => scheduleKeyOf(task.detail) !== undefined);
   const row = (id: string) => db.query("SELECT * FROM schedule_runs WHERE id = ?").get(id) as { anchor: number; last_run: number | null; coalesced: number; paused: number } | null;
-  if (local === undefined || "schedules" in local) await until(() => row("nightly") !== null && row("weekly") !== null, "the timer recorded both anchors");
+  // The timer records an anchor for each configured schedule; wait on the ids this project declares (the default two when `local` is not given).
+  const declared = (local === undefined ? SCHEDULES : Array.isArray(local.schedules) ? local.schedules as { id: string }[] : []).map(entry => entry.id);
+  if (declared.length) await until(() => declared.every(id => row(id) !== null), "the timer recorded every anchor");
   const dbRow = (id: string) => { const d = new Database(join(p.state, "hub.db"), { readonly: true }); try { return d.query("SELECT * FROM schedule_runs WHERE id = ?").get(id) as { last_run: number | null } | null; } finally { d.close(); } };
   return { daemon, person, agent, op, tasks, row, dbRow, dir: p.dir };
 }
@@ -454,4 +456,54 @@ test("the page is wired: the Schedules section sits in the Agents view and rende
   expect(html).toMatch(/<section id="schedules-section"[^>]*data-view="agents"[^>]*hidden>/);
   expect(html).toContain("renderSchedules(snapshot.schedules);");
   expect(html).toContain("usage-table"); // reuses the existing table classes: no new CSS, so the CSP style hash is unchanged by styles
+});
+
+// ---- #1017: a calendar schedule shows its expression and the zone its time is read in, everywhere a person looks.
+
+const CRON_AT = Date.parse("2026-11-01T22:30:00Z");   // Monday 2026-11-02 07:30 in Asia/Seoul
+const cronRow = { id: "digest", cron: "30 7 * * 1-5", zone: "Asia/Seoul", class: "plan", queue: "backlog", next: CRON_AT, state: "scheduled" };
+
+test("ahub schedule list names the expression and shows the next run in the schedule's zone; an every schedule is unchanged", () => {
+  const text = (lines: { text: string }[][]) => lines.map(line => line.map(span => span.text).join("")).join("\n");
+  const out = text(renderScheduleList([cronRow, { id: "nightly", every: "1h", class: "plan", queue: "backlog", next: T0 + HOUR, state: "scheduled" }], 200, CRON_AT - 2 * HOUR));
+  expect(out).toContain("SCHEDULE");
+  expect(out).toContain("cron 30 7 * * 1-5 (Asia/Seoul)");
+  expect(out).toContain("2026-11-02 07:30 Asia/Seoul (in 2h00m)");
+  expect(out).toContain("1h");
+  expect(text(renderScheduleList([{ ...cronRow, state: "paused" }], 200, CRON_AT - 2 * HOUR))).toContain("paused (would be 2026-11-02 07:30 Asia/Seoul");
+  expect(text(renderScheduleChange("pause", [{ ...cronRow, state: "paused" }], 120, CRON_AT - HOUR))).toContain("2026-11-02 07:30 Asia/Seoul");
+});
+
+test("ahub status reads a calendar schedule's next run in its zone", async () => {
+  const shown = renderStatus({ schedules: [cronRow], peers: {} } as never, 200, CRON_AT - HOUR).map(line => paint(line, false)).filter(line => line.includes("schedule digest"));
+  expect(shown).toHaveLength(1);
+  expect(shown[0]).toContain("next 2026-11-02 07:30 Asia/Seoul");
+  expect(shown[0]).toContain("cron 30 7 * * 1-5 (Asia/Seoul)");
+  expect(shown[0]).not.toContain("every ");
+});
+
+test("the dashboard shows a calendar schedule's expression and its next run in the schedule's zone", () => {
+  const { api, nodes } = page();
+  const zoned = new Date(CRON_AT).toLocaleString(undefined, { timeZone: "Asia/Seoul" });
+  expect(api.scheduleNextLabel(cronRow)).toBe(`${zoned} Asia/Seoul`);
+  expect(api.scheduleNextLabel({ ...cronRow, state: "paused" })).toBe(`Paused (would be ${zoned} Asia/Seoul)`);
+  expect(api.scheduleNextLabel({ ...cronRow, zone: "Not/AZone" })).toContain("zone Not/AZone unknown here");
+  expect(api.scheduleNextLabel({ state: "scheduled", next: T0 + HOUR })).toBe(new Date(T0 + HOUR).toLocaleString());   // an every row has no zone
+  api.renderSchedules([cronRow, { id: "nightly", every: "1h", class: "plan", queue: "backlog", state: "scheduled", next: T0 + HOUR }]);
+  const text = nodes.schedules!.text();
+  for (const word of ["digest", "cron 30 7 * * 1-5", "Asia/Seoul", "nightly", "1h", "Period"]) expect(text, word).toContain(word);
+});
+
+test("the daemon's status and dashboard snapshot carry a cron schedule with its zone and no title", async () => {
+  const clock = { now: Date.parse("2026-10-30T00:00:00Z") };
+  const entries = [{ id: "digest", cron: "30 7 * * 1-5", tz: "Asia/Seoul", class: "plan", title: "Secret title", queue: "backlog" }];
+  const h = await start(clock, {}, { schedules: entries });
+  const snapshot = (await h.person.request({ t: "ui_snapshot", after: 0 })).schedules as any[];
+  expect(snapshot).toHaveLength(1);
+  expect(snapshot[0]).toMatchObject({ id: "digest", cron: "30 7 * * 1-5", zone: "Asia/Seoul", state: "scheduled", next: Date.parse("2026-11-01T22:30:00Z") });
+  expect(snapshot[0]).not.toHaveProperty("every");
+  expect(JSON.stringify(snapshot)).not.toContain("Secret title");
+  const status = (await h.person.request({ t: "status" })).status;
+  expect(status.schedules[0]).toMatchObject({ cron: "30 7 * * 1-5", zone: "Asia/Seoul" });
+  expect(scheduleNext(entries[0] as never, clock.now)).toBe(Date.parse("2026-11-01T22:30:00Z"));
 });

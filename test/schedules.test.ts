@@ -8,7 +8,7 @@ import { HUB, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { validSourceId } from "../src/hub/sources.ts";
-import { MIN_EVERY_MS, SOURCE_ID, parseEvery, scheduledDetail, ScheduleStore, scheduleKeyOf, schedulesConfig, scheduleViews, type ScheduleEntry } from "../src/hub/schedules.ts";
+import { MIN_EVERY_MS, SOURCE_ID, parseCron, cronNext, cronMinGapMinutes, scheduleNext, scheduleWhen, schedulePeriodText, checkZone, parseEvery, scheduledDetail, ScheduleStore, scheduleKeyOf, schedulesConfig, scheduleViews, type ScheduleEntry } from "../src/hub/schedules.ts";
 import { ALL_MACHINE_LOCAL, MACHINE_LOCAL } from "../src/hub/config-trust.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 
@@ -60,9 +60,12 @@ test("schedulesConfig accepts the entry shape and fills the queue default", () =
   expect(rows[1]).toEqual({ id: "b_2", every: "2d", class: "implement", title: "T", detail: "d", sources: ["src:e5d53b3ad5222924"], owner: "codex", queue: "ready" });
 });
 
-test("cron is refused with the fixed words, and every other bad entry names itself", () => {
-  expect(() => schedulesConfig([{ id: "c", cron: "0 * * * *", every: "1h", class: "plan", title: "t" }])).toThrow("schedules.c: cron not supported yet; use every");
-  expect(() => schedulesConfig([{ id: "c", cron: "0 * * * *", class: "plan", title: "t" }])).toThrow("cron not supported yet; use every");
+test("every and cron are exclusive, one is required, and the refusal names the entry", () => {
+  expect(() => schedulesConfig([{ id: "c", cron: "0 * * * *", every: "1h", class: "plan", title: "t" }])).toThrow("schedules.c: give every or cron, not both");
+  expect(() => schedulesConfig([{ id: "c", class: "plan", title: "t" }])).toThrow("schedules.c: every must be <n>m, <n>h or <n>d, or give cron (five fields)");
+  expect(() => schedulesConfig([{ id: "c", every: "1h", tz: "UTC", class: "plan", title: "t" }])).toThrow("schedules.c: tz applies to cron only");
+  expect(schedulesConfig([{ id: "c", cron: "  30  7 * *   1-5 ", tz: "asia/seoul", class: "plan", title: "t" }])[0]).toEqual({ id: "c", cron: "30 7 * * 1-5", tz: "Asia/Seoul", class: "plan", title: "t", queue: "backlog" });
+  expect(schedulesConfig([{ id: "c", cron: "0 7 * * *", class: "plan", title: "t" }])[0]).toEqual({ id: "c", cron: "0 7 * * *", class: "plan", title: "t", queue: "backlog" });
   const ok = { id: "a", every: "1h", class: "plan", title: "t" };
   const cases: [unknown, string][] = [
     ["x", "schedules must be a list"], [[1], "schedules[0] must be an object"], [[[]], "schedules[0] must be an object"],
@@ -312,4 +315,133 @@ test("an ordinary propose is not fenced by the schedules hold: only a scheduled 
   await until(() => f.screen.entered === 1);
   f.screen.release!();
   expect((await made).title).toBe("by a person");
+});
+
+// agent-hub #1017: calendar-anchored schedules. Every instant below is fixed; nothing reads the clock or the machine's zone.
+const at = (iso: string) => Date.parse(iso);
+const next = (expression: string, zone: string, after: string) => { const found = cronNext(parseCron(expression), zone, at(after)); return found === undefined ? undefined : new Date(found).toISOString(); };
+
+test("cron is the five standard fields, with lists, ranges and steps, and nothing else", () => {
+  expect(parseCron("*/15 0,12 1-5 */3 1-5/2")).toMatchObject({ minutes: [0, 15, 30, 45], hours: [0, 12], doms: [1, 2, 3, 4, 5], months: [1, 4, 7, 10], dows: [1, 3, 5] });
+  expect(parseCron("0 0 * * 7").dows).toEqual([0]);   // 7 is Sunday
+  for (const bad of ["", " ", "* * * *", "* * * * * *", "@daily", "@hourly", "61 * * * *", "* 24 * * *", "* * 0 * *", "* * 32 * *", "* * * 13 *", "* * * * 8", "5-1 * * * *", "*/0 * * * *", "a * * * *", "1/5 * * * *",
+    "* * * MON *", "* * * jan *", "0 0 * * MON-FRI", "1,,2 * * * *", "1- * * * *", "? * * * *", "L * * * *", "0 0 1W * *", `${"1,".repeat(60)}1 * * * *`, 5, null, undefined, {}])
+    expect(() => parseCron(bad as never), JSON.stringify(bad)).toThrow();
+});
+
+test("weekday-only: 07:30 on Monday to Friday, in the zone's own clock, never on a weekend", () => {
+  // Thu 2026-10-29 09:00 KST: the next fire is Friday 07:30 KST (22:30Z the day before). Friday's has then fired, so Saturday and Sunday are skipped and Monday 2026-11-02 07:30 KST follows.
+  expect(next("30 7 * * 1-5", "Asia/Seoul", "2026-10-29T00:00:00Z")).toBe("2026-10-29T22:30:00.000Z");
+  expect(next("30 7 * * 1-5", "Asia/Seoul", "2026-10-29T22:30:00Z")).toBe("2026-11-01T22:30:00.000Z");   // strictly after: the instant itself is not the next fire
+  expect(next("30 7 * * 1-5", "Asia/Seoul", "2026-10-30T00:00:00Z")).toBe("2026-11-01T22:30:00.000Z");   // Friday 09:00 KST: this week's has passed
+  expect(next("30 7 * * 1-5", "Asia/Seoul", "2026-11-01T22:30:00Z")).toBe("2026-11-02T22:30:00.000Z");   // Monday's fired; Tuesday 07:30 KST
+  // The same expression in another zone is another instant: 07:30 in New York.
+  expect(next("30 7 * * 1-5", "America/New_York", "2026-10-30T12:00:00Z")).toBe("2026-11-02T12:30:00.000Z");
+  // The zone's weekday is the one that counts: 23:30Z Sunday is already Monday in Seoul.
+  expect(next("0 8 * * 1", "Asia/Seoul", "2026-11-01T14:00:00Z")).toBe("2026-11-01T23:00:00.000Z");
+});
+
+test("monthly: the first and fifteenth, a 31st that skips short months, and the day rule when both day fields are set", () => {
+  expect(next("0 9 1,15 * *", "UTC", "2026-01-15T09:00:00Z")).toBe("2026-02-01T09:00:00.000Z");
+  expect(next("0 0 31 * *", "UTC", "2026-04-01T00:00:00Z")).toBe("2026-05-31T00:00:00.000Z");   // April has no 31st
+  expect(next("0 0 29 2 *", "UTC", "2026-01-01T00:00:00Z")).toBe("2028-02-29T00:00:00.000Z");   // a leap day waits for the leap year
+  // Both day fields restricted: either matches (13th, or any Friday); a field that begins with * leaves the other to decide.
+  expect(next("0 0 13 * 5", "UTC", "2026-11-01T00:00:00Z")).toBe("2026-11-06T00:00:00.000Z");
+  expect(next("0 0 */2 * 1", "UTC", "2026-11-01T00:00:00Z")).toBe("2026-11-09T00:00:00.000Z");   // odd days AND Monday: Mon 2026-11-09 is the 9th
+  expect(next("0 0 1 1 *", "UTC", "2026-01-01T00:00:00Z")).toBe("2027-01-01T00:00:00.000Z");
+});
+
+test("daylight saving forward: a skipped local time runs at the next valid minute, once", () => {
+  // New York, 2026-03-08: 02:00 became 03:00. 02:30 does not exist; the fire is the first valid minute, 03:00 EDT = 07:00Z.
+  expect(next("30 2 * * *", "America/New_York", "2026-03-07T17:00:00Z")).toBe("2026-03-08T07:00:00.000Z");
+  expect(next("30 2 * * *", "America/New_York", "2026-03-08T07:00:00Z")).toBe("2026-03-09T06:30:00.000Z");   // the day after it is 02:30 EDT again, once
+  expect(next("0 3 * * *", "America/New_York", "2026-03-07T17:00:00Z")).toBe("2026-03-08T07:00:00.000Z");   // 03:00 itself exists and is the same instant: no second fire
+  // Europe/London, 2026-03-29: 01:00 became 02:00; a 01:15 fire runs at 02:00 BST = 01:00Z.
+  expect(next("15 1 * * *", "Europe/London", "2026-03-28T12:00:00Z")).toBe("2026-03-29T01:00:00.000Z");
+});
+
+test("daylight saving backward: a repeated local time runs once, at its first occurrence", () => {
+  // New York, 2026-11-01: 01:00 to 02:00 happened twice. 01:30 EDT (05:30Z) is the fire; 01:30 EST (06:30Z) is not.
+  expect(next("30 1 * * *", "America/New_York", "2026-10-31T16:00:00Z")).toBe("2026-11-01T05:30:00.000Z");
+  expect(next("30 1 * * *", "America/New_York", "2026-11-01T05:30:00Z")).toBe("2026-11-02T06:30:00.000Z");
+  expect(next("30 1 * * *", "America/New_York", "2026-11-01T06:00:00Z")).toBe("2026-11-02T06:30:00.000Z");   // inside the repeated hour, still one fire that day
+  // An hourly expression across the repeat: wall hours 00 01 02 each fire once, so the repeated 01:00 EST is skipped.
+  const hourly = [] as string[];
+  for (let after = "2026-11-01T03:30:00Z", n = 0; n < 4; n++) { const found = next("0 * * * *", "America/New_York", after)!; hourly.push(found); after = found; }
+  expect(hourly).toEqual(["2026-11-01T04:00:00.000Z", "2026-11-01T05:00:00.000Z", "2026-11-01T07:00:00.000Z", "2026-11-01T08:00:00.000Z"]);
+  // A zone with no daylight saving never moves.
+  expect(next("0 0 * * *", "Asia/Seoul", "2026-11-01T00:00:00Z")).toBe("2026-11-01T15:00:00.000Z");
+});
+
+test("an expression that can fire more often than every 15 minutes is refused with the entry named", () => {
+  const gap = (expression: string) => cronMinGapMinutes(parseCron(expression));
+  expect([gap("* * * * *"), gap("*/10 * * * *"), gap("*/15 * * * *"), gap("0 * * * *"), gap("0,10 7 * * *"), gap("0 7,8 * * *"), gap("0 7 * * 1-5"), gap("45 23 * * *"), gap("0 23,0 * * *")])
+    .toEqual([1, 10, 15, 60, 10, 60, 1440, 1440, 60]);
+  expect(gap("0 0 31 2 *")).toBeUndefined();
+  for (const [cron, text] of [["* * * * *", "every 1 minute"], ["*/5 * * * *", "every 5 minutes"], ["0,10 7 * * *", "every 10 minutes"], ["0 0 31 2 *", "never fires"]] as const)
+    expect(() => schedulesConfig([{ id: "fast", cron, class: "plan", title: "t" }]), cron).toThrow(`schedules.fast: cron can fire ${text.replace("every ", "every ")}`.replace("cron can fire never fires", "cron never fires"));
+  expect(() => schedulesConfig([{ id: "ok", cron: "*/15 * * * *", class: "plan", title: "t" }])).not.toThrow();
+});
+
+test("tz is an IANA name this machine knows, normalized, and applies to cron only", () => {
+  expect(checkZone("utc")).toBe("UTC");
+  expect(checkZone("America/Argentina/Buenos_Aires")).toBe("America/Argentina/Buenos_Aires");
+  for (const bad of ["", "Mars/Base", "KST", "+09:00", "Asia/Seoul; rm", "../etc", " Asia/Seoul", 9, null]) expect(() => checkZone(bad as never), String(bad)).toThrow();
+  expect(() => schedulesConfig([{ id: "z", cron: "0 7 * * *", tz: "Mars/Base", class: "plan", title: "t" }])).toThrow("schedules.z: tz is not a zone this machine knows");
+});
+
+test("scheduleNext: every is the anchor plus the period, cron is the next calendar fire after the anchor", () => {
+  expect(scheduleNext({ every: "6h" }, at("2026-11-01T00:00:00Z"))).toBe(at("2026-11-01T06:00:00Z"));
+  expect(scheduleNext({ cron: "30 7 * * 1-5", tz: "Asia/Seoul" }, at("2026-10-30T22:30:00Z"))).toBe(at("2026-11-01T22:30:00Z"));
+  expect(scheduleNext({ cron: "0 0 31 2 *" as string, tz: "UTC" }, 0)).toBe(Number.MAX_SAFE_INTEGER);
+});
+
+test("a view of a cron schedule carries the expression and the zone, and its next run reads in that zone", () => {
+  const e = entry({ id: "digest", every: undefined, cron: "30 7 * * 1-5", tz: "Asia/Seoul" });
+  const [view] = scheduleViews([e], [], at("2026-10-30T00:00:00Z"), new Map(), false);
+  expect(view).toMatchObject({ id: "digest", cron: "30 7 * * 1-5", zone: "Asia/Seoul", state: "scheduled", next: at("2026-11-01T22:30:00Z") });
+  expect(view).not.toHaveProperty("every");
+  expect(scheduleWhen(view!, view!.next)).toBe("2026-11-02 07:30 Asia/Seoul");
+  expect(schedulePeriodText(view!)).toBe("cron 30 7 * * 1-5 (Asia/Seoul)");
+  const [plain] = scheduleViews([entry()], [], at("2026-10-30T00:00:00Z"), new Map(), false);
+  expect(plain).toMatchObject({ every: "1h" }); expect(plain).not.toHaveProperty("cron"); expect(plain).not.toHaveProperty("zone");
+  expect(schedulePeriodText(plain!)).toBe("every 1h");
+  expect(scheduleWhen({}, at("2026-10-30T22:30:00Z"))).toBe("2026-10-30 22:30 UTC");
+  expect(scheduledDetail(e)).toContain('Scheduled on the calendar "30 7 * * 1-5" (Asia/Seoul)');
+  expect(scheduledDetail(entry())).toContain("Scheduled every 1h");
+});
+
+test("a cron schedule never runs at first sight, runs at its fire time, and a long downtime is one run, not a burst", async () => {
+  const f = await fixture(), e = entry({ id: "digest", every: undefined, cron: "30 7 * * 1-5", tz: "Asia/Seoul" });
+  const first = at("2026-10-30T00:00:00Z");   // Fri 09:00 KST: today's 07:30 has passed
+  expect(await f.tasks.proposeFromSchedules(f.store, [e], first)).toEqual([]);
+  expect(f.store.get("digest")!.anchor).toBe(first);
+  expect(await f.tasks.proposeFromSchedules(f.store, [e], at("2026-10-30T22:29:00Z"))).toEqual([]);   // Sat 07:29 KST, but Saturday is no weekday; the next fire is Monday
+  expect(await f.tasks.proposeFromSchedules(f.store, [e], at("2026-11-01T22:29:00Z"))).toEqual([]);   // one minute before Monday 07:30 KST
+  const runs = await f.tasks.proposeFromSchedules(f.store, [e], at("2026-11-01T22:30:00Z"));
+  expect(runs).toHaveLength(1);
+  expect(runs[0]).toMatchObject({ id: "digest", outcome: "ran" });
+  expect(scheduleKeyOf(f.board.get(runs[0]!.task!)!.detail)).toBe("digest");
+  expect(f.board.get(runs[0]!.task!)!.detail).toContain('"30 7 * * 1-5" (Asia/Seoul)');
+  expect(f.store.get("digest")).toMatchObject({ anchor: at("2026-11-01T22:30:00Z"), last_run: at("2026-11-01T22:30:00Z"), coalesced: 0 });
+  // The task closes; the hub was down for nine days. One pass is one run, and the period restarts at that pass: nothing missed is replayed.
+  f.board.update(runs[0]!.task!, "user", "cancelled", { state: "cancelled" }, "closed");
+  const late = await f.tasks.proposeFromSchedules(f.store, [e], at("2026-11-10T03:00:00Z"));
+  expect(late.filter(run => run.outcome === "ran")).toHaveLength(1);
+  expect(f.board.list().filter(task => scheduleKeyOf(task.detail) === "digest")).toHaveLength(2);
+  expect(f.store.get("digest")!.anchor).toBe(at("2026-11-10T03:00:00Z"));
+  expect(await f.tasks.proposeFromSchedules(f.store, [e], at("2026-11-10T03:30:00Z"))).toEqual([]);
+  expect(scheduleNext(e, at("2026-11-10T03:00:00Z"))).toBe(at("2026-11-10T22:30:00Z"));   // Tue 07:30 KST
+});
+
+test("a cron schedule is held and coalesced like every: a hold counts the due tick and one run follows its release", async () => {
+  let held = true;
+  const f = await fixture({ sweepHeld: () => held }), e = entry({ id: "digest", every: undefined, cron: "0 9 * * *", tz: "UTC" });
+  await f.tasks.proposeFromSchedules(f.store, [e], at("2026-11-01T00:00:00Z"));
+  for (const day of ["2026-11-01T09:00:00Z", "2026-11-02T09:00:00Z", "2026-11-03T09:00:00Z"]) expect(await f.tasks.proposeFromSchedules(f.store, [e], at(day))).toEqual([{ id: "digest", outcome: "held" }]);
+  expect(f.store.get("digest")).toMatchObject({ coalesced: 3, last_run: null });
+  held = false;
+  const runs = await f.tasks.proposeFromSchedules(f.store, [e], at("2026-11-04T09:00:00Z"));
+  expect(runs.filter(run => run.outcome === "ran")).toHaveLength(1);
+  expect(f.store.get("digest")!.coalesced).toBe(0);
 });
