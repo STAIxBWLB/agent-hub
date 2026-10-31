@@ -3892,13 +3892,17 @@ export async function startDaemon(opts: DaemonOptions) {
         const def = settingDef(key);
         return typeof def === "string" || def.store !== "config" ? undefined : { store: def.store, values: def.values, locked: def.locked };
       }, peers);
-      const current = autonomyConsentValues(), retained = autonomyConsent.confirmed(current, true);
+      const current = autonomyConsentValues(), observed = autonomyConsentValues(loadConfig(opts.cwd, undefined, undefined, externalDefinitions));
+      const retained = autonomyConsent.confirmed(current, true);
       const approved: AutonomyConsentValues = Object.fromEntries([...retained].map(peer => [peer, current[peer]!]));
       for (const operation of operations) if (operation.key.startsWith("permission_modes.") && operation.value === "never-ask") {
         const peer = operation.key.slice("permission_modes.".length);
-        if (current[peer]?.[operation.key] === operation.value) approved[peer] = current[peer]!;
+        if (current[peer]?.[operation.key] === operation.value && observed[peer]?.[operation.key] === operation.value) approved[peer] = current[peer]!;
       }
-      if (Object.keys(approved).some(peer => !retained.has(peer))) autonomyConsent.confirm(approved);
+      if (Object.keys(approved).some(peer => !retained.has(peer))) {
+        if (!autonomyConsentTrusted() || readAutonomyDefaults(hubHome(), [opts.cwd, ...executionRoots.values()]).fingerprint !== machineAutonomy.fingerprint) throw new Error("machine autonomy evidence changed during startup");
+        autonomyConsent.confirm(approved);
+      }
     } catch { log("Machine autonomy consent was not issued: preset, project configuration or private state could not be verified."); }
   }
   let autonomyConfirmed = autonomyConsentLocationSafe() ? autonomyConsent.confirmed(autonomyConsentValues(), autonomyConsentTrusted()) : new Set<string>();

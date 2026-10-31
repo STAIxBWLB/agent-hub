@@ -56,6 +56,7 @@ export async function prepareAutonomyProject(project: Project, environment: stri
 export async function runAllProjectAutonomy(args: readonly string[], ports: AllProjectAutonomyPorts): Promise<void> {
   const [action, ...flags] = args;
   if (!["on", "off"].includes(action ?? "") || !flags.includes("--all-projects") || new Set(flags).size !== flags.length || flags.some(flag => flag !== "--all-projects" && !(action === "on" && flag === "--yes"))) throw new Error("usage: ahub autonomy on [--yes] --all-projects | off --all-projects");
+  // ponytail: 256 project previews per confirmation; larger registries need paginated confirmations.
   if (ports.projects.length > 256) throw new Error("at most 256 registered projects can be applied in one command");
   const enabled = action === "on", roots = ports.projects.map(project => project.root), defaults = readAutonomyDefaults(ports.home, roots);
   if (defaults.notice) ports.print(defaults.notice);

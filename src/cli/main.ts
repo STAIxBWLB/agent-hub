@@ -1023,7 +1023,6 @@ const commands: Record<string, () => Promise<void> | void> = {
       });
     } finally { registry.close(); rl?.close(); }
     if (recoveryLauncherCurrent) recoveryLauncherCurrent();
-    else await commands.doctor!();
   },
 
   init: async () => {
