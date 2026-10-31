@@ -138,3 +138,12 @@ test("dispatch floor covers legacy campaigns too while base integrity remains st
   expect(f.board.researchIntegrity()).toEqual(before);
   expect(f.board.researchCampaign(f.draft.id)!.dispatchVersion).toBe(1);
 });
+
+
+test("a tokens ceiling leaves model-call budget support unavailable because its usage is unknown", () => {
+  const input = projection(); input.campaign.contract.budget = { id: "mixed-budget", hardCap: [] };
+  input.instrumentedPeers = ["local"];
+  input.budget = { id: "mixed-budget", kind: "run", peers: ["local"], limits: { model_calls: 10, tokens: 100 }, used: { model_calls: 3 }, coveredTaskIds: [2, 3, 4] };
+  expect(studyProjection(input).units[0]!.budget.model_calls).toEqual({ support: "unavailable", used: 3, limit: 10 });
+  expect(studyProjection(input).units[0]!.budget.tokens.support).toBe("unavailable");
+});

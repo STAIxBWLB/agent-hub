@@ -100,7 +100,7 @@ export class ExecutionBudget {
     const row = this.scopes([taskId], peer).find(row => row.id === id);
     if (!row) return false;
     const limits = fromRow(row).limits;
-    return resources.every(unit => limits[unit] !== undefined);
+    return resources.every(unit => limits[unit] !== undefined && !(unit === "model_calls" && limits.tokens !== undefined));
   }
 
   private scopes(taskIds: number[], peer: string): BudgetRow[] {

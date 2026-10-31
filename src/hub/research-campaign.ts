@@ -243,7 +243,7 @@ export function studyProjection(input: ResearchProjectionInput): ResearchProject
     const budget = Object.fromEntries(RESOURCES.map(resource => {
       const ledger = input.budget, configured = contract.budget;
       let support: ResearchBudgetSupport;
-      if (resource === "tokens") support = "unavailable";
+      if (resource === "tokens" || resource === "model_calls" && contract.budget && input.budget?.id === contract.budget.id && input.budget.limits.tokens !== undefined) support = "unavailable";
       else if (!configured || !task?.owner || !ledger || ledger.id !== configured.id) support = "unknown";
       else if (!input.instrumentedPeers?.includes(task.owner)) support = "unavailable";
       else if (!ledger.peers.includes(task.owner) || !ledger.coveredTaskIds.includes(task.id) || ledger.kind === "task" && ledger.taskId !== task.id || ledger.limits[resource] === undefined) support = "advisory";

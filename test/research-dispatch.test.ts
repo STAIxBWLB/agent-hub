@@ -35,7 +35,8 @@ async function fixture() {
   for (const peer of peers) { bus.add(peer); await peer.start(); }
   const sources = new Map([[SOURCE, { id: SOURCE, sha256: "a".repeat(64), private: false }]]);
   const executionBudget = new ExecutionBudget(file); clean.push(() => executionBudget.close());
-  const routing = loadRouting(dir), roles = { claude: ["planner", "reviewer"], codex: ["implementer"], local: ["implementer"] };
+  const routing = loadRouting(dir); routing.signals.pii_screen = "local"; routing.constraints.pii = "local_only";
+  const roles = { claude: ["planner", "reviewer"], codex: ["implementer"], local: ["implementer"] };
   let now = NOW;
   let screen: ConstructorParameters<typeof Tasks>[0]["piiScreen"];
   let notify = (_line: string): void => {};
@@ -125,4 +126,48 @@ test("a task-scoped budget cannot cover another unit even with another run budge
   f.tasks.configureExecutionBudget({id:"wide",kind:"run",peers:["local"],limits:{tool_calls:3}});
   expect(f.ledger.covers("narrow",id,"local",["tool_calls"])).toBe(false);
   expect(f.ledger.covers("wide",id,"local",["tool_calls"])).toBe(true);
+});
+
+test("an exhausted named cap holds dispatch, including elapsed time and token-unknown model calls", async () => {
+  for (const resource of ["tool_calls","elapsed_ms"] as const) {
+    const f=await fixture();
+    f.tasks.configureExecutionBudget({id:"spent",kind:"run",peers:["local"],limits:{[resource]:0}});
+    const campaign=await approve(f,{id:"spent",hardCap:[resource]}), id=firstId(campaign);
+    await expect(pull(f,id)).rejects.toThrow(/study|eligible/);
+    expect(f.board.get(id)!.state).toBe("backlog");
+  }
+  const f=await fixture();
+  f.tasks.configureExecutionBudget({id:"unknown",kind:"run",peers:["local"],limits:{model_calls:2,tokens:100}});
+  await expect(approve(f,{id:"unknown",hardCap:["model_calls"]})).rejects.toThrow(/hard-cap/);
+});
+
+async function startDiscovery(f: Awaited<ReturnType<typeof fixture>>, campaign: Awaited<ReturnType<typeof approve>>) {
+  const id=firstId(campaign); await pull(f,id); await f.tasks.assignTo(id,"local",USER,true);
+  f.tasks.accept("local",id); return id;
+}
+const handoff = (campaignId:string,taskId:number) => ({campaignId,revision:1,unitId:"discover",taskId,evidence:[{sourceId:SOURCE,locator:"synthetic section"}],unresolved:[],contradictions:[],limitations:[]});
+
+test("only a stored complete handoff or insufficient evidence advances a discovery round", async () => {
+  const f=await fixture(), campaign=await approve(f), id=await startDiscovery(f,campaign);
+  const next=contract(); next.stopPolicy.maxUnits=3;
+  next.units.push({id:"next",round:1,question:"Next measured question",perspective:"analysis",requiredOutput:"result",sourceIds:[SOURCE],dependsOn:[],purpose:"analysis"});
+  await expect(f.tasks.studyRevise(USER,{id:campaign.id,revision:1,contract:next})).rejects.toThrow(/follow-up/);
+  await expect(f.tasks.studyHandoff("codex",handoff(campaign.id,id))).rejects.toThrow(/owner/);
+  expect(await f.tasks.studyHandoff("local",handoff(campaign.id,id))).toMatchObject({unitId:"discover",seq:1});
+  expect(f.tasks.studyShow(USER,{id:campaign.id}).discoveryRounds).toEqual([{round:0,complete:true}]);
+  const revised=await f.tasks.studyRevise(USER,{id:campaign.id,revision:1,contract:next});
+  expect(revised.revision).toBe(2);
+  expect((await f.tasks.studyApprove(USER,{id:campaign.id,revision:2})).units).toHaveLength(3);
+  f.restart();
+  expect(f.tasks.studyShow(USER,{id:campaign.id}).discoveryRounds).toEqual([{round:0,complete:true}]);
+});
+
+test("handoffs refuse missing or newly private sources without persisting public text", async () => {
+  const f=await fixture(), campaign=await approve(f), id=await startDiscovery(f,campaign);
+  f.sources.delete(SOURCE);
+  await expect(f.tasks.studyHandoff("local",handoff(campaign.id,id))).rejects.toThrow(/source/);
+  f.sources.set(SOURCE,{id:SOURCE,sha256:"a".repeat(64),private:true});
+  await expect(f.tasks.studyHandoff("local",handoff(campaign.id,id))).rejects.toThrow(/privacy/);
+  expect(f.board.researchHandoffs(campaign.id)).toEqual([]);
+  expect(f.tasks.studyShow(USER,{id:campaign.id}).units.every(unit=>unit.sourceIds.length===0)).toBe(true);
 });

@@ -1395,7 +1395,8 @@ export class Tasks {
       if (budget?.hardCap.length) {
         const ledger = this.d.executionBudget, current = ledger?.status(budget.id);
         if (!ledger || !current || Array.isArray(current) || !campaign.eligibleOwners?.length ||
-          budget.hardCap.some(resource => resource === "tokens" || current.limits[resource] === undefined)) return "study hard-cap budget is unavailable";
+          budget.hardCap.some(resource => resource === "tokens" || current.limits[resource] === undefined || resource === "model_calls" && current.limits.tokens !== undefined)) return "study hard-cap budget is unavailable";
+        if (budget.hardCap.some(resource => !current.units[resource] || current.units[resource]!.remaining <= 0 || current.units[resource]!.reason === "unknown_usage")) return "study hard-cap budget is exhausted or usage is unknown";
         if (owner && (!campaign.eligibleOwners.includes(owner) || !ledger.covers(budget.id, task.id, owner, budget.hardCap)))
           return "study owner is not covered by its named hard-cap budget";
       }
@@ -1415,10 +1416,10 @@ export class Tasks {
   private studyEligibleOwners(contract: ResearchCampaignContract): string[] | undefined {
     if (!contract.budget?.hardCap.length) return undefined;
     const ledger = this.d.executionBudget, budget = ledger?.status(contract.budget.id);
-    if (!ledger || !budget || Array.isArray(budget) || contract.budget.hardCap.some(resource => resource === "tokens" || budget.limits[resource] === undefined))
-      throw new PreEffectToolRefusal("study hard cap requires an enabled budget with supported resource limits");
+    if (!ledger || !budget || Array.isArray(budget) || contract.budget.hardCap.some(resource => resource === "tokens" || budget.limits[resource] === undefined || resource === "model_calls" && budget.limits.tokens !== undefined))
+      throw new PreEffectToolRefusal("study hard-cap requires an enabled budget with supported resource limits");
     const eligible = budget.peers.filter(peer => ledger.instrumented(peer)).sort();
-    if (!eligible.length) throw new PreEffectToolRefusal("study hard cap has no instrumented eligible owner");
+    if (!eligible.length) throw new PreEffectToolRefusal("study hard-cap has no instrumented eligible owner");
     return eligible;
   }
 
@@ -1443,13 +1444,15 @@ export class Tasks {
     return this.studyWrite(async () => {
       const campaign = this.studyRecord(handoff.campaignId, handoff.revision), task = this.studyParent(handoff.taskId);
       if (by !== task.owner || task.state !== "in_progress" || this.d.privateTurn?.(by) && !this.isPii(task)) throw new PreEffectToolRefusal("handoff requires the current in-progress unit owner");
-      const sourceKey = JSON.stringify(campaign.contract.sourceIds.map(id => this.studySource(id)));
+      const sources = campaign.contract.sourceIds.map(id => this.studySource(id));
+      if (sources.some(source => !source)) throw new PreEffectToolRefusal("study handoff source is unavailable");
+      const sourceKey = JSON.stringify(sources);
       const withheld = await this.withholds("note", JSON.stringify(handoff), task);
       requestCheck();
       const current = this.studyParent(task.id);
       if (current.history.length !== task.history.length || current.owner !== by || current.state !== "in_progress") throw new PreEffectToolRefusal("study handoff task changed during screening");
       if (JSON.stringify(campaign.contract.sourceIds.map(id => this.studySource(id))) !== sourceKey) throw new PreEffectToolRefusal("study handoff sources changed during screening");
-      if (withheld && !this.isPii(current) && !campaign.private) throw new PreEffectToolRefusal("study handoff privacy requires private task authority");
+      if ((withheld || this.studyReplayPrivacy(campaign, this.studyParent(campaign.parentTaskId))) && !this.isPii(current)) throw new PreEffectToolRefusal("study handoff privacy requires private task authority");
       requestCheck();
       try {
         const saved = this.d.board.recordResearchHandoff(handoff, this.d.project, by, this.studyTime(), current.history.length);
@@ -2878,6 +2881,7 @@ export class Tasks {
     }
     if (env.from === HUB && env.refs?.task) {
       const task = this.d.board.get(Number(env.refs.task));
+      if (env.kind === "task" && env.refs.taskOffer !== undefined && task?.owner === peer && this.studyDispatchReason(task, peer)) return false;
       if (task?.state === "cancelled") return env.kind === "task" && typeof env.refs.taskCancelled === "number" && env.refs.taskCancelled === task.cancelled?.flowRevision;
       if (env.refs.taskRecipient === "planner") return !!task && this.taskPlanner(task).includes(peer);
       if (env.refs.planReview !== undefined) return !!task && !isClosedTaskState(task.state) && (task.planningRevision ?? 0) === env.refs.planReview
@@ -4994,6 +4998,7 @@ export class Tasks {
     this.warmRepository(draft);
     const repositoryChanged = this.repositories.scope(task.refs).key !== this.repositories.scope(draft.refs).key;
     const before = new Set(this.overlapHits(task).map((h) => h.task.id));
+    this.studyDispatchCheck(task, task.owner ?? undefined);
     const next = this.linkOnWrite(this.d.board.update(task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}), ...(metadata ? { refs: metadata } : {}) })); // #723: refs.repo may have just arrived
     this.captureOwnerAcceptance(next);
     this.d.notify(`task ${this.publicTitle(next)} accepted by ${by}`);
