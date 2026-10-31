@@ -29,7 +29,7 @@ function apply(p: ReturnType<typeof fixture>, enabled: boolean, operations: { ke
 }
 const operations = [{ key: "permission_modes.codex", value: "never-ask" }, { key: "tasks.auto_pull", value: true }];
 
-test("on/off retain prior manual values, leave equal hand-set keys unowned, and settings undo restores the complete transaction", () => {
+test("on retains precise originals for undo; off removes fixed keys including prior manual values", () => {
   const p = fixture({ permission_modes: { codex: "ask-when-needed" }, tasks: { auto_pull: true }, approvals: { notify: false } });
   const before = readFileSync(p.file, "utf8");
   expect(apply(p, true, operations, p.validate).keys).toEqual(["permission_modes.codex"]);
@@ -40,20 +40,21 @@ test("on/off retain prior manual values, leave equal hand-set keys unowned, and 
   apply(p, true, operations, p.validate);
   expect(apply(p, true, operations, p.validate).changed).toBe(false);
   apply(p, false, operations, p.validate);
-  expect(p.read()).toEqual(JSON.parse(before));
+  expect(p.read()).toEqual({ approvals: { notify: false } });
   undoSetting(p.cwd, p.state, p.validate);
   expect(p.read().permission_modes.codex).toBe("never-ask");
   expect(p.read()._autonomy).toBeDefined();
 });
 
-test("off preserves edits made after on and removes only its untouched owned leaves", () => {
+test("off removes requested preset leaves despite later manual edits and preserves unrelated fields", () => {
   const p = fixture();
   apply(p, true, operations, p.validate);
   const edited = p.read(); edited.permission_modes.codex = "ask"; edited.approvals = { notify: false };
   writeFileSync(p.file, JSON.stringify(edited));
   const result = apply(p, false, operations, p.validate);
-  expect(result.preserved).toEqual(["permission_modes.codex"]);
-  expect(p.read()).toEqual({ permission_modes: { codex: "ask" }, approvals: { notify: false } });
+  expect(result.preserved).toEqual([]);
+  expect(result.keys).toEqual(["permission_modes.codex", "tasks.auto_pull"]);
+  expect(p.read()).toEqual({ approvals: { notify: false } });
 });
 
 test("a failed validation or changed input writes no preset and never offers an undo for a partial write", () => {
@@ -65,15 +66,17 @@ test("a failed validation or changed input writes no preset and never offers an 
   expect(p.read()).toEqual({ approvals: { notify: false } });
 });
 
-test("undo after a hand edit refuses rather than discarding it; malformed ownership never restores arbitrary keys", () => {
+test("undo after a hand edit refuses; off ignores forged ownership keys", () => {
   const p = fixture();
   apply(p, true, operations, p.validate);
   writeFileSync(p.file, JSON.stringify({ ...p.read(), approvals: { notify: false } }));
   expect(() => undoSetting(p.cwd, p.state, p.validate)).toThrow("changed since");
   expect(() => autonomyOwnership({ version: 1, owned: [{ key: "constructor.prototype", previous: null, written: true }] })).toThrow();
-  const edited = p.read(); edited._autonomy.owned[0].key = "terminal.open";
+  const edited = p.read(); edited._autonomy.owned[0].key = "research.enabled";
   writeFileSync(p.file, JSON.stringify(edited));
-  expect(() => apply(p, false, operations, p.validate)).toThrow("not authenticated");
+  edited.research = { enabled: false }; writeFileSync(p.file, JSON.stringify(edited));
+  apply(p, false, operations, p.validate);
+  expect(p.read()).toEqual({ approvals: { notify: false }, research: { enabled: false } });
 });
 
 test("reapplying on admits new targets and changed environment defaults without losing originals or later edits", () => {
@@ -85,7 +88,48 @@ test("reapplying on admits new targets and changed environment defaults without 
   expect(autonomyOwnership(p.read()._autonomy).find(row => row.key === "permission_modes.codex")!.previous).toBe("ask");
   const edited = p.read(); edited.permission_modes.codex = "ask-when-needed"; writeFileSync(p.file, JSON.stringify(edited));
   expect(apply(p, true, extra, p.validate).preserved).toEqual(["permission_modes.codex"]);
-  // Off does not need the current roster to contain the old Pi target.
-  apply(p, false, operations, p.validate);
-  expect(p.read()).toEqual({ permission_modes: { codex: "ask-when-needed" } });
+  // The host supplies its full removal list, including former instance defaults.
+  apply(p, false, extra, p.validate);
+  expect(p.read()).toEqual({});
+});
+
+
+test("off ignores missing, forged, malformed and stale receipts and deletes only host-supplied keys", () => {
+  const receipts = [undefined, { version: 99 }, { version: 1, owned: [{ key: "research.enabled", previous: true, written: false }] }];
+  for (const metadata of receipts) {
+    const p = fixture({ permission_modes: { codex: "ask", pi: "ask" }, tasks: { auto_pull: false }, research: { enabled: false }, ...(metadata === undefined ? {} : { _autonomy: metadata }) });
+    apply(p, false, operations);
+    expect(p.read()).toEqual({ permission_modes: { pi: "ask" }, research: { enabled: false } });
+  }
+  const p = fixture();
+  apply(p, true, operations);
+  const stale = p.read(); stale._autonomy.owned[0].previous = "ask"; stale.research = { enabled: false };
+  writeFileSync(p.file, JSON.stringify(stale));
+  apply(p, false, operations);
+  expect(p.read()).toEqual({ research: { enabled: false } });
+});
+
+test("on starts a fresh receipt for missing, forged, malformed or stale ownership and overwrites requested keys", () => {
+  for (const metadata of [undefined, { version: 99 }, { version: 1, owned: [{ key: "permission_modes.codex", previous: "never-ask", written: "ask-when-needed" }] }]) {
+    const p = fixture({ permission_modes: { codex: "ask" }, approvals: { notify: false }, ...(metadata === undefined ? {} : { _autonomy: metadata }) });
+    apply(p, true, operations);
+    expect(p.read().permission_modes.codex).toBe("never-ask");
+    expect(p.read().approvals).toEqual({ notify: false });
+    expect(autonomyOwnership(p.read()._autonomy).find(row => row.key === "permission_modes.codex")).toEqual({ key: "permission_modes.codex", previous: "ask", written: "never-ask" });
+  }
+  const p = fixture();
+  apply(p, true, operations);
+  const stale = p.read(); stale._autonomy.owned[0].previous = "ask"; stale.permission_modes.codex = "ask-when-needed";
+  writeFileSync(p.file, JSON.stringify(stale));
+  expect(apply(p, true, operations).preserved).toEqual([]);
+  expect(p.read().permission_modes.codex).toBe("never-ask");
+  expect(autonomyOwnership(p.read()._autonomy).find(row => row.key === "permission_modes.codex")!.previous).toBe("ask-when-needed");
+});
+
+test("off never calls the ownership authorizer and a repeated empty off does not write", () => {
+  const p = fixture({ permission_modes: { codex: "never-ask" }, _autonomy: { malformed: true } });
+  const result = writeAutonomyPreset(p.cwd, p.state, false, operations, p.validate, () => { throw new Error("must not inspect ownership"); });
+  expect(result.changed).toBe(true);
+  expect(p.read()).toEqual({});
+  expect(apply(p, false, operations).changed).toBe(false);
 });

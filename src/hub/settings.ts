@@ -391,10 +391,13 @@ export function writeAutonomyPreset(cwd: string, stateDir: string, enabled: bool
   const before = readText(join(cwd, ".agenthub", CONFIG_LOCAL));
   const doc = before === null ? {} : parseObject(before, CONFIG_LOCAL);
   if (before === null && !existsSync(join(cwd, ".agenthub", "config.json"))) throw new Error("run ahub init first; autonomy does not create a project's first config file");
-  const owned = doc._autonomy === undefined ? undefined : autonomyOwnership(doc._autonomy);
-  if (owned && !authorizeOwnership(doc._autonomy)) throw new Error("autonomy ownership metadata is not authenticated; review the project file before applying or restoring it");
+  // Ownership witnesses permit precise reapply/undo only. Neither malformed nor
+  // unauthenticated project metadata may block an explicit on/off operation.
+  let owned: AutonomyOwned[] | undefined;
+  if (enabled && doc._autonomy !== undefined) {
+    try { const parsed = autonomyOwnership(doc._autonomy); if (authorizeOwnership(doc._autonomy)) owned = parsed; } catch { /* Start a fresh receipt. */ }
+  }
   const keys: string[] = [], preserved: string[] = [];
-  if (!enabled && !owned) return { changed: false, keys, preserved };
   if (enabled) {
     const receipt: AutonomyOwned[] = structuredClone(owned ?? []);
     for (const { key, value } of operations) {
@@ -410,17 +413,19 @@ export function writeAutonomyPreset(cwd: string, stateDir: string, enabled: bool
     }
     doc._autonomy = { version: 1, owned: receipt };
   } else {
-    const allowed = new Set(operations.map(operation => operation.key));
-    for (const row of owned!) {
-      // A removed instance still has a removable owned default. No arbitrary settings path is restored.
-      if (!allowed.has(row.key) && !/^permission_modes\.[a-z][a-z0-9_-]*$/.test(row.key) && !/^peers\.[a-z][a-z0-9_-]*\.start_mode$/.test(row.key)) throw new Error(`${row.key}: preset ownership is no longer supported; nothing was changed`);
-      if (!same(valueAt(doc, row.key.split(".")), row.written)) { preserved.push(row.key); continue; }
-      putPreset(doc, row.key, row.previous); keys.push(row.key);
+    // Off removes exactly the host's fixed list, including manual values. Receipt
+    // contents never select keys and never restore previous values on this path.
+    const seen = new Set<string>();
+    for (const { key } of operations) {
+      if (!presetKey(key) || seen.has(key)) throw new Error("invalid autonomy preset operation");
+      seen.add(key);
+      if (valueAt(doc, key.split(".")) === undefined) continue;
+      putPreset(doc, key, null); keys.push(key);
     }
     delete doc._autonomy;
   }
   const next = `${JSON.stringify(doc, null, 2)}\n`;
-  if (!forceUndo && before !== null && same(JSON.parse(before), doc)) return { changed: false, keys, preserved };
+  if (!forceUndo && (before === null ? Object.keys(doc).length === 0 : same(JSON.parse(before), doc))) return { changed: false, keys, preserved };
   checkConfigText(cwd, next, scratch => validate(scratch, keys));
   // Validation may call host ports; retain the exact input file rather than overwrite an intervening hand edit.
   if (readText(join(cwd, ".agenthub", CONFIG_LOCAL)) !== before) throw new Error("configuration changed during autonomy validation; nothing was written");

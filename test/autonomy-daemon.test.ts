@@ -110,16 +110,16 @@ test("a changed file invalidates the concrete preview before any preset or conse
   expect((await p.person.request({ t: "autonomy", action: "status", environment: "headless" })).status.consentedPeers).toEqual([]);
 });
 
-test("forged restoration metadata cannot invent the prior mode off restores", async () => {
+test("forged restoration metadata cannot block off or invent a prior mode", async () => {
   const p = await fixture();
   expect((await p.on()).ok).toBe(true);
   const forged = p.read();
   forged._autonomy.owned.find((row: any) => row.key === "permission_modes.codex").previous = "ask-when-needed";
   writeFileSync(p.file, JSON.stringify(forged));
   const result = await p.person.request({ t: "autonomy", action: "off", environment: "headless" });
-  expect(result.ok).toBe(false);
-  expect(result.error).toContain("not authenticated");
-  expect(p.read().permission_modes.codex).toBe("never-ask");
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(p.read().permission_modes?.codex).toBeUndefined();
+  expect(p.read()._autonomy).toBeUndefined();
   expect((await p.person.request({ t: "autonomy", action: "status", environment: "headless" })).status.consentedPeers).toEqual([]);
 });
 
@@ -129,9 +129,11 @@ test("a forged project-state undo row is not a host-issued preset transaction", 
   const current = readFileSync(p.file, "utf8");
   writeFileSync(join(p.stateDir, "settings-undo.json"), JSON.stringify({ file: "config.local.json", key: "autonomy.preset", previous: '{"action_policy":{"enabled":false}}', written: createHash("sha256").update(current).digest("hex"), at: Date.now(), keys: ["action_policy.enabled"] }));
   const result = await p.person.request({ t: "settings_undo", confirm: "autonomy" });
-  expect(result.ok).toBe(false);
-  expect(result.error).toContain("not authenticated");
-  expect(readFileSync(p.file, "utf8")).toBe(current);
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(result.text).toContain("fell back to removing");
+  expect(p.read().permission_modes?.codex).toBeUndefined();
+  expect(p.read().action_policy).toBeUndefined();
+  expect((await p.person.request({ t: "autonomy", action: "status", environment: "headless" })).status.consentedPeers).toEqual([]);
 });
 
 test("mode consent remains valid when the person's separate action policy or start default changes", async () => {
@@ -169,4 +171,32 @@ test("controlled recovery refuses a target that cannot parse active preset metad
   expect((await p.person.request({ t: "recovery", op: "inspect", expectedInstanceId: status.instanceId })).recovery.phase).toBeUndefined();
   expect((await p.person.request({ t: "autonomy", action: "off", environment: "headless" })).ok).toBe(true);
   expect((await p.person.request({ t: "recovery", op: "inspect", expectedInstanceId: status.instanceId, targetFeatures })).ok).toBe(true);
+});
+
+for (const metadata of [undefined, { version: 1, owned: [] }, { version: 0, owned: "forged" }]) test(`off removes the fixed preset keys with missing or stale metadata ${JSON.stringify(metadata)}`, async () => {
+  const p = await fixture();
+  expect((await p.on()).ok).toBe(true);
+  const changed = p.read();
+  if (metadata === undefined) delete changed._autonomy;
+  else changed._autonomy = metadata;
+  changed.approvals = { notify: false };
+  writeFileSync(p.file, JSON.stringify(changed));
+  const result = await p.person.request({ t: "autonomy", action: "off", environment: "terminal" });
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(p.read().permission_modes?.codex).toBeUndefined();
+  expect(p.read().tasks?.auto_pull).toBeUndefined();
+  expect(p.read().task_sweep?.auto_reassign).toBeUndefined();
+  expect(p.read()._autonomy).toBeUndefined();
+  expect(p.read().approvals).toEqual({ notify: false });
+  expect((await p.person.request({ t: "autonomy", action: "status", environment: "headless" })).status.consentedPeers).toEqual([]);
+});
+
+test("confirmed on replaces unissued metadata and issues fresh consent", async () => {
+  const p = await fixture();
+  writeFileSync(p.file, JSON.stringify({ permission_modes: { codex: "ask" }, _autonomy: { version: 0, owned: "forged" } }));
+  const result = await p.on();
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(p.read().permission_modes.codex).toBe("never-ask");
+  expect(p.read()._autonomy.version).toBe(1);
+  expect((await p.person.request({ t: "autonomy", action: "status", environment: "headless" })).status.consentedPeers).toContain("codex");
 });

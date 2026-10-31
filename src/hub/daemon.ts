@@ -165,7 +165,7 @@ import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, 
 import { withChecklistLine } from "./learning.ts";
 import { createAutonomyConsent, type AutonomyConsentValues } from "./autonomy-consent.ts";
 import { insideRoot } from "./path-policy.ts";
-import { autonomyPreset, planAutonomy, autonomyStatus, type AutonomyEnvironment, type AutonomyPeer } from "./autonomy.ts";
+import { autonomyPreset, planAutonomy, autonomyRemovalKeys, autonomyStatus, type AutonomyEnvironment, type AutonomyPeer } from "./autonomy.ts";
 import { AUTONOMY_UNDO, autonomyOwnershipDigest, autonomyUndoKeys, writeAutonomyPreset, LEARN_CHECKLIST, NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { githubOriginRepository } from "./task-repository.ts";
 import { Bus } from "./bus.ts";
@@ -6971,7 +6971,10 @@ export async function startDaemon(opts: DaemonOptions) {
     if (authority !== "terminal" || confirm !== "autonomy") return { ok: false, error: "undoing project autonomy needs the person's terminal and the autonomy confirmation" };
     let saved = false;
     try {
-      if (!autonomyConsentLocationSafe() || !autonomyUndoWitness.confirmed(autonomyWitnessValues("undo", identity.undoDigest), true).has("undo")) return { ok: false, error: "preset undo is not authenticated by private hub state; nothing was undone" };
+      if (!autonomyConsentLocationSafe() || !autonomyUndoWitness.confirmed(autonomyWitnessValues("undo", identity.undoDigest), true).has("undo")) {
+        const removed = await autonomyCommand("off", Object.keys(autonomyPreset().environments)[0], true);
+        return removed.ok === true ? { ...removed, text: "Preset undo witness did not verify; fell back to removing the preset keys and clearing retained consent." } : removed;
+      }
       const keys = autonomyUndoKeys(opts.stateDir);
       const restored = undoSetting(opts.cwd, opts.stateDir, scratch => { configWriteCheck(scratch, "terminal", AUTONOMY_UNDO.key); for (const key of keys) configWriteCheck(scratch, "terminal", key); }, undefined, identity);
       saved = true;
@@ -7002,7 +7005,7 @@ export async function startDaemon(opts: DaemonOptions) {
         for (const row of rows) if (pendingPermissionDefaults.has(row.id)) row.missing.push("This never-ask default has no matching retained consent; confirm it in ahub console or run ahub autonomy on again.");
         return { ok: true, status: { environment: env, consentedPeers: [...autonomyConfirmed], peers: rows }, lines: [`Project autonomy, environment: ${env}`, ...rows.flatMap(row => [`${row.id}: ${row.effectiveMode}; preset ${row.nextMode ?? "unmanaged"} at ${row.applies}`, ...row.floor.map(floor => `  ${floor.class}: ${floor.status}; ${floor.reason}`), ...row.missing.map(reason => `  missing: ${reason}`)])] };
       }
-      const operations = action === "off" ? Object.entries(autonomyPreset().hub).map(([key, value]) => ({ key, value, store: "config" as const })) : autonomyOperations(env);
+      const operations = action === "off" ? autonomyRemovalKeys(autonomyPeers()).map(key => ({ key, value: null, store: "config" as const })) : autonomyOperations(env);
       if (action === "preview") {
         autonomyPreview = { token: randomUUID(), environment: env, fingerprint: configFingerprint(configSourceTexts(opts.cwd)), revision: configRevision, operations: JSON.stringify(operations) };
         return { ok: true, confirmation: autonomyPreview.token, lines: ["Project autonomy: approval prompts change; sandbox, deny, PII and trust rules remain. Check autonomy status for the current floor enforcement and missing guards.", autonomyPreset().about, ...operations.map(operation => `${operation.key}: ${settingText(operation.value)} (${timing(operation.key)})`), "Unmanaged native clients and missing structural guards are reported by autonomy status; the preset cannot enforce those paths."] };
@@ -7012,26 +7015,34 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!autonomyPreview || confirmation !== autonomyPreview.token || env !== autonomyPreview.environment || autonomyPreview.revision !== configRevision || autonomyPreview.operations !== JSON.stringify(operations) || autonomyPreview.fingerprint !== configFingerprint(configSourceTexts(opts.cwd))) return { ok: false, error: "autonomy preview is stale or missing; run ahub autonomy on again to review the current values" };
         autonomyPreview = undefined;
       }
-      // Off may be called from another environment: every owned key still belongs to the same shipped preset.
+      // Off has a fixed shipped removal scope, independent of environment and untrusted ownership metadata.
       const allowed = operations;
       if (action === "on" && !autonomyConsentLocationSafe()) return { ok: false, error: "retained autonomy consent requires private hub state outside the project and execution roots" };
       if (action === "off") { try { if (autonomyConsentLocationSafe()) autonomyConsent.clear(); } finally { refreshAutonomyConsent(); } }
       refreshAutonomyConsent();
       const renewConsentUndo = action === "on" && operations.some(operation => operation.key.startsWith("permission_modes.") && operation.value === "never-ask" && !autonomyConfirmed.has(operation.key.slice("permission_modes.".length)));
       const result = writeAutonomyPreset(opts.cwd, opts.stateDir, action === "on", allowed, (scratch, keys) => { configWriteCheck(scratch, "terminal", AUTONOMY_UNDO.key); for (const key of keys) configWriteCheck(scratch, "terminal", key); }, metadata => {
-        const digest = autonomyOwnershipDigest(metadata);
-        return !!digest && autonomyConsentLocationSafe() && autonomyOwnershipWitness.confirmed(autonomyWitnessValues("ownership", digest), true).has("ownership");
+        try {
+          const digest = autonomyOwnershipDigest(metadata);
+          return !!digest && autonomyConsentLocationSafe() && autonomyOwnershipWitness.confirmed(autonomyWitnessValues("ownership", digest), true).has("ownership");
+        } catch { return false; }
       }, renewConsentUndo);
       saved = result.changed;
       if (result.changed) {
-        ownAutonomyMetadata(result.ownership);
-        if (result.undo) autonomyUndoWitness.confirm(autonomyWitnessValues("undo", result.undo.undoDigest));
-        else autonomyUndoWitness.clear();
+        if (action === "on") {
+          ownAutonomyMetadata(result.ownership);
+          if (result.undo) autonomyUndoWitness.confirm(autonomyWitnessValues("undo", result.undo.undoDigest));
+          else autonomyUndoWitness.clear();
+        } else {
+          // Private restoration metadata cannot veto the person's off switch either.
+          try { ownAutonomyMetadata(null); } catch { /* Invalid state is never restoration authority. */ }
+          try { if (result.undo) autonomyUndoWitness.confirm(autonomyWitnessValues("undo", result.undo.undoDigest)); else autonomyUndoWitness.clear(); } catch { /* Undo will use the safe removal fallback. */ }
+        }
         const published = await autonomyPublish(result.keys);
         if (published.ok !== true) return published;
         recordSetting(AUTONOMY_UNDO.key, action === "on" ? "off" : "on", action, "terminal", false);
       }
-      if (action === "off" && autonomyConsentLocationSafe()) autonomyOwnershipWitness.clear();
+      if (action === "off" && autonomyConsentLocationSafe()) { try { autonomyOwnershipWitness.clear(); } catch { /* Off does not depend on restoration metadata. */ } }
       if (action === "on") {
         if (!autonomyConsentTrusted()) throw new Error("config.local.json trust changed; retained consent was not issued");
         const fileConfig = loadConfig(opts.cwd, undefined, undefined, externalDefinitions);
@@ -7123,7 +7134,7 @@ export async function startDaemon(opts: DaemonOptions) {
   function settingsUndoPreview(): Record<string, unknown> {
     const identity = pendingUndoIdentity(opts.stateDir), def = undoableDef(identity?.key);
     if (typeof def === "string" || !identity) return { ok: false, error: "nothing to undo" };
-    if (def === AUTONOMY_UNDO) return { ok: true, ...identity, lines: ["Undo the complete project autonomy change, including its ownership receipt. Type autonomy to confirm; modes at peer start and existing live keys keep their apply timing."] };
+    if (def === AUTONOMY_UNDO) return { ok: true, ...identity, lines: ["Undo the complete project autonomy change when its private witness verifies; otherwise remove the fixed preset keys and clear consent. Type autonomy to confirm; modes at peer start and existing live keys keep their apply timing."] };
     if (def.managed) return { ok: true, ...identity, lines: [`Undo ${def.key}: put back the previous machine-local file (the review checklist ahub learn accept changed; its lines are not shown here)`, "The saved previous machine-local file is revalidated before writing."] };
     const value = restoredValue(opts.cwd, opts.stateDir, def), preview = settingsPreview(def.key, value ?? null);
     if (pendingUndoIdentity(opts.stateDir)?.undoDigest !== identity.undoDigest) return { ok: false, error: "undo record changed during preview; preview again" };

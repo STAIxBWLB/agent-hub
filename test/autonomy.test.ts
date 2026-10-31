@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { autonomyPreset, autonomyStatus, planAutonomy, validateAutonomyPreset, type AutonomyKindPreset, type AutonomyPreset, type AutonomySettingLookup } from "../src/hub/autonomy.ts";
+import { autonomyPreset, autonomyStatus, autonomyRemovalKeys, planAutonomy, validateAutonomyPreset, type AutonomyKindPreset, type AutonomyPreset, type AutonomySettingLookup } from "../src/hub/autonomy.ts";
 import { confirmationMatrix } from "../src/hub/confirmation-matrix.ts";
 
 import presetJson from "../templates/presets/autonomous.json";
@@ -143,4 +143,11 @@ test("environment and unsupported native setup are explicit missing entries, nev
   const [observed] = autonomyStatus({ environment: "terminal", peers: [{ id: "newpeer", kind: "newpeer", permissionMode: "ask" }] });
   expect(observed!.effectiveMode).toBe("ask");
   expect(observed!.missing.some(item => item.includes("No autonomy preset"))).toBe(true);
+});
+
+test("off scope comes from shipped keys and host peers across all environments", () => {
+  const keys = autonomyRemovalKeys([{ id: "codex", kind: "codex" }, { id: "kimi", kind: "kimi" }]);
+  for (const key of ["permission_modes.codex", "permission.codex", "permission_modes.kimi", "tasks.auto_pull", "task_sweep.auto_reassign", "peers.codex.start_mode"]) expect(keys).toContain(key);
+  expect(keys.some(key => key.startsWith("action_policy."))).toBe(false);
+  expect(() => autonomyRemovalKeys([{ id: "constructor.prototype", kind: "codex" }])).toThrow();
 });

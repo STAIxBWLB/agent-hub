@@ -162,6 +162,23 @@ export function planAutonomy(environment: AutonomyEnvironment, lookup?: Autonomy
   return operations;
 }
 
+/** Fixed removal scope from shipped data and host peer ids, never ownership metadata or a selected environment. */
+export function autonomyRemovalKeys(peers: readonly Pick<AutonomyPeer, "id" | "kind">[] = Object.keys(autonomyPreset().kinds).map(kind => ({ id: kind, kind })), preset: AutonomyPreset = autonomyPreset()): string[] {
+  const keys = new Set(Object.keys(preset.hub));
+  if (Object.values(preset.environments).some(row => row.terminalOpen !== null)) keys.add("terminal.open");
+  for (const peer of peers) {
+    if (!peerId(peer.id)) throw new Error(`autonomy: invalid peer id ${peer.id}`);
+    const entry = preset.kinds[peer.kind];
+    if (!entry) continue;
+    if (Object.values(entry.permission).some(mode => mode !== null)) {
+      keys.add(`permission_modes.${peer.id}`);
+      keys.add(`permission.${peer.id}`);
+    }
+    if (Object.values(entry.start).some(form => form !== null)) keys.add(`peers.${peer.id}.start_mode`);
+  }
+  return [...keys];
+}
+
 /** Current observations only: neither preset intent nor a kind name establishes a live hook, native sandbox or GitHub guard. */
 export function autonomyStatus(input: AutonomyStatusInput): AutonomyPeerStatus[] {
   const preset = input.preset ?? autonomyPreset(), matrix = input.matrix ?? confirmationMatrix();
