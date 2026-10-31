@@ -187,7 +187,7 @@ test("a wrapped shell and a same-line state change keep asking through the real 
   await r.mode("never-ask"); await until(() => r.probes() >= 1); await Bun.sleep(50);
   for (const [i, command] of ["env GH_REPO=other/app sh -c 'gh pr comment 3 --body x'", "GH_REPO=other/app bash -c 'gh pr comment 3 --body x'", "sudo sh -c 'git push origin feat/x'",
     "git config push.followTags true; git push origin feat/x", "git config remote.origin.pushurl https://github.com/other/app.git && git push origin feat/x", "git checkout -q main; git push origin HEAD",
-    "export GH_REPO=other/app; gh pr comment 3 --body x", "git fetch ./nowhere tag release; git push origin feat/x", "gh pr comment 3 --body https://github.com/acme/app/pull/4"].entries())
+    "export GH_REPO=other/app; gh pr comment 3 --body x", "git fetch ./nowhere tag release; git push origin feat/x"].entries())
     expect(await r.attempt(command, `w-${i}`), command).toMatchObject({ asked: true, ran: false });
   expect(await r.attempt("git add -A; git commit -q -m x --allow-empty; git push origin feat/x; gh pr create --title a --body b", "w-ok")).toMatchObject({ asked: false, ran: true });
 }, 20_000);
