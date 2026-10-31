@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { ACTION_CLASSES } from "../src/hub/action-class.ts";
-import { autonomyPreset, autonomyStatus, planAutonomy, validateAutonomyPreset, type AutonomyKindPreset, type AutonomySettingLookup } from "../src/hub/autonomy.ts";
+import { autonomyPreset, autonomyStatus, planAutonomy, validateAutonomyPreset, type AutonomyKindPreset, type AutonomyPreset, type AutonomySettingLookup } from "../src/hub/autonomy.ts";
 import { confirmationMatrix } from "../src/hub/confirmation-matrix.ts";
 
-const clone = () => structuredClone(autonomyPreset());
+import presetJson from "../templates/presets/autonomous.json";
+const clone = () => structuredClone(presetJson) as unknown as AutonomyPreset;
 const policy = () => ({ enabled: true, always_ask: [...ACTION_CLASSES] });
 const lookup: AutonomySettingLookup = () => ({ store: "config" });
 
