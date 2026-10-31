@@ -46,6 +46,8 @@ export interface RestartSnapshot {
     budgetDigest: string;
     /** Whole captured binding set; portable identities are covered alongside queue/board integrity. */
     externalBindingsDigest?: string;
+    /** Research state remains part of controlled-recovery integrity when present. */
+    research?: { campaigns: number; units: number; revision: number; digest: string };
   };
 }
 
@@ -95,6 +97,12 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
   if (s.peers.some(peer => Object.hasOwn(peer, "externalInstance") && (peer.state !== "offline" || !validExternalInstanceBinding(peer.externalInstance, expected.projectRoot, peer.id)))) return undefined;
   if (s.integrity !== undefined && (!s.integrity || typeof s.integrity !== "object" || typeof s.integrity.boardDigest !== "string" || typeof s.integrity.budgetDigest !== "string" || !Array.isArray(s.integrity.manualPaused) || !s.integrity.manualPaused.every((id) => typeof id === "string") || !s.integrity.queues || typeof s.integrity.queues !== "object" || !Object.values(s.integrity.queues).every((ids) => Array.isArray(ids) && ids.every((id) => typeof id === "string")))) return undefined;
   if (s.integrity && Object.hasOwn(s.integrity, "externalBindingsDigest") && (typeof s.integrity.externalBindingsDigest !== "string" || !/^[a-f0-9]{64}$/.test(s.integrity.externalBindingsDigest))) return undefined;
+  if (s.integrity && Object.hasOwn(s.integrity, "research")) {
+    const research = s.integrity.research;
+    if (!research || typeof research !== "object" || Array.isArray(research)
+      || ![research.campaigns, research.units, research.revision].every(value => Number.isSafeInteger(value) && value >= 0)
+      || typeof research.digest !== "string" || !/^[a-f0-9]{64}$/.test(research.digest)) return undefined;
+  }
   if (bus.journal !== undefined) { try { validateJournalSnapshot(bus.journal); } catch { return undefined; } }
   return s as RestartSnapshot;
 }

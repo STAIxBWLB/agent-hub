@@ -10145,21 +10145,6 @@ var init_deliverables = __esm(() => {
   });
 });
 
-// src/hub/board.ts
-var CLASSES, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
-var init_board = __esm(() => {
-  init_task_code_symbols();
-  init_plan_conformance();
-  init_planning();
-  init_envelope();
-  init_review_findings();
-  init_deliverables();
-  CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
-  PLAN_KEYS = ["paths", "symbols", "signatures", "insertion_points"];
-  ALL_PLAN_KEYS = [...PLAN_KEYS, "sections", "sources", "claims", "proof", "risks"];
-  OUTCOMES_KEPT_MS = 7 * 24 * 3600000;
-});
-
 // templates/roles/dev/software-architect.md
 var software_architect_default = `---
 id: software-architect
@@ -10758,7 +10743,7 @@ function parseRole(text, stem, layer) {
   }
   const reviewStart = sections[4].index + sections[4][0].length;
   const review = body.slice(reviewStart, sections[5].index).trim();
-  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES2), classes: list("classes", CLASSES2), body, review, layer, hash: createHash6("sha256").update(text).digest("hex") };
+  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES2), classes: list("classes", CLASSES), body, review, layer, hash: createHash6("sha256").update(text).digest("hex") };
 }
 function projectRole(file) {
   const fd = openSync6(file, constants5.O_RDONLY | constants5.O_NOFOLLOW | constants5.O_NONBLOCK);
@@ -10850,15 +10835,66 @@ function catalogSection(roles) {
 
 `);
 }
-var ROLE_SECTIONS, BASES2, CLASSES2, ID, PEER;
+var ROLE_SECTIONS, BASES2, CLASSES, ID, PEER;
 var init_roles = __esm(() => {
   init_envelope();
   init_shipped_roles();
   ROLE_SECTIONS = ["Scope", "Not in scope", "Deliverables", "Hub use", "Review duties", "Evidence"];
   BASES2 = ["planner", "implementer", "verifier", "reviewer"];
-  CLASSES2 = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
+  CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
   ID = /^[a-z][a-z0-9-]{0,47}$/;
   PEER = /^[a-z][a-z0-9-]{0,31}$/;
+});
+
+// templates/packs/example.pack.json
+var init_example_pack = () => {};
+
+// templates/packs/writing-pack.pack.json
+var init_writing_pack_pack = () => {};
+
+// templates/packs/analysis.pack.json
+var init_analysis_pack = () => {};
+
+// templates/packs/ops.pack.json
+var init_ops_pack = () => {};
+
+// src/hub/shipped-packs.ts
+var init_shipped_packs = __esm(() => {
+  init_example_pack();
+  init_writing_pack_pack();
+  init_analysis_pack();
+  init_ops_pack();
+});
+
+// src/hub/packs.ts
+var init_packs = __esm(() => {
+  init_profiles();
+  init_roles();
+  init_shipped_packs();
+  init_workflow();
+});
+
+// src/hub/research-campaign.ts
+var BODY;
+var init_research_campaign = __esm(() => {
+  init_packs();
+  BODY = 64 * 1024;
+});
+
+// src/hub/board.ts
+var CLASSES2, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
+var init_board = __esm(() => {
+  init_task_code_symbols();
+  init_plan_conformance();
+  init_planning();
+  init_envelope();
+  init_review_findings();
+  init_deliverables();
+  init_research_campaign();
+  CLASSES2 = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
+  PLAN_KEYS = ["paths", "symbols", "signatures", "insertion_points"];
+  ALL_PLAN_KEYS = [...PLAN_KEYS, "sections", "sources", "claims", "proof", "risks"];
+  OUTCOMES_KEPT_MS = 7 * 24 * 3600000;
 });
 
 // src/hub/profiles.ts
@@ -10890,7 +10926,7 @@ function resolveProfile(raw, overrides) {
     if (!data.classes || typeof data.classes !== "object" || Array.isArray(data.classes) || Object.keys(data.classes).length > 32)
       throw new Error("profile classes must be a bounded base-class map");
     for (const [name, base] of Object.entries(data.classes)) {
-      if (!/^[a-z][a-z0-9_]{0,47}$/.test(name) || typeof base !== "string" || !CLASSES.includes(base) || CLASSES.includes(name) && name !== base)
+      if (!/^[a-z][a-z0-9_]{0,47}$/.test(name) || typeof base !== "string" || !CLASSES2.includes(base) || CLASSES2.includes(name) && name !== base)
         throw new Error("profile class must retain an existing base-class meaning");
       result.classes[name] = base;
     }
@@ -23015,6 +23051,7 @@ init_platform();
 init_policy();
 init_platform();
 // src/hub/tasks.ts
+init_research_campaign();
 init_task_code_symbols();
 init_test_integrity();
 init_eval_gate();

@@ -51,6 +51,16 @@ Every text field is UTF-8 and bounded. A record above its bounds refuses whole, 
 - New daemon feature `research_records` in `DAEMON_FEATURES`. `incompatibleRecoveryTarget` refuses a target without it while `board.hasResearchState()` finds any campaign, protocol, attempt or runner-receipt row, or `research.runners` is set in config.
 - The recovery `integrity()` digest gains the row counts and the latest revision of the research tables.
 
+## T1 implementation boundary (#596)
+
+T1 provides the bounded parser, Board storage and host Tasks methods, with no public study CLI or hub tool until #601. A write receipt carries only generated campaign ids, revision, status and unit counts; the full unit/task mapping is returned only by person-only approval. No raw contract or close reason enters parent Task history or outcome memory.
+
+A stable unit id retains its task across approved revisions and restart, including a unit omitted from an intervening revision. T1 retains only an identical work-bearing unit definition, including its dependencies; changed work uses a fresh unit id. Existing intake or retained tasks keep their owner, reviewer, state, detail and dependencies. Incompatible dependencies or retaining a public task in a private campaign refuse whole rather than changing that task's authority. Approved omissions are recorded as counts in the parent history and remain inspectable through the immutable contracts. A replay creates nothing; it may only tighten the campaign's privacy metadata without changing body, approval time, mapping or Task history.
+
+The #597 dispatch slice adds handoff-backed round advancement and budget-id-specific hard-cap admission. Until then, T1 refuses new follow-up rounds and hard-cap activation instead of silently running them without those checks. Drafts may still describe structurally valid limits. Study writes recheck recovery, shutdown and storage holds before commit; shutdown fences late screens and drains admissions within the existing bounded host-writer stop window.
+
+The base `research_records` floor protects T1 stored state and raw runner-key compatibility. Later slices that introduce additional dispatch, wire or configuration requirements add their own recovery floors before exposing them; advertising base storage support alone is not proof of those later capabilities.
+
 ## Campaigns (#930)
 
 ### ResearchCampaignV1
@@ -62,12 +72,13 @@ Every text field is UTF-8 and bounded. A record above its bounds refuses whole, 
 | `revision` | integer from 1; each revision is immutable once stored |
 | `status` | `draft`, `approved`, `superseded`, `closed` |
 | `question` | long text |
-| `scope`, `exclusions` | long text; exclusions at most 32 short texts |
+| `scope` | long text |
+| `exclusions` | at most 32 short texts |
 | `sourceIds` | at most 64 `src:<16 hex>` ids, each known to `SourceRegistry` |
 | `units` | 1 to 32 units |
-| `deliverableSections` | at most 32 `{ id, title, owner unit id }`; each section has exactly one synthesis owner |
+| `deliverableSections` | at most 32 `{ id, title, ownerUnitId }`; each owner names one unit with purpose `synthesis` |
 | `stopPolicy` | `{ maxUnits (1..32), maxFollowUpRounds (0..5), deadline (ISO time, at most 90 days after approval) }` |
-| `budget` | optional `{ id (an existing ExecutionBudget id), hardCap: resources to enforce, possibly empty }`; see "Budget support map" |
+| `budget` | optional `{ id (an existing ExecutionBudget id), hardCap: resources to enforce, possibly empty }`; reference ids retain the ledger's exact 1..200-character spelling rather than the new-id grammar; see "Budget support map" |
 
 A unit: `{ id, round (integer, 0 for the initial round), question (long text), perspective (short), requiredOutput (short), sourceIds (subset of the campaign's, at most 16), dependsOn (unit ids, at most 16, acyclic, never a later round), purpose: "discovery" | "independent_check" | "analysis" | "synthesis", adoptTaskId?, taskId? }`. `adoptTaskId` names an approved intake child to bind. `taskId` is bound by the hub on activation, never supplied by a contract.
 
@@ -79,7 +90,7 @@ Rounds: a follow-up round is a set of units with `round = n + 1`, added only by 
 2. Revise: `Tasks.studyRevise(by, { id, revision, contract })` (`ahub study revise` or `hub_study_revise`, same authority as draft) stores revision n+1 as `draft`; `revision` must equal the latest, or it refuses as stale. A revision may enlarge scope, units or the stop policy only as a draft; only approval activates it.
 3. Approve: `Tasks.studyApprove(by, { id, revision })`, person only (console role). It runs in three phases.
    - Prepare (async, outside any transaction). Validate and screen the revision's units with the same `withholds` path `Tasks.propose` uses. Resolve every source, intake child, task and dependency ref, and build one child spec per unbound unit (title, detail with a `Study: <campaign id> unit <unit id>` line, class, refs, deps). No write happens here.
-   - Commit (one synchronous `board.activateCampaign(id, revision, prepared)` inside `board.atomic`, the `board.splitBacklog` precedent). It re-checks the revision is still the latest `draft` and that every adopted intake child still exists and is unbound. It creates each new child with the synchronous `Board.propose` as a `backlog: true` card, with deps from `dependsOn` mapped to task ids. It writes the unit-to-task mapping rows and the revision's `approved` status, and marks the previous approved revision `superseded`, all in the same transaction. If anything has changed since Prepare, it throws and nothing is written.
+   - Commit (one synchronous `board.activateCampaign(id, revision, prepared)` inside `board.atomic`, the `board.splitBacklog` precedent). It re-checks the revision is still the latest `draft` and that retained or adopted tasks still have their captured flow revisions. Previously bound stable units reuse their task ids. An intake child may be adopted only if unbound to another campaign/unit; its task is not rewritten. Only unbound person-authored units create new children with synchronous `Board.propose` as `backlog: true` cards, with deps from `dependsOn` mapped to task ids. It writes the unit-to-task mapping rows and the revision's `approved` status, and marks the previous approved revision `superseded`, all in the same transaction. If anything has changed since Prepare, it throws and nothing is written.
    - Publish (after commit). The board's ordinary post-commit change notifications go out. The new children are offered through the existing planner pull path; the campaign does not assign owners itself.
    Re-running approve on an approved revision returns the stored mapping and creates nothing. A crash between commit and publish loses nothing: the mapping and the backlog cards are committed, and the ordinary planner pull picks the cards up after restart. Restart never re-creates children.
 4. Close: `Tasks.studyClose(by, { id, revision, reason })`, person or the campaign's planner. A closed campaign dispatches nothing more; its tasks keep their own states.

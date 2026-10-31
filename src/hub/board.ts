@@ -14,6 +14,73 @@ import type { SdlcReceipt } from "./sdlc.ts";
 import { parseReviewFindings, type ReviewFindingSet } from "./review-findings.ts";
 import { parseDeliverableRecords, type DeliverableRecord } from "./deliverables.ts";
 import type { CostPlan, ReviewCost } from "./cost-governance.ts";
+import { campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchUnit } from "./research-campaign.ts";
+
+export interface ResearchCampaignRecord {
+  id: string;
+  project: string;
+  parentTaskId: number;
+  revision: number;
+  status: ResearchCampaignStatus;
+  contract: ResearchCampaignContract;
+  hash: string;
+  private: boolean;
+  createdBy: PeerId;
+  createdAt: number;
+  approvedBy?: PeerId;
+  approvedAt?: number;
+  closedBy?: PeerId;
+  closedAt?: number;
+  closedReason?: string;
+}
+export interface ResearchUnitBinding {
+  campaignId: string;
+  revision: number;
+  unitId: string;
+  taskId: number;
+  round: number;
+  purpose: ResearchUnit["purpose"];
+  adopted: boolean;
+}
+export interface PreparedResearchUnit {
+  unitId: string;
+  create?: Parameters<Board["propose"]>[1];
+  adopt?: { taskId: number; flowRevision: number };
+  reuse?: { taskId: number; flowRevision: number };
+}
+
+interface ResearchCampaignRow {
+  id: string; project: string; parent_task_id: number; revision: number; status: string; body: string | null; body_sha256: string; private: number;
+  created_by: string; created_at: number; approved_by: string | null; approved_at: number | null;
+  closed_by: string | null; closed_at: number | null; closed_reason: string | null;
+}
+interface ResearchUnitRow { campaign_id: string; revision: number; unit_id: string; task_id: number; round: number; purpose: string; adopted: number }
+const RESEARCH_CAMPAIGN_SELECT = "SELECT id,project,parent_task_id,revision,status,CASE WHEN length(CAST(body AS BLOB)) <= 65536 THEN body END AS body,body_sha256,private,created_by,created_at,approved_by,approved_at,closed_by,closed_at,closed_reason FROM research_campaigns";
+const researchFailure = (): Error => new Error("research campaign state is invalid, changed or corrupt");
+const researchId = (value: unknown): value is string => typeof value === "string" && value.length === 15 && /^rc-[0-9a-f]{12}$/.test(value);
+const researchInteger = (value: unknown, minimum = 1): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
+const researchText = (value: unknown, max = 512): value is string => typeof value === "string" && value.length > 0 && value.length <= max && Buffer.byteLength(value, "utf8") <= max && Buffer.from(value, "utf8").toString("utf8") === value;
+function checkedResearchCampaign(record: ResearchCampaignRecord): ResearchCampaignRecord {
+  if (!researchId(record.id) || !researchText(record.project) || !researchInteger(record.parentTaskId) || !researchInteger(record.revision) ||
+    !["draft", "approved", "superseded", "closed"].includes(record.status) || typeof record.private !== "boolean" || !researchText(record.createdBy) || !researchInteger(record.createdAt, 0)) throw researchFailure();
+  const contract = parseResearchCampaign(record.contract), hash = campaignHash(contract);
+  if (record.hash !== hash || (record.approvedBy === undefined) !== (record.approvedAt === undefined) ||
+    record.approvedBy !== undefined && (!researchText(record.approvedBy) || !researchInteger(record.approvedAt, 0)) ||
+    (record.closedBy === undefined) !== (record.closedAt === undefined) || (record.closedBy === undefined) !== (record.closedReason === undefined) ||
+    record.closedBy !== undefined && (!researchText(record.closedBy) || !researchInteger(record.closedAt, 0) || !researchText(record.closedReason, 4096)) ||
+    ["approved", "superseded"].includes(record.status) && record.approvedBy === undefined || record.status === "closed" && record.closedBy === undefined ||
+    record.status !== "closed" && record.closedBy !== undefined || record.status === "draft" && record.approvedBy !== undefined) throw researchFailure();
+  return { ...record, contract, hash };
+}
+function researchCampaignFromRow(row: ResearchCampaignRow): ResearchCampaignRecord {
+  try {
+    if (typeof row.body !== "string" || ![0, 1].includes(row.private)) throw researchFailure();
+    return checkedResearchCampaign({ id: row.id, project: row.project, parentTaskId: row.parent_task_id, revision: row.revision, status: row.status as ResearchCampaignStatus,
+      contract: JSON.parse(row.body) as ResearchCampaignContract, hash: row.body_sha256, private: row.private === 1, createdBy: row.created_by, createdAt: row.created_at,
+      ...(row.approved_by !== null ? { approvedBy: row.approved_by } : {}), ...(row.approved_at !== null ? { approvedAt: row.approved_at } : {}),
+      ...(row.closed_by !== null ? { closedBy: row.closed_by } : {}), ...(row.closed_at !== null ? { closedAt: row.closed_at } : {}), ...(row.closed_reason !== null ? { closedReason: row.closed_reason } : {}) });
+  } catch { throw researchFailure(); }
+}
 
 export const CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] as const;
 export type TaskClass = (typeof CLASSES)[number];
@@ -354,6 +421,204 @@ export class Board {
     this.db.run("CREATE INDEX IF NOT EXISTS releases_planner_present ON releases(planner) WHERE planner IS NOT NULL");
     if (!(this.db.query("PRAGMA table_info(releases)").all() as { name: string }[]).some(row => row.name === "train")) this.db.run("ALTER TABLE releases ADD COLUMN train TEXT");
 
+    this.db.run(`CREATE TABLE IF NOT EXISTS research_campaigns (
+      id TEXT NOT NULL, project TEXT NOT NULL, parent_task_id INTEGER NOT NULL, revision INTEGER NOT NULL,
+      status TEXT NOT NULL, body TEXT NOT NULL, body_sha256 TEXT NOT NULL, private INTEGER NOT NULL,
+      created_by TEXT NOT NULL, created_at INTEGER NOT NULL, approved_by TEXT, approved_at INTEGER,
+      closed_by TEXT, closed_at INTEGER, closed_reason TEXT, PRIMARY KEY(id,revision))`);
+    this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS research_campaigns_active_parent ON research_campaigns(project,parent_task_id) WHERE status='approved'");
+    this.db.run(`CREATE TABLE IF NOT EXISTS research_units (
+      campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, unit_id TEXT NOT NULL, task_id INTEGER NOT NULL,
+      round INTEGER NOT NULL, purpose TEXT NOT NULL, adopted INTEGER NOT NULL, PRIMARY KEY(campaign_id,revision,unit_id))`);
+    this.db.run("CREATE INDEX IF NOT EXISTS research_units_task ON research_units(task_id)");
+
+  }
+
+  researchCampaign(id: string, revision?: number): ResearchCampaignRecord | undefined {
+    if (!researchId(id) || revision !== undefined && !researchInteger(revision)) throw researchFailure();
+    const row = (revision === undefined
+      ? this.db.query(`${RESEARCH_CAMPAIGN_SELECT} WHERE id=? ORDER BY revision DESC LIMIT 1`).get(id)
+      : this.db.query(`${RESEARCH_CAMPAIGN_SELECT} WHERE id=? AND revision=?`).get(id, revision)) as ResearchCampaignRow | null;
+    return row ? researchCampaignFromRow(row) : undefined;
+  }
+
+  private researchBindings(campaign: ResearchCampaignRecord): ResearchUnitBinding[] {
+    const rows = this.db.query("SELECT campaign_id,revision,unit_id,task_id,round,purpose,adopted FROM research_units WHERE campaign_id=? AND revision=? ORDER BY unit_id LIMIT 33").all(campaign.id, campaign.revision) as ResearchUnitRow[];
+    const expected = new Map(campaign.contract.units.map(unit => [unit.id, unit]));
+    if (rows.length > 32 || rows.length !== (campaign.approvedBy === undefined ? 0 : expected.size)) throw researchFailure();
+    const tasks = new Set<number>();
+    return rows.map(row => {
+      const unit = expected.get(row.unit_id);
+      if (!unit || row.campaign_id !== campaign.id || row.revision !== campaign.revision || !researchInteger(row.task_id) || tasks.has(row.task_id) ||
+        row.round !== unit.round || row.purpose !== unit.purpose || ![0, 1].includes(row.adopted) || (row.adopted === 1) !== (unit.adoptTaskId !== undefined) ||
+        unit.adoptTaskId !== undefined && unit.adoptTaskId !== row.task_id) throw researchFailure();
+      tasks.add(row.task_id);
+      return { campaignId: row.campaign_id, revision: row.revision, unitId: row.unit_id, taskId: row.task_id, round: row.round, purpose: unit.purpose, adopted: row.adopted === 1 };
+    });
+  }
+
+  researchCampaignBindings(id: string, revision: number): ResearchUnitBinding[] {
+    const campaign = this.researchCampaign(id, revision);
+    return campaign ? this.researchBindings(campaign) : [];
+  }
+
+  /** Most recent persisted association, including a unit omitted from intervening revisions. */
+  researchLatestUnitBinding(campaignId: string, unitId: string): ResearchUnitBinding | undefined {
+    if (!researchId(campaignId) || typeof unitId !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(unitId)) throw researchFailure();
+    const row = this.db.query("SELECT revision FROM research_units WHERE campaign_id=? AND unit_id=? ORDER BY revision DESC LIMIT 1")
+      .get(campaignId, unitId) as { revision: number } | null;
+    if (!row) return undefined;
+    const campaign = this.researchCampaign(campaignId, row.revision);
+    if (!campaign) throw researchFailure();
+    const binding = this.researchBindings(campaign).find(unit => unit.unitId === unitId);
+    if (!binding) throw researchFailure();
+    return binding;
+  }
+
+  /** Lifetime unit association, including superseded/closed revisions; never reinterpret a task as another unit. */
+  researchTaskBinding(taskId: number): ResearchUnitBinding | undefined {
+    if (!researchInteger(taskId)) throw researchFailure();
+    const row = this.db.query("SELECT campaign_id,revision FROM research_units WHERE task_id=? ORDER BY campaign_id,revision,unit_id LIMIT 1").get(taskId) as { campaign_id: string; revision: number } | null;
+    if (!row) return undefined;
+    const campaign = this.researchCampaign(row.campaign_id, row.revision);
+    if (!campaign) throw researchFailure();
+    const binding = this.researchBindings(campaign).find(unit => unit.taskId === taskId);
+    if (!binding) throw researchFailure();
+    return binding;
+  }
+
+  /** Bodies are append-only; a new revision cannot change its project's or parent's identity or lower privacy. */
+  saveResearchCampaignDraft(record: ResearchCampaignRecord, expectedLatest: number | undefined, expectedParentFlow: number): ResearchCampaignRecord {
+    const checked = checkedResearchCampaign(record);
+    if (checked.status !== "draft" || checked.approvedBy !== undefined || checked.closedBy !== undefined ||
+      expectedLatest !== undefined && !researchInteger(expectedLatest) || checked.revision !== (expectedLatest ?? 0) + 1 || !researchInteger(expectedParentFlow, 0)) throw researchFailure();
+    return this.atomic(() => {
+      const parent = this.get(checked.parentTaskId), latest = this.researchCampaign(checked.id);
+      if (!parent || parent.history.length !== expectedParentFlow || latest?.revision !== expectedLatest || latest &&
+        (latest.project !== checked.project || latest.parentTaskId !== checked.parentTaskId || latest.status === "closed")) throw researchFailure();
+      const stored = { ...checked, private: checked.private || latest?.private === true };
+      this.taskWrite(() => this.db.query("INSERT INTO research_campaigns(id,project,parent_task_id,revision,status,body,body_sha256,private,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .run(stored.id, stored.project, stored.parentTaskId, stored.revision, "draft", JSON.stringify(stored.contract), stored.hash, stored.private ? 1 : 0, stored.createdBy, stored.createdAt));
+      this.update(parent.id, stored.createdBy, latest ? "study revised" : "study drafted", {}, `${stored.id} revision ${stored.revision}`, {}, expectedParentFlow);
+      return this.researchCampaign(stored.id, stored.revision)!;
+    });
+  }
+
+  /** An approved replay recreates nothing; only monotone privacy tightening may write, without task history or approval changes. */
+  activateCampaign(id: string, revision: number, project: string, by: PeerId, at: number, prepared: readonly PreparedResearchUnit[], expectedParentFlow: number, privateRecord = false): { campaign: ResearchCampaignRecord; bindings: ResearchUnitBinding[]; children: Task[] } {
+    if (!researchText(project) || !researchText(by) || !researchInteger(at, 0) || typeof privateRecord !== "boolean") throw researchFailure();
+    return this.atomic(() => {
+      const campaign = this.researchCampaign(id, revision);
+      if (!campaign || campaign.project !== project) throw researchFailure();
+      if (campaign.status === "approved") {
+        const bindings = this.researchBindings(campaign);
+        if (privateRecord && !campaign.private) this.taskWrite(() => this.db.query("UPDATE research_campaigns SET private=1 WHERE id=? AND revision=? AND private=0").run(id, revision));
+        return { campaign: this.researchCampaign(id, revision)!, bindings, children: [] };
+      }
+      const parent = this.get(campaign.parentTaskId), latest = this.researchCampaign(id);
+      const activeRow = this.db.query("SELECT revision FROM research_campaigns WHERE id=? AND status='approved' LIMIT 1").get(id) as { revision: number } | null;
+      const active = activeRow ? this.researchCampaign(id, activeRow.revision) : undefined;
+      if (campaign.status !== "draft" || latest?.revision !== revision || !researchInteger(expectedParentFlow, 0) || !parent || parent.history.length !== expectedParentFlow) throw researchFailure();
+      if (this.db.query("SELECT 1 FROM research_campaigns WHERE project=? AND parent_task_id=? AND status='approved' AND id<>? LIMIT 1").get(project, campaign.parentTaskId, id)) throw new Error("another research campaign is active for this parent");
+      if (this.researchBindings(campaign).length || prepared.length !== campaign.contract.units.length) throw researchFailure();
+      const inputs = new Map<string, PreparedResearchUnit>(), units = new Map(campaign.contract.units.map(unit => [unit.id, unit]));
+      const mapped = new Map<string, number>(), retained = new Map<string, Task>(), children: Task[] = [];
+      const isPrivate = campaign.private || privateRecord;
+      for (const entry of prepared) {
+        const unit = units.get(entry.unitId);
+        if (!unit || inputs.has(entry.unitId) || [entry.create, entry.adopt, entry.reuse].filter(value => value !== undefined).length !== 1) throw researchFailure();
+        inputs.set(entry.unitId, entry);
+        const prior = this.researchLatestUnitBinding(id, unit.id);
+        if (prior) {
+          const previous = this.researchCampaign(id, prior.revision), previousUnit = previous?.contract.units.find(value => value.id === unit.id);
+          if (!entry.reuse || entry.reuse.taskId !== prior.taskId || !researchInteger(entry.reuse.flowRevision, 0) || prior.revision >= revision ||
+            !previous || previous.project !== project || previous.parentTaskId !== campaign.parentTaskId || JSON.stringify(previousUnit) !== JSON.stringify(unit))
+            throw new Error("a bound research unit must retain its task and definition; changed work requires a fresh unit id");
+          const task = this.get(prior.taskId);
+          if (!task || task.history.length !== entry.reuse.flowRevision || isPrivate && !task.signals.some(signal => signal === "pii" || signal === "pii_path")) throw researchFailure();
+          mapped.set(unit.id, task.id); retained.set(unit.id, task);
+        } else if (entry.reuse) {
+          throw researchFailure();
+        } else if (entry.adopt) {
+          if (unit.adoptTaskId !== entry.adopt.taskId || !researchInteger(entry.adopt.flowRevision, 0)) throw researchFailure();
+          const task = this.get(entry.adopt.taskId);
+          if (!task || task.history.length !== entry.adopt.flowRevision || task.draft || !task.history.some(history => history.event === "draft approved") ||
+            isPrivate && !task.signals.some(signal => signal === "pii" || signal === "pii_path")) throw researchFailure();
+          if (this.db.query("SELECT 1 FROM research_units WHERE task_id=? AND (campaign_id<>? OR unit_id<>?) LIMIT 1").get(task.id, id, unit.id)) throw new Error("intake task is already bound to another research unit");
+          mapped.set(unit.id, task.id); retained.set(unit.id, task);
+        } else {
+          const create = entry.create!;
+          if (unit.adoptTaskId !== undefined || typeof create.title !== "string" || !create.title.trim() || create.title.length > 300 || !CLASSES.includes(create.class) || create.draft ||
+            isPrivate && !create.signals?.includes("pii")) throw researchFailure();
+        }
+      }
+      const pending = campaign.contract.units.filter(unit => !mapped.has(unit.id));
+      while (pending.length) {
+        const next = pending.findIndex(unit => unit.dependsOn.every(dependency => mapped.has(dependency)));
+        if (next < 0) throw researchFailure();
+        const unit = pending.splice(next, 1)[0]!, create = inputs.get(unit.id)!.create!;
+        const deps = [...new Set([...(create.deps ?? []), ...unit.dependsOn.map(dependency => mapped.get(dependency)!)])];
+        if (deps.some(dependency => !researchInteger(dependency) || !this.get(dependency))) throw researchFailure();
+        const child = this.propose(by, { ...create, deps, backlog: true, draft: false });
+        mapped.set(unit.id, child.id); children.push(child);
+      }
+      for (const [unitId, task] of retained) if (units.get(unitId)!.dependsOn.some(dependency => !task.deps?.includes(mapped.get(dependency)!))) throw new Error("retained research task dependencies differ from the campaign");
+      for (const unit of campaign.contract.units) {
+        const taskId = mapped.get(unit.id)!;
+        if (this.db.query("SELECT 1 FROM research_units WHERE task_id=? AND (campaign_id<>? OR unit_id<>?) LIMIT 1").get(taskId, id, unit.id)) throw researchFailure();
+        this.taskWrite(() => this.db.query("INSERT INTO research_units(campaign_id,revision,unit_id,task_id,round,purpose,adopted) VALUES(?,?,?,?,?,?,?)")
+          .run(id, revision, unit.id, taskId, unit.round, unit.purpose, unit.adoptTaskId !== undefined ? 1 : 0));
+      }
+      this.taskWrite(() => this.db.query("UPDATE research_campaigns SET status='superseded',private=MAX(private,?) WHERE id=? AND project=? AND status='approved'").run(isPrivate ? 1 : 0, id, project));
+      this.taskWrite(() => this.db.query("UPDATE research_campaigns SET status='approved',approved_by=?,approved_at=?,private=? WHERE id=? AND revision=? AND status='draft'")
+        .run(by, at, isPrivate ? 1 : 0, id, revision));
+      const nextUnits = new Set(campaign.contract.units.map(unit => unit.id));
+      const nextEdges = new Set(campaign.contract.units.flatMap(unit => unit.dependsOn.map(dependency => `${unit.id}:${dependency}`)));
+      const omittedUnits = active?.contract.units.filter(unit => !nextUnits.has(unit.id)).length ?? 0;
+      const omittedEdges = active?.contract.units.flatMap(unit => unit.dependsOn.map(dependency => `${unit.id}:${dependency}`)).filter(edge => !nextEdges.has(edge)).length ?? 0;
+      this.update(parent.id, by, "study approved", {}, `${id} revision ${revision}; omitted units ${omittedUnits}, dependencies ${omittedEdges}`, {}, expectedParentFlow);
+      const approved = this.researchCampaign(id, revision)!;
+      return { campaign: approved, bindings: this.researchBindings(approved), children };
+    });
+  }
+
+  closeCampaign(id: string, revision: number, project: string, by: PeerId, at: number, reason: string, expectedParentFlow: number, privateRecord = false): ResearchCampaignRecord {
+    if (!researchText(project) || !researchText(by) || !researchInteger(at, 0) || !researchText(reason, 4096) || typeof privateRecord !== "boolean") throw researchFailure();
+    return this.atomic(() => {
+      const campaign = this.researchCampaign(id, revision), latest = this.researchCampaign(id);
+      if (!campaign || campaign.project !== project || latest?.revision !== revision) throw researchFailure();
+      if (campaign.status === "closed") {
+        if (privateRecord && !campaign.private) this.taskWrite(() => this.db.query("UPDATE research_campaigns SET private=1 WHERE id=? AND revision=? AND private=0").run(id, revision));
+        return this.researchCampaign(id, revision)!;
+      }
+      const parent = this.get(campaign.parentTaskId);
+      if (!researchInteger(expectedParentFlow, 0) || !parent || parent.history.length !== expectedParentFlow) throw researchFailure();
+      this.taskWrite(() => this.db.query("UPDATE research_campaigns SET status='closed',closed_by=?,closed_at=?,closed_reason=?,private=MAX(private,?) WHERE id=? AND project=? AND (revision=? OR status='approved')")
+        .run(by, at, reason, campaign.private || privateRecord ? 1 : 0, id, project, revision));
+      this.update(parent.id, by, "study closed", {}, `${id} revision ${revision}`, {}, expectedParentFlow);
+      return this.researchCampaign(id, revision)!;
+    });
+  }
+
+  hasResearchState(): boolean {
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_campaigns) OR EXISTS(SELECT 1 FROM research_units) AS present").get() as { present: number }).present === 1;
+  }
+
+  /** A consistent, streaming digest includes metadata and body hashes, not merely row counts. */
+  researchIntegrity(): { campaigns: number; units: number; revision: number; digest: string } {
+    return this.db.transaction(() => {
+      const digest = createHash("sha256").update("agent-hub.research-integrity/v1\n");
+      let campaigns = 0, units = 0, revision = 0;
+      for (const row of this.db.query(`${RESEARCH_CAMPAIGN_SELECT} ORDER BY id,revision`).iterate() as Iterable<ResearchCampaignRow>) {
+        const campaign = researchCampaignFromRow(row), bindings = this.researchBindings(campaign);
+        const { contract: _body, ...metadata } = campaign;
+        digest.update(JSON.stringify(metadata)).update("\n");
+        for (const binding of bindings) digest.update(JSON.stringify(binding)).update("\n");
+        campaigns++; units += bindings.length; revision = Math.max(revision, campaign.revision);
+      }
+      if ((this.db.query("SELECT COUNT(*) AS count FROM research_units").get() as { count: number }).count !== units) throw researchFailure();
+      return { campaigns, units, revision, digest: digest.digest("hex") };
+    })();
   }
 
   propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; planner?: PeerId | null; plannerReason?: PlannerReason; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean; draft?: boolean; external?: GitHubSource }): Task {

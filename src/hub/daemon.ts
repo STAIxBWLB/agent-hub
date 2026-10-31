@@ -2140,6 +2140,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // #334: the hub model's split, validated against the same `hub_backlog_split` parts schema a planner's call is, and the source registry for `--source`.
     intake: { split: (system, user, opts) => inference?.split(system, user, opts) ?? Promise.resolve(undefined), sourceKnown: id => sourceRegistry.get(id) !== undefined,
       partsSchema: () => profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off").find(tool => tool.name === "hub_backlog_split")?.inputSchema.properties.parts },
+    studySource: id => sourceRegistry.get(id),
     // The PII screen (issue #198): the model on this machine when MLX/Ollama is enabled, else the gateway on campus only.
     piiScreen: opts.piiScreen ?? ((text) => screenPii(text, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })),
     recordScreen: (record) => event({ type: "pii_screen", ...record }),
@@ -4134,6 +4135,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (tasks.autoPullsPending() !== 0) return false; // #785 P1c: an automatic backlog pull mid-admission would write after the commit's digest; its own line keeps the line above exact for scripts/seeds.json
     if (tasks.queuePressureRechecksPending() !== 0) return false;
     if (tasks.schedulesPending() !== 0) return false; // #512a: a scheduled run mid-admission (its PII screen is awaited) would write after the commit's digest; the hold fence refuses its write, and this waits for it to end
+    if (tasks.studiesPending() !== 0) return false;
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
     return recoveryPeerSnapshot.every((saved) => {
@@ -4283,7 +4285,8 @@ export async function startDaemon(opts: DaemonOptions) {
       return row;
     });
     const budgetState = budget.persistedPauseDigestRows().sort((a, b) => a.peer.localeCompare(b.peer));
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    const research = board.researchIntegrity();
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -7386,6 +7389,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ...(tasks.autoPullsPending() !== 0 ? ["an automatic backlog pull in flight"] : []),
       ...(tasks.queuePressureRechecksPending() !== 0 ? ["a queue-pressure assignment recheck in flight"] : []),
       ...(tasks.schedulesPending() !== 0 ? ["a scheduled task proposal in flight"] : []),
+      ...(tasks.studiesPending() !== 0 ? ["a research campaign admission in flight"] : []),
       ...(checkPending.size !== 0 ? ["isolated checks queued or running"] : []),
       ...(piCallsInFlight() !== 0 ? ["Pi tool calls in flight"] : []),
       ...(releasing ? ["ready tasks being released"] : []),
@@ -7427,6 +7431,23 @@ export async function startDaemon(opts: DaemonOptions) {
         && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("task_planners"))) return "target lacks task_planners; configured or persisted planner authority cannot be restored by that daemon";
       if (board.releases().some(release => release.train && ["active", "frozen"].includes(release.state)) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("release_trains"))) return "target lacks release_trains; active or frozen train safeguards cannot be preserved";
       if ((extraIds.some(id => !!definitionOf(id)?.reviewer) || config.review.pool !== undefined) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("reviewer_pool"))) return "target lacks reviewer_pool; fresh review-only variants and pool policy cannot be preserved";
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_records")) {
+        if (board.hasResearchState()) return "target lacks research_records; persisted research campaign records require a supporting daemon";
+        let namesRunners = false;
+        try {
+          const texts = configSourceTexts(opts.cwd);
+          for (const name of CONFIG_FILES) {
+            if (texts[name] === null) continue;
+            const raw: unknown = JSON.parse(texts[name]!);
+            if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid configuration");
+            const research = (raw as Record<string, unknown>).research;
+            if (research !== undefined && (!research || typeof research !== "object" || Array.isArray(research))) throw new Error("invalid research configuration");
+            namesRunners ||= research !== undefined && Object.hasOwn(research, "runners");
+          }
+        } catch { return "research_records compatibility is unknown; configuration could not be read"; }
+        // Raw presence matters even for a disabled or ignored shared declaration: an older target parses the unknown key first.
+        if (namesRunners) return "target lacks research_records; the project's research.runners cannot be loaded by that daemon";
+      }
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("project_autonomy")) {
         let needsAutonomy = autonomyConfirmed.size > 0;
         try {
@@ -9004,6 +9025,7 @@ export async function startDaemon(opts: DaemonOptions) {
     stopping = true;
     roomCommands.stop();
     tasks.stopQueuePressureRechecks();
+    const studiesStopped = tasks.stopStudies();
     let implementerShellCleanupFailed = false;
     const implementerShellStopped = implementerShellStart?.then(wrapper => wrapper.close()).catch(() => { implementerShellCleanupFailed = true; log("host shell cleanup failed during shutdown"); });
     terminalLaunches.clear();
@@ -9026,11 +9048,11 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const pending of checkpointWaits.values()) pending.done(undefined);
     for (const p of permissions.values()) p.done(undefined);
     try {
-      // A schedules pass may be inside its PII screen: `stopping` is set, so its fence refuses the write when the screen returns. Wait for it (bounded, the screen has
-      // its own timeout) before the peers stop, the board closes and the store closes, so no pass runs against a closed database.
-      if (schedulesPass || manualSchedulePasses.size) {
+      // A schedule or study admission may be inside its PII screen: `stopping` is set, so its fence refuses the write when the screen returns. Wait for it (bounded, the screen has
+      // its own timeout) before the peers stop, the board closes and the store closes, so no admission runs against a closed database.
+      if (schedulesPass || manualSchedulePasses.size || tasks.studiesPending() !== 0) {
         let timer: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([Promise.all([schedulesPass?.catch(() => undefined), ...manualSchedulePasses]), new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); timer.unref?.(); })]);
+        await Promise.race([Promise.all([schedulesPass?.catch(() => undefined), ...manualSchedulePasses, studiesStopped]), new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); timer.unref?.(); })]);
         clearTimeout(timer);
       }
       await Promise.all([terminalReadsStopped, codeFactsStopped, implementerShellStopped]);
