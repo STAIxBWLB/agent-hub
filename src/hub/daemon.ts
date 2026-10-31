@@ -164,9 +164,10 @@ import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig, 
 import { taskEvidencePrivacy, type TaskEvidencePrivacy, ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
 import { withChecklistLine } from "./learning.ts";
-import { createAutonomyConsent, type AutonomyConsentValues } from "./autonomy-consent.ts";
+import { autonomyConsentStateDir, createAutonomyConsent, type AutonomyConsentValues } from "./autonomy-consent.ts";
 import { insideRoot } from "./path-policy.ts";
-import { autonomyPreset, planAutonomy, autonomyRemovalKeys, autonomyStatus, type AutonomyEnvironment, type AutonomyPeer } from "./autonomy.ts";
+import { autonomyPreset, autonomyEnvironment, planAutonomy, autonomyRemovalKeys, autonomyStatus, type AutonomyEnvironment, type AutonomyPeer } from "./autonomy.ts";
+import { readAutonomyDefaults } from "./autonomy-defaults.ts";
 import { AUTONOMY_UNDO, autonomyOwnershipDigest, autonomyUndoKeys, writeAutonomyPreset, LEARN_CHECKLIST, NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { githubOriginRepository, githubRemoteRepository } from "./task-repository.ts";
 import { Bus } from "./bus.ts";
@@ -3860,7 +3861,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   // Runtime choices stay in this daemon only; recovery reads project defaults anew.
   const defaultSources = config.permission_default_sources ?? Object.fromEntries(Object.entries(config.permission_modes).map(([peer, mode]) => [peer, { mode, source: "embedded configuration" }]));
-  const autonomyConsentDir = join(hubHome(), "autonomy", createHash("sha256").update(projectId).digest("hex"));
+  const autonomyConsentDir = autonomyConsentStateDir(hubHome(), projectId);
   const autonomyConsent = createAutonomyConsent(autonomyConsentDir, projectId);
   const autonomyOwnershipWitness = createAutonomyConsent(join(autonomyConsentDir, "ownership"), projectId, "ownership");
   const autonomyUndoWitness = createAutonomyConsent(join(autonomyConsentDir, "undo"), projectId, "undo");
@@ -3878,6 +3879,31 @@ export async function startDaemon(opts: DaemonOptions) {
   function autonomyConsentValues(candidate: HubConfig = config): AutonomyConsentValues {
     return Object.fromEntries(Object.entries(candidate.permission_modes).filter(([peer, mode]) => mode === "never-ask" && candidate.permission_default_sources?.[peer]?.source === ".agenthub/config.local.json")
       .map(([peer, mode]) => [peer, { [`permission_modes.${peer}`]: mode }]));
+  }
+  // Machine opt-in is a second host-owned approval trigger. Offline CLI writes never issue consent.
+  const machineAutonomy = readAutonomyDefaults(hubHome(), [opts.cwd, ...executionRoots.values(), ...Object.values(config.instances ?? {}).flatMap(instance => instance.worktree ? [resolve(opts.cwd, instance.worktree)] : [])]);
+  if (machineAutonomy.notice) log(machineAutonomy.notice);
+  if (machineAutonomy.enabled && autonomyConsentTrusted()) {
+    try {
+      const peers: AutonomyPeer[] = SUPPORTED_PEERS.map(id => ({ id, kind: definitionOf(id)?.kind ?? id, unmanaged: !!definitionOf(id)?.permission.unmanaged,
+        ...(declarations[id]?.start_mode ? { form: declarations[id]!.start_mode } : {}) }));
+      // The daemon is detached even for a terminal project; explicit Orca/CI evidence selects those rows.
+      const operations = planAutonomy(autonomyEnvironment(process.env, true), key => {
+        const def = settingDef(key);
+        return typeof def === "string" || def.store !== "config" ? undefined : { store: def.store, values: def.values, locked: def.locked };
+      }, peers);
+      const current = autonomyConsentValues(), observed = autonomyConsentValues(loadConfig(opts.cwd, undefined, undefined, externalDefinitions));
+      const retained = autonomyConsent.confirmed(current, true);
+      const approved: AutonomyConsentValues = Object.fromEntries([...retained].map(peer => [peer, current[peer]!]));
+      for (const operation of operations) if (operation.key.startsWith("permission_modes.") && operation.value === "never-ask") {
+        const peer = operation.key.slice("permission_modes.".length);
+        if (current[peer]?.[operation.key] === operation.value && observed[peer]?.[operation.key] === operation.value) approved[peer] = current[peer]!;
+      }
+      if (Object.keys(approved).some(peer => !retained.has(peer))) {
+        if (!autonomyConsentTrusted() || readAutonomyDefaults(hubHome(), [opts.cwd, ...executionRoots.values()]).fingerprint !== machineAutonomy.fingerprint) throw new Error("machine autonomy evidence changed during startup");
+        autonomyConsent.confirm(approved);
+      }
+    } catch { log("Machine autonomy consent was not issued: preset, project configuration or private state could not be verified."); }
   }
   let autonomyConfirmed = autonomyConsentLocationSafe() ? autonomyConsent.confirmed(autonomyConsentValues(), autonomyConsentTrusted()) : new Set<string>();
   const pendingPermissionDefaults = new Map(Object.entries(defaultSources).filter(([peer, value]) => value.mode === "never-ask" && !autonomyConfirmed.has(peer)).map(([peer, value]) => [peer, value.source]));

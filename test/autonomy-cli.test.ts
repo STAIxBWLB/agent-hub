@@ -12,6 +12,29 @@ test("one person confirmation follows the concrete preview; refusal writes nothi
   expect(calls).toEqual(["preview", "preview", "on"]);
 });
 
+test("machine-default effects are disclosed and run only after the person confirms", async () => {
+  for (const answer of ["n", "y"]) {
+    const events: string[] = [];
+    await runAutonomy(["on"], { environment: "terminal", contextLines: ["This also changes the machine default."], confirmPrompt: "Apply project and machine defaults?",
+      print: line => { events.push(`print:${line}`); },
+      ask: async prompt => { expect(prompt).toBe("Apply project and machine defaults?"); expect(events).toContain("print:This also changes the machine default."); events.push("confirm"); return answer; },
+      beforeApply: () => { events.push("machine-write"); },
+      request: async message => { events.push(String(message.action)); return { ok: true, confirmation: "token", lines: [] }; },
+    });
+    if (answer === "n") expect(events).not.toContain("machine-write");
+    else { expect(events.indexOf("confirm")).toBeLessThan(events.indexOf("machine-write")); expect(events.indexOf("machine-write")).toBeLessThan(events.indexOf("on")); }
+  }
+});
+
+test("a project apply failure states that the machine-default step already completed", async () => {
+  let saved = false;
+  await expect(runAutonomy(["on", "--yes"], { environment: "terminal", print() {}, ask: async () => null,
+    beforeApply: () => { saved = true; },
+    request: async message => message.action === "preview" ? { ok: true, confirmation: "token", lines: [] } : { ok: false, error: "project apply refused" },
+  })).rejects.toThrow("Machine autonomy default was set to on; project apply failed");
+  expect(saved).toBe(true);
+});
+
 test("--yes is one explicit on confirmation, not a generic flag accepted on off or status", async () => {
   const calls: Record<string, unknown>[] = [];
   const ports = { environment: "headless", print: () => {}, ask: async () => { throw new Error("unexpected ask"); }, request: async (message: Record<string, unknown>) => { calls.push(message); return { ok: true, confirmation: "preview-token" }; } };

@@ -4,6 +4,10 @@ import { realPath } from "../../hub/project.ts";
 import { VERSION } from "../../version.ts";
 
 export const PLUGIN = "agent-hub@agent-hub";
+export const CLAUDE_PLUGIN_INVENTORY = Object.freeze({
+  plugins: Object.freeze(["claude", "plugin", "list", "--json"]),
+  marketplaces: Object.freeze(["claude", "plugin", "marketplace", "list", "--json"]),
+});
 const MARKETPLACE = "agent-hub";
 
 export interface InstalledPlugin {

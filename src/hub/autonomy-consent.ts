@@ -15,6 +15,7 @@ export interface AutonomyConsent {
 export const AUTONOMY_CONSENT_DIR = "autonomy";
 export const AUTONOMY_CONSENT_FILE = "autonomy-consent.json";
 export const AUTONOMY_CONSENT_KEY_FILE = "autonomy-consent.key";
+export const autonomyConsentStateDir = (home: string, projectId: string): string => join(home, AUTONOMY_CONSENT_DIR, createHash("sha256").update(projectId).digest("hex"));
 const MAX_PEERS = 128, MAX_RECORD = 64 * 1024, KEY_BYTES = 32;
 const HEX = /^[a-f0-9]{64}$/, PEER = /^[a-z][a-z0-9-]{0,63}$/;
 const unavailable = (): Error => new Error("autonomy consent is unavailable");

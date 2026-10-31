@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
@@ -7,18 +7,27 @@ import { createHash } from "node:crypto";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import type { InstancesConfig } from "../src/hub/instances.ts";
+import { Registry } from "../src/hub/registry.ts";
+import { prepareAutonomyProject, runAllProjectAutonomy } from "../src/cli/autonomy-projects.ts";
+import { autonomyConsentStateDir, createAutonomyConsent } from "../src/hub/autonomy-consent.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
-async function fixture(instances?: InstancesConfig) {
-  const cwd = mkdtempSync(join(tmpdir(), "ahub-autonomy-daemon-"));
-  cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
+async function fixture(instances?: InstancesConfig, local: Record<string, unknown> = {}, machine?: { text: string; mode?: number }) {
+  const root = mkdtempSync(join(tmpdir(), "ahub-autonomy-daemon-")), cwd = join(root, "repo"), home = join(root, "hub");
+  mkdirSync(cwd);
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const vars = { HOME: join(root, "person"), AGENTHUB_HOME: home, CLAUDE_CONFIG_DIR: join(root, "claude"), AMEM_HOME: join(root, "memory") };
+  const previous = Object.fromEntries(Object.keys(vars).map(key => [key, process.env[key]])); Object.assign(process.env, vars);
+  cleanups.push(() => { for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
+  if (machine) { mkdirSync(home); writeFileSync(join(home, "defaults.json"), machine.text, { mode: machine.mode ?? 0o600 }); chmodSync(join(home, "defaults.json"), machine.mode ?? 0o600); }
   mkdirSync(join(cwd, ".agenthub"));
   expect(hubGitSync(["init", "-q"], { cwd, encoding: "utf8", timeout: 1000 }).status).toBe(0);
   writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, research: { enabled: false }, pi: { auto_start: false } }));
   const stateDir = join(cwd, "state"), file = join(cwd, ".agenthub/config.local.json");
-  if (instances) writeFileSync(file, JSON.stringify({ instances }));
-  const options = { cwd, stateDir, projectId: `project-${cwd.split("/").at(-1)}`, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false };
+  if (instances || Object.keys(local).length) writeFileSync(file, JSON.stringify({ ...local, ...(instances ? { instances } : {}) }));
+  const registry = new Registry(join(home, "registry.db")), project = registry.register(cwd, stateDir); cleanups.push(() => registry.close());
+  const options = { cwd: project.root, stateDir: project.stateDir, projectId: project.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false };
   let daemon = await startDaemon({ ...options, config: loadConfig(cwd) });
   cleanups.push(() => daemon.stop());
   const person = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => person.close());
@@ -27,13 +36,82 @@ async function fixture(instances?: InstancesConfig) {
     const preview = await client.request({ t: "autonomy", action: "preview", environment });
     return client.request({ t: "autonomy", action: "on", environment, confirmed: true, confirmation: preview.confirmation });
   };
-  return { person, tools, cwd, file, stateDir, on, read: () => JSON.parse(readFileSync(file, "utf8")), restart: async () => {
+  return { person, tools, cwd: project.root, file, stateDir: project.stateDir, home, registry, project, on, stop: () => daemon.stop(), read: () => JSON.parse(readFileSync(file, "utf8")), restart: async () => {
     await daemon.stop();
     daemon = await startDaemon({ ...options, config: loadConfig(cwd) });
     const client = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => client.close());
     return client;
   } };
 }
+
+for (const all of [false, true]) test(`offline off${all ? " --all-projects" : ""} revokes issued consent before identical defaults can be replayed`, async () => {
+  const p = await fixture();
+  expect((await p.on()).ok).toBe(true);
+  expect((await p.person.request({ t: "autonomy", action: "status", environment: "headless" })).status.consentedPeers).toContain("codex");
+  const before = readFileSync(p.file, "utf8");
+  await p.stop();
+  if (all) await runAllProjectAutonomy(["off", "--all-projects"], { home: p.home, environment: "headless", projects: [p.project], prepare: project => prepareAutonomyProject(project, "headless", false, p.registry), ask: async () => { throw new Error("off never asks"); }, print() {} });
+  else { const prepared = await prepareAutonomyProject(p.project, "headless", false, p.registry); try { await prepared.apply(); } finally { prepared.close(); } }
+  expect(p.read().permission_modes?.codex).toBeUndefined();
+  writeFileSync(p.file, before);
+  rmSync(join(p.home, "defaults.json"), { force: true });
+  const client = await p.restart();
+  const status = (await client.request({ t: "autonomy", action: "status", environment: "headless" })).status;
+  expect(status.consentedPeers).toEqual([]);
+  const peer = status.peers.find((row: any) => row.id === "codex");
+  expect(peer.effectiveMode).toBe("ask");
+  expect(peer.missing.some((line: string) => line.includes("no matching retained consent"))).toBe(true);
+});
+
+test("offline off refuses an A-to-B consent directory alias without clearing another project's state", async () => {
+  const p = await fixture(); expect((await p.on()).ok).toBe(true); await p.stop();
+  const own = autonomyConsentStateDir(p.home, p.project.id), moved = `${own}-retained`, foreign = autonomyConsentStateDir(p.home, "project-b");
+  createAutonomyConsent(foreign, "project-b").confirm({ codex: { "permission_modes.codex": "never-ask" } });
+  const key = join(foreign, "autonomy/autonomy-consent.key"), receipt = join(foreign, "autonomy/autonomy-consent.json");
+  const beforeKey = readFileSync(key), beforeReceipt = readFileSync(receipt);
+  renameSync(own, moved); symlinkSync(foreign, own);
+  const output: string[] = [];
+  await expect(runAllProjectAutonomy(["off", "--all-projects"], { home: p.home, environment: "headless", projects: [p.project], prepare: project => prepareAutonomyProject(project, "headless", false, p.registry), ask: async () => null, print: line => { output.push(line); } })).rejects.toThrow("1 project(s) were not applied");
+  expect(output.some(line => line.includes(p.project.root) && line.includes("consent"))).toBe(true);
+  expect(output.some(line => line.includes("Project autonomy off:"))).toBe(false);
+  expect(readFileSync(key)).toEqual(beforeKey); expect(readFileSync(receipt)).toEqual(beforeReceipt);
+  expect(existsSync(join(moved, "autonomy/autonomy-consent.key"))).toBe(true);
+  expect(p.read().permission_modes.codex).toBe("never-ask");
+});
+
+test("an offline consent-clear failure names the project and cannot report off success", async () => {
+  const p = await fixture(); expect((await p.on()).ok).toBe(true); await p.stop();
+  const privateDirectory = join(p.home, "autonomy", createHash("sha256").update(p.project.id).digest("hex"), "autonomy");
+  chmodSync(privateDirectory, 0o755);
+  const output: string[] = [];
+  await expect(runAllProjectAutonomy(["off", "--all-projects"], { home: p.home, environment: "headless", projects: [p.project], prepare: project => prepareAutonomyProject(project, "headless", false, p.registry), ask: async () => null, print: line => { output.push(line); } })).rejects.toThrow("1 project(s) were not applied");
+  expect(output.some(line => line.includes(p.project.root) && line.includes("consent"))).toBe(true);
+  expect(output.some(line => line.includes("Project autonomy off:"))).toBe(false);
+  expect(p.read().permission_modes.codex).toBe("never-ask");
+  expect(p.registry.get(p.project.id)?.instanceId).toBeNull();
+});
+
+for (const [name, machine, approved] of [
+  ["matching trusted opt-in", { text: '{"schema":1,"autonomy":true}' }, true],
+  ["unsafe writable opt-in", { text: '{"schema":1,"autonomy":true}', mode: 0o666 }, false],
+  ["forged permission fields", { text: '{"schema":1,"autonomy":true,"permission_modes":{"codex":"never-ask"}}' }, false],
+  ["missing machine opt-in", undefined, false],
+] as const) test(`startup issues retained consent only for ${name}`, async () => {
+  const p = await fixture(undefined, { permission_modes: { codex: "never-ask" } }, machine);
+  const status = (await p.person.request({ t: "autonomy", action: "status", environment: "terminal" })).status;
+  expect(status.consentedPeers.includes("codex")).toBe(approved);
+  expect(status.peers.find((peer: any) => peer.id === "codex").effectiveMode).toBe(approved ? "never-ask" : "ask");
+  expect(existsSync(join(p.home, "autonomy"))).toBe(approved);
+});
+
+test("machine opt-in cannot approve a default sourced from tracked/shared configuration", async () => {
+  const p = await fixture(undefined, {}, { text: '{"schema":1,"autonomy":true}' });
+  const shared = join(p.cwd, ".agenthub/config.json"), config = JSON.parse(readFileSync(shared, "utf8"));
+  config.permission_modes = { codex: "never-ask" }; writeFileSync(shared, JSON.stringify(config));
+  const client = await p.restart();
+  expect((await client.request({ t: "autonomy", action: "status", environment: "terminal" })).status.consentedPeers).toEqual([]);
+  expect(existsSync(join(p.home, "autonomy"))).toBe(false);
+});
 
 test("daemon refuses agents and unconfirmed on; person apply/off and whole-preset undo retain settings semantics", async () => {
   const p = await fixture();
