@@ -51,7 +51,12 @@ export function parseEvery(value: unknown): number {
 export interface CronSpec { minutes: number[]; hours: number[]; doms: number[]; months: number[]; dows: number[]; domStar: boolean; dowStar: boolean }
 const CRON_FIELDS = [{ name: "minute", min: 0, max: 59 }, { name: "hour", min: 0, max: 23 }, { name: "day of month", min: 1, max: 31 }, { name: "month", min: 1, max: 12 }, { name: "day of week", min: 0, max: 7 }] as const;
 export const MAX_CRON_LENGTH = 100;
-const CRON_HORIZON_DAYS = 8 * 366;
+/**
+ * One Gregorian cycle: the calendar, and so every day-of-month, month and weekday pattern, repeats exactly every 146097 days (400 years, a whole number of weeks). Scanning that far makes
+ * both questions complete: an expression that never fires has no matching day in it, and one that fires at all fires inside it from any start (a Feb 29 that is a Sunday recurs
+ * 28 to 40 years apart). The cost is only paid by a sparse expression: a common one stops at its first match.
+ */
+const CRON_HORIZON_DAYS = 146_097;
 const DAY_MS = 86_400_000, MIN_MS = 60_000;
 
 function cronField(text: string, name: string, min: number, max: number): number[] {
@@ -91,7 +96,7 @@ function dayMatches(spec: CronSpec, dayMs: number): boolean {
 }
 
 /**
- * The smallest gap, in minutes, between two fires of the expression on the calendar itself (a wall clock with no zone), or undefined when no day of eight years matches (`0 0 31 2 *`).
+ * The smallest gap, in minutes, between two fires of the expression on the calendar itself (a wall clock with no zone), or undefined when no day of a full 400-year Gregorian cycle matches (`0 0 31 2 *`).
  * Daylight saving can still move two fires closer on its one change day (a skipped time runs at the first valid minute); a schedule proposes at most one task per pass and none while its
  * previous task is open, so that costs no flood.
  */
@@ -160,7 +165,7 @@ function instantOf(zone: string, wall: number): number {
   return high * MIN_MS;
 }
 
-/** The first wall-clock minute strictly after `wall` that the expression allows, or undefined within eight years. */
+/** The first wall-clock minute strictly after `wall` that the expression allows, or undefined when no day of a full cycle matches. */
 function nextWall(spec: CronSpec, wall: number): number | undefined {
   const from = wall - (wall % MIN_MS) + MIN_MS, firstDay = from - (from % DAY_MS), floor = (from - firstDay) / MIN_MS;
   for (let day = 0; day < CRON_HORIZON_DAYS; day++) {
@@ -172,7 +177,7 @@ function nextWall(spec: CronSpec, wall: number): number | undefined {
 }
 
 /**
- * The next fire strictly after `after` (epoch ms), or undefined when none comes within eight years. Fires are found on the zone's wall clock and then placed on the timeline by
+ * The next fire strictly after `after` (epoch ms), or undefined when none exists (no day of a full 400-year cycle matches). Fires are found on the zone's wall clock and then placed on the timeline by
  * `instantOf`: a repeated wall time fires once, and a fire the clock skipped fires at the first valid minute.
  */
 export function cronNext(spec: CronSpec, zone: string, after: number): number | undefined {

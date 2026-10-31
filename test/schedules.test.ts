@@ -445,3 +445,17 @@ test("a cron schedule is held and coalesced like every: a hold counts the due ti
   expect(runs.filter(run => run.outcome === "ran")).toHaveLength(1);
   expect(f.store.get("digest")!.coalesced).toBe(0);
 });
+
+test("a sparse expression is satisfiable and fires: a leap day that is a Sunday is 28 to 40 years apart, not never", () => {
+  // `*/7` begins with `*`, so day of month and day of week must both match: Feb 29 that is a Sunday. A scan of only a few years called this one "never fires" (the connector's P2).
+  const sunday = parseCron("0 0 29 2 */7");
+  expect(cronMinGapMinutes(sunday)).toBeGreaterThanOrEqual(1440);
+  expect(() => schedulesConfig([{ id: "sparse", cron: "0 0 29 2 */7", tz: "UTC", class: "plan", title: "t" }])).not.toThrow();
+  expect(next("0 0 29 2 */7", "UTC", "2026-10-31T00:00:00Z")).toBe("2032-02-29T00:00:00.000Z");   // Sunday
+  expect(next("0 0 29 2 */7", "UTC", "2032-02-29T00:00:00Z")).toBe("2060-02-29T00:00:00.000Z");   // the next one is 28 years on
+  expect(next("0 0 29 2 1", "UTC", "2026-01-01T00:00:00Z")).toBe("2026-02-02T00:00:00.000Z");   // both fields restricted, so the OR rule: a Monday in February, not only Feb 29
+  // The truly empty ones still never fire, and are refused as such.
+  expect(next("0 0 31 2 *", "UTC", "2026-01-01T00:00:00Z")).toBeUndefined();
+  expect(() => schedulesConfig([{ id: "never", cron: "0 0 30 2 *", class: "plan", title: "t" }])).toThrow("schedules.never: cron never fires");
+  expect(scheduleNext({ cron: "0 0 31 4 *", tz: "UTC" }, 0)).toBe(Number.MAX_SAFE_INTEGER);
+});
