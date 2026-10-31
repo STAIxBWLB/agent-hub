@@ -70,7 +70,7 @@ function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; ki
   const wrapper = join(root, "run.ts");
   writeFileSync(wrapper, `Date.now = () => ${now}; const original = globalThis.fetch; globalThis.fetch = ((input, init) => String(input).startsWith("http://127.0.0.1:37701/") ? Promise.resolve(Response.json({ status: "ok", version: "fixture" })) : original(input, init)) as typeof fetch; await import(${JSON.stringify(CLI)});`);
   const run = async (args: string[], env: Record<string, string> = {}) => {
-    const childEnv: Record<string, string> = { ...process.env as Record<string, string>, HOME: root, AGENTHUB_HOME: join(root, "home"), PATH: `${bin}:${process.env.PATH}`, TERM: "xterm-256color", OMNIROUTE_API_KEY: "fixture", ...env };
+    const childEnv: Record<string, string> = { ...process.env as Record<string, string>, HOME: root, CLAUDE_CONFIG_DIR: join(root, "claude"), CODEX_HOME: join(root, "codex"), AGENTHUB_HOME: join(root, "home"), PATH: `${bin}:${process.env.PATH}`, TERM: "xterm-256color", OMNIROUTE_API_KEY: "fixture", ...env };
     for (const marker of ["AGENTHUB_PEER_ID", "AGENTHUB_CHANNEL", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_PROJECT_DIR", "AGENTHUB_STATE_DIR", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID", "NO_COLOR", "COLUMNS", "AGENTHUB_OMNIROUTE_URL", "AGENTHUB_OMNIROUTE_KEY"]) if (!(marker in env)) delete childEnv[marker];
     const proc = Bun.spawn([process.execPath, wrapper, ...args], { cwd: root, env: childEnv, stdout: "pipe", stderr: "pipe" });
     const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);

@@ -86,7 +86,7 @@ async function doctor(amem: string | undefined) {
   // `dot` records every call: the doctor must never ask it about memory again (#1008).
   writeFileSync(join(root, "bin", "dot"), `#!/bin/sh\necho "dot $*" >> '${calls}'\necho "✓ codex ready"\necho "✓ kimi ready"\n`, { mode: 0o755 });
   if (amem !== undefined) writeFileSync(join(root, "bin", "amem"), amem, { mode: 0o755 });
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(root, "home"), AGENTHUB_HOME: join(root, "ahub"), AMEM_HOME: join(root, "mem"), PATH: `${join(root, "bin")}:/usr/bin:/bin`, AGENTHUB_OMNIROUTE_URL: "http://127.0.0.1:9/v1" };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(root, "home"), CLAUDE_CONFIG_DIR: join(root, "claude"), CODEX_HOME: join(root, "codex"), AGENTHUB_HOME: join(root, "ahub"), AMEM_HOME: join(root, "mem"), PATH: `${join(root, "bin")}:/usr/bin:/bin`, AGENTHUB_OMNIROUTE_URL: "http://127.0.0.1:9/v1" };
   for (const marker of ["AGENTHUB_PEER_ID", "AGENTHUB_CHANNEL", "AGENTHUB_DELIVERY_ONLY", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_PROJECT_DIR", "AGENTHUB_STATE_DIR", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID"]) delete env[marker];
   const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "doctor", "--json"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
   const [, stdout] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]).then(([code, out, err]) => [code, out, err] as const);
