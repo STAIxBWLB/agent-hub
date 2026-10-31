@@ -23,7 +23,7 @@ import { projectionConfig } from "./text-projection.ts";
 import { validateInstances, type InstancesConfig } from "./instances.ts";
 import { peerRosterConfig, staleInstanceKey } from "./roster.ts";
 import { CHARACTER_IDS } from "../pet/characters.ts";
-import { checkSettingValue, settingDef } from "./settings.ts";
+import { autonomyOwnership, checkSettingValue, settingDef } from "./settings.ts";
 import { petPalette } from "../pet/config.ts";
 
 export type ApplyClass = "live" | "next use" | "restart";
@@ -176,6 +176,7 @@ export const validatePetConfig: Check = (v, k) => {
 shapes.set(validatePetConfig, { fields: petFields });
 const nativeValidators = { bool, text, strings, argv, number, words, block };
 const schema: Record<string, Check> = {
+  _autonomy: v => { autonomyOwnership(v); },
   ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.schema?.(nativeValidators) ?? {})),
   watchdog_ms: number(1, 2_147_483_647), kimi_cmd: argv, qwen_cmd: argv, jcode_cmd: argv, codex_bin: text, jcode_home: text, jcode_provider_profile: text,
   action_policy: block({ enabled: bool, always_ask: (v, k) => { actionPolicyConfig({ always_ask: v }); }, budgets: map(number(0, 1000, true), ACTION_CLASSES) }),

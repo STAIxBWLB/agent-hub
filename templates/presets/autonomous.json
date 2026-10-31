@@ -1,0 +1,160 @@
+{
+  "schema": 1,
+  "issue": "#999",
+  "about": "Person-selected project permission/start and task-flow defaults. Permission and start defaults apply at the next peer start. T1 does not write action_policy; hub floor integration belongs to task #582. Structural guards require current evidence.",
+  "hub": {
+    "tasks.auto_pull": true,
+    "task_sweep.enabled": true,
+    "task_sweep.auto_reassign": true
+  },
+  "environments": {
+    "terminal": {
+      "aliases": [],
+      "terminalOpen": null,
+      "instruction": "Keep the person's terminal.open template. No portable terminal command is invented; configure terminal.open if a TUI peer has no available opener.",
+      "matrixEnvironment": "terminal",
+      "detect": {
+        "priority": 30,
+        "terminal": true
+      }
+    },
+    "orca": {
+      "aliases": [],
+      "terminalOpen": null,
+      "instruction": "Keep the person's terminal.open template and the existing Orca fallback. Configure terminal.open or restore the Orca provider if a TUI opener is unavailable. An Orca environment alone does not prove a Claude profile plugin is installed.",
+      "matrixEnvironment": "orca",
+      "detect": {
+        "priority": 0,
+        "variable": "ORCA_WORKTREE_ID"
+      }
+    },
+    "headless": {
+      "aliases": [],
+      "terminalOpen": null,
+      "instruction": "Use a headless form where the kind supports one. A TUI-only kind needs a declared headless variant or a person-owned terminal; no automatic downgrade is invented.",
+      "matrixEnvironment": "headless",
+      "detect": {
+        "priority": 40,
+        "terminal": false
+      }
+    },
+    "ci": {
+      "aliases": [],
+      "terminalOpen": null,
+      "instruction": "Use the headless defaults in CI; native account and tool availability stay explicit.",
+      "matrixEnvironment": "headless",
+      "detect": {
+        "priority": 10,
+        "variable": "CI"
+      }
+    }
+  },
+  "kinds": {
+    "claude": {
+      "permission": {
+        "tui": "never-ask",
+        "headless": "ask-when-needed"
+      },
+      "start": {
+        "terminal": "tui",
+        "orca": "tui",
+        "headless": null,
+        "ci": null
+      }
+    },
+    "codex": {
+      "permission": {
+        "tui": "never-ask",
+        "headless": "never-ask"
+      },
+      "start": {
+        "terminal": "tui",
+        "orca": "tui",
+        "headless": "headless",
+        "ci": "headless"
+      }
+    },
+    "kimi": {
+      "permission": {
+        "tui": null,
+        "headless": "never-ask"
+      },
+      "start": {
+        "terminal": "tui",
+        "orca": "tui",
+        "headless": "headless",
+        "ci": "headless"
+      }
+    },
+    "qwen": {
+      "permission": {
+        "tui": null,
+        "headless": "never-ask"
+      },
+      "start": {
+        "terminal": "headless",
+        "orca": "headless",
+        "headless": "headless",
+        "ci": "headless"
+      }
+    },
+    "jcode": {
+      "permission": {
+        "tui": null,
+        "headless": null
+      },
+      "start": {
+        "terminal": "tui",
+        "orca": "tui",
+        "headless": "headless",
+        "ci": "headless"
+      }
+    },
+    "pi": {
+      "permission": {
+        "tui": "never-ask",
+        "headless": "never-ask"
+      },
+      "start": {
+        "terminal": "tui",
+        "orca": "tui",
+        "headless": "headless",
+        "ci": "headless"
+      }
+    },
+    "local": {
+      "permission": {
+        "tui": null,
+        "headless": "never-ask"
+      },
+      "start": {
+        "terminal": "headless",
+        "orca": "headless",
+        "headless": "headless",
+        "ci": "headless"
+      }
+    },
+    "agy": {
+      "permission": {
+        "tui": null,
+        "headless": null
+      },
+      "start": {
+        "terminal": "tui",
+        "orca": "tui",
+        "headless": null,
+        "ci": null
+      }
+    }
+  },
+  "floorClasses": [
+    "force-push",
+    "default-branch-push",
+    "tag-push",
+    "release-publish",
+    "package-publish",
+    "destroy-outside-root",
+    "foreign-repo-write",
+    "external-send"
+  ]
+}
