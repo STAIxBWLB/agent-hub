@@ -64,7 +64,7 @@ export const FLOOR_CLASS_TABLE: Readonly<Record<string, { readonly action: Actio
   "external-send": { action: "external-write", asks: "mail and posting", guard: null },
 });
 export const FLOOR_CLASSES: readonly string[] = Object.freeze(Object.keys(FLOOR_CLASS_TABLE));
-export interface FloorEnforcementRow { readonly status: "hub-enforced" | "not-enforced"; readonly reason: string }
+export interface FloorEnforcementRow { readonly class: string; readonly status: "hub-enforced" | "not-enforced"; readonly reason: string }
 /**
  * What the hub can say about each floor class for one peer, from the running policy and where the hub sees that peer's calls (`enforcement`, as `actionEnforcement`
  * in the daemon reports it). `hub-enforced`: the hub sees the call first and the class asks under this policy, with the floor on or off. `not-enforced`: it does not,
@@ -75,10 +75,10 @@ export function floorEnforcement(policy: ActionPolicyConfig | undefined, enforce
   const config = actionPolicyConfig(policy), asked = askedClasses(config), rows: Record<string, FloorEnforcementRow> = {};
   for (const [name, entry] of Object.entries(FLOOR_CLASS_TABLE)) {
     const guard = entry.guard === null ? "no structural guard is named for it" : `it rests on ${entry.guard}, which the hub has not verified`;
-    if (!config.enabled) rows[name] = { status: "not-enforced", reason: `action_policy is disabled, so ${entry.asks} does not ask; ${guard}` };
-    else if (!asked.includes(entry.action)) rows[name] = { status: "not-enforced", reason: `action_policy always_ask omits ${entry.action}, so ${entry.asks} does not ask; ${guard}` };
-    else if (!enforcement.enforced) rows[name] = { status: "not-enforced", reason: `the hub does not see this peer's calls first${enforcement.reason ? ` (${enforcement.reason})` : ""}; ${guard}` };
-    else rows[name] = { status: "hub-enforced", reason: `${entry.asks} asks (class ${entry.action}${config.floor === true ? ", floor on" : ""})` };
+    if (!config.enabled) rows[name] = { class: name, status: "not-enforced", reason: `action_policy is disabled, so ${entry.asks} does not ask; ${guard}` };
+    else if (!asked.includes(entry.action)) rows[name] = { class: name, status: "not-enforced", reason: `action_policy always_ask omits ${entry.action}, so ${entry.asks} does not ask; ${guard}` };
+    else if (!enforcement.enforced) rows[name] = { class: name, status: "not-enforced", reason: `the hub does not see this peer's calls first${enforcement.reason ? ` (${enforcement.reason})` : ""}; ${guard}` };
+    else rows[name] = { class: name, status: "hub-enforced", reason: `${entry.asks} asks (class ${entry.action}${config.floor === true ? ", floor on" : ""})` };
   }
   return rows;
 }
