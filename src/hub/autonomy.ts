@@ -48,7 +48,6 @@ export interface AutonomyStatusInput {
   environment: AutonomyEnvironment;
   peers: readonly AutonomyPeer[];
   rows?: readonly ConfirmationRow[];
-  actionPolicy?: { enabled?: boolean; always_ask?: readonly string[] };
   terminalOpener?: { available: boolean; reason?: string; via?: string };
   /** Host floor-verdict seam for T3; a coarse action policy alone proves no floor enforcement. */
   floorEnforcement?: Readonly<Record<string, Readonly<Record<string, AutonomyFloorStatus>>>>;

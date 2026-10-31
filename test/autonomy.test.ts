@@ -1,11 +1,9 @@
 import { expect, test } from "bun:test";
-import { ACTION_CLASSES } from "../src/hub/action-class.ts";
 import { autonomyPreset, autonomyStatus, planAutonomy, validateAutonomyPreset, type AutonomyKindPreset, type AutonomyPreset, type AutonomySettingLookup } from "../src/hub/autonomy.ts";
 import { confirmationMatrix } from "../src/hub/confirmation-matrix.ts";
 
 import presetJson from "../templates/presets/autonomous.json";
 const clone = () => structuredClone(presetJson) as unknown as AutonomyPreset;
-const policy = () => ({ enabled: true, always_ask: [...ACTION_CLASSES] });
 const lookup: AutonomySettingLookup = () => ({ store: "config" });
 
 test("a new environment is data in the one preset, including its inventory projection", () => {
@@ -101,15 +99,13 @@ test("status reports current mode separately from the next-start default", () =>
   expect(status!.floor.every(entry => entry.status === "not-enforced")).toBe(true);
 });
 
-test("a coarse live gate does not establish the unimplemented finer floor", () => {
-  const [status] = autonomyStatus({ environment: "terminal", peers: [{ id: "claude", kind: "claude", form: "tui", permissionMode: "never-ask", actionEnforcement: { enforced: true } }], actionPolicy: policy(), terminalOpener: { available: true } });
+test("a live pre-tool gate alone does not establish the unimplemented finer floor", () => {
+  const [status] = autonomyStatus({ environment: "terminal", peers: [{ id: "claude", kind: "claude", form: "tui", permissionMode: "never-ask", actionEnforcement: { enforced: true } }], terminalOpener: { available: true } });
   expect(status!.floor.every(entry => entry.status === "not-enforced" && entry.reason.includes("#582"))).toBe(true);
-  const [disabled] = autonomyStatus({ environment: "terminal", peers: [{ id: "claude", kind: "claude", form: "tui", actionEnforcement: { enforced: true } }], actionPolicy: { enabled: false, always_ask: [...ACTION_CLASSES] } });
-  expect(disabled!.floor.every(entry => entry.status === "not-enforced")).toBe(true);
 });
 
 test("native bypass potential or missing live evidence never becomes an assumed structural guard", () => {
-  const [status] = autonomyStatus({ environment: "headless", peers: [{ id: "codex", kind: "codex", form: "headless", permissionMode: "never-ask", actionEnforcement: { enforced: false, reason: "native policy can execute without a request" } }], actionPolicy: policy() });
+  const [status] = autonomyStatus({ environment: "headless", peers: [{ id: "codex", kind: "codex", form: "headless", permissionMode: "never-ask", actionEnforcement: { enforced: false, reason: "native policy can execute without a request" } }] });
   expect(status!.floor.every(entry => entry.status === "not-enforced" && entry.reason.includes("native policy"))).toBe(true);
   expect(status!.missing.some(item => item.includes("No verified structural guard"))).toBe(true);
 });
@@ -122,7 +118,7 @@ test("structural protection is reported per class only with explicit verified ev
 });
 
 test("personal-turn visibility gaps in the T0 matrix remain gaps even when a caller supplies an optimistic gate", () => {
-  const [status] = autonomyStatus({ environment: "terminal", peers: [{ id: "qwen", kind: "qwen", form: "tui", actionEnforcement: { enforced: true } }], actionPolicy: policy(), terminalOpener: { available: true } });
+  const [status] = autonomyStatus({ environment: "terminal", peers: [{ id: "qwen", kind: "qwen", form: "tui", actionEnforcement: { enforced: true } }], terminalOpener: { available: true } });
   expect(status!.effectiveMode).toBe("unmanaged");
   expect(status!.floor.every(entry => entry.status === "not-enforced")).toBe(true);
   expect(status!.missing.some(item => item.includes("every turn"))).toBe(true);

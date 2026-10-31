@@ -21,9 +21,9 @@ async function fixture() {
   cleanups.push(() => daemon.stop());
   const person = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => person.close());
   const tools = await ControlClient.connect(stateDir, { role: "tools", peer: "claude" }); cleanups.push(() => tools.close());
-  const on = async (client = person) => {
-    const preview = await client.request({ t: "autonomy", action: "preview", environment: "headless" });
-    return client.request({ t: "autonomy", action: "on", environment: "headless", confirmed: true, confirmation: preview.confirmation });
+  const on = async (client = person, environment = "headless") => {
+    const preview = await client.request({ t: "autonomy", action: "preview", environment });
+    return client.request({ t: "autonomy", action: "on", environment, confirmed: true, confirmation: preview.confirmation });
   };
   return { person, tools, cwd, file, stateDir, on, read: () => JSON.parse(readFileSync(file, "utf8")), restart: async () => {
     await daemon.stop();
@@ -143,4 +143,13 @@ test("mode consent remains valid when the person's separate action policy or sta
   const status = (await p.person.request({ t: "autonomy", action: "status", environment: "headless" })).status;
   expect(status.consentedPeers).toContain("codex");
   expect(status.peers.find((peer: any) => peer.id === "codex").floor.every((row: any) => row.status === "not-enforced" && row.reason.includes("#582"))).toBe(true);
+});
+
+test("reapplying another environment preserves an already confirmed unchanged mode outside the new target form", async () => {
+  const p = await fixture();
+  expect((await p.on()).ok).toBe(true);
+  expect((await p.on(p.person, "terminal")).ok).toBe(true);
+  const status = (await p.person.request({ t: "autonomy", action: "status", environment: "terminal" })).status;
+  expect(status.consentedPeers).toContain("kimi");
+  expect(p.read().permission_modes.kimi).toBe("never-ask");
 });

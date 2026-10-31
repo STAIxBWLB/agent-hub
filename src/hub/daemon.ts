@@ -6992,7 +6992,7 @@ export async function startDaemon(opts: DaemonOptions) {
         refreshAutonomyConsent();
         for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
         const terminal = opener.available();
-        const rows = autonomyStatus({ environment: env, peers: autonomyPeers(), actionPolicy: actionPolicyConfig(config.action_policy), terminalOpener: terminal.ok ? { available: true, via: terminal.via } : { available: false, reason: terminal.why } });
+        const rows = autonomyStatus({ environment: env, peers: autonomyPeers(), terminalOpener: terminal.ok ? { available: true, via: terminal.via } : { available: false, reason: terminal.why } });
         for (const row of rows) if (pendingPermissionDefaults.has(row.id)) row.missing.push("This never-ask default has no matching retained consent; confirm it in ahub console or run ahub autonomy on again.");
         return { ok: true, status: { environment: env, consentedPeers: [...autonomyConfirmed], peers: rows }, lines: [`Project autonomy, environment: ${env}`, ...rows.flatMap(row => [`${row.id}: ${row.effectiveMode}; preset ${row.nextMode ?? "unmanaged"} at ${row.applies}`, ...row.floor.map(floor => `  ${floor.class}: ${floor.status}; ${floor.reason}`), ...row.missing.map(reason => `  missing: ${reason}`)])] };
       }
@@ -7031,8 +7031,12 @@ export async function startDaemon(opts: DaemonOptions) {
         const fileConfig = loadConfig(opts.cwd, undefined, undefined, externalDefinitions);
         validateEffectiveConfig(fileConfig, adapterCatalog);
         const current = autonomyConsentValues(fileConfig);
-        const approved = Object.fromEntries(operations.filter(operation => operation.key.startsWith("permission_modes.") && operation.value === "never-ask")
-          .flatMap(operation => { const peer = operation.key.slice("permission_modes.".length); return current[peer] ? [[peer, current[peer]]] : []; }));
+        const retained = autonomyConsent.confirmed(current, true);
+        const approved: AutonomyConsentValues = Object.fromEntries([...retained].map(peer => [peer, current[peer]!]));
+        for (const operation of operations) if (operation.key.startsWith("permission_modes.") && operation.value === "never-ask") {
+          const peer = operation.key.slice("permission_modes.".length);
+          if (current[peer]) approved[peer] = current[peer]!;
+        }
         try { autonomyConsent.confirm(approved); } finally { refreshAutonomyConsent(); }
       }
       for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
