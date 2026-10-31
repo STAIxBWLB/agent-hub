@@ -3915,11 +3915,24 @@ export async function startDaemon(opts: DaemonOptions) {
   // #999 T3, the floor: its facts are read where the classifier runs, per peer, and an unknown one keeps the class asking. The default branch comes from the same
   // authoritative remote read the task shell uses (never a local origin/HEAD), cached because the gate is synchronous; before the read answers, or when it fails, every push asks.
   let floorDefaultBranch: string | undefined, floorGeneration = 0;
-  const floorGit = (cwd: string, args: string[]) => { try { return hubGitSync(["-C", cwd, ...args], { encoding: "utf8", timeout: 1000, maxBuffer: 4096 }); } catch { return undefined; } };
+  const floorGitRaw = (cwd: string, args: string[]) => { try { return hubGitSync(["-C", cwd, ...args], { encoding: "utf8", timeout: 1000, maxBuffer: 4096 }); } catch { return undefined; } };
   const floorFacts = (peer: PeerId): FloorFacts | undefined => {
     if (!actionBudgets.floorOn()) return undefined;
     let root: string;
     try { root = realPath(executionRoot(peer)); } catch { return undefined; }
+    // One classification gets a bounded amount of synchronous git work, because the gate is synchronous and a valid-sized command can hold hundreds of pushes: an identical read is answered
+    // once (memoized by directory and arguments), at most FLOOR_GIT_CALLS distinct reads run, and none starts after FLOOR_GIT_MS has passed. Past the bound a fact is unknown, and an
+    // unknown fact keeps the call asking. ponytail: the bound is per classification, not per daemon; a shared async fact cache would lift the ceiling without blocking the loop.
+    const FLOOR_GIT_CALLS = 16, FLOOR_GIT_MS = 2500;
+    const started = Date.now(), memo = new Map<string, ReturnType<typeof floorGitRaw>>();
+    const floorGit = (cwd: string, args: string[]): ReturnType<typeof floorGitRaw> => {
+      const key = `${cwd}\0${args.join("\0")}`;
+      if (memo.has(key)) return memo.get(key);
+      if (memo.size >= FLOOR_GIT_CALLS || Date.now() - started > FLOOR_GIT_MS) return undefined;
+      const found = floorGitRaw(cwd, args);
+      memo.set(key, found);
+      return found;
+    };
     return {
       ...(floorDefaultBranch ? { defaultBranch: floorDefaultBranch } : {}),
       ...(shellProjectRepository ? { repository: shellProjectRepository } : {}),
