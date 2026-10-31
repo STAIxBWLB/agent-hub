@@ -192,11 +192,16 @@ test("#932 real output hashing uses #509 while supplied hashes stay declared and
   await add(f, id, "host-file", { kind: "output", body: { path: "results/result.csv", format: "csv" } });
   await add(f, id, "declared-file", { kind: "output", body: { id: "d-0123456789ab", sha256: HASH } });
   await add(f, id, "missing-file", { kind: "output", body: { path: "results/missing.csv", format: "csv" } });
-  await add(f, id, "denied-file", { kind: "output", body: { path: ".env", format: "txt" } });
   const row = (await f.tasks.experimentShow(USER, { attemptId: id })).attempts[0]!;
   expect(row.evidence).toMatchObject({ measured: [{ values: { sha256: { value: createHash("sha256").update("value\n1\n").digest("hex"), provenance: "host-observed" } } }],
     declared: { outputs: [expect.anything(), { sha256: { value: HASH, provenance: "declared" } },
-      { sha256: { value: null, provenance: "unknown" } }, { sha256: { value: null, provenance: "unknown" } }] } });
+      { sha256: { value: null, provenance: "unknown" } }] } });
+  const deniedId=await attempt(f,hash,"denied-output");
+  await add(f,deniedId,"denied-file",{kind:"output",body:{path:".env",format:"txt"}});
+  const denied=(await f.tasks.experimentShow(USER,{attemptId:deniedId})).attempts[0]!;
+  expect(denied.private).toBe(true);
+  expect(denied.events[0]).toMatchObject({body:"[pii]"});
+  expect(f.board.experimentEvents(deniedId).rows[0]!.observations).toEqual([]);
 });
 
 test("#932 source privacy upgrades and private event text are stubbed in every public show", async () => {
@@ -287,4 +292,15 @@ test("#932 a missing output under pii.paths remains private even though its hash
   expect(JSON.stringify(shown)).not.toContain(path);
   expect(f.board.experimentEvents(id).rows[0]!.observations).toEqual([]);
   expect(f.board.experimentAttempt(id)!.private).toBe(true);
+});
+
+test("#932 denied and unclassifiable output paths are private independently of successful reads", async () => {
+  for (const filePolicy of [{deny:["denied-results"]},{executionRoot:()=>undefined}]) {
+    const f=await fixture(false,filePolicy), hash=await saveProtocol(f), id=await attempt(f,hash,"unreadable-private");
+    await add(f,id,"output",{kind:"output",body:{path:"denied-results/absent.csv",format:"csv"}});
+    const row=(await f.tasks.experimentShow(USER,{attemptId:id})).attempts[0]!;
+    expect(row.private).toBe(true);
+    expect(row.events[0]).toMatchObject({body:"[pii]"});
+    expect(f.board.experimentEvents(id).rows[0]!.observations).toEqual([]);
+  }
 });

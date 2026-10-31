@@ -244,7 +244,7 @@ export function projectExperimentEvidence(protocol: ExperimentProtocolContract, 
     startedAt: declared(starts.at(-1)?.body.startedAt), endedAt: declared<number>(undefined),
     exitStatus: declared(end?.kind === "end" ? end.body.exitStatus : undefined),
     run: declared(end?.kind === "end" ? end.body.run : undefined),
-    durationMs: declared<number>(undefined), queueTime: declared<number>(undefined), timedOut: declared<boolean>(undefined), cancelled: declared<boolean>(undefined),
+    durationMs: declared<number>(undefined), createdAt: declared<number>(undefined), timedOut: declared<boolean>(undefined), cancelled: declared<boolean>(undefined),
     metrics: protocol.metrics.map(metric => {
       const observations = rows.flatMap(row => row.kind === "metric" && row.body.name === metric.name ? [declared(row.body.value)] : []);
       return { name: metric.name, unit: metric.unit, observations, latest: observations.at(-1) ?? declared<number>(undefined) };
@@ -259,7 +259,7 @@ export function projectExperimentEvidence(protocol: ExperimentProtocolContract, 
 export interface ExperimentHostEvidence {
   source: "check" | "deliverable";
   evidence: string;
-  values: Partial<Record<"exitStatus" | "timedOut" | "cancelled" | "durationMs" | "queueTime" | "sha256" | "bytes" | "deliverableId", number | boolean | string>>;
+  values: Partial<Record<"exitStatus" | "timedOut" | "cancelled" | "durationMs" | "createdAt" | "sha256" | "bytes" | "deliverableId", number | boolean | string>>;
 }
 
 /** Validate only measured fields from the host's receipt reader. This helper grants no authority to a supplied receipt. */
@@ -270,8 +270,8 @@ export function checkRunObservation(input: unknown, run: string, taskId: number,
     if (!("commit" in protocol.code) || row.run !== run || row.task !== taskId || row.sha !== protocol.code.commit || row.status !== "finished") return undefined;
     if (row.exit !== null && (typeof row.exit !== "number" || !Number.isSafeInteger(row.exit))) return undefined;
     if (typeof row.timed_out !== "boolean" || typeof row.cancelled !== "boolean") return undefined;
-    const durationMs = number(row.duration_ms, "check.duration_ms", true), queueTime = number(row.created, "check.created", true);
-    return { source: "check", evidence: run, values: { ...(row.exit === null ? {} : { exitStatus: row.exit }), timedOut: row.timed_out, cancelled: row.cancelled, durationMs, queueTime } };
+    const durationMs = number(row.duration_ms, "check.duration_ms", true), createdAt = number(row.created, "check.created", true);
+    return { source: "check", evidence: run, values: { ...(row.exit === null ? {} : { exitStatus: row.exit }), timedOut: row.timed_out, cancelled: row.cancelled, durationMs, createdAt } };
   } catch { return undefined; }
 }
 
@@ -280,12 +280,12 @@ export function checkRunObservation(input: unknown, run: string, taskId: number,
 export function parseExperimentHostEvidence(input: unknown): ExperimentHostEvidence {
   const row = object(input, ["source", "evidence", "values"], "observation");
   const source = choice(row.source, ["check", "deliverable"], "observation.source");
-  const values = object(row.values, source === "check" ? ["exitStatus", "timedOut", "cancelled", "durationMs", "queueTime"] : ["deliverableId", "sha256", "bytes"], "observation.values");
+  const values = object(row.values, source === "check" ? ["exitStatus", "timedOut", "cancelled", "durationMs", "createdAt"] : ["deliverableId", "sha256", "bytes"], "observation.values");
   if (source === "check") {
     if (typeof values.timedOut !== "boolean" || typeof values.cancelled !== "boolean") fail("observation.values", "missing measured check flags");
     return { source, evidence: pattern(row.evidence, RUN, "observation.evidence"), values: {
       ...(values.exitStatus === undefined ? {} : { exitStatus: integer(values.exitStatus, "observation.exitStatus", Number.MIN_SAFE_INTEGER) }),
-      timedOut: values.timedOut, cancelled: values.cancelled, durationMs: number(values.durationMs, "observation.durationMs", true), queueTime: number(values.queueTime, "observation.queueTime", true),
+      timedOut: values.timedOut, cancelled: values.cancelled, durationMs: number(values.durationMs, "observation.durationMs", true), createdAt: number(values.createdAt, "observation.createdAt", true),
     } };
   }
   const deliverableId = pattern(values.deliverableId, DELIVERABLE, "observation.deliverableId");

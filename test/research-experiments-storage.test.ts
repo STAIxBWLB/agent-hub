@@ -104,7 +104,7 @@ test("events are append-only, seq-CAS fenced and idempotent across restart with 
 
 test("host observations remain separate immutable evidence, cannot rewrite declared values or create a second end", () => {
   const f = fixture(), stored = f.save(), attempt = f.board.createExperimentAttempt(f.attempt("first", "1", stored.hash), f.fence());
-  const observation = { source: "check" as const, evidence: RUN, values: { exitStatus: 7, timedOut: false, cancelled: false, durationMs: 10, queueTime: 4 } };
+  const observation = { source: "check" as const, evidence: RUN, values: { exitStatus: 7, timedOut: false, cancelled: false, durationMs: 10, createdAt: 4 } };
   const end = f.board.appendExperimentEvent(attempt.attemptId, "end-key", { kind: "end", body: { status: "succeeded", exitStatus: 0, run: RUN } }, [observation], "local", NOW, false, 0, f.fence());
   expect(end.event).toMatchObject({ provenance: "declared", body: { status: "succeeded", exitStatus: 0 } });
   expect(end.observations).toEqual([{ eventSeq: 1, observation }]);

@@ -971,6 +971,7 @@ export class Board {
     return experimentStatus(events, this.get(attempt.attempt.taskId)?.state);
   }
 
+  // ponytail: exact counts validate all campaign attempts on each show (linear in attempt count). Upgrade to a transactional status projection maintained on event and task-state changes.
   experimentSummary(project: string, campaignId: string): { total: number; statuses: Record<ExperimentStatus, number> } {
     const campaign = this.researchCampaign(campaignId); if (!campaign || campaign.project !== project) throw experimentFailure();
     const statuses: Record<ExperimentStatus, number> = { declared: 0, running: 0, succeeded: 0, failed: 0, cancelled: 0, unknown: 0 };

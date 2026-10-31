@@ -36,7 +36,9 @@ import { CODE_SCOPE_LINE, evidenceOnlyNotice, type ReviewScope } from "./review-
 import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
-import { matchesPolicy } from "./path-policy.ts";
+import { matchesPolicy, policyRealPath, insideRoot } from "./path-policy.ts";
+import { isDenied } from "../local/deny.ts";
+import { foldSegment, isHubWritePath } from "./permission-mode.ts";
 import { correctionInput, resolveVisibleMemory } from "./memory-candidates.ts";
 import type { MemoryScreen } from "./read-tools.ts";
 import { withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
@@ -54,7 +56,7 @@ const learnVerdict = (card: Pick<Task, "state" | "history">): "accepted" | "reje
 };
 import { approvedDeliverables, latestDeliverables, parseDeliverableClaims, publicDeliverables, type DeliverableRecord, type DeliverableStatus } from "./deliverables.ts";
 import { checkDeliverables, DeliverableRefusal, hashDeliverables, vetDeliverables, type DeliverablePorts } from "./deliverable-files.ts";
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type Scope, type Tier } from "@staix/agent-mem";
@@ -1754,7 +1756,7 @@ export class Tasks {
           await this.experimentScreen(canonicalJson([key, event]), before.task); requestCheck();
           this.experimentFresh(before, by, record.protocol, record.recordedForTaskId);
           const observations: ExperimentHostEvidence[] = [];
-          let measuredPrivate = false;
+          let outputPrivate = event.kind === "output" && "path" in event.body ? this.experimentOutputPrivate(before.task, event.body.path) : false;
           if (event.kind === "end" && event.body.run && this.d.experimentCheck) {
             let receipt: unknown;
             try { receipt = await this.d.experimentCheck(event.body.run); } catch { /* unavailable is unknown */ }
@@ -1765,12 +1767,13 @@ export class Tasks {
             try {
               const measured = await hashDeliverables([event.body], this.deliverablePorts(before.task));
               const output = measured[0];
-              if (output) { observations.push(deliverableObservation(output)); measuredPrivate = output.private === true; }
+              if (output) { observations.push(deliverableObservation(output)); outputPrivate ||= output.private === true; }
             } catch { /* #509 refusal, missing or unreadable means unknown; never use a declared fallback hash */ }
             requestCheck(); this.experimentFresh(before, by, record.protocol, record.recordedForTaskId);
           }
           const current = this.experimentFresh(before, by, record.protocol, record.recordedForTaskId); requestCheck();
-          const saved = this.d.board.appendExperimentEvent(id, key, event, observations, by, this.studyTime(), current.private || record.private || attempt.private || measuredPrivate, lastSeq, current.fence);
+          if (event.kind === "output" && "path" in event.body) outputPrivate ||= this.experimentOutputPrivate(current.task, event.body.path);
+          const saved = this.d.board.appendExperimentEvent(id, key, event, observations, by, this.studyTime(), current.private || record.private || attempt.private || outputPrivate, lastSeq, current.fence);
           return { kind: "event", protocolHash: record.hash, attemptId: id, seq: saved.event.seq };
         }
         throw new PreEffectToolRefusal("unsupported experiment record kind");
@@ -5368,6 +5371,16 @@ export class Tasks {
     const root = !this.d.executionRoot || !task.owner || task.owner === USER ? this.d.cwd : this.d.executionRoot(task.owner);
     if (root === undefined) throw new DeliverableRefusal(`deliverables: ${task.owner}'s execution root is not verified right now, so its files cannot be hashed`);
     return { cwd: root, deny: this.d.deny ?? [], private: path => taskPrivate || matchesPolicy(root, path, this.d.piiPaths ?? [], true) };
+  }
+
+  /** Path privacy exists even when measurement cannot open the output. Use the #509 policies on both names. */
+  private experimentOutputPrivate(task: Task, path: string): boolean {
+    try {
+      const ports = this.deliverablePorts(task), root = realPath(ports.cwd), deny = [...ports.deny];
+      const typed = relative(root, resolve(root, path)), actual = relative(root, policyRealPath(resolve(root, path)));
+      return !insideRoot(typed) || !insideRoot(actual) || ports.private(path)
+        || [typed, actual].some(name => isHubWritePath(name) || isDenied(name, deny) || isDenied(foldSegment(name), deny.map(foldSegment)));
+    } catch { return true; }
   }
 
   /**

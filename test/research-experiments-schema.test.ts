@@ -144,7 +144,7 @@ test("projections never infer host evidence, environment hashes, output hashes o
   expect(view.environment.hash).toEqual({ value: null, provenance: "unknown" });
   expect(view.sealed).toEqual({ value: false, provenance: "declared" });
   expect(view.exitStatus).toEqual({ value: 0, provenance: "declared" }); expect(view.run).toEqual({ value: RUN, provenance: "declared" });
-  for (const value of [view.startedAt, view.endedAt, view.durationMs, view.queueTime, view.cancelled, view.timedOut]) expect(value).toEqual({ value: null, provenance: "unknown" });
+  for (const value of [view.startedAt, view.endedAt, view.durationMs, view.createdAt, view.cancelled, view.timedOut]) expect(value).toEqual({ value: null, provenance: "unknown" });
   expect(view.outputs[0]?.sha256).toEqual({ value: HASH, provenance: "declared" });
   expect(view.outputs[1]?.sha256).toEqual({ value: null, provenance: "unknown" });
   expect(view.metrics[0]?.latest).toEqual({ value: 0.8, provenance: "declared" });
@@ -155,7 +155,7 @@ test("projections never infer host evidence, environment hashes, output hashes o
 test("host check projections require matching finished task/commit and keep absent timing fields unknown", async () => {
   const { checkRunObservation } = await import("../src/hub/research-experiments.ts");
   const receipt = {run:RUN,task:2,sha:"b".repeat(40),status:"finished",exit:1,timed_out:false,cancelled:false,duration_ms:42,created:1000,tail:"not evidence"};
-  expect(checkRunObservation(receipt,RUN,2,protocol())).toEqual({source:"check",evidence:RUN,values:{exitStatus:1,timedOut:false,cancelled:false,durationMs:42,queueTime:1000}});
+  expect(checkRunObservation(receipt,RUN,2,protocol())).toEqual({source:"check",evidence:RUN,values:{exitStatus:1,timedOut:false,cancelled:false,durationMs:42,createdAt:1000}});
   for (const patch of [{task:3},{sha:"c".repeat(40)},{status:"running"},{duration_ms:-1},{created:NaN},{cancelled:"false"},{exit:Infinity}]) {
     expect(checkRunObservation({...receipt,...patch},RUN,2,protocol())).toBeUndefined();
   }
@@ -169,7 +169,7 @@ test("host check projections require matching finished task/commit and keep abse
 test("independent observations retain contradictory declarations side by side without inventing a second end", async () => {
   const { projectExperimentWithObservations, parseExperimentHostEvidence, deliverableObservation } = await import("../src/hub/research-experiments.ts");
   const end=event({kind:"end",body:{status:"succeeded",exitStatus:0,run:RUN}},1);
-  const observation=parseExperimentHostEvidence({source:"check",evidence:RUN,values:{exitStatus:1,timedOut:false,cancelled:false,durationMs:20,queueTime:100}});
+  const observation=parseExperimentHostEvidence({source:"check",evidence:RUN,values:{exitStatus:1,timedOut:false,cancelled:false,durationMs:20,createdAt:100}});
   const view=projectExperimentWithObservations(protocol(),[end],[{eventSeq:1,observation}]);
   expect(view.declared.exitStatus).toEqual({value:0,provenance:"declared"});
   expect(view.measured[0]!.values.exitStatus).toEqual({value:1,provenance:"host-observed",evidence:RUN});
