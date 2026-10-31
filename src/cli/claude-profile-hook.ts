@@ -57,7 +57,7 @@ function planClaudeProfileHook(home: ClaudeHome, options: ClaudeProfileHookOptio
     let parent: Stats | undefined;
     if (directory && (!directory.isDirectory() || directory.isSymbolicLink() || !owned(directory))) return refuse("The selected Claude home is unsafe or not owned by this user.");
     if (!directory) {
-      if (!home.sources.some(source => source === "environment" || source === "recorded-launch")) return refuse("The previously observed default Claude home is no longer present.");
+      if (home.exists && !home.sources.some(source => source === "environment" || source === "recorded-launch")) return refuse("The previously observed default Claude home is no longer present.");
       parent = lstatSync(dirname(home.path), { throwIfNoEntry: false });
       if (!parent?.isDirectory() || parent.isSymbolicLink() || !owned(parent)) return refuse("The selected Claude home's parent is unsafe or unavailable.");
     }
