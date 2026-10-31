@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Database } from "bun:sqlite";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { BasePeer } from "../src/hub/peers.ts";
@@ -33,7 +34,7 @@ async function fixture() {
   const sources = new Map([[SOURCE, { id: SOURCE, sha256: "a".repeat(64), private: false }]]);
   const routing = loadRouting(dir), roles = { claude: ["planner", "reviewer"], codex: ["implementer"], local: ["implementer"] };
   const build = () => new Tasks({ board, bus, cwd: dir, project: "fixture-project", roles, routing: () => routing, notify: () => {}, studyNow: () => NOW,
-    studySource: id => { expect(board.db.inTransaction).toBe(false); return sources.get(id); } });
+    studySource: id => { expect((board as unknown as { db: Database }).db.inTransaction).toBe(false); return sources.get(id); } });
   let tasks = build();
   const parent = await tasks.propose(USER, { title: "Research parent", class: "implement", owner: "codex" });
   return { dir, file, bus, peers, sources, routing, roles, parent, get board() { return board; }, get tasks() { return tasks; },

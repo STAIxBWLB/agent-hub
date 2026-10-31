@@ -1312,7 +1312,7 @@ export class Tasks {
 
   private studyFamily(parent: Task): Set<number> {
     if (!parent.history.some(entry => entry.event === "draft approved")) throw new PreEffectToolRefusal("adoption requires an approved intake family");
-    const family = new Set<number>(), pending = [...parent.deps];
+    const family = new Set<number>(), pending = [...(parent.deps ?? [])];
     // ponytail: 512 dependency nodes bound intake provenance walks; a larger family needs indexed family identities.
     while (pending.length) {
       const id = pending.pop()!;
@@ -1381,6 +1381,7 @@ export class Tasks {
       const record: ResearchCampaignRecord = { id: `rc-${randomBytes(6).toString("hex")}`, project: this.d.project, parentTaskId: parentId,
         revision: 1, status: "draft", contract, hash: campaignHash(contract), private: current.private || withheld, createdBy: by, createdAt: this.studyTime() };
       let saved: ResearchCampaignRecord;
+      requestCheck(); this.plannerWriteAuthority(by, current.parent);
       try { saved = this.d.board.saveResearchCampaignDraft(record, undefined, current.parent.history.length); }
       catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "study draft was not saved"); }
       this.releaseNotice(`study ${saved.id} revision ${saved.revision} drafted`);
@@ -1407,6 +1408,7 @@ export class Tasks {
       const next: ResearchCampaignRecord = { id, project: this.d.project, parentTaskId: latest.parentTaskId, revision: revision + 1, status: "draft",
         contract, hash: campaignHash(contract), private: latest.private || current.private || withheld, createdBy: by, createdAt: this.studyTime() };
       let saved: ResearchCampaignRecord;
+      requestCheck(); this.plannerWriteAuthority(by, current.parent);
       try { saved = this.d.board.saveResearchCampaignDraft(next, revision, current.parent.history.length); }
       catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "study revision was not saved"); }
       this.releaseNotice(`study ${id} revision ${saved.revision} drafted`);
@@ -1421,7 +1423,8 @@ export class Tasks {
     return this.studyWrite(async () => {
       const original = this.studyRecord(id, revision), parent = this.studyParent(original.parentTaskId);
       if (original.status === "approved") {
-        const replay = this.d.board.activateCampaign(id, revision, this.d.project, by, this.studyTime(), [], parent.history.length, this.studyReplayPrivacy(original, parent));
+        const privacy = this.studyReplayPrivacy(original, parent); requestCheck();
+        const replay = this.d.board.activateCampaign(id, revision, this.d.project, by, this.studyTime(), [], parent.history.length, privacy);
         return this.studyReceipt(replay.campaign, true);
       }
       this.studyLatest(id, revision);
@@ -1452,12 +1455,13 @@ export class Tasks {
         throw new PreEffectToolRefusal("a private study cannot adopt a public task without changing its authority");
       for (const unit of prepared) if (unit.create) {
         if (priv && !unit.create.signals?.includes("pii")) unit.create.signals = [...(unit.create.signals ?? []), "pii"];
-        const planner = this.proposalPlanner({ ...parent, ...unit.create, signals: unit.create.signals ?? [], refs: unit.create.refs ?? {}, state: "backlog", owner: null, reviewer: null });
+        const planner = this.proposalPlanner({ ...parent, ...unit.create, signals: unit.create.signals ?? [], refs: unit.create.refs ?? {}, draft: undefined, state: "backlog", owner: null, reviewer: null });
         unit.create.planner = planner.planner; unit.create.plannerReason = planner.plannerReason;
-        this.warmRepository(unit.create);
+        this.warmRepository({ refs: unit.create.refs ?? {}, plan: unit.create.plan });
       }
       const mode = this.d.coordination?.();
       let result: ReturnType<Board["activateCampaign"]>;
+      requestCheck();
       try { result = this.d.board.activateCampaign(id, revision, this.d.project, by, now, prepared, current.parent.history.length, priv); }
       catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "study approval was not saved"); }
       for (const child of result.children) {
@@ -1484,6 +1488,7 @@ export class Tasks {
       if (latest.hash !== original.hash || currentParent.history.length !== parent.history.length) throw new PreEffectToolRefusal("study changed during close screening");
       const priv = this.studyReplayPrivacy(latest, currentParent) || withheld || !this.nameable(reason);
       let closed: ResearchCampaignRecord;
+      requestCheck(); this.plannerWriteAuthority(by, currentParent);
       try { closed = this.d.board.closeCampaign(id, revision, this.d.project, by, this.studyTime(), reason, currentParent.history.length, priv); }
       catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "study close was not saved"); }
       this.releaseNotice(`study ${id} revision ${revision} closed`);
