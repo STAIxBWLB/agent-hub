@@ -59,7 +59,7 @@ function directAliasTarget(path: string): string | undefined {
   }
   return undefined;
 }
-/** Only a completed bounded scan contributes aliases; a truncated root contributes none. */
+/** Only completed bounded scans contribute aliases; opt-in strict callers treat an incomplete scan as protected. */
 function aliasScope(dir: string, lexical: string, actual: string, includeParents: boolean, budget: DiscoveryBudget): boolean {
   // Readability must not depend on reaching readSync after an exhausted-budget return.
   accessSync(dir, constants.R_OK);
