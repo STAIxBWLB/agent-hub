@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "ce8da3ec141f7ef17e2e1cd6a8104ddc36304efe",
+      "verifiedAgainst": "57fe2130e4ab87f8ae54f869c1cbf38bc6cc93ed",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "ce8da3ec141f7ef17e2e1cd6a8104ddc36304efe",
+      "verifiedAgainst": "57fe2130e4ab87f8ae54f869c1cbf38bc6cc93ed",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "ce8da3ec141f7ef17e2e1cd6a8104ddc36304efe",
+      "verifiedAgainst": "57fe2130e4ab87f8ae54f869c1cbf38bc6cc93ed",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "ce8da3ec141f7ef17e2e1cd6a8104ddc36304efe",
+      "verifiedAgainst": "57fe2130e4ab87f8ae54f869c1cbf38bc6cc93ed",
       "paths": [
         "package.json",
         "src/",
@@ -43,7 +43,7 @@
       ]
     },
     "docs/agent-notes/adapters.md": {
-      "verifiedAgainst": "ce8da3ec141f7ef17e2e1cd6a8104ddc36304efe",
+      "verifiedAgainst": "57fe2130e4ab87f8ae54f869c1cbf38bc6cc93ed",
       "paths": [
         "src/adapters/",
         "src/pi/",
@@ -264,7 +264,7 @@
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "ce8da3ec141f7ef17e2e1cd6a8104ddc36304efe",
+      "verifiedAgainst": "57fe2130e4ab87f8ae54f869c1cbf38bc6cc93ed",
       "paths": [
         "test/",
         "scripts/check.sh",
