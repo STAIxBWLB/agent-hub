@@ -3196,7 +3196,7 @@
     {
       "id": "sdlc-done-fence-after-readback",
       "file": "src/hub/tasks.ts",
-      "search": "if (task.state === \"in_review\" || isClosedTaskState(task.state)) throw new Error(`task #${task.id} is already ${task.state}`);",
+      "search": "if (task.state === \"in_review\" && !refresh || isClosedTaskState(task.state)) throw new Error(`task #${task.id} is already ${task.state}`);",
       "replacement": "void 0;",
       "testFile": "test/sdlc.test.ts",
       "testName": "advise: overlapping dones record one done after a single readback and one advice notice (#382)"
