@@ -3906,6 +3906,7 @@ test("#1000 owner re-file refreshes a review at a new full head without a reject
   await f.tasks.done("codex", t.id, "first", { commit: REFILE_OLD });
   await until(() => f.peers.claude!.got.some(e => e.kind === "review"));
   const oldRequest = f.peers.claude!.got.find(e => e.kind === "review")!;
+  expect(oldRequest.refs?.commit).toBe(REFILE_OLD);
   // Historical evidence must not override the new delivered head or certify its checks.
   f.board.update(t.id, HUB, "lifecycle", { sdlc: { stage: "build", head: REFILE_OLD, reviewedHead: REFILE_OLD, localHead: REFILE_OLD, localResult: "passed" } });
   const before = f.board.get(t.id)!;
@@ -3913,10 +3914,10 @@ test("#1000 owner re-file refreshes a review at a new full head without a reject
   expect(next).toMatchObject({ state: "in_review", owner: "codex", reviewer: "claude", refs: { commit: REFILE_NEW }, rejections: before.rejections });
   expect(next.history.filter(h => h.event === "done")).toHaveLength(2);
   for (const key of ["head", "reviewedHead", "localHead", "localResult"] as const) expect(next.sdlc?.[key]).toBeUndefined();
-  expect(f.tasks.reviewBindingCurrent("claude", t.id, { head: REFILE_OLD, flowRevision: Number(oldRequest.refs.reviewRevision) })).toBe(false);
-  await until(() => f.peers.claude!.got.some(e => e.kind === "review" && e.refs.commit === REFILE_NEW));
-  const request = f.peers.claude!.got.find(e => e.kind === "review" && e.refs.commit === REFILE_NEW)!;
-  expect(f.tasks.reviewBindingCurrent("claude", t.id, { head: REFILE_NEW, flowRevision: Number(request.refs.reviewRevision) })).toBe(true);
+  expect(f.tasks.reviewBindingCurrent("claude", t.id, { head: REFILE_OLD, flowRevision: Number(oldRequest.refs!.reviewRevision) })).toBe(false);
+  await until(() => f.peers.claude!.got.some(e => e.kind === "review" && e.refs?.commit === REFILE_NEW));
+  const request = f.peers.claude!.got.find(e => e.kind === "review" && e.refs?.commit === REFILE_NEW)!;
+  expect(f.tasks.reviewBindingCurrent("claude", t.id, { head: REFILE_NEW, flowRevision: Number(request.refs!.reviewRevision) })).toBe(true);
   await expect(f.tasks.review("claude", t.id, "approved", "old verdict", undefined, REFILE_OLD)).rejects.toThrow(/head/);
   expect((await f.tasks.review("claude", t.id, "approved", "current verdict", undefined, REFILE_NEW)).state).toBe("approved");
   await expect(f.tasks.done("codex", t.id, "after approval", { commit: "c".repeat(40) })).rejects.toThrow(/already approved/);
@@ -3963,6 +3964,9 @@ test("#1000 a refreshed head runs its configured check before review, with faile
     const pending = await tasks.done("codex", t.id, "new source", { commit: REFILE_NEW });
     expect(pending).toMatchObject({ state: "in_progress", refs: { commit: REFILE_NEW }, rejections: 0 });
     expect(tasks.isChecking(t.id)).toBe(true);
+    const checking = f.board.get(t.id)!;
+    await expect(tasks.done("codex", t.id, "another head", { commit: "c".repeat(40) })).rejects.toThrow(/check is still running/);
+    expect(f.board.get(t.id)).toEqual(checking);
     await expect(tasks.review("claude", t.id, "approved", "too early", undefined, REFILE_NEW)).rejects.toThrow();
     release();
     if (code) {
@@ -3973,4 +3977,49 @@ test("#1000 a refreshed head runs its configured check before review, with faile
     await until(() => f.board.get(t.id)!.state === "in_review");
     expect(f.board.get(t.id)).toMatchObject({ refs: { commit: REFILE_NEW }, rejections: 0 });
   }
+});
+
+
+test("#1000 a delayed owner re-file cannot overwrite a newer admitted re-file", async () => {
+  const f = await setup(); cleanup.push(() => f.board.close());
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+  const routing = loadRouting(f.dir); routing.signals.pii_screen = "local"; routing.constraints.pii = "local_only";
+  const tasks = new Tasks({ board: f.board, bus: f.bus, cwd: f.dir, project: "agent-hub", routing: () => routing, notify: () => {},
+    piiScreen: async text => { if (text === "slow owner delivery") { entered(); await gate; } return { label: "clear", ms: 0 }; } });
+  const t = await tasks.propose("claude", { title: "race owner deliveries", class: "implement", owner: "codex" });
+  await tasks.done("codex", t.id, "first", { commit: REFILE_OLD });
+  const slow = tasks.done("codex", t.id, "slow owner delivery", { commit: REFILE_NEW }).then(() => "saved", error => String(error));
+  const newest = "c".repeat(40);
+  try { await started; await tasks.done("codex", t.id, "current delivery", { commit: newest }); }
+  finally { release(); }
+  expect(await slow).toMatch(/changed|current work/);
+  expect(f.board.get(t.id)).toMatchObject({ state: "in_review", refs: { commit: newest }, rejections: 0 });
+  expect(f.board.get(t.id)!.history.filter(h => h.event === "done")).toHaveLength(2);
+});
+
+test("#1000 a re-file preserves current-head local evidence, open findings and rejection count", async () => {
+  const f = await setup(); cleanup.push(() => f.board.close());
+  const t = await f.tasks.propose("claude", { title: "carry unresolved obligations", class: "implement", owner: "codex" });
+  await f.tasks.done("codex", t.id, "first", { commit: REFILE_OLD });
+  const finding = { id: "still-open", pass: "bugs", severity: "important", disposition: "open" };
+  await f.tasks.review("claude", t.id, "changes_requested", "required behavior", undefined, REFILE_OLD, undefined, [finding]);
+  await f.tasks.done("codex", t.id, "candidate", { commit: REFILE_OLD });
+  f.board.update(t.id, HUB, "lifecycle", { sdlc: { stage: "build", head: REFILE_OLD, reviewedHead: REFILE_OLD, localHead: REFILE_NEW, localResult: "passed" } });
+  const next = await f.tasks.done("codex", t.id, "updated candidate", { commit: REFILE_NEW });
+  expect(next).toMatchObject({ state: "in_review", rejections: 1, sdlc: { localHead: REFILE_NEW, localResult: "passed" } });
+  expect(next.sdlc?.head).toBeUndefined(); expect(next.sdlc?.reviewedHead).toBeUndefined();
+  expect(next.history.flatMap(h => h.reviewFindings?.items ?? [])).toContainEqual(finding);
+});
+
+test("#1000 a replacement cannot bypass configured lifecycle review admission", async () => {
+  const f = await setup(); cleanup.push(() => f.board.close());
+  const t = f.board.propose("claude", { title: "closed gate", class: "implement", refs: { commit: REFILE_OLD } });
+  f.board.update(t.id, "codex", "accepted", { owner: "codex", reviewer: "claude", state: "in_progress" });
+  f.board.update(t.id, "codex", "done", { state: "in_review", sdlc: { stage: "review", repo: "acme/project", issue: 1, pr: 2 } });
+  const tasks = new Tasks({ board: f.board, bus: f.bus, cwd: f.dir, project: "agent-hub", routing: () => loadRouting(f.dir), notify: () => {},
+    sdlc: { config: () => sdlcConfig({ mode: "enforce", required_checks: [] }), gh: async () => ({ code: 1, stdout: "" }) } });
+  const before = f.board.get(t.id)!;
+  await expect(tasks.done("codex", t.id, "replacement", { commit: REFILE_NEW })).rejects.toThrow(/blocked|unavailable|unknown/);
+  expect(f.board.get(t.id)).toEqual(before);
 });
