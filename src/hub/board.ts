@@ -569,7 +569,12 @@ export class Board {
   }
 
   hasResearchDispatchState(): boolean {
-    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_campaigns) OR EXISTS(SELECT 1 FROM research_units) OR EXISTS(SELECT 1 FROM research_dispatch) OR EXISTS(SELECT 1 FROM research_dropped_offers) OR EXISTS(SELECT 1 FROM research_handoffs) AS present").get() as { present: number }).present === 1;
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_campaigns) OR EXISTS(SELECT 1 FROM research_units) OR EXISTS(SELECT 1 FROM research_dispatch) OR EXISTS(SELECT 1 FROM research_handoffs) AS present").get() as { present: number }).present === 1;
+  }
+
+  /** #603: a persisted study re-offer needs a target that knows `research_dropped_offers`; `research_dispatch` alone does not (the additive floor rule). */
+  hasResearchDroppedOffers(): boolean {
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_dropped_offers) AS present").get() as { present: number }).present === 1;
   }
 
   researchDispatchIntegrity(): { activations: number; handoffs: number; digest: string } {

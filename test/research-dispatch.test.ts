@@ -263,7 +263,7 @@ test("dropped-offer rows join the dispatch integrity only when present, and a co
   const db=(f.board as unknown as {db:Database}).db;
   db.query("INSERT INTO research_dropped_offers(task_id,owner) VALUES(?,?)").run(f.parent.id,"local");   // written behind the Board's back
   expect(()=>f.board.researchDispatchIntegrity()).toThrow();
-  expect(f.board.hasResearchDispatchState()).toBe(true);
+  expect(f.board.hasResearchDroppedOffers()).toBe(true);
 });
 
 test("insufficientEvidence settles a discovery round while acceptance still refuses an expired task", async () => {

@@ -7451,6 +7451,8 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_dispatch")) && board.hasResearchDispatchState())
         return "target lacks research_dispatch; persisted campaign stop policies and handoffs require a supporting daemon";
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_dropped_offers")) && board.hasResearchDroppedOffers())
+        return "target lacks research_dropped_offers; persisted study re-offers require a supporting daemon";
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("project_autonomy")) {
         let needsAutonomy = autonomyConfirmed.size > 0;
         try {

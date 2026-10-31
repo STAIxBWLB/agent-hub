@@ -95,6 +95,28 @@ test("a persisted dropped study offer is part of the dispatch integrity a real d
     expect(current.researchDispatch).toEqual(f.expectedDispatch);                      // the daemon computed it over the stored row
     expect(current.researchDispatch.digest).not.toBe(withoutRow);                      // and the row changes it
     expect(await request(f, "prepare", f.status.features)).toMatchObject({ ok: true, recovery: { phase: "prepared", integrity: { current: { researchDispatch: f.expectedDispatch } } } });
-    expect(await request(f, "prepare", f.withoutResearch)).toMatchObject({ ok: false, error: expect.stringContaining("research_dispatch") });   // an older target is refused
+  } finally { await f.close(); }
+}, 30_000);
+
+test("research_dropped_offers is its own recovery label: a stored row refuses a target without it and accepts one with it", async () => {
+  expect(DAEMON_FEATURES).toContain("research_dropped_offers");
+  const f = await fixture({ approved: true, dropped: true });
+  try {
+    const withoutLabel = f.status.features.filter((feature: string) => feature !== "research_dropped_offers");
+    expect(withoutLabel).toContain("research_dispatch");                              // a main-era target: knows the older floor, not this one
+    for (const op of ["prepare", "commit", "inspect"]) {
+      expect(await request(f, op, withoutLabel), op).toMatchObject({ ok: false, error: "target lacks research_dropped_offers; persisted study re-offers require a supporting daemon" });
+      expect((await inspect(f)).phase).toBeUndefined();                               // refused before any recovery effect
+    }
+    expect(await request(f, "prepare", f.withoutResearch)).toMatchObject({ ok: false, error: expect.stringContaining("research_dispatch") });   // the older floor still refuses first
+    expect(await request(f, "prepare", f.status.features)).toMatchObject({ ok: true, recovery: { phase: "prepared" } });
+  } finally { await f.close(); }
+}, 30_000);
+
+test("without a stored dropped-offer row a target lacking research_dropped_offers is still accepted", async () => {
+  const f = await fixture({ approved: true });
+  try {
+    const withoutLabel = f.status.features.filter((feature: string) => feature !== "research_dropped_offers");
+    expect(await request(f, "prepare", withoutLabel)).toMatchObject({ ok: true });
   } finally { await f.close(); }
 }, 30_000);
