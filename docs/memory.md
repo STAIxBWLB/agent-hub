@@ -1,6 +1,6 @@
 # Hub memory integration
 
-Agent-hub consumes the exact-pinned first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library (current pin `0.15.0`, initial pin `0.1.1`). The package owns portable storage, tiers, graph, goals, sync, import and raw commands. Agent-hub owns caller authority, current project privacy policy, task lifecycle integration and presentation. Claude-mem is an optional, explicit import source only; runtime recall and capture make no worker HTTP requests.
+Agent-hub consumes the exact-pinned first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library (current pin `0.17.0`, initial pin `0.1.1`). The package owns portable storage, tiers, graph, goals, sync, import and raw commands. Agent-hub owns caller authority, current project privacy policy, task lifecycle integration and presentation. Claude-mem is an optional, explicit import source only; runtime recall and capture make no worker HTTP requests.
 
 ## Portable core and data directory
 

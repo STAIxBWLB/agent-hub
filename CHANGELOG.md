@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Pin `@staix/agent-mem` 0.17.0 (was 0.15.0). agent-mem 0.16.0 requires every amem writer on one memory home, hub pins included, to run 0.16.0 or later: a 0.15.0 drain deletes hook-spool records that 0.16.0 staged without reading them. Upgrade the hub together with a global `amem` of 0.16.0 or later. 0.17.0 adds the acon console plugin (`@staix/agent-mem/ui-plugin`) and `CandidateStore.reopen`. The hub does not pass `forgetNearby`, so the changed `amem forget --json` output does not reach it. Recall, capture, briefs and memory homes are otherwise unchanged.
+
 ## 0.24.0
 
 - Autonomy preset (#999 T1 and T2, tasks 581 and 583, #1009, #1010): `ahub autonomy on [--all-projects] [--yes] | off [--all-projects] | status [--json]`, person only. Agent shells, delegated live tests, hub tools and the conductor are refused. `on` previews the settings and their apply timing, then takes one confirmation. It applies `templates/presets/autonomous.json` to this project's untracked `config.local.json`: task flow, supported permission and start defaults, and `action_policy.floor`. It also writes the machine opt-in `~/.agenthub/defaults.json` (owner-only 0600; an unsafe file is ignored with a notice). `--all-projects` applies to every registered project after one combined preview: live hubs through their console, stopped ones through the same validated writer. `off` removes the fixed preset keys, including hand-set values of those keys, and the retained consent; unrelated keys stay. Nothing changes until the person opts in, and a machine without the file keeps the shipped ask defaults.
