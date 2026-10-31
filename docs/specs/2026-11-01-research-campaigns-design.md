@@ -69,17 +69,19 @@ Every text field is UTF-8 and bounded. A record above its bounds refuses whole, 
 | `stopPolicy` | `{ maxUnits (1..32), maxFollowUpRounds (0..5), deadline (ISO time, at most 90 days after approval) }` |
 | `executionBudgetId` | optional existing `ExecutionBudget` id |
 
-A unit: `{ id, question (long text), perspective (short), requiredOutput (short), sourceIds (subset of the campaign's, at most 16), dependsOn (unit ids, at most 16, acyclic), purpose: "discovery" | "independent_check" | "analysis" | "synthesis", taskId? }`. `taskId` is bound by the hub on activation, never supplied for a person-authored unit.
+A unit: `{ id, round (integer, 0 for the initial round), question (long text), perspective (short), requiredOutput (short), sourceIds (subset of the campaign's, at most 16), dependsOn (unit ids, at most 16, acyclic, never a later round), purpose: "discovery" | "independent_check" | "analysis" | "synthesis", adoptTaskId?, taskId? }`. `adoptTaskId` names an approved intake child to bind. `taskId` is bound by the hub on activation, never supplied by a contract.
+
+Rounds: a follow-up round is a set of units with `round = n + 1`, added only by a revision. Validation refuses a revision that adds round n+1 units while any round-n discovery unit has neither a complete handoff nor an `insufficientEvidence` reason, and refuses a round above `stopPolicy.maxFollowUpRounds`. A unit's round is stored in `research_units.round`, so the dispatch gate and restart read it rather than recompute it.
 
 ### Lifecycle
 
-1. Draft: `Tasks.studyDraft(by, { parentTaskId, contract })` by the person or a configured planner. It validates the whole contract and stores revision 1 as `draft`. A draft creates no task and dispatches nothing.
-2. Revise: `Tasks.studyRevise(by, { id, revision, contract })` stores revision n+1 as `draft`; `revision` must equal the latest, or it refuses as stale. A revision may enlarge scope, units or the stop policy only as a draft; only approval activates it.
-3. Approve: `Tasks.studyApprove(by, { id, revision })`, person only (console role). In one `board.atomic` it:
-   - re-checks the revision is the latest and still `draft`, and that every source, task and dependency ref still resolves in this project;
-   - binds units to tasks: a unit that adopts an approved intake child gets that child's id (from the intake family); every other unit gets a new ordinary child created through the existing propose path, with `after` set from `dependsOn` mapped to task ids;
-   - stores the unit-to-task mapping in the same transaction as the revision's `approved` status, and marks the previous approved revision `superseded`.
-   Re-running approve on an already approved revision returns the stored mapping and creates nothing. Restart reads the mapping and never re-creates children.
+1. Draft: `Tasks.studyDraft(by, { parentTaskId, contract })` by the person (CLI `ahub study draft`) or a configured planner (`hub_study_draft`, checked with `planningAuthority`). It validates the whole contract and stores revision 1 as `draft`. A draft creates no task and dispatches nothing.
+2. Revise: `Tasks.studyRevise(by, { id, revision, contract })` (`ahub study revise` or `hub_study_revise`, same authority as draft) stores revision n+1 as `draft`; `revision` must equal the latest, or it refuses as stale. A revision may enlarge scope, units or the stop policy only as a draft; only approval activates it.
+3. Approve: `Tasks.studyApprove(by, { id, revision })`, person only (console role). It runs in three phases.
+   - Prepare (async, outside any transaction). Validate and screen the revision's units with the same `withholds` path `Tasks.propose` uses. Resolve every source, intake child, task and dependency ref, and build one child spec per unbound unit (title, detail with a `Study: <campaign id> unit <unit id>` line, class, refs, deps). No write happens here.
+   - Commit (one synchronous `board.activateCampaign(id, revision, prepared)` inside `board.atomic`, the `board.splitBacklog` precedent). It re-checks the revision is still the latest `draft` and that every adopted intake child still exists and is unbound. It creates each new child with the synchronous `Board.propose` as a `backlog: true` card, with deps from `dependsOn` mapped to task ids. It writes the unit-to-task mapping rows and the revision's `approved` status, and marks the previous approved revision `superseded`, all in the same transaction. If anything has changed since Prepare, it throws and nothing is written.
+   - Publish (after commit). The board's ordinary post-commit change notifications go out. The new children are offered through the existing planner pull path; the campaign does not assign owners itself.
+   Re-running approve on an approved revision returns the stored mapping and creates nothing. A crash between commit and publish loses nothing: the mapping and the backlog cards are committed, and the ordinary planner pull picks the cards up after restart. Restart never re-creates children.
 4. Close: `Tasks.studyClose(by, { id, revision, reason })`, person or the campaign's planner. A closed campaign dispatches nothing more; its tasks keep their own states.
 
 A person-approved revision may drop a dependency or a unit. The omission is recorded in that revision's history note. Task approval stays the only event that releases a dependent; a campaign never approves a task.
@@ -89,7 +91,7 @@ A person-approved revision may drop a dependency or a unit. The omission is reco
 Before the hub offers, assigns or pulls a task that is bound to a campaign unit, `Tasks` synchronously re-reads the campaign. It holds the task with a reason, and does not dispatch it, when:
 - the bound revision is not `approved` (superseded, closed or revoked);
 - the deadline has passed;
-- the unit is a follow-up round beyond `maxFollowUpRounds`, or the unit count exceeds `maxUnits`.
+- the unit's stored `round` exceeds `maxFollowUpRounds`, or the approved revision's unit count exceeds `maxUnits` (both re-read from the tables, never from the request).
 
 The check runs after any asynchronous screening, immediately before the dispatch write. Holding a task never kills a native turn already running.
 
@@ -108,10 +110,16 @@ Closing a discovery round needs every discovery unit to have a complete handoff,
 
 ### Budget support map
 
-A campaign with `executionBudgetId` shows, per peer and per resource (`model_calls`, `tool_calls`, `elapsed_ms`, `tokens`):
-- `enforceable` for an instrumented peer (today `pi` and `local`) on a resource the ledger counts;
-- `advisory` for attribution only;
-- `unavailable` for tokens (the ledger denies them as `unknown_usage`) and for an uninstrumented peer.
+A campaign with `executionBudgetId` shows, per unit and per resource (`model_calls`, `tool_calls`, `elapsed_ms`, `tokens`), one label:
+- `enforceable` only when every condition is proven from current state:
+  - the budget exists and is enabled;
+  - the unit's task has an owner;
+  - that owner is in the budget's `peers` and is instrumented (today `pi` and `local`);
+  - the resource has a limit;
+  - the scope covers the task: a `kind: "run"` budget covers every task of its peers, and a `kind: "task"` budget covers only its `taskId`. `ExecutionBudget.applies([taskId], owner)` is the proof.
+- `unknown` when the unit has no owner yet, or the budget cannot be read.
+- `advisory` when the scope or peer does not cover the unit; usage is shown for attribution only.
+- `unavailable` for `tokens` (the ledger denies them as `unknown_usage`) and for an uninstrumented owner.
 
 V1 uses the existing ledger as is. A `kind: "run"` budget is peer-wide, so unrelated work by those peers spends the same budget, and the projection says so. Two campaigns that name one budget share it, and neither resets it. Activation refuses a requested hard cap on an `unavailable` cell, and refuses a campaign-exclusive hard cap entirely, until the ledger gains task membership in a separate reviewed change. Stop and budget limits block new dispatch only.
 
@@ -138,7 +146,16 @@ Stored by content: `protocolHash = sha256(canonical JSON of the body)`.
 | `resourceLimits` | at most 16 `{ name, value, unit }` |
 | `sealed` | `declared` boolean; verified only by a runner receipt (below) |
 
-A protocol is immutable. A change is a new protocol with a new hash. A person approval of a protocol binds its hash and its evaluator hash, so a changed protocol needs a new approval.
+Every protocol also carries `lineage` (a short id, stable across revisions of one experiment) and `supersedes?` (the previous protocol hash in that lineage). A protocol is immutable, so a change is a new protocol with a new hash.
+
+Protocol approval:
+- `ahub study approve-protocol <hash>` is person only (console role). It writes one `research_protocol_approvals` row: `(protocol_hash, evaluator_hash, approved_by, at)`.
+- An approval applies to exactly that protocol hash, and to that evaluator identity hash (sha256 of the canonical `evaluator` object).
+- A changed protocol has a new hash and so no approval. Nothing copies an approval forward.
+- Consumers:
+  - The comparison projection marks a pair `approved` only when both protocols have approvals.
+  - `hub_experiment_show` shows each attempt's protocol as `approved` or `unapproved`.
+  - Recording against an unapproved protocol is allowed, and shown as such.
 
 ### Comparison plan
 
@@ -148,16 +165,25 @@ A protocol is immutable. A change is a new protocol with a new hash. A person ap
 
 - `attemptId`: hub-issued `ra-<12 hex>`. `idempotencyKey`: caller-supplied, at most 64 bytes, unique per project. A second record call with the same key and the same body returns the existing attempt; the same key with a different body refuses.
 - `protocolHash`, `taskId` (an existing task in this project), and optional `retryOf` or `reproducesAttemptId`. A retry is always a new attempt linked by `retryOf`; `reproducesAttemptId` is declared and never set by the hub.
-- Status is folded from append-only attempt events: `declared`, `running`, `succeeded`, `failed`, `cancelled`, `unknown`. An attempt with no terminal event is `unknown` once its task is closed.
-- Each event carries `{ seq, kind: "start" | "end" | "metric" | "output" | "note" | "attestation", provenance, body, at }`.
-  - Metrics: `{ name, value, provenance }`, where the name must exist in the protocol.
-  - Outputs: deliverable claims hashed by the host through `hashDeliverables` (`host-observed`), or declared hashes (`declared`). An inaccessible file is `unknown`.
-- A metric or parameter changed after a `final` evaluation event exists for the same protocol lineage is marked `post-hoc`.
+- Every attempt has `phase: "development" | "final"`, set when it is created and never changed. A `final` attempt is the evaluation of record for its protocol.
+- Each event carries `{ seq, kind, provenance, body, at }`, where `at` is the hub's time of recording. The kinds:
+  - `start`: `{ startedAt? }`, declared unless host evidence supplies it.
+  - `end`: `{ status: "succeeded" | "failed" | "cancelled", exitStatus?, reason? (short), run? (a check-runner run id) }`. At most one per attempt; a second `end` refuses.
+  - `metric`: `{ name, value }`. The name must exist in the protocol's `metrics`.
+  - `output`: deliverable claims. If the hub hashes them through `hashDeliverables`, they are `host-observed`; declared hashes stay `declared`. An inaccessible file is `unknown`.
+  - `note`: short text.
+  - `attestation`: a verified runner receipt or a person attestation.
+- Status is a pure fold over the events:
+  - `declared` with no `start` and no `end`;
+  - `running` after `start` and before `end`;
+  - the `end` status once there is an `end`;
+  - `unknown` when there is no `end` and the attempt's task is approved, cancelled or closed.
+- Post-hoc: a protocol is marked `post-hoc` when, at its recording time, its lineage already has a `final` attempt with an `end` event. That is, it was written after a final evaluation of an earlier protocol in the same lineage. The projection reads only `seq` and the recording order, so the fold is deterministic.
 - Failed, cancelled and unknown attempts stay in every all-attempt count. Task approval and experiment success are separate fields.
 
 ### Host evidence
 
-- A check-runner receipt (#793) supplies `host-observed` start, end, exit status and duration when an `end` event names its `run`. The hub reads `stateDir/checks/<run>.json` itself and requires `status: "finished"`, the same task and a commit equal to the protocol's `code.commit`.
+- A check-runner receipt (#793) supplies `host-observed` exit status (`exit`), `timedOut`, `cancelled`, duration (`duration_ms`) and queue time (`created`) when an `end` event names its `run`. The hub reads `stateDir/checks/<run>.json` itself, and requires `status: "finished"`, the same task, and a `sha` equal to the protocol's `code.commit`. The receipt records no separate start or end time, so `startedAt` and `endedAt` stay `unknown` (or declared) for such an attempt. Extending the run receipt with timestamps is a separate change.
 - Output hashes are host-observed only when the hub hashed the file.
 - An agent-supplied hash is never host evidence.
 
@@ -188,7 +214,15 @@ Verification refuses before any write when any of these holds:
 - the attempt is missing, in another project, or bound to a different `protocolHash`;
 - the receipt is over its bounds.
 
-A verified receipt appends one `attestation` event. Its fields are `runner-attested`. `sealed` becomes verified only when every evaluator mount is `readOnly` and no container is both `candidate` and `evaluator`; otherwise it stays declared.
+Each mount also carries `purpose: "evaluator-code" | "evaluator-data" | "candidate-output" | "other"`.
+
+A verified receipt appends one `attestation` event, and its fields are `runner-attested`. `sealed` becomes verified only when every condition holds:
+- at least one container has role `candidate` and at least one has role `evaluator`, and their ids are disjoint and unique;
+- every mount's `container` names a listed container;
+- at least one mount has purpose `evaluator-code` or `evaluator-data` and is on an evaluator container;
+- every `evaluator-code` and `evaluator-data` mount is `readOnly`, and none of them is on a candidate container.
+
+Missing, empty or inconsistent isolation evidence leaves `sealed` declared or unverified, never verified.
 
 A receipt with a known `receiptId` and identical bytes is a no-op. The same `receiptId` with different bytes refuses.
 
@@ -205,11 +239,12 @@ All new tables live in `hub.db`, created in the `Board` constructor with `CREATE
 | Table | Key | Content |
 |---|---|---|
 | `research_campaigns` | `(id, revision)` | status, parent task id, body JSON, body sha256, approved_by, approved_at |
-| `research_units` | `(campaign_id, revision, unit_id)` | task id, purpose |
+| `research_units` | `(campaign_id, revision, unit_id)` | round, task id, purpose, adopted (boolean) |
+| `research_protocol_approvals` | `(protocol_hash)` | evaluator hash, approved_by, at |
 | `research_handoffs` | `(campaign_id, unit_id, seq)` | task id, body JSON, by, at |
 | `research_protocols` | `hash` | campaign id and revision, body JSON, by, at |
 | `research_plans` | `hash` | campaign id, body JSON, by, at |
-| `research_attempts` | `attempt_id`, unique `(project, idempotency_key)` | protocol hash, task id, retry_of, reproduces, by, at |
+| `research_attempts` | `attempt_id`, unique `(project, idempotency_key)` | protocol hash, task id, phase, retry_of, reproduces, by, at |
 | `research_attempt_events` | `(attempt_id, seq)`, unique `receipt_id` when present | kind, provenance, body JSON, at |
 
 `board.hasResearchState()` reports whether any row exists. Readback is paginated: at most 50 rows per call, with a cursor.
@@ -219,7 +254,8 @@ All new tables live in `hub.db`, created in the `Board` constructor with `CREATE
 | Surface | Name | Who |
 |---|---|---|
 | CLI | `ahub study draft <parent> <contract.json>`, `study revise <id> <revision> <contract.json>`, `study approve <id> <revision>`, `study close <id> <revision> --reason`, `study show [<id>] [--json]`, `study experiments [--campaign <id>] [--json]`, `study attest <attempt> <field> <value>`, `study receipt <file>` | approve, attest and receipt are person only; draft and revise are person or planner; show is anyone |
-| Hub tools | `hub_study_show` (read-only), `hub_study_handoff` (bound task owner), `hub_experiment_record` (`kind`: `protocol`, `plan`, `attempt`, `event` or `receipt`; task owner), `hub_experiment_show` (read-only) | none of them approves or attests |
+| Hub tools | `hub_study_draft` and `hub_study_revise` (configured planner only, through `planningAuthority`; they store drafts and never approve), `hub_study_show` (read-only), `hub_study_handoff` (bound task owner), `hub_experiment_record` (`kind`: `protocol`, `plan`, `attempt`, `event` or `receipt`; task owner), `hub_experiment_show` (read-only) | none of them approves or attests |
+| CLI (person only) | `ahub study approve-protocol <hash>` | person |
 | Control | `study` (console role, CLI only) | person |
 | Feature | `research_records` | recovery gate |
 | Config | `research.runners` | untracked config.local.json only |
@@ -232,12 +268,12 @@ Each slice amends this spec in its own PR if it must differ, and updates `docs/d
 
 | Task | Issue and ACs | Scope |
 |---|---|---|
-| #596 | #930 T1, AC1 and AC2 | the `research-campaign.ts` schema and validation; the campaign and unit tables; `studyDraft`, `studyRevise`, `studyApprove` and `studyClose`; intake adoption; the replay and restart tests; the `research_records` feature gate |
-| #597 | #930 T2, AC3 and AC4 | the dispatch gate; the coverage and stop projection; the budget support map with the two-campaign shared-ledger fixture |
-| #598 | #932 T1, AC1 and AC2 | the `research-experiments.ts` protocol, attempt and event schemas; the provenance levels; the protocol, attempt and event tables; `hub_experiment_record` for protocol, attempt and event; host evidence from check receipts and deliverable hashes |
-| #599 | #932 T2, AC3 and AC4 | comparison plans and compatibility; review invalidation on a changed hash; idempotency and retry linkage; the post-hoc marking |
-| #600 | #1018, AC1 to AC5 | the `research.runners` config; `research-runner.ts` receipt verification; receipt delivery and the sealing rule; fixtures with a test key pair |
-| #601 | #930 T3, AC5 and AC6 | `ahub study` draft, revise, approve, close and show; `hub_study_show` and `hub_study_handoff`; the privacy stubs; role guidance in `templates/`; the three-source, two-peer example |
+| #596 | #930 T1, AC1 and AC2 | the `research-campaign.ts` schema and validation (rounds included); the campaign and unit tables; `studyDraft`, `studyRevise`, the three-phase `studyApprove` with `board.activateCampaign`, and `studyClose`; intake adoption; the replay, crash-between-commit-and-publish and restart tests; the `research_records` feature gate |
+| #597 | #930 T2, AC3 and AC4 | the dispatch gate on stored rounds; round advancement validation; the coverage and stop projection; the budget support map with its `applies` proof and the two-campaign shared-ledger fixture |
+| #598 | #932 T1, AC1 and AC2 | the `research-experiments.ts` protocol (with lineage), attempt (with phase) and event schemas; the status fold; the provenance levels; the protocol, attempt and event tables; `hub_experiment_record` for protocol, attempt and event; host evidence from check receipts (exit, duration and queue time only) and deliverable hashes |
+| #599 | #932 T2, AC3 and AC4 | comparison plans and compatibility; the protocol approval table and `ahub study approve-protocol` with its consumers; idempotency and retry linkage; the post-hoc marking by lineage |
+| #600 | #1018, AC1 to AC5 | the `research.runners` config; `research-runner.ts` receipt verification; receipt delivery; the sealing rule with its negative cases (no evaluator, empty mounts, a dangling container ref, an evaluator mount on a candidate); fixtures with a test key pair |
+| #601 | #930 T3, AC5 and AC6 | `ahub study` draft, revise, approve, close and show; `hub_study_draft`, `hub_study_revise`, `hub_study_show` and `hub_study_handoff`; the privacy stubs; role guidance in `templates/`; the three-source, two-peer example |
 | #602 | #932 T3, AC5 and AC6 | `ahub study experiments`, `attest` and `receipt`; `hub_experiment_show`; the synthetic CPU-only fixture; the rerun checklist in `docs/profiles.md` |
 
 ## Departures from the issues
@@ -245,7 +281,10 @@ Each slice amends this spec in its own PR if it must differ, and updates `docs/d
 - Runner registration is person only in V1. #1018 proposed "the person or conductor". A public key is a trust root, so the conductor path is deferred until a reviewed change gives it the same confirmation as other trust settings.
 - Claim ids in a protocol are free ids until #931 defines claims; they are not validated against a claim store.
 - `ahub study attest` covers `person-attested` fields. #932 names a "person attestation" without a command.
-- `hub_study_handoff` is a new tool. #930 lists only `hub_study_show`, but a handoff needs a write path that is not a task completion.
+- `hub_study_handoff`, `hub_study_draft` and `hub_study_revise` are new tools. #930 lists only `hub_study_show`, but a handoff needs a write path that is not a task completion, and a planner needs a draft route that is not the person-only CLI.
+- Protocol approval is the person-only `ahub study approve-protocol`; #932 asks for approvals bound to hashes without naming the operation.
+- The budget support map adds an `unknown` label for a unit with no owner yet, since enforceability depends on the owner peer.
+- Host evidence from a check run covers exit status, duration and queue time only; the run receipt has no start or end timestamp.
 
 ## Out of scope
 
