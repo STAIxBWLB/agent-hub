@@ -10,6 +10,7 @@ import { USER, type Envelope } from "../src/hub/envelope.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { ExecutionBudget } from "../src/hub/execution-budget.ts";
 import { loadRouting } from "../src/hub/routing.ts";
+import type { ResearchCampaignContract } from "../src/hub/research-campaign.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 
 const clean: (() => void)[] = [];
@@ -21,7 +22,7 @@ class Peer extends BasePeer {
   async stop() {}
   async deliver(envs: Envelope[]) { this.got.push(...envs); }
 }
-const contract = () => ({ question: "What does the fixture show?", scope: "Synthetic inputs only", exclusions: [], sourceIds: [SOURCE],
+const contract = (): ResearchCampaignContract => ({ question: "What does the fixture show?", scope: "Synthetic inputs only", exclusions: [], sourceIds: [SOURCE],
   units: [
     { id: "discover", round: 0, question: "Inspect the synthetic source", perspective: "measurement", requiredOutput: "a bounded handoff", sourceIds: [SOURCE], dependsOn: [], purpose: "discovery" },
     { id: "synthesis", round: 0, question: "Combine the synthetic evidence", perspective: "synthesis", requiredOutput: "the result section", sourceIds: [], dependsOn: ["discover"], purpose: "synthesis" },
