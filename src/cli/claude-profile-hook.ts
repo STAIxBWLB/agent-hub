@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join } from "node:path";
 import { canonicalJson } from "../hub/packs.ts";
@@ -92,13 +92,17 @@ export function installClaudeProfileHook(home: ClaudeHome, options: ClaudeProfil
       const current = lstatSync(dirname(home.path));
       if (!same(plan.parent, current) || !owned(current)) throw new Error("parent changed");
       mkdirSync(home.path, { mode: 0o700 });
-      chmodSync(home.path, 0o700);
       created = lstatSync(home.path);
+      if (!created.isDirectory() || created.isSymbolicLink() || !owned(created)) throw new Error("home changed");
     }
-    writeFileSync(temporary, plan.next, { mode: 0o600, flag: "wx" });
-    chmodSync(temporary, 0o600);
+    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    let prepared: Stats;
+    try { writeFileSync(fd, plan.next); fchmodSync(fd, 0o600); fsyncSync(fd); prepared = fstatSync(fd); }
+    finally { closeSync(fd); }
     const current = planClaudeProfileHook(home, options);
     if (current.check.state === "refused" || !same(plan.home ?? created, current.home) || !same(plan.source?.info, current.source?.info) || plan.source?.digest !== current.source?.digest) throw new Error("settings changed");
+    const named = lstatSync(temporary);
+    if (!same(prepared, named) || !named.isFile() || named.isSymbolicLink() || named.nlink !== 1 || !owned(named)) throw new Error("temporary settings changed");
     renameSync(temporary, plan.file);
     return { state: "installed", changed: true, reason: "The project-neutral profile hook is configured; this does not prove live permission enforcement." };
   } catch { return { state: "refused", changed: false, reason: "Claude profile settings changed or could not be safely written; inspect the selected home before trying again." }; }

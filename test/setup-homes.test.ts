@@ -79,6 +79,23 @@ test("one confirmation configures plugin and hook in both selected homes under t
   expect(f.env.CLAUDE_CONFIG_DIR).toBe(f.unused);
 });
 
+test("revoked recovery authority cannot write a profile hook after confirmation or a final probe", async () => {
+  for (const phase of ["confirmation", "probe"]) {
+    const f = fixture(); let allowed = true;
+    for (const state of f.states.values()) { state.marketplace = true; state.plugin = true; }
+    f.ports.current = () => { if (!allowed) throw new Error("recovery authority changed"); };
+    if (phase === "confirmation") f.ports.ask = async () => { allowed = false; return "y"; };
+    else {
+      f.ports.yes = true;
+      const probe = f.ports.probe;
+      f.ports.probe = async (argv, options) => { const result = await probe(argv, options); allowed = false; return result; };
+    }
+    await expect(setupClaudeHomes(f.ports)).rejects.toThrow("recovery authority changed");
+    expect(f.runs).toEqual([]);
+    for (const home of f.homes) expect(existsSync(join(home.path, "settings.json"))).toBe(false);
+  }
+});
+
 test("denying the single confirmation mutates no selected or unused home and never probes a missing home", async () => {
   const f = fixture(true), before = readFileSync(f.unusedSettings, "utf8");
   let asks = 0; f.ports.ask = async () => { asks++; return "n"; };

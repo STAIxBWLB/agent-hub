@@ -2,7 +2,7 @@ import { lstatSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { realPath } from "../hub/project.ts";
 import { launcherOf, recordPath, MAX_COMMAND_MS, type ProcessIdentity } from "./terminal-recovery.ts";
-import { nextStep, pluginState, type InstalledPlugin, type Marketplace, type PluginState, type SetupStep } from "./setup.ts";
+import { CLAUDE_PLUGIN_INVENTORY, nextStep, pluginState, type InstalledPlugin, type Marketplace, type PluginState, type SetupStep } from "./setup.ts";
 import { checkClaudeProfileHook, type ClaudeProfileHookCheck } from "./claude-profile-hook.ts";
 
 export type ClaudeHomeSource = "environment" | "default" | "recorded-launch";
@@ -107,9 +107,9 @@ export async function checkClaudeHome(home: ClaudeHome, packageRoot: string, env
     return Array.isArray(value) ? value : undefined;
   };
   try {
-    const plugins = await read(["claude", "plugin", "list", "--json"]);
+    const plugins = await read(CLAUDE_PLUGIN_INVENTORY.plugins);
     if (!plugins) return unknown();
-    const marketplaces = await read(["claude", "plugin", "marketplace", "list", "--json"]);
+    const marketplaces = await read(CLAUDE_PLUGIN_INVENTORY.marketplaces);
     if (!marketplaces) return unknown();
     const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
     if (!plugins.every(row => object(row) && typeof row.id === "string" && row.id.length <= 256 &&

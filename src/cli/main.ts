@@ -32,7 +32,8 @@ import { terminalText } from "./console-state.ts";
 import { parseSettingsEditArgs, runSettingsEdit, SETTINGS_EDIT_USAGE } from "./settings-edit.ts";
 import { autonomyEnvironment, runAutonomy } from "./autonomy.ts";
 import { readAutonomyDefaults, writeAutonomyDefaults } from "../hub/autonomy-defaults.ts";
-import { inheritMachineAutonomy, prepareAutonomyProject, runAllProjectAutonomy } from "./autonomy-projects.ts";
+import { inheritMachineAutonomy, prepareAutonomyProject, runAllProjectAutonomy, type PreparedAutonomyProject } from "./autonomy-projects.ts";
+import { offlineAutonomyStatus } from "./autonomy-offline.ts";
 import { autonomyHomeStatus, usedClaudeHomes } from "./autonomy-homes.ts";
 import { discoverClaudeHomes } from "./claude-homes.ts";
 import { setupClaudeHomes } from "./setup-homes.ts";
@@ -1017,6 +1018,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const found = recoveryLauncherCurrent || delegatedPeer ? await discoverClaudeHomes({ home: homedir(), env: process.env }) : await usedClaudeHomes(registry, homedir(), process.env);
       for (const notice of found.notices) console.log(terminalText(notice));
       await setupClaudeHomes({ homes: found.homes, env: process.env, packageRoot: root, yes: args.includes("--yes"),
+        current: () => { recoveryLauncherCurrent?.(); assertLifecycleAvailable(); },
         print: line => console.log(terminalText(line)), ask: async prompt => rl ? rl.question(prompt) : null,
         probe: (argv, options) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8", env: options.env, timeout: options.timeoutMs, maxBuffer: 1024 * 1024 }); recoveryLauncherCurrent?.(); return { status: result.status ?? -1, stdout: result.stdout ?? "" }; },
         run: async (argv, env) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { stdio: "inherit", env, timeout: 30_000 }); recoveryLauncherCurrent?.(); return result.status ?? -1; },
@@ -1893,6 +1895,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
   autonomy: async () => {
     let hub: ControlClient | undefined;
+    let prepared: PreparedAutonomyProject | undefined, previewToken: string | undefined;
     const registry = new Registry();
     const rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
     try {
@@ -1908,7 +1911,26 @@ const commands: Record<string, () => Promise<void> | void> = {
       const roots = [...registry.list().map(project => project.root), cwd], defaults = readAutonomyDefaults(home, roots);
       const usage = await runAutonomy(args, {
         environment,
-        request: async message => { hub ??= await connect(); return hub.request(message, 35_000); },
+        request: async message => {
+          if (message.action === "preview") {
+            prepared?.close();
+            prepared = await prepareAutonomyProject(registeredProject(), environment, true, registry);
+            previewToken = randomUUID();
+            return { ok: true, confirmation: previewToken, lines: prepared.lines };
+          }
+          if (message.action === "on") {
+            if (!prepared || message.confirmation !== previewToken) return { ok: false, error: "autonomy preview is stale or missing" };
+            previewToken = undefined;
+            return { ok: true, lines: await prepared.apply() };
+          }
+          if (message.action === "off") {
+            prepared = await prepareAutonomyProject(registeredProject(), environment, false, registry);
+            return { ok: true, lines: await prepared.apply() };
+          }
+          const project = registry.list().find(row => row.root === cwd && row.stateDir === stateDir);
+          if (project && (await inspectProject(project)).state === "stopped") return offlineAutonomyStatus(project, environment);
+          hub ??= await connect(); return hub.request(message, 35_000);
+        },
         ask: async prompt => { if (!rl) return null; try { return await rl.question(prompt); } catch { return null; } },
         print: line => console.log(terminalText(line)),
         contextLines: [...(defaults.notice ? [defaults.notice] : []), "On/off also changes this machine's autonomy default for new projects; --all-projects applies the change to every registered project."],
@@ -1930,7 +1952,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         },
       });
       if (usage) fail(usage);
-    } finally { rl?.close(); hub?.close(); registry.close(); }
+    } finally { prepared?.close(); rl?.close(); hub?.close(); registry.close(); }
   },
   settings: async () => {
     // #689: structural config edits (instances, review, snapshots, approvals, context.gate, sdlc.toml) and their backups. The hub validates and writes.

@@ -1,6 +1,6 @@
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
-import { planAutonomy, autonomyRemovalKeys, type AutonomyOperation, type AutonomyPeer } from "../hub/autonomy.ts";
+import { planAutonomy, autonomyRemovalKeys, autonomyStatus, autonomyPreset, type AutonomyOperation, type AutonomyPeer, type AutonomyFloorStatus } from "../hub/autonomy.ts";
 import { configFingerprint, configSourceTexts } from "../hub/config-reload.ts";
 import { configRefusal } from "../hub/config-trust.ts";
 import { loadConfig } from "../hub/daemon.ts";
@@ -55,5 +55,19 @@ export function applyOfflineAutonomy(project: Target, environment: string, enabl
     validateEffectiveConfig(candidate, scope.catalog);
   });
   return [`Project autonomy ${enabled ? "on" : "off"}: ${result.changed ? "saved" : "unchanged"}; applies at the next hub/peer start.`,
-    "No retained consent was written by this offline command; startup independently checks the machine opt-in."];
+    "Permission confirmation is checked against the trusted machine default when the hub starts."];
+}
+
+/** Stopped-hub status reports preset intent, never a claimed effective native mode or consent. */
+export function offlineAutonomyStatus(project: Target, environment: string): Record<string, unknown> {
+  try {
+    const { peers } = scopeOf(project.root);
+    const floorEnforcement = Object.fromEntries(peers.map(peer => [peer.id, Object.fromEntries(autonomyPreset().floorClasses.map(action => [action,
+      { class: action, status: "not-enforced", reason: "The hub is stopped; runtime floor enforcement is unverified." } satisfies AutonomyFloorStatus]))]));
+    const rows = autonomyStatus({ environment, peers, floorEnforcement });
+    return { ok: true, status: { environment, runtime: "stopped", consentState: "unknown", consentedPeers: [], peers: rows },
+      lines: ["The hub is stopped; effective runtime modes and retained consent are unknown.", ...rows.map(row => `${row.id}: ${row.effectiveMode}; preset ${row.nextMode ?? "unmanaged"} at ${row.applies}`)] };
+  } catch {
+    return { ok: true, status: { environment, runtime: "stopped", consentState: "unknown", consentedPeers: [], peers: [], missing: ["Project configuration could not be safely inspected."] }, lines: ["The hub is stopped and its project configuration could not be safely inspected; runtime modes and consent are unknown."] };
+  }
 }
