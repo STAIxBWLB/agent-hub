@@ -23,6 +23,7 @@ export async function setupClaudeHomes(ports: SetupHomesPorts): Promise<void> {
     ports.print(`Claude home ${check.home.path}: plugin ${check.plugin.state}; hook ${check.hook.state}.`);
     if (check.plugin.state === "unknown" || check.hook.state === "refused") throw new Error(`Claude setup cannot safely inspect ${check.home.path}; nothing was changed`);
   }
+  for (const check of initial) if (check.next) ports.print(`${check.home.path}: ${check.next.argv.join(" ")} (${check.next.why})`);
   if (initial.every(check => !check.next && check.hook.state === "installed")) return;
   if (!ports.yes && ports.interactive === false) throw new Error("not a terminal: nothing was changed; rerun with --yes to apply");
   if (!ports.yes && !["y", "yes"].includes((await ports.ask("Install the hub plugin and project-neutral hook in these Claude homes? [y/N] "))?.trim().toLowerCase() ?? "")) { ports.print("Claude setup was not changed."); return; }
