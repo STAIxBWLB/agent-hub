@@ -4,6 +4,9 @@ import { queueBackpressure, queueBackpressurePolicy, type QueueBackpressureCode,
 import { canonicalMemorySymbolNode, normalizeMemorySymbolInput, MEMORY_SYMBOL_LIMIT, type MemorySymbolNodes } from "./memory-symbols.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { types } from "node:util";
+import { canonicalJson } from "./packs.ts";
+import { parseExperimentProtocol, parseExperimentAttempt, parseExperimentEvent, protocolHash, checkRunObservation, deliverableObservation, projectExperimentWithObservations,
+  type ExperimentProtocolContract, type ExperimentProtocolRecord, type ExperimentAttemptRecord, type ExperimentWriteFence, type ExperimentHostEvidence, type ExperimentStatus } from "./research-experiments.ts";
 import { parseResearchHandoff, studyProjection, campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus } from "./research-campaign.ts";
 import type { ResearchCampaignRecord, ResearchUnitBinding, PreparedResearchUnit } from "./board.ts";
 import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-command.ts";
@@ -181,6 +184,8 @@ export interface TasksDeps {
   studySource?: (id: string) => { id: string; sha256: string; private: boolean } | undefined;
   /** Host-only fixture clock; never read from model input or project configuration. */
   studyNow?: () => number;
+  /** Host-only reader for this project's check-runner receipts; record inputs never supply a receipt. */
+  experimentCheck?: (run: string) => Promise<unknown>;
   /** Reviewer choice from recorded review outcomes (issue #35); off unless the project config turns it on. */
   review?: { adaptive: boolean; min_reviews: number; pool?: readonly string[]; rerotate?: boolean; same_family?: "fallback" | "never" };
   /** Peers whose recent deliveries all failed, with the reason (issue #89); routing skips them. */
@@ -384,6 +389,13 @@ export const GROOM_FYI_WINDOW_MS = 10 * 60_000;
 /** #694: a PR staged at done with the commit or branch it was read for. */
 export interface ResearchCampaignReceipt { id: string; parentTaskId: number; revision: number; status: ResearchCampaignStatus; unitCount: number; units: ResearchUnitBinding[] }
 interface StudyReferences { parent: Task; adopted: Map<string, Task>; reused: Map<string, Task>; private: boolean; key: string }
+export interface ExperimentReceipt { kind: "protocol" | "attempt" | "event"; protocolHash: string; attemptId?: string; seq?: number }
+export interface ExperimentAttemptView {
+  id: string; protocolHash: string; taskId: number; phase: "development" | "final"; status: ExperimentStatus; private: boolean;
+  protocol: unknown; events: unknown[]; evidence: Record<string, unknown>; eventsComplete: boolean; nextEventCursor?: number;
+}
+export interface ExperimentView { attempts: ExperimentAttemptView[]; counts: { all: number; statuses: Record<ExperimentStatus, number> }; nextCursor?: number }
+interface ExperimentContext { task: Task; campaign: ResearchCampaignRecord; private: boolean; key: string; fence: ExperimentWriteFence }
 interface CompletionRefresh { revision: number; commit: string }
 interface IdentityLink { repo: string; pr: number; basis: { commit?: string; branch?: string } }
 
@@ -1639,6 +1651,174 @@ export class Tasks {
       this.releaseNotice(`study ${id} revision ${revision} closed`);
       return this.studyReceipt(closed);
     });
+  }
+
+  private experimentHash(input: unknown): string { return createHash("sha256").update(canonicalJson(input)).digest("hex"); }
+
+  private experimentId(input: unknown, protocol = false): string {
+    if (typeof input !== "string" || !(protocol ? /^[a-f0-9]{64}$/ : /^ra-[a-f0-9]{12}$/).test(input)) throw new PreEffectToolRefusal("experiment identity is invalid");
+    return input;
+  }
+
+  private experimentProtocol(hash: string): ExperimentProtocolRecord {
+    try {
+      const record = this.d.board.experimentProtocol(hash);
+      if (record?.project === this.d.project) return record;
+    } catch { /* damaged records are never returned as evidence */ }
+    throw new PreEffectToolRefusal("experiment protocol is unavailable in this project");
+  }
+
+  private experimentAttempt(id: string): ExperimentAttemptRecord {
+    try {
+      const record = this.d.board.experimentAttempt(id);
+      if (record?.project === this.d.project) return record;
+    } catch { /* fail closed without including any stored body */ }
+    throw new PreEffectToolRefusal("experiment attempt is unavailable in this project");
+  }
+
+  private experimentContext(by: PeerId, taskId: number, protocol: ExperimentProtocolContract, recordedForTaskId = taskId): ExperimentContext {
+    const task = this.studyParent(taskId), bound = this.d.board.researchDispatchBinding(taskId);
+    if (task.owner !== by || task.state !== "in_progress") throw new PreEffectToolRefusal("experiment records require the current in-progress task owner");
+    if (this.d.privateTurn?.(by) && !this.isPii(task)) throw new PreEffectToolRefusal("a private turn cannot write experiment records on a public task");
+    const campaign = bound?.campaign;
+    // ponytail: T1 refuses protocol carry across revisions; #599 adds explicit invalidation/comparison bindings.
+    if (!bound?.binding || !campaign || campaign.project !== this.d.project || campaign.id !== protocol.campaignId || campaign.revision !== protocol.campaignRevision || campaign.status !== "approved")
+      throw new PreEffectToolRefusal("experiment task must be a unit of the protocol's current approved campaign revision");
+    const recording = this.d.board.researchDispatchBinding(recordedForTaskId), origin = this.studyParent(recordedForTaskId);
+    if (!recording?.binding || recording.campaign.id !== campaign.id || recording.campaign.revision !== campaign.revision || recording.campaign.status !== "approved")
+      throw new PreEffectToolRefusal("experiment recording task is no longer a unit of this campaign");
+    const sources = protocol.inputs.map(input => {
+      const source = this.studySource(input.sourceId);
+      if (!campaign.contract.sourceIds.includes(input.sourceId) || !source || source.sha256 !== input.sha256) throw new PreEffectToolRefusal("experiment input source identity or hash is unavailable in this campaign");
+      return source;
+    });
+    let artifactPrivate = false;
+    if ("deliverable" in protocol.code) {
+      const reference = protocol.code.deliverable, artifact = latestDeliverables(origin.history)?.find(value => value.id === reference.id && value.sha256 === reference.sha256);
+      if (!artifact) throw new PreEffectToolRefusal("experiment code deliverable identity is not recorded for its task");
+      artifactPrivate = artifact.private === true;
+    }
+    const privateRecord = this.studyReplayPrivacy(campaign, this.studyParent(campaign.parentTaskId)) || this.isPii(task) || this.isPii(origin) || artifactPrivate || sources.some(source => source.private);
+    const fence: ExperimentWriteFence = { project: this.d.project, taskId, taskFlowRevision: task.history.length, owner: by,
+      campaignId: campaign.id, campaignRevision: campaign.revision, campaignHash: campaign.hash };
+    return { task, campaign, private: privateRecord, fence, key: JSON.stringify([fence, sources, privateRecord, origin.history.length, recording.binding]) };
+  }
+
+  private experimentFresh(before: ExperimentContext, by: PeerId, protocol: ExperimentProtocolContract, recordedForTaskId?: number): ExperimentContext {
+    const current = this.experimentContext(by, before.task.id, protocol, recordedForTaskId);
+    if (current.key !== before.key) throw new PreEffectToolRefusal("experiment authority, source or campaign changed during admission");
+    return current;
+  }
+
+  private async experimentScreen(text: string, task: Task): Promise<void> {
+    if (!this.isPii(task) && (!this.nameable(text) || looksSecret(text) || await this.withholds("note", text, task)))
+      throw new PreEffectToolRefusal("experiment text was not cleared; nothing was recorded");
+  }
+
+  /** Record evidence only: this path never runs a check, a shell command or a runner. */
+  async experimentRecord(by: PeerId, input: unknown): Promise<ExperimentReceipt> {
+    const requestCheck = this.requestCheck(by, () => this.studyHold());
+    const envelope = this.studyFields(input, ["kind", "taskId", "protocol", "attempt", "attemptId", "idempotencyKey", "event"]);
+    return this.studyWrite(async () => {
+      try {
+        if (envelope.kind === "protocol") {
+          const fields = this.studyFields(input, ["kind", "taskId", "protocol"]), taskId = this.studyNumber(fields.taskId, "taskId"), protocol = parseExperimentProtocol(fields.protocol);
+          const before = this.experimentContext(by, taskId, protocol);
+          for (const reference of [protocol.variantOf, protocol.supersedes]) if (reference) {
+            const previous = this.experimentProtocol(reference);
+            if (previous.protocol.campaignId !== protocol.campaignId || reference === protocol.supersedes && previous.protocol.lineage !== protocol.lineage)
+              throw new PreEffectToolRefusal("experiment protocol reference belongs to another campaign or lineage");
+          }
+          await this.experimentScreen(canonicalJson(protocol), before.task); requestCheck();
+          const current = this.experimentFresh(before, by, protocol); requestCheck();
+          const saved = this.d.board.saveExperimentProtocol({ hash: protocolHash(protocol), project: this.d.project, recordedForTaskId: taskId, protocol, by, at: this.studyTime(), private: current.private }, current.fence);
+          return { kind: "protocol", protocolHash: saved.hash };
+        }
+        if (envelope.kind === "attempt") {
+          const fields = this.studyFields(input, ["kind", "attempt"]), attempt = parseExperimentAttempt(fields.attempt), record = this.experimentProtocol(attempt.protocolHash);
+          const before = this.experimentContext(by, attempt.taskId, record.protocol, record.recordedForTaskId);
+          for (const reference of [attempt.retryOf, attempt.reproducesAttemptId]) if (reference) {
+            const previous = this.experimentAttempt(reference), protocol = this.experimentProtocol(previous.attempt.protocolHash);
+            if (protocol.protocol.campaignId !== record.protocol.campaignId) throw new PreEffectToolRefusal("attempt reference belongs to another campaign");
+          }
+          await this.experimentScreen(canonicalJson(attempt), before.task); requestCheck();
+          const current = this.experimentFresh(before, by, record.protocol, record.recordedForTaskId); requestCheck();
+          const saved = this.d.board.createExperimentAttempt({ attemptId: `ra-${randomBytes(6).toString("hex")}`, project: this.d.project, attempt, bodyHash: this.experimentHash(attempt), by, at: this.studyTime(), private: current.private || record.private }, current.fence);
+          return { kind: "attempt", protocolHash: saved.attempt.protocolHash, attemptId: saved.attemptId };
+        }
+        if (envelope.kind === "event") {
+          const fields = this.studyFields(input, ["kind", "attemptId", "idempotencyKey", "event"]), id = this.experimentId(fields.attemptId), key = fields.idempotencyKey;
+          if (typeof key !== "string" || !key.trim() || key.length > 64 || Buffer.byteLength(key, "utf8") > 64 || Buffer.from(key, "utf8").toString("utf8") !== key) throw new PreEffectToolRefusal("event idempotencyKey needs at most 64 UTF-8 bytes");
+          const attempt = this.experimentAttempt(id), record = this.experimentProtocol(attempt.attempt.protocolHash), event = parseExperimentEvent(fields.event, record.protocol);
+          const before = this.experimentContext(by, attempt.attempt.taskId, record.protocol, record.recordedForTaskId), lastSeq = this.d.board.experimentLastSeq(id);
+          await this.experimentScreen(canonicalJson([key, event]), before.task); requestCheck();
+          this.experimentFresh(before, by, record.protocol, record.recordedForTaskId);
+          const observations: ExperimentHostEvidence[] = [];
+          let measuredPrivate = false;
+          if (event.kind === "end" && event.body.run && this.d.experimentCheck) {
+            let receipt: unknown;
+            try { receipt = await this.d.experimentCheck(event.body.run); } catch { /* unavailable is unknown */ }
+            requestCheck(); this.experimentFresh(before, by, record.protocol, record.recordedForTaskId);
+            const observation = checkRunObservation(receipt, event.body.run, before.task.id, record.protocol);
+            if (observation) observations.push(observation);
+          } else if (event.kind === "output" && "path" in event.body) {
+            try {
+              const measured = await hashDeliverables([event.body], this.deliverablePorts(before.task));
+              const output = measured[0];
+              if (output) { observations.push(deliverableObservation(output)); measuredPrivate = output.private === true; }
+            } catch { /* #509 refusal, missing or unreadable means unknown; never use a declared fallback hash */ }
+            requestCheck(); this.experimentFresh(before, by, record.protocol, record.recordedForTaskId);
+          }
+          const current = this.experimentFresh(before, by, record.protocol, record.recordedForTaskId); requestCheck();
+          const saved = this.d.board.appendExperimentEvent(id, key, event, observations, by, this.studyTime(), current.private || record.private || attempt.private || measuredPrivate, lastSeq, current.fence);
+          return { kind: "event", protocolHash: record.hash, attemptId: id, seq: saved.event.seq };
+        }
+        throw new PreEffectToolRefusal("unsupported experiment record kind");
+      } catch (error) {
+        if (error instanceof PreEffectToolRefusal) throw error;
+        throw new PreEffectToolRefusal(error instanceof Error ? error.message : "experiment record was not saved");
+      }
+    });
+  }
+
+  private experimentPrivate(record: ExperimentProtocolRecord, attempt: ExperimentAttemptRecord): boolean {
+    try {
+      const campaign = this.d.board.researchCampaign(record.protocol.campaignId, record.protocol.campaignRevision), task = this.d.board.get(attempt.attempt.taskId);
+      return record.private || attempt.private || !campaign || this.studyReplayPrivacy(campaign, this.studyParent(campaign.parentTaskId)) || !task || this.isPii(task)
+        || record.protocol.inputs.some(input => { const source = this.studySource(input.sourceId); return !source || source.private; });
+    } catch { return true; }
+  }
+
+  async experimentShow(by: PeerId, input: unknown): Promise<ExperimentView> {
+    requireLocalTaskPeer(by);
+    const fields = this.studyFields(input, ["attemptId", "campaignId", "after", "eventAfter", "limit"]);
+    const cursor = (value: unknown, name: string) => value === undefined ? 0 : typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : (() => { throw new PreEffectToolRefusal(`${name} must be a nonnegative integer`); })();
+    const after = cursor(fields.after, "after"), eventAfter = cursor(fields.eventAfter, "eventAfter"), limit = fields.limit === undefined ? 50 : this.studyNumber(fields.limit, "limit");
+    if (limit > 50) throw new PreEffectToolRefusal("experiment readback is limited to 50 rows");
+    let campaignId: string, attempts: ExperimentAttemptRecord[], nextCursor: number | undefined;
+    if (fields.attemptId !== undefined) {
+      if (fields.campaignId !== undefined || fields.after !== undefined) throw new PreEffectToolRefusal("choose one attempt or campaign page");
+      const attempt = this.experimentAttempt(this.experimentId(fields.attemptId));
+      campaignId = this.experimentProtocol(attempt.attempt.protocolHash).protocol.campaignId; attempts = [attempt];
+    } else {
+      campaignId = this.studyId(fields.campaignId); this.studyRecord(campaignId);
+      const page = this.d.board.experimentAttempts(this.d.project, campaignId, after, limit); attempts = page.rows;
+      if (!page.done) nextCursor = page.afterRow;
+    }
+    const summary = this.d.board.experimentSummary(this.d.project, campaignId), views: ExperimentAttemptView[] = [];
+    for (const attempt of attempts) {
+      const record = this.experimentProtocol(attempt.attempt.protocolHash), page = this.d.board.experimentEvents(attempt.attemptId, eventAfter, limit);
+      const privateRecord = this.experimentPrivate(record, attempt) || page.rows.some(row => row.private);
+      const status = this.d.board.experimentAttemptStatus(attempt.attemptId);
+      const observations = page.rows.flatMap(row => row.observations), events = page.rows.map(row => row.event);
+      const evidence = projectExperimentWithObservations(record.protocol, events, observations);
+      views.push({ id: attempt.attemptId, protocolHash: record.hash, taskId: attempt.attempt.taskId, phase: attempt.attempt.phase, status, private: privateRecord,
+        protocol: privateRecord ? "[pii]" : record.protocol,
+        events: page.rows.map(row => privateRecord ? { seq: row.event.seq, kind: row.event.kind, at: row.event.at, provenance: row.event.provenance, body: "[pii]" } : row.event),
+        evidence: privateRecord ? { declared: "[pii]", measured: evidence.measured.map(row => ({ eventSeq: row.eventSeq, source: row.source, provenance: "host-observed", values: "[pii]" })) } : evidence,
+        eventsComplete: page.done, ...(!page.done ? { nextEventCursor: page.afterSeq } : {}) });
+    }
+    return { attempts: views, counts: { all: summary.total, statuses: summary.statuses }, ...(nextCursor === undefined ? {} : { nextCursor }) };
   }
 
   /** Every new host proposal, including split children, consumes the same pure walk before its first notification. */

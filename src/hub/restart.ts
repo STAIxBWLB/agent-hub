@@ -49,6 +49,7 @@ export interface RestartSnapshot {
     /** Research state remains part of controlled-recovery integrity when present. */
     research?: { campaigns: number; units: number; revision: number; digest: string };
     researchDispatch?: { activations: number; handoffs: number; digest: string };
+    researchExperiments?: { protocols: number; attempts: number; events: number; observations: number; digest: string };
   };
 }
 
@@ -107,6 +108,11 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
   if (s.integrity && Object.hasOwn(s.integrity, "researchDispatch")) {
     const value = s.integrity.researchDispatch;
     if (!value || typeof value !== "object" || Array.isArray(value) || ![value.activations, value.handoffs].every(count => Number.isSafeInteger(count) && count >= 0)
+      || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "researchExperiments")) {
+    const value = s.integrity.researchExperiments;
+    if (!value || typeof value !== "object" || Array.isArray(value) || ![value.protocols, value.attempts, value.events, value.observations].every(count => Number.isSafeInteger(count) && count >= 0)
       || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }
   if (bus.journal !== undefined) { try { validateJournalSnapshot(bus.journal); } catch { return undefined; } }

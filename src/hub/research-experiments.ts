@@ -314,3 +314,41 @@ export function projectExperimentWithObservations(protocol: ExperimentProtocolCo
       values: Object.fromEntries(Object.entries(observation.values).map(([field, value]) => [field, { value, provenance: "host-observed" as const, evidence: observation.evidence }])) };
   }) };
 }
+
+/** Storage records carry host-issued identity separately from the immutable caller body. */
+export interface ExperimentProtocolRecord {
+  hash: string;
+  project: string;
+  recordedForTaskId: number;
+  protocol: ExperimentProtocolContract;
+  by: string;
+  at: number;
+  private: boolean;
+}
+export interface ExperimentAttemptRecord {
+  attemptId: string;
+  project: string;
+  attempt: ExperimentAttemptInput;
+  bodyHash: string;
+  by: string;
+  at: number;
+  private: boolean;
+}
+export interface ExperimentEventRecord {
+  attemptId: string;
+  idempotencyKey: string;
+  event: DeclaredExperimentEvent;
+  bodyHash: string;
+  by: string;
+  private: boolean;
+  observations: { eventSeq: number; observation: ExperimentHostEvidence }[];
+}
+export interface ExperimentWriteFence {
+  project: string;
+  taskId: number;
+  taskFlowRevision: number;
+  owner: string;
+  campaignId: string;
+  campaignRevision: number;
+  campaignHash: string;
+}

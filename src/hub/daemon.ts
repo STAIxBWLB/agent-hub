@@ -2141,6 +2141,7 @@ export async function startDaemon(opts: DaemonOptions) {
     intake: { split: (system, user, opts) => inference?.split(system, user, opts) ?? Promise.resolve(undefined), sourceKnown: id => sourceRegistry.get(id) !== undefined,
       partsSchema: () => profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off").find(tool => tool.name === "hub_backlog_split")?.inputSchema.properties.parts },
     studySource: id => sourceRegistry.get(id),
+    experimentCheck: run => checkRunner.result(run),
     // The PII screen (issue #198): the model on this machine when MLX/Ollama is enabled, else the gateway on campus only.
     piiScreen: opts.piiScreen ?? ((text) => screenPii(text, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })),
     recordScreen: (record) => event({ type: "pii_screen", ...record }),
@@ -4287,7 +4288,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const budgetState = budget.persistedPauseDigestRows().sort((a, b) => a.peer.localeCompare(b.peer));
     const research = board.researchIntegrity();
     const researchDispatch = board.researchDispatchIntegrity();
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    const researchExperiments = board.researchExperimentsIntegrity();
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -7453,6 +7455,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return "target lacks research_dispatch; persisted campaign stop policies and handoffs require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_dropped_offers")) && board.hasResearchDroppedOffers())
         return "target lacks research_dropped_offers; persisted study re-offers require a supporting daemon";
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_experiments")) && board.hasResearchExperimentState())
+        return "target lacks research_experiments; persisted experiment records require a supporting daemon";
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("project_autonomy")) {
         let needsAutonomy = autonomyConfirmed.size > 0;
         try {
