@@ -5364,19 +5364,19 @@ export class Tasks {
   }
 
   /** What the deliverable reader needs from the host: the project root, the secrets denylist, and which files make a record private (#509a). */
-  private deliverablePorts(task: Task): DeliverablePorts {
+  private deliverablePorts(task: Task, policy: { failClosedOnDiscoveryLimit?: boolean } = {}): DeliverablePorts {
     const taskPrivate = this.isPii(task);
     // The owner's own root: a declared worktree instance writes under its worktree, so its deliverables are hashed there, never in the canonical
     // checkout (which holds a different file or none). With the root unproven there is nothing safe to hash: refuse rather than guess.
     const root = !this.d.executionRoot || !task.owner || task.owner === USER ? this.d.cwd : this.d.executionRoot(task.owner);
     if (root === undefined) throw new DeliverableRefusal(`deliverables: ${task.owner}'s execution root is not verified right now, so its files cannot be hashed`);
-    return { cwd: root, deny: this.d.deny ?? [], private: path => taskPrivate || matchesPolicy(root, path, this.d.piiPaths ?? [], true) };
+    return { cwd: root, deny: this.d.deny ?? [], private: path => taskPrivate || matchesPolicy(root, path, this.d.piiPaths ?? [], true, policy) };
   }
 
   /** Path privacy exists even when measurement cannot open the output. Use the #509 policies on both names. */
   private experimentOutputPrivate(task: Task, path: string): boolean {
     try {
-      const ports = this.deliverablePorts(task), root = realPath(ports.cwd), deny = [...ports.deny];
+      const ports = this.deliverablePorts(task, { failClosedOnDiscoveryLimit: true }), root = realPath(ports.cwd), deny = [...ports.deny];
       const typed = relative(root, resolve(root, path)), actual = relative(root, policyRealPath(resolve(root, path)));
       return !insideRoot(typed) || !insideRoot(actual) || ports.private(path)
         || [typed, actual].some(name => isHubWritePath(name) || isDenied(name, deny) || isDenied(foldSegment(name), deny.map(foldSegment)));

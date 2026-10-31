@@ -32,7 +32,11 @@ export function policyTargets(cwd: string, paths: string[]): string[] {
   const root = realPath(cwd);
   return [...new Set(paths.flatMap(path => { const lexical = resolve(root, path); return [lexical, policyRealPath(lexical)]; }))];
 }
-type DiscoveryBudget = { entries: number };
+type DiscoveryBudget = { entries: number; failClosedOnDiscoveryLimit?: boolean };
+function discoveryLimit(budget: DiscoveryBudget): false {
+  if (budget.failClosedOnDiscoveryLimit) throw new Error("policy alias discovery incomplete");
+  return false;
+}
 /** A dangling direct child names a future lexical target; an ELOOP child opens no file. */
 function directAliasTarget(path: string): string | undefined {
   let target = path;
@@ -62,9 +66,9 @@ function aliasScope(dir: string, lexical: string, actual: string, includeParents
   const handle = opendirSync(dir);
   let matched = false;
   try {
-    if (budget.entries >= 4096) return false;
+    if (budget.entries >= 4096) return discoveryLimit(budget);
     for (let entry = handle.readSync(); entry; entry = handle.readSync()) {
-      if (budget.entries >= 4096) return false;
+      if (budget.entries >= 4096) return discoveryLimit(budget);
       budget.entries++;
       if (!entry.isSymbolicLink()) continue;
       const target = directAliasTarget(join(dir, entry.name));
@@ -138,13 +142,13 @@ function globScope(root: string, lexical: string, actual: string, path: string, 
     if (!lowerBeneath(real, root)) throw new Error("policy glob discovery outside project");
     const info = statSync(dir);
     if (!info.isDirectory()) return false;
-    if (aliasDiscovery && budget.entries >= 4096) return false;
+    if (aliasDiscovery && budget.entries >= 4096) return discoveryLimit(budget);
     if (depth > 32 || ancestors.has(real) || budget.entries > 4096) throw new Error("policy glob discovery unavailable");
     const chain = new Set(ancestors); chain.add(real);
     const handle = opendirSync(dir);
     try {
       for (let entry = handle.readSync(); entry; entry = handle.readSync()) {
-        if (aliasDiscovery && budget.entries >= 4096) return false;
+        if (aliasDiscovery && budget.entries >= 4096) return discoveryLimit(budget);
         if (++budget.entries > 4096) throw new Error("policy glob discovery unavailable");
         const next = advance(pattern, states, entry.name);
         if (next.size && visit(join(dir, entry.name), next, depth + 1, chain)) return true;
@@ -163,13 +167,13 @@ export function matchesPolicyLexically(cwd: string, path: string, paths: string[
 }
 
 /** Compare declared spelling, real targets and bounded aliases; legacy discovery errors fail closed. */
-export function matchesPolicy(cwd: string, path: string, paths: string[], includeParents = false): boolean {
+export function matchesPolicy(cwd: string, path: string, paths: string[], includeParents = false, options: { failClosedOnDiscoveryLimit?: boolean } = {}): boolean {
   if (!paths.length) return false;
   try {
     if (path.length > 4096) return true;
     const root = realPath(cwd), lexical = resolve(root, path), actual = policyRealPath(lexical);
     includeParents &&= !existing(lexical) || statSync(lexical).isDirectory();
-    const budget = { entries: 0 }, roots = new Set<string>(), exact: string[] = [];
+    const budget: DiscoveryBudget = { entries: 0, failClosedOnDiscoveryLimit: options.failClosedOnDiscoveryLimit }, roots = new Set<string>(), exact: string[] = [];
     if (paths.some(entry => {
       if (/[?*]/.test(entry)) return globScope(root, lexical, actual, entry, includeParents, budget, roots);
       const targets = policyTargets(root, [entry]);
