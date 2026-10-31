@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { classifyAction, type ActionClass, type FloorFacts } from "../src/hub/action-class.ts";
 import { actionGate, claudeActionClasses } from "../src/hub/action-enforce.ts";
-import { ActionBudgets, actionPolicyConfig, askedClasses, FLOOR_GUARDS } from "../src/hub/action-policy.ts";
+import { ActionBudgets, actionPolicyConfig, askedClasses, FLOOR_GUARDS, floorReads } from "../src/hub/action-policy.ts";
 import { validateRawConfig } from "../src/hub/config-apply.ts";
 
 // #999 T3: with the floor on, an ordinary branch push and an own-repository pull request run without a prompt, and everything release-grade still asks.
@@ -207,10 +207,13 @@ test("an earlier command on the same line that can change the facts ends the flo
     "git remote add other https://example.com/y.git && gh pr comment 3 --body x", "git $SUB; git push origin feat/x", "some-script; git push origin feat/x", "make deploy && gh pr merge 3 --squash",
     "FOO=1 git status; git push origin feat/x", "git status $(git config remote.origin.pushurl x); git push origin feat/x",
   ];
+  // a fetch creates tags and updates remotes, and a test or build runs the agent's own code: neither leaves the facts read before them in place (floor-fetch-invalidates-tag-facts)
+  CHANGES_FACTS.push("git fetch ./source tag release && git push origin release", "git fetch origin && git push origin feat/x", "git fetch --tags origin; git push origin feat/x", "bun test && git push origin feat/x",
+    "bun run build && git push origin feat/x", "bun x tsc --noEmit; git push origin feat/x", "rg --pre ./x foo; git push origin feat/x");
   for (const command of CHANGES_FACTS) expect(classes(command).length, command).toBeGreaterThan(0);
   // commands that cannot change those facts leave the floor in place
-  for (const command of ["git add -A && git commit -m work && git push origin feat/x", "git status && git diff && git push origin feat/x", "bun test && git push origin feat/x", "echo done; gh pr comment 3 --body x",
-    "git fetch origin && git log --oneline && git push origin feat/x", "git add -A; git commit -m x; git push -u origin HEAD; gh pr create --title a --body b", "cd sub && git push origin feat/x"])
+  for (const command of ["git add -A && git commit -m work && git push origin feat/x", "git status && git diff && git push origin feat/x", "echo done; gh pr comment 3 --body x",
+    "git log --oneline && git push origin feat/x", "git add -A; git commit -m x; git push -u origin HEAD; gh pr create --title a --body b", "cd sub && git push origin feat/x"])
     expect(classes(command), command).toEqual([]);
   // the floor ending later on the line never un-asks an earlier call
   expect(classes("git push origin main && git push origin feat/x")).toEqual(["publish"]);
@@ -318,4 +321,39 @@ test("without the floor status rows are exactly what they were", () => {
   expect(plain.status("peer", true).note).toBe("always-ask active");
   const off = new ActionBudgets(() => actionPolicyConfig({ floor: true, enabled: false }), () => "s1").status("peer", false, "x");
   expect(off.note).not.toContain("floor on");                                              // a disabled policy has no floor to rest on
+});
+
+test("an option value never names a repository: gh body and title text is text (floor-gh-selector-in-option-value)", () => {
+  const unproven = facts({ ghDefaultIsOwn: () => false });   // no proven own default: only a real selector can pass
+  for (const command of ["gh pr comment 3 --body https://github.com/acme/app/pull/4", "gh pr comment 3 -b https://github.com/acme/app/pull/4", "gh pr comment 3 --body=https://github.com/acme/app/pull/4",
+    "gh pr create --title https://github.com/acme/app/pull/4 --body x", "gh pr review 3 --comment --body https://github.com/acme/app/pull/4", "gh pr merge 3 --subject https://github.com/acme/app/pull/4",
+    "gh pr comment 3 --body-file https://github.com/acme/app/pull/4", "gh pr comment 3 --body x --unknown-option https://github.com/acme/app/pull/4", "gh pr comment 3 -- https://github.com/acme/app/pull/4"])
+    expect(classes(command, unproven), command).toEqual(["external-write"]);
+  // a real selector still runs, with or without option values around it, and a foreign one still asks
+  for (const command of ["gh pr comment https://github.com/acme/app/pull/4 --body hi", "gh pr comment 3 -R acme/app --body https://github.com/other/x/pull/9", "gh pr comment 3 --body https://github.com/other/x/pull/9 --repo acme/app"])
+    expect(classes(command, unproven), command).toEqual([]);
+  expect(classes("gh pr comment https://github.com/other/x/pull/4 --body hi", unproven)).toEqual(["external-write"]);
+  expect(classes("gh pr comment 3 -R other/x --body https://github.com/acme/app/pull/4", unproven)).toEqual(["external-write"]);
+  // the value belongs to its option, so a value-taking option at the end with nothing after it is unknown, and the call asks
+  expect(classes("gh pr comment 3 --body", unproven)).toEqual(["external-write"]);
+});
+
+test("every floor authority read shares one cap, one memo and one deadline (floor-fact-probe-budget)", () => {
+  let clock = 0, runs = 0;
+  const reads = floorReads(3, 100, () => clock);
+  const run = (n: number) => reads.read(`k${n}`, () => { runs++; return n; });
+  expect([run(1), run(1), run(1)]).toEqual([1, 1, 1]);   // an identical read runs once
+  expect(runs).toBe(1);
+  expect([run(2), run(3), run(4)]).toEqual([2, 3, undefined]);   // the cap counts distinct reads, whichever kind they are
+  expect(reads.distinct).toBe(3);
+  expect(runs).toBe(3);
+  expect(run(1)).toBe(1);                                          // a memoized answer is still served inside the deadline
+  clock = 101;
+  expect([run(1), run(2), run(5)]).toEqual([undefined, undefined, undefined]);   // past the deadline nothing is answered, memoized or not
+  expect(runs).toBe(3);
+  // 126 origin queries of the reviewer's repro collapse to one under the shared memo
+  const again = floorReads(16, 2500, () => 0);
+  let origin = 0;
+  for (let i = 0; i < 126; i++) again.read("origin\0/work/project", () => ++origin);
+  expect(origin).toBe(1);
 });

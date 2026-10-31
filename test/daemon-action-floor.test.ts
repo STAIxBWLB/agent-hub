@@ -88,7 +88,7 @@ test("floor on: an ordinary branch push and own-repository pull request run with
     expect(out.title, command).toContain(`Action approval (${klass}`);
     expect(out.ran, command).toBe(false);
   }
-}, 60_000);
+}, 20_000);
 
 test("floor off, absent or false: the same push and pull request ask exactly as before", async () => {
   for (const policy of [{}, { floor: false }, { budgets: { publish: 1 } }]) {
@@ -100,7 +100,7 @@ test("floor off, absent or false: the same push and pull request ask exactly as 
     expect(r.probes(), "no remote read is made for a policy without the floor").toBe(0);
     await r.daemon.stop();
   }
-}, 60_000);
+}, 20_000);
 
 test("floor on but a fact is unproven: the remote read fails, the origin is not on GitHub, or the policy is disabled", async () => {
   // the authoritative default-branch read failed: every push asks, even a feature branch
@@ -120,7 +120,7 @@ test("floor on but a fact is unproven: the remote read fails, the origin is not 
   await off.mode("never-ask");
   expect(await off.attempt("git push --force origin main", "d-push")).toMatchObject({ asked: false, ran: true });
   await off.daemon.stop();
-}, 60_000);
+}, 20_000);
 
 test("a tag named like a branch and a nested clone keep asking; a version-shaped branch is a branch", async () => {
   const r = await rig({ floor: true }, { branch: "feat/x" });
@@ -133,7 +133,7 @@ test("a tag named like a branch and a nested clone keep asking; a version-shaped
   expect(await r.attempt("cd nested && git push origin feat/x", "n-cd")).toMatchObject({ asked: true, ran: false });
   git(r.cwd, "checkout", "-q", "-b", "v2.0.0");
   expect(await r.attempt("git push origin HEAD", "v-push")).toMatchObject({ asked: false, ran: true });
-}, 60_000);
+}, 20_000);
 
 test("real git configuration that redirects or widens a push keeps it asking, and a clean checkout still runs (connector findings 1 and 2)", async () => {
   const r = await rig({ floor: true }, { branch: "feat/x" });
@@ -166,7 +166,7 @@ test("real git configuration that redirects or widens a push keeps it asking, an
   expect(await run("git push origin refs/tags/v7:feat/x", "c-qtag")).toMatchObject({ asked: true, ran: false });
   expect(await run("git push origin refs/heads/feat/x:feat/y", "c-qbranch")).toMatchObject({ asked: false, ran: true });
   expect(await run("git push origin feat/x", "c-after")).toMatchObject({ asked: false, ran: true });             // the configuration is read per call, so undoing it restores the floor
-}, 90_000);
+}, 20_000);
 
 test("gh without a selector asks when its default is not the project's, and an explicit own selector or a clean checkout runs (connector finding 3)", async () => {
   const r = await rig({ floor: true }, { branch: "feat/x" });
@@ -180,17 +180,17 @@ test("gh without a selector asks when its default is not the project's, and an e
   expect(await r.attempt("gh pr comment 3 --body x", "g-set")).toMatchObject({ asked: true, ran: false });
   git(r.cwd, "config", "remote.origin.gh-resolved", "base");                                                        // gh's own marker for the base repository
   expect(await r.attempt("gh pr comment 3 --body x", "g-base")).toMatchObject({ asked: false, ran: true });
-}, 90_000);
+}, 20_000);
 
 test("a wrapped shell and a same-line state change keep asking through the real daemon (connector finding 4)", async () => {
   const r = await rig({ floor: true }, { branch: "feat/x" });
   await r.mode("never-ask"); await until(() => r.probes() >= 1); await Bun.sleep(50);
   for (const [i, command] of ["env GH_REPO=other/app sh -c 'gh pr comment 3 --body x'", "GH_REPO=other/app bash -c 'gh pr comment 3 --body x'", "sudo sh -c 'git push origin feat/x'",
     "git config push.followTags true; git push origin feat/x", "git config remote.origin.pushurl https://github.com/other/app.git && git push origin feat/x", "git checkout -q main; git push origin HEAD",
-    "export GH_REPO=other/app; gh pr comment 3 --body x"].entries())
+    "export GH_REPO=other/app; gh pr comment 3 --body x", "git fetch ./nowhere tag release; git push origin feat/x", "gh pr comment 3 --body https://github.com/acme/app/pull/4"].entries())
     expect(await r.attempt(command, `w-${i}`), command).toMatchObject({ asked: true, ran: false });
   expect(await r.attempt("git add -A; git commit -q -m x --allow-empty; git push origin feat/x; gh pr create --title a --body b", "w-ok")).toMatchObject({ asked: false, ran: true });
-}, 90_000);
+}, 20_000);
 
 test("status names the structural guards for a peer the hub cannot see, and says it has not verified them", async () => {
   const r = await rig({ floor: true }, { branch: "feat/x" });
@@ -202,4 +202,4 @@ test("status names the structural guards for a peer the hub cannot see, and says
   expect(stopped.enforceable).toBe(false);
   expect(stopped.floorGuards.map((g: any) => g.guard)).toEqual(["GitHub branch protection on the default branch", "release only through ahub sdlc authorize-release and the OIDC tag workflow", "the peer's native sandbox"]);
   expect(stopped.note).toContain("rest on structural guards the hub has not verified");
-}, 60_000);
+}, 20_000);

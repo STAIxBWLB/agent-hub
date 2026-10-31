@@ -523,10 +523,22 @@ function floorPush(globals: string[], args: string[], root: string, cwd: string[
   // A bare `git push` or `git push origin` follows push.default and may reach the default branch: it keeps asking.
   return remote === "origin" && specs.length > 0 && specs.every(spec => floorRefspec(spec, at, floor));
 }
+/**
+ * The options of each `gh pr` subcommand the floor knows, with their arity: a value belongs to its option and never names a repository (a `--body` that holds a pull request URL is text, not a selector).
+ * An option not listed here is unknown, and an unknown option keeps the call asking: it may take a value the floor would then misread as a positional or a selector.
+ * `-R` and `--repo` are handled apart. Sources: `gh pr create|comment|review|merge --help`.
+ */
+const GH_PR_OPTIONS: Readonly<Record<string, { readonly flags: readonly string[]; readonly values: readonly string[] }>> = {
+  comment: { flags: ["-e", "--editor", "-w", "--web", "--edit-last", "--delete-last", "--create-if-none", "--yes"], values: ["-b", "--body", "-F", "--body-file"] },
+  create: { flags: ["-d", "--draft", "--dry-run", "-f", "--fill", "--fill-first", "--fill-verbose", "-w", "--web", "--no-maintainer-edit"],
+    values: ["-a", "--assignee", "-B", "--base", "-b", "--body", "-F", "--body-file", "-H", "--head", "-l", "--label", "-m", "--milestone", "-p", "--project", "-r", "--reviewer", "-T", "--template", "-t", "--title", "--recover"] },
+  review: { flags: ["-a", "--approve", "-c", "--comment", "-r", "--request-changes"], values: ["-b", "--body", "-F", "--body-file"] },
+  merge: { flags: ["--auto", "-d", "--delete-branch", "--disable-auto", "-m", "--merge", "-r", "--rebase", "-s", "--squash"], values: ["-A", "--author-email", "-b", "--body", "-F", "--body-file", "--match-head-commit", "-t", "--subject"] },
+};
 /** `gh pr create|comment|review|merge` the floor does not ask about: the project's own repository, never an admin merge, never a foreign URL. */
-function floorPullRequest(args: string[], root: string, cwd: string[], floor: FloorFacts): boolean {
-  const own = floor.repository?.toLowerCase();
-  if (!own || !withinRoot(root, cwd) || cwd.some(at => floor.inOwnRepository?.(at) !== true)) return false;   // an unknown repository is not the project's own
+function floorPullRequest(sub: string, args: string[], root: string, cwd: string[], floor: FloorFacts): boolean {
+  const own = floor.repository?.toLowerCase(), options = GH_PR_OPTIONS[sub];
+  if (!own || !options || !withinRoot(root, cwd) || cwd.some(at => floor.inOwnRepository?.(at) !== true)) return false;   // an unknown repository is not the project's own
   const sameRepository = (value: string | undefined): boolean => !!value && !opaque(value) && value.toLowerCase() === own;
   let explicit = false;                                                          // the call names the project's own repository itself, so gh's default and GH_REPO do not matter
   for (let i = 0; i < args.length; i++) {
@@ -535,7 +547,13 @@ function floorPullRequest(args: string[], root: string, cwd: string[], floor: Fl
     if (arg === "-R" || arg === "--repo") { if (!sameRepository(args[++i])) return false; explicit = true; continue; }
     if (arg.startsWith("--repo=")) { if (!sameRepository(arg.slice("--repo=".length))) return false; explicit = true; continue; }
     if (/^-R./.test(arg)) { if (!sameRepository(arg.slice(2))) return false; explicit = true; continue; }
-    // A pull request may be named by URL, and that URL can be another repository's.
+    if (arg.startsWith("-")) {
+      const [name] = arg.split("=", 1) as [string], inline = arg.includes("=");
+      if (options.values.includes(name)) { if (!inline) { if (i + 1 >= args.length) return false; i++; } continue; }   // the value is the option's: never a selector, and not looked at again
+      if (options.flags.includes(arg)) continue;
+      return false;                                                                // `--`, a cluster, an option the floor does not know: unknown is strict
+    }
+    // A positional: a pull request number or branch, or a URL, which can be another repository's.
     if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(arg)) {
       const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/[0-9]+\/?$/.exec(arg);
       if (!sameRepository(match?.[1])) return false;
@@ -550,7 +568,7 @@ function floorPullRequest(args: string[], root: string, cwd: string[], floor: Fl
  * Commands that cannot change what the floor's facts were read from (git configuration, the checked-out branch, remotes, gh's default repository, the environment). A command
  * earlier on the same line that is anything else ends the floor for the rest of that line: the facts were read before it ran.
  */
-const FLOOR_INERT_GIT = new Set(["add", "commit", "status", "diff", "log", "show", "rm", "mv", "fetch", "blame", "ls-files", "rev-parse", "describe", "shortlog"]);
+const FLOOR_INERT_GIT = new Set(["add", "commit", "status", "diff", "log", "show", "rm", "mv", "blame", "ls-files", "rev-parse", "describe", "shortlog"]);
 const FLOOR_INERT_PROGRAMS = new Set(["echo", "printf", "true", "false", ":", "ls", "pwd", "cat", "head", "tail", "wc", "rg", "grep", "test", "[", "sleep", "cd", "diff", "stat", "file", "tree", "find"]);
 function floorInert(command: Command, root: string, cwd: string[], floor: FloorFacts): boolean {
   if (command.outputs.length > 0 || command.redirected || command.nested?.length) return false;   // any redirect may write .git/config (`>>` is not an output of the destroy rule); a substitution runs commands of its own
@@ -565,8 +583,7 @@ function floorInert(command: Command, root: string, cwd: string[], floor: FloorF
     if (heads[0]!.name === "push") return floorPush(args.slice(0, args.length - heads[0]!.args.length - 1), heads[0]!.args, root, cwd, floor);
     return FLOOR_INERT_GIT.has(heads[0]!.name);
   }
-  if (program === "bun") return args[0] === "test" || args[0] === "x" && args[1] === "tsc" || args[0] === "run" && args[1] === "build";
-  return FLOOR_INERT_PROGRAMS.has(program) && !(program === "find" && args.some(arg => ["-delete", "-exec", "-execdir", "-ok", "-fprint", "-fls"].includes(arg)));
+  return FLOOR_INERT_PROGRAMS.has(program) && !(program === "find" && args.some(arg => ["-delete", "-exec", "-execdir", "-ok", "-fprint", "-fls"].includes(arg))) && !(program === "rg" && args.some(arg => arg === "--pre" || arg.startsWith("--pre=")));
 }
 
 function sequence(parsed: Command[], root: string, initial: string[], found: Set<ActionClass>, depth = 0, floor?: FloorFacts): void {
@@ -646,7 +663,7 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
     if (words[0] === "release" && ["create", "upload", "edit", "delete"].includes(words[1] ?? "")) found.add("publish");
     if (["issue", "pr", "gist"].includes(words[0] ?? "") && ["create", "comment", "edit", "close", "reopen", "merge", "review", "delete"].includes(words[1] ?? "")) {
       // Floor: a pull request in the project's own repository is ordinary work. Issues, gists, edits, closes and deletes keep asking.
-      const ordinary = bare && words[0] === "pr" && ["create", "comment", "review", "merge"].includes(words[1]!) && floorPullRequest(words.slice(2), root, cwd, floor!);
+      const ordinary = bare && words[0] === "pr" && ["create", "comment", "review", "merge"].includes(words[1]!) && floorPullRequest(words[1]!, words.slice(2), root, cwd, floor!);
       if (!ordinary) found.add("external-write");
     }
     if (opaque(words[0])) { found.add("publish"); found.add("external-write"); }   // `gh $GROUP ...`: the strictest classes gh reaches (#762)

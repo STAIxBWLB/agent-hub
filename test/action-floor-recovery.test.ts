@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
@@ -7,9 +7,10 @@ import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 
 // #999 T3: a project that sets `action_policy.floor` cannot be recovered onto a daemon that predates the key, because that daemon rejects the unknown key and the project would
 // not load there. Codex raised it on #582: #581's project_autonomy gate covers the preset's metadata, not this independently writable field.
-async function fixture(policy: unknown) {
+async function fixture(policy: unknown, files: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-floor-recovery-")), stateDir = join(root, "state");
   mkdirSync(stateDir);
+  if (Object.keys(files).length) { mkdirSync(join(root, ".agenthub")); for (const [name, body] of Object.entries(files)) writeFileSync(join(root, ".agenthub", name), JSON.stringify(body)); }
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined, client: ControlClient | undefined;
   const close = async () => { client?.close(); await daemon?.stop(); rmSync(root, { recursive: true, force: true }); };
   try {
@@ -60,7 +61,7 @@ test("a floor policy that names the key at all refuses a target without the feat
     try { expect(await request(f, "inspect", f.withoutFloor), JSON.stringify(policy)).toMatchObject({ ok: false, error: expect.stringContaining("target lacks action_policy_floor") }); }
     finally { await f.close(); }
   }
-}, 40_000);
+}, 20_000);
 
 test("without the key no target needs the feature: absent and unrelated policies are unchanged", async () => {
   for (const policy of [undefined, {}, { budgets: { publish: 2 } }, { enabled: false }]) {
@@ -70,10 +71,28 @@ test("without the key no target needs the feature: absent and unrelated policies
       expect(reply.error ?? "", JSON.stringify(policy)).not.toContain("action_policy_floor");
     } finally { await f.close(); }
   }
-}, 40_000);
+}, 20_000);
 
 test("a disabled policy that still names the floor is judged as written: the older target would reject the key", async () => {
   const f = await fixture({ floor: true, enabled: false });
   try { expect(await request(f, "inspect", f.withoutFloor)).toMatchObject({ ok: false, error: expect.stringContaining("target lacks action_policy_floor") }); }
   finally { await f.close(); }
+}, 20_000);
+
+test("the raw files decide: a shared config.json or a floor:false file refuses a target without the feature, though the effective policy names no floor (floor-recovery-schema-presence)", async () => {
+  // a shared config.json may not set action_policy, so its key is ignored and the effective config has no floor, yet an older target's parser rejects the raw key
+  for (const [name, files] of [["shared false", { "config.json": { action_policy: { floor: false } } }], ["shared true", { "config.json": { action_policy: { floor: true } } }],
+    ["local false", { "config.local.json": { action_policy: { floor: false } } }]] as Array<[string, Record<string, unknown>]>) {
+    const f = await fixture(undefined, files);
+    try {
+      expect(await request(f, "inspect", f.withoutFloor), name).toMatchObject({ ok: false, error: expect.stringContaining("target lacks action_policy_floor") });
+      for (const op of ["prepare", "commit"]) expect(await request(f, op, f.withoutFloor), `${name} ${op}`).toMatchObject({ ok: false, error: expect.stringContaining("target lacks action_policy_floor") });
+      expect(await phase(f), name).toBeUndefined();
+    } finally { await f.close(); }
+  }
+}, 20_000);
+
+test("raw files that do not name the floor leave an older target allowed, and an unreadable file is unknown, never absent", async () => {
+  const clean = await fixture(undefined, { "config.json": { action_policy: { budgets: { publish: 2 } } }, "config.local.json": {} });
+  try { expect((await request(clean, "inspect", clean.withoutFloor)).error ?? "").not.toContain("action_policy_floor"); } finally { await clean.close(); }
 }, 20_000);

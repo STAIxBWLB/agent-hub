@@ -21,7 +21,7 @@ import { createClaudeFailureTrace, type ClaudeFailureTrace } from "./claude-fail
 import { buildNativePermissionProbe, NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH, validateNativePermissionRequest } from "./native-permission-request.ts";
 import { createClaudeLaunchProof, readClaudeLaunchProof } from "./claude-launch-proof.ts";
 import { InboxPolling } from "./inbox-polling.ts";
-import { ActionBudgets, actionPolicyConfig, floorEnforcement, type ActionPolicyConfig } from "./action-policy.ts";
+import { ActionBudgets, actionPolicyConfig, floorEnforcement, floorReads, type ActionPolicyConfig } from "./action-policy.ts";
 import { actionGate, claudeActionClasses } from "./action-enforce.ts";
 import type { FloorFacts } from "./action-class.ts";
 import { ReleaseAuthorizations, releaseAuthorizationError } from "./sdlc-release-authorization.ts";
@@ -3920,19 +3920,12 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!actionBudgets.floorOn()) return undefined;
     let root: string;
     try { root = realPath(executionRoot(peer)); } catch { return undefined; }
-    // One classification gets a bounded amount of synchronous git work, because the gate is synchronous and a valid-sized command can hold hundreds of pushes: an identical read is answered
-    // once (memoized by directory and arguments), at most FLOOR_GIT_CALLS distinct reads run, and none starts after FLOOR_GIT_MS has passed. Past the bound a fact is unknown, and an
-    // unknown fact keeps the call asking. ponytail: the bound is per classification, not per daemon; a shared async fact cache would lift the ceiling without blocking the loop.
+    // One classification gets a bounded amount of synchronous work (`floorReads`): every authority read goes through it, the project origin included, so one shared cap, memo and deadline
+    // cover all of them. Past the bound a fact is unknown, and an unknown fact keeps the call asking.
     const FLOOR_GIT_CALLS = 16, FLOOR_GIT_MS = 2500;
-    const started = Date.now(), memo = new Map<string, ReturnType<typeof floorGitRaw>>();
-    const floorGit = (cwd: string, args: string[]): ReturnType<typeof floorGitRaw> => {
-      const key = `${cwd}\0${args.join("\0")}`;
-      if (memo.has(key)) return memo.get(key);
-      if (memo.size >= FLOOR_GIT_CALLS || Date.now() - started > FLOOR_GIT_MS) return undefined;
-      const found = floorGitRaw(cwd, args);
-      memo.set(key, found);
-      return found;
-    };
+    const reads = floorReads(FLOOR_GIT_CALLS, FLOOR_GIT_MS);
+    const floorGit = (cwd: string, args: string[]): ReturnType<typeof floorGitRaw> => reads.read(`git\0${cwd}\0${args.join("\0")}`, () => floorGitRaw(cwd, args));
+    const floorOrigin = (): string | undefined => reads.read(`origin\0${root}`, () => githubOriginRepository(root));
     return {
       ...(floorDefaultBranch ? { defaultBranch: floorDefaultBranch } : {}),
       ...(shellProjectRepository ? { repository: shellProjectRepository } : {}),
@@ -3941,7 +3934,7 @@ export async function startDaemon(opts: DaemonOptions) {
         try {
           const top = floorGit(cwd, ["rev-parse", "--show-toplevel"]);
           if (!top || top.status !== 0 || typeof top.stdout !== "string" || realPath(top.stdout.trim()) !== root) return undefined;
-          return !!shellProjectRepository && githubOriginRepository(root) === shellProjectRepository;
+          return !!shellProjectRepository && floorOrigin() === shellProjectRepository;
         } catch { return undefined; }
       },
       refIsTag: (name, cwd) => { const found = floorGit(cwd, ["rev-parse", "-q", "--verify", `refs/tags/${name}`]); return found === undefined || found.status === null ? undefined : found.status === 0 ? true : found.status === 1 ? false : undefined; },
@@ -7418,7 +7411,19 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       // #999 T3: a target without the floor key rejects `action_policy.floor` as an unknown key, so the project would fail to load there. The check is the key's presence in the project's file, true or false:
       // `floor: false` is just as unknown to an older target, and a disabled policy still names it.
-      if (config.action_policy?.floor !== undefined && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("action_policy_floor"))) return "target lacks action_policy_floor; the project's action_policy.floor cannot be loaded by that daemon";
+      // The raw files decide, not the effective config: a shared `config.json` that names `action_policy.floor` is ignored (the key is machine-local) but an older target's parser rejects it
+      // before that rule runs, and a `floor: false` is normalized away. Unreadable files are unknown, never absent.
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("action_policy_floor")) {
+        let namesFloor = config.action_policy?.floor !== undefined;
+        try {
+          const texts = configSourceTexts(opts.cwd);
+          namesFloor ||= CONFIG_FILES.some(name => {
+            const policy = texts[name] === null ? undefined : (JSON.parse(texts[name]!) as Record<string, unknown>).action_policy;
+            return !!policy && typeof policy === "object" && Object.hasOwn(policy, "floor");
+          });
+        } catch { return "action_policy_floor compatibility is unknown; configuration could not be read"; }
+        if (namesFloor) return "target lacks action_policy_floor; the project's action_policy.floor cannot be loaded by that daemon";
+      }
       return undefined;
     };
     const checkTarget = msg.op === "prepare" || msg.op === "commit" || msg.op === "inspect" && msg.targetFeatures !== undefined;

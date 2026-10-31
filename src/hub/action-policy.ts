@@ -49,6 +49,27 @@ export const FLOOR_GUARDS: readonly { readonly asks: string; readonly guard: str
 export const floorGuardText = (): string => FLOOR_GUARDS.map(entry => `${entry.asks}: ${entry.guard}`).join("; ");
 
 /**
+ * One classification's budget for host reads (#999 T3). Every authority read the floor makes goes through `read`: an identical key is answered once from the memo, at most `calls`
+ * distinct reads run, and none is answered after `ms` has passed, so a valid-sized command that holds hundreds of pushes cannot hold the synchronous gate. Past the bound a fact is
+ * unknown (undefined), and an unknown fact keeps the call asking. `now` is injectable so a test proves the bound with a counter and a clock, never a subprocess storm.
+ * ponytail: the bound is per classification, not per daemon; a shared async fact cache would lift the ceiling without blocking the loop.
+ */
+export function floorReads(calls: number, ms: number, now: () => number = Date.now): { read: <T>(key: string, run: () => T) => T | undefined; readonly distinct: number } {
+  const started = now(), memo = new Map<string, unknown>();
+  return {
+    read: <T>(key: string, run: () => T): T | undefined => {
+      if (now() - started > ms) return undefined;
+      if (memo.has(key)) return memo.get(key) as T;
+      if (memo.size >= calls) return undefined;
+      const found = run();
+      memo.set(key, found);
+      return found;
+    },
+    get distinct() { return memo.size; },
+  };
+}
+
+/**
  * The eight floor classes of #999 (one list with `templates/presets/autonomous.json` `floorClasses`; a test holds them equal): each maps to the action class
  * that asks for it and to the structural guard it rests on where the hub cannot see the call first. `guard` null means none is named: the class is then
  * unprotected there, and status says so.

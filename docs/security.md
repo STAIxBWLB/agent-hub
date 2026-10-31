@@ -287,7 +287,16 @@ the settings that add refs to a push (`push.followTags`, `push.pushOption`,
 `push.recurseSubmodules`, `remote.origin.push`, `remote.origin.mirror`) and gh's default
 repository (`gh repo set-default`, a second remote), and a call it cannot prove is
 ordinary asks. A wrapper takes the floor away from a shell it wraps, and a command earlier
-on the same line that can change those facts ends the floor for the rest of the line.
+on the same line that can change those facts ends the floor for the rest of the line. That
+includes `git fetch` (it creates tags and moves remotes, so a tag probe read before it is stale),
+`bun test` and the other builds and test runs (they run the agent's own code), and `rg --pre`.
+A `gh pr` call is read option by option: a value belongs to its option (`--body`, `--title`,
+`--subject` and the rest), so a pull request URL inside a body is text and never selects a
+repository, and an option the floor does not know keeps the call asking. Every authority read
+shares one budget, the project's origin query included. A project whose `config.json` or
+`config.local.json` names `action_policy.floor`, true or false, in the raw file refuses an older
+recovery target, even where the key is ignored (a shared file may not set `action_policy`) or
+normalized away (`false`), because the older parser rejects the key before that rule runs.
 What it cannot see: the environment of a native agent's own process. The hub reads its own
 `GH_REPO` and `GH_HOST`, but a `GH_REPO` exported in a Claude, Codex or Kimi shell never
 reaches the hub. So for every peer whose environment the hub does not build (Claude,

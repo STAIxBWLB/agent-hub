@@ -51,7 +51,7 @@ test("Claude hook with the floor on: an unqualified gh pr call asks, an explicit
   expect(await r.classes("git push origin main")).toEqual(["publish"]);
   expect(await r.classes("gh release create v1")).toEqual(["publish"]);
   expect((await r.client.request({ t: "status" })).status.actionPolicyInfo.claude).toMatchObject({ floor: true, enforceable: true });
-}, 60_000);
+}, 20_000);
 
 test("Claude hook: one classification does a bounded amount of git work, and a long chain of pushes asks once the bound is spent", async () => {
   const r = await rig({ floor: true });
@@ -61,7 +61,7 @@ test("Claude hook: one classification does a bounded amount of git work, and a l
   const started = Date.now();
   expect(await r.classes(chain(60))).toEqual(["publish"]);                               // 60 stays under the classifier's 64-segment cap, but needs a tag probe per distinct branch: past the bound the fact is unknown and the call asks
   expect(Date.now() - started).toBeLessThan(5_000);                                      // and the daemon was not held for 60 probes
-}, 60_000);
+}, 20_000);
 
 test("Claude hook: a coarse always_ask never hands the floor's classes back, and without the floor the unqualified call asks as it always did", async () => {
   const narrow = await rig({ floor: true, always_ask: ["install"] });
@@ -74,4 +74,4 @@ test("Claude hook: a coarse always_ask never hands the floor's classes back, and
   const off = await rig({});
   expect(await off.classes("gh pr comment 3 --body hi")).toEqual(["external-write"]);
   expect(await off.classes("git push origin feat/x")).toEqual(["publish"]);
-}, 60_000);
+}, 20_000);
