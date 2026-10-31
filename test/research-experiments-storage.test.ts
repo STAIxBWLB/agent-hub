@@ -79,7 +79,9 @@ test("protocol storage enforces campaign source association, exact task binding,
   const foreignAttempt = f.attempt("foreign-project", "2", baseline.hash, f.variantId);
   expect(() => f.board.createExperimentAttempt(foreignAttempt, { ...f.fence(f.variantId), project: "foreign-project" })).toThrow();
   expect(() => f.save(original.protocol, f.variantId)).toThrow();
-  expect(() => f.save({ ...protocol(f.campaign.id), supersedes: baseline.hash })).toThrow("revision linkage");
+  const revised = f.save({ ...protocol(f.campaign.id), supersedes: baseline.hash, method: "A revised declared method" });
+  expect(revised.protocol.supersedes).toBe(baseline.hash);
+  expect(() => f.save({ ...protocol(f.campaign.id), supersedes: baseline.hash, lineage: "foreign-lineage" })).toThrow();
 });
 
 test("events are append-only, seq-CAS fenced and idempotent across restart with one terminal event", () => {
