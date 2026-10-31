@@ -99,6 +99,13 @@ test("status reports current mode separately from the next-start default", () =>
   expect(status!.floor.every(entry => entry.status === "not-enforced")).toBe(true);
 });
 
+test("status never suggests restarting a locked read-only peer into the wider preset mode", () => {
+  const [status] = autonomyStatus({ environment: "headless", peers: [{ id: "codex-reader", kind: "codex", form: "headless", permissionMode: "read-only", lockedMode: "read-only" }] });
+  expect(status).toMatchObject({ effectiveMode: "read-only", nextMode: "read-only" });
+  expect(status!.missing.some(reason => reason.includes("ceiling is locked"))).toBe(true);
+  expect(status!.missing.some(reason => reason.includes("restart the peer to use it"))).toBe(false);
+});
+
 test("a live pre-tool gate alone does not establish the unimplemented finer floor", () => {
   const [status] = autonomyStatus({ environment: "terminal", peers: [{ id: "claude", kind: "claude", form: "tui", permissionMode: "never-ask", actionEnforcement: { enforced: true } }], terminalOpener: { available: true } });
   expect(status!.floor.every(entry => entry.status === "not-enforced" && entry.reason.includes("#582"))).toBe(true);
@@ -133,4 +140,7 @@ test("environment and unsupported native setup are explicit missing entries, nev
   const [unknown] = autonomyStatus({ environment: "terminal", peers: [{ id: "newpeer", kind: "newpeer" }] });
   expect(unknown!.effectiveMode).toBe("unknown");
   expect(unknown!.missing.some(item => item.includes("No autonomy preset"))).toBe(true);
+  const [observed] = autonomyStatus({ environment: "terminal", peers: [{ id: "newpeer", kind: "newpeer", permissionMode: "ask" }] });
+  expect(observed!.effectiveMode).toBe("ask");
+  expect(observed!.missing.some(item => item.includes("No autonomy preset"))).toBe(true);
 });

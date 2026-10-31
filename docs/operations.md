@@ -1894,6 +1894,8 @@ The on confirmation retains peer-specific consent under the machine hub home, ou
 
 `ahub autonomy status` prints each peer's current effective mode, the preset's requested next-start default and every current floor class: hub-enforced, a named verified structural guard, or not enforced with a reason. `--json` returns the same report as data. Plugin, native policy, terminal provider and GitHub branch protection are reported as missing or unknown when no current evidence establishes them. Orca uses the existing registered worktree opener; a custom `terminal.open` template is preserved. A headless or CI invocation selects headless defaults where the kind supports them.
 
+A controlled restart or upgrade checks target feature `project_autonomy` while preset metadata or retained consent is active. A target without it is refused before the source is held or stopped; it could not read the new config metadata. Turn the preset off before selecting such a target.
+
 Live config switches apply through scoped reload now. Permission and start defaults apply at the next peer start; an active native turn keeps its policy. T1 writes no action_policy keys. Status reports the eight floor cases as not hub-enforced until task #582; T3 owns action_policy.floor and the finer classification, so T1 alone does not promise a zero-prompt task. The shipped ask default, sandbox, deny, PII and trust rules stay. Machine-wide defaults, `--all-projects`, init inheritance and Claude profile-home setup are T2 work.
 
 

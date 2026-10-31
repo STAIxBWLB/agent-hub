@@ -28,6 +28,7 @@ export interface AutonomyPeer {
   kind: string;
   form?: AutonomyForm;
   permissionMode?: string;
+  lockedMode?: string;
   actionEnforcement?: { enforced: boolean; reason?: string };
   structuralGuards?: Partial<Record<string, AutonomyStructuralGuard>>;
 }
@@ -39,7 +40,7 @@ export interface AutonomyPeerStatus {
   effectiveMode: string;
   /** Preset intent, not proof that a config transaction has applied it. */
   nextForm: AutonomyForm | null;
-  nextMode: PermissionMode | null;
+  nextMode: string | null;
   applies: "next peer start";
   floor: AutonomyFloorStatus[];
   missing: string[];
@@ -170,14 +171,15 @@ export function autonomyStatus(input: AutonomyStatusInput): AutonomyPeerStatus[]
     const facts = matrix.kinds[peer.kind], entry = preset.kinds[peer.kind];
     const desiredForm = nextForm(peer, environment, preset, matrix), currentForm = peer.form ?? desiredForm;
     const mode = currentForm && entry ? entry.permission[currentForm] : null;
-    const desiredMode = desiredForm && entry ? entry.permission[desiredForm] : null;
-    const effectiveMode = !facts || !entry || !currentForm ? "unknown" : mode === null ? "unmanaged" : peer.permissionMode ?? "unknown";
+    const desiredMode = peer.lockedMode ?? (desiredForm && entry ? entry.permission[desiredForm] : null);
+    const effectiveMode = peer.permissionMode ?? (!facts || !entry || !currentForm ? "unknown" : mode === null ? "unmanaged" : "unknown");
     const missing: string[] = [];
+    if (peer.lockedMode) missing.push(`The ${peer.lockedMode} permission ceiling is locked; the preset does not change it.`);
     if (!facts || !entry) missing.push(`No autonomy preset or confirmation inventory exists for kind ${peer.kind}.`);
     if (!desiredForm) missing.push(`No ${preset.environments[environment]!.matrixEnvironment} base start is available for this peer; use an explicit supported instance or a person-owned terminal.`);
     if (mode === null && facts && entry && currentForm) missing.push("Native permissions are not managed by the hub in this form; configure them in the native client.");
     else if (peer.permissionMode === undefined || peer.permissionMode === "unknown") missing.push("The current runtime permission mode is unknown.");
-    if (desiredMode !== null && effectiveMode !== desiredMode) missing.push(`Current mode ${effectiveMode}; the preset requests ${desiredMode} for the next peer start. Apply the project defaults and restart the peer to use it.`);
+    if (!peer.lockedMode && desiredMode !== null && effectiveMode !== desiredMode) missing.push(`Current mode ${effectiveMode}; the preset requests ${desiredMode} for the next peer start. Apply the project defaults and restart the peer to use it.`);
     if (currentForm === "tui" && input.terminalOpener?.available !== true) missing.push(`${input.terminalOpener?.reason ?? "No verified terminal opener is available."} ${preset.environments[environment]!.instruction}`);
     const rowEnvironment = currentForm === "headless" ? "headless" : preset.environments[environment]!.matrixEnvironment;
     const applicable = rows.filter(row => row.kinds.includes(peer.kind) && row.environments.includes(rowEnvironment) && (row.form === "any" || row.form === currentForm));

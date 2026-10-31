@@ -6941,8 +6941,14 @@ export async function startDaemon(opts: DaemonOptions) {
   }
 
   function autonomyPeers(): AutonomyPeer[] {
-    return SUPPORTED_PEERS.map(id => ({ id, kind: definitionOf(id)?.kind ?? id,
-      form: bus.peers.get(id)?.form ?? startMode(id), permissionMode: permissionDisplay(id, bus.peers.get(id)), actionEnforcement: actionEnforcement(id) }));
+    return SUPPORTED_PEERS.map(id => {
+      const setting = settingDef(`permission_modes.${id}`), definition = definitionOf(id), owner = bus.peers.get(id);
+      const lockedMode = typeof setting !== "string" && setting.locked ? setting.values?.[0] : undefined;
+      const form = owner?.form ?? startMode(id);
+      const unmanaged = definition?.permission.unmanaged || definition?.permission.unmanagedForms?.includes(owner ? owner.form ?? "tui" : form);
+      return { id, kind: definition?.kind ?? id, ...(lockedMode ? { lockedMode } : {}), form,
+        permissionMode: unmanaged && !lockedMode ? "unmanaged" : permissionDisplay(id, owner), actionEnforcement: actionEnforcement(id) };
+    });
   }
   function autonomyOperations(environment: AutonomyEnvironment) {
     return planAutonomy(environment, key => {
@@ -6999,7 +7005,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const operations = action === "off" ? Object.entries(autonomyPreset().hub).map(([key, value]) => ({ key, value, store: "config" as const })) : autonomyOperations(env);
       if (action === "preview") {
         autonomyPreview = { token: randomUUID(), environment: env, fingerprint: configFingerprint(configSourceTexts(opts.cwd)), revision: configRevision, operations: JSON.stringify(operations) };
-        return { ok: true, confirmation: autonomyPreview.token, lines: ["Project autonomy: approval prompts change; sandbox, deny, PII and trust rules remain. Check autonomy status for the current floor enforcement and missing guards.", ...operations.map(operation => `${operation.key}: ${settingText(operation.value)} (${timing(operation.key)})`), "Unmanaged native clients and missing structural guards are reported by autonomy status; the preset cannot enforce those paths."] };
+        return { ok: true, confirmation: autonomyPreview.token, lines: ["Project autonomy: approval prompts change; sandbox, deny, PII and trust rules remain. Check autonomy status for the current floor enforcement and missing guards.", autonomyPreset().about, ...operations.map(operation => `${operation.key}: ${settingText(operation.value)} (${timing(operation.key)})`), "Unmanaged native clients and missing structural guards are reported by autonomy status; the preset cannot enforce those paths."] };
       }
       if (action === "on" && confirmed !== true) return { ok: false, error: "project autonomy needs one person confirmation; use ahub autonomy on [--yes]" };
       if (action === "on") {
@@ -7318,6 +7324,14 @@ export async function startDaemon(opts: DaemonOptions) {
         && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("task_planners"))) return "target lacks task_planners; configured or persisted planner authority cannot be restored by that daemon";
       if (board.releases().some(release => release.train && ["active", "frozen"].includes(release.state)) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("release_trains"))) return "target lacks release_trains; active or frozen train safeguards cannot be preserved";
       if ((extraIds.some(id => !!definitionOf(id)?.reviewer) || config.review.pool !== undefined) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("reviewer_pool"))) return "target lacks reviewer_pool; fresh review-only variants and pool policy cannot be preserved";
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("project_autonomy")) {
+        let needsAutonomy = autonomyConfirmed.size > 0;
+        try {
+          const texts = configSourceTexts(opts.cwd);
+          needsAutonomy ||= CONFIG_FILES.some(name => texts[name] !== null && Object.hasOwn(JSON.parse(texts[name]!), "_autonomy"));
+        } catch { return "project autonomy compatibility is unknown; configuration could not be read"; }
+        if (needsAutonomy) return "target lacks project_autonomy; project preset metadata and retained mode consent require a supporting daemon";
+      }
       return undefined;
     };
     const checkTarget = msg.op === "prepare" || msg.op === "commit" || msg.op === "inspect" && msg.targetFeatures !== undefined;

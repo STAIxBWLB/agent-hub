@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { createHash } from "node:crypto";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -151,5 +151,22 @@ test("reapplying another environment preserves an already confirmed unchanged mo
   expect((await p.on(p.person, "terminal")).ok).toBe(true);
   const status = (await p.person.request({ t: "autonomy", action: "status", environment: "terminal" })).status;
   expect(status.consentedPeers).toContain("kimi");
+  expect(status.peers.find((peer: any) => peer.id === "kimi").effectiveMode).toBe("unmanaged");
   expect(p.read().permission_modes.kimi).toBe("never-ask");
+});
+
+test("controlled recovery refuses a target that cannot parse active preset metadata before taking a hold", async () => {
+  const p = await fixture();
+  const { status } = await p.person.request({ t: "status" });
+  const targetFeatures = DAEMON_FEATURES.filter(feature => feature !== "project_autonomy");
+  expect((await p.person.request({ t: "recovery", op: "inspect", expectedInstanceId: status.instanceId, targetFeatures })).ok).toBe(true);
+  expect((await p.on()).ok).toBe(true);
+  for (const op of ["inspect", "prepare"]) {
+    const result = await p.person.request({ t: "recovery", op, expectedInstanceId: status.instanceId, targetFeatures });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("target lacks project_autonomy");
+  }
+  expect((await p.person.request({ t: "recovery", op: "inspect", expectedInstanceId: status.instanceId })).recovery.phase).toBeUndefined();
+  expect((await p.person.request({ t: "autonomy", action: "off", environment: "headless" })).ok).toBe(true);
+  expect((await p.person.request({ t: "recovery", op: "inspect", expectedInstanceId: status.instanceId, targetFeatures })).ok).toBe(true);
 });
