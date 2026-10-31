@@ -583,7 +583,7 @@ Conductor operations are listed in [the operational command table](#conductor-op
 
 ### Capability discovery (#445 C1)
 
-`ahub capabilities [--json]` is Console only: an agent shell is refused, and so is the configured conductor. It lists, for each attached peer, the skills and commands the hub can read from that peer's own session, whether you share each one, its digest, and the class a call would count as. It lists and never calls anything; invoking a capability is a later slice (C2).
+`ahub capabilities [--json]` is Console only: an agent shell is refused, and so is the configured conductor. It lists, for each attached peer, the skills and commands the hub can read from that peer's own session, whether you share each one, its digest, and the class a call would count as. It lists and never calls anything; agents call what you share with `hub_invoke` (see below).
 
 What the hub can read is deliberately narrow. A listing is read only from a version whose listing was probed (the [C0 receipt](verification/2026-10-30-445-capability-probes.md)): Kimi 2.3.2, Qwen 0.26.1 and Codex 0.166.0. Any other version lists nothing until a new receipt covers it, and so does a peer that is offline or whose list did not arrive. Codex's pinned 0.154.0 is not probed, so a pinned install lists nothing for now. Only skills are listed: Qwen by its `_meta.source` (`bundled-skill`, `skill-dir-command`), Kimi by the `skill:` prefix of its name, Codex by an enabled entry of `skills/list`. A builtin such as Kimi's `compact` or Qwen's `clear` changes session or host state and is never listed. A session the hub cannot read natively publishes its own list with `hub_capabilities_publish`; that list is bound to the connection that published it, forced to `invoke: prompt`, and gone when the connection ends.
 
@@ -2203,7 +2203,7 @@ all 1007 H0 UI/console fallback identities, with 81 in these UI/console paths an
 926 outside them. The additional `task-progress.ts` initializer is classified
 under tasks/routing by the inventory's precedence and is recorded separately.
 Five rows cover six H0 identities (the two command-history paths share one key).
-Deferred support/CLI/memory items remain for a follow-up; issue #489 stays open.
+The deferred support, CLI and memory items stay constant at their current owners and bounds ([closure record](verification/2026-10-30-operational-settings-closure.md), #989); #489 is complete.
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
   the machine-local files (`ahub init` ignores both in git). The shared
@@ -3615,10 +3615,12 @@ after them is not retried on MLX, and a failed one marks `dgx/fast` failing (a c
 disconnects does not). Each backend is tried once per request, so with moves on, a moved attempt
 cut at 15 s followed by an MLX slot that stays busy past 120 s fails the request (502), where
 without moves the request would have waited for MLX and then had `dgx/fast` with its full
-deadline; this is part of what the opt-in accepts until #199 AC5 measures it. After three
-consecutive transport or startup failures outside a cooldown (a failure more than 10 min after
-the last counted one starts the count over), a relay alias cools down for 30 s, doubling up to
-5 min. A busy MLX slot and timeouts cut short by an execution budget never count; any HTTP
+deadline; this is part of what the opt-in accepts until #199 AC5 measures it. After
+`model_relay.cooldown_failures` (default three) consecutive transport or startup failures
+outside a cooldown (a failure more than twice the cap, 10 min by default, after the last counted
+one starts the count over), a relay alias cools down for `model_relay.cooldown_s` (default
+30 s), doubling up to `model_relay.cooldown_cap_s` (default 5 min); all three apply at the next
+daemon restart. A busy MLX slot and timeouts cut short by an execution budget never count; any HTTP
 answer, a success or an error status, proves the transport works and ends the streak and the
 cooldown. `ahub status` shows a `cooling` detail with a relative time and failure count and `events.jsonl`
 records `cooldown` events.
@@ -4217,13 +4219,13 @@ A bundled adapter module is authorized by the person with `adapter_modules` (at 
 
 # Catalog session guidance (#295)
 
-- Read available guidance with `ahub role list [--group dev|research]` and `ahub role show <id>`. Each definition identifies its layer and content hash. Doctor reports invalid files/selections without printing their contents.
+- Read available guidance with `ahub role list [--group dev|research|writing|ops]` and `ahub role show <id>`. Each definition identifies its layer and content hash. Doctor reports invalid files/selections without printing their contents.
 - Select up to two ids per peer in `catalog_roles` in the shared/local config, with at least one flow base already held by that peer. Empty local lists clear shared selections. This initial slice applies selections at a new daemon/MCP/adapter start; live assignment/settings and task roles follow separately.
 - Defaults preserve the existing flow. Catalog guidance adds no authority or routing preference. Native ingestion/retention and measured benefit remain unverified. Schema, bounds and source notice: [roles](roles.md).
 
 # Project profiles (#259)
 
-- Initialize new projects with `ahub init --profile research|writing|general`; default dev retains its existing templates and contracts. Profile aliases map to the existing base flow and are displayed beside it. `--profile <pack>` applies a domain pack (`.agenthub/roles/<name>.pack.json` or a shipped one) as review-checklist and example-check overrides; `--dry-run` previews ids only, and a pack is data, never a command ([domain packs](profiles.md#domain-packs-513a), #513a).
+- Initialize new projects with `ahub init --profile research|writing|general`; default dev retains its existing templates and contracts. Profile aliases map to the existing base flow and are displayed beside it. `--profile <pack>` applies a domain pack (`.agenthub/roles/<name>.pack.json` or a shipped one: `writing-pack`, `analysis`, `ops`) as review-checklist and example-check overrides; `--dry-run` previews ids only, and a pack is data, never a command ([domain packs](profiles.md#domain-packs-513a), #513a).
 - Non-dev plans declare paths, section anchors, source ids and claims. Configure completion checks explicitly in machine-local config; selecting a profile never starts a check or study. Schema, examples and pending converter/policy slices: [profiles](profiles.md).
 
 # Private and read-only data paths (#259)
