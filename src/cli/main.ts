@@ -16,7 +16,7 @@ import { readInstanceRoleConfig, readInstanceConfig, type InstanceRoleConfig } f
 import { staleInstanceKey } from "../hub/roster.ts";
 import { parseConfiguredAcpArguments, runConfiguredAcpEntry, requireActiveConfiguredAcp } from "./configured-acp-entry.ts";
 import type { NativeCliEntryContext } from "../adapters/definitions/native-cli-entry-types.ts";
-import { BUILTIN_CLI_ENTRIES, createProjectAdapterCatalog, definitionOf, DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "../adapters/registry.ts";
+import { BUILTIN_CLI_ENTRIES, createProjectAdapterCatalog, definitionOf, DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeMemoryCaptureRow, type MemorySetupReading, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "../adapters/registry.ts";
 import { parsePiFlags } from "../adapters/definitions/native-cli-pi.ts";
 import { supportsBoardReleaseFilter, supportsBoardColumnMetadata } from "./board-read.ts";
 import { matchesPolicy } from "../hub/path-policy.ts";
@@ -2658,11 +2658,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       let memoryLibraryReady = false;
       try { assertAgentMemVersion({ name: "@staix/agent-mem", version: AGENT_MEM_VERSION }); memoryLibraryReady = true; } catch { /* report the failed exact pin without opening a store */ }
       row(memoryLibraryReady, "memory library", memoryLibraryReady ? `amem ${AGENT_MEM_VERSION}; in-process, no claude-mem worker` : "installed amem does not match the exact dependency pin");
-      const bridge = spawnSync("dot", ["ai", "memory", "status"], { encoding: "utf8" });
-      const out = bridge.error ? "" : bridge.stdout.replace(/\x1b\[[0-9;]*m/g, "");
+      // #1008: memory capture is agent-mem's own setup state, read as structured data (`amem setup <tool> --json`, a preview that writes nothing), never dotfiles text. The caller's
+      // identity is NOT scrubbed: agent-mem screens a plan for an agent, and a refusal reads as unknown here instead of being laundered into a person's answer.
       for (const tool of DOCTOR_MEMORY_CAPTURE_PEERS) {
-        const ready = new RegExp(`✓\\s+${tool} ready`).test(out);
-        row(bridge.error ? undefined : ready, `memory capture: ${tool}`, bridge.error ? "unknown (`dot ai memory status` not available)" : `${ready ? "ready" : "not ready"}, per ` + "`dot ai memory status`");
+        const found = nativeMemoryCaptureRow(tool, readMemorySetup(tool));
+        row(found.ok, `memory capture: ${tool}`, found.detail);
       }
     } finally {
       // Preserve findings already collected if a later probe (for example config parsing) throws.
@@ -2671,6 +2671,19 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
   },
 };
+
+/**
+ * One bounded read of agent-mem's setup state for a tool: `amem setup <tool> --json` with no mode flag is a preview and writes nothing. No shell, a 10 s timeout, a 256 KiB output cap,
+ * and the answer is parsed as JSON here and judged by `nativeMemoryCaptureRow`; anything that does not parse, exits non-zero or times out is "unavailable", never a guess.
+ * ponytail: runs the `amem` found on PATH (the hub pins @staix/agent-mem exactly, but the person's own `amem` may be another version); the upgrade is to call `planSetup` from the pinned
+ * library in-process once it is exported from its public entry.
+ */
+function readMemorySetup(tool: string): MemorySetupReading {
+  const found = spawnSync("amem", ["setup", tool, "--json"], { encoding: "utf8", timeout: 10_000, maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  if (found.error) return { kind: "unavailable", reason: (found.error as NodeJS.ErrnoException).code === "ENOENT" ? "`amem` is not on PATH" : "`amem setup` could not be run" };
+  if (found.status !== 0 || typeof found.stdout !== "string") return { kind: "unavailable", reason: found.status === null ? "`amem setup` timed out" : `\`amem setup ${tool}\` refused or failed` };
+  try { return { kind: "read", plan: JSON.parse(found.stdout) }; } catch { return { kind: "unavailable", reason: "`amem setup --json` did not print JSON" }; }
+}
 
 function sanitizeRoutingParseError(file: "routing.toml" | "routing.local.toml", error: unknown): string {
   const raw = ((error as Error)?.message || "invalid TOML").split("\n")[0]!.trim();

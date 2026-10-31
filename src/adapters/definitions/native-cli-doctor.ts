@@ -8,6 +8,36 @@ const nativeTools = [
 ] as const;
 export const DOCTOR_TOOL_PROBES: readonly string[] = Object.freeze(["bun", ...nativeTools.filter(tool => tool.initial).map(tool => tool.id)]);
 export const DOCTOR_MEMORY_CAPTURE_PEERS = Object.freeze(["codex", "kimi"] as const);
+/**
+ * What one read of agent-mem's own setup state gave (`amem setup <tool> --json`, a preview that writes nothing): the parsed plan, or why there is none. Agent-mem owns the state;
+ * doctor never reads dotfiles text or a client's config itself (#1008).
+ */
+export type MemorySetupReading = { kind: "read"; plan: unknown } | { kind: "unavailable"; reason: string };
+
+/**
+ * One memory-capture doctor row from agent-mem's structured setup plan: `applied` (the hub's receipt matches and the MCP entry and hooks are as setup would write them), `pending`
+ * (setup would add or replace something, so `amem setup <tool> --apply` is the fix), or `client missing` (the native CLI is not installed). A reading that cannot be trusted as the shape
+ * agent-mem documents is unknown, never ready: the row says it could not be read instead of guessing. Pure: the plan is data, never text, and nothing here runs a process.
+ * Codex also needs the person's native `/hooks` review before a newly registered hook runs, which agent-mem's setup does not grant, so an applied Codex row says so.
+ */
+export function nativeMemoryCaptureRow(tool: string, reading: MemorySetupReading): { ok: boolean | undefined; detail: string } {
+  const unknown = (why: string) => ({ ok: undefined, detail: `unknown (${why})` });
+  if (reading.kind !== "read") return unknown(reading.reason);
+  const plan = reading.plan as { mode?: unknown; actions?: unknown } | null;
+  const actions = plan && typeof plan === "object" && plan.mode === "preview" && Array.isArray(plan.actions) ? plan.actions : undefined;
+  const action = actions?.length === 1 ? actions[0] as Record<string, unknown> | null : undefined;
+  if (!action || typeof action !== "object" || action.target !== tool || typeof action.available !== "boolean" || !["add", "replace", "restore", "unchanged"].includes(String(action.mcpChange)))
+    return unknown("`amem setup " + tool + " --json` did not return the setup plan it documents");
+  if (action.available === false) return { ok: false, detail: `client missing: the ${tool} CLI is not installed, so there is nothing to set up` };
+  const setup = `amem setup ${tool} --apply`;
+  if (action.mcpChange !== "unchanged") {
+    const state = typeof action.state === "string" ? action.state.slice(0, 60).replace(/[^\x20-\x7e]/g, "?") : "unknown";
+    return { ok: false, detail: `not set up (${state}); run \`${setup}\`` };
+  }
+  const hooks = tool === "codex" ? "; newly registered hooks need the native /hooks review in Codex before they run (amem setup does not grant hook trust)" : "";
+  return { ok: true, detail: `set up, per \`amem setup ${tool}\`${hooks}` };
+}
+
 export const DOCTOR_PLUGIN_PROBE = Object.freeze({ command: "claude", argv: Object.freeze(["plugin", "list", "--json"] as const), name: "claude plugin" });
 
 /** Exact legacy section and severity classification, including non-native and unknown diagnostic names. */
