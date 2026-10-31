@@ -68,7 +68,7 @@ results=[]
 for raw_binary in args.claude:
  binary=pathlib.Path(raw_binary).resolve(); identity=ROOT/('identity-'+binary.name); identity.mkdir()
  version=subprocess.run([str(binary),'--version'],env={'HOME':str(identity),'CLAUDE_CONFIG_DIR':str(identity/'config'),'PATH':'/usr/bin:/bin'},capture_output=True,text=True,timeout=10)
- assert version.returncode==0 and version.stdout.strip().split()[0] in ('2.1.309','2.1.310','2.1.314'),(version.returncode,version.stdout)
+ assert version.returncode==0 and version.stdout.strip().split()[0] in ('2.1.309','2.1.310','2.1.314','2.1.316'),(version.returncode,version.stdout)
  label=version.stdout.strip().split()[0]; digest=sha(binary)
  for mode in ('context','normalized'):
   d=ROOT/(label+'-'+mode); d.mkdir(); home=d/'home';home.mkdir(); work=d/"work 'quoted'";work.mkdir();(work/'sub').mkdir()

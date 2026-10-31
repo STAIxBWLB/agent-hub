@@ -34,11 +34,11 @@ export const COMPAT = {
     parse: out => plain(out.trim()),
     trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified.",
     receipt: "docs/verification/2026-10-26-pi-140-compat.md" },
-  // Transport receipts: docs/verification/2026-10-23-headless-claude-permissions.md; 2.1.310: docs/verification/2026-10-26-claude-implementer-2.1.310.md; 2.1.314 (transport and wrapper): docs/verification/2026-10-31-claude-implementer-2.1.314.md; host-wrapper receipt below repeats with them.
-  "claude-implementer": { label: "Claude headless implementer", verified: ["2.1.309", "2.1.310", "2.1.314"], gate: "contract", probe: ["claude", "--version"],
+  // Transport receipts: docs/verification/2026-10-23-headless-claude-permissions.md; 2.1.310: docs/verification/2026-10-26-claude-implementer-2.1.310.md; 2.1.314 (transport and wrapper): docs/verification/2026-10-31-claude-implementer-2.1.314.md; 2.1.316: docs/verification/2026-10-31-claude-implementer-2.1.316.md; host-wrapper receipt below repeats with them.
+  "claude-implementer": { label: "Claude headless implementer", verified: ["2.1.309", "2.1.310", "2.1.314", "2.1.316"], gate: "contract", probe: ["claude", "--version"],
     parse: out => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
     trustNote: "The native prompt-tool transport and host-wrapper rewrite, environment isolation and replay contract have isolated receipts. No dontAsk/bypass fallback exists; another version's permission or rewrite behavior is unverified.",
-    receipt: "docs/verification/2026-10-31-claude-implementer-2.1.314.md" },
+    receipt: "docs/verification/2026-10-31-claude-implementer-2.1.316.md" },
   // 0.163.0 receipt: docs/verification/2026-10-22-codex-reviewer-isolation.md; 0.164.0 receipt: docs/verification/2026-10-24-codex-0164-reviewer-isolation.md; 0.166.0: docs/verification/2026-10-31-codex-0166-reviewer-isolation.md
   "codex-review": { label: "Codex reviewer (codex-cli)", verified: ["0.146.0", "0.163.0", "0.164.0"], gate: "isolation", probe: ["codex", "--version"], config: "codex_bin",
     parse: out => plain(out.trim().replace(/^codex-cli /, "")),
