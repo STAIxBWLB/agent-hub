@@ -30,6 +30,7 @@ import { renderLearnChange, renderLearnList } from "./learn-output.ts";
 import { renderCapabilities } from "./capabilities-output.ts";
 import { terminalText } from "./console-state.ts";
 import { parseSettingsEditArgs, runSettingsEdit, SETTINGS_EDIT_USAGE } from "./settings-edit.ts";
+import { autonomyEnvironment, runAutonomy } from "./autonomy.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
 import { startPetWindow, closePetWindow } from "../pet/window.ts";
 import { loadPetConfig, savePetPalette } from "./pet-config.ts";
@@ -1890,6 +1891,19 @@ const commands: Record<string, () => Promise<void> | void> = {
       printOutput([[{ text: result.text }]], options.color);
     } finally { hub.close(); }
   },
+  autonomy: async () => {
+    let hub: ControlClient | undefined;
+    const rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+    try {
+      const usage = await runAutonomy(args, {
+        environment: autonomyEnvironment(process.env, !!process.stdin.isTTY),
+        request: async message => { hub ??= await connect(); return hub.request(message, 35_000); },
+        ask: async prompt => { if (!rl) return null; try { return await rl.question(prompt); } catch { return null; } },
+        print: line => console.log(terminalText(line)),
+      });
+      if (usage) fail(usage);
+    } finally { rl?.close(); hub?.close(); }
+  },
   settings: async () => {
     // #689: structural config edits (instances, review, snapshots, approvals, context.gate, sdlc.toml) and their backups. The hub validates and writes.
     if (args[0] === "edit" || args[0] === "backups") {
@@ -1983,6 +1997,11 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (typeof undoDef === "string" && settingScopeError) fail(`pending undo ${String(view.undo)}: ${undoDef}; the project config could not be read: ${settingScopeError}`);
         const rosterPeer = typeof undoDef !== "string" && undoDef.group === "Roster" ? undoDef.path[1] : undefined;
         let confirm: string | undefined;
+        if (typeof undoDef !== "string" && undoDef.managed === "autonomy") {
+          if (!process.stdin.isTTY) fail("undoing project autonomy requires a person's terminal confirmation");
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          try { confirm = (await rl.question("Type autonomy to undo the complete preset change: ")).trim(); } finally { rl.close(); }
+        }
         if (rosterPeer) {
           if (!process.stdin.isTTY) fail("undoing a roster setting needs confirmation in a terminal; use ahub settings set for an explicit scripted change");
           const rl = createInterface({ input: process.stdin, output: process.stdout });

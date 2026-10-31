@@ -90,7 +90,7 @@ import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type Fold
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
 import type { ScannedFile } from "./schedules.ts";
 import { corpusConfig } from "./corpus-config.ts";
-import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
+import { ALL_MACHINE_LOCAL, configRefusal, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
 import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateEffectiveConfig, validateOperationalConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSourceTexts, type ConfigSources } from "./config-reload.ts";
@@ -148,7 +148,7 @@ import { recallMemoryLines, trimToTokens } from "../memory/recall.ts";
 import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, statSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { realPath, hubHome } from "./project.ts";
+import { canonicalPath, realPath, hubHome } from "./project.ts";
 import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, profileTaskTools } from "./hub-tools.ts";
@@ -163,7 +163,10 @@ import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig, 
 import { taskEvidencePrivacy, type TaskEvidencePrivacy, ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
 import { withChecklistLine } from "./learning.ts";
-import { LEARN_CHECKLIST, NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
+import { createAutonomyConsent, type AutonomyConsentValues } from "./autonomy-consent.ts";
+import { insideRoot } from "./path-policy.ts";
+import { autonomyPreset, planAutonomy, autonomyStatus, type AutonomyEnvironment, type AutonomyPeer } from "./autonomy.ts";
+import { AUTONOMY_UNDO, autonomyOwnershipDigest, autonomyUndoKeys, writeAutonomyPreset, LEARN_CHECKLIST, NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { githubOriginRepository } from "./task-repository.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
@@ -474,6 +477,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     if (file.pet && typeof file.pet === "object" && !Object.keys(file.pet).length) delete file.pet;
     delete file.declaredExternalInstances; // host-derived refusal rows, never a file claim
     delete file.permission_default_sources; // provenance is loader-owned, never a file claim
+    delete file._autonomy; // Inert restoration metadata, never policy or approval provenance.
     if (file.checks?.runner === "remote" || file.checks?.remote !== undefined) {
       if (name !== "config.local.json" || configTracked(cwd, name) !== false) throw new Error("remote checks require untracked config.local.json");
       if (file.checks.remote !== undefined) remoteRunnerConfig(file.checks.remote);
@@ -944,7 +948,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return typeof found === "string" && stale ? { key: `roster.${stale}`, group: "Roster", label: `${stale}: stale roster key (instance no longer declared)`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", stale] } : found;
   };
   // #514b: undo resolves the managed checklist key, which is not a settings row, and every other key through the project-scoped lookup above (declared instances, the adapter catalog, a stale roster key).
-  const undoableDef = (key: unknown): SettingDef | string => key === LEARN_CHECKLIST.key ? LEARN_CHECKLIST : settingDef(key);
+  const undoableDef = (key: unknown): SettingDef | string => key === AUTONOMY_UNDO.key ? AUTONOMY_UNDO : key === LEARN_CHECKLIST.key ? LEARN_CHECKLIST : settingDef(key);
   const accountOf = (peer: string) => definitionOf(peer)?.budget?.account ?? peer;
   const accountMembers = (account: string) => SUPPORTED_PEERS.filter(peer => accountOf(peer) === account);
   let rosterChanging: string | undefined;
@@ -3855,20 +3859,46 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   // Runtime choices stay in this daemon only; recovery reads project defaults anew.
   const defaultSources = config.permission_default_sources ?? Object.fromEntries(Object.entries(config.permission_modes).map(([peer, mode]) => [peer, { mode, source: "embedded configuration" }]));
-  const pendingPermissionDefaults = new Map(Object.entries(defaultSources).filter(([, value]) => value.mode === "never-ask").map(([peer, value]) => [peer, value.source]));
+  const autonomyConsentDir = join(hubHome(), "autonomy", createHash("sha256").update(projectId).digest("hex"));
+  const autonomyConsent = createAutonomyConsent(autonomyConsentDir, projectId);
+  const autonomyOwnershipWitness = createAutonomyConsent(join(autonomyConsentDir, "ownership"), projectId, "ownership");
+  const autonomyUndoWitness = createAutonomyConsent(join(autonomyConsentDir, "undo"), projectId, "undo");
+  const autonomyWitnessValues = (peer: "ownership" | "undo", digest: string): AutonomyConsentValues => ({ [peer]: { digest } });
+  const ownAutonomyMetadata = (metadata: unknown) => {
+    const digest = autonomyOwnershipDigest(metadata);
+    if (digest) autonomyOwnershipWitness.confirm(autonomyWitnessValues("ownership", digest));
+    else autonomyOwnershipWitness.clear();
+  };
+  const autonomyConsentLocationSafe = () => {
+    try { const held = canonicalPath(autonomyConsentDir); const roots = [opts.cwd, ...executionRoots.values(), ...Object.values(config.instances ?? {}).flatMap(instance => instance.worktree ? [resolve(opts.cwd, instance.worktree)] : [])]; return !roots.some(root => insideRoot(relative(canonicalPath(root), held))); }
+    catch { return false; }
+  };
+  const autonomyConsentTrusted = () => autonomyConsentLocationSafe() && configRefusal(opts.cwd, "config.local.json") === undefined;
+  function autonomyConsentValues(candidate: HubConfig = config): AutonomyConsentValues {
+    return Object.fromEntries(Object.entries(candidate.permission_modes).filter(([peer, mode]) => mode === "never-ask" && candidate.permission_default_sources?.[peer]?.source === ".agenthub/config.local.json")
+      .map(([peer, mode]) => [peer, { [`permission_modes.${peer}`]: mode }]));
+  }
+  let autonomyConfirmed = autonomyConsentLocationSafe() ? autonomyConsent.confirmed(autonomyConsentValues(), autonomyConsentTrusted()) : new Set<string>();
+  const pendingPermissionDefaults = new Map(Object.entries(defaultSources).filter(([peer, value]) => value.mode === "never-ask" && !autonomyConfirmed.has(peer)).map(([peer, value]) => [peer, value.source]));
   const permissionChanges = new Map<string, Promise<void>>();
-  const permissionModes = new Map<string, PermissionMode>(Object.entries(config.permission_modes).map(([peer, mode]) => [peer, mode === "never-ask" ? "ask" : mode]));
+  const permissionModes = new Map<string, PermissionMode>(Object.entries(config.permission_modes).map(([peer, mode]) => [peer, mode === "never-ask" && !autonomyConfirmed.has(peer) ? "ask" : mode]));
   for (const peer of pendingPermissionDefaults.keys()) permissionModes.set(peer, "ask");
   const changedPermissionDefaults = new Set<string>();
+  function refreshAutonomyConsent(candidate: HubConfig = config): void {
+    const next = autonomyConsentLocationSafe() ? autonomyConsent.confirmed(autonomyConsentValues(candidate), autonomyConsentTrusted()) : new Set<string>();
+    for (const peer of new Set([...next, ...autonomyConfirmed])) if (next.has(peer) !== autonomyConfirmed.has(peer)) changedPermissionDefaults.add(peer);
+    autonomyConfirmed = next;
+  }
   const applyPendingPermissionDefault = (peer: string): void => {
+    refreshAutonomyConsent();
     if (changedPermissionDefaults.has(peer) && (!bus.peers.has(peer) || bus.peers.get(peer)!.state === "offline")) {
       changedPermissionDefaults.delete(peer);
       const mode = config.permission_modes[peer] ?? "ask";
       const source = config.permission_default_sources?.[peer]?.source ?? "configuration default";
-      permissionModes.set(peer, mode === "never-ask" ? "ask" : mode);
+      permissionModes.set(peer, mode === "never-ask" && !autonomyConfirmed.has(peer) ? "ask" : mode);
       permissionModeSources.set(peer, source);
       pendingPermissionDefaults.delete(peer);
-      if (mode === "never-ask") pendingPermissionDefaults.set(peer, source);
+      if (mode === "never-ask" && !autonomyConfirmed.has(peer)) pendingPermissionDefaults.set(peer, source);
       if (config.permission_default_sources?.[peer]) defaultSources[peer] = config.permission_default_sources[peer]!;
       else delete defaultSources[peer];
     }
@@ -6443,6 +6473,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return JSON.stringify(before) === JSON.stringify(after) ? [] : [prefix];
   }
   function declaredPaths(value: unknown, prefix = ""): string[] {
+    if (prefix === "_autonomy" || prefix.startsWith("_autonomy.")) return [];
     // Retired dictionaries never enter active publication; hub ids remain opaque keys.
     if (prefix === "routing.targets" || prefix === "routing.routes") return [];
     if (prefix === "routing.hub_routes") return [prefix];
@@ -6636,6 +6667,7 @@ export async function startDaemon(opts: DaemonOptions) {
       config.retired = prepared.running.retired;
       for (const line of config.retired ?? []) if (!priorRetired.has(line)) log(`config: ${line}`);
       config.permission_default_sources = candidate.permission_default_sources;
+      refreshAutonomyConsent(prepared.fileConfig);
       for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
       if (changes.some(change => change.key === "task_sweep" || change.key.startsWith("task_sweep."))) rescheduleSweep();
       if (changes.some(change => change.key === "schedules" || change.key.startsWith("schedules.") || change.key === "folder_triggers" || change.key.startsWith("folder_triggers."))) rescheduleSchedules();
@@ -6774,7 +6806,10 @@ export async function startDaemon(opts: DaemonOptions) {
       if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding roster changes" };
       rosterChanging = peer;
       if (undo) undoSetting(opts.cwd, opts.stateDir, scratch => configWriteCheck(scratch, authority, `roster.${peer}`), (_routing, overlay) => routingWriteCheck(authority, overlay), undoIdentity);
-      else writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority, `roster.${peer}`), {preserveUndo:authority==="conductor"});
+      else {
+        const written = writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority, `roster.${peer}`), {preserveUndo:authority==="conductor"});
+        if (written && authority !== "conductor") autonomyUndoWitness.clear();
+      }
       // Apply exactly the authorized key. Other file edits stay pending until the next hub start.
       config.roster = next;
       settlePlanner(); // #455: an automatic planner follows the roster
@@ -6795,9 +6830,10 @@ export async function startDaemon(opts: DaemonOptions) {
         checkOperational(authority);
         const mode = config.permission_modes[peer] ?? "ask";
         permissionModes.set(peer, mode === "never-ask" ? "ask" : mode);
+        if (mode === "never-ask" && autonomyConfirmed.has(peer)) permissionModes.set(peer, mode);
         permissionModeSources.set(peer, defaultSources[peer]?.source ?? "embedded configuration");
         pendingPermissionDefaults.delete(peer);
-        if (mode === "never-ask") pendingPermissionDefaults.set(peer, defaultSources[peer]?.source ?? "embedded configuration");
+        if (mode === "never-ask" && !autonomyConfirmed.has(peer)) pendingPermissionDefaults.set(peer, defaultSources[peer]?.source ?? "embedded configuration");
         const handoffCurrent = authority === "conductor" ? operationalContext.getStore()!.current : undefined;
         handoff = await tasks.reassignForRoster(peer, handoffCurrent);
       } else {
@@ -6878,6 +6914,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const next = writeRoutingSetting(opts.cwd, opts.stateDir, def, value, (_routing, overlay) => routingWriteCheck(authority, overlay, def.key));
         if (!next) return { ok: true, text: `${def.key}: ${OVERLAY_FILE} already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
         saved = true;
+        if (authority !== "conductor") autonomyUndoWitness.clear();
         const result = await reloadConfig(authority, def.key);
         if (result.ok !== true) return { ...result, saved: true };
         recordSetting(def.key, from, routingValue(activeRouting(), def), source, false, reason);
@@ -6887,6 +6924,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const from = settingScalar(valueAt(storedConfig(), def.path));
       if (!writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority, def.path.join(".")), {preserveUndo:authority==="conductor"})) return { ok: true, text: `${def.key}: config.local.json already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
       saved = true;
+      if (authority !== "conductor") autonomyUndoWitness.clear();
       const result = await reloadConfig(authority, def.path.join("."));
       if (result.ok !== true) return { ...result, saved: true };
       const to = settingScalar(valueAt(storedConfig(), def.path));
@@ -6899,6 +6937,109 @@ export async function startDaemon(opts: DaemonOptions) {
       return { ok: true, text: `${def.key}: ${settingText(shown(to))} (${timing})` };
     } catch (error) {
       return { ok: false, error: sanitize((error as Error).message), ...(error instanceof OperationalAuthorityError ? { authorityRefused: true, authorityScope: error.scope } : {}), ...(saved ? { saved: true } : {}) };
+    }
+  }
+
+  function autonomyPeers(): AutonomyPeer[] {
+    return SUPPORTED_PEERS.map(id => ({ id, kind: definitionOf(id)?.kind ?? id,
+      form: bus.peers.get(id)?.form ?? startMode(id), permissionMode: permissionDisplay(id, bus.peers.get(id)), actionEnforcement: actionEnforcement(id) }));
+  }
+  function autonomyOperations(environment: AutonomyEnvironment) {
+    return planAutonomy(environment, key => {
+      const def = settingDef(key);
+      return typeof def === "string" || def.store !== "config" ? undefined : { store: def.store, values: def.values, locked: def.locked };
+    }, autonomyPeers()).map(operation => {
+      const def = settingDef(operation.key);
+      if (typeof def !== "string") checkSettingValue(def, operation.value);
+      return operation;
+    });
+  }
+  async function autonomyPublish(keys: string[]): Promise<Record<string, unknown>> {
+    for (const key of keys) {
+      const result = await reloadConfig("terminal", key);
+      if (result.ok !== true) return { ...result, saved: true };
+    }
+    return { ok: true };
+  }
+  async function autonomyUndo(authority: SettingAuthority, confirm: unknown, identity: UndoIdentity): Promise<Record<string, unknown>> {
+    if (authority !== "terminal" || confirm !== "autonomy") return { ok: false, error: "undoing project autonomy needs the person's terminal and the autonomy confirmation" };
+    let saved = false;
+    try {
+      if (!autonomyConsentLocationSafe() || !autonomyUndoWitness.confirmed(autonomyWitnessValues("undo", identity.undoDigest), true).has("undo")) return { ok: false, error: "preset undo is not authenticated by private hub state; nothing was undone" };
+      const keys = autonomyUndoKeys(opts.stateDir);
+      const restored = undoSetting(opts.cwd, opts.stateDir, scratch => { configWriteCheck(scratch, "terminal", AUTONOMY_UNDO.key); for (const key of keys) configWriteCheck(scratch, "terminal", key); }, undefined, identity);
+      saved = true;
+      try { if (autonomyConsentLocationSafe()) autonomyConsent.clear(); } finally { refreshAutonomyConsent(); }
+      ownAutonomyMetadata(restored.ownership); autonomyUndoWitness.clear();
+      const result = await autonomyPublish(keys);
+      if (result.ok !== true) return result;
+      recordSetting(AUTONOMY_UNDO.key, "preset change", "previous configuration", "terminal", true);
+      return { ok: true, text: "Project autonomy change undone; live keys apply now, permission and start defaults at the next peer start." };
+    } catch (error) {
+      for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
+      return { ok: false, error: sanitize((error as Error).message), ...(saved ? { saved: true } : {}) };
+    }
+  }
+  let autonomyPreview: { token: string; environment: string; fingerprint: string; revision: number; operations: string } | undefined;
+  async function autonomyCommand(action: unknown, environment: unknown, confirmed: unknown, confirmation?: unknown): Promise<Record<string, unknown>> {
+    if (stopping || recoveryActive() || rosterChanging) return { ok: false, error: "recovery, shutdown or roster change is holding autonomy" };
+    if (typeof action !== "string" || typeof environment !== "string" || !Object.entries(autonomyPreset().environments).some(([name, row]) => name === environment || row.aliases.includes(environment)) || !["preview", "on", "off", "status"].includes(action)) return { ok: false, error: "invalid autonomy command or environment" };
+    let saved = false;
+    try {
+      const env = environment as AutonomyEnvironment;
+      const timing = (key: string) => { const def = settingDef(key); return typeof def !== "string" && def.applies === "next use" ? "next peer start" : typeof def !== "string" && def.applies === "restart" ? "next hub start" : "live"; };
+      if (action === "status") {
+        refreshAutonomyConsent();
+        for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
+        const terminal = opener.available();
+        const rows = autonomyStatus({ environment: env, peers: autonomyPeers(), actionPolicy: actionPolicyConfig(config.action_policy), terminalOpener: terminal.ok ? { available: true, via: terminal.via } : { available: false, reason: terminal.why } });
+        for (const row of rows) if (pendingPermissionDefaults.has(row.id)) row.missing.push("This never-ask default has no matching retained consent; confirm it in ahub console or run ahub autonomy on again.");
+        return { ok: true, status: { environment: env, consentedPeers: [...autonomyConfirmed], peers: rows }, lines: [`Project autonomy, environment: ${env}`, ...rows.flatMap(row => [`${row.id}: ${row.effectiveMode}; preset ${row.nextMode ?? "unmanaged"} at ${row.applies}`, ...row.floor.map(floor => `  ${floor.class}: ${floor.status}; ${floor.reason}`), ...row.missing.map(reason => `  missing: ${reason}`)])] };
+      }
+      const operations = action === "off" ? Object.entries(autonomyPreset().hub).map(([key, value]) => ({ key, value, store: "config" as const })) : autonomyOperations(env);
+      if (action === "preview") {
+        autonomyPreview = { token: randomUUID(), environment: env, fingerprint: configFingerprint(configSourceTexts(opts.cwd)), revision: configRevision, operations: JSON.stringify(operations) };
+        return { ok: true, confirmation: autonomyPreview.token, lines: ["Project autonomy: approval prompts change; sandbox, deny, PII and trust rules remain. Check autonomy status for the current floor enforcement and missing guards.", ...operations.map(operation => `${operation.key}: ${settingText(operation.value)} (${timing(operation.key)})`), "Unmanaged native clients and missing structural guards are reported by autonomy status; the preset cannot enforce those paths."] };
+      }
+      if (action === "on" && confirmed !== true) return { ok: false, error: "project autonomy needs one person confirmation; use ahub autonomy on [--yes]" };
+      if (action === "on") {
+        if (!autonomyPreview || confirmation !== autonomyPreview.token || env !== autonomyPreview.environment || autonomyPreview.revision !== configRevision || autonomyPreview.operations !== JSON.stringify(operations) || autonomyPreview.fingerprint !== configFingerprint(configSourceTexts(opts.cwd))) return { ok: false, error: "autonomy preview is stale or missing; run ahub autonomy on again to review the current values" };
+        autonomyPreview = undefined;
+      }
+      // Off may be called from another environment: every owned key still belongs to the same shipped preset.
+      const allowed = operations;
+      if (action === "on" && !autonomyConsentLocationSafe()) return { ok: false, error: "retained autonomy consent requires private hub state outside the project and execution roots" };
+      if (action === "off") { try { if (autonomyConsentLocationSafe()) autonomyConsent.clear(); } finally { refreshAutonomyConsent(); } }
+      refreshAutonomyConsent();
+      const renewConsentUndo = action === "on" && operations.some(operation => operation.key.startsWith("permission_modes.") && operation.value === "never-ask" && !autonomyConfirmed.has(operation.key.slice("permission_modes.".length)));
+      const result = writeAutonomyPreset(opts.cwd, opts.stateDir, action === "on", allowed, (scratch, keys) => { configWriteCheck(scratch, "terminal", AUTONOMY_UNDO.key); for (const key of keys) configWriteCheck(scratch, "terminal", key); }, metadata => {
+        const digest = autonomyOwnershipDigest(metadata);
+        return !!digest && autonomyConsentLocationSafe() && autonomyOwnershipWitness.confirmed(autonomyWitnessValues("ownership", digest), true).has("ownership");
+      }, renewConsentUndo);
+      saved = result.changed;
+      if (result.changed) {
+        ownAutonomyMetadata(result.ownership);
+        if (result.undo) autonomyUndoWitness.confirm(autonomyWitnessValues("undo", result.undo.undoDigest));
+        else autonomyUndoWitness.clear();
+        const published = await autonomyPublish(result.keys);
+        if (published.ok !== true) return published;
+        recordSetting(AUTONOMY_UNDO.key, action === "on" ? "off" : "on", action, "terminal", false);
+      }
+      if (action === "off" && autonomyConsentLocationSafe()) autonomyOwnershipWitness.clear();
+      if (action === "on") {
+        if (!autonomyConsentTrusted()) throw new Error("config.local.json trust changed; retained consent was not issued");
+        const fileConfig = loadConfig(opts.cwd, undefined, undefined, externalDefinitions);
+        validateEffectiveConfig(fileConfig, adapterCatalog);
+        const current = autonomyConsentValues(fileConfig);
+        const approved = Object.fromEntries(operations.filter(operation => operation.key.startsWith("permission_modes.") && operation.value === "never-ask")
+          .flatMap(operation => { const peer = operation.key.slice("permission_modes.".length); return current[peer] ? [[peer, current[peer]]] : []; }));
+        try { autonomyConsent.confirm(approved); } finally { refreshAutonomyConsent(); }
+      }
+      for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
+      return { ok: true, lines: [`Project autonomy ${action}: ${result.changed ? "saved" : "unchanged"}. ahub settings undo restores the complete last write.`, ...result.keys.map(key => `${key}: ${timing(key)}`), ...result.preserved.map(key => `${key}: kept the later manual edit`)] };
+    } catch (error) {
+      if (action === "off") for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
+      return { ok: false, error: sanitize((error as Error).message), ...(saved ? { saved: true } : {}) };
     }
   }
 
@@ -6915,6 +7056,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     const def = undoableDef(identity?.key);
     if (typeof def === "string" || !identity) return { ok: false, error: "nothing to undo" };
+    if (def === AUTONOMY_UNDO) return autonomyUndo(authority, confirm, identity);
     if (def.managed && authority !== "terminal") return { ok: false, error: `${def.key} was written by ahub learn accept: put it back with ahub settings undo in a terminal` };
     if (def.group === "Roster") return changeRosterSetting(def, null, settingSource(authority), confirm, now === true, true, authority, reason, identity);
     if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };
@@ -6971,6 +7113,7 @@ export async function startDaemon(opts: DaemonOptions) {
   function settingsUndoPreview(): Record<string, unknown> {
     const identity = pendingUndoIdentity(opts.stateDir), def = undoableDef(identity?.key);
     if (typeof def === "string" || !identity) return { ok: false, error: "nothing to undo" };
+    if (def === AUTONOMY_UNDO) return { ok: true, ...identity, lines: ["Undo the complete project autonomy change, including its ownership receipt. Type autonomy to confirm; modes at peer start and existing live keys keep their apply timing."] };
     if (def.managed) return { ok: true, ...identity, lines: [`Undo ${def.key}: put back the previous machine-local file (the review checklist ahub learn accept changed; its lines are not shown here)`, "The saved previous machine-local file is revalidated before writing."] };
     const value = restoredValue(opts.cwd, opts.stateDir, def), preview = settingsPreview(def.key, value ?? null);
     if (pendingUndoIdentity(opts.stateDir)?.undoDigest !== identity.undoDigest) return { ok: false, error: "undo record changed during preview; preview again" };
@@ -8424,6 +8567,10 @@ export async function startDaemon(opts: DaemonOptions) {
         if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding task role changes" });
         try { const task = tasks.setRole(c.role === "console" ? USER : c.peer!, msg.id, msg.role); return void reply({ ok: true, text: `task #${task.id}: catalog role ${task.role ?? "none"}` }); }
         catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
+      case "autonomy":
+        if (c.role !== "console") return void reply({ ok: false, error: "autonomy is a person-only command; run ahub autonomy in a person's terminal" });
+        void autonomyCommand(msg.action, msg.environment, msg.confirmed, msg.confirmation).then(reply, () => reply({ ok: false, error: "project autonomy could not be changed" }));
+        return;
       case "settings_get":
         if (c.role !== "console") {
           try { const current = publicReadCurrent(sock); current(); const view = publicSettingsView(); current(); return void reply({ ok: true, ...view }); }

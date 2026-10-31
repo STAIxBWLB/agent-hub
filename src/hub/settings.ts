@@ -30,7 +30,7 @@ export interface SettingDef {
   label: string;
   type: "enum" | "boolean" | "peers" | "roles" | "integer" | "number" | "lines";
   /** Written only by the named hub command, never by `settings set`, a dashboard session or a conductor (#514b). */
-  managed?: "learn";
+  managed?: "learn" | "autonomy";
   min?: number; max?: number;
   /** The closed values of an enum; a route setting takes the project's own route ids instead. */
   values?: readonly string[];
@@ -156,6 +156,7 @@ export function projectSettings(instances?: KindMap, adapterCatalog?: ProjectAda
 
 /** What undo may put back: a registry key, or the one managed key `ahub learn accept` writes. Never used to set anything. The CLI passes its project scope; the daemon has its own wrapper over its project-scoped lookup. */
 export function undoableDef(key: unknown, instances?: KindMap, adapterCatalog?: ProjectAdapterCatalog): SettingDef | string {
+  if (key === AUTONOMY_UNDO.key) return AUTONOMY_UNDO;
   return key === LEARN_CHECKLIST.key ? LEARN_CHECKLIST : settingDef(key, instances, adapterCatalog);
 }
 
@@ -221,7 +222,7 @@ export function parseSettingText(def: SettingDef, text: string): unknown {
 export const settingText = (value: unknown): string => value === null || value === undefined ? "(not set)" : Array.isArray(value) ? value.join(",") || "(none)" : String(value);
 
 export type SettingSource = "dashboard" | "terminal" | "conductor";
-export type SettingWriteOptions = { preserveUndo?: boolean };
+export type SettingWriteOptions = { preserveUndo?: boolean; keys?: string[] };
 /** `ordinary`: a dashboard session from `ahub ui`. `settings`: one from `ahub ui --settings`. `terminal`: `ahub settings`. */
 export type SettingAuthority = "ordinary" | "settings" | "terminal" | "conductor";
 /** Why this authority may not set this value, or undefined. Removing a stored value can raise, so it counts as one. */
@@ -236,7 +237,7 @@ export function settingRefusal(def: SettingDef | string, value: SettingValue, au
 
 const CONFIG_LOCAL = "config.local.json";
 type StoredFile = typeof CONFIG_LOCAL | typeof OVERLAY_FILE;
-interface UndoRecord { file: StoredFile; key: string; previous: string | null; written: string | null; at: number }
+interface UndoRecord { file: StoredFile; key: string; previous: string | null; written: string | null; at: number; keys?: string[] }
 const undoFile = (stateDir: string): string => join(stateDir, "settings-undo.json");
 const digest = (text: string | null): string | null => text === null ? null : createHash("sha256").update(text).digest("hex");
 /** The file's text, or null when it is not there. Any other failure is named by its code: its own text holds absolute paths. */
@@ -275,17 +276,19 @@ function refuseTracked(cwd: string, file: StoredFile): void {
   if (tracked === undefined && configRepositoryPresent(cwd)) throw new Error(`git could not confirm that .agenthub/${file} is untracked; nothing was written`);
 }
 /** Person writes keep the one previous version; conductor writes preserve that existing receipt. */
-function store(cwd: string, stateDir: string, file: StoredFile, key: string, previous: string | null, next: string | null, options: SettingWriteOptions = {}): void {
+function store(cwd: string, stateDir: string, file: StoredFile, key: string, previous: string | null, next: string | null, options: SettingWriteOptions = {}): UndoIdentity | undefined {
   refuseTracked(cwd, file);
   replaceFile(join(cwd, ".agenthub", file), file, next);
   // A conductor write never replaces, deletes or rebases the person's undo receipt. The ordinary digest fence still applies.
   if(options.preserveUndo)return;
   // The record follows the file: a write that failed leaves the earlier record valid, because the file is as it left it.
-  const record: UndoRecord = { file, key, previous, written: digest(next), at: Date.now() };
+  const record: UndoRecord = { file, key, previous, written: digest(next), at: Date.now(), ...(options.keys ? { keys: options.keys } : {}) };
   try {
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     rmSync(undoFile(stateDir), { force: true });
-    writeFileSync(undoFile(stateDir), JSON.stringify(record), { mode: 0o600 });
+    const text = JSON.stringify(record);
+    writeFileSync(undoFile(stateDir), text, { mode: 0o600 });
+    return { key, undoDigest: digest(text)! };
   } catch {
     rmSync(undoFile(stateDir), { force: true }); // this write has no undo, and an older record must not offer one
   }
@@ -350,6 +353,93 @@ export function writeConfigSetting(cwd: string, stateDir: string, def: SettingDe
   store(cwd, stateDir, CONFIG_LOCAL, def.key, before, text, options);
   return true;
 }
+
+/** Preset writes share the ordinary settings writer and its whole-file undo receipt. Not a public settings row. */
+export const AUTONOMY_UNDO: SettingDef = Object.freeze({ key: "autonomy.preset", group: "Permissions", label: "Project autonomy preset", type: "boolean", store: "config", applies: "live", risk: "raises", path: ["_autonomy"], managed: "autonomy" });
+interface AutonomyOwned { key: string; previous: SettingValue; written: SettingValue }
+const presetKey = (key: unknown): key is string => typeof key === "string" && key.length <= 160 && /^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)+$/.test(key)
+  && !key.split(".").some(part => ["__proto__", "constructor", "prototype"].includes(part));
+const presetValue = (value: unknown): value is SettingValue => value === null || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value)
+  || typeof value === "string" && value.length <= 4096 || Array.isArray(value) && value.length <= 64 && value.every(item => typeof item === "string" && item.length <= 4096);
+/** Ownership is inert machine-local metadata, co-written with the values, so undo also restores ownership. */
+export function autonomyOwnership(value: unknown): AutonomyOwned[] {
+  if (!isObject(value) || value.version !== 1 || Object.keys(value).some(key => !["version", "owned"].includes(key)) || !Array.isArray(value.owned) || value.owned.length > 128) throw new Error("invalid autonomy ownership receipt");
+  const keys = new Set<string>();
+  for (const row of value.owned) {
+    if (!isObject(row) || Object.keys(row).some(key => !["key", "previous", "written"].includes(key)) || !presetKey(row.key) || !presetValue(row.previous) || !presetValue(row.written) || keys.has(row.key)) throw new Error("invalid autonomy ownership entry");
+    keys.add(row.key);
+  }
+  return value.owned as AutonomyOwned[];
+}
+function putPreset(doc: Record<string, unknown>, key: string, value: SettingValue): void {
+  const parts = key.split("."), trail: [Record<string, unknown>, string][] = [];
+  let node = doc;
+  for (const part of parts.slice(0, -1)) {
+    if (node[part] === undefined) { if (value === null) return; node[part] = {}; }
+    if (!isObject(node[part])) throw new Error(`${key}: parent is not an object; nothing was changed`);
+    trail.push([node, part]); node = node[part] as Record<string, unknown>;
+  }
+  const leaf = parts.at(-1)!;
+  if (value !== null) node[leaf] = structuredClone(value);
+  else {
+    delete node[leaf];
+    for (const [parent, part] of trail.reverse()) { if (Object.keys(parent[part] as object).length) break; delete parent[part]; }
+  }
+}
+/** Only the host-derived shipped operations enter here; requests cannot supply operations or receipt keys. */
+export function writeAutonomyPreset(cwd: string, stateDir: string, enabled: boolean, operations: readonly { key: string; value: unknown }[], validate: (scratch: string, keys: string[]) => unknown, authorizeOwnership: (metadata: unknown) => boolean = () => false, forceUndo = false): { changed: boolean; keys: string[]; preserved: string[]; ownership?: unknown; undo?: UndoIdentity } {
+  const before = readText(join(cwd, ".agenthub", CONFIG_LOCAL));
+  const doc = before === null ? {} : parseObject(before, CONFIG_LOCAL);
+  if (before === null && !existsSync(join(cwd, ".agenthub", "config.json"))) throw new Error("run ahub init first; autonomy does not create a project's first config file");
+  const owned = doc._autonomy === undefined ? undefined : autonomyOwnership(doc._autonomy);
+  if (owned && !authorizeOwnership(doc._autonomy)) throw new Error("autonomy ownership metadata is not authenticated; review the project file before applying or restoring it");
+  const keys: string[] = [], preserved: string[] = [];
+  if (!enabled && !owned) return { changed: false, keys, preserved };
+  if (enabled) {
+    const receipt: AutonomyOwned[] = structuredClone(owned ?? []);
+    for (const { key, value } of operations) {
+      if (!presetKey(key) || !presetValue(value) || value === null || keys.includes(key)) throw new Error("invalid autonomy preset operation");
+      const previous = valueAt(doc, key.split("."));
+      if (previous !== undefined && !presetValue(previous)) throw new Error(`${key}: existing value cannot be retained by the preset`);
+      const retained = receipt.find(row => row.key === key);
+      if (retained && !same(previous, retained.written)) { preserved.push(key); continue; }
+      if (same(previous, value)) continue; // Already hand-set: never claim ownership of it.
+      if (retained) retained.written = structuredClone(value);
+      else receipt.push({ key, previous: previous ?? null, written: structuredClone(value) });
+      putPreset(doc, key, value); keys.push(key);
+    }
+    doc._autonomy = { version: 1, owned: receipt };
+  } else {
+    const allowed = new Set(operations.map(operation => operation.key));
+    for (const row of owned!) {
+      // A removed instance still has a removable owned default. No arbitrary settings path is restored.
+      if (!allowed.has(row.key) && !/^permission_modes\.[a-z][a-z0-9_-]*$/.test(row.key) && !/^peers\.[a-z][a-z0-9_-]*\.start_mode$/.test(row.key)) throw new Error(`${row.key}: preset ownership is no longer supported; nothing was changed`);
+      if (!same(valueAt(doc, row.key.split(".")), row.written)) { preserved.push(row.key); continue; }
+      putPreset(doc, row.key, row.previous); keys.push(row.key);
+    }
+    delete doc._autonomy;
+  }
+  const next = `${JSON.stringify(doc, null, 2)}\n`;
+  if (!forceUndo && before !== null && same(JSON.parse(before), doc)) return { changed: false, keys, preserved };
+  checkConfigText(cwd, next, scratch => validate(scratch, keys));
+  // Validation may call host ports; retain the exact input file rather than overwrite an intervening hand edit.
+  if (readText(join(cwd, ".agenthub", CONFIG_LOCAL)) !== before) throw new Error("configuration changed during autonomy validation; nothing was written");
+  const undo = store(cwd, stateDir, CONFIG_LOCAL, AUTONOMY_UNDO.key, before, next, { keys });
+  return { changed: true, keys, preserved, ownership: doc._autonomy ?? null, undo };
+}
+/** The keys of the retained preset transaction, never arbitrary request text. */
+/** The inert leaf is never authority by itself; the host authenticates this digest outside the project. */
+export function autonomyOwnershipDigest(metadata: unknown): string | null {
+  if (metadata === null || metadata === undefined) return null;
+  const owned = autonomyOwnership(metadata).map(row => ({ key: row.key, previous: row.previous, written: row.written })).sort((a, b) => a.key.localeCompare(b.key));
+  return digest(JSON.stringify({ version: 1, owned }));
+}
+export function autonomyUndoKeys(stateDir: string): string[] {
+  const raw = readText(undoFile(stateDir));
+  const record = raw === null ? undefined : JSON.parse(raw) as UndoRecord;
+  if (record?.key !== AUTONOMY_UNDO.key || !Array.isArray(record.keys) || record.keys.length > 128 || record.keys.some(key => !presetKey(key))) throw new Error("invalid autonomy undo receipt");
+  return [...record.keys];
+}
 /** Runs `validate` on a scratch project holding the shared config and this candidate for the machine-local one. */
 function checkConfigText(cwd: string, text: string | null, validate: (scratch: string) => unknown): void {
   const scratch = mkdtempSync(join(tmpdir(), "ahub-settings-"));
@@ -407,7 +497,7 @@ export function readOverlay(cwd: string): RoutingOverlay {
  * that write (a hand edit would be lost), when the loaders no longer accept that version, or when there is nothing to undo.
  */
 export interface UndoIdentity { key: string; undoDigest: string }
-export function undoSetting(cwd: string, stateDir: string, validate: (scratch: string) => unknown, checkRouting?: (routing: Routing, overlay?: RoutingOverlay) => void, expected?: UndoIdentity): { key: string; file: StoredFile } {
+export function undoSetting(cwd: string, stateDir: string, validate: (scratch: string) => unknown, checkRouting?: (routing: Routing, overlay?: RoutingOverlay) => void, expected?: UndoIdentity): { key: string; file: StoredFile; ownership?: unknown } {
   const raw = readText(undoFile(stateDir));
   if (raw === null) throw new Error("nothing to undo");
   let record: UndoRecord;
@@ -426,9 +516,10 @@ export function undoSetting(cwd: string, stateDir: string, validate: (scratch: s
   }
   else checkConfigText(cwd, record.previous, validate);
   if (expected && readText(undoFile(stateDir)) !== raw) throw new Error("undo record changed since preview; preview again; nothing was undone");
+  const ownership = record.key === AUTONOMY_UNDO.key ? record.previous === null ? null : parseObject(record.previous, CONFIG_LOCAL)._autonomy ?? null : undefined;
   replaceFile(path, record.file, record.previous);
   rmSync(undoFile(stateDir), { force: true });
-  return { key: String(record.key), file: record.file };
+  return { key: String(record.key), file: record.file, ...(ownership !== undefined ? { ownership } : {}) };
 }
 /** Whether the machine-local config file holds a value for this setting now. */
 export function storedLocally(cwd: string, def: SettingDef): boolean {

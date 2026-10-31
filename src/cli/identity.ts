@@ -26,6 +26,7 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
     || (command === "board" && args[0] === "import") || (command === "sdlc" && (args[0] === "record" || args[0] === "accept" || args[0] === "accept-departure"))
     || (command === "bench" && args.find(arg => arg !== "--json") === "run") || command === "pet"
     // #691: trusting an untested agent CLI version is the person's consent, never a delegated live-test operation.
+    || command === "autonomy"
     || (command === "agents" && !args.every(arg => arg === "--json"));
 }
 

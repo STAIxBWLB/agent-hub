@@ -329,3 +329,11 @@ const consoleClassForms: readonly [string, readonly string[], PeerCommandAccess]
 test("#933: the fixture table covers every console, conductor and own-task row of the issue", () => {
   for (const [command, args, access] of consoleClassForms) expect([command, args.join(" "), classifyPeerCommand(command, args)]).toEqual([command, args.join(" "), access]);
 });
+
+// #999: even an opted-in machine cannot let an agent toggle its own approval policy.
+test("autonomy mutations are person-only, including the explicit live-test bypass", () => {
+  for (const args of [["on"], ["on", "--yes"], ["off"], ["status", "--json"]]) {
+    expect(classifyPeerCommand("autonomy", args)).toBe("console");
+    expect(liveTestRefusal("autonomy", args)).toBeTruthy();
+  }
+});
