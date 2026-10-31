@@ -257,6 +257,7 @@
       "hubSeesBeforeRun": "unknown",
       "askedBy": "unknown",
       "note": "unknown: no allow rule for the hub tools was found in the plugin or the launcher. In ask and ask-when-needed Claude's own rules decide. never-ask returns a hook allow for every tool.",
+      "unknowns": ["whether Claude asks before calling the hub's hub_* tools in ask and ask-when-needed"],
       "evidence": [
         { "file": "docs/operations.md", "needle": "Hook allow for every tool" }
       ]
@@ -272,6 +273,7 @@
       "hubSeesBeforeRun": "no",
       "askedBy": "native-tui",
       "note": "Recorded as an attended step when a recovery recreates a Claude session. unknown: whether it appears on every ordinary ahub claude start, and whether Orca profile homes differ.",
+      "unknowns": ["whether the confirmation appears on every ordinary ahub claude start", "whether Orca profile homes differ"],
       "evidence": [
         { "file": "docs/smoke.md", "needle": "development-channel confirmation" },
         { "file": "src/adapters/definitions/builtin-metadata.ts", "needle": "--dangerously-load-development-channels" }
@@ -365,6 +367,7 @@
       "hubSeesBeforeRun": "unknown",
       "askedBy": "unknown",
       "note": "unknown: with peers.codex.start_mode headless there is no TUI, and the code gates a classed command request only while a TUI link is open. The mode override (on-request or never) applies to every hub turn/start.",
+      "unknowns": ["who answers a Codex approval request when no TUI is attached", "whether the hub gates a classed request with no TUI link"],
       "evidence": [
         { "file": "docs/operations.md", "needle": "a hub-made start runs the app-server only" },
         { "file": "src/adapters/codex-appserver.ts", "needle": "applyPermissionPolicy" }
@@ -381,6 +384,7 @@
       "hubSeesBeforeRun": "unknown",
       "askedBy": "unknown",
       "note": "unknown: see codex.tool-approval.headless. Never-ask sends no request at all.",
+      "unknowns": ["who answers a classed Codex request when no TUI is attached"],
       "evidence": [
         { "file": "src/adapters/codex-appserver.ts", "needle": "interceptActionApproval" }
       ]
@@ -425,6 +429,7 @@
       "hubSeesBeforeRun": "unknown",
       "askedBy": "unknown",
       "note": "unknown: the TUI's own prompts are not observable by the hub.",
+      "unknowns": ["whether Kimi's TUI asks before calling hub tools"],
       "evidence": [
         { "file": "docs/operations.md", "needle": "Kimi in its own TUI" }
       ]
@@ -505,46 +510,96 @@
       ]
     },
     {
-      "id": "qwen.hub-tools.any",
+      "id": "qwen.hub-tools.hub-turn",
       "kinds": ["qwen"],
       "environments": ["terminal", "orca", "headless"],
       "form": "any",
       "point": "hub-tools",
-      "asks": "None for the hub's own tools: an exact mcp__agent-hub__<name> title is auto-approved, in the TUI too.",
+      "asks": "None for the hub's own tools during a turn the hub delivered: an exact mcp__agent-hub__<name> title is auto-approved.",
       "controlledBy": [],
       "hubSeesBeforeRun": "yes",
       "askedBy": "none",
+      "note": "In the dual-output TUI this holds only while a hub-delivered turn is started and hub-owned. A turn the person types is covered by qwen.hub-tools.personal-turn.",
       "evidence": [
-        { "file": "src/hub/daemon.ts", "needle": "autoApprove: name => !stopping && HUB_TOOL_TITLES.has(name)" }
+        { "file": "src/hub/daemon.ts", "needle": "autoApprove: name => !stopping && HUB_TOOL_TITLES.has(name)" },
+        { "file": "src/adapters/qwen-dual.ts", "needle": "Only a hub turn asks the hub." }
       ]
     },
     {
-      "id": "qwen.tool-approval.tui",
+      "id": "qwen.hub-tools.personal-turn",
+      "kinds": ["qwen"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "hub-tools",
+      "asks": "Qwen's own TUI prompt, if any, for a hub tool called during a turn the person typed. The hub neither auto-approves nor asks.",
+      "controlledBy": ["native.qwen"],
+      "hubSeesBeforeRun": "no",
+      "askedBy": "native-tui",
+      "note": "The adapter returns before autoApprove, the action gate and onPermission unless the turn is started and hub-owned. unknown: whether Qwen's native mode prompts for the hub's tools at all.",
+      "unknowns": ["whether Qwen's own mode prompts for hub tools"],
+      "evidence": [
+        { "file": "src/adapters/qwen-dual.ts", "needle": "During the person's own turn the TUI prompt is theirs" }
+      ]
+    },
+    {
+      "id": "qwen.tool-approval.tui-hub-turn",
       "kinds": ["qwen"],
       "environments": ["terminal", "orca"],
       "form": "tui",
       "point": "tool-approval",
-      "asks": "Qwen's can_use_tool request, shown on the hub console. Answering in the Qwen terminal first withdraws the hub's pending approval.",
+      "asks": "During a turn the hub delivered: Qwen's can_use_tool request, shown on the hub console. Answering in the Qwen terminal first withdraws the hub's pending approval.",
       "controlledBy": ["native.qwen", "approvals.timeout_s"],
       "hubSeesBeforeRun": "yes",
       "askedBy": "native-and-hub",
-      "note": "Explicit only (ahub qwen --mode tui), never opened by the hub. A hub denial ends the turn without an answer. unknown: whether permission_modes.qwen changes anything for the TUI, which is launched with --approval-mode default.",
+      "note": "Only while the turn is started and hub-owned. Explicit only (ahub qwen --mode tui), never opened by the hub. A hub denial ends the turn without an answer. unknown: whether permission_modes.qwen changes anything for the TUI, which is launched with --approval-mode default.",
+      "unknowns": ["whether permission_modes.qwen changes the dual-output TUI"],
       "evidence": [
-        { "file": "docs/operations.md", "needle": "can_use_tool" }
+        { "file": "docs/operations.md", "needle": "can_use_tool" },
+        { "file": "src/adapters/qwen-dual.ts", "needle": "Only a hub turn asks the hub." }
       ]
     },
     {
-      "id": "qwen.classed-action.tui",
+      "id": "qwen.tool-approval.tui-personal-turn",
+      "kinds": ["qwen"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "tool-approval",
+      "asks": "During a turn the person typed: Qwen's own TUI prompt only. The hub console is not asked, so the person is not asked twice.",
+      "controlledBy": ["native.qwen"],
+      "hubSeesBeforeRun": "no",
+      "askedBy": "native-tui",
+      "evidence": [
+        { "file": "src/adapters/qwen-dual.ts", "needle": "During the person's own turn the TUI prompt is theirs" }
+      ]
+    },
+    {
+      "id": "qwen.classed-action.tui-hub-turn",
       "kinds": ["qwen"],
       "environments": ["terminal", "orca"],
       "form": "tui",
       "point": "classed-action",
-      "asks": "The same console approval, with the classed title, for a classed call in the dual-output TUI.",
+      "asks": "During a turn the hub delivered: the same console approval, with the classed title, for a classed call in the dual-output TUI.",
       "controlledBy": ["action_policy", "native.qwen"],
       "hubSeesBeforeRun": "yes",
       "askedBy": "native-and-hub",
+      "note": "Only while the turn is started and hub-owned.",
       "evidence": [
-        { "file": "src/hub/daemon.ts", "needle": "onPermission, actionGate: (call, session) => acpActionGate(peer)" }
+        { "file": "src/hub/daemon.ts", "needle": "onPermission, actionGate: (call, session) => acpActionGate(peer)" },
+        { "file": "src/adapters/qwen-dual.ts", "needle": "Only a hub turn asks the hub." }
+      ]
+    },
+    {
+      "id": "qwen.classed-action.tui-personal-turn",
+      "kinds": ["qwen"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "classed-action",
+      "asks": "During a turn the person typed: Qwen's own TUI prompt only. The hub classifies nothing.",
+      "controlledBy": ["native.qwen"],
+      "hubSeesBeforeRun": "no",
+      "askedBy": "native-tui",
+      "evidence": [
+        { "file": "src/adapters/qwen-dual.ts", "needle": "During the person's own turn the TUI prompt is theirs" }
       ]
     },
     {
@@ -553,13 +608,15 @@
       "environments": ["terminal", "orca", "headless"],
       "form": "any",
       "point": "tool-approval",
-      "asks": "Jcode's own native policy. The hub maps no mode for it.",
+      "asks": "Jcode's own native policy decides. The hub maps no mode and has no pre-tool approval path, in either form.",
       "controlledBy": ["native.jcode", "peers.<peer>.start_mode"],
       "hubSeesBeforeRun": "no",
-      "askedBy": "native-tui",
-      "note": "permission_modes.jcode is refused by the config loader. In headless form (ACP only) unknown: whether and where Jcode asks, since no hub pre-tool approval path exists.",
+      "askedBy": "unknown",
+      "note": "permission_modes.jcode is refused by the config loader. unknown: who asks and where, in the TUI and in headless ACP. The source establishes only that the policy is unmanaged by the hub, not that a native TUI prompt appears, and in headless there is no TUI.",
+      "unknowns": ["who asks and where, in the TUI form", "who asks and where, in headless ACP"],
       "evidence": [
-        { "file": "src/adapters/definitions/builtin-metadata.ts", "needle": "Jcode native policy is unmanaged" }
+        { "file": "src/adapters/definitions/builtin-metadata.ts", "needle": "Jcode native policy is unmanaged" },
+        { "file": "src/hub/permission-mode.ts", "needle": "approvals belong to its native tools" }
       ]
     },
     {
@@ -571,7 +628,9 @@
       "asks": "Nothing from the hub: always-ask is not enforceable for Jcode.",
       "controlledBy": ["action_policy", "native.jcode"],
       "hubSeesBeforeRun": "no",
-      "askedBy": "native-tui",
+      "askedBy": "unknown",
+      "note": "unknown: whether Jcode asks at all for a classed call, and who, in either form. The hub's side is established: it sees nothing first.",
+      "unknowns": ["whether and who asks for a classed call, in either form"],
       "evidence": [
         { "file": "docs/operations.md", "needle": "Jcode still has no hub pre-tool approval path" }
       ]
@@ -677,6 +736,7 @@
       "hubSeesBeforeRun": "unknown",
       "askedBy": "unknown",
       "note": "unknown: not observable by the hub.",
+      "unknowns": ["whether Antigravity's TUI asks before calling hub tools"],
       "evidence": [
         { "file": "docs/operations.md", "needle": "Optional Antigravity (agy) peer" }
       ]
@@ -692,6 +752,7 @@
       "hubSeesBeforeRun": "unknown",
       "askedBy": "unknown",
       "note": "unknown: neither the code nor the docs state it for these kinds. Ask the T0 reviewer or probe it in the T4 receipt.",
+      "unknowns": ["whether codex, jcode, pi or local ask before calling the hub's own tools"],
       "evidence": [
         { "file": "docs/operations.md", "needle": "Permission modes for running peers" }
       ]
@@ -754,6 +815,7 @@
       "hubSeesBeforeRun": "not-applicable",
       "askedBy": "none",
       "note": "Orca runs Claude under per-profile CLAUDE_CONFIG_DIR homes (issue #999). ahub setup does not read CLAUDE_CONFIG_DIR, so unknown: whether the hub plugin is installed in each profile home.",
+      "unknowns": ["whether the hub plugin is installed in each Orca Claude profile home"],
       "evidence": [
         { "file": "src/cli/terminal-recovery.ts", "needle": "[\"terminal\", \"create\", \"--worktree\"" },
         { "file": "src/adapters/definitions/builtin-metadata.ts", "needle": "configDirEnv: \"CLAUDE_CONFIG_DIR\"" }

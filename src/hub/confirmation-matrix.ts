@@ -32,6 +32,8 @@ export interface ConfirmationRow {
   hubSeesBeforeRun: typeof HUB_SEES[number];
   askedBy: typeof ASKED_BY[number];
   note?: string;
+  /** What was not established, one entry each. Required, and only allowed, when the note says `unknown` or hubSeesBeforeRun or askedBy is `unknown`. */
+  unknowns?: string[];
   evidence: MatrixEvidence[];
 }
 export interface MatrixKey {
@@ -163,9 +165,15 @@ export function validateConfirmationMatrix(value: unknown, catalog: readonly Cat
     for (const key of Array.isArray(row.controlledBy) ? row.controlledBy : []) if (!Object.hasOwn(matrix.keys, key)) problems.push(`${at}: controlledBy names ${String(key)}, which is not in keys`);
     if (!oneOf(HUB_SEES, row.hubSeesBeforeRun)) problems.push(`${at}: hubSeesBeforeRun must be one of ${HUB_SEES.join(", ")}`);
     if (!oneOf(ASKED_BY, row.askedBy)) problems.push(`${at}: askedBy must be one of ${ASKED_BY.join(", ")}`);
-    // A fact that was not established is the word unknown in the row's note, never a silent guess.
-    if ((row.hubSeesBeforeRun === "unknown" || row.askedBy === "unknown") && !/\bunknown\b/.test(row.note ?? "")) problems.push(`${at}: an unknown value needs a note that says what is unknown`);
-    if (row.hubSeesBeforeRun === "unknown" !== (row.askedBy === "unknown") && row.askedBy !== "none") problems.push(`${at}: hubSeesBeforeRun and askedBy are unknown together`);
+    // A fact that was not established is the word unknown in a structured field, never prose alone: a note cannot override a concrete value.
+    const saysUnknown = row.hubSeesBeforeRun === "unknown" || row.askedBy === "unknown" || /\bunknown\b/.test(row.note ?? "");
+    const listed = Array.isArray(row.unknowns) ? row.unknowns : undefined;
+    if (row.unknowns !== undefined && (!listed || !listed.length || listed.some(item => typeof item !== "string" || !item.trim()))) problems.push(`${at}: unknowns must be a non-empty list of text`);
+    if (saysUnknown && !listed?.length) problems.push(`${at}: an unknown value needs a structured unknowns list that says what is unknown`);
+    if (!saysUnknown && row.unknowns !== undefined) problems.push(`${at}: unknowns is listed but neither the note nor a field says unknown`);
+    if ((row.hubSeesBeforeRun === "unknown") !== (row.askedBy === "unknown") && row.askedBy !== "none" && row.hubSeesBeforeRun !== "no") problems.push(`${at}: hubSeesBeforeRun and askedBy are unknown together`);
+    // A native TUI prompt exists only in a TUI form: a row that covers headless, or any form, cannot name one as the asker.
+    if ((row.askedBy === "native-tui" || row.askedBy === "native-and-hub") && (row.form !== "tui" || (Array.isArray(row.environments) && row.environments.includes("headless")))) problems.push(`${at}: askedBy ${row.askedBy} needs form tui and no headless environment; split the row or mark the asker unknown`);
     // A prompt that costs a person's turn must name a key that controls it. A row whose asker is unknown names none: that is the gap it records.
     if (row.askedBy !== "none" && row.askedBy !== "unknown" && Array.isArray(row.controlledBy) && !row.controlledBy.length) problems.push(`${at}: a row that asks needs at least one controlling key`);
     if (!Array.isArray(row.evidence) || !row.evidence.length) problems.push(`${at}: evidence must name at least one file and needle`);

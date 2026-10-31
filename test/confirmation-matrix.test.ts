@@ -77,13 +77,50 @@ test("a row names only keys that exist, and an asking row names a controlling ke
   expect(validateConfirmationMatrix(matrix)).toContain("rows[pi.tool-approval.any]: a row that asks needs at least one controlling key");
 });
 
-test("a fact that was not established is the word unknown in the note, never a guess", () => {
+test("a fact that was not established is a structured unknowns entry, and a note cannot stand in for a concrete value", () => {
   const matrix = clone();
-  const unknown = matrix.rows.filter(row => row.hubSeesBeforeRun === "unknown" || row.askedBy === "unknown");
+  const unknown = matrix.rows.filter(row => row.hubSeesBeforeRun === "unknown" || row.askedBy === "unknown" || /\bunknown\b/.test(row.note ?? ""));
   expect(unknown.length).toBeGreaterThan(0);
-  for (const row of unknown) expect(row.note).toMatch(/\bunknown\b/);
-  unknown[0]!.note = "probably fine";
-  expect(validateConfirmationMatrix(matrix).some(problem => problem.includes("an unknown value needs a note"))).toBe(true);
+  for (const row of unknown) expect(row.unknowns?.length, row.id).toBeGreaterThan(0);
+  // prose alone: a note that says unknown with no structured entry fails
+  const prose = clone().rows.find(row => row.id === "qwen.hub-tools.personal-turn")!;
+  delete prose.unknowns;
+  expect(validateConfirmationMatrix({ ...clone(), rows: clone().rows.map(row => row.id === prose.id ? prose : row) }).some(problem => problem.includes("structured unknowns list"))).toBe(true);
+  // an unknowns list on a row that claims everything is established
+  const claimed = clone();
+  claimed.rows.find(row => row.id === "pi.tool-approval.any")!.unknowns = ["something"];
+  expect(validateConfirmationMatrix(claimed).some(problem => problem.includes("unknowns is listed"))).toBe(true);
+});
+
+test("a native TUI asker is only claimed on a TUI-only row, never on one that covers headless", () => {
+  for (const row of confirmationMatrix().rows) if (row.askedBy === "native-tui" || row.askedBy === "native-and-hub") {
+    expect(row.form, row.id).toBe("tui");
+    expect(row.environments.includes("headless"), row.id).toBe(false);
+  }
+  const matrix = clone();
+  const jcode = matrix.rows.find(row => row.id === "jcode.tool-approval.any")!;
+  jcode.askedBy = "native-tui";
+  expect(validateConfirmationMatrix(matrix).some(problem => problem.includes("rows[jcode.tool-approval.any]: askedBy native-tui needs form tui"))).toBe(true);
+  // Jcode's asker is not established by the source, so it is unknown in both rows
+  for (const id of ["jcode.tool-approval.any", "jcode.classed-action.any"]) expect(confirmationMatrix().rows.find(row => row.id === id)!.askedBy).toBe("unknown");
+});
+
+test("Qwen's TUI rows separate a hub-owned turn from a personal turn, as the adapter does", () => {
+  const rows = confirmationMatrix().rows;
+  for (const point of ["tool-approval", "classed-action", "hub-tools"] as const) {
+    const tui = rows.filter(row => row.kinds.includes("qwen") && row.point === point && row.environments.includes("terminal"));
+    const hub = tui.find(row => row.id.endsWith("hub-turn")), personal = tui.find(row => row.id.endsWith("personal-turn"));
+    expect(hub, point).toBeDefined();
+    expect(personal, point).toBeDefined();
+    expect(personal!.hubSeesBeforeRun, personal!.id).toBe("no");
+    expect(personal!.askedBy, personal!.id).toBe("native-tui");
+    expect(hub!.hubSeesBeforeRun, hub!.id).not.toBe("no");
+  }
+  // no Qwen TUI row claims hub visibility without a turn-owner qualifier
+  for (const row of rows.filter(entry => entry.kinds.includes("qwen") && entry.form === "tui")) expect(/hub-turn$|personal-turn$/.test(row.id), row.id).toBe(true);
+  // the adapter source is what makes the split true
+  const source = read("src/adapters/qwen-dual.ts")!;
+  expect(source).toContain('if (!turn?.started || this.owner !== "hub"');
 });
 
 test("every row cites evidence that still exists in the repository", () => {
