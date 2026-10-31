@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { types } from "node:util";
 import { looksSecret } from "@staix/agent-mem";
 import { canonicalJson } from "./packs.ts";
-import { parseDeliverableClaims, parseDeliverableRecords, deliverableId, type DeliverableClaim, type DeliverableRecord } from "./deliverables.ts";
+import { parseDeliverableClaims, parseDeliverableRecords, deliverableId, DELIVERABLE_LIMITS, type DeliverableClaim, type DeliverableRecord } from "./deliverables.ts";
 
 export type ExperimentScalar = string | number | boolean | null;
 export type ExperimentProvenance = "declared" | "host-observed" | "runner-attested" | "person-attested";
@@ -290,12 +290,14 @@ export function parseExperimentHostEvidence(input: unknown): ExperimentHostEvide
   }
   const deliverableId = pattern(values.deliverableId, DELIVERABLE, "observation.deliverableId");
   if (row.evidence !== deliverableId) fail("observation.evidence", "must name the measured deliverable");
-  return { source, evidence: deliverableId, values: { deliverableId, sha256: pattern(values.sha256, HASH, "observation.sha256"), bytes: integer(values.bytes, "observation.bytes") } };
+  const bytes = integer(values.bytes, "observation.bytes");
+  if (bytes > DELIVERABLE_LIMITS.fileBytes) fail("observation.bytes", "exceeds the deliverable file limit");
+  return { source, evidence: deliverableId, values: { deliverableId, sha256: pattern(values.sha256, HASH, "observation.sha256"), bytes } };
 }
 
 /** The record is the result of #509 host hashing, never an agent's output reference. */
 export function deliverableObservation(record: DeliverableRecord): ExperimentHostEvidence {
-  const measured = parseDeliverableRecords([record])[0]!;
+  const measured = parseDeliverableRecords([object(record, ["id", "path", "format", "version", "sha256", "bytes", "private"], "deliverable")])[0]!;
   return parseExperimentHostEvidence({ source: "deliverable", evidence: measured.id, values: { deliverableId: measured.id, sha256: measured.sha256, bytes: measured.bytes } });
 }
 

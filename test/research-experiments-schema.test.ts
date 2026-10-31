@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { deliverableId, DELIVERABLE_LIMITS } from "../src/hub/deliverables.ts";
 import { experimentStatus, parseExperimentAttempt, parseExperimentEvent, parseExperimentProtocol, projectExperimentEvidence, protocolHash,
   type DeclaredExperimentEvent, type DeclaredExperimentEventInput, type ExperimentProtocolContract } from "../src/hub/research-experiments.ts";
 
@@ -180,6 +181,8 @@ test("independent observations retain contradictory declarations side by side wi
   for (const patch of [{source:"runner-attested"},{provenance:"declared"},{values:{...observation.values,startedAt:10}}]) {
     expect(()=>parseExperimentHostEvidence({...observation,...patch})).toThrow();
   }
-  const output=deliverableObservation({id:"d-0123456789ab",path:"result.csv",format:"csv",sha256:HASH,bytes:12});
+  const output=deliverableObservation({id:deliverableId("result.csv","csv"),path:"result.csv",format:"csv",sha256:HASH,bytes:12});
+  expect(()=>deliverableObservation({id:"d-0123456789ab",path:"result.csv",format:"csv",sha256:HASH,bytes:12})).toThrow("id does not match");
+  expect(()=>parseExperimentHostEvidence({...output,values:{...output.values,bytes:DELIVERABLE_LIMITS.fileBytes+1}})).toThrow("file limit");
   expect(output.values.sha256).toBe(HASH); expect(JSON.stringify(output)).not.toContain("result.csv");
 });
