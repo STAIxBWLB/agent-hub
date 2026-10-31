@@ -71,6 +71,8 @@ export async function discoverClaudeHomes(input: ClaudeHomeDiscoveryInput): Prom
     }
     if (candidates > MAX_CANDIDATES) break;
   }
+  // Claude uses its default home on first launch too; absence is not evidence of an unused profile.
+  if (!homes.size && !input.env.CLAUDE_CONFIG_DIR && validPath(input.home)) add(join(input.home, ".claude"), "default");
   return { homes: [...homes.values()], notices, complete };
 }
 
@@ -91,12 +93,12 @@ export interface ClaudeHomeCheck {
 }
 
 /** Read-only per-home plugin inspection. Installation never proves that a live permission hook is present. */
-export async function checkClaudeHome(home: ClaudeHome, packageRoot: string, env: NodeJS.ProcessEnv, probe: ClaudeHomeProbe, timeoutMs = MAX_COMMAND_MS): Promise<ClaudeHomeCheck> {
+export async function checkClaudeHome(home: ClaudeHome, packageRoot: string, env: NodeJS.ProcessEnv, probe: ClaudeHomeProbe, timeoutMs = MAX_COMMAND_MS, probeMissingDefault = false): Promise<ClaudeHomeCheck> {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_COMMAND_MS) throw new Error("invalid Claude plugin probe time bound");
   const hook = checkClaudeProfileHook(home);
   const unknown = (): ClaudeHomeCheck => ({ home, plugin: { state: "unknown", reason: "Claude plugin inventory is unavailable or invalid for this home." }, hook });
   if (hook.state === "refused") return unknown();
-  if (!home.exists) return { home, plugin: { state: "missing" }, next: nextStep([], [], packageRoot), hook };
+  if (!home.exists && !(probeMissingDefault && home.sources.includes("default"))) return { home, plugin: { state: "missing" }, next: nextStep([], [], packageRoot), hook };
   const scoped = claudeHomeEnvironment(home, env), deadline = performance.now() + timeoutMs;
   const read = async (argv: readonly string[]): Promise<unknown[] | undefined> => {
     const remaining = Math.floor(deadline - performance.now());

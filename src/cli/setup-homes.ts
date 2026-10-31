@@ -18,7 +18,7 @@ export async function setupClaudeHomes(ports: SetupHomesPorts): Promise<void> {
   ports.current?.();
   if (!ports.homes.length) { ports.print("No Claude configuration home in use was found; set CLAUDE_CONFIG_DIR to select one."); return; }
   const initial = [];
-  for (const home of ports.homes) initial.push(await checkClaudeHome(home, ports.packageRoot, ports.env, ports.probe));
+  for (const home of ports.homes) initial.push(await checkClaudeHome(home, ports.packageRoot, ports.env, ports.probe, undefined, true));
   for (const check of initial) {
     ports.print(`Claude home ${check.home.path}: plugin ${check.plugin.state}; hook ${check.hook.state}.`);
     if (check.plugin.state === "unknown" || check.hook.state === "refused") throw new Error(`Claude setup cannot safely inspect ${check.home.path}; nothing was changed`);
@@ -34,7 +34,7 @@ export async function setupClaudeHomes(ports: SetupHomesPorts): Promise<void> {
       ports.print(`${check.home.path}: ${current.next.argv.join(" ")} (${current.next.why})`);
       ports.current?.();
       if (await ports.run(current.next.argv, claudeHomeEnvironment(check.home, ports.env)) !== 0) throw new Error(`Claude plugin setup failed for ${check.home.path}; no later home was changed`);
-      current = await checkClaudeHome({ ...check.home, exists: true }, ports.packageRoot, ports.env, ports.probe);
+      current = await checkClaudeHome({ ...check.home, exists: true }, ports.packageRoot, ports.env, ports.probe, undefined, true);
       if (current.plugin.state === "unknown") throw new Error(`Claude plugin inventory is unavailable for ${check.home.path}`);
     }
     if (current.next) throw new Error(`Claude setup exceeded six plugin steps for ${check.home.path}`);
