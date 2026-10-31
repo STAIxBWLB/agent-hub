@@ -157,6 +157,8 @@ describe("acon Space from the office model (#1012 Part 2)", () => {
     expect(scene.zones.map((z) => [z.id, z.kind, z.count])).toEqual([["p1:todo", "queue", 1], ["p1:work", "work", 1], ["p1:review", "review", 1], ["p1:done", "done", 1]]);
     expect(scene.cards.find((c) => c.id === "p1:1")).toMatchObject({ title: "#1 [pii]", zone: "p1:work", owner: "p1:codex" });
     expect(scene.cards.find((c) => c.id === "p1:2")?.zone).toBe("p1:todo");
+    expect(scene.actors.every((a) => JSON.stringify(a.link) === JSON.stringify({ panel: "agents", params: { project: "p1" } }))).toBe(true);
+    expect(scene.cards.every((c) => JSON.stringify(c.link) === JSON.stringify({ panel: "board", params: { project: "p1" } }))).toBe(true);
     expect(scene.links).toEqual([expect.objectContaining({ kind: "overlap", from: "p1:codex", to: "p1:pi", label: "#1 #3" })]);
     // Message links come from envelope rows that arrive after the first snapshot (the office model's arcs), as on the dashboard.
     const first = officeModel(dirty, null, { cols: 4, now: 3000 });

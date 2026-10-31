@@ -45,7 +45,8 @@ function actorState(condition: string, attached: boolean, approvals: number, nee
 export function officeSpace(model: OfficeScene, project: { id: string; label?: string }): SpaceScene {
   const pre = (id: string | number) => safeId(`${project.id}:${id}`);
   const name = (peer: string) => clip(project.label ? `${project.label} / ${peer}` : peer, 64);
-  const board: Link = { panel: "board" }, agents: Link = { panel: "agents" };
+  // Links name the owning project so a multi-project console opens the right one (the panel's show() selects it).
+  const board: Link = { panel: "board", params: { project: project.id } }, agents: Link = { panel: "agents", params: { project: project.id } };
   const actors: SpaceScene["actors"] = model.desks.map((desk) => {
     const marks: NonNullable<SpaceScene["actors"][number]["marks"]> = [];
     if (desk.approvals > 0) marks.push({ kind: "approval", text: desk.approvals === 1 ? "1 approval" : `${desk.approvals} approvals` });
