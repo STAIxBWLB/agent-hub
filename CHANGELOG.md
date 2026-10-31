@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Claude Code 2.1.316 is a receipt-verified headless implementer version (#888): the model-free permission-transport and host shell-wrapper producers pass on it with 2.1.314 as the control (`docs/verification/2026-10-31-claude-implementer-2.1.316.md`). 2.1.311-2.1.313 and 2.1.315 (published with no changelog entry, not run here) stay unverified.
+- Pin `@staix/agent-mem` 0.15.0 (was 0.14.0). amem 0.15.0 changes only its own CLI: per-command `--help`, specific usage errors in agent-marked sessions, and `unknown command` for inherited object names. The hub uses the library API and never runs the `amem` CLI, so hub recall, capture, briefs and memory homes are unchanged.
 
 ## 0.23.1
 

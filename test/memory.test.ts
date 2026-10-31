@@ -26,7 +26,7 @@ test("published amem recall, briefs, ask and candidates operate without any work
  const r=rig(); let calls=0; const worker=Bun.serve({hostname:"127.0.0.1",port:0,fetch(){calls++;return new Response("unexpected");}});clean.push(()=>worker.stop(true));
  const previous=globalThis.fetch; globalThis.fetch=((..._args:unknown[])=>{calls++;throw Error("network tripwire");}) as unknown as typeof fetch; clean.push(()=>{globalThis.fetch=previous;});
  const id=r.note("switchyard policy is curated"); r.note("private-value switchyard");r.note("foreign switchyard","project-b");
- expect(await r.client.health()).toEqual({ok:true,version:"0.14.0"});
+ expect(await r.client.health()).toEqual({ok:true,version:"0.15.0"});
  const recall=await recallFor("kimi",r.client,["ignored-legacy-name"],1000);expect(recall).toContain(id);expect(recall).not.toContain("private-value");
  const rows=await related(r.client,"project-b","switchyard");expect(rows.map(v=>v.id)).toEqual([`mem:${id}`]);
  const brief=await new Briefs(r.client,"project-b").forTask("codex",{id:1,title:"switchyard",refs:{}});expect(brief).toContain(`mem:${id}`);
