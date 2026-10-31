@@ -3897,3 +3897,80 @@ test("C3 Tasks records host-only ids audit once per outcome, never changes task 
     expect(() => f.tasks.recordInvocation(task.id, { ...row, id: "call-2" })).toThrow(/scope changed/);
   } finally { ledger.close(); f.board.close(); rmSync(f.dir, { recursive: true, force: true }); }
 });
+
+const REFILE_OLD = "a".repeat(40), REFILE_NEW = "b".repeat(40);
+
+test("#1000 owner re-file refreshes a review at a new full head without a rejection, and stale requests cannot judge it", async () => {
+  const f = await setup(); cleanup.push(() => f.board.close());
+  const t = await f.tasks.propose("claude", { title: "refresh reviewed work", class: "implement", owner: "codex" });
+  await f.tasks.done("codex", t.id, "first", { commit: REFILE_OLD });
+  await until(() => f.peers.claude!.got.some(e => e.kind === "review"));
+  const oldRequest = f.peers.claude!.got.find(e => e.kind === "review")!;
+  // Historical evidence must not override the new delivered head or certify its checks.
+  f.board.update(t.id, HUB, "lifecycle", { sdlc: { stage: "build", head: REFILE_OLD, reviewedHead: REFILE_OLD, localHead: REFILE_OLD, localResult: "passed" } });
+  const before = f.board.get(t.id)!;
+  const next = await f.tasks.done("codex", t.id, "new source", { commit: REFILE_NEW });
+  expect(next).toMatchObject({ state: "in_review", owner: "codex", reviewer: "claude", refs: { commit: REFILE_NEW }, rejections: before.rejections });
+  expect(next.history.filter(h => h.event === "done")).toHaveLength(2);
+  for (const key of ["head", "reviewedHead", "localHead", "localResult"] as const) expect(next.sdlc?.[key]).toBeUndefined();
+  expect(f.tasks.reviewBindingCurrent("claude", t.id, { head: REFILE_OLD, flowRevision: Number(oldRequest.refs.reviewRevision) })).toBe(false);
+  await until(() => f.peers.claude!.got.some(e => e.kind === "review" && e.refs.commit === REFILE_NEW));
+  const request = f.peers.claude!.got.find(e => e.kind === "review" && e.refs.commit === REFILE_NEW)!;
+  expect(f.tasks.reviewBindingCurrent("claude", t.id, { head: REFILE_NEW, flowRevision: Number(request.refs.reviewRevision) })).toBe(true);
+  await expect(f.tasks.review("claude", t.id, "approved", "old verdict", undefined, REFILE_OLD)).rejects.toThrow(/head/);
+  expect((await f.tasks.review("claude", t.id, "approved", "current verdict", undefined, REFILE_NEW)).state).toBe("approved");
+  await expect(f.tasks.done("codex", t.id, "after approval", { commit: "c".repeat(40) })).rejects.toThrow(/already approved/);
+});
+
+test("#1000 same-head, missing or malformed head and foreign-owner re-files are effect-free refusals", async () => {
+  const f = await setup(); cleanup.push(() => f.board.close());
+  const t = await f.tasks.propose("claude", { title: "retain refusal boundaries", class: "implement", owner: "codex" });
+  await f.tasks.done("codex", t.id, "first", { commit: REFILE_OLD });
+  for (const [by, refs] of [["codex", undefined], ["codex", { branch: "new-branch" }], ["codex", { commit: REFILE_OLD }], ["codex", { commit: "short" }], ["kimi", { commit: REFILE_NEW }]] as const) {
+    const before = f.board.get(t.id)!;
+    await expect(f.tasks.done(by, t.id, "must not change", refs)).rejects.toBeInstanceOf(PreEffectToolRefusal);
+    expect(f.board.get(t.id)).toEqual(before);
+  }
+});
+
+test("#1000 a reviewer already screening an unheaded verdict cannot approve refreshed source", async () => {
+  const f = await setup(); cleanup.push(() => f.board.close());
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+  const routing = loadRouting(f.dir); routing.signals.pii_screen = "local"; routing.constraints.pii = "local_only";
+  const tasks = new Tasks({ board: f.board, bus: f.bus, cwd: f.dir, project: "agent-hub", routing: () => routing, notify: () => {},
+    piiScreen: async text => { if (text === "screen old verdict") { entered(); await gate; } return { label: "clear", ms: 0 }; } });
+  const t = await tasks.propose("claude", { title: "fence active verdict", class: "implement", owner: "codex" });
+  await tasks.done("codex", t.id, "first", { commit: REFILE_OLD });
+  const verdict = tasks.review("claude", t.id, "approved", "screen old verdict");
+  // Observe its own rejection immediately, including when the new re-file is refused before the fix.
+  const outcome = verdict.then(() => "approved", error => String(error));
+  try { await started; await tasks.done("codex", t.id, "new source", { commit: REFILE_NEW }); }
+  finally { release(); }
+  expect(await outcome).toMatch(/changed|superseded|new head/);
+  expect(f.board.get(t.id)).toMatchObject({ state: "in_review", refs: { commit: REFILE_NEW }, rejections: 0 });
+});
+
+test("#1000 a refreshed head runs its configured check before review, with failed checks retained by the owner", async () => {
+  for (const initialCode of [0, 1]) {
+    const f = await setup(); cleanup.push(() => f.board.close());
+    let enabled = false, code = initialCode, release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const tasks = new Tasks({ board: f.board, bus: f.bus, cwd: f.dir, project: "agent-hub", routing: () => loadRouting(f.dir), notify: () => {},
+      check: () => enabled ? "fixture check" : undefined, runCheck: async () => { await gate; return { code, timedOut: false, tail: "fixture" }; } });
+    const t = await tasks.propose("claude", { title: "check revised source", class: "implement", owner: "codex" });
+    await tasks.done("codex", t.id, "first", { commit: REFILE_OLD }); enabled = true;
+    const pending = await tasks.done("codex", t.id, "new source", { commit: REFILE_NEW });
+    expect(pending).toMatchObject({ state: "in_progress", refs: { commit: REFILE_NEW }, rejections: 0 });
+    expect(tasks.isChecking(t.id)).toBe(true);
+    await expect(tasks.review("claude", t.id, "approved", "too early", undefined, REFILE_NEW)).rejects.toThrow();
+    release();
+    if (code) {
+      await until(() => f.board.get(t.id)!.history.some(h => h.event === "check failed"));
+      expect(f.board.get(t.id)).toMatchObject({ state: "in_progress", rejections: 0 });
+      code = 0; await tasks.done("codex", t.id, "check corrected", { commit: REFILE_NEW });
+    }
+    await until(() => f.board.get(t.id)!.state === "in_review");
+    expect(f.board.get(t.id)).toMatchObject({ refs: { commit: REFILE_NEW }, rejections: 0 });
+  }
+});
