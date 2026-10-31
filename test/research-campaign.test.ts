@@ -8,6 +8,7 @@ import { Bus } from "../src/hub/bus.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { USER, type Envelope } from "../src/hub/envelope.ts";
 import { Tasks } from "../src/hub/tasks.ts";
+import { ExecutionBudget } from "../src/hub/execution-budget.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 
@@ -32,9 +33,10 @@ async function fixture() {
   const bus = new Bus({ batchMs: 0 }), peers = [new Peer("claude"), new Peer("codex"), new Peer("local")];
   for (const peer of peers) { bus.add(peer); await peer.start(); }
   const sources = new Map([[SOURCE, { id: SOURCE, sha256: "a".repeat(64), private: false }]]);
+  const executionBudget = new ExecutionBudget(file); clean.push(() => executionBudget.close());
   const routing = loadRouting(dir), roles = { claude: ["planner", "reviewer"], codex: ["implementer"], local: ["implementer"] };
   let screen: ConstructorParameters<typeof Tasks>[0]["piiScreen"];
-  const build = () => new Tasks({ board, bus, cwd: dir, project: "fixture-project", roles, routing: () => routing, notify: () => {}, studyNow: () => NOW,
+  const build = () => new Tasks({ board, bus, cwd: dir, project: "fixture-project", roles, routing: () => routing, notify: () => {}, executionBudget, studyNow: () => NOW,
     piiScreen: text => screen?.(text) ?? Promise.resolve({ label: "clear" as const, ms: 0 }),
     studySource: id => { expect((board as unknown as { db: Database }).db.inTransaction).toBe(false); return sources.get(id); } });
   let tasks = build();
@@ -237,4 +239,41 @@ test("#930 foreign parent repositories and campaign projects refuse before write
   f.board.update(f.parent.id, USER, "fixture repository", { refs: { repo: "foreign/research" } });
   await expect(f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: contract() })).rejects.toThrow(/project/);
   expect(f.board.researchIntegrity()).toEqual(before);
+});
+
+
+test("#930 approval refuses expired or overlong deadlines without activating or creating children", async () => {
+  const f = await fixture();
+  for (const deadline of [NOW - 1, NOW + 90 * 86_400_000 + 1]) {
+    const body = contract(); body.stopPolicy.deadline = new Date(deadline).toISOString();
+    const draft = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: body });
+    const before = f.board.researchIntegrity(), rows = f.board.list();
+    await expect(f.tasks.studyApprove(USER, { id: draft.id, revision: 1 })).rejects.toThrow(/deadline/);
+    expect(f.board.researchIntegrity()).toEqual(before); expect(f.board.list()).toEqual(rows);
+  }
+});
+
+test("#930 T1 resolves existing budget references and refuses unverified hard-cap activation pending dispatch integration", async () => {
+  const f = await fixture(), id = "Legacy Budget / Scope";
+  f.tasks.configureExecutionBudget({ id, kind: "run", peers: ["local"], limits: { model_calls: 2, tokens: 2 } });
+  for (const resource of ["model_calls", "tokens"]) {
+    const draft = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: { ...contract(), budget: { id, hardCap: [resource] } } });
+    const before = f.board.researchIntegrity(), rows = f.board.list();
+    await expect(f.tasks.studyApprove(USER, { id: draft.id, revision: 1 })).rejects.toThrow(/hard-cap/);
+    expect(f.board.researchIntegrity()).toEqual(before); expect(f.board.list()).toEqual(rows);
+  }
+  const advisory = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: { ...contract(), budget: { id, hardCap: [] } } });
+  expect((await f.tasks.studyApprove(USER, { id: advisory.id, revision: 1 })).status).toBe("approved");
+  const before = f.board.researchIntegrity();
+  await expect(f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: { ...contract(), budget: { id: "missing", hardCap: [] } } })).rejects.toThrow(/budget/);
+  expect(f.board.researchIntegrity()).toEqual(before);
+});
+
+test("#930 corrupted stored campaign bodies are refused without exposing contents or creating work", async () => {
+  const f = await fixture(), draft = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: contract() });
+  const rows = f.board.list(), canary = "CORRUPT_PRIVATE_BODY_CANARY";
+  (f.board as unknown as { db: Database }).db.query("UPDATE research_campaigns SET body=? WHERE id=?").run(JSON.stringify({ question: canary }), draft.id);
+  const result = await f.tasks.studyApprove(USER, { id: draft.id, revision: 1 }).then(() => undefined, error => error);
+  expect(result).toBeInstanceOf(PreEffectToolRefusal); expect(String(result)).not.toContain(canary);
+  expect(f.board.list()).toEqual(rows); expect(f.board.hasResearchState()).toBe(true);
 });
