@@ -348,3 +348,21 @@ test("Pi 1.4.0 has an exact receipt gate; other versions need the person's trust
     expect(assessVersion("pi", version, [{ id: "pi", version, at: 1 }])).toMatchObject({ ok: true, state: "trusted" });
   }
 });
+
+
+test("Kimi reviewer 2.4.1 is exact-receipt verified; nearby untested versions stay refused (#888)", () => {
+  expect(assessVersion("kimi-review", "2.4.1", [])).toEqual({ ok: true, state: "verified", version: "2.4.1" });
+  for (const near of ["2.3.3", "2.4.0", "2.4.2", "2.4.1-rc.1", "kimi 2.4.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
+});
+
+test("Qwen ACP 0.26.4 is exact-receipt verified; intermediate and nearby versions stay refused (#888)", () => {
+  expect(assessVersion("qwen", "0.26.4", [])).toEqual({ ok: true, state: "verified", version: "0.26.4" });
+  for (const near of ["0.26.2", "0.26.3", "0.26.5", "0.27.0", "0.26.4-rc.1", "qwen 0.26.4"]) expect(assessVersion("qwen", near, []).ok).toBe(false);
+});
+
+
+test("the Qwen ACP 0.26.4 receipt never admits the unqualified dual-output contract (#888)", () => {
+  expect(assessVersion("qwen", "0.26.4", []).ok).toBe(true);
+  expect(assessVersion("qwen-dual", "0.26.4", [])).toMatchObject({ ok: false, state: "refused", version: "0.26.4" });
+  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1"]);
+});
