@@ -6004,6 +6004,11 @@ function policyTargets(cwd, paths) {
     return [lexical, policyRealPath(lexical)];
   }))];
 }
+function discoveryLimit(budget) {
+  if (budget.failClosedOnDiscoveryLimit)
+    throw new Error("policy alias discovery incomplete");
+  return false;
+}
 function directAliasTarget(path) {
   let target = path;
   for (let hops = 0;hops <= 40; hops++) {
@@ -6035,10 +6040,10 @@ function aliasScope(dir, lexical, actual, includeParents, budget) {
   let matched = false;
   try {
     if (budget.entries >= 4096)
-      return false;
+      return discoveryLimit(budget);
     for (let entry = handle.readSync();entry; entry = handle.readSync()) {
       if (budget.entries >= 4096)
-        return false;
+        return discoveryLimit(budget);
       budget.entries++;
       if (!entry.isSymbolicLink())
         continue;
@@ -6125,7 +6130,7 @@ function globScope(root, lexical, actual, path, includeParents, budget, roots, a
     if (!info.isDirectory())
       return false;
     if (aliasDiscovery && budget.entries >= 4096)
-      return false;
+      return discoveryLimit(budget);
     if (depth > 32 || ancestors.has(real) || budget.entries > 4096)
       throw new Error("policy glob discovery unavailable");
     const chain = new Set(ancestors);
@@ -6134,7 +6139,7 @@ function globScope(root, lexical, actual, path, includeParents, budget, roots, a
     try {
       for (let entry = handle.readSync();entry; entry = handle.readSync()) {
         if (aliasDiscovery && budget.entries >= 4096)
-          return false;
+          return discoveryLimit(budget);
         if (++budget.entries > 4096)
           throw new Error("policy glob discovery unavailable");
         const next = advance(pattern, states, entry.name);
@@ -6148,7 +6153,7 @@ function globScope(root, lexical, actual, path, includeParents, budget, roots, a
   };
   return visit(root, start, 0, new Set);
 }
-function matchesPolicy(cwd, path, paths, includeParents = false) {
+function matchesPolicy(cwd, path, paths, includeParents = false, options = {}) {
   if (!paths.length)
     return false;
   try {
@@ -6156,7 +6161,7 @@ function matchesPolicy(cwd, path, paths, includeParents = false) {
       return true;
     const root = realPath(cwd), lexical = resolve8(root, path), actual = policyRealPath(lexical);
     includeParents &&= !existing(lexical) || statSync2(lexical).isDirectory();
-    const budget = { entries: 0 }, roots = new Set, exact = [];
+    const budget = { entries: 0, failClosedOnDiscoveryLimit: options.failClosedOnDiscoveryLimit }, roots = new Set, exact = [];
     if (paths.some((entry) => {
       if (/[?*]/.test(entry))
         return globScope(root, lexical, actual, entry, includeParents, budget, roots);
@@ -23319,6 +23324,8 @@ var isReviewScope = (value) => value === "full" || value === "code";
 init_review_findings();
 init_roles();
 init_path_policy();
+init_deny();
+init_permission_mode();
 
 // src/hub/memory-candidates.ts
 init_src();
