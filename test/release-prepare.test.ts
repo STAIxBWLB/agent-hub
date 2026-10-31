@@ -154,3 +154,20 @@ test("the report skeleton claims no consent and names the person's command", () 
   expect(text).toContain("person only");
   expect(text).toContain(AGENT_TODO);
 });
+
+
+test("#1004 release preparation retains native version receipts and excludes only whole dated release-report basenames", () => {
+  const r = repo();
+  const receipt = "docs/verification/2026-10-31-claude-implementer-2.1.314.md";
+  const report = "docs/verification/2026-10-31-0.1.0.md";
+  r.write(receipt, "Native implementer receipt\n");
+  r.write(report, "Earlier release report\n");
+  r.git("add", "."); r.git("commit", "-qm", "docs: native receipt and release report");
+  r.git("checkout", "-qb", "release/0.2.0");
+  const result = prepareRelease(r.work, { dryRun: true, today: "2026-11-01", write: () => { throw new Error("dry run wrote"); }, read: r.read, run: realRun });
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+  expect(result.plan.receipts).toEqual([receipt]);
+  expect(reportSkeleton(result.plan, "2026-11-01")).toContain(receipt);
+  expect(result.plan.receipts).not.toContain(report);
+});
