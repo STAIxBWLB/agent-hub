@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setupClaudeHomes, type SetupHomesPorts } from "../src/cli/setup-homes.ts";
+import { discoverClaudeHomes } from "../src/cli/claude-homes.ts";
 import { checkClaudeProfileHook } from "../src/cli/claude-profile-hook.ts";
 import type { ClaudeHome, ClaudeHomeProbe } from "../src/cli/claude-homes.ts";
 import { VERSION } from "../src/version.ts";
@@ -154,4 +155,22 @@ test("no selected home is a read-only notice with no prompts, probes or native c
   await setupClaudeHomes(f.ports);
   expect(f.probes).toEqual([]); expect(f.runs).toEqual([]); expect(f.asks()).toBe(0);
   expect(f.printed[0]).toContain("No Claude configuration home in use");
+});
+
+
+test("fresh default home is previewed without creating it, then configured after confirmation", async () => {
+  const f = fixture(), defaultHome = join(f.user, ".claude");
+  const found = await discoverClaudeHomes({ home: f.user, env: { HOME: f.user } });
+  expect(found.homes).toEqual([{ path: defaultHome, exists: false, sources: ["default"] }]);
+  f.ports.homes = found.homes;
+  f.states.set(defaultHome, { marketplace: false, plugin: false });
+  f.ports.ask = async () => {
+    expect(existsSync(defaultHome)).toBe(false);
+    expect(f.runs).toEqual([]);
+    expect(f.printed.some(line => line.includes("claude plugin marketplace add"))).toBe(true);
+    return "yes";
+  };
+  await setupClaudeHomes(f.ports);
+  expect(f.runs.map(call => call.env.CLAUDE_CONFIG_DIR)).toEqual([defaultHome, defaultHome]);
+  expect(checkClaudeProfileHook({ path: defaultHome, exists: true, sources: ["default"] }).state).toBe("installed");
 });

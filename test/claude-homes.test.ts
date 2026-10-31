@@ -20,10 +20,10 @@ function fixture() {
   return { root, home, projectRoot, profile, stateDir, env, project, record, recordsFile, writeRecords, discover };
 }
 
-test("only an explicit config home or an existing default home is selected, never adjacent profile directories", async () => {
+test("an explicit config home or Claude default is selected, including first use, never adjacent profiles", async () => {
   const f = fixture();
   mkdirSync(join(f.home, "unused-profile"));
-  expect(await discoverClaudeHomes({ home: f.home, env: f.env })).toEqual({ homes: [], notices: [], complete: true });
+  expect(await discoverClaudeHomes({ home: f.home, env: f.env })).toEqual({ homes: [{ path: join(f.home, ".claude"), exists: false, sources: ["default"] }], notices: [], complete: true });
   mkdirSync(join(f.home, ".claude"));
   expect((await discoverClaudeHomes({ home: f.home, env: f.env })).homes).toEqual([{ path: join(f.home, ".claude"), exists: true, sources: ["default"] }]);
   const explicit = join(f.home, "설정-home");
@@ -50,12 +50,12 @@ test("a missing captured config variable uses only the existing default for a pr
 test("stale and foreign-instance launches do not select a profile, and unknown provenance stays explicit", async () => {
   const f = fixture();
   f.writeRecords([f.record({ launcherSignature: "another-signature" })]);
-  expect((await f.discover()).homes).toEqual([]);
+  expect((await f.discover()).homes).toEqual([{ path: join(f.home, ".claude"), exists: false, sources: ["default"] }]);
   f.writeRecords([f.record({ instanceId: "older-instance" })]);
-  expect(await f.discover()).toEqual({ homes: [], notices: [], complete: true });
+  expect(await f.discover()).toEqual({ homes: [{ path: join(f.home, ".claude"), exists: false, sources: ["default"] }], notices: [], complete: true });
   f.writeRecords([f.record({ launcherSignature: undefined })]);
   const unknown = await f.discover();
-  expect(unknown.homes).toEqual([]);
+  expect(unknown.homes).toEqual([{ path: join(f.home, ".claude"), exists: false, sources: ["default"] }]);
   expect(unknown.complete).toBe(false);
   expect(unknown.notices.join(" ")).toContain("cannot be proven live");
 });
@@ -68,7 +68,7 @@ test("unsafe records and invalid home paths never become selected paths or refle
   expect(invalid.notices.join(" ")).not.toContain("relative-secret-content");
   f.writeRecords([f.record()]); chmodSync(f.recordsFile, 0o666);
   const unsafe = await f.discover();
-  expect(unsafe.homes).toEqual([]); expect(unsafe.complete).toBe(false);
+  expect(unsafe.homes).toEqual([{ path: join(f.home, ".claude"), exists: false, sources: ["default"] }]); expect(unsafe.complete).toBe(false);
   chmodSync(f.recordsFile, 0o600);
   rmSync(f.recordsFile); symlinkSync(join(f.root, "absent-record"), f.recordsFile);
   expect((await f.discover()).complete).toBe(false);
@@ -137,4 +137,11 @@ test("unsafe profile settings prevent native inventory probes as well as hook in
   expect(probes).toBe(0);
   expect(result.plugin.state).toBe("unknown");
   expect(result.hook.state).toBe("refused");
+});
+
+
+test("a proven live profile takes precedence over an absent default fallback", async () => {
+  const f = fixture(); f.writeRecords([f.record()]);
+  const result = await f.discover();
+  expect(result.homes).toEqual([{ path: f.profile, exists: true, sources: ["recorded-launch"] }]);
 });
