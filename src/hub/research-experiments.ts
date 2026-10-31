@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { types } from "node:util";
 import { looksSecret } from "@staix/agent-mem";
 import { canonicalJson } from "./packs.ts";
-import { parseDeliverableClaims, parseDeliverableRecords, type DeliverableClaim, type DeliverableRecord } from "./deliverables.ts";
+import { parseDeliverableClaims, parseDeliverableRecords, deliverableId, type DeliverableClaim, type DeliverableRecord } from "./deliverables.ts";
 
 export type ExperimentScalar = string | number | boolean | null;
 export type ExperimentProvenance = "declared" | "host-observed" | "runner-attested" | "person-attested";
@@ -305,7 +305,9 @@ export function projectExperimentWithObservations(protocol: ExperimentProtocolCo
   return { declared, measured: observations.map(row => {
     integer(row.eventSeq, "observation.eventSeq", 1);
     if (!seqs.has(row.eventSeq)) fail("observation.eventSeq", "declared event is unavailable");
-    const observation = parseExperimentHostEvidence(row.observation);
+    const observation = parseExperimentHostEvidence(row.observation), event = events.find(event => event.seq === row.eventSeq)!;
+    if (observation.source === "check" && (event.kind !== "end" || event.body.run !== observation.evidence)) fail("observation", "check evidence must name its declared end run");
+    if (observation.source === "deliverable" && (event.kind !== "output" || !("path" in event.body) || deliverableId(event.body.path, event.body.format) !== observation.evidence)) fail("observation", "output evidence must match a host hash request");
     return { eventSeq: row.eventSeq, source: observation.source, evidence: observation.evidence,
       values: Object.fromEntries(Object.entries(observation.values).map(([field, value]) => [field, { value, provenance: "host-observed" as const, evidence: observation.evidence }])) };
   }) };
