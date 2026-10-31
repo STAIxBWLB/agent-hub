@@ -90,7 +90,7 @@ test("accessors, proxies and sparse lists never execute caller code", () => {
 });
 
 test("attempt input requires immutable identity inputs and cannot claim status, actor, time or provenance", () => {
-  const input = { protocolHash: HASH, taskId: 2, phase: "final", idempotencyKey: "fixture receipt", retryOf: "ra-0123456789ab" };
+  const input = { protocolHash: HASH, taskId: 2, phase: "final" as const, idempotencyKey: "fixture receipt", retryOf: "ra-0123456789ab" };
   expect(parseExperimentAttempt(input)).toEqual(input);
   for (const key of ["attemptId", "project", "status", "startedAt", "at", "provenance", "createdBy"]) expect(() => parseExperimentAttempt({ ...input, [key]: "forged" })).toThrow("unknown field");
   for (const patch of [{ taskId: 0 }, { phase: "approved" }, { idempotencyKey: "가".repeat(22) }, { retryOf: "../../receipt" }]) expect(() => parseExperimentAttempt({ ...input, ...patch })).toThrow();
