@@ -75,3 +75,19 @@ test("comparison parser refuses proxies, accessors and sparse lists without exec
   expect(() => parseComparisonPlan({ ...plan(), varying: new Array(1) })).toThrow("dense data list");
   expect(touched).toBe(0);
 });
+
+test("approval identity never carries to changed protocol or evaluator hashes, including metadata-only changes", async () => {
+  const { protocolHash, evaluatorIdentityHash, protocolApprovalBindingMatches } = await import("../src/hub/research-experiments.ts");
+  const p=protocol(), binding={protocolHash:protocolHash(p),evaluatorHash:evaluatorIdentityHash(p)};
+  expect(protocolApprovalBindingMatches(p,binding)).toBe(true);
+  expect(protocolApprovalBindingMatches(p,undefined)).toBe(false);
+  const changed=[{...p,code:{commit:"c".repeat(40)}},{...p,parameters:{size:3}},{...p,campaignRevision:2},{...p,lineage:"another-lineage"},{...p,supersedes:HASH},
+    {...p,evaluator:{...p.evaluator,version:"v2"}}];
+  for (const value of changed) expect(protocolApprovalBindingMatches(value,binding)).toBe(false);
+  const evaluatorChanged={...p,evaluator:{...p.evaluator,version:"v2"}};
+  expect(protocolApprovalBindingMatches(evaluatorChanged,{...binding,protocolHash:protocolHash(evaluatorChanged)})).toBe(false);
+  let touched=0;
+  const hostile={get protocolHash(){touched++;return binding.protocolHash;},evaluatorHash:binding.evaluatorHash};
+  expect(protocolApprovalBindingMatches(p,hostile)).toBe(false);
+  expect(touched).toBe(0);
+});

@@ -376,7 +376,7 @@ export function parseComparisonPlan(input: unknown): ComparisonPlanV1 {
     const field = `comparison.fixed.metrics[${index}]`, row = object(value, ["name", "unit", "direction"], field);
     return { name: text(row.name, SHORT, `${field}.name`), unit: text(row.unit, SHORT, `${field}.unit`), direction: choice(row.direction, ["higher", "lower"], `${field}.direction`) };
   }), value => value.name, "comparison.fixed.metrics");
-  const varying = unique(array(raw.varying, 4, "comparison.varying").map(value => choice(value, ["code", "parameters", "seeds", "role"], "comparison.varying")), value => value, "comparison.varying");
+  const varying = unique(array(raw.varying, 4, "comparison.varying").map(value => choice<ComparisonVaryingField>(value, ["code", "parameters", "seeds", "role"], "comparison.varying")), value => value, "comparison.varying");
   const rawRule = object(raw.rule, ["kind", "value", "name", "alpha"], "comparison.rule");
   let rule: ComparisonPlanV1["rule"];
   if (rawRule.kind === "tolerance") {
@@ -395,4 +395,20 @@ export function parseComparisonPlan(input: unknown): ComparisonPlanV1 {
 
 export function comparisonPlanHash(plan: ComparisonPlanV1): string {
   return createHash("sha256").update(canonicalJson(parseComparisonPlan(plan))).digest("hex");
+}
+
+
+/** Identity of the declared evaluator object, not a measurement of evaluator execution. */
+export function evaluatorIdentityHash(protocol: ExperimentProtocolContract): string {
+  return createHash("sha256").update(canonicalJson(parseExperimentProtocol(protocol).evaluator)).digest("hex");
+}
+
+/** Matches host-read approval identity only; Tasks remains responsible for person authority and persistence. */
+export function protocolApprovalBindingMatches(protocol: ExperimentProtocolContract, binding: { protocolHash: string; evaluatorHash: string } | undefined): boolean {
+  const hash = protocolHash(protocol), evaluator = evaluatorIdentityHash(protocol);
+  if (!binding) return false;
+  try {
+    const record = object(binding, undefined, "approval");
+    return record.protocolHash === hash && record.evaluatorHash === evaluator;
+  } catch { return false; }
 }
