@@ -1777,6 +1777,28 @@ Only ignored, untracked `.agenthub/config.local.json` can hold `action_policy`. 
 
 The ledger asks first and after the approved class budget is spent. Adapter integrations must request that class allowance explicitly; an ordinary one-time answer does not seed the cache, and a cached budget never suppresses a prompt required by the native mode. One approval includes its own invocation; budget zero asks for every invocation. A fresh native session resets counters, and status polls do not bind sessions. A command with no classed literal prefix retains native permission handling; around a shell expansion the literal words are classed, and where the opaque part could change the class the strictest reachable class applies (#756, #762; [security](security.md)). This foundation never changes a sandbox or bypasses a denied permission; per-adapter enforcement tests land with their integrations.
 
+### Floor policy: ordinary development work does not ask (#999 T3)
+
+`action_policy.floor: true` in the untracked `.agenthub/config.local.json` stops the always-ask policy from asking about ordinary development work, and changes nothing else. It is off by default, so a machine without it behaves exactly as above. It applies live through the confirmed terminal reload, like the rest of `action_policy`.
+
+With the floor on, these run without a prompt wherever the hub sees the call first:
+
+- `git push` of a literal, non-default branch to `origin`, from inside the execution root (`git push origin feat/x`, `-u`, `HEAD`, `feat/x:feat/x`, `refs/heads/feat/x`, `git -C <subdir> push ...`).
+- `gh pr create`, `comment`, `review` and `merge` in the project's own GitHub repository, with no `--repo` or URL naming another one and never with `--admin`.
+
+These still ask, with the class they always had, and so does anything the classifier cannot decide:
+
+- Any force push (`--force`, `-f`, `+refspec`, `--force-with-lease`, `--force-if-includes`), a delete (`:branch`, `--delete`), `--mirror`, `--all`, `--prune`, `--no-verify` and a push option.
+- A push to the default branch (`main`, `master` and whatever the remote names its default, in any letter case, as `refs/heads/...` or `heads/...`, or as `HEAD` while it is checked out), a push of a tag (`v1`, `refs/tags/...`, `--tags`, `--follow-tags`, or a bare name that is also a local tag), a ref outside `refs/heads`, a remote other than `origin`, and a bare `git push` or `git push origin`, which follow `push.default`.
+- `gh release *`, `npm`, `bun`, `pnpm`, `yarn` and `cargo publish`, deletion outside the execution root, `gh issue` and `gh gist` calls, `gh pr close|edit|reopen|delete`, any write to another repository, mail and posting tools.
+- An expansion in a position that decides the outcome (`git push origin $B`, `gh pr create --repo $R`), a wrapper the classifier cannot read (`env`, `sudo`, `timeout`, `xargs`, a leading `VAR=value`), `-c`, `--git-dir` and `--work-tree`, and a directory the classifier cannot place (`cd /elsewhere`, `cd $D`). A command whose class cannot be decided keeps the strictest class it might reach (#756, #762).
+
+Facts the floor needs come from the host, never from the agent: the default branch from the authoritative GitHub remote read the task shell uses (not a local `origin/HEAD`; read at start and at every `action_policy` reload, and unknown until it answers, so every push asks until then), the project's own repository from its `origin`, whether a name is also a local tag, and the branch checked out in the directory. A directory counts only when git proves its top level is the peer's execution root and its `origin` is the project's repository, so a nested clone keeps asking. A fact that is missing, unreadable or unproven keeps the call asking. The policy flag is the only switch: floor facts never widen a policy that did not set `floor`, a disabled policy asks nothing as before, and a class left out of `always_ask` stays out.
+
+Where the hub cannot see a call first (Codex in `never-ask`, Kimi in `auto`, Jcode, a session without the hub hook), the floor cannot be enforced by the hub. `ahub status` says so on that peer's action policy row, with `floor on:` and the structural guards the floor rests on, which the hub names and has not verified: GitHub branch protection on the default branch (force push, default-branch and tag pushes), release only through `ahub sdlc authorize-release` and the OIDC tag workflow (`gh release`, release tags), and the peer's native sandbox (deletion outside the project, writes to another repository). A missing guard is for the person to report. Status marks the floor as a weakening on every policy row (`attention`), like any other policy that asks less.
+
+The floor changes approval prompts only. No sandbox, deny list, PII rule, path guard or trust check changes, and the person-only flow (release tag consent, logins and trust settings) stays the person's.
+
 ## Permission modes for running peers
 
 Use a plain terminal to inspect or change a running peer:

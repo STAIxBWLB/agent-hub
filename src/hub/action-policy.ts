@@ -1,19 +1,21 @@
 import { ACTION_CLASSES, type ActionClass } from "./action-class.ts";
 import { sanitize } from "./envelope.ts";
 
-export interface ActionPolicyConfig { enabled: boolean; always_ask: ActionClass[]; budgets: Record<ActionClass, number> }
+/** `floor` (#999 T3) lets ordinary branch pushes and own-repository pull requests run without asking. It is present only when true, so a policy without it is byte-identical to before. */
+export interface ActionPolicyConfig { enabled: boolean; always_ask: ActionClass[]; budgets: Record<ActionClass, number>; floor?: true }
 const DEFAULT_BUDGETS: Record<ActionClass, number> = { publish: 1, destroy: 3, "external-write": 5, install: 2 };
 /** Defaults are host policy; overrides belong only in untracked config.local.json.
  * ponytail: startup adopts that local policy without a retained person confirmation.
  * Status surfaces every weakening as attention; upgrade: retain a person-bound startup confirmation.
  */
 export function actionPolicyConfig(value?: unknown): ActionPolicyConfig {
-  const fail = (): never => { throw new Error("action_policy: expected enabled, always_ask and class budgets (integers 0..1000)"); };
+  const fail = (): never => { throw new Error("action_policy: expected enabled, always_ask, floor and class budgets (integers 0..1000)"); };
   if (value === undefined) return { enabled: true, always_ask: [...ACTION_CLASSES], budgets: { ...DEFAULT_BUDGETS } };
   if (!value || typeof value !== "object" || Array.isArray(value)) return fail();
   const raw = value as Record<string, unknown>;
-  if (Object.keys(raw).some(key => !["enabled", "always_ask", "budgets"].includes(key))) return fail();
+  if (Object.keys(raw).some(key => !["enabled", "always_ask", "budgets", "floor"].includes(key))) return fail();
   if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") return fail();
+  if (raw.floor !== undefined && typeof raw.floor !== "boolean") return fail();
   const classes = raw.always_ask === undefined ? ACTION_CLASSES : raw.always_ask;
   if (!Array.isArray(classes) || classes.length > ACTION_CLASSES.length || new Set(classes).size !== classes.length || classes.some(key => !ACTION_CLASSES.includes(key))) return fail();
   const budgets = { ...DEFAULT_BUDGETS };
@@ -24,8 +26,19 @@ export function actionPolicyConfig(value?: unknown): ActionPolicyConfig {
       budgets[key as ActionClass] = amount;
     }
   }
-  return { enabled: raw.enabled ?? true, always_ask: [...classes], budgets } as ActionPolicyConfig;
+  return { enabled: raw.enabled ?? true, always_ask: [...classes], budgets, ...(raw.floor === true ? { floor: true } : {}) } as ActionPolicyConfig;
 }
+
+/**
+ * The structural guards the floor rests on where the hub cannot see a call first (Codex in never-ask, Kimi in auto, Jcode: #999 T3). The hub names
+ * them and cannot verify them from here, so a status row says "not verified", never that they hold. A guard that is missing is the person's to report.
+ */
+export const FLOOR_GUARDS: readonly { readonly asks: string; readonly guard: string }[] = Object.freeze([
+  { asks: "force push, a push to the default branch or of tags", guard: "GitHub branch protection on the default branch" },
+  { asks: "gh release and a release tag", guard: "release only through ahub sdlc authorize-release and the OIDC tag workflow" },
+  { asks: "deletion outside the project, a write to another repository", guard: "the peer's native sandbox" },
+]);
+export const floorGuardText = (): string => FLOOR_GUARDS.map(entry => `${entry.asks}: ${entry.guard}`).join("; ");
 
 export interface ActionSessionBudget { readonly peer: string; readonly session: string }
 export interface ActionChallenge { readonly classes: readonly ActionClass[] }
@@ -58,6 +71,11 @@ export class ActionBudgets {
     const policy = JSON.stringify(actionPolicyConfig(this.config()));
     if (state.policy !== policy) { state.policy = policy; state.remaining = empty(); state.grants = empty(); }
     return state;
+  }
+  /** Whether the floor (#999 T3) is on: the policy is enabled and says `floor`. Callers read floor facts only through this, so facts alone never widen a policy that did not ask for them. */
+  floorOn(): boolean {
+    const config = actionPolicyConfig(this.config());
+    return config.enabled && config.floor === true;
   }
   private selected(actions: readonly ActionClass[]): ActionClass[] {
     const config = actionPolicyConfig(this.config());
@@ -101,10 +119,14 @@ export class ActionBudgets {
   status(peer: string, enforced: boolean, reason = "adapter integration pending") {
     const config = actionPolicyConfig(this.config()), state = this.sessions.get(peer);
     const bound = !!state && this.currentSession(peer) === state.handle.session && state.policy === JSON.stringify(config);
-    const weakened = !config.enabled || ACTION_CLASSES.some(key => !config.always_ask.includes(key) || config.budgets[key] > DEFAULT_BUDGETS[key]);
+    const weakened = !config.enabled || config.floor === true || ACTION_CLASSES.some(key => !config.always_ask.includes(key) || config.budgets[key] > DEFAULT_BUDGETS[key]);
     const attention = weakened ? "; attention: machine-local policy weakens defaults; no retained startup confirmation" : "";
+    const floor = config.enabled && config.floor === true;
+    // Where the hub cannot see a call first, the floor rests on guards outside it: say which, and that the hub has not verified them.
+    const rests = floor && !enforced ? `; floor on: ${floorGuardText()} rest on structural guards the hub has not verified` : floor ? "; floor on: ordinary branch pushes and own-repository pull requests do not ask" : "";
     return { enabled: config.enabled, alwaysAsk: [...config.always_ask], limits: { ...config.budgets }, remaining: bound ? { ...state.remaining } : empty(), sessionBound: bound,
-      enforceable: enforced, note: (!enforced ? `always-ask not enforceable: ${reason}${config.enabled ? "" : "; policy disabled"}` : config.enabled ? "always-ask active" : "always-ask disabled") + attention };
+      ...(config.floor === true ? { floor: true, ...(floor && !enforced ? { floorGuards: FLOOR_GUARDS.map(entry => ({ ...entry })) } : {}) } : {}),
+      enforceable: enforced, note: (!enforced ? `always-ask not enforceable: ${reason}${config.enabled ? "" : "; policy disabled"}` : config.enabled ? "always-ask active" : "always-ask disabled") + rests + attention };
   }
 }
 

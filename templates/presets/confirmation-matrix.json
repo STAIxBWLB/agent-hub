@@ -51,9 +51,9 @@
     "action_policy": {
       "kind": "file",
       "setting": null,
-      "where": ".agenthub/config.local.json only (enabled, always_ask, budgets). Shared config.json cannot set it.",
+      "where": ".agenthub/config.local.json only (enabled, always_ask, budgets, floor). Shared config.json cannot set it.",
       "applies": "live through the confirmed terminal reload",
-      "default": "enabled, always_ask is publish, external-write, destroy and install, budgets 1, 5, 3, 2",
+      "default": "enabled, always_ask is publish, external-write, destroy and install, budgets 1, 5, 3, 2, floor off. floor: true (#999 T3) lets a push of a non-default branch and gh pr create, comment, review and merge in the project's own repository run without a prompt, and leaves force push, the default branch, tags, gh release, package publish, deletion outside the root, other repositories, mail and posting asking",
       "setBy": "the person (settings action_policy.enabled and action_policy.budgets.<class> are registered)",
       "doc": "docs/operations.md, Always-ask action policy foundation"
     },

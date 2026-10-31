@@ -254,6 +254,34 @@ subcommand's argument). What the policy still cannot see is the content of a
 variable used as the whole command, an alias or function, a script the command
 runs, and text read from a file or stdin.
 
+The floor policy (#999 T3). `action_policy.floor: true`, settable only in the
+untracked `.agenthub/config.local.json` like the rest of `action_policy` and off by
+default, stops the policy from asking about ordinary development work: an unforced
+`git push` of a literal non-default branch to `origin` from inside the execution
+root, and `gh pr create|comment|review|merge` in the project's own repository
+(never `--admin`, never another repository by flag or URL). Everything else the
+policy asked about still asks: force and delete pushes, the default branch and tags,
+`gh release`, package publish, deletion outside the execution root, writes to
+other repositories, mail and posting. It is a weakening, so every status policy row
+carries the existing `attention` notice. The floor reads only host facts (the
+default branch from the authoritative GitHub remote read, never a local
+`origin/HEAD` or the agent's text; the project's own repository; whether a name is
+also a local tag; the checked-out branch) and treats a missing or unproven fact as
+the strict case: until the default branch is read, a failed read, a directory that
+is not provably the project's own checkout (a nested clone has another `origin`), a
+wrapper the classifier cannot read, `-c`, `--git-dir`, an expansion or an unplaceable
+`cd` all keep the call asking. The flag is the only switch: facts alone never widen
+a policy that did not set it, and a disabled policy or a class left out of
+`always_ask` is unchanged. It affects approval prompts only: the sandbox, deny
+list, PII rule, path guard and trust checks do not change. The hub enforces the
+floor only where it sees the call first. For Codex in `never-ask`, Kimi in `auto`,
+Jcode and a Claude session without the hub hook it cannot, and the floor rests on
+guards the hub does not verify (GitHub branch protection on the default branch,
+release only through `ahub sdlc authorize-release` and the OIDC tag workflow, the
+peer's native sandbox): `ahub status` names them on that peer's row and says they
+are not verified, never that they hold. A missing guard, such as an unprotected
+default branch, is the person's to find and report.
+
 The `gh` classes (#636, #756, #762). `publish`: `gh release create|upload|edit|delete`.
 `external-write`: `gh issue|pr|gist create|comment|edit|close|reopen|merge|review|delete`,
 `gh run rerun|cancel|delete`, `gh workflow run|enable|disable`, and `gh api` with a
