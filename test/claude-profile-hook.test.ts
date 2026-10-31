@@ -110,3 +110,63 @@ test("fallback sends only with explicit state and peer and without any managed l
   expect(await runClaudeProfileHook("x".repeat(1024 * 1024 + 1), admitted, transport)).toBeUndefined();
   expect(calls).toHaveLength(1);
 });
+
+test("a managed session with both per-launch and installed profile hooks delivers PreToolUse exactly once", async () => {
+  const { sessionSettings } = await import("../src/cli/launch.ts");
+  const { PROTOCOL } = await import("../src/hub/control-client.ts");
+  const f = fixture(), stateDir = join(f.root, "state"), user = join(f.root, "user"), hubHome = join(f.root, "hub"), temporary = join(f.root, "tmp"), bin = join(f.root, "bin");
+  for (const directory of [stateDir, user, hubHome, temporary, bin]) mkdirSync(directory, { mode: 0o700 });
+  symlinkSync(process.execPath, join(bin, "bun"));
+  const identity = { projectId: "fixture-project", instanceId: "fixture-instance", cwd: f.root };
+  const facts: Record<string, unknown>[] = [];
+  const token = "fixture-profile-hook-token";
+  const server = Bun.serve<{ authenticated: boolean }>({ hostname: "127.0.0.1", port: 0,
+    fetch(request, server) {
+      if (request.headers.has("Origin")) return new Response("origin refused", { status: 403 });
+      return server.upgrade(request, { data: { authenticated: false } }) ? undefined : new Response("upgrade required", { status: 400 });
+    },
+    websocket: { message(ws, raw) {
+      const message = JSON.parse(String(raw)) as Record<string, unknown>;
+      if (message.t === "hello") {
+        if (message.token !== token || message.role !== "tools" || message.peer !== "claude") { ws.close(4401, "fixture authentication refused"); return; }
+        ws.data.authenticated = true;
+        ws.send(JSON.stringify({ t: "welcome", rid: message.rid, ...identity }));
+      } else if (ws.data.authenticated && message.t === "facts") {
+        facts.push(message);
+        ws.send(JSON.stringify({ ok: true, rid: message.rid, permission: "ask", projectRoot: f.root, text: "fixture hook context" }));
+      } else ws.close(4401, "fixture request refused");
+    } },
+  });
+  try {
+    writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: PROTOCOL, ...identity }), { mode: 0o600 });
+    writeFileSync(join(stateDir, "control-token"), token, { mode: 0o600 });
+    const generated = JSON.parse(sessionSettings(undefined, { script: join(import.meta.dir, "../src/cli/facts-hook.ts"), stateDir, purpose: "permission" }));
+    f.write(generated);
+    expect(installClaudeProfileHook(f.home)).toMatchObject({ state: "installed", changed: true });
+    const entries = f.read().hooks.PreToolUse as { hooks: { command: string; timeout: number }[] }[];
+    const commands = entries.flatMap(entry => entry.hooks);
+    expect(commands).toHaveLength(2);
+    expect(commands.every(command => command.timeout === 5)).toBe(true);
+    expect((await fetch(`http://127.0.0.1:${server.port}`, { headers: { Origin: "https://fixture.invalid" } })).status).toBe(403);
+    const env: NodeJS.ProcessEnv = {
+      HOME: user, CLAUDE_CONFIG_DIR: f.home.path, AGENTHUB_HOME: hubHome, AMEM_HOME: join(f.root, "memory"), TMPDIR: temporary,
+      PATH: `${bin}:/usr/bin:/bin`, GIT_CONFIG_GLOBAL: "/dev/null",
+      AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: f.root, AGENTHUB_PEER_ID: "claude", AGENTHUB_INSTANCE_ID: identity.instanceId, AGENTHUB_LAUNCH_ID: "fixture-managed-launch",
+    };
+    const input = Buffer.from(JSON.stringify({ hook_event_name: "PreToolUse", session_id: "fixture-session", tool_name: "Bash", tool_input: { command: "fixture-only" } }));
+    const outputs: string[] = [];
+    for (const command of commands) {
+      // exec/env preserves each generated command while making the timed child the actual hook process.
+      const child = Bun.spawn(["/bin/sh", "-c", `exec /usr/bin/env ${command.command}`], { cwd: f.root, env, stdin: input, stdout: "pipe", stderr: "pipe", timeout: 5000, killSignal: "SIGKILL" });
+      try {
+        const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+        expect(code, stderr).toBe(0);
+        outputs.push(stdout);
+      } finally { if (child.exitCode === null) child.kill("SIGKILL"); await child.exited; }
+    }
+    expect(facts).toHaveLength(1);
+    expect(facts[0]).toMatchObject({ t: "facts", phase: "pre", tool: "Bash", nativeLaunchId: "fixture-managed-launch" });
+    expect(outputs.filter(output => output.includes("fixture hook context"))).toHaveLength(1);
+    expect(outputs.filter(output => output === "")).toHaveLength(1);
+  } finally { server.stop(true); }
+}, 20000);
