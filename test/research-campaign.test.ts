@@ -256,13 +256,13 @@ test("#930 approval refuses expired or overlong deadlines without activating or 
   }
 });
 
-test("#930 T1 resolves existing budget references and refuses unverified hard-cap activation pending dispatch integration", async () => {
+test("#930 resolves existing budget references; a token hard cap is refused, and a supported one is approved with its eligible owners (#597)", async () => {
   const f = await fixture(), id = "Legacy Budget / Scope";
   f.tasks.configureExecutionBudget({ id, kind: "run", peers: ["local"], limits: { model_calls: 2, tokens: 2 } });
-  for (const resource of ["model_calls", "tokens"]) {
-    const draft = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: { ...contract(), budget: { id, hardCap: [resource] } } });
+  {
+    const draft = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: { ...contract(), budget: { id, hardCap: ["tokens"] } } });
     const before = f.board.researchIntegrity(), rows = f.board.list();
-    await expect(f.tasks.studyApprove(USER, { id: draft.id, revision: 1 })).rejects.toThrow(/hard-cap/);
+    await expect(f.tasks.studyApprove(USER, { id: draft.id, revision: 1 })).rejects.toThrow(/tokens/);
     expect(f.board.researchIntegrity()).toEqual(before); expect(f.board.list()).toEqual(rows);
   }
   const advisory = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: { ...contract(), budget: { id, hardCap: [] } } });

@@ -91,6 +91,19 @@ export class ExecutionBudget {
     return this.scopes(taskIds, peer).length > 0;
   }
 
+  /**
+   * #597: whether THIS budget (by id) meters this peer's work on this task right now, and limits every named resource. It is `applies` for one id instead of any: the same scopes()
+   * read, so a `run` budget covers every task of its peers and a `task` budget only its own task, and it reads only (nothing admitted, counted or reset; no second ledger). `tokens` is
+   * never covered: the ledger denies them as unknown usage. A missing budget, an unlisted peer, a task outside a task budget, an unlimited resource or an empty resource list answer false.
+   */
+  covers(id: string, taskId: number, peer: string, resources: readonly ExecutionUnit[]): boolean {
+    if (typeof id !== "string" || !id || !resources.length || resources.some(unit => !UNITS.has(unit) || unit === "tokens")) return false;
+    const row = this.scopes([taskId], peer).find(scope => scope.id === id);
+    if (!row) return false;
+    const limits = JSON.parse(row.limits) as ExecutionBudgetLimits;
+    return resources.every(unit => limits[unit] !== undefined);
+  }
+
   private scopes(taskIds: number[], peer: string): BudgetRow[] {
     const ids = [...new Set(taskIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
     const taskRows = ids.length

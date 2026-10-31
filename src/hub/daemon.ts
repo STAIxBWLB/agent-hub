@@ -4286,7 +4286,7 @@ export async function startDaemon(opts: DaemonOptions) {
     });
     const budgetState = budget.persistedPauseDigestRows().sort((a, b) => a.peer.localeCompare(b.peer));
     const research = board.researchIntegrity();
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units || research.handoffs ? { research } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -7431,6 +7431,10 @@ export async function startDaemon(opts: DaemonOptions) {
         && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("task_planners"))) return "target lacks task_planners; configured or persisted planner authority cannot be restored by that daemon";
       if (board.releases().some(release => release.train && ["active", "frozen"].includes(release.state)) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("release_trains"))) return "target lacks release_trains; active or frozen train safeguards cannot be preserved";
       if ((extraIds.some(id => !!definitionOf(id)?.reviewer) || config.review.pool !== undefined) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("reviewer_pool"))) return "target lacks reviewer_pool; fresh review-only variants and pool policy cannot be preserved";
+      // #597: stored dispatch state is more than storage. An approved campaign's stop policy, deadline, eligible owner set and handoffs are enforced by the dispatch gate; a target that has only the
+      // base `research_records` would store them and dispatch past them, so it needs `research_dispatch` while any research row exists. The base guard below stays and is checked separately.
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_dispatch")) && board.hasResearchState())
+        return "target lacks research_dispatch; persisted research campaigns need the dispatch gate that holds expired, superseded and over-limit units";
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_records")) {
         if (board.hasResearchState()) return "target lacks research_records; persisted research campaign records require a supporting daemon";
         let namesRunners = false;

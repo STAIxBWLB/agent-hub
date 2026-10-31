@@ -47,7 +47,7 @@ export interface RestartSnapshot {
     /** Whole captured binding set; portable identities are covered alongside queue/board integrity. */
     externalBindingsDigest?: string;
     /** Research state remains part of controlled-recovery integrity when present. */
-    research?: { campaigns: number; units: number; revision: number; digest: string };
+    research?: { campaigns: number; units: number; revision: number; digest: string; handoffs?: number };
   };
 }
 
@@ -101,7 +101,9 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
     const research = s.integrity.research;
     if (!research || typeof research !== "object" || Array.isArray(research)
       || ![research.campaigns, research.units, research.revision].every(value => Number.isSafeInteger(value) && value >= 0)
-      || typeof research.digest !== "string" || !/^[a-f0-9]{64}$/.test(research.digest)) return undefined;
+      || typeof research.digest !== "string" || !/^[a-f0-9]{64}$/.test(research.digest)
+      || Object.hasOwn(research, "handoffs") && !(Number.isSafeInteger(research.handoffs) && (research.handoffs as number) > 0)
+      || Object.keys(research).some(key => !["campaigns", "units", "revision", "digest", "handoffs"].includes(key))) return undefined;
   }
   if (bus.journal !== undefined) { try { validateJournalSnapshot(bus.journal); } catch { return undefined; } }
   return s as RestartSnapshot;

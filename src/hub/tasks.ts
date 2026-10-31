@@ -4,7 +4,7 @@ import { queueBackpressure, queueBackpressurePolicy, type QueueBackpressureCode,
 import { canonicalMemorySymbolNode, normalizeMemorySymbolInput, MEMORY_SYMBOL_LIMIT, type MemorySymbolNodes } from "./memory-symbols.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { types } from "node:util";
-import { campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus } from "./research-campaign.ts";
+import { budgetDispatchHold, campaignDispatchHold, RESEARCH_RESOURCES, campaignHash, followUpProblem, handoffState, parseResearchCampaign, parseResearchHandoff, STUDY_HOLD_TEXT, studyProjection, type HandoffState, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchProjection, type StudyHold } from "./research-campaign.ts";
 import type { ResearchCampaignRecord, ResearchUnitBinding, PreparedResearchUnit } from "./board.ts";
 import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-command.ts";
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
@@ -267,6 +267,7 @@ interface QueuePressurePass { ownerAfter: number; reviewAfter: number; ownerDone
 /** Board events that leave a task where its completion check found it; any other event means it moved on meanwhile. */
 const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
 QUIET_EVENTS.add("ready held"); // #655: the hub's note that a ready task waits for its reserved owner's WIP slot.
+QUIET_EVENTS.add("study held"); // #597: the hub's note that a campaign-bound task is held; like a ready hold it is no move.
 QUIET_EVENTS.add("plan observed"); // Host observation does not move the task or replace completion intent.
 QUIET_EVENTS.add("planner changed"); // Planning authority does not move the execution owner or revoke its handoff.
 QUIET_EVENTS.add("claim verdict"); // #901: a person's bookkeeping on a plan claim moves nothing, so it must not turn a running check into "check finished late".
@@ -1389,6 +1390,92 @@ export class Tasks {
     });
   }
 
+  /**
+   * #597, the dispatch gate. One synchronous answer, read from the tables at the moment it is asked (never from a request, a cache or an earlier read), for whether a task bound to a campaign
+   * unit may be offered, assigned, pulled or moved to `owner` now. A task bound to no unit is not this gate's business and answers undefined. It holds, with a reason, when the bound revision
+   * is no longer the approved one (superseded, closed, revoked), the deadline has passed, the unit's stored round or the revision's unit count is over the stop policy, or, for a campaign
+   * that asked for a hard cap, the chosen owner is outside the stored eligible set or the named budget no longer covers this task and owner with every hard-capped resource limited. A storage
+   * or ledger read that fails holds too (`state_unreadable`): an unreadable decision never dispatches. Holding never touches a native turn already running.
+   */
+  studyDispatchHold(taskId: number, owner: PeerId | undefined): { hold: StudyHold; campaign: string; unit: string } | undefined {
+    let binding: ReturnType<Board["researchTaskBinding"]>;
+    try { binding = this.d.board.researchTaskBinding(taskId); } catch { return { hold: "state_unreadable", campaign: "unknown", unit: "unknown" }; }
+    if (!binding) return undefined;
+    const named = (hold: StudyHold) => ({ hold, campaign: binding!.campaignId, unit: binding!.unitId });
+    try {
+      const active = this.d.board.researchActive(binding.campaignId);
+      const campaign = campaignDispatchHold({ status: active?.status, contract: active?.contract, unitId: binding.unitId, now: this.studyTime() });
+      if (campaign) return named(campaign);
+      const budget = active!.contract.budget;
+      if (!budget?.hardCap.length || owner === undefined) return undefined;
+      // The id-specific proof, immediately before the write: the named budget (not any budget) must cover this exact task and owner and still limit every hard-capped resource.
+      let covered: boolean | undefined;
+      try { covered = this.d.executionBudget?.covers(budget.id, taskId, owner, budget.hardCap); } catch { covered = undefined; }
+      const hold = budgetDispatchHold({ hardCap: budget.hardCap, eligibleOwners: active!.eligibleOwners, owner, covered });
+      return hold ? named(hold) : undefined;
+    } catch { return named("state_unreadable"); }
+  }
+
+  /**
+   * A held dispatch writes no owner. A person's or planner's explicit request refuses before any effect with the reason; the hub's own offers and sweeps record one `held` entry
+   * (once per reason, never a pile) and a notice, and the task stays where it was, so a later approved revision or a restored budget releases it through the ordinary ready path.
+   */
+  private studyHeld(task: Task, held: { hold: StudyHold; campaign: string; unit: string }, refuseNamed: "pre" | "plain" | undefined, plannerPull: boolean): Task {
+    const text = this.studyHoldText(held);
+    if (refuseNamed || plannerPull) throw new (refuseNamed === "plain" ? Error : PreEffectToolRefusal)(`cannot dispatch task #${task.id}: ${text}`);
+    const note = `study hold: ${held.hold}`;
+    const current = this.d.board.get(task.id) ?? task;
+    // One entry and one notice per reason: a sweep that meets the same held task every tick adds nothing after the first. A different reason, or a hold that was lifted and came back, writes again.
+    const lastHold = current.history.findLastIndex(entry => entry.event === "study held");
+    const released = lastHold >= 0 && current.history.slice(lastHold + 1).some(entry => entry.event === "assigned" || entry.event === "reassigned");
+    if (lastHold < 0 || released || current.history[lastHold]!.note !== note) {
+      try { this.d.board.update(current.id, HUB, "study held", {}, note); } catch { /* the hold is the fact; its note is advisory */ }
+      this.releaseNotice(`task ${this.publicTitle(current)} is held: ${text}`);
+    }
+    return this.d.board.get(task.id) ?? current;
+  }
+
+  /**
+   * Activation of a requested hard cap. Refuses unless the named budget exists, every hard-capped resource has a limit and is not `tokens` (the ledger cannot count them), and the budget's peers
+   * intersected with the instrumented peers is not empty; that intersection is the eligible owner set stored with the approval. A campaign-exclusive hard cap cannot be requested at all: the
+   * contract only names a budget id, and a `task` budget bound to the parent or any other single task would cover one task, so it is refused as not covering every unit. No hard cap returns undefined.
+   */
+  private studyHardCap(contract: ResearchCampaignContract): string[] | undefined {
+    const request = contract.budget;
+    if (!request?.hardCap.length) return undefined;
+    let status: ReturnType<ExecutionBudget["status"]>;
+    try { status = this.d.executionBudget?.status(request.id); } catch { throw new PreEffectToolRefusal("hard-cap activation needs a readable execution budget"); }
+    if (!status || Array.isArray(status)) throw new PreEffectToolRefusal("hard-cap activation needs an existing, enabled execution budget");
+    if (request.hardCap.includes("tokens")) throw new PreEffectToolRefusal("hard-cap activation refuses tokens: the ledger cannot count them, so a token cap would be advisory");
+    const unlimited = request.hardCap.filter(resource => status.limits[resource] === undefined);
+    if (unlimited.length) throw new PreEffectToolRefusal(`hard-cap activation needs a limit on ${unlimited.join(", ")} in budget ${request.id}`);
+    if (status.kind === "task") throw new PreEffectToolRefusal("hard-cap activation refuses a campaign-exclusive cap: a task budget covers one task, and the ledger has no task-membership support for a campaign's units");
+    const eligible = status.peers.filter(peer => !!(this.d.adapterCatalog?.definitionOf ?? definitionOf)(peer, this.d.instances?.())?.budget?.instrumented);
+    if (!eligible.length) throw new PreEffectToolRefusal("hard-cap activation needs at least one instrumented peer in the budget");
+    return [...eligible].sort();
+  }
+
+  /** The latest stored handoff state per unit of a campaign's contract: a missing or unreadable handoff is `none`, which closes nothing. */
+  private studyStates(campaignId: string, units: readonly { id: string }[]): Map<string, HandoffState> {
+    const states = new Map<string, HandoffState>();
+    for (const unit of units) {
+      let stored: ReturnType<Board["researchHandoff"]>;
+      try { stored = this.d.board.researchHandoff(campaignId, unit.id); } catch { stored = undefined; }
+      states.set(unit.id, handoffState(stored?.handoff));
+    }
+    return states;
+  }
+
+  private studyRoundCheck(campaignId: string, previous: ResearchCampaignContract, next: ResearchCampaignContract): void {
+    const problem = followUpProblem(next, previous.units, this.studyStates(campaignId, previous.units));
+    if (problem) throw new PreEffectToolRefusal(problem);
+  }
+
+  /** The refusal text for a held dispatch: ids and the fixed reason, never a question, scope or note. */
+  private studyHoldText(held: { hold: StudyHold; campaign: string; unit: string }): string {
+    return `held by study ${held.campaign} unit ${held.unit}: ${STUDY_HOLD_TEXT[held.hold]}`;
+  }
+
   async studyDraft(by: PeerId, input: unknown): Promise<ResearchCampaignReceipt> {
     const requestCheck = this.requestCheck(by, () => this.studyHold()); this.plannerWriteAuthority(by);
     const fields = this.studyFields(input, ["parentTaskId", "contract"]), parentId = this.studyNumber(fields.parentTaskId, "parentTaskId");
@@ -1420,9 +1507,9 @@ export class Tasks {
       const original = this.studyLatest(id, revision);
       this.plannerWriteAuthority(by, this.studyParent(original.parentTaskId));
       const before = this.studyReferences(original.parentTaskId, contract, id);
-      // ponytail: #597 adds handoff-backed round advancement; T1 never activates an unverified follow-up.
-      if (contract.units.some(unit => unit.round > 0 && !original.contract.units.some(previous => previous.id === unit.id && previous.round === unit.round)))
-        throw new PreEffectToolRefusal("follow-up rounds require the handoff coverage gate");
+      // #597: a revision that adds a follow-up round is allowed only once every discovery unit of the round before is closed by a complete handoff or a recorded insufficient-evidence reason.
+      // The states are read from the stored handoffs now, never from the request; the round limit is the contract's own and `parseResearchCampaign` already bounds each round by it.
+      this.studyRoundCheck(id, original.contract, contract);
       const withheld = await this.withholds("note", JSON.stringify(contract), before.parent);
       requestCheck();
       const latest = this.studyLatest(id, revision), current = this.studyReferences(latest.parentTaskId, contract, id);
@@ -1452,9 +1539,8 @@ export class Tasks {
       }
       this.studyLatest(id, revision);
       if (original.status !== "draft" || parent.draft) throw new PreEffectToolRefusal("study approval requires a draft and an approved parent input");
-      // ponytail: #597 adds budget-id-specific dispatch fences; T1 refuses a hard cap instead of silently degrading it.
-      if (original.contract.budget?.hardCap.length) throw new PreEffectToolRefusal("hard-cap activation requires the study dispatch budget gate");
       const before = this.studyReferences(parent.id, original.contract, id);
+      const eligibleOwners = this.studyHardCap(original.contract);
       let priv = original.private || before.private || await this.withholds("note", JSON.stringify(original.contract), parent);
       const prepared: PreparedResearchUnit[] = [];
       for (const unit of original.contract.units) {
@@ -1487,7 +1573,10 @@ export class Tasks {
       const mode = this.d.coordination?.();
       let result: ReturnType<Board["activateCampaign"]>;
       requestCheck();
-      try { result = this.d.board.activateCampaign(id, revision, this.d.project, by, now, prepared, current.parent.history.length, priv); }
+      // The budget is read again at the write: a ceiling removed, a peer dropped or a budget disabled while screening was awaited refuses here, before the campaign is approved.
+      const eligibleAtWrite = this.studyHardCap(original.contract);
+      if (JSON.stringify(eligibleAtWrite) !== JSON.stringify(eligibleOwners)) throw new PreEffectToolRefusal("study budget changed during approval screening");
+      try { result = this.d.board.activateCampaign(id, revision, this.d.project, by, now, prepared, current.parent.history.length, priv, eligibleAtWrite); }
       catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "study approval was not saved"); }
       for (const child of result.children) {
         this.incomingBacklog.add(child.id);
@@ -1519,6 +1608,77 @@ export class Tasks {
       this.releaseNotice(`study ${id} revision ${revision} closed`);
       return this.studyReceipt(closed);
     });
+  }
+
+  /**
+   * #597: record a handoff for a campaign unit. Only the bound task's CURRENT owner, only while that task is in progress, only for the campaign's approved revision. It screens the
+   * body like every note (a private body is stored but stubbed in public views), then re-checks everything the screen could have changed, and the Board compares the task's flow revision
+   * in the same write. Returns ids, the sequence and whether the unit's coverage is now closed: never the evidence, locators or notes.
+   */
+  async studyHandoff(by: PeerId, input: unknown): Promise<{ campaignId: string; unitId: string; seq: number; state: HandoffState }> {
+    const requestCheck = this.requestCheck(by, () => this.studyHold());
+    requireLocalTaskPeer(by);
+    let handoff: ReturnType<typeof parseResearchHandoff>;
+    try { handoff = parseResearchHandoff(input); } catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid handoff"); }
+    const owned = (): { task: Task; flow: number } => {
+      const binding = this.d.board.researchTaskBinding(handoff.taskId);
+      if (!binding || binding.campaignId !== handoff.campaignId || binding.unitId !== handoff.unitId || binding.revision !== handoff.revision) throw new PreEffectToolRefusal("handoff names a task that is not this unit's bound task");
+      const active = this.d.board.researchActive(handoff.campaignId);
+      if (!active || active.revision !== handoff.revision || active.project !== this.d.project) throw new PreEffectToolRefusal("handoff names a revision that is not the campaign's approved one");
+      const task = this.d.board.get(handoff.taskId);
+      if (!task) throw new PreEffectToolRefusal("handoff names a task that does not exist");
+      if (task.owner !== by || task.state !== "in_progress") throw new PreEffectToolRefusal(`only the owner of task #${task.id} records its handoff, and only while it is in progress`);
+      return { task, flow: task.history.length };
+    };
+    return this.studyWrite(async () => {
+      let before: { task: Task; flow: number };
+      try { before = owned(); } catch (error) { if (error instanceof PreEffectToolRefusal) throw error; throw new PreEffectToolRefusal("study record is unavailable or invalid"); }
+      const withheld = await this.withholds("note", JSON.stringify(handoff), before.task);
+      requestCheck();
+      const now = owned();
+      if (now.flow !== before.flow) throw new PreEffectToolRefusal("the unit's task changed while the handoff was screened");
+      requestCheck();
+      let saved: ReturnType<Board["saveResearchHandoff"]>;
+      try { saved = this.d.board.saveResearchHandoff(handoff, by, this.studyTime(), now.flow); }
+      catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "handoff was not saved"); }
+      if (withheld && !this.isPii(now.task)) this.releaseNotice(`study ${saved.campaignId} unit ${saved.unitId}: a handoff was withheld by the privacy screen`);
+      this.releaseNotice(`study ${saved.campaignId} unit ${saved.unitId} handoff ${saved.seq} recorded`);
+      return { campaignId: saved.campaignId, unitId: saved.unitId, seq: saved.seq, state: handoffState(saved.handoff) };
+    });
+  }
+
+  /**
+   * #597: the read-only coverage and stop projection of a campaign's latest revision, with the budget support map when it names a budget. Ids, enums, counts and times only (never a question,
+   * scope, locator or note), so it is the same for a private campaign. Not a write and not a lock: it reads current state once and changes nothing.
+   */
+  studyProjection(id: unknown): ResearchProjection {
+    const campaignId = this.studyId(id), record = this.studyRecord(campaignId);
+    const bound = record.approvedBy === undefined ? [] : this.d.board.researchCampaignBindings(record.id, record.revision);
+    const byUnit = new Map(bound.map(binding => [binding.unitId, binding]));
+    const rows = record.contract.units.map(unit => {
+      const binding = byUnit.get(unit.id), task = binding ? this.d.board.get(binding.taskId) : undefined;
+      let stored: ReturnType<Board["researchHandoff"]>;
+      try { stored = binding ? this.d.board.researchHandoff(record.id, unit.id) : undefined; } catch { stored = undefined; }
+      const handoff = stored ? { evidenceSources: [...new Set(stored.handoff.evidence.map(row => row.sourceId))], insufficientEvidence: stored.handoff.insufficientEvidence !== undefined, incomplete: stored.handoff.evidence.length === 0 } : undefined;
+      // Per resource, each its own id-specific read: a budget that limits tool calls but not model calls covers the one and not the other.
+      let covered: Partial<Record<(typeof RESEARCH_RESOURCES)[number], boolean>> | undefined;
+      const budget = record.contract.budget;
+      if (budget && task?.owner) {
+        try { covered = Object.fromEntries(RESEARCH_RESOURCES.map(resource => [resource, this.d.executionBudget?.covers(budget.id, task.id, task.owner!, [resource]) ?? false])); } catch { covered = undefined; }
+      }
+      return { unitId: unit.id, ...(binding ? { taskId: binding.taskId } : {}), ...(task ? { taskState: task.state, owner: task.owner } : {}), ...(handoff ? { handoff } : {}), ...(covered !== undefined ? { covered } : {}) };
+    });
+    let budgetFacts: Parameters<typeof studyProjection>[0]["budget"];
+    if (record.contract.budget) {
+      let status: ReturnType<ExecutionBudget["status"]>;
+      try { status = this.d.executionBudget?.status(record.contract.budget.id); } catch { status = undefined; }
+      const instrumented = status && !Array.isArray(status) ? status.peers.filter(peer => !!(this.d.adapterCatalog?.definitionOf ?? definitionOf)(peer, this.d.instances?.())?.budget?.instrumented) : [];
+      budgetFacts = status && !Array.isArray(status)
+        ? { read: "ok", id: record.contract.budget.id, hardCap: record.contract.budget.hardCap, ...(record.eligibleOwners ? { eligibleOwners: record.eligibleOwners } : {}), kind: status.kind, peers: status.peers,
+          limits: status.limits, usage: status.units, instrumentedPeers: instrumented }
+        : { read: "unreadable", id: record.contract.budget.id, hardCap: record.contract.budget.hardCap };
+    }
+    return studyProjection({ campaign: { id: record.id, revision: record.revision, status: record.status, contract: record.contract }, now: this.studyTime(), units: rows, ...(budgetFacts ? { budget: budgetFacts } : {}) });
   }
 
   /** Every new host proposal, including split children, consumes the same pure walk before its first notification. */
@@ -1786,6 +1946,9 @@ export class Tasks {
         const refusal = task.reserved ? `reserved peer ${task.reserved} cannot take the planner pull: ${assignment.refusals?.find(row => row.role === "owner" && row.peer === task.reserved)?.reason ?? "not eligible"}; ${this.plannerRefusal(task)}` : this.plannerRefusal(task);
         throw new PreEffectToolRefusal(`${this.hasPersonReservation(task) ? "a person's reservation is retained; " : ""}${refusal}`);
       }
+      // #597: a pull of a campaign-bound task is a dispatch decision. `validate` runs again after the screen and right before the write, so the same synchronous read covers both.
+      const held = this.studyDispatchHold(task.id, assignment.owner);
+      if (held) throw new PreEffectToolRefusal(`cannot pull task #${task.id}: ${this.studyHoldText(held)}`);
       return { task, owner: assignment.owner, assignment };
     };
     const initial = validate(), withheld = await this.withholds("note", input.reason, initial.task);
@@ -3047,6 +3210,9 @@ export class Tasks {
         }
       }
     }
+    // #597: a task bound to a campaign unit is held here, before routing, when its campaign no longer allows dispatch. The same read is asked again, synchronously, right before the owner write.
+    const early = this.studyDispatchHold(task.id, opts.namedOwner ?? (opts.candidates?.length === 1 ? opts.candidates[0] : undefined));
+    if (early) return this.studyHeld(task, early, opts.refuseNamed, opts.plannerPull !== undefined);
     const waits = this.waitsFor(task);
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
     const plannerFull = plannedMove ? this.plannerFull(task) : [];
@@ -3090,6 +3256,10 @@ export class Tasks {
     const binding = this.plannerBinding(task, a, !!opts.plannerPull);
     const assignmentExtra = { ...this.reviewMetadata(a, task), ...(binding ? { plannerReason: binding.plannerReason } : {}), ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}), ...(opts.conductorManual ? { conductorManual: true as const } : {}) };
     opts.current?.();
+    // The chosen owner is known now. This is the last read before the write and nothing yields between it and the write, so an approval revoked or revised, a deadline that passed, or a budget that
+    // stopped covering while screening or routing was awaited writes nothing. The owner may differ from the early read's candidate: it is re-proved against the stored eligible set.
+    const late = this.studyDispatchHold(task.id, a.owner);
+    if (late) return this.studyHeld(task, late, opts.refuseNamed, opts.plannerPull !== undefined);
     const next = opts.plannerPull
       ? this.d.board.pullAssigned(task.id, by, a.owner, opts.plannerPull.revision, opts.plannerPull.note, opts.plannerPull.withheld, a.reviewer ?? null, assignmentNote, assignmentExtra, task.history.length, binding)
       : this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(binding ? { planner: binding.planner } : {}), ...(opts.roster && task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, assignmentNote, assignmentExtra, opts.expectedFlowRevision);

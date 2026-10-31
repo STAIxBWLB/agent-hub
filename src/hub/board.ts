@@ -14,7 +14,7 @@ import type { SdlcReceipt } from "./sdlc.ts";
 import { parseReviewFindings, type ReviewFindingSet } from "./review-findings.ts";
 import { parseDeliverableRecords, type DeliverableRecord } from "./deliverables.ts";
 import type { CostPlan, ReviewCost } from "./cost-governance.ts";
-import { campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchUnit } from "./research-campaign.ts";
+import { campaignHash, parseResearchCampaign, parseResearchHandoff, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchHandoff, type ResearchUnit } from "./research-campaign.ts";
 
 export interface ResearchCampaignRecord {
   id: string;
@@ -32,7 +32,11 @@ export interface ResearchCampaignRecord {
   closedBy?: PeerId;
   closedAt?: number;
   closedReason?: string;
+  /** #597: the peers a hard-capped campaign may dispatch to: the named budget's peers that are instrumented, fixed at approval. Absent for a campaign with no hard cap. */
+  eligibleOwners?: string[];
 }
+/** One stored handoff: the latest per unit is the one coverage reads, earlier ones stay in history. */
+export interface ResearchHandoffRecord { campaignId: string; unitId: string; seq: number; taskId: number; handoff: ResearchHandoff; by: PeerId; at: number }
 export interface ResearchUnitBinding {
   campaignId: string;
   revision: number;
@@ -52,10 +56,10 @@ export interface PreparedResearchUnit {
 interface ResearchCampaignRow {
   id: string; project: string; parent_task_id: number; revision: number; status: string; body: string | null; body_sha256: string; private: number;
   created_by: string; created_at: number; approved_by: string | null; approved_at: number | null;
-  closed_by: string | null; closed_at: number | null; closed_reason: string | null;
+  closed_by: string | null; closed_at: number | null; closed_reason: string | null; eligible_owners: string | null;
 }
 interface ResearchUnitRow { campaign_id: string; revision: number; unit_id: string; task_id: number; round: number; purpose: string; adopted: number }
-const RESEARCH_CAMPAIGN_SELECT = "SELECT id,project,parent_task_id,revision,status,CASE WHEN length(CAST(body AS BLOB)) <= 65536 THEN body END AS body,body_sha256,private,created_by,created_at,approved_by,approved_at,closed_by,closed_at,closed_reason FROM research_campaigns";
+const RESEARCH_CAMPAIGN_SELECT = "SELECT id,project,parent_task_id,revision,status,CASE WHEN length(CAST(body AS BLOB)) <= 65536 THEN body END AS body,body_sha256,private,created_by,created_at,approved_by,approved_at,closed_by,closed_at,closed_reason,eligible_owners FROM research_campaigns";
 const researchFailure = (): Error => new Error("research campaign state is invalid, changed or corrupt");
 const researchId = (value: unknown): value is string => typeof value === "string" && value.length === 15 && /^rc-[0-9a-f]{12}$/.test(value);
 const researchInteger = (value: unknown, minimum = 1): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
@@ -70,6 +74,9 @@ function checkedResearchCampaign(record: ResearchCampaignRecord): ResearchCampai
     record.closedBy !== undefined && (!researchText(record.closedBy) || !researchInteger(record.closedAt, 0) || !researchText(record.closedReason, 4096)) ||
     ["approved", "superseded"].includes(record.status) && record.approvedBy === undefined || record.status === "closed" && record.closedBy === undefined ||
     record.status !== "closed" && record.closedBy !== undefined || record.status === "draft" && record.approvedBy !== undefined) throw researchFailure();
+  // The eligible owner set is fixed at approval and exists only with a hard cap: a draft has none, and a campaign without a hard cap has none.
+  if (record.eligibleOwners !== undefined && (record.approvedBy === undefined || !contract.budget?.hardCap.length || !Array.isArray(record.eligibleOwners) || record.eligibleOwners.length < 1 || record.eligibleOwners.length > 32 ||
+    new Set(record.eligibleOwners).size !== record.eligibleOwners.length || record.eligibleOwners.some(peer => !researchText(peer, 64)))) throw researchFailure();
   return { ...record, contract, hash };
 }
 function researchCampaignFromRow(row: ResearchCampaignRow): ResearchCampaignRecord {
@@ -78,7 +85,8 @@ function researchCampaignFromRow(row: ResearchCampaignRow): ResearchCampaignReco
     return checkedResearchCampaign({ id: row.id, project: row.project, parentTaskId: row.parent_task_id, revision: row.revision, status: row.status as ResearchCampaignStatus,
       contract: JSON.parse(row.body) as ResearchCampaignContract, hash: row.body_sha256, private: row.private === 1, createdBy: row.created_by, createdAt: row.created_at,
       ...(row.approved_by !== null ? { approvedBy: row.approved_by } : {}), ...(row.approved_at !== null ? { approvedAt: row.approved_at } : {}),
-      ...(row.closed_by !== null ? { closedBy: row.closed_by } : {}), ...(row.closed_at !== null ? { closedAt: row.closed_at } : {}), ...(row.closed_reason !== null ? { closedReason: row.closed_reason } : {}) });
+      ...(row.closed_by !== null ? { closedBy: row.closed_by } : {}), ...(row.closed_at !== null ? { closedAt: row.closed_at } : {}), ...(row.closed_reason !== null ? { closedReason: row.closed_reason } : {}),
+      ...(row.eligible_owners !== null ? { eligibleOwners: JSON.parse(row.eligible_owners) as string[] } : {}) });
   } catch { throw researchFailure(); }
 }
 
@@ -431,6 +439,10 @@ export class Board {
       campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, unit_id TEXT NOT NULL, task_id INTEGER NOT NULL,
       round INTEGER NOT NULL, purpose TEXT NOT NULL, adopted INTEGER NOT NULL, PRIMARY KEY(campaign_id,revision,unit_id))`);
     this.db.run("CREATE INDEX IF NOT EXISTS research_units_task ON research_units(task_id)");
+    // #597: the eligible owner set of a hard-capped campaign, and the handoffs coverage reads. A column on the existing table (an older database gains it, older rows read as none).
+    if (!(this.db.query("PRAGMA table_info(research_campaigns)").all() as { name: string }[]).some(row => row.name === "eligible_owners")) this.db.run("ALTER TABLE research_campaigns ADD COLUMN eligible_owners TEXT");
+    this.db.run(`CREATE TABLE IF NOT EXISTS research_handoffs (
+      campaign_id TEXT NOT NULL, unit_id TEXT NOT NULL, seq INTEGER NOT NULL, task_id INTEGER NOT NULL, body TEXT NOT NULL, by TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(campaign_id,unit_id,seq))`);
 
   }
 
@@ -505,7 +517,7 @@ export class Board {
   }
 
   /** An approved replay recreates nothing; only monotone privacy tightening may write, without task history or approval changes. */
-  activateCampaign(id: string, revision: number, project: string, by: PeerId, at: number, prepared: readonly PreparedResearchUnit[], expectedParentFlow: number, privateRecord = false): { campaign: ResearchCampaignRecord; bindings: ResearchUnitBinding[]; children: Task[] } {
+  activateCampaign(id: string, revision: number, project: string, by: PeerId, at: number, prepared: readonly PreparedResearchUnit[], expectedParentFlow: number, privateRecord = false, eligibleOwners?: readonly string[]): { campaign: ResearchCampaignRecord; bindings: ResearchUnitBinding[]; children: Task[] } {
     if (!researchText(project) || !researchText(by) || !researchInteger(at, 0) || typeof privateRecord !== "boolean") throw researchFailure();
     return this.atomic(() => {
       const campaign = this.researchCampaign(id, revision);
@@ -521,6 +533,9 @@ export class Board {
       if (campaign.status !== "draft" || latest?.revision !== revision || !researchInteger(expectedParentFlow, 0) || !parent || parent.history.length !== expectedParentFlow) throw researchFailure();
       if (this.db.query("SELECT 1 FROM research_campaigns WHERE project=? AND parent_task_id=? AND status='approved' AND id<>? LIMIT 1").get(project, campaign.parentTaskId, id)) throw new Error("another research campaign is active for this parent");
       if (this.researchBindings(campaign).length || prepared.length !== campaign.contract.units.length) throw researchFailure();
+      // #597: a hard-capped campaign is approved only with its eligible owner set (a non-empty list of distinct peers), and one without a hard cap never carries one.
+      const hardCapped = !!campaign.contract.budget?.hardCap.length;
+      if (hardCapped !== (eligibleOwners !== undefined) || eligibleOwners !== undefined && (!eligibleOwners.length || eligibleOwners.length > 32 || new Set(eligibleOwners).size !== eligibleOwners.length || eligibleOwners.some(peer => !researchText(peer, 64)))) throw researchFailure();
       const inputs = new Map<string, PreparedResearchUnit>(), units = new Map(campaign.contract.units.map(unit => [unit.id, unit]));
       const mapped = new Map<string, number>(), retained = new Map<string, Task>(), children: Task[] = [];
       const isPrivate = campaign.private || privateRecord;
@@ -570,8 +585,8 @@ export class Board {
           .run(id, revision, unit.id, taskId, unit.round, unit.purpose, unit.adoptTaskId !== undefined ? 1 : 0));
       }
       this.taskWrite(() => this.db.query("UPDATE research_campaigns SET status='superseded',private=MAX(private,?) WHERE id=? AND project=? AND status='approved'").run(isPrivate ? 1 : 0, id, project));
-      this.taskWrite(() => this.db.query("UPDATE research_campaigns SET status='approved',approved_by=?,approved_at=?,private=? WHERE id=? AND revision=? AND status='draft'")
-        .run(by, at, isPrivate ? 1 : 0, id, revision));
+      this.taskWrite(() => this.db.query("UPDATE research_campaigns SET status='approved',approved_by=?,approved_at=?,private=?,eligible_owners=? WHERE id=? AND revision=? AND status='draft'")
+        .run(by, at, isPrivate ? 1 : 0, eligibleOwners === undefined ? null : JSON.stringify([...eligibleOwners].sort()), id, revision));
       const nextUnits = new Set(campaign.contract.units.map(unit => unit.id));
       const nextEdges = new Set(campaign.contract.units.flatMap(unit => unit.dependsOn.map(dependency => `${unit.id}:${dependency}`)));
       const omittedUnits = active?.contract.units.filter(unit => !nextUnits.has(unit.id)).length ?? 0;
@@ -600,15 +615,67 @@ export class Board {
     });
   }
 
+  /**
+   * #597: record a handoff for a unit of the campaign's active approved revision. The bound task's flow revision is the caller's capture and is compared here (a task that moved since
+   * the screen wrote nothing). History is append-only: a second call is a new `seq`, and coverage reads the highest.
+   */
+  saveResearchHandoff(handoff: ResearchHandoff, by: PeerId, at: number, expectedTaskFlow: number): ResearchHandoffRecord {
+    const checked = parseResearchHandoff(handoff);
+    if (!researchText(by) || !researchInteger(at, 0) || !researchInteger(expectedTaskFlow, 0)) throw researchFailure();
+    return this.atomic(() => {
+      const active = this.researchActive(checked.campaignId);
+      if (!active || active.revision !== checked.revision || active.status !== "approved") throw new Error("handoff names a revision that is not the campaign's approved one");
+      const binding = this.researchBindings(active).find(unit => unit.unitId === checked.unitId);
+      if (!binding || binding.taskId !== checked.taskId) throw new Error("handoff names a unit or task that is not bound in the approved revision");
+      const task = this.get(binding.taskId);
+      if (!task || task.history.length !== expectedTaskFlow) throw new Error("the unit's task changed while the handoff was screened");
+      if (checked.evidence.some(row => !active.contract.sourceIds.includes(row.sourceId)) || checked.contradictions.some(row => row.sourceIds.some(source => !active.contract.sourceIds.includes(source))))
+        throw new Error("handoff cites a source that is not in the campaign");
+      const last = (this.db.query("SELECT MAX(seq) AS seq FROM research_handoffs WHERE campaign_id=? AND unit_id=?").get(checked.campaignId, checked.unitId) as { seq: number | null }).seq ?? 0;
+      this.taskWrite(() => this.db.query("INSERT INTO research_handoffs(campaign_id,unit_id,seq,task_id,body,by,at) VALUES(?,?,?,?,?,?,?)")
+        .run(checked.campaignId, checked.unitId, last + 1, binding.taskId, JSON.stringify(checked), by, at));
+      return { campaignId: checked.campaignId, unitId: checked.unitId, seq: last + 1, taskId: binding.taskId, handoff: checked, by, at };
+    });
+  }
+
+  /** The campaign's one approved revision, if any. */
+  researchActive(id: string): ResearchCampaignRecord | undefined {
+    if (!researchId(id)) throw researchFailure();
+    const row = this.db.query("SELECT revision FROM research_campaigns WHERE id=? AND status='approved' LIMIT 1").get(id) as { revision: number } | null;
+    return row ? this.researchCampaign(id, row.revision) : undefined;
+  }
+
+  private researchHandoffFrom(row: { campaign_id: string; unit_id: string; seq: number; task_id: number; body: string; by: string; at: number }): ResearchHandoffRecord {
+    try {
+      const handoff = parseResearchHandoff(JSON.parse(row.body));
+      if (!researchId(row.campaign_id) || handoff.campaignId !== row.campaign_id || handoff.unitId !== row.unit_id || handoff.taskId !== row.task_id || !researchInteger(row.seq) ||
+        !researchText(row.by) || !researchInteger(row.at, 0)) throw researchFailure();
+      return { campaignId: row.campaign_id, unitId: row.unit_id, seq: row.seq, taskId: row.task_id, handoff, by: row.by, at: row.at };
+    } catch { throw researchFailure(); }
+  }
+
+  /** The latest handoff of a unit (the one coverage reads), or undefined. A corrupt row throws: coverage never guesses. */
+  researchHandoff(campaignId: string, unitId: string): ResearchHandoffRecord | undefined {
+    if (!researchId(campaignId) || typeof unitId !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(unitId)) throw researchFailure();
+    const row = this.db.query("SELECT campaign_id,unit_id,seq,task_id,body,by,at FROM research_handoffs WHERE campaign_id=? AND unit_id=? ORDER BY seq DESC LIMIT 1").get(campaignId, unitId) as Parameters<Board["researchHandoffFrom"]>[0] | null;
+    return row ? this.researchHandoffFrom(row) : undefined;
+  }
+
+  /** Every handoff of a unit, oldest first, bounded: the history behind the latest one. */
+  researchHandoffs(campaignId: string, unitId: string): ResearchHandoffRecord[] {
+    if (!researchId(campaignId) || typeof unitId !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(unitId)) throw researchFailure();
+    return (this.db.query("SELECT campaign_id,unit_id,seq,task_id,body,by,at FROM research_handoffs WHERE campaign_id=? AND unit_id=? ORDER BY seq LIMIT 1000").all(campaignId, unitId) as Parameters<Board["researchHandoffFrom"]>[0][]).map(row => this.researchHandoffFrom(row));
+  }
+
   hasResearchState(): boolean {
-    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_campaigns) OR EXISTS(SELECT 1 FROM research_units) AS present").get() as { present: number }).present === 1;
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_campaigns) OR EXISTS(SELECT 1 FROM research_units) OR EXISTS(SELECT 1 FROM research_handoffs) AS present").get() as { present: number }).present === 1;
   }
 
   /** A consistent, streaming digest includes metadata and body hashes, not merely row counts. */
-  researchIntegrity(): { campaigns: number; units: number; revision: number; digest: string } {
+  researchIntegrity(): { campaigns: number; units: number; revision: number; digest: string; handoffs?: number } {
     return this.db.transaction(() => {
       const digest = createHash("sha256").update("agent-hub.research-integrity/v1\n");
-      let campaigns = 0, units = 0, revision = 0;
+      let campaigns = 0, units = 0, revision = 0, handoffs = 0;
       for (const row of this.db.query(`${RESEARCH_CAMPAIGN_SELECT} ORDER BY id,revision`).iterate() as Iterable<ResearchCampaignRow>) {
         const campaign = researchCampaignFromRow(row), bindings = this.researchBindings(campaign);
         const { contract: _body, ...metadata } = campaign;
@@ -617,7 +684,14 @@ export class Board {
         campaigns++; units += bindings.length; revision = Math.max(revision, campaign.revision);
       }
       if ((this.db.query("SELECT COUNT(*) AS count FROM research_units").get() as { count: number }).count !== units) throw researchFailure();
-      return { campaigns, units, revision, digest: digest.digest("hex") };
+      // #597: handoffs join the digest only when any exist, after the campaigns, so a hub with none keeps the exact digest it had before this slice recorded them.
+      for (const row of this.db.query("SELECT campaign_id,unit_id,seq,task_id,body,by,at FROM research_handoffs ORDER BY campaign_id,unit_id,seq").iterate() as Iterable<Parameters<Board["researchHandoffFrom"]>[0]>) {
+        const record = this.researchHandoffFrom(row);
+        if (handoffs === 0) digest.update("handoffs\n");
+        digest.update(JSON.stringify({ campaignId: record.campaignId, unitId: record.unitId, seq: record.seq, taskId: record.taskId, by: record.by, at: record.at })).update("\n").update(createHash("sha256").update(row.body).digest("hex")).update("\n");
+        handoffs++;
+      }
+      return { campaigns, units, revision, digest: digest.digest("hex"), ...(handoffs ? { handoffs } : {}) };
     })();
   }
 

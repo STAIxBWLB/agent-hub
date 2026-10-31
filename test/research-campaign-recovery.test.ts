@@ -74,11 +74,15 @@ test("the daemon advertises research_records and leaves empty recovery integrity
 test("persisted campaign drafts refuse unsupported prepare, commit and target inspect before recovery effects", async () => {
   const f = await fixture({ draft: true });
   try {
-    for (const targetFeatures of [undefined, f.withoutResearch, []] as Array<readonly string[] | undefined>) for (const op of ["prepare", "commit"]) {
-      expect(await request(f, op, targetFeatures), op).toMatchObject({ ok: false, error: expect.stringContaining("target lacks research_records") });
+    // #597: stored research is also dispatch state, so a target lacking research_dispatch is named first (the dispatch guard runs before the base one), while a target that has dispatch but not the base storage is still refused for the base feature.
+    const withoutDispatch = f.status.features.filter((feature: string) => feature !== "research_dispatch");
+    const withoutBase = f.status.features.filter((feature: string) => feature !== "research_records");
+    for (const [targetFeatures, floor] of [[undefined, "research_dispatch"], [withoutDispatch, "research_dispatch"], [[], "research_dispatch"], [f.withoutResearch, "research_records"]] as Array<[readonly string[] | undefined, string]>) for (const op of ["prepare", "commit"]) {
+      expect(await request(f, op, targetFeatures), `${op} ${floor}`).toMatchObject({ ok: false, error: expect.stringContaining(`target lacks ${floor}`) });
       expect((await inspect(f)).phase).toBeUndefined();
     }
-    expect(await request(f, "inspect", f.withoutResearch)).toMatchObject({ ok: false, error: expect.stringContaining("target lacks research_records") });
+    expect(await request(f, "inspect", withoutDispatch)).toMatchObject({ ok: false, error: expect.stringContaining("target lacks research_dispatch") });
+    expect(await request(f, "inspect", [...withoutBase, "research_dispatch"])).toMatchObject({ ok: false, error: expect.stringContaining("target lacks research_records") });
     const current = await inspect(f);
     expect(current.phase).toBeUndefined();
     expect(current.integrity.current.research).toEqual(f.expectedResearch);
