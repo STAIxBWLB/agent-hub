@@ -67,7 +67,7 @@ Every text field is UTF-8 and bounded. A record above its bounds refuses whole, 
 | `units` | 1 to 32 units |
 | `deliverableSections` | at most 32 `{ id, title, owner unit id }`; each section has exactly one synthesis owner |
 | `stopPolicy` | `{ maxUnits (1..32), maxFollowUpRounds (0..5), deadline (ISO time, at most 90 days after approval) }` |
-| `executionBudgetId` | optional existing `ExecutionBudget` id |
+| `budget` | optional `{ id (an existing ExecutionBudget id), hardCap: resources to enforce, possibly empty }`; see "Budget support map" |
 
 A unit: `{ id, round (integer, 0 for the initial round), question (long text), perspective (short), requiredOutput (short), sourceIds (subset of the campaign's, at most 16), dependsOn (unit ids, at most 16, acyclic, never a later round), purpose: "discovery" | "independent_check" | "analysis" | "synthesis", adoptTaskId?, taskId? }`. `adoptTaskId` names an approved intake child to bind. `taskId` is bound by the hub on activation, never supplied by a contract.
 
@@ -110,7 +110,7 @@ Closing a discovery round needs every discovery unit to have a complete handoff,
 
 ### Budget support map
 
-A campaign with `executionBudgetId` shows, per unit and per resource (`model_calls`, `tool_calls`, `elapsed_ms`, `tokens`), one label:
+A campaign with a `budget` shows, per unit and per resource (`model_calls`, `tool_calls`, `elapsed_ms`, `tokens`), one label:
 - `enforceable` only when every condition is proven from current state:
   - the budget exists and is enabled;
   - the unit's task has an owner;
@@ -120,6 +120,15 @@ A campaign with `executionBudgetId` shows, per unit and per resource (`model_cal
 - `unknown` when the unit has no owner yet, or the budget cannot be read.
 - `advisory` when the scope or peer does not cover the unit; usage is shown for attribution only.
 - `unavailable` for `tokens` (the ledger denies them as `unknown_usage`) and for an uninstrumented owner.
+
+Display is not enforcement. A contract that wants enforcement says so with `budget: { id, hardCap: [resources] }` in place of the bare `executionBudgetId`. `hardCap` lists the resources that must be enforced for every unit, as stored intent, and it may be empty for an advisory-only budget. With a non-empty `hardCap`:
+- Activation refuses unless all of these hold:
+  - budget `id` exists and is enabled;
+  - every `hardCap` resource has a limit and is not `tokens`;
+  - the budget's `peers`, intersected with instrumented peers, is not empty.
+  That intersection is the campaign's eligible owner set, stored with the revision.
+- The dispatch gate and every owner change for a campaign-bound task make the same id-specific check immediately before the write: the offer, the assignment, a planner pull, a sweep reassignment, `hub_task_assign` and an owner handoff. The chosen owner must be in the stored eligible set, and `ExecutionBudget.applies([taskId], owner)` must include this budget `id`, with every `hardCap` resource still limited. If any part fails or cannot be read, the task is held with the reason, or the assignment is refused, and nothing is offered to an uncovered owner. A budget that is disabled or removed after activation holds every not-yet-started unit the same way.
+- A unit already running when the budget changes keeps running; the hold applies from its next dispatch or owner change.
 
 V1 uses the existing ledger as is. A `kind: "run"` budget is peer-wide, so unrelated work by those peers spends the same budget, and the projection says so. Two campaigns that name one budget share it, and neither resets it. Activation refuses a requested hard cap on an `unavailable` cell, and refuses a campaign-exclusive hard cap entirely, until the ledger gains task membership in a separate reviewed change. Stop and budget limits block new dispatch only.
 
@@ -269,7 +278,7 @@ Each slice amends this spec in its own PR if it must differ, and updates `docs/d
 | Task | Issue and ACs | Scope |
 |---|---|---|
 | #596 | #930 T1, AC1 and AC2 | the `research-campaign.ts` schema and validation (rounds included); the campaign and unit tables; `studyDraft`, `studyRevise`, the three-phase `studyApprove` with `board.activateCampaign`, and `studyClose`; intake adoption; the replay, crash-between-commit-and-publish and restart tests; the `research_records` feature gate |
-| #597 | #930 T2, AC3 and AC4 | the dispatch gate on stored rounds; round advancement validation; the coverage and stop projection; the budget support map with its `applies` proof and the two-campaign shared-ledger fixture |
+| #597 | #930 T2, AC3 and AC4 | the dispatch gate on stored rounds; round advancement validation; the coverage and stop projection; the budget support map with its `applies` proof; the stored `hardCap` intent and eligible owner set, with refusal at activation and the id-specific check at every dispatch and owner change (offer, assign, pull, sweep reassign, handoff); the two-campaign shared-ledger fixture |
 | #598 | #932 T1, AC1 and AC2 | the `research-experiments.ts` protocol (with lineage), attempt (with phase) and event schemas; the status fold; the provenance levels; the protocol, attempt and event tables; `hub_experiment_record` for protocol, attempt and event; host evidence from check receipts (exit, duration and queue time only) and deliverable hashes |
 | #599 | #932 T2, AC3 and AC4 | comparison plans and compatibility; the protocol approval table and `ahub study approve-protocol` with its consumers; idempotency and retry linkage; the post-hoc marking by lineage |
 | #600 | #1018, AC1 to AC5 | the `research.runners` config; `research-runner.ts` receipt verification; receipt delivery; the sealing rule with its negative cases (no evaluator, empty mounts, a dangling container ref, an evaluator mount on a candidate); fixtures with a test key pair |
