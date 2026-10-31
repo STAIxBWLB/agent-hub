@@ -101,7 +101,10 @@ test("non-interactive setup without yes fails instead of reporting a successful 
   const ports = { ...f.ports, interactive: false, ask: async () => { asks++; return null; } };
   await expect(setupClaudeHomes(ports)).rejects.toThrow("not a terminal");
   expect(asks).toBe(0); expect(f.runs).toEqual([]);
-  for (const home of f.homes) expect(existsSync(join(home.path, "settings.json"))).toBe(false);
+  for (const home of f.homes) {
+    expect(f.printed.some(line => line.includes(home.path) && line.includes("claude plugin marketplace add"))).toBe(true);
+    expect(existsSync(join(home.path, "settings.json"))).toBe(false);
+  }
 });
 
 test("denying the single confirmation mutates no selected or unused home and never probes a missing home", async () => {

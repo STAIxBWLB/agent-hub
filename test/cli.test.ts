@@ -273,8 +273,10 @@ test("ahub setup without a terminal and without --yes prints the step, changes n
   const bin = mkdtempSync(join(tmpdir(), "agenthub-setup-tty-"));
   const calls = join(bin, "calls.log");
   writeFileSync(join(bin, "claude"), `#!/bin/sh\necho "$@" >> "${calls}"\necho "[]"\n`, { mode: 0o755 });
-  // A hub home of its own: an operation running on this machine must not decide the test.
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, AGENTHUB_HOME: mkdtempSync(join(tmpdir(), "agenthub-setup-home-")) };
+  // Select only an isolated Claude home, independently of the runner's installed profiles.
+  const home = settingsState(), claudeHome = join(home, "selected-claude");
+  mkdirSync(claudeHome, { mode: 0o700 });
+  const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claudeHome, PATH: `${bin}:${process.env.PATH}`, AGENTHUB_HOME: settingsState() };
   const res = Bun.spawnSync(["bun", "src/cli/main.ts", "setup"], { stdin: "ignore", env });
   expect(res.exitCode).toBe(1);
   expect(res.stdout.toString()).toContain("claude plugin marketplace add");
