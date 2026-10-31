@@ -208,3 +208,60 @@ test("the real ahub CLI drafts, shows, approves and closes a campaign against th
   expect(closed.code, closed.stderr).toBe(0); expect(closed.stdout).toContain("closed");
   expect((await ahub("study", "show")).stdout).toContain(`${id}  r1   closed`);
 }, 60_000);
+
+// What the earlier real-CLI test left out, on the real path: `study revise`, an agent's shell (the real classifier, the real daemon), and a restart between approve and show.
+function realCli(r: Rig, markers: Record<string, string> = {}) {
+  return async (...args: string[]) => {
+    const env = { ...process.env, NO_COLOR: "1", COLUMNS: "100" } as Record<string, string>;
+    for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") && key !== "AGENTHUB_HOME" || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CODEX_THREAD_ID", "KIMI_CODE"].includes(key)) delete env[key];
+    Object.assign(env, markers);
+    const proc = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", r.root, ...args], { cwd: r.root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    return { code: await proc.exited, stdout, stderr };
+  };
+}
+
+test("the real ahub process: an agent shell reads a campaign and is refused every write before the hub changes, and the person revises through the same CLI", async () => {
+  const r = await rig({ stateUnderProject: true });
+  writeFileSync(join(r.root, ".agenthub/config.json"), "{}");
+  writeFileSync(join(r.root, "contract.json"), JSON.stringify(contractFor(r)));
+  writeFileSync(join(r.root, "contract2.json"), JSON.stringify(contractFor(r, { scope: "Narrower scope" })));
+  const person = realCli(r), agent = realCli(r, { AGENTHUB_PEER_ID: "codex", AGENTHUB_STATE_DIR: r.stateDir, AGENTHUB_PROJECT_DIR: r.root });
+  const drafted = await person("study", "draft", String(r.parent.id), "contract.json"); expect(drafted.code, drafted.stderr).toBe(0);
+  const id = drafted.stdout.match(/rc-[a-f0-9]{12}/)![0];
+  // the person revises a draft: revision 2 exists, a stale revision 1 is refused by the hub
+  const revised = await person("study", "revise", id, "1", "contract2.json");
+  expect(revised.code, revised.stderr).toBe(0); expect(revised.stdout).toContain("revision 2"); expect(revised.stdout).toContain(`ahub study approve ${id} 2`);
+  const stale = await person("study", "revise", id, "1", "contract2.json"); expect(stale.code).toBe(1);
+  // an agent shell: read allowed, every write refused as a console command, and nothing changed
+  expect((await agent("study", "show")).code).toBe(0);
+  expect((await agent("study", "show", id, "--json")).stdout).toContain('"units"');
+  for (const argv of [["approve", id, "2"], ["close", id, "2", "--reason", "x"], ["draft", String(r.parent.id), "contract.json"], ["revise", id, "2", "contract2.json"]]) {
+    const refused = await agent("study", ...argv);
+    expect(refused.code, `agent study ${argv[0]}`).toBe(1);
+    expect(refused.stderr, `agent study ${argv[0]}`).toContain(`codex cannot run ahub study ${argv[0]}`);   // the classifier's own refusal, in the agent's process
+    expect(refused.stderr).toContain("inherited agent markers");
+  }
+  const board = new Board(join(r.stateDir, "hub.db"));
+  try { expect(board.researchCampaign(id)!.revision).toBe(2); expect(board.researchCampaign(id)!.status).toBe("draft"); expect(board.researchCampaignBindings(id, 2)).toHaveLength(0); } finally { board.close(); }
+  const approved = await person("study", "approve", id, "2"); expect(approved.code, approved.stderr).toBe(0); expect(approved.stdout).toContain("approved");
+}, 90_000);
+
+test("a campaign survives a daemon restart: show and close still work, and the units keep their task ids", async () => {
+  const r = await rig({ stateUnderProject: true });
+  const draft = json(await task(r.person, "study_draft", { parentTaskId: r.parent.id, contract: contractFor(r) }));
+  const approved = json(await task(r.person, "study_approve", { id: draft.id, revision: 1 }));
+  await r.daemon.stop();
+  const again = await startDaemon({ cwd: r.root, stateDir: r.stateDir, projectId: r.root, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, notifier: () => {},
+    config: { ...DEFAULT_CONFIG, roles: { claude: ["planner"], codex: ["implementer"] }, roster: {}, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
+      inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, research: { ...DEFAULT_CONFIG.research, enabled: false },
+      task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } });
+  cleanup.push(() => again.stop());
+  const person = await r.connect("console");
+  const shown = json(await task(person, "hub_study_show", { id: draft.id }));
+  expect(shown.units.map((unit: any) => [unit.unitId, unit.taskId]).sort()).toEqual(approved.units.map((unit: any) => [unit.unitId, unit.taskId]).sort());
+  expect(json(await task(person, "hub_study_show", {}))).toEqual([expect.objectContaining({ id: draft.id, status: "approved", unitCount: 2 })]);
+  const replay = json(await task(person, "study_approve", { id: draft.id, revision: 1 }));   // re-running approve returns the stored mapping and creates nothing
+  expect(replay.units.map((unit: any) => unit.taskId).sort()).toEqual(approved.units.map((unit: any) => unit.taskId).sort());
+  expect(json(await task(person, "study_close", { id: draft.id, revision: 1, reason: "after restart" })).status).toBe("closed");
+}, 60_000);
