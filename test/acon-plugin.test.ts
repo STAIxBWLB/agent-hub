@@ -176,9 +176,48 @@ describe("acon Space from the office model (#1012 Part 2)", () => {
 
   test("merged scenes stay within acon's caps", () => {
     const one = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p" });
-    const many = mergeSpaces(Array.from({ length: 40 }, (_, i) => ({ ...one, actors: one.actors.map((a) => ({ ...a, id: `${i}:${a.id}` })), links: Array.from({ length: 5 }, () => one.links![0]!) })));
+    const scene = (i: number) => ({ ...one, actors: one.actors.map((a) => ({ ...a, id: `${i}:${a.id}` })), links: Array.from({ length: 8 }, () => ({ ...one.links![0]!, from: `${i}:${one.links![0]!.from}`, to: `${i}:${one.links![0]!.to}` })) });
+    const many = mergeSpaces(Array.from({ length: 40 }, (_, i) => scene(i)));
     expect(many.actors.length).toBe(SPACE_CAPS.actors);
     expect(many.links!.length).toBe(SPACE_CAPS.links);
+  });
+
+  test("Codex thread 4: after the caps, links, card owners and actor cards point only inside what was kept", () => {
+    const one = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p" });
+    // 11 projects of 3 actors: project 10's actors are cut. Its links come last (newest) and must not crowd out kept ones.
+    const scenes = Array.from({ length: 11 }, (_, i) => ({ actors: one.actors.map((a) => ({ ...a, id: `${i}:${a.id}`, ...(a.card ? { card: `${i}:${a.card}` } : {}) })), zones: [],
+      cards: one.cards.map((c) => ({ ...c, id: `${i}:${c.id}`, ...(c.owner ? { owner: `${i}:${c.owner}` } : {}) })),
+      links: Array.from({ length: i === 10 ? 64 : 2 }, () => ({ ...one.links![0]!, from: `${i}:p:codex`, to: `${i}:p:pi` })) }));
+    const merged = mergeSpaces(scenes);
+    const actors = new Set(merged.actors.map((a) => a.id)), cards = new Set(merged.cards.map((c) => c.id));
+    expect(merged.actors.length).toBe(SPACE_CAPS.actors);
+    expect(merged.links!.length).toBe(20);
+    expect(merged.links!.every((l) => actors.has(l.from) && actors.has(l.to))).toBe(true);
+    expect(merged.cards.every((c) => !c.owner || actors.has(c.owner))).toBe(true);
+    expect(merged.cards.some((c) => c.id.startsWith("10:") && c.owner === undefined)).toBe(true);
+    expect(merged.actors.every((a) => !a.card || cards.has(a.card))).toBe(true);
+    const tight = mergeSpaces([{ ...scenes[0]!, cards: [] }]);
+    expect(tight.actors.every((a) => a.card === undefined)).toBe(true);
+  });
+
+  test("Codex thread 1: the actor card is only the bubble's attributed task, with no single-card fallback", () => {
+    // pi owns in-progress #5 but its open turn is attributed to reviewing #3: the card is #3, never #5.
+    const input = { ...dirty, status: { peers: { ...(dirty as any).status.peers, pi: { state: "busy", turn: { task: 3 } } } },
+      tasks: [...(dirty as any).tasks, { id: 5, title: "own work", class: "implement", state: "in_progress", owner: "pi", deps: [] }] } as unknown as OfficeSnapshotInput;
+    const scene = officeSpace(officeModel(input, null, { cols: 4, now: 3000 }), { id: "p1" });
+    expect(scene.actors.find((a) => a.id === "p1:pi")?.card).toBe("p1:3");
+    // An open turn without an attributed task gives an empty bubble: no card, even with one in-progress task.
+    const idle = officeSpace(officeModel({ ...input, status: { peers: { ...(dirty as any).status.peers, pi: { state: "busy", turn: {} } } } } as unknown as OfficeSnapshotInput, null, { cols: 4, now: 3000 }), { id: "p1" });
+    expect(idle.actors.find((a) => a.id === "p1:pi")?.card).toBeUndefined();
+  });
+
+  test("Codex thread 2: a broadcast arc (empty to) links the sender to every other visible desk", () => {
+    const first = officeModel(dirty, null, { cols: 4, now: 3000 });
+    const next = officeModel({ ...dirty, events: [{ seq: 10, event: { t: "envelope", env: { from: "codex", to: [], kind: "chat", priority: "status", ts: 3500, body: `${MARKER} all` } } }] } as unknown as OfficeSnapshotInput, first, { cols: 4, now: 4000 });
+    const scene = officeSpace(next, { id: "p1" });
+    const messages = scene.links!.filter((l) => l.kind === "message");
+    expect(messages.map((l) => [l.from, l.to]).sort()).toEqual([["p1:codex", "p1:kimi"], ["p1:codex", "p1:pi"]]);
+    expect(JSON.stringify(scene)).not.toContain(MARKER);
   });
 
   test("the provider's space panel aggregates running projects through ui_snapshot and leaks no marker", async () => {

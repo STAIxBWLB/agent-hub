@@ -54,8 +54,9 @@ export function officeSpace(model: OfficeScene, project: { id: string; label?: s
     if (inbox > 0) marks.push({ kind: "inbox", text: `${inbox} queued` });
     if (desk.condition === "paused") marks.push({ kind: "paused", text: "paused" });
     if (desk.mode) marks.push({ kind: "mode", text: clip(desk.mode, 40) });
-    // The card is the desk's bubble: the turn's attributed task, or the peer's single in_progress task ("#id class").
-    const card = desk.cards.find((c) => desk.bubble.startsWith(`#${c.id} `)) ?? (desk.cards.length === 1 ? desk.cards[0] : undefined);
+    // The card is only the bubble's attributed task ("#id ..."): a peer reviewing #2 while owning #1 shows #2, an empty bubble shows none.
+    const attributed = /^#(\d+) /.exec(desk.bubble)?.[1];
+    const card = attributed ? { id: Number(attributed) } : undefined;
     return { id: pre(desk.id), name: name(desk.id), state: actorState(desk.condition, desk.attached, desk.approvals, desk.tray.needsReview),
       ...(card ? { card: pre(card.id) } : {}), ...(marks.length ? { marks } : {}), link: agents };
   });
@@ -89,8 +90,13 @@ export function officeSpace(model: OfficeScene, project: { id: string; label?: s
   for (const arc of model.arcs) {
     if (!desks.has(arc.from)) continue;
     const at = Number.isFinite(arc.until) ? new Date(arc.until - 10_000).toISOString() : undefined;
-    for (const to of arc.to.filter((p) => desks.has(p) && p !== arc.from)) links.push({ kind: "message", from: pre(arc.from), to: pre(to), ...(arc.task ? { label: `#${arc.task}` } : {}), ...(at ? { at } : {}) });
+    // A broadcast arc has an empty `to` (office-model contract): it reaches every visible desk but the sender, as on the dashboard.
+    const targets = arc.to.length ? arc.to : [...desks];
+    for (const to of targets.filter((p) => desks.has(p) && p !== arc.from)) links.push({ kind: "message", from: pre(arc.from), to: pre(to), ...(arc.task ? { label: `#${arc.task}` } : {}), ...(at ? { at } : {}) });
   }
+  // An attributed task that is not on the floor (not placed) has no card to point at.
+  const placedCards = new Set(cards.map((c) => c.id));
+  for (const actor of actors) if (actor.card && !placedCards.has(actor.card)) delete actor.card;
   return { actors, zones, cards, links };
 }
 
@@ -99,7 +105,12 @@ export const SPACE_CAPS = { actors: 32, cards: 200, links: 64 } as const;
 
 /** Joins per-project scenes within acon's caps. */
 export function mergeSpaces(scenes: SpaceScene[]): SpaceScene {
-  const links = scenes.flatMap((s) => s.links ?? []);
-  return { actors: scenes.flatMap((s) => s.actors).slice(0, SPACE_CAPS.actors), zones: scenes.flatMap((s) => s.zones),
-    cards: scenes.flatMap((s) => s.cards).slice(0, SPACE_CAPS.cards), links: links.slice(Math.max(0, links.length - SPACE_CAPS.links)) };
+  // Cap actors and cards first, then keep only references inside what was kept, so links to cut actors never crowd out visible ones.
+  const actors = scenes.flatMap((s) => s.actors).slice(0, SPACE_CAPS.actors);
+  const actorIds = new Set(actors.map((a) => a.id));
+  const cards = scenes.flatMap((s) => s.cards).slice(0, SPACE_CAPS.cards).map((c) => c.owner && !actorIds.has(c.owner) ? (({ owner: _owner, ...rest }) => rest)(c) : c);
+  const cardIds = new Set(cards.map((c) => c.id));
+  const kept = actors.map((a) => a.card && !cardIds.has(a.card) ? (({ card: _card, ...rest }) => rest)(a) : a);
+  const links = scenes.flatMap((s) => s.links ?? []).filter((l) => actorIds.has(l.from) && actorIds.has(l.to));
+  return { actors: kept, zones: scenes.flatMap((s) => s.zones), cards, links: links.slice(Math.max(0, links.length - SPACE_CAPS.links)) };
 }
