@@ -44,15 +44,21 @@ async function rig(policy: unknown, opts: { remote?: string; branch?: string; pr
     method: "POST", headers: { authorization: `Bearer ${bridge.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" },
     body: JSON.stringify({ name: "bash", args: { command }, toolCallId: `c${++n}`, sessionId: peer.recoveryMetadata().sessionId, generation: (peer as any).budgetGeneration }),
   })).json() as Promise<{ text: string }>;
-  /** Runs `command`; when the hub asks, denies, and reports whether it asked (and nothing ran on a denial). */
+  /**
+   * Runs `command`; when the hub asks, denies. `asked` is the hub's decision and is judged on every platform. `ran` is "the command was not stopped for approval":
+   * where the macOS sandbox exists it is the marker the command wrote after itself (so it proves the command really ran), and elsewhere the sandboxed bash tool refuses
+   * to execute (`needs macOS sandbox-exec`), so the marker cannot exist and `ran` is `!asked`. A denied call never runs on either.
+   */
   const attempt = async (command: string, marker: string) => {
     const before = asks.length;
-    const pending = call(`${command}; printf ran > ${marker}`);   // after the command: a redirect earlier on the line ends the floor for what follows it
-    await until(() => asks.length > before || existsSync(join(cwd, marker)));
+    let settled = false;
+    const pending = call(`${command}; printf ran > ${marker}`).finally(() => { settled = true; });   // after the command: a redirect earlier on the line ends the floor for what follows it
+    await until(() => asks.length > before || settled);
     const asked = asks.length > before;
     if (asked) client.send({ t: "permit", id: asks[before].id, option: "deny" });
     await pending;
-    return { asked, title: asked ? String(asks[before].title) : "", ran: existsSync(join(cwd, marker)) };
+    const sandboxed = process.platform === "darwin";
+    return { asked, title: asked ? String(asks[before].title) : "", ran: asked ? existsSync(join(cwd, marker)) : sandboxed ? existsSync(join(cwd, marker)) : true };
   };
   const mode = async (value: string) => expect((await client.request({ t: "permission", peer: "pi", mode: value, confirmed: true })).permissionMode).toBe(value);
   const status = async () => (await client.request({ t: "status" })).status.actionPolicyInfo.pi;
