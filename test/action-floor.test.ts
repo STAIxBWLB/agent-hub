@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { classifyAction, type ActionClass, type FloorFacts } from "../src/hub/action-class.ts";
 import { actionGate, claudeActionClasses } from "../src/hub/action-enforce.ts";
-import { ActionBudgets, actionPolicyConfig, FLOOR_GUARDS } from "../src/hub/action-policy.ts";
+import { ActionBudgets, actionPolicyConfig, askedClasses, FLOOR_GUARDS } from "../src/hub/action-policy.ts";
 import { validateRawConfig } from "../src/hub/config-apply.ts";
 
 // #999 T3: with the floor on, an ordinary branch push and an own-repository pull request run without a prompt, and everything release-grade still asks.
@@ -41,7 +41,10 @@ const STILL_ASKS: Array<[string, ActionClass]> = [
   ["git push origin feat/x:main", "publish"], ["git push origin HEAD:main", "publish"], ["git push origin HEAD:refs/heads/main", "publish"], ["git push origin heads/main", "publish"],
   // tags and other ref types
   ["git push origin v1", "publish"], ["git push origin v1.2.3", "publish"], ["git push origin refs/tags/v1", "publish"], ["git push --tags origin feat/x", "publish"],
-  ["git push --follow-tags origin feat/x", "publish"], ["git push origin tags/v1", "publish"], ["git push origin feat/x:refs/tags/v2", "publish"], ["git push origin release", "publish"],
+  ["git push --follow-tags origin feat/x", "publish"], ["git push origin tags/v1", "publish"], ["git push origin feat/x:refs/tags/v2", "publish"],
+  // a qualified or ref-typed SOURCE is the ref it names: refs/tags/v1 is a tag, never a branch called refs/tags/v1 (judged as the destination is)
+  ["git push origin refs/tags/v1:feat/x", "publish"], ["git push origin refs/tags/v1:refs/heads/feat/x", "publish"], ["git push origin tags/v1:feat/x", "publish"], ["git push origin refs/notes/commits:feat/x", "publish"],
+  ["git push origin refs/remotes/origin/main:feat/x", "publish"], ["git push origin heads/main:feat/x", "publish"], ["git push origin v1:feat/x", "publish"], ["git push origin release", "publish"],
   ["git push origin refs/notes/commits", "publish"], ["git push origin refs/pull/1/head", "publish"],
   // deletion, mirror, prune, bypass and hooks
   ["git push origin :feat/x", "publish"], ["git push --delete origin feat/x", "publish"], ["git push -d origin feat/x", "publish"], ["git push --mirror origin", "publish"], ["git push --all origin", "publish"],
@@ -146,7 +149,7 @@ test("a git tool call and an argv command are judged like the shell form", () =>
 test("action_policy accepts floor as a boolean, rejects anything else, and omits it by default", () => {
   expect(actionPolicyConfig()).toEqual({ enabled: true, always_ask: ["publish", "external-write", "destroy", "install"], budgets: { publish: 1, destroy: 3, "external-write": 5, install: 2 } });
   expect("floor" in actionPolicyConfig()).toBe(false);
-  expect("floor" in actionPolicyConfig({ floor: false })).toBe(false);
+  expect(actionPolicyConfig({ floor: false }).floor).toBe(false);                         // the raw key is kept so a recovery can see the file names it at all
   expect(actionPolicyConfig({ floor: true }).floor).toBe(true);
   expect(actionPolicyConfig({ floor: true, enabled: false })).toMatchObject({ enabled: false, floor: true });
   for (const bad of [{ floor: "yes" }, { floor: 1 }, { floor: null }, { floor: [] }, { floors: true }]) expect(() => actionPolicyConfig(bad), JSON.stringify(bad)).toThrow();
@@ -237,12 +240,41 @@ test("the hub gate lets a floor-allowed call through without spending a class bu
   }
 });
 
-test("a floor policy that is disabled, or that omits a class from always_ask, never widens beyond what the policy already allowed", () => {
+test("with the floor on, every floor class asks whatever always_ask says; without it always_ask is the whole selector", () => {
   const disabled = gateRig({ floor: true, enabled: false }, facts());
-  expect(disabled.gate(call("git push --force origin main"), "s1")).toBeUndefined();     // a disabled policy asks nothing, as before
-  const narrow = gateRig({ floor: true, always_ask: ["destroy"] }, facts());
-  expect(narrow.gate(call("git push --force origin main"), "s1")).toBeUndefined();       // publish is not in always_ask: unchanged by the floor
-  expect(narrow.gate(call("rm -rf ../x"), "s1")?.title).toContain("Action approval (destroy)");
+  expect(disabled.gate(call("git push --force origin main"), "s1")).toBeUndefined();     // a disabled policy asks nothing, floor or not, as before
+  // A coarse always_ask can no longer hand the floor's own classes back: publish, external-write and destroy ask even when always_ask omits them.
+  const narrow = gateRig({ floor: true, always_ask: ["install"] }, facts());
+  for (const [command, klass] of [["git push --force origin feat/x", "publish"], ["git push origin main", "publish"], ["gh release create v1", "publish"], ["npm publish", "publish"],
+    ["gh pr merge 3 --admin", "external-write"], ["gh issue create --title a", "external-write"], ["rm -rf ../x", "destroy"]] as const)
+    expect(narrow.gate(call(command), "s1")?.title, command).toContain(`Action approval (${klass})`);
+  expect(narrow.gate(call("git push origin feat/x"), "s1")).toBeUndefined();            // the floor still lets the ordinary push through
+  expect(narrow.gate(call("npm install -g left-pad"), "s1")?.title).toContain("Action approval (install)");
+  expect(askedClasses(actionPolicyConfig({ floor: true, always_ask: [] }))).toEqual(["publish", "external-write", "destroy"]);
+  expect(askedClasses(actionPolicyConfig({ floor: true, enabled: false }))).toEqual([]);
+  // without the floor the selector is exactly always_ask, as before
+  const plain = gateRig({ always_ask: ["destroy"] }, facts());
+  expect(plain.gate(call("git push --force origin main"), "s1")).toBeUndefined();
+  expect(plain.gate(call("rm -rf ../x"), "s1")?.title).toContain("Action approval (destroy)");
+  expect(askedClasses(actionPolicyConfig({ floor: false, always_ask: ["destroy"] }))).toEqual(["destroy"]);
+  expect(new ActionBudgets(() => actionPolicyConfig({ floor: true, always_ask: [] }), () => "s1").status("p", true).alwaysAsk).toEqual(["publish", "external-write", "destroy"]);
+  expect(claudeActionClasses(new ActionBudgets(() => actionPolicyConfig({ floor: true, always_ask: [] }), () => "s1"), "Bash", { command: "git push --force origin feat/x" }, root, facts())).toEqual(["publish"]);
+});
+
+test("a qualified branch source is judged as a branch, and a bare ref-typed or tag source is not", () => {
+  expect(classes("git push origin refs/heads/feat/x:feat/y")).toEqual([]);
+  expect(classes("git push origin refs/heads/feat/x:refs/heads/feat/y")).toEqual([]);
+  expect(classes("git push origin refs/heads/main:feat/y")).toEqual(["publish"]);        // the default branch as a source is still a plain branch: pushing main's commits to a feature branch writes only that branch
+  expect(classes("git push origin refs/tags/v1:feat/y")).toEqual(["publish"]);
+  expect(classes("git push origin feat/x:feat/y", facts({ refIsTag: name => name === "feat/x" }))).toEqual(["publish"]);   // a bare source that is also a local tag is ambiguous
+});
+
+test("an unqualified gh call asks for a peer whose environment the hub cannot see, and an explicit own selector still runs", () => {
+  for (const ghDefaultIsOwn of [() => false, undefined] as Array<FloorFacts["ghDefaultIsOwn"]>) {
+    expect(classes("gh pr comment 3 --body hi", facts({ ghDefaultIsOwn }))).toEqual(["external-write"]);
+    expect(classes("gh pr comment 3 -R acme/app --body hi", facts({ ghDefaultIsOwn }))).toEqual([]);
+    expect(classes("gh pr merge https://github.com/acme/app/pull/3 --squash", facts({ ghDefaultIsOwn }))).toEqual([]);
+  }
 });
 
 test("the Claude hook names no class for a floor-allowed call and still names the rest", () => {

@@ -3932,18 +3932,23 @@ export async function startDaemon(opts: DaemonOptions) {
         } catch { return undefined; }
       },
       refIsTag: (name, cwd) => { const found = floorGit(cwd, ["rev-parse", "-q", "--verify", `refs/tags/${name}`]); return found === undefined || found.status === null ? undefined : found.status === 0 ? true : found.status === 1 ? false : undefined; },
-      // The effective push destination, not the fetch URL: pushurl and url.<base>.pushInsteadOf can send `git push origin` to another repository, and push.followTags,
-      // push.pushOption, push.recurseSubmodules and a remote.origin.push or mirror setting add refs, tags or submodule pushes to a plain branch push. Any of them present, or any read that fails, is not proof.
+      // The effective push destinations, not the fetch URL: pushurl and url.<base>.pushInsteadOf can send `git push origin` to another repository, and push.followTags,
+      // push.pushOption, push.recurseSubmodules and a remote.origin.push or mirror setting add refs, tags or submodule pushes to a plain branch push. `--all` because a remote can have several push
+      // URLs and git pushes to every one of them: each must name the project's own repository. Any of those settings present, or any read that fails, is not proof.
       pushIsOwn: cwd => {
         const added = floorGit(cwd, ["config", "--get-regexp", "^(push\\.(followtags|pushoption|recursesubmodules)|remote\\.origin\\.(push|mirror|pushurl))$"]);
         if (added === undefined || added.status !== 1) return added?.status === 0 ? false : undefined;
-        const url = floorGit(cwd, ["remote", "get-url", "--push", "origin"]);
-        if (url === undefined || url.status !== 0 || typeof url.stdout !== "string") return undefined;
-        return !!shellProjectRepository && githubRemoteRepository(url.stdout.trim()) === shellProjectRepository;
+        const urls = floorGit(cwd, ["remote", "get-url", "--push", "--all", "origin"]);
+        if (urls === undefined || urls.status !== 0 || typeof urls.stdout !== "string") return undefined;
+        const lines = urls.stdout.split("\n").map(line => line.trim()).filter(Boolean);
+        return !!shellProjectRepository && lines.length > 0 && lines.every(line => githubRemoteRepository(line) === shellProjectRepository);
       },
-      // gh's default repository: only origin, no `gh repo set-default` marker naming another repository, and no GH_REPO or GH_HOST in the hub's own environment. The environment of
-      // a native agent's own process is not visible to the hub, so for those peers the residual is the person's (docs/security.md).
+      // gh's default repository. A peer whose commands the hub builds the environment for (Pi and the local worker: `trust.hubSandboxed`) is judged on the facts the hub can read: only origin, no
+      // `gh repo set-default` marker naming another repository, no GH_REPO, GH_HOST or GH_ENTERPRISE_TOKEN in the hub's own environment. For every other peer (Claude, Codex, Kimi, Qwen, Jcode, agy)
+      // the hub cannot see the environment its shell runs in, and a GH_REPO exported there would redirect an unqualified call: such a call is never proven own, so it asks (foreign-repo-write)
+      // and only an explicit own `--repo`, `-R` or pull request URL runs.
       ghDefaultIsOwn: cwd => {
+        if (definitionOf(peer)?.trust.hubSandboxed !== true) return false;
         if (process.env.GH_REPO || process.env.GH_HOST || process.env.GH_ENTERPRISE_TOKEN) return false;
         const remotes = floorGit(cwd, ["remote"]);
         if (remotes === undefined || remotes.status !== 0 || typeof remotes.stdout !== "string" || remotes.stdout.trim() !== "origin") return remotes?.status === 0 ? false : undefined;
@@ -7396,8 +7401,9 @@ export async function startDaemon(opts: DaemonOptions) {
         } catch { return "project autonomy compatibility is unknown; configuration could not be read"; }
         if (needsAutonomy) return "target lacks project_autonomy; project preset metadata and retained mode consent require a supporting daemon";
       }
-      // #999 T3: a target without the floor key rejects `action_policy.floor` as an unknown key, so the project would fail to load there. Only a policy that sets it needs the feature.
-      if (config.action_policy?.floor === true && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("action_policy_floor"))) return "target lacks action_policy_floor; the project's action_policy.floor cannot be loaded by that daemon";
+      // #999 T3: a target without the floor key rejects `action_policy.floor` as an unknown key, so the project would fail to load there. The check is the key's presence in the project's file, true or false:
+      // `floor: false` is just as unknown to an older target, and a disabled policy still names it.
+      if (config.action_policy?.floor !== undefined && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("action_policy_floor"))) return "target lacks action_policy_floor; the project's action_policy.floor cannot be loaded by that daemon";
       return undefined;
     };
     const checkTarget = msg.op === "prepare" || msg.op === "commit" || msg.op === "inspect" && msg.targetFeatures !== undefined;

@@ -271,8 +271,9 @@ the strict case: until the default branch is read, a failed read, a directory th
 is not provably the project's own checkout (a nested clone has another `origin`), a
 wrapper the classifier cannot read, `-c`, `--git-dir`, an expansion or an unplaceable
 `cd` all keep the call asking. The flag is the only switch: facts alone never widen
-a policy that did not set it, and a disabled policy or a class left out of
-`always_ask` is unchanged. It affects approval prompts only: the sandbox, deny
+a policy that did not set it, and a disabled policy is unchanged. With the floor on,
+`publish`, `external-write` and `destroy` ask whatever `always_ask` says, so a coarse
+selector cannot hand them back. It affects approval prompts only: the sandbox, deny
 list, PII rule, path guard and trust checks do not change. The hub enforces the
 floor only where it sees the call first. For Codex in `never-ask`, Kimi in `auto`,
 Jcode and a Claude session without the hub hook it cannot, and the floor rests on
@@ -281,7 +282,7 @@ release only through `ahub sdlc authorize-release` and the OIDC tag workflow, th
 peer's native sandbox): `ahub status` names them on that peer's row and says they
 are not verified, never that they hold. A missing guard, such as an unprotected
 default branch, is the person's to find and report. The floor also reads, per call, the
-checkout's effective push destination (`remote.origin.pushurl`, `url.*.pushInsteadOf`),
+checkout's effective push destinations (`remote.origin.pushurl`, `url.*.pushInsteadOf`, every URL),
 the settings that add refs to a push (`push.followTags`, `push.pushOption`,
 `push.recurseSubmodules`, `remote.origin.push`, `remote.origin.mirror`) and gh's default
 repository (`gh repo set-default`, a second remote), and a call it cannot prove is
@@ -289,10 +290,11 @@ ordinary asks. A wrapper takes the floor away from a shell it wraps, and a comma
 on the same line that can change those facts ends the floor for the rest of the line.
 What it cannot see: the environment of a native agent's own process. The hub reads its own
 `GH_REPO` and `GH_HOST`, but a `GH_REPO` exported in a Claude, Codex or Kimi shell never
-reaches the hub, so for those peers an unqualified `gh pr` comment can still reach the
-repository that variable names. The local worker and Pi run commands in a fixed
-environment the hub builds, so they do not have this gap. Name the repository
-(`gh pr ... --repo owner/name`) or keep `GH_REPO` unset where the floor is on.
+reaches the hub. So for every peer whose environment the hub does not build (Claude,
+Codex, Kimi, Qwen, Jcode, agy) an unqualified `gh pr` call is never treated as the
+project's own and asks; only an explicit own `--repo`, `-R` or pull request URL runs.
+The local worker and Pi run commands in an environment the hub builds, so for them the
+unqualified call is judged on the facts the hub can read.
 
 The `gh` classes (#636, #756, #762). `publish`: `gh release create|upload|edit|delete`.
 `external-write`: `gh issue|pr|gist create|comment|edit|close|reopen|merge|review|delete`,

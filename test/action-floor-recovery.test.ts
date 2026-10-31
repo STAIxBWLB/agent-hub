@@ -54,8 +54,16 @@ test("a target that has the feature is accepted for a floor project", async () =
   } finally { await f.close(); }
 }, 20_000);
 
-test("without the floor no target needs the feature: absent, false and an unrelated policy are unchanged", async () => {
-  for (const policy of [undefined, {}, { floor: false }, { budgets: { publish: 2 } }, { enabled: false }]) {
+test("a floor policy that names the key at all refuses a target without the feature, true or false, enabled or not", async () => {
+  for (const policy of [{ floor: false }, { floor: false, enabled: false }, { floor: true }]) {
+    const f = await fixture(policy);
+    try { expect(await request(f, "inspect", f.withoutFloor), JSON.stringify(policy)).toMatchObject({ ok: false, error: expect.stringContaining("target lacks action_policy_floor") }); }
+    finally { await f.close(); }
+  }
+}, 40_000);
+
+test("without the key no target needs the feature: absent and unrelated policies are unchanged", async () => {
+  for (const policy of [undefined, {}, { budgets: { publish: 2 } }, { enabled: false }]) {
     const f = await fixture(policy);
     try {
       const reply = await request(f, "inspect", f.withoutFloor);

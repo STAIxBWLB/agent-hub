@@ -151,6 +151,8 @@ test("real git configuration that redirects or widens a push keeps it asking, an
     ["push.pushOption", () => set("push.pushOption", "ci.skip"), () => unset("push.pushOption")],
     ["remote.origin.push refspec", () => set("remote.origin.push", "refs/heads/main:refs/heads/main"), () => unset("remote.origin.push")],
     ["remote.origin.mirror", () => set("remote.origin.mirror", "true"), () => unset("remote.origin.mirror")],
+    // a remote can have several push URLs and git pushes to every one: a second URL that is another repository must ask even when the first is the project's
+    ["a second push URL on another repository", () => { set("remote.origin.pushurl", "https://github.com/acme/app.git"); set("--add", "remote.origin.pushurl", "https://github.com/other/app.git"); }, () => unset("remote.origin.pushurl")],
   ];
   for (const [i, [name, apply, undo]] of cases.entries()) {
     apply();
@@ -159,6 +161,10 @@ test("real git configuration that redirects or widens a push keeps it asking, an
     expect(out.title, name).toContain("Action approval (publish");
     undo();
   }
+  // a qualified tag source is the ref it names, and must ask (it used to be probed as a branch called refs/tags/<name>)
+  git(r.cwd, "tag", "-a", "v7", "-m", "v7");
+  expect(await run("git push origin refs/tags/v7:feat/x", "c-qtag")).toMatchObject({ asked: true, ran: false });
+  expect(await run("git push origin refs/heads/feat/x:feat/y", "c-qbranch")).toMatchObject({ asked: false, ran: true });
   expect(await run("git push origin feat/x", "c-after")).toMatchObject({ asked: false, ran: true });             // the configuration is read per call, so undoing it restores the floor
 }, 90_000);
 

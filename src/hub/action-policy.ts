@@ -1,8 +1,8 @@
 import { ACTION_CLASSES, type ActionClass } from "./action-class.ts";
 import { sanitize } from "./envelope.ts";
 
-/** `floor` (#999 T3) lets ordinary branch pushes and own-repository pull requests run without asking. It is present only when true, so a policy without it is byte-identical to before. */
-export interface ActionPolicyConfig { enabled: boolean; always_ask: ActionClass[]; budgets: Record<ActionClass, number>; floor?: true }
+/** `floor` (#999 T3) lets ordinary branch pushes and own-repository pull requests run without asking. It is kept when present, true or false, so a recovery can tell that the project's file names the key at all. */
+export interface ActionPolicyConfig { enabled: boolean; always_ask: ActionClass[]; budgets: Record<ActionClass, number>; floor?: boolean }
 const DEFAULT_BUDGETS: Record<ActionClass, number> = { publish: 1, destroy: 3, "external-write": 5, install: 2 };
 /** Defaults are host policy; overrides belong only in untracked config.local.json.
  * ponytail: startup adopts that local policy without a retained person confirmation.
@@ -26,7 +26,15 @@ export function actionPolicyConfig(value?: unknown): ActionPolicyConfig {
       budgets[key as ActionClass] = amount;
     }
   }
-  return { enabled: raw.enabled ?? true, always_ask: [...classes], budgets, ...(raw.floor === true ? { floor: true } : {}) } as ActionPolicyConfig;
+  return { enabled: raw.enabled ?? true, always_ask: [...classes], budgets, ...(raw.floor !== undefined ? { floor: raw.floor } : {}) } as ActionPolicyConfig;
+}
+
+/** The classes the floor never lets always_ask drop: with the floor on, release-grade, destructive and foreign-write calls ask whatever the coarse selector says. */
+export const FLOOR_ASKED: readonly ActionClass[] = Object.freeze(["publish", "external-write", "destroy"] as const);
+/** The classes that ask under this policy: always_ask, plus every floor class while the floor is on. A disabled policy asks none. */
+export function askedClasses(config: ActionPolicyConfig): ActionClass[] {
+  if (!config.enabled) return [];
+  return ACTION_CLASSES.filter(key => config.always_ask.includes(key) || config.floor === true && FLOOR_ASKED.includes(key));
 }
 
 /**
@@ -78,8 +86,8 @@ export class ActionBudgets {
     return config.enabled && config.floor === true;
   }
   private selected(actions: readonly ActionClass[]): ActionClass[] {
-    const config = actionPolicyConfig(this.config());
-    return config.enabled ? ACTION_CLASSES.filter(key => actions.includes(key) && config.always_ask.includes(key)) : [];
+    const asked = askedClasses(actionPolicyConfig(this.config()));
+    return ACTION_CLASSES.filter(key => actions.includes(key) && asked.includes(key));
   }
   /** A budget decision consumes every selected class atomically; native never grants permission. */
   request(handle: ActionSessionBudget | undefined, actions: readonly ActionClass[]): ActionDecision {
@@ -124,7 +132,7 @@ export class ActionBudgets {
     const floor = config.enabled && config.floor === true;
     // Where the hub cannot see a call first, the floor rests on guards outside it: say which, and that the hub has not verified them.
     const rests = floor && !enforced ? `; floor on: ${floorGuardText()} rest on structural guards the hub has not verified` : floor ? "; floor on: ordinary branch pushes and own-repository pull requests do not ask" : "";
-    return { enabled: config.enabled, alwaysAsk: [...config.always_ask], limits: { ...config.budgets }, remaining: bound ? { ...state.remaining } : empty(), sessionBound: bound,
+    return { enabled: config.enabled, alwaysAsk: askedClasses({ ...config, enabled: true }), limits: { ...config.budgets }, remaining: bound ? { ...state.remaining } : empty(), sessionBound: bound,
       ...(config.floor === true ? { floor: true, ...(floor && !enforced ? { floorGuards: FLOOR_GUARDS.map(entry => ({ ...entry })) } : {}) } : {}),
       enforceable: enforced, note: (!enforced ? `always-ask not enforceable: ${reason}${config.enabled ? "" : "; policy disabled"}` : config.enabled ? "always-ask active" : "always-ask disabled") + rests + attention };
   }
