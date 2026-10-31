@@ -10009,9 +10009,9 @@ var init_research = __esm(() => {
       "claims"
     ],
     role_text: {
-      planner: "planner: propose one outcome per task with its class, paths and dependencies; name sections, sources and claim ids before collection or writing. For a multi-unit study use hub_study_draft/hub_study_revise (drafts only; the person approves with ahub study approve) and read hub_study_show.",
-      implementer: "implementer: accept your assigned task or claim it with a bounded plan of paths, sections, sources and claims. Finish with changed deliverables, provenance, checks and unknowns; decline work beyond scope. On a study unit finish with hub_study_handoff covering every source the unit names, or insufficientEvidence with a reason.",
-      verifier: "verifier: check every named claim against its sources and label it supported, unsupported or unclear. Model judgment is advisory; a person or deterministic check decides whether verification passes. Read a study with hub_study_show.",
+      planner: "planner: propose one outcome per task with its class, paths and dependencies; name sections, sources and claim ids before collection or writing.",
+      implementer: "implementer: accept your assigned task or claim it with a bounded plan of paths, sections, sources and claims. Finish with changed deliverables, provenance, checks and unknowns; decline work beyond scope.",
+      verifier: "verifier: check every named claim against its sources and label it supported, unsupported or unclear. Model judgment is advisory; a person or deterministic check decides whether verification passes.",
       reviewer: "reviewer: read the deliverable and its sources, assess scope, provenance and unsupported claims, then use hub_review with a concrete disposition."
     },
     catalog_roles: {
@@ -10328,7 +10328,6 @@ Question, hypotheses, source/sample rules, outcomes and study limitations.
 
 ## Hub use
 Use the existing task flow for your assigned role. Name paths and evidence refs in the plan and completion summary. Report unknown or unrun checks explicitly.
-When the work is a multi-unit study, draft it with hub_study_draft (and hub_study_revise with the revision you read) on an approved parent task: question, scope, sources, one unit per source or perspective, a stop policy and an optional budget. A draft creates nothing and dispatches nothing. Only the person approves it with \`ahub study approve\`; never ask another agent to. Read progress with hub_study_show.
 
 ## Review duties
 Check that the design can distinguish the claim from plausible alternatives.
@@ -10359,7 +10358,6 @@ Source ids, inclusion rules, provenance and a supported/unsupported claim map.
 
 ## Hub use
 Use the existing task flow for your assigned role. Name paths and evidence refs in the plan and completion summary. Report unknown or unrun checks explicitly.
-When your task is a study unit, record your handoff with hub_study_handoff before you finish: evidence per source you actually read, what stays unresolved, contradictions between sources and limitations. Cover every source the unit names, or say \`insufficientEvidence\` with the reason. A task that is done is not a handoff, and an incomplete handoff does not close a round. Check coverage with hub_study_show.
 
 ## Review duties
 Check source independence, scope, dates and whether conclusions exceed evidence.
@@ -10390,7 +10388,6 @@ Input/output hashes, methods, rerun instructions and limitations.
 
 ## Hub use
 Use the existing task flow for your assigned role. Name paths and evidence refs in the plan and completion summary. Report unknown or unrun checks explicitly.
-When your task is a study unit, finish it with hub_study_handoff: one evidence entry per source with a short locator, plus unresolved, contradictions and limitations. A unit that must read several sources is complete only when its handoff covers all of them. hub_study_show says what the hub counts as covered.
 
 ## Review duties
 Check data assumptions, transformations, missingness and reproducibility.
@@ -10421,7 +10418,6 @@ Estimands, design checks, intervals and failed/unknown assumptions.
 
 ## Hub use
 Use the existing task flow for your assigned role. Name paths and evidence refs in the plan and completion summary. Report unknown or unrun checks explicitly.
-When a study has a budget or several rounds, read hub_study_show before advising: it names each unit's coverage, its handoff, whether a follow-up round is allowed yet and why dispatch is held. Do not advise a follow-up before the discovery round has stored handoffs.
 
 ## Review duties
 Check sampling, comparisons, multiple testing and the difference between association and causation.
@@ -10452,7 +10448,6 @@ Claim ids labelled supported, unsupported or unclear with evidence references.
 
 ## Hub use
 Use the existing task flow for your assigned role. Name paths and evidence refs in the plan and completion summary. Report unknown or unrun checks explicitly.
-When the work is a study unit, check each claim against the sources the handoff names and say which are unsupported. Record your own check with hub_study_handoff only if you own a unit; otherwise read with hub_study_show and report in your verdict.
 
 ## Review duties
 Check quotes, context, dates, independence and conflicting evidence.
@@ -12104,7 +12099,7 @@ var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_
   name,
   description,
   inputSchema: { type: "object", properties, required, additionalProperties: false }
-}), STUDY_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
+}), BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
 var init_hub_tools = __esm(() => {
   init_test_integrity();
   init_sdlc();
@@ -12112,7 +12107,7 @@ var init_hub_tools = __esm(() => {
   init_roles();
   init_registry();
   init_envelope();
-  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_study_handoff"]);
+  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request"]);
   IMPLEMENTER_PERMISSION_TOOL = {
     name: "hub_permission_request",
     description: "Native permission prompt for this current owned child. The person allows once or denies; failure is deny.",
@@ -12166,7 +12161,6 @@ var init_hub_tools = __esm(() => {
     additionalProperties: false
   };
   acceptPlan = { ...plan, properties: { ...plan.properties, sections: list("document heading anchors, such as report.md#methods"), sources: list("citation ids, DOI or source URL ids"), claims: list("short claim ids to verify") } };
-  STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_study_handoff"]);
   BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
   CAPABILITY_TOOLS = new Set(["hub_capabilities", "hub_capabilities_publish", "hub_invoke"]);
   TASK_TOOLS = [
@@ -12180,10 +12174,6 @@ var init_hub_tools = __esm(() => {
     tool2("hub_backlog_pull", "Reserve a WIP slot and pull ready unpinned backlog work into To Do at its current revision. Preserves person order/reservations and frozen scope; pending unowned work can be undone with hub_backlog_undo.", { id: id2, revision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["id", "revision", "reason"]),
     tool2("hub_backlog_split", "Split unstarted backlog work into two to eight staged parts. The original card retains integration/acceptance and depends on the children. Use after for existing prerequisite ids and afterParts for earlier zero-based part indexes. Latest unused unchanged children can be undone with hub_backlog_undo.", { id: id2, revision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 1000 }, parts: { type: "array", minItems: 2, maxItems: 8, items: { type: "object", properties: { title: { type: "string", minLength: 1, maxLength: 300 }, detail: { type: "string", maxLength: 8000 }, class: str2, refs, plan, after: { type: "array", maxItems: 64, uniqueItems: true, items: { type: "integer", minimum: 1 } }, afterParts: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "integer", minimum: 0 } } }, required: ["title"], additionalProperties: false } } }, ["id", "revision", "reason", "parts"]),
     tool2("hub_backlog_undo", "Undo your latest planning change at its current revision. Refuses intervening changes and another actor's edit.", { id: id2, revision: { type: "integer", minimum: 1 } }, ["id", "revision"]),
-    tool2("hub_study_draft", "Store a research campaign contract as a DRAFT revision 1 on an approved parent task. Configured planners only; it creates no task, dispatches nothing and never approves (only the person approves, with ahub study approve). The contract is data: question, scope, exclusions, sourceIds, units, deliverableSections, stopPolicy and an optional budget.", { parentTaskId: id2, contract: { type: "object" } }, ["parentTaskId", "contract"]),
-    tool2("hub_study_revise", "Store the next DRAFT revision of a research campaign with the revision you read. Configured planners only; a stale revision refuses, and a draft holds older bound work until the person approves it. Never approves.", { id: str2, revision: { type: "integer", minimum: 1 }, contract: { type: "object" } }, ["id", "revision", "contract"]),
-    tool2("hub_study_show", "Read a research campaign's coverage and stop projection: per unit round, state, handoff completeness and budget support, and why dispatch is held. Read-only. A private campaign, task or source shows ids, counts and states only, never its question, scope, path or excerpt. Give no id to list this project's campaigns.", { id: str2 }),
-    tool2("hub_study_handoff", "Record the handoff for the research unit you currently own and have in progress: evidence per source, unresolved questions, contradictions and limitations, or insufficientEvidence. Only the bound owner; every required field must be present. Not a task completion.", { handoff: { type: "object" } }, ["handoff"]),
     tool2("hub_release_new", "Create a future release planning row. Planner/person only; no activation, publish or release authorization.", { name: { type: "string", minLength: 1, maxLength: 64 }, goal: { type: "string", minLength: 1, maxLength: 1000 }, order: { type: "integer", minimum: 0 } }, ["name", "goal", "order"]),
     tool2("hub_release_report", "Read a planned release's task readiness and recorded metrics. Planner/person only. A due date never waives unfinished scope.", { id: id2 }, ["id"]),
     tool2("hub_release_assign", "Assign or move only a task's release, retaining its execution state and owner. Planner/person only; requires a reason and current planning revision. Frozen scope refuses.", { id: id2, revision: { type: "integer", minimum: 0 }, release: { type: ["integer", "null"], minimum: 1 }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["id", "revision", "release", "reason"]),
@@ -12241,7 +12231,7 @@ var init_hub_tools = __esm(() => {
     tool2("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str2 }, ["peer"])
   ];
   CONDUCTOR_TOOL_NAMES = new Set(CONDUCTOR_TOOLS.map((t) => t.name));
-  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
   ROLE_TEXT = {
     conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses.",
     planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.",
@@ -23324,7 +23314,7 @@ var package_default = {
 var VERSION = package_default.version;
 
 // src/hub/no-writes.ts
-var OWNER_TOOL_EFFECTS = new Set(["hub_task_propose", "hub_task_decline", "hub_task_done", "hub_task_cancel", "hub_task_assign", "hub_task_escalate", "hub_review", "hub_checkpoint", "hub_remember", "hub_memory_correct", "hub_check_start", "hub_check_cancel", "hub_sdlc_record", "hub_plan_review", "hub_backlog_plan", "hub_backlog_pull", "hub_backlog_undo", "hub_backlog_split", "hub_backlog_return_untouched", "hub_release_new", "hub_release_configure", "hub_release_assign", "hub_release_cut", "hub_study_handoff"]);
+var OWNER_TOOL_EFFECTS = new Set(["hub_task_propose", "hub_task_decline", "hub_task_done", "hub_task_cancel", "hub_task_assign", "hub_task_escalate", "hub_review", "hub_checkpoint", "hub_remember", "hub_memory_correct", "hub_check_start", "hub_check_cancel", "hub_sdlc_record", "hub_plan_review", "hub_backlog_plan", "hub_backlog_pull", "hub_backlog_undo", "hub_backlog_split", "hub_backlog_return_untouched", "hub_release_new", "hub_release_configure", "hub_release_assign", "hub_release_cut"]);
 
 // src/hub/github-import.ts
 init_sdlc();
