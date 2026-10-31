@@ -809,12 +809,13 @@
       "environments": ["terminal", "orca", "headless"],
       "form": "any",
       "point": "settings-raise",
-      "asks": "Raising a setting (auto_pull, auto_reassign, permission defaults) needs a settings session (ahub ui --settings) or the person's own terminal. An ordinary dashboard session and the conductor cannot.",
+      "asks": "Raising tasks.auto_pull or a permission default needs a settings session (ahub ui --settings) or the person's own terminal. An ordinary dashboard session cannot. The configured conductor may set only thirteen live keys, which include task_sweep.enabled and task_sweep.auto_reassign but not tasks.auto_pull and no permission key.",
       "controlledBy": ["tasks.auto_pull", "task_sweep.auto_reassign", "permission_modes.<peer>"],
       "hubSeesBeforeRun": "not-applicable",
       "askedBy": "hub-console",
       "evidence": [
-        { "file": "src/hub/settings.ts", "needle": "can widen what agents do without asking" }
+        { "file": "src/hub/settings.ts", "needle": "can widen what agents do without asking" },
+        { "file": "docs/operations.md", "needle": "Only the thirteen existing live registry keys" }
       ]
     },
     {

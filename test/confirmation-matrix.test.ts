@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ADAPTERS } from "../src/adapters/registry.ts";
+import { ADAPTERS, START_MODE_PEERS } from "../src/adapters/registry.ts";
 import { SETTINGS } from "../src/hub/settings.ts";
+import { permissionDefaults } from "../src/hub/permission-mode.ts";
 import {
   catalogKinds, confirmationMatrix, evidenceProblems, MATRIX_ENVIRONMENTS, missingCoverage, REQUIRED_POINTS, rowsFor, validateConfirmationMatrix,
   type CatalogKind, type ConfirmationMatrix,
@@ -108,7 +109,38 @@ test("a key that claims to be a setting names a setting the registry has", () =>
   }
 });
 
-test("every key the preset will write is described: the five hub keys of the issue appear", () => {
+test("permission_modes.<peer> applies to exactly the kinds the real loader accepts", () => {
+  const accepted = ADAPTERS.map(definition => definition.kind).filter(kind => { try { permissionDefaults({ [kind]: "ask-when-needed" }); return true; } catch { return false; } });
+  const keys = confirmationMatrix().keys;
+  expect([...keys["permission_modes.<peer>"]!.appliesTo!].sort()).toEqual([...accepted].sort());
+  expect([...keys["permission.<peer>"]!.appliesTo!].sort()).toEqual([...accepted].sort());
+  // The same fact, from the matrix's own kinds block: a kind the loader refuses is not hub-mapped, and the reverse.
+  for (const [kind, facts] of Object.entries(confirmationMatrix().kinds)) expect(facts.hubMode === "unmanaged", kind).toBe(!accepted.includes(kind));
+});
+
+test("peers.<peer>.start_mode applies to exactly the registry's start-mode kinds, and the registered settings agree", () => {
+  const keys = confirmationMatrix().keys;
+  expect([...keys["peers.<peer>.start_mode"]!.appliesTo!].sort()).toEqual([...START_MODE_PEERS].sort());
+  for (const kind of START_MODE_PEERS) expect(SETTINGS.some(setting => setting.key === `peers.${kind}.start_mode`), kind).toBe(true);
+  for (const kind of Object.keys(confirmationMatrix().kinds)) if (!START_MODE_PEERS.includes(kind)) expect(SETTINGS.some(setting => setting.key === `peers.${kind}.start_mode`), kind).toBe(false);
+});
+
+test("a kind with no TUI form never has a tui-open row, and a kind the hub maps no mode for is never marked hub-seen on classed actions", () => {
+  for (const row of confirmationMatrix().rows.filter(entry => entry.point === "tui-open")) for (const kind of row.kinds) expect(confirmationMatrix().kinds[kind]!.forms.includes("tui"), `${row.id}: ${kind}`).toBe(true);
+  for (const row of confirmationMatrix().rows) for (const kind of row.kinds) {
+    const facts = confirmationMatrix().kinds[kind];
+    if (facts?.hubMode === "unmanaged" && row.point === "classed-action") expect(row.hubSeesBeforeRun, row.id).toBe("no");
+  }
+});
+
+test("the registered switches the issue names carry the risk the matrix claims", () => {
+  const byKey = new Map(SETTINGS.map(setting => [setting.key, setting]));
+  for (const key of ["tasks.auto_pull", "task_sweep.auto_reassign", "task_sweep.enabled"]) expect(byKey.get(key)?.risk, key).toBe("raises");
+  expect(byKey.get("tasks.auto_pull")?.applies).toBe("live");
+  expect(byKey.get("tasks.auto_pull")?.floor).toBe(false);
+});
+
+test("every key the preset will write is described: the hub keys of the issue appear", () => {
   const keys = Object.keys(confirmationMatrix().keys);
   for (const key of ["permission_modes.<peer>", "permission.<peer>", "action_policy", "tasks.auto_pull", "task_sweep.auto_reassign", "peers.<peer>.start_mode", "terminal.open"]) expect(keys).toContain(key);
 });
