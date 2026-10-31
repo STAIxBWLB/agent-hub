@@ -23305,7 +23305,8 @@ var package_default = {
   },
   exports: {
     "./adapter": "./src/adapters/public.ts",
-    "./conformance": "./src/adapters/conformance/index.ts"
+    "./conformance": "./src/adapters/conformance/index.ts",
+    "./ui-plugin": "./src/ui/plugin.ts"
   }
 };
 

@@ -37,6 +37,7 @@ import { offlineAutonomyStatus } from "./autonomy-offline.ts";
 import { autonomyHomeStatus, usedClaudeHomes } from "./autonomy-homes.ts";
 import { discoverClaudeHomes } from "./claude-homes.ts";
 import { setupClaudeHomes } from "./setup-homes.ts";
+import { registerAconPlugin } from "./acon-register.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
 import { startPetWindow, closePetWindow } from "../pet/window.ts";
 import { loadPetConfig, savePetPalette } from "./pet-config.ts";
@@ -1025,6 +1026,9 @@ const commands: Record<string, () => Promise<void> | void> = {
         run: async (argv, env) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { stdio: "inherit", env, timeout: 30_000 }); recoveryLauncherCurrent?.(); return result.status ?? -1; },
       });
     } finally { registry.close(); rl?.close(); }
+    // #935: register the acon console plugin (acon reads it at its next start; no acon install is needed for this).
+    const acon = registerAconPlugin(hubHome(), join(root, "src", "ui", "plugin.ts"));
+    console.log("error" in acon ? `acon plugin not registered: ${acon.error}` : acon.changed ? `acon plugin registered: ${acon.path}` : `acon plugin up to date: ${acon.path}`);
     if (recoveryLauncherCurrent) recoveryLauncherCurrent();
     else await commands.doctor!();
   },

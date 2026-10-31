@@ -31,12 +31,9 @@ export const dashboardView = (value: unknown): typeof DASHBOARD_VIEWS[number] | 
 const LIMIT = 64;
 const secret = () => randomBytes(32).toString("hex");
 
-/** Separate browser surface. Only the authenticated control console may construct it and issue tickets. */
-export function startDashboard(options: DashboardOptions) {
-  const now = options.now ?? Date.now;
-  const tickets = new Map<string, { expires: number; settings: boolean; liveTest?: true }>();
-  const sessions = new Map<string, { expires: number; settingsUntil?: number; liveTest?: true }>();
-  // Inject the same pure public-board model used by the console before computing CSP hashes.
+/** The dashboard page with its shared models injected (#935 D2): `ahub ui` serves `html` inlined and hashed, unchanged; the acon
+ * plugin builds its panel from the same `styles` and `script` blocks and the `markup` of the body. */
+export function renderDashboard(): { html: string; styles: string[]; markup: string; script: string } {
   const html = readFileSync(new URL("../ui/index.html", import.meta.url), "utf8")
     .replace("/* BOARD_MODEL */", () => `const boardColumns = ${boardColumns.toString()}; const peerPalette = ${JSON.stringify(PEER_PALETTE)};`)
     .replace("/* ADAPTER_DISPLAY */", () => `const adapterDisplay = ${JSON.stringify(ADAPTER_DISPLAY)};`)
@@ -45,6 +42,18 @@ export function startDashboard(options: DashboardOptions) {
     .replace("/* PEER_START_RETRY_MS */", () => `const PEER_START_RETRY_MS = ${PEER_START_RETRY_MS};`)
     .replace("/* OFFICE_MODEL */", () => `const officeModel = ((OFFICE_PEER_ORDER) => ${officeModel.toString()})(${JSON.stringify(OFFICE_PEER_ORDER)});`)
     .replace("/* NEEDS_MODEL */", () => `const needs = ${needs.toString()};`);
+  const blocks = (tag: string) => [...html.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g"))].map((m) => m[1]!);
+  const body = /<body>([\s\S]*)<\/body>/.exec(html)?.[1] ?? "";
+  return { html, styles: blocks("style"), markup: body.replace(/<script>[\s\S]*?<\/script>/g, ""), script: blocks("script").join("\n") };
+}
+
+/** Separate browser surface. Only the authenticated control console may construct it and issue tickets. */
+export function startDashboard(options: DashboardOptions) {
+  const now = options.now ?? Date.now;
+  const tickets = new Map<string, { expires: number; settings: boolean; liveTest?: true }>();
+  const sessions = new Map<string, { expires: number; settingsUntil?: number; liveTest?: true }>();
+  // Inject the same pure public-board model used by the console before computing CSP hashes.
+  const { html } = renderDashboard();
   const hashes = (tag: string) => [...html.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g"))]
     .map((m) => `'sha256-${createHash("sha256").update(m[1]!).digest("base64")}'`).join(" ");
   const headers = {
