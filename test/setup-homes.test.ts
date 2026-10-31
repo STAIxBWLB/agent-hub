@@ -96,6 +96,14 @@ test("revoked recovery authority cannot write a profile hook after confirmation 
   }
 });
 
+test("non-interactive setup without yes fails instead of reporting a successful cancellation", async () => {
+  const f = fixture(); let asks = 0;
+  const ports = { ...f.ports, interactive: false, ask: async () => { asks++; return null; } };
+  await expect(setupClaudeHomes(ports)).rejects.toThrow("not a terminal");
+  expect(asks).toBe(0); expect(f.runs).toEqual([]);
+  for (const home of f.homes) expect(existsSync(join(home.path, "settings.json"))).toBe(false);
+});
+
 test("denying the single confirmation mutates no selected or unused home and never probes a missing home", async () => {
   const f = fixture(true), before = readFileSync(f.unusedSettings, "utf8");
   let asks = 0; f.ports.ask = async () => { asks++; return "n"; };
