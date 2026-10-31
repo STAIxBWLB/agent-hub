@@ -9,6 +9,7 @@ import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { USER } from "../src/hub/envelope.ts";
 import { campaignHash, parseResearchCampaign } from "../src/hub/research-campaign.ts";
 import { SourceRegistry } from "../src/hub/sources.ts";
+import { realPath } from "../src/hub/project.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
 
@@ -23,7 +24,7 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 const SECRET_QUESTION = "SECRET_QUESTION_CANARY which compound binds", SECRET_PATH = "/private/SECRET_PATH_CANARY/notes.txt";
 
 async function rig(options: { privateSource?: boolean; stateUnderProject?: boolean } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "ahub-study-cli-")), stateDir = options.stateUnderProject ? join(root, ".agenthub/state") : join(root, "state");
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-study-cli-"))), stateDir = options.stateUnderProject ? join(root, ".agenthub/state") : join(root, "state");
   mkdirSync(stateDir, { recursive: true }); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const envKeys = ["HOME", "CLAUDE_CONFIG_DIR", "AGENTHUB_HOME", "AMEM_HOME", "KIMI_CODE_HOME"] as const;
   const saved = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
