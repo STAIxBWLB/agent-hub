@@ -14,7 +14,7 @@ import type { SdlcReceipt } from "./sdlc.ts";
 import { parseReviewFindings, type ReviewFindingSet } from "./review-findings.ts";
 import { parseDeliverableRecords, type DeliverableRecord } from "./deliverables.ts";
 import type { CostPlan, ReviewCost } from "./cost-governance.ts";
-import { campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchUnit } from "./research-campaign.ts";
+import { campaignHash, parseResearchCampaign, parseResearchHandoff, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchUnit, type ResearchHandoffV1, type ResearchHandoffRecord } from "./research-campaign.ts";
 
 export interface ResearchCampaignRecord {
   id: string;
@@ -32,6 +32,8 @@ export interface ResearchCampaignRecord {
   closedBy?: PeerId;
   closedAt?: number;
   closedReason?: string;
+  dispatchVersion?: 1;
+  eligibleOwners?: string[];
 }
 export interface ResearchUnitBinding {
   campaignId: string;
@@ -54,6 +56,7 @@ interface ResearchCampaignRow {
   created_by: string; created_at: number; approved_by: string | null; approved_at: number | null;
   closed_by: string | null; closed_at: number | null; closed_reason: string | null;
 }
+interface ResearchHandoffRow { campaign_id: string; unit_id: string; seq: number; revision: number; task_id: number; body: string | null; by_peer: string; at: number; private: number }
 interface ResearchUnitRow { campaign_id: string; revision: number; unit_id: string; task_id: number; round: number; purpose: string; adopted: number }
 const RESEARCH_CAMPAIGN_SELECT = "SELECT id,project,parent_task_id,revision,status,CASE WHEN length(CAST(body AS BLOB)) <= 65536 THEN body END AS body,body_sha256,private,created_by,created_at,approved_by,approved_at,closed_by,closed_at,closed_reason FROM research_campaigns";
 const researchFailure = (): Error => new Error("research campaign state is invalid, changed or corrupt");
@@ -431,6 +434,13 @@ export class Board {
       campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, unit_id TEXT NOT NULL, task_id INTEGER NOT NULL,
       round INTEGER NOT NULL, purpose TEXT NOT NULL, adopted INTEGER NOT NULL, PRIMARY KEY(campaign_id,revision,unit_id))`);
     this.db.run("CREATE INDEX IF NOT EXISTS research_units_task ON research_units(task_id)");
+    this.db.run(`CREATE TABLE IF NOT EXISTS research_dispatch (
+      campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, version INTEGER NOT NULL, eligible_owners TEXT,
+      PRIMARY KEY(campaign_id,revision))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS research_handoffs (
+      campaign_id TEXT NOT NULL, unit_id TEXT NOT NULL, seq INTEGER NOT NULL, revision INTEGER NOT NULL,
+      task_id INTEGER NOT NULL, body TEXT NOT NULL, by_peer TEXT NOT NULL, at INTEGER NOT NULL, private INTEGER NOT NULL,
+      PRIMARY KEY(campaign_id,unit_id,seq))`);
 
   }
 
@@ -439,7 +449,19 @@ export class Board {
     const row = (revision === undefined
       ? this.db.query(`${RESEARCH_CAMPAIGN_SELECT} WHERE id=? ORDER BY revision DESC LIMIT 1`).get(id)
       : this.db.query(`${RESEARCH_CAMPAIGN_SELECT} WHERE id=? AND revision=?`).get(id, revision)) as ResearchCampaignRow | null;
-    return row ? researchCampaignFromRow(row) : undefined;
+    if (!row) return undefined;
+    const campaign = researchCampaignFromRow(row);
+    const dispatch = this.db.query("SELECT version,CASE WHEN length(CAST(eligible_owners AS BLOB))<=32768 OR eligible_owners IS NULL THEN eligible_owners ELSE '!' END AS eligible_owners FROM research_dispatch WHERE campaign_id=? AND revision=?")
+      .get(id, campaign.revision) as { version: number; eligible_owners: string | null } | null;
+    if (!dispatch) return campaign;
+    if (dispatch.version !== 1 || campaign.approvedBy === undefined) throw researchFailure();
+    let owners: string[] | undefined;
+    if (dispatch.eligible_owners !== null) {
+      try { owners = JSON.parse(dispatch.eligible_owners) as string[]; } catch { throw researchFailure(); }
+      if (!Array.isArray(owners) || owners.length < 1 || owners.length > 256 || owners.some(owner => !researchText(owner, 64) || !/^[a-z][a-z0-9_-]{0,63}$/.test(owner)) || new Set(owners).size !== owners.length) throw researchFailure();
+    }
+    if (!!campaign.contract.budget?.hardCap.length !== !!owners?.length) throw researchFailure();
+    return { ...campaign, dispatchVersion: 1, ...(owners ? { eligibleOwners: owners } : {}) };
   }
 
   private researchBindings(campaign: ResearchCampaignRecord): ResearchUnitBinding[] {
@@ -487,6 +509,84 @@ export class Board {
     return binding;
   }
 
+  /** Resolve lifetime membership against the latest revision; an omitted unit or a draft never inherits old dispatch approval. */
+  researchDispatchBinding(taskId: number): { campaign: ResearchCampaignRecord; binding?: ResearchUnitBinding } | undefined {
+    if (!researchInteger(taskId)) throw researchFailure();
+    const rows = this.db.query("SELECT DISTINCT campaign_id FROM research_units WHERE task_id=? ORDER BY campaign_id LIMIT 2").all(taskId) as { campaign_id: string }[];
+    if (!rows.length) return undefined;
+    if (rows.length !== 1) throw researchFailure();
+    const campaign = this.researchCampaign(rows[0]!.campaign_id);
+    if (!campaign) throw researchFailure();
+    const binding = this.researchBindings(campaign).find(unit => unit.taskId === taskId);
+    return { campaign, ...(binding ? { binding } : {}) };
+  }
+
+  private researchHandoffFromRow(row: ResearchHandoffRow): ResearchHandoffRecord {
+    try {
+      if (typeof row.body !== "string" || Buffer.byteLength(row.body, "utf8") > 65536 || !researchInteger(row.seq) || !researchInteger(row.at, 0) || !researchText(row.by_peer) || ![0, 1].includes(row.private)) throw researchFailure();
+      const handoff = parseResearchHandoff(JSON.parse(row.body)), campaign = this.researchCampaign(row.campaign_id, row.revision);
+      const unit = campaign?.contract.units.find(value => value.id === row.unit_id);
+      const binding = campaign && this.researchBindings(campaign).find(value => value.unitId === row.unit_id);
+      if (!campaign || !unit || !binding || handoff.campaignId !== row.campaign_id || handoff.revision !== row.revision || handoff.unitId !== row.unit_id || handoff.taskId !== row.task_id || binding.taskId !== row.task_id ||
+        handoff.evidence.some(entry => !unit.sourceIds.includes(entry.sourceId)) || handoff.contradictions.some(entry => entry.sourceIds.some(source => !unit.sourceIds.includes(source)))) throw researchFailure();
+      return { handoff, seq: row.seq, by: row.by_peer, at: row.at, private: row.private === 1 || campaign.private };
+    } catch { throw researchFailure(); }
+  }
+
+  /** At most one latest handoff per unit; history remains append-only and older stable-unit evidence survives a revision. */
+  researchHandoffs(campaignId: string, revision?: number): ResearchHandoffRecord[] {
+    const campaign = this.researchCampaign(campaignId, revision);
+    if (!campaign) return [];
+    const rows = this.db.query(`SELECT campaign_id,unit_id,seq,revision,task_id,
+      CASE WHEN length(CAST(body AS BLOB))<=65536 THEN body END AS body,by_peer,at,private
+      FROM research_handoffs AS h WHERE campaign_id=? AND revision<=? AND unit_id IN (${campaign.contract.units.map(() => "?").join(",")}) AND seq=(SELECT MAX(seq) FROM research_handoffs AS old WHERE old.campaign_id=h.campaign_id AND old.unit_id=h.unit_id AND old.revision<=?) ORDER BY unit_id LIMIT 33`)
+      .all(campaignId, campaign.revision, ...campaign.contract.units.map(unit => unit.id), campaign.revision) as ResearchHandoffRow[];
+    if (rows.length > 32) throw researchFailure();
+    return rows.map(row => this.researchHandoffFromRow(row)).filter(row => campaign.contract.units.some(unit => unit.id === row.handoff.unitId));
+  }
+
+  /** Caller authority/privacy screening belongs to Tasks; the transaction re-checks every persisted binding and ownership fact. */
+  recordResearchHandoff(input: ResearchHandoffV1, project: string, by: PeerId, at: number, expectedTaskFlow: number): ResearchHandoffRecord {
+    const handoff = parseResearchHandoff(input);
+    if (!researchText(project) || !researchText(by) || !researchInteger(at, 0) || !researchInteger(expectedTaskFlow, 0)) throw researchFailure();
+    return this.atomic(() => {
+      const current = this.researchDispatchBinding(handoff.taskId), campaign = current?.campaign, binding = current?.binding;
+      const task = this.get(handoff.taskId), unit = campaign?.contract.units.find(value => value.id === handoff.unitId);
+      if (!campaign || campaign.id !== handoff.campaignId || campaign.revision !== handoff.revision || campaign.status !== "approved" || campaign.project !== project || !binding || binding.unitId !== handoff.unitId || !unit ||
+        !task || task.owner !== by || task.state !== "in_progress" || task.history.length !== expectedTaskFlow ||
+        handoff.evidence.some(entry => !unit.sourceIds.includes(entry.sourceId)) || handoff.contradictions.some(entry => entry.sourceIds.some(source => !unit.sourceIds.includes(source)))) throw researchFailure();
+      const last = this.db.query("SELECT MAX(seq) AS seq FROM research_handoffs WHERE campaign_id=? AND unit_id=?").get(campaign.id, unit.id) as { seq: number | null };
+      const seq = (last.seq ?? 0) + 1;
+      if (!researchInteger(seq)) throw researchFailure();
+      const privateRecord = campaign.private || task.signals.some(signal => signal === "pii" || signal === "pii_path");
+      this.taskWrite(() => this.db.query("INSERT INTO research_handoffs(campaign_id,unit_id,seq,revision,task_id,body,by_peer,at,private) VALUES(?,?,?,?,?,?,?,?,?)")
+        .run(campaign.id, unit.id, seq, campaign.revision, task.id, JSON.stringify(handoff), by, at, privateRecord ? 1 : 0));
+      this.update(task.id, by, "study handoff", {}, `${campaign.id} revision ${campaign.revision}; evidence ${handoff.evidence.length}`, {}, expectedTaskFlow);
+      return { handoff, seq, by, at, private: privateRecord };
+    });
+  }
+
+  hasResearchDispatchState(): boolean {
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_campaigns) OR EXISTS(SELECT 1 FROM research_units) OR EXISTS(SELECT 1 FROM research_dispatch) OR EXISTS(SELECT 1 FROM research_handoffs) AS present").get() as { present: number }).present === 1;
+  }
+
+  researchDispatchIntegrity(): { activations: number; handoffs: number; digest: string } {
+    return this.db.transaction(() => {
+      const digest = createHash("sha256").update("agent-hub.research-dispatch-integrity/v1\n");
+      let activations = 0, handoffs = 0;
+      for (const row of this.db.query("SELECT campaign_id,revision,version,eligible_owners FROM research_dispatch ORDER BY campaign_id,revision").iterate() as Iterable<{ campaign_id: string; revision: number; version: number; eligible_owners: string | null }>) {
+        const campaign = this.researchCampaign(row.campaign_id, row.revision);
+        if (!campaign || campaign.dispatchVersion !== 1) throw researchFailure();
+        digest.update(JSON.stringify(row)).update("\n"); activations++;
+      }
+      for (const row of this.db.query("SELECT campaign_id,unit_id,seq,revision,task_id,CASE WHEN length(CAST(body AS BLOB))<=65536 THEN body END AS body,by_peer,at,private FROM research_handoffs ORDER BY campaign_id,unit_id,seq").iterate() as Iterable<ResearchHandoffRow>) {
+        const record = this.researchHandoffFromRow(row);
+        digest.update(JSON.stringify(record)).update("\n"); handoffs++;
+      }
+      return { activations, handoffs, digest: digest.digest("hex") };
+    })();
+  }
+
   /** Bodies are append-only; a new revision cannot change its project's or parent's identity or lower privacy. */
   saveResearchCampaignDraft(record: ResearchCampaignRecord, expectedLatest: number | undefined, expectedParentFlow: number): ResearchCampaignRecord {
     const checked = checkedResearchCampaign(record);
@@ -505,7 +605,7 @@ export class Board {
   }
 
   /** An approved replay recreates nothing; only monotone privacy tightening may write, without task history or approval changes. */
-  activateCampaign(id: string, revision: number, project: string, by: PeerId, at: number, prepared: readonly PreparedResearchUnit[], expectedParentFlow: number, privateRecord = false): { campaign: ResearchCampaignRecord; bindings: ResearchUnitBinding[]; children: Task[] } {
+  activateCampaign(id: string, revision: number, project: string, by: PeerId, at: number, prepared: readonly PreparedResearchUnit[], expectedParentFlow: number, privateRecord = false, dispatch?: { eligibleOwners?: readonly string[] }): { campaign: ResearchCampaignRecord; bindings: ResearchUnitBinding[]; children: Task[] } {
     if (!researchText(project) || !researchText(by) || !researchInteger(at, 0) || typeof privateRecord !== "boolean") throw researchFailure();
     return this.atomic(() => {
       const campaign = this.researchCampaign(id, revision);
@@ -515,6 +615,9 @@ export class Board {
         if (privateRecord && !campaign.private) this.taskWrite(() => this.db.query("UPDATE research_campaigns SET private=1 WHERE id=? AND revision=? AND private=0").run(id, revision));
         return { campaign: this.researchCampaign(id, revision)!, bindings, children: [] };
       }
+      const owners = dispatch?.eligibleOwners === undefined ? undefined : [...dispatch.eligibleOwners];
+      if (owners && (owners.length < 1 || owners.length > 256 || owners.some(owner => !researchText(owner, 64) || !/^[a-z][a-z0-9_-]{0,63}$/.test(owner)) || new Set(owners).size !== owners.length) ||
+        dispatch !== undefined && !!campaign.contract.budget?.hardCap.length !== !!owners?.length) throw researchFailure();
       const parent = this.get(campaign.parentTaskId), latest = this.researchCampaign(id);
       const activeRow = this.db.query("SELECT revision FROM research_campaigns WHERE id=? AND status='approved' LIMIT 1").get(id) as { revision: number } | null;
       const active = activeRow ? this.researchCampaign(id, activeRow.revision) : undefined;
@@ -572,6 +675,8 @@ export class Board {
       this.taskWrite(() => this.db.query("UPDATE research_campaigns SET status='superseded',private=MAX(private,?) WHERE id=? AND project=? AND status='approved'").run(isPrivate ? 1 : 0, id, project));
       this.taskWrite(() => this.db.query("UPDATE research_campaigns SET status='approved',approved_by=?,approved_at=?,private=? WHERE id=? AND revision=? AND status='draft'")
         .run(by, at, isPrivate ? 1 : 0, id, revision));
+      if (dispatch !== undefined) this.taskWrite(() => this.db.query("INSERT INTO research_dispatch(campaign_id,revision,version,eligible_owners) VALUES(?,?,1,?)")
+        .run(id, revision, owners === undefined ? null : JSON.stringify(owners)));
       const nextUnits = new Set(campaign.contract.units.map(unit => unit.id));
       const nextEdges = new Set(campaign.contract.units.flatMap(unit => unit.dependsOn.map(dependency => `${unit.id}:${dependency}`)));
       const omittedUnits = active?.contract.units.filter(unit => !nextUnits.has(unit.id)).length ?? 0;

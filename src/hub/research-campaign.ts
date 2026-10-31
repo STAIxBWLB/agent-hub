@@ -153,3 +153,111 @@ export function parseResearchCampaign(input: unknown): ResearchCampaignContract 
 export function campaignHash(contract: ResearchCampaignContract): string {
   return createHash("sha256").update(canonicalJson(parseResearchCampaign(contract))).digest("hex");
 }
+
+export interface ResearchHandoffV1 {
+  campaignId: string;
+  revision: number;
+  unitId: string;
+  taskId: number;
+  evidence: { sourceId: string; locator: string }[];
+  unresolved: string[];
+  contradictions: { sourceIds: string[]; note: string }[];
+  limitations: string[];
+  insufficientEvidence?: string;
+}
+export interface ResearchHandoffRecord {
+  handoff: ResearchHandoffV1;
+  seq: number;
+  by: string;
+  at: number;
+  private: boolean;
+}
+
+/** Required-field diagnostics are aggregate; no partially validated handoff is persisted. */
+export function parseResearchHandoff(input: unknown): ResearchHandoffV1 {
+  const required = ["campaignId", "revision", "unitId", "taskId", "evidence", "unresolved", "contradictions", "limitations"] as const;
+  const raw = record(input, [...required, "insufficientEvidence"], "handoff");
+  const missing = required.filter(key => raw[key] === undefined);
+  if (missing.length) fail("handoff", `missing required fields: ${missing.join(", ")}`);
+  if (typeof raw.campaignId !== "string" || !/^rc-[0-9a-f]{12}$/.test(raw.campaignId)) fail("handoff.campaignId", "expected a campaign id");
+  const shortList = (value: unknown, field: string) => list(value, 16, field).map((item, index) => text(item, SHORT, `${field}[${index}]`));
+  const value: ResearchHandoffV1 = {
+    campaignId: raw.campaignId,
+    revision: integer(raw.revision, 1, Number.MAX_SAFE_INTEGER, "handoff.revision"),
+    unitId: id(raw.unitId, "handoff.unitId"), taskId: integer(raw.taskId, 1, Number.MAX_SAFE_INTEGER, "handoff.taskId"),
+    evidence: list(raw.evidence, 64, "handoff.evidence").map((item, index) => {
+      const field = `handoff.evidence[${index}]`, entry = record(item, ["sourceId", "locator"], field);
+      return { sourceId: id(entry.sourceId, `${field}.sourceId`, true), locator: text(entry.locator, SHORT, `${field}.locator`) };
+    }),
+    unresolved: shortList(raw.unresolved, "handoff.unresolved"),
+    contradictions: list(raw.contradictions, 16, "handoff.contradictions").map((item, index) => {
+      const field = `handoff.contradictions[${index}]`, entry = record(item, ["sourceIds", "note"], field);
+      return { sourceIds: ids(entry.sourceIds, 16, `${field}.sourceIds`, true), note: text(entry.note, SHORT, `${field}.note`) };
+    }),
+    limitations: shortList(raw.limitations, "handoff.limitations"),
+    ...(raw.insufficientEvidence !== undefined ? { insufficientEvidence: text(raw.insufficientEvidence, SHORT, "handoff.insufficientEvidence") } : {}),
+  };
+  if (Buffer.byteLength(canonicalJson(value), "utf8") > BODY) fail("handoff", "stored body exceeds 64 KiB");
+  return value;
+}
+
+export type ResearchResource = NonNullable<ResearchCampaignContract["budget"]>["hardCap"][number];
+export type ResearchBudgetSupport = "enforceable" | "unknown" | "advisory" | "unavailable";
+export interface ResearchProjectionInput {
+  campaign: { id: string; revision: number; status: ResearchCampaignStatus; contract: ResearchCampaignContract };
+  bindings: readonly { unitId: string; taskId: number; round: number }[];
+  tasks: readonly { id: number; state: string; owner: string | null }[];
+  handoffs: readonly ResearchHandoffRecord[];
+  now: number;
+  budget?: { id: string; kind: "task" | "run"; taskId?: number; peers: readonly string[]; limits: Partial<Record<ResearchResource, number>>;
+    used?: Partial<Record<ResearchResource, number>>; coveredTaskIds: readonly number[] };
+  instrumentedPeers?: readonly string[];
+}
+export interface ResearchProjection {
+  id: string;
+  revision: number;
+  held: boolean;
+  reasons: string[];
+  sharedPeerLedger: boolean;
+  units: { unitId: string; round: number; taskId: number | null; state: string; purpose: ResearchUnit["purpose"];
+    intentionalIndependentCheck: boolean; sourceIds: string[]; duplicateSourceIds: string[];
+    handoff: { present: boolean; complete: boolean; insufficientEvidence: boolean; coveredSourceIds: string[] };
+    budget: Record<ResearchResource, { support: ResearchBudgetSupport; used: number | null; limit: number | null }> }[];
+  discoveryRounds: { round: number; complete: boolean }[];
+}
+
+/** Facts supplied by the host only; task completion never substitutes for source coverage. */
+export function studyProjection(input: ResearchProjectionInput): ResearchProjection {
+  const { campaign, now } = input, contract = campaign.contract;
+  const reasons: string[] = [];
+  if (campaign.status !== "approved") reasons.push("campaign approval is not current");
+  if (!Number.isFinite(now) || !Number.isFinite(Date.parse(contract.stopPolicy.deadline)) || now >= Date.parse(contract.stopPolicy.deadline)) reasons.push("campaign deadline has passed or is unknown");
+  if (contract.units.length > contract.stopPolicy.maxUnits || input.bindings.length > contract.stopPolicy.maxUnits) reasons.push("campaign unit limit exceeded");
+  if (input.bindings.some(binding => binding.round > contract.stopPolicy.maxFollowUpRounds)) reasons.push("campaign follow-up limit exceeded");
+  const assignments = new Map<string, number>();
+  for (const unit of contract.units) if (unit.purpose === "discovery") for (const source of unit.sourceIds) assignments.set(source, (assignments.get(source) ?? 0) + 1);
+  const units: ResearchProjection["units"] = contract.units.map(unit => {
+    const binding = input.bindings.find(value => value.unitId === unit.id), task = binding && input.tasks.find(value => value.id === binding.taskId);
+    const latest = binding && input.handoffs.filter(value => value.handoff.campaignId === campaign.id && value.handoff.unitId === unit.id && value.handoff.taskId === binding.taskId && value.handoff.revision <= campaign.revision).sort((a, b) => b.seq - a.seq)[0];
+    const covered = new Set(latest?.handoff.evidence.map(value => value.sourceId) ?? []), insufficientEvidence = !!latest?.handoff.insufficientEvidence;
+    const budget = Object.fromEntries(RESOURCES.map(resource => {
+      const ledger = input.budget, configured = contract.budget;
+      let support: ResearchBudgetSupport;
+      if (resource === "tokens" || resource === "model_calls" && contract.budget && input.budget?.id === contract.budget.id && input.budget.limits.tokens !== undefined) support = "unavailable";
+      else if (!configured || !task?.owner || !ledger || ledger.id !== configured.id) support = "unknown";
+      else if (!input.instrumentedPeers?.includes(task.owner)) support = "unavailable";
+      else if (!ledger.peers.includes(task.owner) || !ledger.coveredTaskIds.includes(task.id) || ledger.kind === "task" && ledger.taskId !== task.id || ledger.limits[resource] === undefined) support = "advisory";
+      else support = "enforceable";
+      const matching = configured && ledger?.id === configured.id;
+      return [resource, { support, used: matching ? ledger.used?.[resource] ?? null : null, limit: matching ? ledger.limits[resource] ?? null : null }];
+    })) as ResearchProjection["units"][number]["budget"];
+    return { unitId: unit.id, round: binding?.round ?? unit.round, taskId: binding?.taskId ?? null, state: task?.state ?? "unknown", purpose: unit.purpose,
+      intentionalIndependentCheck: unit.purpose === "independent_check", sourceIds: [...unit.sourceIds],
+      duplicateSourceIds: unit.purpose === "discovery" ? unit.sourceIds.filter(source => (assignments.get(source) ?? 0) > 1) : [],
+      handoff: { present: !!latest, complete: !!latest && unit.sourceIds.every(source => covered.has(source)), insufficientEvidence, coveredSourceIds: unit.sourceIds.filter(source => covered.has(source)) }, budget };
+  });
+  const discoveryRounds = [...new Set(units.filter(unit => unit.purpose === "discovery").map(unit => unit.round))].sort((a, b) => a - b)
+    .map(round => ({ round, complete: units.filter(unit => unit.round === round && unit.purpose === "discovery").every(unit => unit.handoff.complete || unit.handoff.insufficientEvidence) }));
+  return { id: campaign.id, revision: campaign.revision, held: reasons.length > 0, reasons,
+    sharedPeerLedger: !!contract.budget && input.budget?.id === contract.budget.id && input.budget.kind === "run", units, discoveryRounds };
+}

@@ -309,3 +309,11 @@ Each slice amends this spec in its own PR if it must differ, and updates `docs/d
 ## Out of scope
 
 #931 evidence links and claim judgment; executing, scheduling or provisioning experiments; a campaign-exclusive budget ledger; holiday calendars; new search, crawling or source providers; any third-party dependency.
+
+## T2 dispatch and coverage implementation boundary (#597)
+
+- `research_dispatch` is an additive recovery floor. Any stored campaign already carries stop policy intent, including a campaign activated before this slice. A target without the feature refuses while any campaign, dispatch activation or handoff exists. The base `research_records` floor remains required too. Dispatch metadata and handoff content have their own integrity digest when present.
+- The latest stored revision controls every offer, planner pull, owner change and acceptance. A newer draft holds older bound work until that draft is approved; a closed or omitted unit remains held. This gate never interrupts a native turn already running. A revision cannot reauthorize a changed unit definition without a new unit id.
+- Approval stores the instrumented eligible owner set for the named budget. Immediately before dispatch or an owner change, current membership, task scope and each required limit must still be proven for that same budget id. Another budget covering the task proves nothing. The existing peer-wide ledger is shared, never reset by campaign activation. Exhausted requested cells hold dispatch. A model-call cap alongside a token ceiling is unavailable because the existing meter cannot prove token usage; activation refuses it.
+- A complete handoff covers every source assigned to the unit; all required structural fields remain mandatory. `insufficientEvidence` is a separate way to settle a discovery unit. New round n+1 units require stored round-n discovery bindings and complete or insufficient-evidence handoffs for each. A proposed contract cannot supply its own completion evidence.
+- `Tasks.studyHandoff` accepts only the current in-progress bound owner and screens outside the transaction; stored ownership, revision, sources and flow are rechecked at the write. `Tasks.studyShow` exposes the pure projection and removes source identifiers from private views. Public tool and CLI wiring remains in #601.

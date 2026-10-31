@@ -91,6 +91,18 @@ export class ExecutionBudget {
     return this.scopes(taskIds, peer).length > 0;
   }
 
+  /** Capability comes from the resolved instance definition, never the peer's spelling. */
+  instrumented(peer: string): boolean { return definitionOf(peer, this.instances)?.budget?.instrumented === true; }
+
+  /** The named budget must cover this task and owner; another applicable budget proves nothing. */
+  covers(id: string, taskId: number, peer: string, resources: readonly ExecutionUnit[]): boolean {
+    if (!this.instrumented(peer) || !resources.every(unit => UNITS.has(unit) && unit !== "tokens")) return false;
+    const row = this.scopes([taskId], peer).find(row => row.id === id);
+    if (!row) return false;
+    const limits = fromRow(row).limits;
+    return resources.every(unit => limits[unit] !== undefined && !(unit === "model_calls" && limits.tokens !== undefined));
+  }
+
   private scopes(taskIds: number[], peer: string): BudgetRow[] {
     const ids = [...new Set(taskIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
     const taskRows = ids.length

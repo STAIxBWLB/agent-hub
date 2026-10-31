@@ -4286,7 +4286,8 @@ export async function startDaemon(opts: DaemonOptions) {
     });
     const budgetState = budget.persistedPauseDigestRows().sort((a, b) => a.peer.localeCompare(b.peer));
     const research = board.researchIntegrity();
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    const researchDispatch = board.researchDispatchIntegrity();
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -7448,6 +7449,8 @@ export async function startDaemon(opts: DaemonOptions) {
         // Raw presence matters even for a disabled or ignored shared declaration: an older target parses the unknown key first.
         if (namesRunners) return "target lacks research_records; the project's research.runners cannot be loaded by that daemon";
       }
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_dispatch")) && board.hasResearchDispatchState())
+        return "target lacks research_dispatch; persisted campaign stop policies and handoffs require a supporting daemon";
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("project_autonomy")) {
         let needsAutonomy = autonomyConfirmed.size > 0;
         try {
