@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Pin `@staix/agent-mem` 0.14.0 (was 0.13.0). The hub uses the library API and does not activate amem 0.14.0's opt-in v2 public prune view (`amem migrate --public-prune-view`), so hub recall, capture, briefs and existing homes are unchanged. 0.13.0 and earlier readers refuse an activated v2 home: upgrade every hub and `amem` CLI sharing a memory home to 0.14.0 before a person activates it.
+
 ## 0.23.0
 
 - Write and external invocations (#445 C3, task 180, #991): a shared `write` or `external` capability runs only for a caller's open non-PII task (`hub_invoke` `task`) and only after a person allows that one call; unattended hubs refuse before prompting, and `destructive` still never runs. The approval shows caller, target, capability, class, digest, task and the screened, sanitized arguments (200 characters per value, marked when cut); the previews stay on person permission surfaces and never reach audit, events or logs. Every admission gate is rechecked after the approval. The task history records an invocation's queued and terminal metadata without changing the task's state. Only a `read` may replay, at most once after a safe failure; an uncertain write or external outcome is held as `needs_review`, never retried. `hub_invoke` waits up to the approval window instead of the 30 s tool timeout, and a closed or cancelled call is withdrawn before it can be granted. Not live-verified (C4).
