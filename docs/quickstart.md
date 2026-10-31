@@ -32,7 +32,7 @@ terminal: it reviews the plan with you, applies it and follows it.
 
 ## Upgrading to 0.23.1
 
-The hub now exact-pins `@staix/agent-mem` 0.14.0, with no storage change for the hub. amem 0.14.0 adds an opt-in v2 public prune view (`amem migrate --public-prune-view`) that 0.13.0 and earlier readers refuse once it is activated: before a person activates it, upgrade every hub that shares the memory home to 0.23.1 or later (which bundles amem 0.14.0) and every global `amem` CLI to 0.14.0. Claude Code 2.1.314 joins the verified headless implementer versions (#996).
+The hub now exact-pins `@staix/agent-mem` 0.14.0, with no storage change for the hub. amem 0.14.0 adds an opt-in v2 public prune view (`amem migrate --public-prune-view`) that 0.13.0 and earlier readers refuse once it is activated: before a person activates it, upgrade every hub that shares the memory home to 0.23.1 or later (which bundles amem 0.14.0) and every global `amem` CLI to 0.14.0. Claude Code 2.1.314 joins the verified headless implementer versions (#996), Kimi Code 2.4.1 the fresh reviewer versions and Qwen Code 0.26.4 the ACP versions (#1002); the Qwen dual-output TUI stays on 0.26.1 and Codex 0.166.0 stays unverified (#997).
 
 ## Upgrading to 0.23.0
 
