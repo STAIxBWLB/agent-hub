@@ -375,6 +375,7 @@ export const GROOM_FYI_WINDOW_MS = 10 * 60_000;
  * PII handling, envelopes, briefs and memory notes are decided in one place.
  */
 /** #694: a PR staged at done with the commit or branch it was read for. */
+interface CompletionRefresh { revision: number; commit: string }
 interface IdentityLink { repo: string; pr: number; basis: { commit?: string; branch?: string } }
 
 /** What one live check of a task's files says as a whole (#317): `unchanged` only when EVERY file measured unchanged. A change outranks a missing file, which outranks one the hub could not read. */
@@ -4782,13 +4783,26 @@ export class Tasks {
   /** Whether a completion check is still running for this task. */
   isChecking = (id: number) => this.checking.has(id);
 
-  private completionCurrent(id: unknown, by: PeerId, preEffect: boolean): Task {
+  /** Invalidate stale artifact evidence without changing spec acceptance or open findings. */
+  private completionDraft(task: Task, refresh?: CompletionRefresh): Task {
+    if (!refresh || !task.sdlc) return task;
+    const sdlc = { ...task.sdlc };
+    if (sdlc.head !== refresh.commit) { delete sdlc.head; delete sdlc.observed; }
+    if (sdlc.reviewedHead !== refresh.commit) delete sdlc.reviewedHead;
+    if (sdlc.localHead !== refresh.commit) { delete sdlc.localHead; delete sdlc.localResult; }
+    delete sdlc.merge;
+    return { ...task, sdlc };
+  }
+
+  private completionCurrent(id: unknown, by: PeerId, preEffect: boolean, refresh?: CompletionRefresh): Task {
     const task = this.need(id, false, preEffect);
     this.mine(task, by, "owner", preEffect);
+    if (refresh && (task.state !== "in_review" || task.history.length !== refresh.revision))
+      throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: review changed during re-file; retry on current work`);
     if (preEffect) {
-      if (task.state === "in_review" || isClosedTaskState(task.state)) throw new PreEffectToolRefusal(`task #${task.id} is already ${task.state}`);
+      if (task.state === "in_review" && !refresh || isClosedTaskState(task.state)) throw new PreEffectToolRefusal(`task #${task.id} is already ${task.state}`);
     } else {
-      if (task.state === "in_review" || isClosedTaskState(task.state)) throw new Error(`task #${task.id} is already ${task.state}`);
+      if (task.state === "in_review" && !refresh || isClosedTaskState(task.state)) throw new Error(`task #${task.id} is already ${task.state}`);
     }
     this.ready(task, preEffect);
     if (task.state === "proposed" || task.state === "changes_requested") this.acceptanceCapacity(task);
@@ -4796,12 +4810,21 @@ export class Tasks {
       // The result goes only to the owner the check was started for: anyone who took the task since hears nothing.
       throw new (preEffect ? PreEffectToolRefusal : Error)(this.checking.get(task.id) === task.owner ? `task #${task.id}: its check is still running; its result comes as a task message` : `task #${task.id}: a check from before it changed hands is still running; call hub_task_done again in a few minutes`);
     }
-    return task;
+    return this.completionDraft(task, refresh);
   }
 
   async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs, deliverables?: unknown): Promise<Task> {
     const requestCheck = this.requestCheck(by);
-    const valid = () => { requestCheck(); return this.completionCurrent(id, by, true); };
+    const initial = this.need(id, false, true);
+    this.mine(initial, by, "owner", true);
+    let refresh: CompletionRefresh | undefined;
+    if (initial.state === "in_review") {
+      const commit = cleanRefs(refs).commit;
+      if (!commit || !/^[a-f0-9]{40}$/.test(commit) || commit === this.reviewHead(initial))
+        throw new PreEffectToolRefusal(`task #${initial.id} is already in_review; re-file requires a different full head SHA`);
+      refresh = { revision: initial.history.length, commit };
+    }
+    const valid = () => { requestCheck(); return this.completionCurrent(id, by, true, refresh); };
     // #509a: a bad claim (a claimed hash, an outside or denied path, a missing file) is refused before any effect, with nothing recorded.
     const claims = deliverables === undefined ? undefined : this.deliverableClaims(deliverables, valid());
     // The PII screen reads the summary of a done that passes these checks (issue #198); they run again after it.
@@ -4823,7 +4846,7 @@ export class Tasks {
     task = current();
     let reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review"); task = current(); }
-    const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(staged, link, refs), !task.reviewer) : undefined;
+    const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, refresh), link, refs), !task.reviewer) : undefined;
     task = current();
     // A member of a silent cohort (issue #107): its done is an intent, and the last of them integrates first.
     const cohort = this.cohorts.of(task.id);
@@ -4855,12 +4878,13 @@ export class Tasks {
     }
     if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
-    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records, requestCheck);
+    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records, requestCheck, refresh);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
     this.checking.set(task.id, task.owner);
     const checkedRefs = cleanRefs(refs);
     this.warmRepository({ ...task, refs: { ...task.refs, ...checkedRefs } });
-    const pending = this.d.board.update(task.id, by, "done (checking)", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...checkedRefs } }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    const pending = this.d.board.update(task.id, by, "done (checking)", { ...(refresh ? { state: "in_progress" as const } : {}), codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...checkedRefs } }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    if (refresh) { this.ciWatchers.cancel(pending.id); this.heldReviews.delete(pending.id); }
     this.releaseNotice(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
     this.pendingChecks++;
@@ -5005,7 +5029,7 @@ export class Tasks {
   }
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
-  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink, records?: DeliverableRecord[], requestCheck: () => void = () => {}): Promise<Task> {
+  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink, records?: DeliverableRecord[], requestCheck: () => void = () => {}, refresh?: CompletionRefresh): Promise<Task> {
     requestCheck();
     // A check's completion carries the records its `done (checking)` bound: the same bytes the owner delivered, not a later read.
     records ??= latestPendingDeliverables(task);
@@ -5014,15 +5038,15 @@ export class Tasks {
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
       reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
       requestCheck();
-      task = this.withLink(this.completionCurrent(task.id, by, false), link, refs);
+      task = this.withLink(this.completionCurrent(task.id, by, false, refresh), link, refs);
       selection = this.poolReview(task, refs);
       reviewer = selection?.reviewer ?? task.reviewer;
     }
     // A delayed local check needs a new readback; a completion-selected reviewer also needs optional facts in off mode.
     if (!admission && ((reviewer && (this.d.sdlc?.config().mode ?? "off") !== "off") || this.d.prepareReviewBrief)) {
-      admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence, undefined, staged => this.withLink(staged, link, refs), !reviewer);
+      admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, refresh), link, refs), !reviewer);
       requestCheck();
-      task = this.withLink(this.completionCurrent(task.id, by, false), link, refs);
+      task = this.withLink(this.completionCurrent(task.id, by, false, refresh), link, refs);
     }
     selection = this.poolReview(task, refs);
     reviewer = selection?.reviewer ?? task.reviewer;
@@ -5478,11 +5502,13 @@ export class Tasks {
     // inherited reviewedHead lives there).
     let covered: { commit: string | undefined; receipt: string } | undefined;
     let conformanceIdentity: string | undefined;
+    let reviewRound: number | undefined;
     const valid = (): Task => {
       requestCheck();
       const refused = authority?.();
       if (refused) throw new PreEffectToolRefusal(refused); // rechecked after every await, right before each write
       const t = this.need(id, false, true);
+      if (reviewRound !== undefined && this.reviewRequestRevision(t) !== reviewRound) throw new PreEffectToolRefusal(`task #${t.id}: review request changed during the verdict; review the new head`);
       if (covered && (t.refs.commit !== covered.commit || JSON.stringify(t.sdlc ?? null) !== covered.receipt)) throw new PreEffectToolRefusal(`task #${t.id}'s commit or lifecycle receipt changed during the verdict: review the new head`);
       this.mine(t, by, "reviewer", true);
       if (verdict !== "approved" && verdict !== "changes_requested") throw new PreEffectToolRefusal('verdict must be "approved" or "changes_requested"');
@@ -5498,6 +5524,7 @@ export class Tasks {
     // the gap in the verdict note, off and a person's own verdict skip it.
     const mode = this.d.sdlc?.config().mode ?? "off";
     const initial = valid(), suppliedFindings = findings !== undefined;
+    reviewRound = this.reviewRequestRevision(initial);
     let parsed: ReviewFinding[];
     try { parsed = parseReviewFindings(findings, { person: by === USER, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS }); }
     catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid structured findings"); }
