@@ -6,6 +6,7 @@ export interface AutonomyCliPorts {
   ask(prompt: string): Promise<string | null>;
   print(line: string): void;
   contextLines?: readonly string[];
+  confirmPrompt?: string;
   beforeApply?(action: "on" | "off"): Promise<void> | void;
   decorateStatus?(reply: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
@@ -25,7 +26,7 @@ export async function runAutonomy(args: string[], ports: AutonomyCliPorts): Prom
     if (typeof preview.confirmation !== "string" || !preview.confirmation) throw new Error("autonomy confirmation preview is unavailable; upgrade the running hub");
     confirmation = preview.confirmation;
     for (const line of Array.isArray(preview.lines) ? preview.lines : []) if (typeof line === "string") ports.print(line);
-    if (flag !== "--yes" && (await ports.ask("Apply project autonomy? Approval prompts change; sandboxes and trust stay in force. [y/N] "))?.trim().toLowerCase() !== "y") {
+    if (flag !== "--yes" && (await ports.ask(ports.confirmPrompt ?? "Apply project autonomy? Approval prompts change; sandboxes and trust stay in force. [y/N] "))?.trim().toLowerCase() !== "y") {
       ports.print("Project autonomy was not changed."); return;
     }
   }

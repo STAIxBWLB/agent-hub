@@ -1934,6 +1934,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         ask: async prompt => { if (!rl) return null; try { return await rl.question(prompt); } catch { return null; } },
         print: line => console.log(terminalText(line)),
         contextLines: [...(defaults.notice ? [defaults.notice] : []), "On/off also changes this machine's autonomy default for new projects; --all-projects applies the change to every registered project."],
+        confirmPrompt: "Apply this project's preset and this machine's autonomy default? [y/N] ",
         beforeApply: action => {
           assertLifecycleAvailable();
           if (action === "off" && defaults.fingerprint === "untrusted") console.log("Unsafe machine defaults are already ignored; their file was left unchanged.");
