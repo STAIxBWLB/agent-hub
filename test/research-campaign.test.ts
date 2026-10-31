@@ -37,13 +37,15 @@ async function fixture() {
   const executionBudget = new ExecutionBudget(file); clean.push(() => executionBudget.close());
   const routing = loadRouting(dir), roles = { claude: ["planner", "reviewer"], codex: ["implementer"], local: ["implementer"] };
   let screen: ConstructorParameters<typeof Tasks>[0]["piiScreen"];
-  const build = () => new Tasks({ board, bus, cwd: dir, project: "fixture-project", roles, routing: () => routing, notify: () => {}, executionBudget, studyNow: () => NOW,
+  let notify = (_line: string): void => {};
+  const build = () => new Tasks({ board, bus, cwd: dir, project: "fixture-project", roles, routing: () => routing, notify: line => notify(line), executionBudget, studyNow: () => NOW,
     piiScreen: text => screen?.(text) ?? Promise.resolve({ label: "clear" as const, ms: 0 }),
     studySource: id => { expect((board as unknown as { db: Database }).db.inTransaction).toBe(false); return sources.get(id); } });
   let tasks = build();
   const parent = await tasks.propose(USER, { title: "Research parent", class: "implement", owner: "codex" });
   return { dir, file, bus, peers, sources, routing, roles, parent, get board() { return board; }, get tasks() { return tasks; },
     setScreen(next: NonNullable<typeof screen>) { screen = next; },
+    setNotify(next: (line: string) => void) { notify = next; },
     restart() { board.close(); board = new Board(file); tasks = build(); } };
 }
 
@@ -360,4 +362,49 @@ test("#930 an approved omission is auditable without leaking unit text into pare
   const entry = f.board.get(f.parent.id)!.history.findLast(item => item.event === "study approved")!;
   expect(entry.note).toContain("omitted units 1, dependencies 1");
   expect(entry.note).not.toContain("OMITTED_PRIVATE_UNIT_TEXT");
+});
+
+
+test("#930 T1 refuses new follow-up rounds before storing or activating an unenforced revision", async () => {
+  const f = await fixture(), first = contract();
+  const draft = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: first });
+  await f.tasks.studyApprove(USER, { id: draft.id, revision: 1 });
+  const followup = contract(); followup.stopPolicy.maxUnits = 3;
+  followup.units.push({ id: "followup", round: 1, question: "A separately approved next round", perspective: "analysis", requiredOutput: "A follow-up handoff", sourceIds: [SOURCE], dependsOn: ["discover"], purpose: "analysis" });
+  const before = f.board.researchIntegrity(), rows = f.board.list();
+  await expect(f.tasks.studyRevise("claude", { id: draft.id, revision: 1, contract: followup })).rejects.toThrow(/follow-up/);
+  expect(f.board.researchIntegrity()).toEqual(before); expect(f.board.list()).toEqual(rows);
+});
+
+test("#930 a private campaign refuses to adopt an otherwise approved public intake task", async () => {
+  const f = await fixture();
+  const root = f.board.propose(USER, { title: "Public intake parent", class: "implement", backlog: true, draft: true });
+  const child = f.board.propose(USER, { title: "Public intake child", class: "implement", backlog: true, draft: true });
+  f.board.plan(root.id, USER, { deps: [child.id] }, 0, "fixture family");
+  f.board.approveDrafts([root.id, child.id], USER, "intake approved by the person");
+  const body = contract(); body.units[0]!.adoptTaskId = child.id;
+  f.sources.get(SOURCE)!.private = true;
+  const draft = await f.tasks.studyDraft("claude", { parentTaskId: root.id, contract: body });
+  const before = f.board.researchIntegrity(), rows = f.board.list();
+  await expect(f.tasks.studyApprove(USER, { id: draft.id, revision: 1 })).rejects.toThrow(/private.*public/);
+  expect(f.board.researchIntegrity()).toEqual(before); expect(f.board.list()).toEqual(rows);
+});
+
+test("#930 committed campaign mappings survive lost publication and cold planner pull without recreating children", async () => {
+  const f = await fixture(), draft = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: contract() });
+  const changed = f.board.onChange;
+  f.board.onChange = () => { throw new Error("fixture publication lost after commit"); };
+  f.setNotify(() => { throw new Error("fixture notice sink lost after commit"); });
+  let approved: Awaited<ReturnType<Tasks["studyApprove"]>>;
+  try { approved = await f.tasks.studyApprove(USER, { id: draft.id, revision: 1 }); }
+  finally { f.board.onChange = changed; f.setNotify(() => {}); }
+  const ids = approved.units.map(unit => unit.taskId), count = f.board.list().length;
+  f.restart();
+  expect((await f.tasks.studyApprove(USER, { id: draft.id, revision: 1 })).units.map(unit => unit.taskId)).toEqual(ids);
+  expect(f.board.list()).toHaveLength(count);
+  const discovery = approved.units.find(unit => unit.unitId === "discover")!;
+  const pulled = await f.tasks.pullPlanned("claude", { id: discovery.taskId, revision: 0, reason: "cold planner resumes committed work" });
+  expect(pulled).toMatchObject({ id: discovery.taskId, state: "proposed" });
+  expect(pulled.history.some(entry => entry.event === "backlog pulled")).toBe(true);
+  expect(f.board.list()).toHaveLength(count);
 });
