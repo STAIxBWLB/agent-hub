@@ -296,7 +296,7 @@ test("Codex isolation names an unverified version, and the person's trust lifts 
   try {
     const refused = await codexReviewerBackend.prepare(f.ctx);
     expect(refused).toHaveProperty("unavailable");
-    expect((refused as { unavailable: string }).unavailable).toContain("codex-cli) 0.165.0 (verified 0.146.0, 0.163.0, 0.164.0)");
+    expect((refused as { unavailable: string }).unavailable).toContain("codex-cli) 0.165.0 (verified 0.146.0, 0.163.0, 0.164.0, 0.166.0)");
     expect((refused as { unavailable: string }).unavailable).toContain("ahub agents trust codex-review 0.165.0");
     writeTrust("codex-review", "0.165.0", false);
     const admitted = await codexReviewerBackend.prepare(f.ctx);
