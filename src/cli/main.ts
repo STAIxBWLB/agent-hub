@@ -31,6 +31,11 @@ import { renderCapabilities } from "./capabilities-output.ts";
 import { terminalText } from "./console-state.ts";
 import { parseSettingsEditArgs, runSettingsEdit, SETTINGS_EDIT_USAGE } from "./settings-edit.ts";
 import { autonomyEnvironment, runAutonomy } from "./autonomy.ts";
+import { readAutonomyDefaults, writeAutonomyDefaults } from "../hub/autonomy-defaults.ts";
+import { inheritMachineAutonomy, prepareAutonomyProject, runAllProjectAutonomy } from "./autonomy-projects.ts";
+import { autonomyHomeStatus, usedClaudeHomes } from "./autonomy-homes.ts";
+import { discoverClaudeHomes } from "./claude-homes.ts";
+import { setupClaudeHomes } from "./setup-homes.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
 import { startPetWindow, closePetWindow } from "../pet/window.ts";
 import { loadPetConfig, savePetPalette } from "./pet-config.ts";
@@ -1007,47 +1012,43 @@ const commands: Record<string, () => Promise<void> | void> = {
     recoveryLauncherCurrent?.();
     assertLifecycleAvailable();
     const root = join(import.meta.dir, "..", "..");
-    const state = () => {
-      const out = (argv: string[]) => { recoveryLauncherCurrent?.(); const result = spawnSync("claude", argv, { encoding: "utf8", ...(recoveryLauncherCurrent ? { timeout: 30_000 } : {}) }); recoveryLauncherCurrent?.(); return result.stdout ?? ""; };
-      return nextStep(parseList<InstalledPlugin>(out(["plugin", "list", "--json"])), parseList<Marketplace>(out(["plugin", "marketplace", "list", "--json"])), root);
-    };
-    let step = state();
-    if (!step) console.log(`Claude Code plugin agent-hub@agent-hub ${VERSION} is installed from this package.`);
-    else {
-      console.log(`ahub setup changes your Claude Code plugin configuration, one step at a time, re-checking after each. First step:\n  ${step.argv.join(" ")}\n      ${step.why}`);
-      if (!args.includes("--yes")) {
-        // Nobody can answer without a terminal: waiting would hang a script forever (issue #73).
-        if (!process.stdin.isTTY) fail("not a terminal: nothing was changed; rerun with --yes to apply");
-        const rl = createInterface({ input: process.stdin, output: process.stdout });
-        const answer = (await rl.question("Proceed (this and the steps that follow from it)? [y/N] ")).trim().toLowerCase();
-        rl.close();
-        if (answer !== "y" && answer !== "yes") return console.log("nothing was changed");
-      }
-      for (let i = 0; step && i < 6; i++, step = state()) {
-        console.log(`> ${step.argv.join(" ")}   (${step.why})`);
-        recoveryLauncherCurrent?.();
-        if (spawnSync(step.argv[0]!, step.argv.slice(1), { stdio: "inherit", ...(recoveryLauncherCurrent ? { timeout: 30_000 } : {}) }).status !== 0) fail(`"${step.argv.join(" ")}" failed; nothing after it was run`);
-        recoveryLauncherCurrent?.();
-      }
-      if (step) fail(`still not done after 6 steps; next would be: ${step.argv.join(" ")}`);
-    }
+    const registry = new Registry(), rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+    try {
+      const found = recoveryLauncherCurrent || delegatedPeer ? await discoverClaudeHomes({ home: homedir(), env: process.env }) : await usedClaudeHomes(registry, homedir(), process.env);
+      for (const notice of found.notices) console.log(terminalText(notice));
+      await setupClaudeHomes({ homes: found.homes, env: process.env, packageRoot: root, yes: args.includes("--yes"),
+        print: line => console.log(terminalText(line)), ask: async prompt => rl ? rl.question(prompt) : null,
+        probe: (argv, options) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8", env: options.env, timeout: options.timeoutMs, maxBuffer: 1024 * 1024 }); recoveryLauncherCurrent?.(); return { status: result.status ?? -1, stdout: result.stdout ?? "" }; },
+        run: async (argv, env) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { stdio: "inherit", env, timeout: 30_000 }); recoveryLauncherCurrent?.(); return result.status ?? -1; },
+      });
+    } finally { registry.close(); rl?.close(); }
     if (recoveryLauncherCurrent) recoveryLauncherCurrent();
     else await commands.doctor!();
   },
 
-  init: () => {
+  init: async () => {
     const flags = takeFlags(args.filter(arg => arg !== "--dry-run" && arg !== "--json" && arg !== "--shadow" && arg !== "--release-guard"), ["--profile"], []);
     if (flags.rest.length) fail("usage: ahub init [--profile dev|research|writing|general|<pack>] [--shadow] [--release-guard] [--dry-run --json]");
     // A pack is a project file in .agenthub/roles/<name>.pack.json (#513a); init resolves the name and refuses an unknown one with the profiles and packs it knows.
     const requestedProfile = flags.one["--profile"];
+    const newProject = !existsSync(join(cwd, ".agenthub/config.json"));
     if (args.includes("--dry-run")) {
       const plan = planInit(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"));
+      const defaults = readAutonomyDefaults(hubHome(), [cwd]);
+      if (newProject && defaults.enabled) plan.push({ action: existsSync(join(cwd, ".agenthub/config.local.json")) ? "modify" : "create", path: join(cwd, ".agenthub/config.local.json"), reason: "inherit the trusted machine autonomy preset; consent is checked at daemon startup" });
+      if (defaults.notice) console.error(defaults.notice);
       return console.log(args.includes("--json") ? JSON.stringify(plan, null, 2) : plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`).join("\n") || "already up to date");
     }
     assertLifecycleAvailable();
+    if (newProject && delegatedPeer && readAutonomyDefaults(hubHome(), [cwd]).enabled) fail("machine autonomy inheritance is person-only; delegated live tests cannot apply it");
     const changed = init(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"));
-    registeredProject();
+    const project = registeredProject();
     console.log(changed.length ? changed.map((p) => `${existsSync(p) ? "wrote" : "removed"} ${p}`).join("\n") : "already up to date");
+    if (newProject) {
+      const registry = new Registry();
+      try { for (const line of await inheritMachineAutonomy(project, hubHome(), autonomyEnvironment(process.env, !!process.stdin.isTTY), registry)) console.log(terminalText(line)); }
+      finally { registry.close(); }
+    }
     const config = projectConfig(), examples = resolveProfile(config.profile, config.profile_overrides).example_checks;
     if (examples.length) console.log(terminalText("Example checks (advisory):\n" + examples.map(example => "- " + example).join("\n")));
   },
@@ -1893,16 +1894,44 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
   autonomy: async () => {
     let hub: ControlClient | undefined;
+    const registry = new Registry();
     const rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
     try {
+      const environment = autonomyEnvironment(process.env, !!process.stdin.isTTY), home = hubHome();
+      if (args.includes("--all-projects")) {
+        assertLifecycleAvailable();
+        await runAllProjectAutonomy(args, { home, environment, projects: registry.list(),
+          prepare: (project, enabled) => prepareAutonomyProject(project, environment, enabled, registry),
+          ask: async prompt => rl ? rl.question(prompt) : null, print: line => console.log(terminalText(line)),
+        });
+        return;
+      }
+      const roots = [...registry.list().map(project => project.root), cwd], defaults = readAutonomyDefaults(home, roots);
       const usage = await runAutonomy(args, {
-        environment: autonomyEnvironment(process.env, !!process.stdin.isTTY),
+        environment,
         request: async message => { hub ??= await connect(); return hub.request(message, 35_000); },
         ask: async prompt => { if (!rl) return null; try { return await rl.question(prompt); } catch { return null; } },
         print: line => console.log(terminalText(line)),
+        contextLines: [...(defaults.notice ? [defaults.notice] : []), "On/off also changes this machine's autonomy default for new projects; --all-projects applies the change to every registered project."],
+        beforeApply: action => {
+          assertLifecycleAvailable();
+          if (action === "off" && defaults.fingerprint === "untrusted") console.log("Unsafe machine defaults are already ignored; their file was left unchanged.");
+          else writeAutonomyDefaults(home, action === "on", defaults.fingerprint, roots);
+          console.log(`Machine autonomy default: ${action}.`);
+        },
+        decorateStatus: async reply => {
+          const machine = readAutonomyDefaults(home, roots);
+          const profiles = await autonomyHomeStatus(registry, homedir(), process.env, join(import.meta.dir, "..", ".."), (argv, options) => {
+            const result = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8", env: options.env, timeout: options.timeoutMs, maxBuffer: 1024 * 1024 });
+            return { status: result.status ?? -1, stdout: result.stdout ?? "" };
+          });
+          return { ...reply, status: { ...(reply.status as Record<string, unknown>), machineDefault: { enabled: machine.enabled, ...(machine.notice ? { notice: machine.notice } : {}) }, claudeHomes: profiles.homes, claudeHomeDiscoveryComplete: profiles.complete, claudeHomeNotices: profiles.notices },
+            lines: [...(reply.lines as string[]), `Machine autonomy default: ${machine.enabled ? "on" : "off"}.`, ...(machine.notice ? [machine.notice] : []), ...profiles.notices,
+              ...profiles.homes.map(profile => `Claude home ${profile.home.path}: plugin ${profile.plugin.state}; hook ${profile.hook.state}. ${profile.hook.reason}`)] };
+        },
       });
       if (usage) fail(usage);
-    } finally { rl?.close(); hub?.close(); }
+    } finally { rl?.close(); hub?.close(); registry.close(); }
   },
   settings: async () => {
     // #689: structural config edits (instances, review, snapshots, approvals, context.gate, sdlc.toml) and their backups. The hub validates and writes.

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
@@ -10,14 +10,19 @@ import type { InstancesConfig } from "../src/hub/instances.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
-async function fixture(instances?: InstancesConfig) {
-  const cwd = mkdtempSync(join(tmpdir(), "ahub-autonomy-daemon-"));
-  cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
+async function fixture(instances?: InstancesConfig, local: Record<string, unknown> = {}, machine?: { text: string; mode?: number }) {
+  const root = mkdtempSync(join(tmpdir(), "ahub-autonomy-daemon-")), cwd = join(root, "repo"), home = join(root, "hub");
+  mkdirSync(cwd);
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const vars = { HOME: join(root, "person"), AGENTHUB_HOME: home, CLAUDE_CONFIG_DIR: join(root, "claude"), AMEM_HOME: join(root, "memory") };
+  const previous = Object.fromEntries(Object.keys(vars).map(key => [key, process.env[key]])); Object.assign(process.env, vars);
+  cleanups.push(() => { for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
+  if (machine) { mkdirSync(home); writeFileSync(join(home, "defaults.json"), machine.text, { mode: machine.mode ?? 0o600 }); chmodSync(join(home, "defaults.json"), machine.mode ?? 0o600); }
   mkdirSync(join(cwd, ".agenthub"));
   expect(hubGitSync(["init", "-q"], { cwd, encoding: "utf8", timeout: 1000 }).status).toBe(0);
   writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, research: { enabled: false }, pi: { auto_start: false } }));
   const stateDir = join(cwd, "state"), file = join(cwd, ".agenthub/config.local.json");
-  if (instances) writeFileSync(file, JSON.stringify({ instances }));
+  if (instances || Object.keys(local).length) writeFileSync(file, JSON.stringify({ ...local, ...(instances ? { instances } : {}) }));
   const options = { cwd, stateDir, projectId: `project-${cwd.split("/").at(-1)}`, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false };
   let daemon = await startDaemon({ ...options, config: loadConfig(cwd) });
   cleanups.push(() => daemon.stop());
@@ -27,13 +32,35 @@ async function fixture(instances?: InstancesConfig) {
     const preview = await client.request({ t: "autonomy", action: "preview", environment });
     return client.request({ t: "autonomy", action: "on", environment, confirmed: true, confirmation: preview.confirmation });
   };
-  return { person, tools, cwd, file, stateDir, on, read: () => JSON.parse(readFileSync(file, "utf8")), restart: async () => {
+  return { person, tools, cwd, file, stateDir, home, on, read: () => JSON.parse(readFileSync(file, "utf8")), restart: async () => {
     await daemon.stop();
     daemon = await startDaemon({ ...options, config: loadConfig(cwd) });
     const client = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => client.close());
     return client;
   } };
 }
+
+for (const [name, machine, approved] of [
+  ["matching trusted opt-in", { text: '{"schema":1,"autonomy":true}' }, true],
+  ["unsafe writable opt-in", { text: '{"schema":1,"autonomy":true}', mode: 0o666 }, false],
+  ["forged permission fields", { text: '{"schema":1,"autonomy":true,"permission_modes":{"codex":"never-ask"}}' }, false],
+  ["missing machine opt-in", undefined, false],
+] as const) test(`startup issues retained consent only for ${name}`, async () => {
+  const p = await fixture(undefined, { permission_modes: { codex: "never-ask" } }, machine);
+  const status = (await p.person.request({ t: "autonomy", action: "status", environment: "terminal" })).status;
+  expect(status.consentedPeers.includes("codex")).toBe(approved);
+  expect(status.peers.find((peer: any) => peer.id === "codex").effectiveMode).toBe(approved ? "never-ask" : "ask");
+  expect(existsSync(join(p.home, "autonomy"))).toBe(approved);
+});
+
+test("machine opt-in cannot approve a default sourced from tracked/shared configuration", async () => {
+  const p = await fixture(undefined, {}, { text: '{"schema":1,"autonomy":true}' });
+  const shared = join(p.cwd, ".agenthub/config.json"), config = JSON.parse(readFileSync(shared, "utf8"));
+  config.permission_modes = { codex: "never-ask" }; writeFileSync(shared, JSON.stringify(config));
+  const client = await p.restart();
+  expect((await client.request({ t: "autonomy", action: "status", environment: "terminal" })).status.consentedPeers).toEqual([]);
+  expect(existsSync(join(p.home, "autonomy"))).toBe(false);
+});
 
 test("daemon refuses agents and unconfirmed on; person apply/off and whole-preset undo retain settings semantics", async () => {
   const p = await fixture();

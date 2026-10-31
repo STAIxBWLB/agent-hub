@@ -64,6 +64,14 @@ const form = (value: unknown): value is AutonomyForm => value === "tui" || value
 const peerId = (value: string) => /^[a-z][a-z0-9_-]{0,63}$/.test(value);
 export const autonomyPreset = (): AutonomyPreset => presetJson as unknown as AutonomyPreset;
 
+export function autonomyEnvironment(env: NodeJS.ProcessEnv, terminal: boolean, preset: AutonomyPreset = autonomyPreset()): string {
+  if (validateAutonomyPreset(preset).length) throw new Error("autonomy preset is invalid");
+  const matching = Object.entries(preset.environments).filter(([, row]) => (!row.detect.variable || !!env[row.detect.variable]) && (row.detect.terminal === undefined || row.detect.terminal === terminal))
+    .sort((a, b) => a[1].detect.priority - b[1].detect.priority);
+  if (!matching[0] || matching[1]?.[1].detect.priority === matching[0][1].detect.priority) throw new Error("autonomy environment is missing or ambiguous");
+  return matching[0][0];
+}
+
 /** Pure, closed-data validation. A new catalog kind needs preset data, never a new kind branch. */
 export function validateAutonomyPreset(value: unknown, matrix: ConfirmationMatrix = confirmationMatrix()): string[] {
   if (!object(value)) return ["autonomy preset must be an object"];
