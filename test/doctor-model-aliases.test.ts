@@ -74,7 +74,7 @@ test("#553 doctor reports retired routing tables as Config findings and still in
 test("#553 invalid routing does not abort doctor model and memory probes", async () => {
   const rows = await doctor(aliases, false, false, true);
   expect(rows).toContainEqual(expect.objectContaining({ name: "routing models", section: "Models", level: "unknown" }));
-  expect(rows).toContainEqual(expect.objectContaining({ name: "memory library", level: "ok", detail: expect.stringContaining("amem 0.15.0") }));
+  expect(rows).toContainEqual(expect.objectContaining({ name: "memory library", level: "ok", detail: expect.stringContaining("amem 0.17.0") }));
   expect(rows.some(row => row.name === "memory worker")).toBe(false);
   expect(rows.some(row => row.name === "catalog roles" && row.level === "fail")).toBe(false);
 });
