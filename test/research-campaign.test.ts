@@ -277,3 +277,35 @@ test("#930 corrupted stored campaign bodies are refused without exposing content
   expect(result).toBeInstanceOf(PreEffectToolRefusal); expect(String(result)).not.toContain(canary);
   expect(f.board.list()).toEqual(rows); expect(f.board.hasResearchState()).toBe(true);
 });
+
+test("#930 a scope-only revision reuses stable unit tasks instead of recreating work", async () => {
+  const f = await fixture(), draft = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: contract() });
+  const first = await f.tasks.studyApprove(USER, { id: draft.id, revision: 1 });
+  const children = first.units.map(unit => f.board.get(unit.taskId)!);
+  await f.tasks.studyRevise("claude", { id: draft.id, revision: 1, contract: { ...contract(), scope: "A refined campaign-wide scope" } });
+  const second = await f.tasks.studyApprove(USER, { id: draft.id, revision: 2 });
+  expect(second.units.map(unit => [unit.unitId, unit.taskId])).toEqual(first.units.map(unit => [unit.unitId, unit.taskId]));
+  expect(f.board.list()).toHaveLength(1 + children.length);
+  expect(children.map(task => f.board.get(task.id))).toEqual(children);
+  expect(f.board.researchCampaign(draft.id, 1)!.status).toBe("superseded");
+  f.restart();
+  expect(await f.tasks.studyApprove(USER, { id: draft.id, revision: 2 })).toEqual(second);
+});
+
+test("#930 a recovery hold raised during screening fences the pending activation", async () => {
+  const f = await fixture(), draft = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: contract() });
+  f.routing.signals.pii_screen = "local"; f.routing.constraints.pii = "local_only";
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+  f.setScreen(async () => { entered(); await gate; return { label: "clear", ms: 0 }; });
+  const before = f.board.researchIntegrity(), rows = f.board.list();
+  const call = f.tasks.studyApprove(USER, { id: draft.id, revision: 1 }), result = call.then(() => undefined, error => error);
+  try {
+    await Promise.race([started, call.then(() => { throw new Error("activation missed the screen barrier"); })]);
+    f.bus.setRecoveryHold(true);
+    release();
+    expect(await result).toBeInstanceOf(PreEffectToolRefusal);
+    expect(f.board.researchIntegrity()).toEqual(before); expect(f.board.list()).toEqual(rows);
+    expect(f.tasks.studiesPending()).toBe(0);
+  } finally { release(); f.bus.setRecoveryHold(false); }
+});
