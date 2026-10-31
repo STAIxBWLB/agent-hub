@@ -14838,53 +14838,12 @@ var init_registry = __esm(() => {
   }));
 });
 
-// node_modules/@staix/agent-mem/src/memory/cli-attribution.ts
-import { AsyncLocalStorage } from "async_hooks";
-var scope;
-var init_cli_attribution = __esm(() => {
-  scope = new AsyncLocalStorage;
-});
-
-// node_modules/@staix/agent-mem/src/memory/private-spans.ts
-var init_private_spans = () => {};
-
-// node_modules/@staix/agent-mem/src/memory/screen.ts
-var init_screen = () => {};
-
 // node_modules/@staix/agent-mem/src/memory/mutation.ts
-var init_mutation = () => {};
-
-// node_modules/@staix/agent-mem/src/memory/project.ts
-var init_project2 = __esm(() => {
+var mutations;
+var init_mutation = __esm(() => {
   init_platform();
+  mutations = new WeakMap;
 });
-
-// node_modules/@staix/agent-mem/src/memory/policy.ts
-var MAX_BYTES3, MAX_STRING_BYTES, flags;
-var init_policy = __esm(() => {
-  init_screen();
-  init_platform();
-  init_project2();
-  MAX_BYTES3 = 256 * 1024;
-  MAX_STRING_BYTES = 16 * 1024;
-  flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
-});
-
-// node_modules/@staix/agent-mem/src/memory/config.ts
-var MAX_CONFIG_BYTES2;
-var init_config2 = __esm(() => {
-  init_policy();
-  MAX_CONFIG_BYTES2 = 64 * 1024;
-});
-
-// node_modules/@staix/agent-mem/src/memory/home.ts
-var init_home = __esm(() => {
-  init_platform();
-  init_config2();
-});
-
-// node_modules/@staix/agent-mem/src/memory/machine.ts
-var init_machine = () => {};
 
 // node_modules/@staix/agent-mem/src/memory/lifecycle-log.ts
 var MAX_LOG_BYTES;
@@ -14897,91 +14856,35 @@ var init_aliases = __esm(() => {
   init_lifecycle_log();
 });
 
-// node_modules/@staix/agent-mem/src/memory/generation.ts
-var init_generation = __esm(() => {
-  init_mutation();
-  init_platform();
-});
-
 // node_modules/@staix/agent-mem/src/memory/shard.ts
 var init_shard = __esm(() => {
+  init_public_prune_view();
   init_generation();
   init_aliases();
   init_aliases();
 });
 
-// node_modules/@staix/agent-mem/src/memory/lifecycle.ts
-var init_lifecycle = __esm(() => {
-  init_aliases();
-  init_lifecycle_log();
-  init_shard();
-});
-
-// node_modules/@staix/agent-mem/src/memory/search-score.ts
-function sql(expr, rank) {
-  const get = (part) => sql(part, rank);
-  switch (expr.op) {
-    case "rank":
-      return rank;
-    case "tier":
-      return `CASE tier ${Object.entries(TIER_WEIGHTS).map(([name, value]) => `WHEN '${name}' THEN ${real(value)}`).join(" ")} ELSE ${real(DEFAULT_TIER_WEIGHT)} END`;
-    case "age":
-      return `((julianday(?) - julianday(at)) / ${real(MONTH_DAYS)})`;
-    case "constant":
-      return real(expr.value);
-    case "negative":
-      return `(-(${get(expr.value)}))`;
-    case "reciprocal":
-      return `(1.0 / ${get(expr.value)})`;
-    case "add":
-      return `(${get(expr.left)} + ${get(expr.right)})`;
-    case "multiply":
-      return expr.right.op === "reciprocal" ? `(${get(expr.left)} / ${get(expr.right.value)})` : `(${get(expr.left)} * ${get(expr.right)})`;
-    case "max":
-      return `max(${get(expr.left)}, ${get(expr.right)})`;
-  }
-}
-function rankedScoreSql(rank = "bm25(docs)") {
-  return sql(SCORE, rank);
-}
-var MONTH_DAYS = 30, TIER_WEIGHTS, DEFAULT_TIER_WEIGHT = 0.9, TIER_FACTOR, DENOMINATOR, RECENCY_FACTOR, SCORE, real = (value) => Number.isInteger(value) ? `${value}.0` : String(value);
-var init_search_score = __esm(() => {
-  TIER_WEIGHTS = { long: 1, capture: 0.5 };
-  TIER_FACTOR = { op: "tier" };
-  DENOMINATOR = { op: "add", left: { op: "constant", value: 1 }, right: { op: "max", left: { op: "constant", value: 0 }, right: { op: "age" } } };
-  RECENCY_FACTOR = { op: "reciprocal", value: DENOMINATOR };
-  SCORE = { op: "multiply", left: { op: "multiply", left: { op: "negative", value: { op: "rank" } }, right: TIER_FACTOR }, right: RECENCY_FACTOR };
-});
-
-// node_modules/@staix/agent-mem/src/memory/search-fts.ts
-var SCREENED_SCORE, SCREENED_SUBSTRING_SCORE;
-var init_search_fts = __esm(() => {
-  init_search_score();
-  SCREENED_SCORE = rankedScoreSql();
-  SCREENED_SUBSTRING_SCORE = rankedScoreSql("-1.0");
-});
-
-// node_modules/@staix/agent-mem/src/memory/capture-input.ts
-var init_capture_input = __esm(() => {
-  init_screen();
+// node_modules/@staix/agent-mem/src/memory/public-prune-input-chain.ts
+var PUBLIC_PRUNE_REPLAY_MAX_BYTES;
+var init_public_prune_input_chain = __esm(() => {
+  init_generation();
   init_platform();
-  init_private_spans();
+  PUBLIC_PRUNE_REPLAY_MAX_BYTES = 256 * 1024 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/capture.ts
-var SPOOL_MAX_BYTES;
-var init_capture = __esm(() => {
-  init_screen();
-  init_capture_input();
-  init_capture_input();
-  init_home();
+// node_modules/@staix/agent-mem/src/memory/generation.ts
+var init_generation = __esm(() => {
+  init_public_prune_view();
+  init_mutation();
+  init_platform();
   init_shard();
-  init_lifecycle();
-  init_machine();
-  init_config2();
-  init_policy();
-  init_search_fts();
-  SPOOL_MAX_BYTES = 256 * 1024;
+  init_public_prune_input_chain();
+});
+
+// node_modules/@staix/agent-mem/src/memory/public-prune-view.ts
+var init_public_prune_view = __esm(() => {
+  init_generation();
+  init_platform();
 });
 
 // node_modules/@staix/agent-mem/src/memory/ops-contract.ts
@@ -15171,6 +15074,125 @@ var init_shard_bridge = __esm(() => {
   init_bridge();
 });
 
+// node_modules/@staix/agent-mem/src/memory/cli-attribution.ts
+import { AsyncLocalStorage } from "async_hooks";
+var scope;
+var init_cli_attribution = __esm(() => {
+  scope = new AsyncLocalStorage;
+});
+
+// node_modules/@staix/agent-mem/src/memory/private-spans.ts
+var init_private_spans = () => {};
+
+// node_modules/@staix/agent-mem/src/memory/screen.ts
+var init_screen = () => {};
+
+// node_modules/@staix/agent-mem/src/memory/project.ts
+var init_project2 = __esm(() => {
+  init_platform();
+});
+
+// node_modules/@staix/agent-mem/src/memory/policy.ts
+var MAX_BYTES3, MAX_STRING_BYTES, flags;
+var init_policy = __esm(() => {
+  init_screen();
+  init_platform();
+  init_project2();
+  MAX_BYTES3 = 256 * 1024;
+  MAX_STRING_BYTES = 16 * 1024;
+  flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
+});
+
+// node_modules/@staix/agent-mem/src/memory/config.ts
+var MAX_CONFIG_BYTES2;
+var init_config2 = __esm(() => {
+  init_policy();
+  MAX_CONFIG_BYTES2 = 64 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/home.ts
+var init_home = __esm(() => {
+  init_platform();
+  init_config2();
+});
+
+// node_modules/@staix/agent-mem/src/memory/machine.ts
+var init_machine = () => {};
+
+// node_modules/@staix/agent-mem/src/memory/lifecycle.ts
+var init_lifecycle = __esm(() => {
+  init_aliases();
+  init_lifecycle_log();
+  init_shard();
+});
+
+// node_modules/@staix/agent-mem/src/memory/search-score.ts
+function sql(expr, rank) {
+  const get = (part) => sql(part, rank);
+  switch (expr.op) {
+    case "rank":
+      return rank;
+    case "tier":
+      return `CASE tier ${Object.entries(TIER_WEIGHTS).map(([name, value]) => `WHEN '${name}' THEN ${real(value)}`).join(" ")} ELSE ${real(DEFAULT_TIER_WEIGHT)} END`;
+    case "age":
+      return `((julianday(?) - julianday(at)) / ${real(MONTH_DAYS)})`;
+    case "constant":
+      return real(expr.value);
+    case "negative":
+      return `(-(${get(expr.value)}))`;
+    case "reciprocal":
+      return `(1.0 / ${get(expr.value)})`;
+    case "add":
+      return `(${get(expr.left)} + ${get(expr.right)})`;
+    case "multiply":
+      return expr.right.op === "reciprocal" ? `(${get(expr.left)} / ${get(expr.right.value)})` : `(${get(expr.left)} * ${get(expr.right)})`;
+    case "max":
+      return `max(${get(expr.left)}, ${get(expr.right)})`;
+  }
+}
+function rankedScoreSql(rank = "bm25(docs)") {
+  return sql(SCORE, rank);
+}
+var MONTH_DAYS = 30, TIER_WEIGHTS, DEFAULT_TIER_WEIGHT = 0.9, TIER_FACTOR, DENOMINATOR, RECENCY_FACTOR, SCORE, real = (value) => Number.isInteger(value) ? `${value}.0` : String(value);
+var init_search_score = __esm(() => {
+  TIER_WEIGHTS = { long: 1, capture: 0.5 };
+  TIER_FACTOR = { op: "tier" };
+  DENOMINATOR = { op: "add", left: { op: "constant", value: 1 }, right: { op: "max", left: { op: "constant", value: 0 }, right: { op: "age" } } };
+  RECENCY_FACTOR = { op: "reciprocal", value: DENOMINATOR };
+  SCORE = { op: "multiply", left: { op: "multiply", left: { op: "negative", value: { op: "rank" } }, right: TIER_FACTOR }, right: RECENCY_FACTOR };
+});
+
+// node_modules/@staix/agent-mem/src/memory/search-fts.ts
+var SCREENED_SCORE, SCREENED_SUBSTRING_SCORE;
+var init_search_fts = __esm(() => {
+  init_search_score();
+  SCREENED_SCORE = rankedScoreSql();
+  SCREENED_SUBSTRING_SCORE = rankedScoreSql("-1.0");
+});
+
+// node_modules/@staix/agent-mem/src/memory/capture-input.ts
+var init_capture_input = __esm(() => {
+  init_screen();
+  init_platform();
+  init_private_spans();
+});
+
+// node_modules/@staix/agent-mem/src/memory/capture.ts
+var SPOOL_MAX_BYTES;
+var init_capture = __esm(() => {
+  init_screen();
+  init_capture_input();
+  init_capture_input();
+  init_home();
+  init_shard();
+  init_lifecycle();
+  init_machine();
+  init_config2();
+  init_policy();
+  init_search_fts();
+  SPOOL_MAX_BYTES = 256 * 1024;
+});
+
 // node_modules/@staix/agent-mem/src/memory/style.ts
 function style(color) {
   return { color, ok: wrap(color, 32, 39), attention: wrap(color, 33, 39), error: wrap(color, 31, 39), dim: wrap(color, 2, 22), bold: wrap(color, 1, 22) };
@@ -15187,8 +15209,46 @@ var init_prune = __esm(() => {
   init_style();
 });
 
+// node_modules/@staix/agent-mem/src/memory/public-prune-witness.ts
+var init_public_prune_witness = __esm(() => {
+  init_generation();
+  init_prune();
+  init_shard_sync_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard-sync-format.ts
+var SHARD_PACK_MAX_BYTES;
+var init_shard_sync_format = __esm(() => {
+  init_bridge();
+  init_generation();
+  init_prune();
+  init_shard();
+  init_public_prune_witness();
+  SHARD_PACK_MAX_BYTES = 1024 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/public-prune-inputs.ts
+var PUBLIC_PRUNE_GRAPH_MAX_BYTES, OBJECT_MAX, plans, batches;
+var init_public_prune_inputs = __esm(() => {
+  init_generation();
+  init_mutation();
+  init_platform();
+  init_store();
+  init_prune();
+  init_shard_sync_format();
+  init_public_prune_witness();
+  init_public_prune_input_chain();
+  init_public_prune_input_chain();
+  PUBLIC_PRUNE_GRAPH_MAX_BYTES = 80 * 1024 * 1024;
+  OBJECT_MAX = 1024 * 1024 + 64;
+  plans = new WeakMap;
+  batches = new WeakMap;
+});
+
 // node_modules/@staix/agent-mem/src/memory/generation-index.ts
 var init_generation_index = __esm(() => {
+  init_public_prune_inputs();
+  init_public_prune_view();
   init_shard();
   init_shard_bridge();
   init_generation();
@@ -15212,12 +15272,15 @@ var init_reader_lease = __esm(() => {
   init_generation();
   init_mutation();
   init_platform();
+  init_public_prune_view();
   open = new Map;
 });
 
 // node_modules/@staix/agent-mem/src/memory/store.ts
 var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP;
 var init_store = __esm(() => {
+  init_public_prune_view();
+  init_shard_bridge();
   init_cli_attribution();
   init_platform();
   init_private_spans();
@@ -15288,6 +15351,7 @@ var init_sync_screen = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/sync.ts
 var liveGroups;
 var init_sync = __esm(() => {
+  init_generation();
   init_platform();
   init_mutation();
   init_generation_sync();
@@ -22994,7 +23058,7 @@ var package_default = {
     bun: ">=1.4.2"
   },
   dependencies: {
-    "@staix/agent-mem": "0.13.0"
+    "@staix/agent-mem": "0.14.0"
   },
   devDependencies: {
     "@modelcontextprotocol/sdk": "^1.27.1",
