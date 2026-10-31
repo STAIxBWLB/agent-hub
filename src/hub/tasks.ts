@@ -1598,9 +1598,6 @@ export class Tasks {
     });
   }
 
-  /** Task id -> the owner whose queued offer a study hold made the bus discard (#597). */
-  private readonly studyDroppedOffers = new Map<number, PeerId>();
-
   /**
    * A unit held only because a newer draft existed lost its queued offer at delivery. Once a revision is approved, each retained unit task whose offer was dropped, that still has
    * the same owner and has not been accepted, gets a fresh offer through the one offer path (`sendTask`), which re-runs `studyDispatchCheck`. The approval is already saved: a
@@ -1608,13 +1605,16 @@ export class Tasks {
    */
   private async studyReoffer(taskIds: readonly number[]): Promise<void> {
     for (const taskId of taskIds) {
-      const owner = this.studyDroppedOffers.get(taskId);
+      let owner: PeerId | undefined;
+      try { owner = this.d.board.researchDroppedOffer(taskId); } catch (e) { this.releaseNotice(`task #${taskId}: study dropped-offer record is unreadable: ${e instanceof Error ? e.message : String(e)}`); continue; }
       if (owner === undefined) continue;
-      this.studyDroppedOffers.delete(taskId);
       const task = this.d.board.get(taskId);
-      if (!task || task.owner !== owner || task.state !== "proposed") continue;
-      try { await this.sendTask(task, { owner, ...(task.reviewer ? { reviewer: task.reviewer } : {}), trace: [] }); }
-      catch (e) { this.releaseNotice(`task ${this.publicTitle(task)}: could not re-offer after the study was approved: ${e instanceof Error ? e.message : String(e)}`); }
+      // The record names an owner that no longer holds the unproposed task: it is stale, not a pending offer.
+      if (!task || task.owner !== owner || task.state !== "proposed") { this.d.board.clearResearchDroppedOffer(taskId); continue; }
+      try {
+        await this.sendTask(task, { owner, ...(task.reviewer ? { reviewer: task.reviewer } : {}), trace: [] });
+        this.d.board.clearResearchDroppedOffer(taskId);   // after the offer is published: a refusal keeps the record for the next approval
+      } catch (e) { this.releaseNotice(`task ${this.publicTitle(task)}: could not re-offer after the study was approved: ${e instanceof Error ? e.message : String(e)}`); }
     }
   }
 
@@ -2907,9 +2907,9 @@ export class Tasks {
     if (env.from === HUB && env.refs?.task) {
       const task = this.d.board.get(Number(env.refs.task));
       if (env.kind === "task" && env.refs.taskOffer !== undefined && task?.owner === peer && this.studyDispatchReason(task, peer)) {
-        // The bus discards a false verdict for good and cannot hold the envelope. Remember the owner it was for, so approving the study again offers the retained task afresh.
-        // ponytail: in memory, so a restart between the drop and the approval loses it; the task sweep (when enabled) re-offers ownerless or stalled work. Upgrade: persist it on the task offer record.
-        this.studyDroppedOffers.set(task.id, peer);
+        // The bus discards a false verdict for good and cannot hold the envelope. Remember the owner it was for (on the board, so it survives a restart), so approving the study again offers the retained task afresh.
+        try { this.d.board.recordResearchDroppedOffer(task.id, peer); }
+        catch (e) { this.releaseNotice(`task ${this.publicTitle(task)}: could not record the dropped study offer: ${e instanceof Error ? e.message : String(e)}`); }
         return false;
       }
       if (task?.state === "cancelled") return env.kind === "task" && typeof env.refs.taskCancelled === "number" && env.refs.taskCancelled === task.cancelled?.flowRevision;
