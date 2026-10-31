@@ -7375,6 +7375,8 @@ export async function startDaemon(opts: DaemonOptions) {
         } catch { return "project autonomy compatibility is unknown; configuration could not be read"; }
         if (needsAutonomy) return "target lacks project_autonomy; project preset metadata and retained mode consent require a supporting daemon";
       }
+      // #999 T3: a target without the floor key rejects `action_policy.floor` as an unknown key, so the project would fail to load there. Only a policy that sets it needs the feature.
+      if (config.action_policy?.floor === true && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("action_policy_floor"))) return "target lacks action_policy_floor; the project's action_policy.floor cannot be loaded by that daemon";
       return undefined;
     };
     const checkTarget = msg.op === "prepare" || msg.op === "commit" || msg.op === "inspect" && msg.targetFeatures !== undefined;

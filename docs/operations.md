@@ -1799,6 +1799,8 @@ Where the hub cannot see a call first (Codex in `never-ask`, Kimi in `auto`, Jco
 
 The floor changes approval prompts only. No sandbox, deny list, PII rule, path guard or trust check changes, and the person-only flow (release tag consent, logins and trust settings) stays the person's.
 
+A project that sets `action_policy.floor: true` cannot be upgraded or recovered onto a release that predates the key, because that release rejects an unknown `action_policy` key and the project would not load there. The daemon advertises the `action_policy_floor` feature, and a controlled recovery (`prepare`, `commit` and a target-checking `inspect`) refuses a target without it, naming `target lacks action_policy_floor`, before any effect. A project without the floor is unaffected.
+
 ## Permission modes for running peers
 
 Use a plain terminal to inspect or change a running peer:
