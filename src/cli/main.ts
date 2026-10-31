@@ -1018,6 +1018,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const found = recoveryLauncherCurrent || delegatedPeer ? await discoverClaudeHomes({ home: homedir(), env: process.env }) : await usedClaudeHomes(registry, homedir(), process.env);
       for (const notice of found.notices) console.log(terminalText(notice));
       await setupClaudeHomes({ homes: found.homes, env: process.env, packageRoot: root, yes: args.includes("--yes"),
+        interactive: !!rl,
         current: () => { recoveryLauncherCurrent?.(); assertLifecycleAvailable(); },
         print: line => console.log(terminalText(line)), ask: async prompt => rl ? rl.question(prompt) : null,
         probe: (argv, options) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8", env: options.env, timeout: options.timeoutMs, maxBuffer: 1024 * 1024 }); recoveryLauncherCurrent?.(); return { status: result.status ?? -1, stdout: result.stdout ?? "" }; },
@@ -1025,6 +1026,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       });
     } finally { registry.close(); rl?.close(); }
     if (recoveryLauncherCurrent) recoveryLauncherCurrent();
+    else await commands.doctor!();
   },
 
   init: async () => {

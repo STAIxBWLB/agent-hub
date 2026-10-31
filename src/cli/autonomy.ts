@@ -30,8 +30,14 @@ export async function runAutonomy(args: string[], ports: AutonomyCliPorts): Prom
       ports.print("Project autonomy was not changed."); return;
     }
   }
-  if (action === "on" || action === "off") await ports.beforeApply?.(action);
-  let reply = await request(action);
+  let machineApplied = false;
+  if (action === "on" || action === "off") { await ports.beforeApply?.(action); machineApplied = ports.beforeApply !== undefined; }
+  let reply: Record<string, unknown>;
+  try { reply = await request(action); }
+  catch (error) {
+    if (machineApplied) throw new Error(`${error instanceof Error ? error.message : String(error)}; Machine autonomy default was set to ${action}; project apply failed. Inspect ahub autonomy status before retrying.`);
+    throw error;
+  }
   if (action === "status" && ports.decorateStatus) reply = await ports.decorateStatus(reply);
   if (action === "status" && args.includes("--json")) ports.print(JSON.stringify(reply.status));
   else for (const line of Array.isArray(reply.lines) ? reply.lines : typeof reply.text === "string" ? [reply.text] : []) if (typeof line === "string") ports.print(line);

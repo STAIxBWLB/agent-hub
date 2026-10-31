@@ -5,6 +5,7 @@ export interface SetupHomesPorts {
   env: NodeJS.ProcessEnv;
   packageRoot: string;
   yes: boolean;
+  interactive?: boolean;
   homes: readonly ClaudeHome[];
   probe: ClaudeHomeProbe;
   run(argv: readonly string[], env: NodeJS.ProcessEnv): Promise<number>;
@@ -23,6 +24,7 @@ export async function setupClaudeHomes(ports: SetupHomesPorts): Promise<void> {
     if (check.plugin.state === "unknown" || check.hook.state === "refused") throw new Error(`Claude setup cannot safely inspect ${check.home.path}; nothing was changed`);
   }
   if (initial.every(check => !check.next && check.hook.state === "installed")) return;
+  if (!ports.yes && ports.interactive === false) throw new Error("not a terminal: nothing was changed; rerun with --yes to apply");
   if (!ports.yes && !["y", "yes"].includes((await ports.ask("Install the hub plugin and project-neutral hook in these Claude homes? [y/N] "))?.trim().toLowerCase() ?? "")) { ports.print("Claude setup was not changed."); return; }
   ports.current?.();
   for (const check of initial) {
