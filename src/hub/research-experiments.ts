@@ -352,3 +352,47 @@ export interface ExperimentWriteFence {
   campaignRevision: number;
   campaignHash: string;
 }
+
+export type ComparisonVaryingField = "code" | "parameters" | "seeds" | "role";
+export interface ComparisonPlanV1 {
+  campaignId: string;
+  fixed: Pick<ExperimentProtocolContract, "inputs" | "splits" | "evaluator" | "metrics">;
+  varying: ComparisonVaryingField[];
+  rule: { kind: "tolerance"; value: number } | { kind: "test"; name: string; alpha: number };
+}
+export type ComparisonCompatibility = { compatible: true }
+  | { compatible: false; field: string; side: "baseline" | "variant" | "pair" };
+
+/** A plan declares comparison invariants and a rule; parsing never runs the statistical rule. */
+export function parseComparisonPlan(input: unknown): ComparisonPlanV1 {
+  const raw = object(input, ["campaignId", "fixed", "varying", "rule"], "comparison");
+  const fixed = object(raw.fixed, ["inputs", "splits", "evaluator", "metrics"], "comparison.fixed");
+  const inputs = unique(array(fixed.inputs, 64, "comparison.fixed.inputs").map((value, index) => {
+    const field = `comparison.fixed.inputs[${index}]`, row = object(value, ["sourceId", "sha256"], field);
+    return { sourceId: pattern(row.sourceId, SOURCE, `${field}.sourceId`), sha256: pattern(row.sha256, HASH, `${field}.sha256`) };
+  }), value => value.sourceId, "comparison.fixed.inputs");
+  const evaluator = object(fixed.evaluator, ["id", "version", "hash"], "comparison.fixed.evaluator");
+  const metrics = unique(array(fixed.metrics, 32, "comparison.fixed.metrics").map((value, index) => {
+    const field = `comparison.fixed.metrics[${index}]`, row = object(value, ["name", "unit", "direction"], field);
+    return { name: text(row.name, SHORT, `${field}.name`), unit: text(row.unit, SHORT, `${field}.unit`), direction: choice(row.direction, ["higher", "lower"], `${field}.direction`) };
+  }), value => value.name, "comparison.fixed.metrics");
+  const varying = unique(array(raw.varying, 4, "comparison.varying").map(value => choice(value, ["code", "parameters", "seeds", "role"], "comparison.varying")), value => value, "comparison.varying");
+  const rawRule = object(raw.rule, ["kind", "value", "name", "alpha"], "comparison.rule");
+  let rule: ComparisonPlanV1["rule"];
+  if (rawRule.kind === "tolerance") {
+    object(raw.rule, ["kind", "value"], "comparison.rule");
+    rule = { kind: "tolerance", value: number(rawRule.value, "comparison.rule.value", true) };
+  } else if (rawRule.kind === "test") {
+    object(raw.rule, ["kind", "name", "alpha"], "comparison.rule");
+    const alpha = number(rawRule.alpha, "comparison.rule.alpha");
+    if (alpha <= 0 || alpha >= 1) fail("comparison.rule.alpha", "expected a probability strictly between zero and one");
+    rule = { kind: "test", name: text(rawRule.name, SHORT, "comparison.rule.name"), alpha };
+  } else fail("comparison.rule.kind", "expected tolerance or test");
+  return bounded({ campaignId: pattern(raw.campaignId, CAMPAIGN, "comparison.campaignId"), fixed: { inputs, splits: strings(fixed.splits, 16, "comparison.fixed.splits"),
+    evaluator: { id: pattern(evaluator.id, ID, "comparison.fixed.evaluator.id"), version: text(evaluator.version, SHORT, "comparison.fixed.evaluator.version"),
+      ...(evaluator.hash !== undefined ? { hash: pattern(evaluator.hash, HASH, "comparison.fixed.evaluator.hash") } : {}) }, metrics }, varying, rule }, "comparison");
+}
+
+export function comparisonPlanHash(plan: ComparisonPlanV1): string {
+  return createHash("sha256").update(canonicalJson(parseComparisonPlan(plan))).digest("hex");
+}
