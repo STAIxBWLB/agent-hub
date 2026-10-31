@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { relative, resolve } from "node:path";
 import { readAutonomyDefaults, writeAutonomyDefaults } from "../hub/autonomy-defaults.ts";
+import { autonomyConsentStateDir, createAutonomyConsent } from "../hub/autonomy-consent.ts";
+import { canonicalPath, hubHome } from "../hub/project.ts";
+import { insideRoot } from "../hub/path-policy.ts";
+import { readInstanceRoleConfig } from "../hub/instance-config.ts";
 import { ControlClient } from "../hub/control-client.ts";
 import { inspectProject } from "../hub/lifecycle.ts";
 import { processSignature } from "../pi/process-signature.ts";
@@ -26,6 +31,7 @@ export async function inheritMachineAutonomy(project: Project, home: string, env
 }
 /** Registry ownership excludes a concurrent daemon starter while an offline write runs. */
 export async function prepareAutonomyProject(project: Project, environment: string, enabled: boolean, registry: Registry): Promise<PreparedAutonomyProject> {
+  const consentHome = hubHome();
   const inspection = await inspectProject(project);
   if (inspection.state === "running") {
     const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: project.root, instanceId: inspection.status.instanceId });
@@ -48,7 +54,18 @@ export async function prepareAutonomyProject(project: Project, environment: stri
     if (!current || current.root !== project.root || current.stateDir !== project.stateDir) throw new Error("project registration changed; autonomy was not changed");
     const claim = randomUUID();
     if (!registry.claim(project.id, claim, process.pid, processSignature(process.pid))) throw new Error("project acquired a live owner; autonomy was not changed");
-    try { return applyOfflineAutonomy(project, environment, enabled, preview); }
+    try {
+      if (!enabled) {
+        try {
+          const scope = readInstanceRoleConfig(project.root), held = canonicalPath(autonomyConsentStateDir(consentHome, project.id));
+          const roots = [project.root, ...Object.values(scope.instances ?? {}).flatMap(instance => instance.worktree ? [resolve(project.root, instance.worktree)] : [])];
+          if (roots.some(root => insideRoot(relative(canonicalPath(root), held)))) throw new Error("private consent state is inside an execution root");
+          // Revocation only: this command never calls confirm or creates a consent key/witness.
+          createAutonomyConsent(held, project.id).clear();
+        } catch { throw new Error(`${project.root}: retained autonomy consent could not be revoked; project autonomy was not changed`); }
+      }
+      return applyOfflineAutonomy(project, environment, enabled, preview);
+    }
     finally { registry.release(project.id, claim); }
   } };
 }

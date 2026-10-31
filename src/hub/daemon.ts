@@ -164,7 +164,7 @@ import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig, 
 import { taskEvidencePrivacy, type TaskEvidencePrivacy, ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
 import { withChecklistLine } from "./learning.ts";
-import { createAutonomyConsent, type AutonomyConsentValues } from "./autonomy-consent.ts";
+import { autonomyConsentStateDir, createAutonomyConsent, type AutonomyConsentValues } from "./autonomy-consent.ts";
 import { insideRoot } from "./path-policy.ts";
 import { autonomyPreset, autonomyEnvironment, planAutonomy, autonomyRemovalKeys, autonomyStatus, type AutonomyEnvironment, type AutonomyPeer } from "./autonomy.ts";
 import { readAutonomyDefaults } from "./autonomy-defaults.ts";
@@ -3861,7 +3861,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   // Runtime choices stay in this daemon only; recovery reads project defaults anew.
   const defaultSources = config.permission_default_sources ?? Object.fromEntries(Object.entries(config.permission_modes).map(([peer, mode]) => [peer, { mode, source: "embedded configuration" }]));
-  const autonomyConsentDir = join(hubHome(), "autonomy", createHash("sha256").update(projectId).digest("hex"));
+  const autonomyConsentDir = autonomyConsentStateDir(hubHome(), projectId);
   const autonomyConsent = createAutonomyConsent(autonomyConsentDir, projectId);
   const autonomyOwnershipWitness = createAutonomyConsent(join(autonomyConsentDir, "ownership"), projectId, "ownership");
   const autonomyUndoWitness = createAutonomyConsent(join(autonomyConsentDir, "undo"), projectId, "undo");
