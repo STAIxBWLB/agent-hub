@@ -213,7 +213,13 @@ test("an earlier command on the same line that can change the facts ends the flo
   // a find action that writes a file or runs a command is not inert: `-fprintf` can rewrite .git/config and so a later push destination (floor-find-output-invalidates-facts)
   CHANGES_FACTS.push("find . -maxdepth 0 -fprintf .git/config x; git push origin feat/x", "find . -fprint .git/config; git push origin feat/x", "find . -fprint0 .git/config; git push origin feat/x",
     "find . -fls .git/config && git push origin feat/x", "find . -exec true {} \\; ; git push origin feat/x", "find . -execdir true {} + ; git push origin feat/x", "find . -ok true {} \\; ; git push origin feat/x",
-    "find . -okdir true {} \\; ; git push origin feat/x", "find . -delete; git push origin feat/x", "find . -fprintf=x; git push origin feat/x");
+    "find . -okdir true {} \\; ; git push origin feat/x", "find . -delete; git push origin feat/x", "find . -fprintf=x; git push origin feat/x",
+    // a glob can expand into a writer primary (a file named `-fprintf`), so any glob in find or rg arguments ends the floor
+    "find . -f* ; git push origin feat/x", "find . -fprint* x; git push origin feat/x", "find . -fp*f .git/config x; git push origin feat/x", "find . -?printf .git/config x; git push origin feat/x",
+    "find . [-]fprintf .git/config x; git push origin feat/x", "find * -maxdepth 0; git push origin feat/x", "find . -name '*.ts'; git push origin feat/x", "rg --pr* x; git push origin feat/x",
+    "rg foo *; git push origin feat/x", "tree -o .git/config; git push origin feat/x", "file -C; git push origin feat/x",
+    "git diff --output=.git/config; git push origin feat/x", "git log --output .git/config; git push origin feat/x", "git show --output=.git/config HEAD; git push origin feat/x",
+    "git diff --out* ; git push origin feat/x", "git log -- *; git push origin feat/x");
   for (const command of CHANGES_FACTS) expect(classes(command).length, command).toBeGreaterThan(0);
   // commands that cannot change those facts leave the floor in place
   for (const command of ["git add -A && git commit -m work && git push origin feat/x", "git status && git diff && git push origin feat/x", "echo done; gh pr comment 3 --body x",
@@ -363,7 +369,7 @@ test("every floor authority read shares one cap, one memo and one deadline (floo
 });
 
 test("a find that only reads leaves the floor in place, and an expansion or glob in a value option's value keeps the strict class (#585)", () => {
-  expect(classes("find . -name '*.ts' -print; git push origin feat/x")).toEqual([]);
+  expect(classes("find . -name x -print; git push origin feat/x")).toEqual([]);
   expect(classes("find . -maxdepth 1 -type f; gh pr comment 3 --body x")).toEqual([]);
   const unproven = facts({ ghDefaultIsOwn: () => false });
   // an unquoted $(cat flags) or glob can expand into a later real -R/--repo: the value is judged before it is skipped (floor-gh-expanded-option-value)

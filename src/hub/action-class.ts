@@ -583,7 +583,7 @@ const FIND_WRITERS = new Set(["-delete", "-exec", "-execdir", "-ok", "-okdir", "
  * asks even where the shell would not expand it. Upgrade path: have `commands` mark a word that held an unquoted glob character, then test that mark here.
  */
 const globby = (word: string): boolean => /[*?[]/.test(word);
-const FLOOR_INERT_PROGRAMS = new Set(["echo", "printf", "true", "false", ":", "ls", "pwd", "cat", "head", "tail", "wc", "rg", "grep", "test", "[", "sleep", "cd", "diff", "stat", "file", "tree", "find"]);
+const FLOOR_INERT_PROGRAMS = new Set(["echo", "printf", "true", "false", ":", "ls", "pwd", "cat", "head", "tail", "wc", "rg", "grep", "test", "[", "sleep", "cd", "diff", "stat", "find"]);   // not `tree -o` or `file -C`: they write a named file
 function floorInert(command: Command, root: string, cwd: string[], floor: FloorFacts): boolean {
   if (command.outputs.length > 0 || command.redirected || command.nested?.length) return false;   // any redirect may write .git/config (`>>` is not an output of the destroy rule); a substitution runs commands of its own
   if (unwrapped(command.words).length !== command.words.length) return false;   // `env X=1 ...`, `sudo`, `VAR=x cmd`
@@ -595,9 +595,17 @@ function floorInert(command: Command, root: string, cwd: string[], floor: FloorF
     if (heads.length !== 1 || args.includes("-c") || args.some(arg => arg.startsWith("--config-env"))) return false;
     // A push the floor itself lets through only writes remote refs and, with `-u`, this branch's upstream: none of what the floor reads (push destination, tag and push settings, the default repository).
     if (heads[0]!.name === "push") return floorPush(args.slice(0, args.length - heads[0]!.args.length - 1), heads[0]!.args, root, cwd, floor);
+    // `git diff|log|show|blame --output=<file>` writes a named file (`.git/config` included), and a glob can expand into that option: both end the floor.
+    if (["diff", "log", "show", "blame"].includes(heads[0]!.name) && args.some(arg => arg === "--output" || arg.startsWith("--output=") || arg.startsWith("--out") || globby(arg))) return false;
     return FLOOR_INERT_GIT.has(heads[0]!.name);
   }
-  return FLOOR_INERT_PROGRAMS.has(program) && !(program === "find" && args.some(arg => FIND_WRITERS.has(arg) || /^-f(?:print|ls)/.test(arg))) && !(program === "rg" && args.some(arg => arg === "--pre" || arg.startsWith("--pre=")));
+  if (!FLOOR_INERT_PROGRAMS.has(program)) return false;
+  // `find` and `rg` take actions as options: a writer primary (`-fprintf`, `-exec`, `--pre`) makes them non-inert, and so does a glob anywhere in their arguments, because the shell
+  // expands an unquoted one before they run and a file named `-fprintf` or `--pre` becomes that option (floor-find-output-invalidates-facts). The tokenizer does not keep quote state,
+  // so a quoted `-name '*.ts'` also ends the floor for the rest of the line (the ponytail on `globby`).
+  if (program === "find" && args.some(arg => FIND_WRITERS.has(arg) || /^-f(?:print|ls)/.test(arg) || globby(arg))) return false;
+  if (program === "rg" && args.some(arg => arg === "--pre" || arg.startsWith("--pre=") || globby(arg))) return false;
+  return true;
 }
 
 function sequence(parsed: Command[], root: string, initial: string[], found: Set<ActionClass>, depth = 0, floor?: FloorFacts): void {

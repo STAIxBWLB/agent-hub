@@ -292,7 +292,10 @@ includes `git fetch` (it creates tags and moves remotes, so a tag probe read bef
 `bun test` and the other builds and test runs (they run the agent's own code), and `rg --pre`.
 A `find` with any action that writes a file or runs a command (`-fprintf`, `-fprint`, `-fprint0`, `-fls`,
 `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`) is not inert either: `-fprintf .git/config` can rewrite a
-push destination. An option's value that holds an expansion or a glob character (`--body $(cat f)`,
+push destination. A glob anywhere in a `find` or `rg` call also ends the
+floor, because the shell expands an unquoted one before the program runs and a file named `-fprintf` or
+`--pre` becomes that option. `tree`, `file` and `git diff|log|show|blame --output` write named files and are
+not inert. An option's value that holds an expansion or a glob character (`--body $(cat f)`,
 `--body */*`) keeps the call asking, because it can become several words, one of them a real
 `--repo`. That glob test does not see quoting, so a prose `--body` holding `*`, `?` or `[` also asks
 (a `ponytail:` in `src/hub/action-class.ts` names the upgrade).
