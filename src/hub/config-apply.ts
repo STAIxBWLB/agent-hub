@@ -179,7 +179,7 @@ const schema: Record<string, Check> = {
   _autonomy: v => { autonomyOwnership(v); },
   ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.schema?.(nativeValidators) ?? {})),
   watchdog_ms: number(1, 2_147_483_647), kimi_cmd: argv, qwen_cmd: argv, jcode_cmd: argv, codex_bin: text, jcode_home: text, jcode_provider_profile: text,
-  action_policy: block({ enabled: bool, always_ask: (v, k) => { actionPolicyConfig({ always_ask: v }); }, budgets: map(number(0, 1000, true), ACTION_CLASSES) }),
+  action_policy: block({ enabled: bool, floor: bool, always_ask: (v, k) => { actionPolicyConfig({ always_ask: v }); }, budgets: map(number(0, 1000, true), ACTION_CLASSES) }),
   permission_modes: v => { permissionDefaults(v); }, protect_instruction_files: bool,
   adapter_modules: v => { adapterModuleDeclarations(v); },
   adapters: v => { createProjectAdapterCatalog(v); }, instances: v => { validateInstances(v, createProjectAdapterCatalog()); }, pet: validatePetConfig,

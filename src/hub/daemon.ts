@@ -21,8 +21,9 @@ import { createClaudeFailureTrace, type ClaudeFailureTrace } from "./claude-fail
 import { buildNativePermissionProbe, NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH, validateNativePermissionRequest } from "./native-permission-request.ts";
 import { createClaudeLaunchProof, readClaudeLaunchProof } from "./claude-launch-proof.ts";
 import { InboxPolling } from "./inbox-polling.ts";
-import { ActionBudgets, actionPolicyConfig, type ActionPolicyConfig } from "./action-policy.ts";
+import { ActionBudgets, actionPolicyConfig, floorEnforcement, floorReads, type ActionPolicyConfig } from "./action-policy.ts";
 import { actionGate, claudeActionClasses } from "./action-enforce.ts";
+import type { FloorFacts } from "./action-class.ts";
 import { ReleaseAuthorizations, releaseAuthorizationError } from "./sdlc-release-authorization.ts";
 import { parseReleaseGuardArgv, parseReleasePushUpdates } from "../cli/sdlc-release-guard.ts";
 import type { DocEvidence } from "./sdlc-release.ts";
@@ -167,7 +168,7 @@ import { createAutonomyConsent, type AutonomyConsentValues } from "./autonomy-co
 import { insideRoot } from "./path-policy.ts";
 import { autonomyPreset, planAutonomy, autonomyRemovalKeys, autonomyStatus, type AutonomyEnvironment, type AutonomyPeer } from "./autonomy.ts";
 import { AUTONOMY_UNDO, autonomyOwnershipDigest, autonomyUndoKeys, writeAutonomyPreset, LEARN_CHECKLIST, NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
-import { githubOriginRepository } from "./task-repository.ts";
+import { githubOriginRepository, githubRemoteRepository } from "./task-repository.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -3911,7 +3912,62 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const actionBudgets = new ActionBudgets(() => config.action_policy, actionSession);
   // #636 slice 2: the always-ask gate of an ACP peer, built per peer from the host's own ports (root, task, PII screen); never from the agent.
-  const acpActionGate = (peer: PeerId) => actionGate({ budgets: actionBudgets, policy: () => config.action_policy, root: executionRoot,
+  // #999 T3, the floor: its facts are read where the classifier runs, per peer, and an unknown one keeps the class asking. The default branch comes from the same
+  // authoritative remote read the task shell uses (never a local origin/HEAD), cached because the gate is synchronous; before the read answers, or when it fails, every push asks.
+  let floorDefaultBranch: string | undefined, floorGeneration = 0;
+  const floorGitRaw = (cwd: string, args: string[]) => { try { return hubGitSync(["-C", cwd, ...args], { encoding: "utf8", timeout: 1000, maxBuffer: 4096 }); } catch { return undefined; } };
+  const floorFacts = (peer: PeerId): FloorFacts | undefined => {
+    if (!actionBudgets.floorOn()) return undefined;
+    let root: string;
+    try { root = realPath(executionRoot(peer)); } catch { return undefined; }
+    // One classification gets a bounded amount of synchronous work (`floorReads`): every authority read goes through it, the project origin included, so one shared cap, memo and deadline
+    // cover all of them. Past the bound a fact is unknown, and an unknown fact keeps the call asking.
+    const FLOOR_GIT_CALLS = 16, FLOOR_GIT_MS = 2500;
+    const reads = floorReads(FLOOR_GIT_CALLS, FLOOR_GIT_MS);
+    const floorGit = (cwd: string, args: string[]): ReturnType<typeof floorGitRaw> => reads.read(`git\0${cwd}\0${args.join("\0")}`, () => floorGitRaw(cwd, args));
+    const floorOrigin = (): string | undefined => reads.read(`origin\0${root}`, () => githubOriginRepository(root));
+    return {
+      ...(floorDefaultBranch ? { defaultBranch: floorDefaultBranch } : {}),
+      ...(shellProjectRepository ? { repository: shellProjectRepository } : {}),
+      // Proven only: the directory's own top level is the peer's execution root and that checkout's origin is the project's repository.
+      inOwnRepository: cwd => {
+        try {
+          const top = floorGit(cwd, ["rev-parse", "--show-toplevel"]);
+          if (!top || top.status !== 0 || typeof top.stdout !== "string" || realPath(top.stdout.trim()) !== root) return undefined;
+          return !!shellProjectRepository && floorOrigin() === shellProjectRepository;
+        } catch { return undefined; }
+      },
+      refIsTag: (name, cwd) => { const found = floorGit(cwd, ["rev-parse", "-q", "--verify", `refs/tags/${name}`]); return found === undefined || found.status === null ? undefined : found.status === 0 ? true : found.status === 1 ? false : undefined; },
+      // The effective push destinations, not the fetch URL: pushurl and url.<base>.pushInsteadOf can send `git push origin` to another repository, and push.followTags,
+      // push.pushOption, push.recurseSubmodules and a remote.origin.push or mirror setting add refs, tags or submodule pushes to a plain branch push. `--all` because a remote can have several push
+      // URLs and git pushes to every one of them: each must name the project's own repository. Any of those settings present, or any read that fails, is not proof.
+      pushIsOwn: cwd => {
+        const added = floorGit(cwd, ["config", "--get-regexp", "^(push\\.(followtags|pushoption|recursesubmodules)|remote\\.origin\\.(push|mirror|pushurl))$"]);
+        if (added === undefined || added.status !== 1) return added?.status === 0 ? false : undefined;
+        const urls = floorGit(cwd, ["remote", "get-url", "--push", "--all", "origin"]);
+        if (urls === undefined || urls.status !== 0 || typeof urls.stdout !== "string") return undefined;
+        const lines = urls.stdout.split("\n").map(line => line.trim()).filter(Boolean);
+        return !!shellProjectRepository && lines.length > 0 && lines.every(line => githubRemoteRepository(line) === shellProjectRepository);
+      },
+      // gh's default repository. A peer whose commands the hub builds the environment for (Pi and the local worker: `trust.hubSandboxed`) is judged on the facts the hub can read: only origin, no
+      // `gh repo set-default` marker naming another repository, no GH_REPO, GH_HOST or GH_ENTERPRISE_TOKEN in the hub's own environment. For every other peer (Claude, Codex, Kimi, Qwen, Jcode, agy)
+      // the hub cannot see the environment its shell runs in, and a GH_REPO exported there would redirect an unqualified call: such a call is never proven own, so it asks (foreign-repo-write)
+      // and only an explicit own `--repo`, `-R` or pull request URL runs.
+      ghDefaultIsOwn: cwd => {
+        if (definitionOf(peer)?.trust.hubSandboxed !== true) return false;
+        if (process.env.GH_REPO || process.env.GH_HOST || process.env.GH_ENTERPRISE_TOKEN) return false;
+        const remotes = floorGit(cwd, ["remote"]);
+        if (remotes === undefined || remotes.status !== 0 || typeof remotes.stdout !== "string" || remotes.stdout.trim() !== "origin") return remotes?.status === 0 ? false : undefined;
+        const resolved = floorGit(cwd, ["config", "--get-regexp", "^remote\\..*\\.gh-resolved$"]);
+        if (resolved === undefined) return undefined;
+        if (resolved.status === 1) return true;
+        if (resolved.status !== 0 || typeof resolved.stdout !== "string") return undefined;
+        return resolved.stdout.trim().split("\n").every(line => line.trim().split(/\s+/)[1] === "base");
+      },
+      currentBranch: cwd => { const found = floorGit(cwd, ["symbolic-ref", "-q", "--short", "HEAD"]); return found?.status === 0 && typeof found.stdout === "string" && found.stdout.trim() ? found.stdout.trim() : undefined; },
+    };
+  };
+  const acpActionGate = (peer: PeerId) => actionGate({ budgets: actionBudgets, policy: () => config.action_policy, root: executionRoot, floor: floorFacts,
     task: p => board.list("in_progress").find(t => t.owner === p), publicView: task => tasks.publicView(task), isPrivate: p => !!turns.get(p)?.private || contextPii(p),
     nameable: text => tasks.nameable(text) }, peer);
   // A peer is enforceable only where the hub sees the call before it runs, in the mode it runs in now; anything else says why, never a silent claim.
@@ -3948,6 +4004,14 @@ export async function startDaemon(opts: DaemonOptions) {
   const nativeUnattended = (peer: string): boolean => startingUnattended.get(peer) ?? unattendedPeers.has(peer);
   const permissions = new Map<string, { push: string; peer: string; tool?: string; createdAt: number; expiresAt: number; done: (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason?: "expired" | "cancelled") => boolean }>();
   let stopping = false;
+  /** Read the default branch for the floor. A newer policy or a stop makes an older read's answer void, and a failed read leaves the branch unknown (every push asks). */
+  const refreshFloorFacts = async (): Promise<void> => {
+    const generation = ++floorGeneration;
+    if (config.action_policy?.floor !== true || !shellProjectRepository) { floorDefaultBranch = undefined; return; }
+    const found = await (opts.shellDefaultBranchProbe ?? readTaskShellDefaultBranch)(opts.cwd, hostShellEnvironment({ PATH: hostShellPath(opts.cwd, opts.cwd) ?? "" }), () => !stopping && generation === floorGeneration, opts.cwd, shellProjectRepository).catch(() => undefined);
+    if (generation === floorGeneration) floorDefaultBranch = found;
+  };
+  void refreshFloorFacts();
   const roomInvocations: RoomInvocations = new RoomInvocations({ bus, ledger: invocations, shares: () => readShare(config.invocation?.share), identity: (peer, sender) => roomChat.invocationIdentity(peer, sender),
     target: async (input, request) => { await invokeCapability(input.remotePeer, { peer: input.envelope.to, capability: request.capability, args: request.args }, false, () => { if (!input.current()) throw new PreEffectToolRefusal("remote invocation authority changed"); }, { ...input, request }); },
     safeResult: async (body, current) => {
@@ -6658,7 +6722,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (change.applies === "restart" || change.key === "roles" || change.key.startsWith("roles.")) continue;
         putConfig(config, change.key, change.after);
       }
-      if (changes.some(change => change.key === "action_policy" || change.key.startsWith("action_policy."))) actionBudgets.policyChanged();
+      if (changes.some(change => change.key === "action_policy" || change.key.startsWith("action_policy."))) { actionBudgets.policyChanged(); void refreshFloorFacts(); }
       if (rolesChanged) { policyRoles = structuredClone(prepared.running.roles); settlePlanner(); }
       for (const change of changes.filter(change => change.key === "permission_modes" || change.key.startsWith("permission_modes."))) {
         for (const peer of change.key === "permission_modes" ? SUPPORTED_PEERS : [change.key.split(".")[1]!]) changedPermissionDefaults.add(peer);
@@ -7001,7 +7065,9 @@ export async function startDaemon(opts: DaemonOptions) {
         refreshAutonomyConsent();
         for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
         const terminal = opener.available();
-        const rows = autonomyStatus({ environment: env, peers: autonomyPeers(), terminalOpener: terminal.ok ? { available: true, via: terminal.via } : { available: false, reason: terminal.why } });
+        const peers = autonomyPeers();
+        const rows = autonomyStatus({ environment: env, peers, terminalOpener: terminal.ok ? { available: true, via: terminal.via } : { available: false, reason: terminal.why },
+          floorEnforcement: Object.fromEntries(peers.map(peer => [peer.id, floorEnforcement(config.action_policy, peer.actionEnforcement ?? { enforced: false })])) });
         for (const row of rows) if (pendingPermissionDefaults.has(row.id)) row.missing.push("This never-ask default has no matching retained consent; confirm it in ahub console or run ahub autonomy on again.");
         return { ok: true, status: { environment: env, consentedPeers: [...autonomyConfirmed], peers: rows }, lines: [`Project autonomy, environment: ${env}`, ...rows.flatMap(row => [`${row.id}: ${row.effectiveMode}; preset ${row.nextMode ?? "unmanaged"} at ${row.applies}`, ...row.floor.map(floor => `  ${floor.class}: ${floor.status}; ${floor.reason}`), ...row.missing.map(reason => `  missing: ${reason}`)])] };
       }
@@ -7342,6 +7408,21 @@ export async function startDaemon(opts: DaemonOptions) {
           needsAutonomy ||= CONFIG_FILES.some(name => texts[name] !== null && Object.hasOwn(JSON.parse(texts[name]!), "_autonomy"));
         } catch { return "project autonomy compatibility is unknown; configuration could not be read"; }
         if (needsAutonomy) return "target lacks project_autonomy; project preset metadata and retained mode consent require a supporting daemon";
+      }
+      // #999 T3: a target without the floor key rejects `action_policy.floor` as an unknown key, so the project would fail to load there. The check is the key's presence in the project's file, true or false:
+      // `floor: false` is just as unknown to an older target, and a disabled policy still names it.
+      // The raw files decide, not the effective config: a shared `config.json` that names `action_policy.floor` is ignored (the key is machine-local) but an older target's parser rejects it
+      // before that rule runs, and a `floor: false` is normalized away. Unreadable files are unknown, never absent.
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("action_policy_floor")) {
+        let namesFloor = config.action_policy?.floor !== undefined;
+        try {
+          const texts = configSourceTexts(opts.cwd);
+          namesFloor ||= CONFIG_FILES.some(name => {
+            const policy = texts[name] === null ? undefined : (JSON.parse(texts[name]!) as Record<string, unknown>).action_policy;
+            return !!policy && typeof policy === "object" && Object.hasOwn(policy, "floor");
+          });
+        } catch { return "action_policy_floor compatibility is unknown; configuration could not be read"; }
+        if (namesFloor) return "target lacks action_policy_floor; the project's action_policy.floor cannot be loaded by that daemon";
       }
       return undefined;
     };
@@ -8201,7 +8282,7 @@ export async function startDaemon(opts: DaemonOptions) {
             const mode = permissionMode(peer);
             if (mode !== "ask" && mode !== "ask-when-needed") return void reply({ t: "facts", ok: false });
             const blocked = scopedWriteBlocked(phase, mode, msg.tool, () => projectFileTool(msg.tool, msg.input, root, config.protect_instruction_files, config.data?.readonly));
-            const actionClasses = phase === "pre" && typeof msg.tool === "string" ? claudeActionClasses(actionBudgets, msg.tool, msg.input, root) : [];
+            const actionClasses = phase === "pre" && typeof msg.tool === "string" ? claudeActionClasses(actionBudgets, msg.tool, msg.input, root, floorFacts(peer)) : [];
             return void reply({ t: "facts", ok: true, ...(phase === "pre" ? { permission: mode === "ask-when-needed" && blocked ? "ask" : mode, projectRoot: root, protectInstructionFiles: config.protect_instruction_files, ...(actionClasses.length ? { actionClasses } : {}) } : {}) });
           }
           let nativeClaude = false, nativeTranscript: string | undefined;
@@ -8231,7 +8312,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (permission !== undefined && nativePeer) claudeLaunchProof.bindGeneration(peer, nativePeer.sessionGeneration);
           const protectedWrite = scopedWriteBlocked(phase, permission, msg.tool, () => projectFileTool(msg.tool, msg.input, writeRoot ?? opts.cwd, config.protect_instruction_files, config.data?.readonly));
           // Always-ask (#636): a classed call is asked about in every permission mode. The hub names only the classes, under the same verified root as the file policy above; the hook turns them into `ask`.
-          const actionClasses = phase === "pre" && permission !== undefined && typeof msg.tool === "string" ? claudeActionClasses(actionBudgets, msg.tool, msg.input, writeRoot ?? opts.cwd) : [];
+          const actionClasses = phase === "pre" && permission !== undefined && typeof msg.tool === "string" ? claudeActionClasses(actionBudgets, msg.tool, msg.input, writeRoot ?? opts.cwd, floorFacts(peer)) : [];
           const plannerOnly = !!declarations[peer] && definitionOf(peer)?.transport === "claude-channel" && isPlannerOnly(config.roles[peer] ?? []);
           // Older hooks do not know mutationGrants; the existing permission field must also withhold their mutation grant.
           const plannerMutation = plannerOnly && !["Read", "LS", "Glob", "Grep"].includes(tool);

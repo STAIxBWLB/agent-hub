@@ -1,11 +1,12 @@
 {
   "schema": 1,
   "issue": "#999",
-  "about": "Person-selected project permission/start and task-flow defaults. Permission and start defaults apply at the next peer start. T1 does not write action_policy; hub floor integration belongs to task #582. Structural guards require current evidence.",
+  "about": "Person-selected project permission/start and task-flow defaults. Permission and start defaults apply at the next peer start. The floor key action_policy.floor (#999 T3) makes ordinary branch pushes and own-repository pull requests run without a prompt where the hub sees the call first; every other floor class keeps asking. Structural guards require current evidence.",
   "hub": {
     "tasks.auto_pull": true,
     "task_sweep.enabled": true,
-    "task_sweep.auto_reassign": true
+    "task_sweep.auto_reassign": true,
+    "action_policy.floor": true
   },
   "environments": {
     "terminal": {

@@ -158,12 +158,12 @@ test("a forged project-state undo row is not a host-issued preset transaction", 
 test("mode consent remains valid when the person's separate action policy or start default changes", async () => {
   const p = await fixture();
   expect((await p.on()).ok).toBe(true);
-  expect(p.read().action_policy).toBeUndefined();
+  expect(p.read().action_policy).toEqual({ floor: true });
   expect((await p.person.request({ t: "settings_set", key: "action_policy.enabled", value: false })).ok).toBe(true);
   expect((await p.person.request({ t: "settings_set", key: "peers.codex.start_mode", value: "tui" })).ok).toBe(true);
   const status = (await p.person.request({ t: "autonomy", action: "status", environment: "headless" })).status;
   expect(status.consentedPeers).toContain("codex");
-  expect(status.peers.find((peer: any) => peer.id === "codex").floor.every((row: any) => row.status === "not-enforced" && row.reason.includes("#582"))).toBe(true);
+  expect(status.peers.find((peer: any) => peer.id === "codex").floor.every((row: any) => row.status === "not-enforced")).toBe(true);
 });
 
 test("reapplying another environment preserves an already confirmed unchanged mode outside the new target form", async () => {
@@ -218,4 +218,25 @@ test("confirmed on replaces unissued metadata and issues fresh consent", async (
   expect(p.read().permission_modes.codex).toBe("never-ask");
   expect(p.read()._autonomy.version).toBe(1);
   expect((await p.person.request({ t: "autonomy", action: "status", environment: "headless" })).status.consentedPeers).toContain("codex");
+});
+
+test("the preset turns the floor on and status reads the host verdict per class, never a guard it did not verify (#999 T3)", async () => {
+  const p = await fixture();
+  const before = (await p.person.request({ t: "autonomy", action: "status", environment: "headless" })).status;
+  expect(before.peers.every((peer: any) => peer.floor.every((row: any) => row.status !== "structural-guard"))).toBe(true);
+  expect((await p.on()).ok).toBe(true);
+  expect(p.read().action_policy).toEqual({ floor: true });
+  const status = (await p.person.request({ t: "autonomy", action: "status", environment: "headless" })).status;
+  for (const peer of status.peers) {
+    expect(peer.floor).toHaveLength(8);
+    expect(peer.floor.every((row: any) => row.status !== "structural-guard")).toBe(true);
+    // A class is hub-enforced only for a peer whose calls the hub sees first; the others name the guard they rest on and that the hub did not verify it.
+    for (const row of peer.floor) if (row.status === "not-enforced") expect(row.reason.length).toBeGreaterThan(0);
+  }
+  const codex = status.peers.find((peer: any) => peer.id === "codex");
+  expect(codex.floor.find((row: any) => row.class === "force-push").reason).toContain("GitHub branch protection");
+  expect(codex.floor.find((row: any) => row.class === "force-push").reason).toContain("has not verified");
+  expect(codex.floor.find((row: any) => row.class === "external-send").reason).toContain("no structural guard is named");
+  expect((await p.person.request({ t: "autonomy", action: "off", environment: "headless", confirmed: true })).ok).toBe(true);
+  expect(p.read().action_policy).toBeUndefined();
 });

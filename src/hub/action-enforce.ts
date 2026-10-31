@@ -1,4 +1,4 @@
-import { ACTION_CLASSES, classifyAction, type ActionClass } from "./action-class.ts";
+import { ACTION_CLASSES, classifyAction, type ActionClass, type FloorFacts } from "./action-class.ts";
 import { actionApprovalView, actionPolicyConfig, type ActionBudgets, type ActionPolicyConfig } from "./action-policy.ts";
 import type { ActionGateVerdict } from "../adapters/acp.ts";
 
@@ -12,11 +12,11 @@ import type { ActionGateVerdict } from "../adapters/acp.ts";
 export interface ActionCall { names: readonly string[]; kind?: string; input: unknown }
 
 /** The classes of one call. ACP names a shell call `execute` by kind whatever its tool is called, so that kind is also read as a shell. */
-export function classifyCall(call: ActionCall, root: string): ActionClass[] {
+export function classifyCall(call: ActionCall, root: string, floor?: FloorFacts): ActionClass[] {
   const names = new Set(call.names.filter(name => typeof name === "string" && name.length > 0));
   if (call.kind === "execute") names.add("bash");
   const found = new Set<ActionClass>();
-  for (const name of names) for (const key of classifyAction(name, call.input, root)) found.add(key);
+  for (const name of names) for (const key of classifyAction(name, call.input, root, floor)) found.add(key);
   return ACTION_CLASSES.filter(key => found.has(key));
 }
 
@@ -25,8 +25,8 @@ export function classifyCall(call: ActionCall, root: string): ActionClass[] {
  * cannot carry a class-budget choice, so every classed Claude call asks (a count of zero approved calls, always). A handle-less request
  * selects the classes without touching any session ledger.
  */
-export function claudeActionClasses(budgets: ActionBudgets, tool: string, input: unknown, root: string): ActionClass[] {
-  const classes = classifyAction(tool, input, root);
+export function claudeActionClasses(budgets: ActionBudgets, tool: string, input: unknown, root: string, floor?: FloorFacts): ActionClass[] {
+  const classes = classifyAction(tool, input, root, budgets.floorOn() ? floor : undefined);
   if (!classes.length) return [];
   const decision = budgets.request(undefined, classes);
   return decision.kind === "ask" ? decision.classes : [];
@@ -51,6 +51,8 @@ export interface ActionGatePorts<T> {
   policy(): ActionPolicyConfig | undefined;
   /** The peer's execution root: a delete outside it is classed. */
   root(peer: string): string;
+  /** The floor's facts (#999 T3), read per call. Absent or undefined means the floor is off or its facts are unknown, and every class asks as before. */
+  floor?(peer: string): FloorFacts | undefined;
   /** The task the peer is working on, for the approval line. */
   task(peer: string): T | undefined;
   /** The task's public view (`Tasks.publicView`): the only way a task title reaches an approval. */
@@ -68,7 +70,7 @@ export interface ActionGatePorts<T> {
  */
 export function actionGate<T>(ports: ActionGatePorts<T>, peer: string): (call: ActionCall, session: string, onPremToolTitle?: string) => ActionGateVerdict | undefined {
   return (call, session, onPremToolTitle) => {
-    const classes = classifyCall(call, ports.root(peer));
+    const classes = classifyCall(call, ports.root(peer), ports.budgets.floorOn() ? ports.floor?.(peer) : undefined);
     if (!classes.length) return undefined;
     const decision = ports.budgets.request(ports.budgets.bindSession(peer, session), classes);
     if (decision.kind !== "ask") return undefined; // native, or within an approved class budget

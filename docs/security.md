@@ -254,6 +254,57 @@ subcommand's argument). What the policy still cannot see is the content of a
 variable used as the whole command, an alias or function, a script the command
 runs, and text read from a file or stdin.
 
+The floor policy (#999 T3). `action_policy.floor: true`, settable only in the
+untracked `.agenthub/config.local.json` like the rest of `action_policy` and off by
+default, stops the policy from asking about ordinary development work: an unforced
+`git push` of a literal non-default branch to `origin` from inside the execution
+root, and `gh pr create|comment|review|merge` in the project's own repository
+(never `--admin`, never another repository by flag or URL). Everything else the
+policy asked about still asks: force and delete pushes, the default branch and tags,
+`gh release`, package publish, deletion outside the execution root, writes to
+other repositories, mail and posting. It is a weakening, so every status policy row
+carries the existing `attention` notice. The floor reads only host facts (the
+default branch from the authoritative GitHub remote read, never a local
+`origin/HEAD` or the agent's text; the project's own repository; whether a name is
+also a local tag; the checked-out branch) and treats a missing or unproven fact as
+the strict case: until the default branch is read, a failed read, a directory that
+is not provably the project's own checkout (a nested clone has another `origin`), a
+wrapper the classifier cannot read, `-c`, `--git-dir`, an expansion or an unplaceable
+`cd` all keep the call asking. The flag is the only switch: facts alone never widen
+a policy that did not set it, and a disabled policy is unchanged. With the floor on,
+`publish`, `external-write` and `destroy` ask whatever `always_ask` says, so a coarse
+selector cannot hand them back. It affects approval prompts only: the sandbox, deny
+list, PII rule, path guard and trust checks do not change. The hub enforces the
+floor only where it sees the call first. For Codex in `never-ask`, Kimi in `auto`,
+Jcode and a Claude session without the hub hook it cannot, and the floor rests on
+guards the hub does not verify (GitHub branch protection on the default branch,
+release only through `ahub sdlc authorize-release` and the OIDC tag workflow, the
+peer's native sandbox): `ahub status` names them on that peer's row and says they
+are not verified, never that they hold. A missing guard, such as an unprotected
+default branch, is the person's to find and report. The floor also reads, per call, the
+checkout's effective push destinations (`remote.origin.pushurl`, `url.*.pushInsteadOf`, every URL),
+the settings that add refs to a push (`push.followTags`, `push.pushOption`,
+`push.recurseSubmodules`, `remote.origin.push`, `remote.origin.mirror`) and gh's default
+repository (`gh repo set-default`, a second remote), and a call it cannot prove is
+ordinary asks. A wrapper takes the floor away from a shell it wraps, and a command earlier
+on the same line that can change those facts ends the floor for the rest of the line. That
+includes `git fetch` (it creates tags and moves remotes, so a tag probe read before it is stale),
+`bun test` and the other builds and test runs (they run the agent's own code), and `rg --pre`.
+A `gh pr` call is read option by option: a value belongs to its option (`--body`, `--title`,
+`--subject` and the rest), so a pull request URL inside a body is text and never selects a
+repository, and an option the floor does not know keeps the call asking. Every authority read
+shares one budget, the project's origin query included. A project whose `config.json` or
+`config.local.json` names `action_policy.floor`, true or false, in the raw file refuses an older
+recovery target, even where the key is ignored (a shared file may not set `action_policy`) or
+normalized away (`false`), because the older parser rejects the key before that rule runs.
+What it cannot see: the environment of a native agent's own process. The hub reads its own
+`GH_REPO` and `GH_HOST`, but a `GH_REPO` exported in a Claude, Codex or Kimi shell never
+reaches the hub. So for every peer whose environment the hub does not build (Claude,
+Codex, Kimi, Qwen, Jcode, agy) an unqualified `gh pr` call is never treated as the
+project's own and asks; only an explicit own `--repo`, `-R` or pull request URL runs.
+The local worker and Pi run commands in an environment the hub builds, so for them the
+unqualified call is judged on the facts the hub can read.
+
 The `gh` classes (#636, #756, #762). `publish`: `gh release create|upload|edit|delete`.
 `external-write`: `gh issue|pr|gist create|comment|edit|close|reopen|merge|review|delete`,
 `gh run rerun|cancel|delete`, `gh workflow run|enable|disable`, and `gh api` with a

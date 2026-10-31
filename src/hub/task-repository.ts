@@ -36,12 +36,8 @@ function boundedGit(dir: string, args: string[], isolated = false): string | und
   } catch { return undefined; } // Unknown identity never grants; never log remote URLs or stderr.
 }
 
-/** Actual project-local GitHub origin only, never task refs, a bare slug or global-config fallback. */
-export function githubOriginRepository(cwd: string): string | undefined {
-  let root: string;
-  try { root = realPath(cwd); } catch { return undefined; }
-  const reply = boundedGit(root, ["config", "--show-scope", "--get", "remote.origin.url"], true);
-  const remote = reply && /^(?:local|worktree)\t([^\r\n]+)\n$/.exec(reply)?.[1];
+/** The project-local GitHub repository a remote URL names, or undefined: only GitHub https, http or ssh URLs and scp forms, no query, no fragment, no whitespace. */
+export function githubRemoteRepository(remote: string): string | undefined {
   if (!remote || /[\s?#]/.test(remote)) return undefined;
   const scp = /^(?:[^/@:]+@)?github\.com:[^/]+\/[^/]+\/?$/i.test(remote);
   if (!scp) {
@@ -49,6 +45,15 @@ export function githubOriginRepository(cwd: string): string | undefined {
     try { const url = new URL(remote); if (url.search || url.hash) return undefined; } catch { return undefined; }
   }
   return slug(remote);
+}
+
+/** Actual project-local GitHub origin only, never task refs, a bare slug or global-config fallback. */
+export function githubOriginRepository(cwd: string): string | undefined {
+  let root: string;
+  try { root = realPath(cwd); } catch { return undefined; }
+  const reply = boundedGit(root, ["config", "--show-scope", "--get", "remote.origin.url"], true);
+  const remote = reply && /^(?:local|worktree)\t([^\r\n]+)\n$/.exec(reply)?.[1];
+  return remote ? githubRemoteRepository(remote) : undefined;
 }
 
 /** Repository metadata is advisory, never an execution root or a grant. Git reads are bounded, local and cached. */

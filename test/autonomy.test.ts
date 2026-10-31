@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { autonomyPreset, autonomyStatus, autonomyRemovalKeys, planAutonomy, validateAutonomyPreset, type AutonomyKindPreset, type AutonomyPreset, type AutonomySettingLookup } from "../src/hub/autonomy.ts";
+import { actionPolicyConfig, floorEnforcement, FLOOR_CLASSES } from "../src/hub/action-policy.ts";
 import { confirmationMatrix } from "../src/hub/confirmation-matrix.ts";
 
 import presetJson from "../templates/presets/autonomous.json";
@@ -14,11 +15,13 @@ test("a new environment is data in the one preset, including its inventory proje
   expect(planAutonomy("remote-ci", undefined, undefined, preset)).toEqual(planAutonomy("headless", undefined, undefined, preset));
 });
 
-test("the one shipped T1 preset covers every matrix kind without writing action policy", () => {
+test("the one shipped preset covers every matrix kind and writes only the floor key of action policy", () => {
   const preset = autonomyPreset(), matrix = confirmationMatrix();
   expect(validateAutonomyPreset(preset)).toEqual([]);
   expect(Object.keys(preset.kinds).sort()).toEqual(Object.keys(matrix.kinds).sort());
-  expect(Object.keys(preset.hub).some(key => key.startsWith("action_policy."))).toBe(false);
+  expect(Object.keys(preset.hub).filter(key => key.startsWith("action_policy."))).toEqual(["action_policy.floor"]);
+  expect(preset.hub["action_policy.floor"]).toBe(true);
+  expect(preset.floorClasses).toEqual([...FLOOR_CLASSES]);
   expect(preset.floorClasses).toHaveLength(8);
   for (const key of ["tasks.auto_pull", "task_sweep.enabled", "task_sweep.auto_reassign"]) expect(preset.hub[key]).toBe(true);
 });
@@ -119,9 +122,9 @@ test("status never suggests restarting a locked read-only peer into the wider pr
   expect(status!.missing.some(reason => reason.includes("restart the peer to use it"))).toBe(false);
 });
 
-test("a live pre-tool gate alone does not establish the unimplemented finer floor", () => {
+test("a live pre-tool gate alone does not establish the floor: a class needs the host verdict", () => {
   const [status] = autonomyStatus({ environment: "terminal", peers: [{ id: "claude", kind: "claude", form: "tui", permissionMode: "never-ask", actionEnforcement: { enforced: true } }], terminalOpener: { available: true } });
-  expect(status!.floor.every(entry => entry.status === "not-enforced" && entry.reason.includes("#582"))).toBe(true);
+  expect(status!.floor.every(entry => entry.status === "not-enforced" && entry.reason.includes("not established"))).toBe(true);
 });
 
 test("native bypass potential or missing live evidence never becomes an assumed structural guard", () => {
@@ -161,6 +164,32 @@ test("environment and unsupported native setup are explicit missing entries, nev
 test("off scope comes from shipped keys and host peers across all environments", () => {
   const keys = autonomyRemovalKeys([{ id: "codex", kind: "codex" }, { id: "kimi", kind: "kimi" }]);
   for (const key of ["permission_modes.codex", "permission.codex", "permission_modes.kimi", "tasks.auto_pull", "task_sweep.auto_reassign", "peers.codex.start_mode"]) expect(keys).toContain(key);
-  expect(keys.some(key => key.startsWith("action_policy."))).toBe(false);
+  expect(keys.filter(key => key.startsWith("action_policy."))).toEqual(["action_policy.floor"]);
   expect(() => autonomyRemovalKeys([{ id: "constructor.prototype", kind: "codex" }])).toThrow();
+});
+
+test("a host floor verdict makes a class hub-enforced only where the hub sees the call first and the policy asks for it", () => {
+  const seen = { enforced: true }, blind = { enforced: false, reason: "native policy can execute without a request" };
+  const hub = floorEnforcement(actionPolicyConfig({ floor: true }), seen);
+  expect(Object.keys(hub)).toEqual([...FLOOR_CLASSES]);
+  expect(Object.values(hub).every(row => row.status === "hub-enforced" && row.reason.includes("floor on"))).toBe(true);
+  const none = floorEnforcement(actionPolicyConfig({ floor: true }), blind);
+  expect(Object.values(none).every(row => row.status === "not-enforced" && row.reason.includes("native policy"))).toBe(true);
+  expect(none["force-push"]!.reason).toContain("GitHub branch protection");
+  expect(none["package-publish"]!.reason).toContain("no structural guard is named");
+  // Policy off, or a class dropped from always_ask without the floor: the hub does not ask, so nothing is enforced even where it sees the call.
+  expect(Object.values(floorEnforcement(actionPolicyConfig({ enabled: false }), seen)).every(row => row.status === "not-enforced" && row.reason.includes("disabled"))).toBe(true);
+  const dropped = floorEnforcement(actionPolicyConfig({ always_ask: ["install"] }), seen);
+  expect(dropped["release-publish"]).toMatchObject({ status: "not-enforced" });
+  expect(dropped["release-publish"]!.reason).toContain("omits publish");
+  // With the floor on the coarse selector cannot hand the floor's own classes back.
+  expect(Object.values(floorEnforcement(actionPolicyConfig({ floor: true, always_ask: [] }), seen)).every(row => row.status === "hub-enforced")).toBe(true);
+});
+
+test("status takes the host verdict, and a verdict does not outrank a missing pre-run visibility row", () => {
+  const verdict = floorEnforcement(actionPolicyConfig({ floor: true }), { enforced: true });
+  const [claude] = autonomyStatus({ environment: "terminal", peers: [{ id: "claude", kind: "claude", form: "tui", permissionMode: "never-ask", actionEnforcement: { enforced: true } }], terminalOpener: { available: true }, floorEnforcement: { claude: verdict } });
+  expect(claude!.floor.every(entry => entry.status === "hub-enforced")).toBe(true);
+  const [kimi] = autonomyStatus({ environment: "terminal", peers: [{ id: "kimi", kind: "kimi", form: "tui", actionEnforcement: { enforced: true } }], terminalOpener: { available: true }, floorEnforcement: { kimi: verdict } });
+  expect(kimi!.floor.every(entry => entry.status === "not-enforced")).toBe(true);
 });

@@ -6,7 +6,7 @@ export type ActionClass = typeof ACTION_CLASSES[number];
 const SHELL_TOOLS = new Set(["bash", "shell", "shell_command", "exec_command", "run_shell_command"]);
 const LIMIT = 16_384;
 /** `nested`: the commands of each substitution in the segment (`$(...)`, a backtick). They run in a subshell, so their `cd` never moves the outer cwd. */
-type Command = { words: string[]; outputs: string[]; nested?: Command[][] };
+type Command = { words: string[]; outputs: string[]; nested?: Command[][]; /** A redirect of any kind (`>`, `>>`, `<`, `>|`): its target is not recorded as a word, so a caller that needs to know whether the command writes anything must count it. */ redirected?: true };
 
 /** Bound the whole input before accepting any prefix, including unsupported suffixes. */
 function segmentLimit(text: string): boolean {
@@ -105,7 +105,7 @@ function commands(text: string, nest = 0): Command[] | undefined {
   if (text.length > LIMIT || text.includes("\0") || !segmentLimit(text)) return;
   const result: Command[] = [];
   let words: string[] = [], outputs: string[] = [], word = "", active = false, quote = "";
-  let redirect: false | "overwrite" | "skip" = false;
+  let redirect: false | "overwrite" | "skip" = false, redirected = false;
   const flush = () => {
     if (!active) return;
     if (redirect === "overwrite") outputs.push(word);
@@ -113,7 +113,7 @@ function commands(text: string, nest = 0): Command[] | undefined {
     word = ""; active = false; redirect = false;
   };
   let nested: Command[][] = [];
-  const finish = () => { flush(); if (words.length || outputs.length || nested.length) result.push({ words, outputs, ...(nested.length ? { nested } : {}) }); words = []; outputs = []; nested = []; };
+  const finish = () => { flush(); if (words.length || outputs.length || nested.length) result.push({ words, outputs, ...(nested.length ? { nested } : {}), ...(redirected ? { redirected: true as const } : {}) }); words = []; outputs = []; nested = []; redirected = false; };
   for (let i = 0; i < text.length; i++) {
     const c = text[i]!;
     if (quote === "'") { if (c === "'") quote = ""; else word += c; continue; }
@@ -149,6 +149,7 @@ function commands(text: string, nest = 0): Command[] | undefined {
         i += 1 + duplicate[0].length; continue;
       }
       redirect = c === "<" || text[i + 1] === ">" ? "skip" : "overwrite";
+      redirected = true;
       if (text[i + 1] === ">" || text[i + 1] === "|") i++;
       continue;
     }
@@ -428,10 +429,169 @@ function curlWrites(input: string[]): boolean {
   return writes();
 }
 
-function sequence(parsed: Command[], root: string, initial: string[], found: Set<ActionClass>, depth = 0): void {
+/**
+ * #999 T3, the floor policy: what the classifier needs to tell an ordinary branch push or own-repository pull request from a release-grade one.
+ * The classifier stays pure, so the host supplies these facts. A fact that is missing is unknown, and unknown keeps the strictest class (#762).
+ * Without a `FloorFacts` argument nothing here runs and every class is exactly what it was before the floor existed.
+ */
+export interface FloorFacts {
+  /** The default branch from the authoritative remote read. Without it every push still asks. */
+  defaultBranch?: string;
+  /** The project's own GitHub repository, `owner/name`. Without it a `--repo` flag still asks. */
+  repository?: string;
+  /** Whether a local tag of that name exists in `cwd`: `false` only when git proved there is none. */
+  refIsTag?: (name: string, cwd: string) => boolean | undefined;
+  /** The branch checked out in `cwd`, or undefined when detached or unknown. */
+  currentBranch?: (cwd: string) => string | undefined;
+  /** Whether `cwd` is inside the project's own git repository (its top level is the execution root), so `origin` and `gh` mean the project's remote. `true` only when proven: a nested clone has another `origin`. */
+  inOwnRepository?: (cwd: string) => boolean | undefined;
+  /**
+   * Whether a plain `git push origin <branch>` from `cwd` can only write the project's own repository and only the named branch: every effective push URL of `origin`
+   * (`remote.origin.pushurl`, `url.*.pushInsteadOf`) is the project's repository, and no configuration can add refs to the push (`push.followTags`, `push.pushOption`,
+   * `remote.origin.push`, `remote.origin.mirror`), and the hub's own environment overrides none of it. `true` only when proven.
+   */
+  pushIsOwn?: (cwd: string) => boolean | undefined;
+  /**
+   * Whether `gh` run in `cwd` with no `--repo` resolves to the project's own repository: the checkout has no remote but `origin`, its `gh-resolved` marker does not name another
+   * repository, and neither `GH_REPO` nor `GH_HOST` is set in the hub's environment. `true` only when proven.
+   */
+  ghDefaultIsOwn?: (cwd: string) => boolean | undefined;
+}
+/** The only `git push` options the floor lets through. Force, delete, tags, mirror, prune, no-verify, push options and another repository all ask. */
+const FLOOR_PUSH_LONG = new Set(["--set-upstream", "--quiet", "--verbose", "--dry-run", "--porcelain", "--atomic", "--progress", "--no-progress"]);
+const FLOOR_PUSH_SHORT = "uqvn";
+const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+const plainBranch = (name: string): boolean => BRANCH_NAME.test(name) && !name.includes("..") && !name.includes("//") && !name.endsWith("/") && !name.endsWith(".lock") && name !== "HEAD";
+const isDefaultBranch = (name: string, floor: FloorFacts): boolean => ["main", "master", floor.defaultBranch ?? ""].some(known => known !== "" && known.toLowerCase() === name.toLowerCase());
+/** Every candidate cwd is a known directory inside the execution root: `cd /elsewhere`, `cd $X` and `cd ~` leave the floor. */
+const withinRoot = (root: string, cwd: string[]): boolean => isAbsolute(root) && cwd.length > 0 && cwd.every(at => at !== "" && !outside(".", root, at));
+/** One push refspec is an ordinary branch push: literal, unforced, a non-default branch that git cannot read as a tag or another ref type. */
+function floorRefspec(spec: string, cwd: string[], floor: FloorFacts): boolean {
+  if (!floor.defaultBranch || spec.startsWith("+") || spec.startsWith("-") || opaque(spec)) return false;
+  const parts = spec.split(":");
+  if (parts.length > 2 || parts.some(part => part === "")) return false;       // `:branch` deletes, and `x:` or `a:b:c` is no refspec
+  const [src, dst] = parts as [string, string | undefined];
+  const target = dst ?? src;
+  const names: Array<{ name: string; qualified: boolean }> = [];
+  if (dst === undefined && src === "HEAD") {
+    for (const at of cwd) { const branch = floor.currentBranch?.(at); if (!branch) return false; names.push({ name: branch, qualified: true }); }
+  } else {
+    const qualified = target.startsWith("refs/heads/");
+    if (target.startsWith("refs/") && !qualified) return false;                 // refs/tags/, refs/notes/, refs/pull/ ...
+    names.push({ name: qualified ? target.slice("refs/heads/".length) : target, qualified });
+  }
+  for (const { name, qualified } of names) {
+    if (!plainBranch(name) || isDefaultBranch(name, floor)) return false;
+    if (qualified) continue;
+    // Git reads `heads/main` as refs/heads/main and `tags/v1` as a tag, and a bare name that is also a tag is ambiguous: only a proven non-tag passes.
+    if (["heads", "tags", "remotes", "refs"].includes(name.split("/")[0]!)) return false;
+    if (cwd.some(at => floor.refIsTag?.(name, at) !== false)) return false;
+  }
+  // `src:dst` with an unqualified dst takes its type from src: a source that may be a tag would push a tag. A qualified source is the ref it names (`refs/tags/v1` is a tag, never probed
+  // as a branch called `refs/tags/v1`), and a bare source with a ref-type prefix (`tags/v1`, `heads/x`, `remotes/...`) is not a plain branch name either.
+  if (dst !== undefined && src !== "HEAD" && (!dst.startsWith("refs/") || src.startsWith("refs/"))) {
+    if (src.startsWith("refs/")) { if (!src.startsWith("refs/heads/") || !plainBranch(src.slice("refs/heads/".length))) return false; }
+    else if (!plainBranch(src) || ["heads", "tags", "remotes", "refs"].includes(src.split("/")[0]!) || cwd.some(at => floor.refIsTag?.(src, at) !== false)) return false;
+  }
+  return true;
+}
+/** `git push` the floor does not ask about: an unforced push of non-default branches to `origin`, from inside the execution root. */
+function floorPush(globals: string[], args: string[], root: string, cwd: string[], floor: FloorFacts): boolean {
+  if (!withinRoot(root, cwd) || cwd.some(at => floor.inOwnRepository?.(at) !== true || floor.pushIsOwn?.(at) !== true)) return false;
+  let at = cwd;                                                                 // where git runs: `-C dir` moves it, and the tag and branch reads follow
+  let moved = false;
+  for (let i = 0; i < globals.length; i++) {
+    const option = globals[i]!;
+    if (["--no-pager", "-P", "-p", "--paginate", "--no-optional-locks"].includes(option)) continue;
+    if (option !== "-C" || moved) return false;                                 // -c, --git-dir, --work-tree and the rest can point `origin` anywhere
+    const dir = globals[++i];
+    if (!dir || opaque(dir) || cwd.some(from => outside(dir, root, from))) return false;
+    at = cwd.map(from => resolve(from, dir));
+    if (at.some(where => floor.inOwnRepository?.(where) !== true || floor.pushIsOwn?.(where) !== true)) return false;   // `-C` into a nested clone reaches that clone's origin
+    moved = true;
+  }
+  const operands: string[] = [];
+  let literal = false;
+  for (const arg of args) {
+    if (opaque(arg)) return false;
+    if (!literal && arg === "--") { literal = true; continue; }
+    if (!literal && arg.startsWith("--")) { if (!FLOOR_PUSH_LONG.has(arg)) return false; continue; }
+    if (!literal && /^-[^-]/.test(arg)) { if (![...arg.slice(1)].every(flag => FLOOR_PUSH_SHORT.includes(flag))) return false; continue; }
+    operands.push(arg);
+  }
+  const [remote, ...specs] = operands;
+  // A bare `git push` or `git push origin` follows push.default and may reach the default branch: it keeps asking.
+  return remote === "origin" && specs.length > 0 && specs.every(spec => floorRefspec(spec, at, floor));
+}
+/**
+ * The options of each `gh pr` subcommand the floor knows, with their arity: a value belongs to its option and never names a repository (a `--body` that holds a pull request URL is text, not a selector).
+ * An option not listed here is unknown, and an unknown option keeps the call asking: it may take a value the floor would then misread as a positional or a selector.
+ * `-R` and `--repo` are handled apart. Sources: `gh pr create|comment|review|merge --help`.
+ */
+const GH_PR_OPTIONS: Readonly<Record<string, { readonly flags: readonly string[]; readonly values: readonly string[] }>> = {
+  comment: { flags: ["-e", "--editor", "-w", "--web", "--edit-last", "--delete-last", "--create-if-none", "--yes"], values: ["-b", "--body", "-F", "--body-file"] },
+  create: { flags: ["-d", "--draft", "--dry-run", "-f", "--fill", "--fill-first", "--fill-verbose", "-w", "--web", "--no-maintainer-edit"],
+    values: ["-a", "--assignee", "-B", "--base", "-b", "--body", "-F", "--body-file", "-H", "--head", "-l", "--label", "-m", "--milestone", "-p", "--project", "-r", "--reviewer", "-T", "--template", "-t", "--title", "--recover"] },
+  review: { flags: ["-a", "--approve", "-c", "--comment", "-r", "--request-changes"], values: ["-b", "--body", "-F", "--body-file"] },
+  merge: { flags: ["--auto", "-d", "--delete-branch", "--disable-auto", "-m", "--merge", "-r", "--rebase", "-s", "--squash"], values: ["-A", "--author-email", "-b", "--body", "-F", "--body-file", "--match-head-commit", "-t", "--subject"] },
+};
+/** `gh pr create|comment|review|merge` the floor does not ask about: the project's own repository, never an admin merge, never a foreign URL. */
+function floorPullRequest(sub: string, args: string[], root: string, cwd: string[], floor: FloorFacts): boolean {
+  const own = floor.repository?.toLowerCase(), options = GH_PR_OPTIONS[sub];
+  if (!own || !options || !withinRoot(root, cwd) || cwd.some(at => floor.inOwnRepository?.(at) !== true)) return false;   // an unknown repository is not the project's own
+  const sameRepository = (value: string | undefined): boolean => !!value && !opaque(value) && value.toLowerCase() === own;
+  let explicit = false;                                                          // the call names the project's own repository itself, so gh's default and GH_REPO do not matter
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (opaque(arg) || arg === "--admin" || arg.startsWith("--admin=")) return false;
+    if (arg === "-R" || arg === "--repo") { if (!sameRepository(args[++i])) return false; explicit = true; continue; }
+    if (arg.startsWith("--repo=")) { if (!sameRepository(arg.slice("--repo=".length))) return false; explicit = true; continue; }
+    if (/^-R./.test(arg)) { if (!sameRepository(arg.slice(2))) return false; explicit = true; continue; }
+    if (arg.startsWith("-")) {
+      const [name] = arg.split("=", 1) as [string], inline = arg.includes("=");
+      if (options.values.includes(name)) { if (!inline) { if (i + 1 >= args.length) return false; i++; } continue; }   // the value is the option's: never a selector, and not looked at again
+      if (options.flags.includes(arg)) continue;
+      return false;                                                                // `--`, a cluster, an option the floor does not know: unknown is strict
+    }
+    // A positional: a pull request number or branch, or a URL, which can be another repository's.
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(arg)) {
+      const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/[0-9]+\/?$/.exec(arg);
+      if (!sameRepository(match?.[1])) return false;
+      explicit = true;
+    }
+  }
+  // With no selector gh picks its own default (`gh repo set-default`, another remote, GH_REPO): only a proven own default passes.
+  return explicit || cwd.every(at => floor.ghDefaultIsOwn?.(at) === true);
+}
+
+/**
+ * Commands that cannot change what the floor's facts were read from (git configuration, the checked-out branch, remotes, gh's default repository, the environment). A command
+ * earlier on the same line that is anything else ends the floor for the rest of that line: the facts were read before it ran.
+ */
+const FLOOR_INERT_GIT = new Set(["add", "commit", "status", "diff", "log", "show", "rm", "mv", "blame", "ls-files", "rev-parse", "describe", "shortlog"]);
+const FLOOR_INERT_PROGRAMS = new Set(["echo", "printf", "true", "false", ":", "ls", "pwd", "cat", "head", "tail", "wc", "rg", "grep", "test", "[", "sleep", "cd", "diff", "stat", "file", "tree", "find"]);
+function floorInert(command: Command, root: string, cwd: string[], floor: FloorFacts): boolean {
+  if (command.outputs.length > 0 || command.redirected || command.nested?.length) return false;   // any redirect may write .git/config (`>>` is not an output of the destroy rule); a substitution runs commands of its own
+  if (unwrapped(command.words).length !== command.words.length) return false;   // `env X=1 ...`, `sudo`, `VAR=x cmd`
+  const [name, ...args] = command.words;
+  if (!name || opaque(name) || command.words.some(opaque)) return false;
+  const program = basename(name);
+  if (program === "git") {
+    const heads = commandHeads(args, ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"], ["-P", "-p", "--no-pager", "--paginate", "--literal-pathspecs", "--bare", "--no-optional-locks", "--no-replace-objects"], ["push"]);
+    if (heads.length !== 1 || args.includes("-c") || args.some(arg => arg.startsWith("--config-env"))) return false;
+    // A push the floor itself lets through only writes remote refs and, with `-u`, this branch's upstream: none of what the floor reads (push destination, tag and push settings, the default repository).
+    if (heads[0]!.name === "push") return floorPush(args.slice(0, args.length - heads[0]!.args.length - 1), heads[0]!.args, root, cwd, floor);
+    return FLOOR_INERT_GIT.has(heads[0]!.name);
+  }
+  return FLOOR_INERT_PROGRAMS.has(program) && !(program === "find" && args.some(arg => ["-delete", "-exec", "-execdir", "-ok", "-fprint", "-fls"].includes(arg))) && !(program === "rg" && args.some(arg => arg === "--pre" || arg.startsWith("--pre=")));
+}
+
+function sequence(parsed: Command[], root: string, initial: string[], found: Set<ActionClass>, depth = 0, floor?: FloorFacts): void {
   const cwd = new Set(initial);
+  let facts = floor;
   for (const command of parsed) {
-    classify(command, root, [...cwd], found, depth);
+    classify(command, root, [...cwd], found, depth, facts);
+    if (facts && !floorInert(command, root, [...cwd], facts)) facts = undefined;
     const [program, ...args] = unwrapped(command.words);
     const target = args[0] === "--" ? args[1] : args[0];
     // Retain both outcomes: cd may fail, or be in a pipeline/conditional branch.
@@ -447,8 +607,10 @@ function sequence(parsed: Command[], root: string, initial: string[], found: Set
     }
   }
 }
-function classify(command: Command, root: string, cwd: string[], found: Set<ActionClass>, depth = 0): void {
-  for (const group of command.nested ?? []) sequence(group, root, cwd, found, depth);   // a substitution's own cwd state; only its classes come back
+function classify(command: Command, root: string, cwd: string[], found: Set<ActionClass>, depth = 0, floor?: FloorFacts): void {
+  for (const group of command.nested ?? []) sequence(group, root, cwd, found, depth, floor);   // a substitution's own cwd state; only its classes come back
+  // The floor applies only to a bare command: `env X=1 git push`, `GIT_SSH_COMMAND=... git push`, `sudo`, `timeout`, `if` and the other wrappers `unwrapped` peels can redirect or re-time a push the floor cannot read.
+  const bare = floor !== undefined && unwrapped(command.words).length === command.words.length;
   const words = unwrapped(command.words);
   const program = basename(words.shift() ?? "");
   if (["sh", "bash", "zsh"].includes(program) && depth < 2) {
@@ -458,7 +620,8 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
     if (mode && /^-[A-Za-z]*c[A-Za-z]*$/.test(mode)) {
       if (shell[0] === "--") shell.shift();
       const nested = shell[0] === undefined ? undefined : commands(shell[0].replaceAll(OPAQUE, "$_"));
-      if (nested) sequence(nested, root, cwd, found, depth + 1);
+      // A wrapped shell (`env GH_REPO=x sh -c '...'`) runs its text under whatever the wrapper set: the floor's authority does not reach inside it.
+      if (nested) sequence(nested, root, cwd, found, depth + 1, bare ? floor : undefined);
     }
   }
   if (command.outputs.some(p => cwd.some(at => outside(p, root, at)))) found.add("destroy");
@@ -467,7 +630,7 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
       ["-P", "-p", "--no-pager", "--paginate", "--literal-pathspecs", "--bare", "--no-optional-locks", "--no-replace-objects"], ["push", "reset", "clean", "branch"]);
     if (heads.some(head => opaque(head.name))) { found.add("publish"); found.add("destroy"); }   // `git $CMD`: the strictest classes git reaches (#762)
     for (const { name: sub, args } of heads) {
-      if (sub === "push") found.add("publish");
+      if (sub === "push" && !(bare && floorPush(words.slice(0, words.length - args.length - 1), args, root, cwd, floor!))) found.add("publish");
       if (sub === "reset" && (args.some(w => w === "--hard" || w.startsWith("--hard=")) || mayBeFlag(args))) found.add("destroy");
       if (sub === "clean" && forcedClean(args)) found.add("destroy");
       if (sub === "branch" && (flags(args, "D") || args.includes("--delete") && args.includes("--force") || mayBeFlag(args))) found.add("destroy");
@@ -498,7 +661,11 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
   if (program === "pipx" && words[0] === "install" || program === "brew" && ["install", "reinstall"].includes(words[0] ?? "") || ["pip", "pip3"].includes(program) && words[0] === "install" && words.includes("--user")) found.add("install");
   if (program === "gh") {
     if (words[0] === "release" && ["create", "upload", "edit", "delete"].includes(words[1] ?? "")) found.add("publish");
-    if (["issue", "pr", "gist"].includes(words[0] ?? "") && ["create", "comment", "edit", "close", "reopen", "merge", "review", "delete"].includes(words[1] ?? "")) found.add("external-write");
+    if (["issue", "pr", "gist"].includes(words[0] ?? "") && ["create", "comment", "edit", "close", "reopen", "merge", "review", "delete"].includes(words[1] ?? "")) {
+      // Floor: a pull request in the project's own repository is ordinary work. Issues, gists, edits, closes and deletes keep asking.
+      const ordinary = bare && words[0] === "pr" && ["create", "comment", "review", "merge"].includes(words[1]!) && floorPullRequest(words[1]!, words.slice(2), root, cwd, floor!);
+      if (!ordinary) found.add("external-write");
+    }
     if (opaque(words[0])) { found.add("publish"); found.add("external-write"); }   // `gh $GROUP ...`: the strictest classes gh reaches (#762)
     else if (opaque(words[1]) && ["release"].includes(words[0] ?? "")) found.add("publish");
     else if (opaque(words[1]) && ["issue", "pr", "gist", "run", "workflow", "repo", "secret", "variable", "label"].includes(words[0] ?? "")) found.add("external-write");
@@ -529,7 +696,7 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
  * Literal cd retains both success/failure cwd candidates (at most 128); it may
  * overclassify a later relative write and is not a shell control-flow proof.
  */
-export function classifyAction(tool: string, args: unknown, executionRoot: string): ActionClass[] {
+export function classifyAction(tool: string, args: unknown, executionRoot: string, floor?: FloorFacts): ActionClass[] {
   if (typeof tool !== "string" || tool.length > 128 || typeof executionRoot !== "string" || executionRoot.length > LIMIT) return [];
   if (typeof args === "string") {
     if (args.length > LIMIT) return [];
@@ -542,14 +709,14 @@ export function classifyAction(tool: string, args: unknown, executionRoot: strin
   const boundedArgv = (value: unknown): value is string[] => Array.isArray(value) && value.length <= 256 && value.every(w => typeof w === "string" && w.length <= LIMIT) && value.join("").length <= LIMIT;
   const location = input.cwd ?? input.workdir;
   const cwd = typeof location === "string" && location.startsWith("~") ? "" : typeof location === "string" && location.length <= LIMIT && !/[$`]/.test(location) ? resolve(executionRoot, location) : executionRoot;
-  if (tool.toLowerCase() === "git" && boundedArgv(input.args)) classify({ words: ["git", ...input.args], outputs: [] }, executionRoot, [cwd], found);
+  if (tool.toLowerCase() === "git" && boundedArgv(input.args)) classify({ words: ["git", ...input.args], outputs: [] }, executionRoot, [cwd], found, 0, floor);
   if (SHELL_TOOLS.has(tool.toLowerCase())) {
     const raw = input.command ?? input.cmd;
     if (typeof raw === "string") {
       const parsed = commands(raw);
-      if (parsed) sequence(parsed, executionRoot, [cwd], found);
+      if (parsed) sequence(parsed, executionRoot, [cwd], found, 0, floor);
     } else if (boundedArgv(raw)) {
-      classify({ words: raw, outputs: [] }, executionRoot, [cwd], found);
+      classify({ words: raw, outputs: [] }, executionRoot, [cwd], found, 0, floor);
     }
   }
   return ACTION_CLASSES.filter(value => found.has(value));
