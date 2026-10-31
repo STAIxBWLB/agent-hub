@@ -177,6 +177,9 @@ export function createProvider(options: { home: string; registry?: Registry; lif
           chip: { text: "review", tone: "neutral" }, verbs: [{ id: "open", label: "Open board", primary: true }], link: { panel: "board" } });
       }
     }
+    // Forget ids that left the inbox, so `seen` stays the size of what is waiting now.
+    const current = new Set(items.map((item) => item.id));
+    for (const id of seen.keys()) if (!current.has(id)) seen.delete(id);
     return items;
   }
 
