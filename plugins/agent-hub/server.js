@@ -308,12 +308,12 @@ var init_compat = __esm(() => {
     },
     "claude-implementer": {
       label: "Claude headless implementer",
-      verified: ["2.1.309", "2.1.310"],
+      verified: ["2.1.309", "2.1.310", "2.1.314"],
       gate: "contract",
       probe: ["claude", "--version"],
       parse: (out) => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
       trustNote: "The native prompt-tool transport and host-wrapper rewrite, environment isolation and replay contract have isolated receipts. No dontAsk/bypass fallback exists; another version's permission or rewrite behavior is unverified.",
-      receipt: "docs/verification/2026-10-26-headless-claude-shell-context.md"
+      receipt: "docs/verification/2026-10-31-claude-implementer-2.1.314.md"
     },
     "codex-review": {
       label: "Codex reviewer (codex-cli)",
