@@ -823,14 +823,16 @@ export class Board {
   saveExperimentProtocol(record: ExperimentProtocolRecord, fence: ExperimentWriteFence): ExperimentProtocolRecord {
     const protocol = parseExperimentProtocol(record.protocol), hash = protocolHash(protocol);
     if (hash !== record.hash || record.project !== fence.project || record.recordedForTaskId !== fence.taskId || record.by !== fence.owner || !researchInteger(record.at, 0) || typeof record.private !== "boolean") throw experimentFailure();
-    // T1 records immutable first protocols; validated lineage/supersession approval belongs to #599.
-    if (protocol.supersedes !== undefined) throw new Error("protocol revision linkage requires the comparison/review binding slice");
     return this.atomic(() => {
       const { task, campaign } = this.experimentFence(fence);
       if (protocol.campaignId !== campaign.id || protocol.campaignRevision !== campaign.revision || protocol.inputs.some(input => !campaign.contract.sourceIds.includes(input.sourceId))) throw experimentFailure();
       if (protocol.variantOf !== undefined) {
         const baseline = this.experimentProtocol(protocol.variantOf);
         if (!baseline || baseline.project !== record.project || baseline.protocol.campaignId !== campaign.id || baseline.protocol.campaignRevision !== campaign.revision || baseline.protocol.role !== "baseline") throw experimentFailure();
+      }
+      if (protocol.supersedes !== undefined) {
+        const previous = this.experimentProtocol(protocol.supersedes);
+        if (!previous || previous.project !== record.project || previous.protocol.campaignId !== campaign.id || previous.protocol.lineage !== protocol.lineage) throw experimentFailure();
       }
       const priv = record.private || campaign.private || task.signals.some(signal => signal === "pii" || signal === "pii_path");
       const previous = this.experimentProtocol(hash);

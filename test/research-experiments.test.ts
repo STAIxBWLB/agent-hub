@@ -265,3 +265,13 @@ for (const change of ["owner", "source-hash", "source-privacy", "campaign", "rec
     finally { f.bus.setRecoveryHold(false); }
   }, 20_000);
 }
+
+test("#932 protocol supersession records a new immutable declared body without approving it", async () => {
+  const f=await fixture(), original=f.protocol(), hash=await saveProtocol(f,"codex",original);
+  const changed={...original,method:"A newly declared protocol",supersedes:hash};
+  const next=await saveProtocol(f,"codex",changed);
+  expect(next).not.toBe(hash);
+  expect(f.board.experimentProtocol(hash)!.protocol).toEqual(original);
+  expect(f.board.experimentProtocol(next)!.protocol).toEqual(changed);
+  await expect(saveProtocol(f,"codex",{...changed,lineage:"foreign-lineage"})).rejects.toThrow();
+});
