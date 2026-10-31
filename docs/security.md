@@ -290,6 +290,12 @@ ordinary asks. A wrapper takes the floor away from a shell it wraps, and a comma
 on the same line that can change those facts ends the floor for the rest of the line. That
 includes `git fetch` (it creates tags and moves remotes, so a tag probe read before it is stale),
 `bun test` and the other builds and test runs (they run the agent's own code), and `rg --pre`.
+A `find` with any action that writes a file or runs a command (`-fprintf`, `-fprint`, `-fprint0`, `-fls`,
+`-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`) is not inert either: `-fprintf .git/config` can rewrite a
+push destination. An option's value that holds an expansion or a glob character (`--body $(cat f)`,
+`--body */*`) keeps the call asking, because it can become several words, one of them a real
+`--repo`. That glob test does not see quoting, so a prose `--body` holding `*`, `?` or `[` also asks
+(a `ponytail:` in `src/hub/action-class.ts` names the upgrade).
 A `gh pr` call is read option by option: a value belongs to its option (`--body`, `--title`,
 `--subject` and the rest), so a pull request URL inside a body is text and never selects a
 repository, and an option the floor does not know keeps the call asking. Every authority read

@@ -549,7 +549,13 @@ function floorPullRequest(sub: string, args: string[], root: string, cwd: string
     if (/^-R./.test(arg)) { if (!sameRepository(arg.slice(2))) return false; explicit = true; continue; }
     if (arg.startsWith("-")) {
       const [name] = arg.split("=", 1) as [string], inline = arg.includes("=");
-      if (options.values.includes(name)) { if (!inline) { if (i + 1 >= args.length) return false; i++; } continue; }   // the value is the option's: never a selector, and not looked at again
+      if (options.values.includes(name)) {
+        // The value is the option's: never a selector. But an expansion or a glob in it can become several words, one of them a real `-R`/`--repo`, so it is judged before it is skipped.
+        const value = inline ? arg.slice(name.length + 1) : args[i + 1];
+        if (value === undefined || opaque(value) || globby(value)) return false;
+        if (!inline) i++;
+        continue;
+      }
       if (options.flags.includes(arg)) continue;
       return false;                                                                // `--`, a cluster, an option the floor does not know: unknown is strict
     }
@@ -569,6 +575,14 @@ function floorPullRequest(sub: string, args: string[], root: string, cwd: string
  * earlier on the same line that is anything else ends the floor for the rest of that line: the facts were read before it ran.
  */
 const FLOOR_INERT_GIT = new Set(["add", "commit", "status", "diff", "log", "show", "rm", "mv", "blame", "ls-files", "rev-parse", "describe", "shortlog"]);
+/** Every `find` primary that writes a file or runs a command: `-fprintf` and the other `-f*` actions create or truncate a named file (`.git/config` included), the `-exec` family runs code, `-delete` removes. */
+const FIND_WRITERS = new Set(["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]);
+/**
+ * A glob character: the shell may expand an unquoted one into several words, so the value is not the one it looks like.
+ * ponytail: the tokenizer drops quote state, so a quoted `--body "why?"` or a markdown `* item` is judged like an unquoted glob and asks. Ceiling: a prose body with `*`, `?` or `[`
+ * asks even where the shell would not expand it. Upgrade path: have `commands` mark a word that held an unquoted glob character, then test that mark here.
+ */
+const globby = (word: string): boolean => /[*?[]/.test(word);
 const FLOOR_INERT_PROGRAMS = new Set(["echo", "printf", "true", "false", ":", "ls", "pwd", "cat", "head", "tail", "wc", "rg", "grep", "test", "[", "sleep", "cd", "diff", "stat", "file", "tree", "find"]);
 function floorInert(command: Command, root: string, cwd: string[], floor: FloorFacts): boolean {
   if (command.outputs.length > 0 || command.redirected || command.nested?.length) return false;   // any redirect may write .git/config (`>>` is not an output of the destroy rule); a substitution runs commands of its own
@@ -583,7 +597,7 @@ function floorInert(command: Command, root: string, cwd: string[], floor: FloorF
     if (heads[0]!.name === "push") return floorPush(args.slice(0, args.length - heads[0]!.args.length - 1), heads[0]!.args, root, cwd, floor);
     return FLOOR_INERT_GIT.has(heads[0]!.name);
   }
-  return FLOOR_INERT_PROGRAMS.has(program) && !(program === "find" && args.some(arg => ["-delete", "-exec", "-execdir", "-ok", "-fprint", "-fls"].includes(arg))) && !(program === "rg" && args.some(arg => arg === "--pre" || arg.startsWith("--pre=")));
+  return FLOOR_INERT_PROGRAMS.has(program) && !(program === "find" && args.some(arg => FIND_WRITERS.has(arg) || /^-f(?:print|ls)/.test(arg))) && !(program === "rg" && args.some(arg => arg === "--pre" || arg.startsWith("--pre=")));
 }
 
 function sequence(parsed: Command[], root: string, initial: string[], found: Set<ActionClass>, depth = 0, floor?: FloorFacts): void {
