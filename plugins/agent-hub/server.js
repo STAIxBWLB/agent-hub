@@ -10122,29 +10122,6 @@ var init_general = __esm(() => {
   };
 });
 
-// src/hub/task-code-symbols.ts
-var HOST_CODE_SYMBOLS;
-var init_task_code_symbols = __esm(() => {
-  HOST_CODE_SYMBOLS = Symbol("host task code symbols");
-});
-
-// src/hub/planning.ts
-var init_planning = __esm(() => {
-  init_sdlc();
-});
-// src/hub/deliverables.ts
-var DELIVERABLE_LIMITS;
-var init_deliverables = __esm(() => {
-  DELIVERABLE_LIMITS = Object.freeze({
-    count: 16,
-    fileBytes: 256 * 1024 * 1024,
-    totalBytes: 512 * 1024 * 1024,
-    pathChars: 512,
-    formatChars: 32,
-    versionChars: 64
-  });
-});
-
 // templates/roles/dev/software-architect.md
 var software_architect_default = `---
 id: software-architect
@@ -10874,16 +10851,1033 @@ var init_packs = __esm(() => {
   init_workflow();
 });
 
-// src/hub/research-campaign.ts
+// node_modules/@staix/agent-mem/src/memory/mutation.ts
+var mutations;
+var init_mutation = __esm(() => {
+  init_platform();
+  mutations = new WeakMap;
+});
+
+// node_modules/@staix/agent-mem/src/memory/lifecycle-log.ts
+var MAX_LOG_BYTES;
+var init_lifecycle_log = __esm(() => {
+  MAX_LOG_BYTES = 8 * 1024 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/aliases.ts
+var init_aliases = __esm(() => {
+  init_lifecycle_log();
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard.ts
+var init_shard = __esm(() => {
+  init_public_prune_view();
+  init_generation();
+  init_aliases();
+  init_aliases();
+});
+
+// node_modules/@staix/agent-mem/src/memory/public-prune-input-chain.ts
+var PUBLIC_PRUNE_REPLAY_MAX_BYTES;
+var init_public_prune_input_chain = __esm(() => {
+  init_generation();
+  init_platform();
+  PUBLIC_PRUNE_REPLAY_MAX_BYTES = 256 * 1024 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/generation.ts
+var init_generation = __esm(() => {
+  init_public_prune_view();
+  init_mutation();
+  init_platform();
+  init_shard();
+  init_public_prune_input_chain();
+});
+
+// node_modules/@staix/agent-mem/src/memory/public-prune-view.ts
+var init_public_prune_view = __esm(() => {
+  init_generation();
+  init_platform();
+});
+
+// node_modules/@staix/agent-mem/src/memory/ops-contract.ts
+function current(op, fields, required, placement, targets, precedence, legacyOptional = []) {
+  const keys = [...Object.keys(base), ...required];
+  return Object.freeze({
+    status: "v1-equal",
+    implemented: true,
+    payloadVersion: "agent-hub.memory/v1",
+    required: keys,
+    payloadSchema: { version: 1, required: keys, fields: { ...base, op: { type: "string", values: [op] }, ...fields }, legacyOptional },
+    immutableTargets: targets,
+    placement,
+    precedence,
+    identity,
+    crashBoundary: crash,
+    fixtures: [`v1-${op}`]
+  });
+}
+function ordinaryOp(op, placement, targets, precedence, dated = false) {
+  const hasBy = !["forget", "confirm", "reject"].includes(op);
+  const by = dated ? utc : op === "supersede" ? id : op === "goal_state" ? { type: "string", values: ["open", "active", "blocked", "done", "dropped"] } : text;
+  return current(op, { target: op === "settle" ? { ...text, maxLength: 400 } : id, actor: text, ...hasBy ? { by } : {} }, ["target", "actor", ...hasBy ? ["by"] : []], placement, targets, precedence, ["actor"]);
+}
+function blocked(op) {
+  return Object.freeze({
+    status: "truth-changing",
+    implemented: false,
+    payloadVersion: "unimplemented",
+    required: [],
+    payloadSchema: null,
+    immutableTargets: "not defined: no writer",
+    placement: "future generation only; never local or synced shared-v1 segments",
+    precedence: "not defined: person-run generation migration and contracts required first",
+    identity: "not defined: no payload is emitted",
+    crashBoundary: "refused before authoritative append",
+    fixtures: [`deny-${op}`]
+  });
+}
+var text, id, utc, strings, base, identity = "sha256(canonical complete payload without id), first 32 hex; schema, at and machine participate; replay INSERT OR IGNORE", crash = "complete newline is authoritative; append precedes derived-index refresh; incomplete tail waits; refresh/rebuild recovers a complete append", v1, V1_OPS, OP_CONTRACTS, generationId, authoredHash, canonicalUtc, pruneRequired, PRUNE_GENERATION_CONTRACT, VAULT_LINK_GENERATION_CONTRACT, GENERATION_OP_CONTRACTS;
+var init_ops_contract = __esm(() => {
+  text = { type: "string" };
+  id = { type: "string", format: "id" };
+  utc = { type: "string", format: "utc" };
+  strings = { type: "string-array" };
+  base = {
+    schema: { type: "string", values: ["agent-hub.memory/v1"] },
+    op: text,
+    id,
+    at: utc,
+    machine: { type: "string", maxLength: 64 }
+  };
+  v1 = {
+    note: current("note", {
+      project: { type: "string", maxLength: 400 },
+      scope: { type: "string", values: ["project", "shared"] },
+      tier: { type: "string", values: ["short", "long"] },
+      kind: { type: "string", values: ["decision", "finding", "contract", "fail"] },
+      peer: { type: "string", maxLength: 64 },
+      title: text,
+      text,
+      task: text,
+      about: strings,
+      supersedes: id,
+      promotedFrom: id,
+      source: { type: "string", values: ["hub", "person", "claude-mem"] },
+      expires: utc
+    }, ["project", "scope", "tier", "kind", "peer", "text", "about", "source"], "short -> local; long -> synced", "optional supersedes and promotedFrom are full immutable entry ids; about nodes and task keys retain v1 identity", "newest at/id first; note supersedes joins supersede ops; promoted source hidden; expiry trusts wall clock (declared C05 rollback ceiling)", ["source"]),
+    forget: ordinaryOp("forget", "follows target authored segment: local when target.local, synced otherwise", "target entry id, promotion ancestry included", "forget wins independent of timestamp; never edits source rows"),
+    supersede: ordinaryOp("supersede", "follows old target authored segment: local when old.local, synced otherwise; replacement visibility never narrower", "target old id; by replacement id, never a mutable alias", "latest relation by at then replacement id; earliest cycle relation yields; gone replacement releases old entry"),
+    demote: ordinaryOp("demote", "synced for long targets; local for local short targets", "target entry id; by fixed expiry", "latest demotion at/id fixes short deadline; clock rollback retains C05 ceiling", true),
+    settle: ordinaryOp("settle", "local", "target immutable project#task@created key; by fixed expiry", "earliest settlement deadline wins; eligible held notes wait for promotion; clock rollback retains C05 ceiling", true),
+    goal: current("goal", {
+      project: { type: "string", maxLength: 400 },
+      scope: { type: "string", values: ["project", "shared"] },
+      title: { type: "string", maxLength: 400 },
+      milestones: strings,
+      dependsOn: strings,
+      actor: text
+    }, ["project", "scope", "title", "milestones", "dependsOn", "actor"], "synced", "dependsOn goal ids; goal's full id is its immutable identity", "goals newest at first; initial state open; subsequent state/link/lease ops reduce separately", ["scope", "actor"]),
+    goal_state: ordinaryOp("goal_state", "synced", "target full goal id; by open|active|blocked|done|dropped", "latest valid state by at/id wins"),
+    goal_link: ordinaryOp("goal_link", "synced", "target full goal id; by immutable project#task@created key", "unique authored intent; links retain at/machine; identical payload replays once"),
+    lease: ordinaryOp("lease", "synced", "target full goal id; by fixed UTC expiry; machine is holder identity", "claims after last forced claim; latest per machine; earliest uninterrupted active claim then machine id wins; expired holder is metadata", true),
+    lease_force: ordinaryOp("lease_force", "synced", "target full goal id; by fixed UTC expiry", "latest forced claim at/id discards earlier claims, then ordinary lease ordering applies", true),
+    suggest: ordinaryOp("suggest", "synced", "target source entry id; by relation:destination id", "suggestions stay dashed, never confirmed graph evidence; suggestion full id is verdict target"),
+    confirm: ordinaryOp("confirm", "synced", "target immutable suggestion id", "latest confirm/reject by at/id wins; confirmation adds evidence relation only for valid endpoints"),
+    reject: ordinaryOp("reject", "synced", "target immutable suggestion id", "latest confirm/reject by at/id wins; rejection excludes suggested relation from evidence")
+  };
+  V1_OPS = Object.freeze(Object.keys(v1));
+  OP_CONTRACTS = Object.freeze({
+    ...v1,
+    prune: blocked("prune"),
+    correct: blocked("correct"),
+    lift: blocked("lift"),
+    consolidate: blocked("consolidate"),
+    group: blocked("group")
+  });
+  generationId = { type: "string", pattern: "^[a-f0-9]{32}$" };
+  authoredHash = { type: "string", pattern: "^[a-f0-9]{64}$" };
+  canonicalUtc = { type: "string", format: "canonical-utc" };
+  pruneRequired = ["schema", "op", "generation", "at", "machine", "actor", "placement", "cutoff", "targets", "id"];
+  PRUNE_GENERATION_CONTRACT = Object.freeze({
+    status: "truth-changing",
+    implemented: true,
+    generationOnly: true,
+    targetSemantics: "exact-entry-v1",
+    validator: "validatePruneRow",
+    validation: ["exact required keys at each nested level; no additional fields", "canonical UTC; cutoff <= at; each expiredAt <= cutoff", "1..32 targets, strictly sorted unique full ids; canonical row <=16384 UTF-8 bytes", "id equals first 32 hex of canonical complete payload hash excluding id", "generation and authored segment placement match the bound generation/input", "target/basis full authored hashes and explicit expires/by relationship verified separately by reducer; missing witnesses remain pending"],
+    payloadVersion: "agent-mem.prune/v1",
+    required: pruneRequired,
+    payloadSchema: { version: 1, required: pruneRequired, additionalProperties: false, maxUtf8Bytes: 16384, fields: {
+      schema: { type: "string", values: ["agent-mem.prune/v1"] },
+      op: { type: "string", values: ["prune"] },
+      generation: generationId,
+      at: canonicalUtc,
+      machine: { type: "string", pattern: "^[a-f0-9]{16}$" },
+      actor: { type: "string", values: ["person"] },
+      placement: { type: "string", values: ["local", "synced"] },
+      cutoff: canonicalUtc,
+      id: generationId,
+      targets: { type: "array", minItems: 1, maxItems: 32, sortedUniqueBy: "id", items: {
+        type: "object",
+        required: ["id", "rowHash", "expiredAt", "basis"],
+        additionalProperties: false,
+        fields: {
+          id: generationId,
+          rowHash: authoredHash,
+          expiredAt: canonicalUtc,
+          basis: { type: "object", required: ["kind", "id", "rowHash"], additionalProperties: false, fields: {
+            kind: { type: "string", values: ["note", "demote", "settle"] },
+            id: generationId,
+            rowHash: authoredHash
+          } }
+        }
+      } }
+    } },
+    immutableTargets: "only explicit full note id plus SHA-256 of complete canonical authored row including id; exact note.expires or demote/settle.by basis id/hash; no implicit TTL/backstop proof or ancestry traversal",
+    placement: "generation local by default; synced only for positively attested public target and basis already in verified cached legacy-main or generation public segments; no policy-free bypass",
+    precedence: "validated exact target is permanently gone, union/idempotent across prune rows; later clock/deadline changes do not revoke it; missing witnesses pending; different IDs and independent replacements survive; raw promotion metadata remains for v1 source hiding",
+    identity: "sha256(canonical complete prune payload excluding id), first 32 hex; generation/at/machine/placement/cutoff/ordered targets participate; rowHash is full SHA-256 of authored witness including id",
+    crashBoundary: "fsync exact local sealed plan, mutation fence, revalidate proofs/policy, append+fsync complete row then refresh; per-row atomicity; retry skips durable IDs; incomplete own tail completes only from identical persisted-plan prefix; mismatched tail refuses",
+    fixtures: ["test/generation-prune.test.ts#only explicit note expires or demote settle by values can prove expiry", "test/generation-prune.test.ts#exact-entry reducer waits for witnesses and cannot be reversed by clock or later deadlines", "test/generation-prune.test.ts#prune partitions private target or basis locally and public attestations bind only public rows", "test/generation-prune.test.ts#prune row shape hashes canonical time ordering placement and byte bounds are strict"]
+  });
+  VAULT_LINK_GENERATION_CONTRACT = Object.freeze({
+    status: "truth-changing",
+    implemented: true,
+    generationOnly: true,
+    targetSemantics: "exact-entry-v1",
+    validator: "validateVaultLinkRow",
+    validation: ["exact string-valued keys; no additional fields; canonical UTC and bounded metadata", "id is canonical complete payload hash excluding id", "bound generation and local authored machine segment must match", "projection requires exact full target id and authored row hash in the same project"],
+    payloadVersion: "agent-mem.vault-link/v1",
+    required: ["schema", "op", "generation", "id", "at", "machine", "actor", "placement", "target", "rowHash", "project", "path"],
+    payloadSchema: { version: 1, required: ["schema", "op", "generation", "id", "at", "machine", "actor", "placement", "target", "rowHash", "project", "path"], additionalProperties: false, maxUtf8Bytes: 4096, fields: {
+      schema: { type: "string", values: ["agent-mem.vault-link/v1"] },
+      op: { type: "string", values: ["vault_link"] },
+      generation: generationId,
+      id: generationId,
+      at: canonicalUtc,
+      machine: { type: "string", pattern: "^[a-f0-9]{16}$" },
+      actor: { type: "string", values: ["person"] },
+      placement: { type: "string", values: ["local"] },
+      target: generationId,
+      rowHash: authoredHash,
+      project: { type: "string" },
+      path: { type: "string" }
+    } },
+    immutableTargets: "full exact note id and SHA-256 of the complete canonical authored row; project must match; no aliases, promotion ancestry or replacements",
+    placement: "generation local segment only; vault paths are machine-local metadata and never sync; shard migration carries the row to its exact target owner",
+    precedence: "append-only links suppress only their witnessed exact entry from future candidates; independent replacement ids survive; malformed or missing witnesses cannot suppress",
+    identity: "sha256(canonical complete vault-link payload excluding id), first 32 hex; generation, target id, full witness hash and path participate",
+    crashBoundary: "mutation fence and exact id/hash recheck; refuse an incomplete prior tail; append+fsync then derived refresh; complete rows replay, incomplete tails require person inspection",
+    fixtures: ["test/vault.test.ts#vault links refuse shared-v1 and bind exact generation entries, survive rebuild, and never touch v1 logs", "test/vault.test.ts#vault link validation rejects changed payload hashes, foreign generation and public placement", "test/vault.test.ts#vault links retain their exact target through curated shard migration"]
+  });
+  GENERATION_OP_CONTRACTS = Object.freeze({ prune: PRUNE_GENERATION_CONTRACT, vault_link: VAULT_LINK_GENERATION_CONTRACT });
+});
+
+// node_modules/@staix/agent-mem/src/memory/bridge.ts
+var init_bridge = __esm(() => {
+  init_platform();
+  init_generation();
+  init_ops_contract();
+  init_store();
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard-bridge.ts
+var init_shard_bridge = __esm(() => {
+  init_bridge();
+});
+
+// node_modules/@staix/agent-mem/src/memory/cli-attribution.ts
+import { AsyncLocalStorage } from "async_hooks";
+var scope;
+var init_cli_attribution = __esm(() => {
+  scope = new AsyncLocalStorage;
+});
+
+// node_modules/@staix/agent-mem/src/memory/private-spans.ts
+var init_private_spans = () => {};
+
+// node_modules/@staix/agent-mem/src/memory/screen.ts
+var init_screen = () => {};
+
+// node_modules/@staix/agent-mem/src/memory/project.ts
+var init_project2 = __esm(() => {
+  init_platform();
+});
+
+// node_modules/@staix/agent-mem/src/memory/policy.ts
+var MAX_BYTES3, MAX_STRING_BYTES, flags;
+var init_policy = __esm(() => {
+  init_screen();
+  init_platform();
+  init_project2();
+  MAX_BYTES3 = 256 * 1024;
+  MAX_STRING_BYTES = 16 * 1024;
+  flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
+});
+
+// node_modules/@staix/agent-mem/src/memory/config.ts
+var MAX_CONFIG_BYTES2;
+var init_config = __esm(() => {
+  init_policy();
+  MAX_CONFIG_BYTES2 = 64 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/home.ts
+var init_home = __esm(() => {
+  init_platform();
+  init_config();
+});
+
+// node_modules/@staix/agent-mem/src/memory/machine.ts
+var init_machine = () => {};
+
+// node_modules/@staix/agent-mem/src/memory/lifecycle.ts
+var init_lifecycle = __esm(() => {
+  init_aliases();
+  init_lifecycle_log();
+  init_shard();
+});
+
+// node_modules/@staix/agent-mem/src/memory/search-score.ts
+function sql(expr, rank) {
+  const get = (part) => sql(part, rank);
+  switch (expr.op) {
+    case "rank":
+      return rank;
+    case "tier":
+      return `CASE tier ${Object.entries(TIER_WEIGHTS).map(([name, value]) => `WHEN '${name}' THEN ${real(value)}`).join(" ")} ELSE ${real(DEFAULT_TIER_WEIGHT)} END`;
+    case "age":
+      return `((julianday(?) - julianday(at)) / ${real(MONTH_DAYS)})`;
+    case "constant":
+      return real(expr.value);
+    case "negative":
+      return `(-(${get(expr.value)}))`;
+    case "reciprocal":
+      return `(1.0 / ${get(expr.value)})`;
+    case "add":
+      return `(${get(expr.left)} + ${get(expr.right)})`;
+    case "multiply":
+      return expr.right.op === "reciprocal" ? `(${get(expr.left)} / ${get(expr.right.value)})` : `(${get(expr.left)} * ${get(expr.right)})`;
+    case "max":
+      return `max(${get(expr.left)}, ${get(expr.right)})`;
+  }
+}
+function rankedScoreSql(rank = "bm25(docs)") {
+  return sql(SCORE, rank);
+}
+var MONTH_DAYS = 30, TIER_WEIGHTS, DEFAULT_TIER_WEIGHT = 0.9, TIER_FACTOR, DENOMINATOR, RECENCY_FACTOR, SCORE, real = (value) => Number.isInteger(value) ? `${value}.0` : String(value);
+var init_search_score = __esm(() => {
+  TIER_WEIGHTS = { long: 1, capture: 0.5 };
+  TIER_FACTOR = { op: "tier" };
+  DENOMINATOR = { op: "add", left: { op: "constant", value: 1 }, right: { op: "max", left: { op: "constant", value: 0 }, right: { op: "age" } } };
+  RECENCY_FACTOR = { op: "reciprocal", value: DENOMINATOR };
+  SCORE = { op: "multiply", left: { op: "multiply", left: { op: "negative", value: { op: "rank" } }, right: TIER_FACTOR }, right: RECENCY_FACTOR };
+});
+
+// node_modules/@staix/agent-mem/src/memory/search-fts.ts
+var SCREENED_SCORE, SCREENED_SUBSTRING_SCORE;
+var init_search_fts = __esm(() => {
+  init_search_score();
+  SCREENED_SCORE = rankedScoreSql();
+  SCREENED_SUBSTRING_SCORE = rankedScoreSql("-1.0");
+});
+
+// node_modules/@staix/agent-mem/src/memory/capture-input.ts
+var init_capture_input = __esm(() => {
+  init_screen();
+  init_platform();
+  init_private_spans();
+});
+
+// node_modules/@staix/agent-mem/src/memory/capture.ts
+var SPOOL_MAX_BYTES;
+var init_capture = __esm(() => {
+  init_screen();
+  init_capture_input();
+  init_capture_input();
+  init_home();
+  init_shard();
+  init_lifecycle();
+  init_machine();
+  init_config();
+  init_policy();
+  init_search_fts();
+  SPOOL_MAX_BYTES = 256 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/style.ts
+function style(color) {
+  return { color, ok: wrap(color, 32, 39), attention: wrap(color, 33, 39), error: wrap(color, 31, 39), dim: wrap(color, 2, 22), bold: wrap(color, 1, 22) };
+}
+var wrap = (on, open, close) => (text) => on ? `\x1B[${open}m${text}\x1B[${close}m` : text, PLAIN;
+var init_style = __esm(() => {
+  PLAIN = style(false);
+});
+
+// node_modules/@staix/agent-mem/src/memory/prune.ts
+var init_prune = __esm(() => {
+  init_generation();
+  init_store();
+  init_style();
+});
+
+// node_modules/@staix/agent-mem/src/memory/public-prune-witness.ts
+var init_public_prune_witness = __esm(() => {
+  init_generation();
+  init_prune();
+  init_shard_sync_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard-sync-format.ts
+var SHARD_PACK_MAX_BYTES;
+var init_shard_sync_format = __esm(() => {
+  init_bridge();
+  init_generation();
+  init_prune();
+  init_shard();
+  init_public_prune_witness();
+  SHARD_PACK_MAX_BYTES = 1024 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/public-prune-inputs.ts
+var PUBLIC_PRUNE_GRAPH_MAX_BYTES, OBJECT_MAX, plans, batches;
+var init_public_prune_inputs = __esm(() => {
+  init_generation();
+  init_mutation();
+  init_platform();
+  init_store();
+  init_prune();
+  init_shard_sync_format();
+  init_public_prune_witness();
+  init_public_prune_input_chain();
+  init_public_prune_input_chain();
+  PUBLIC_PRUNE_GRAPH_MAX_BYTES = 80 * 1024 * 1024;
+  OBJECT_MAX = 1024 * 1024 + 64;
+  plans = new WeakMap;
+  batches = new WeakMap;
+});
+
+// node_modules/@staix/agent-mem/src/memory/generation-index.ts
+var init_generation_index = __esm(() => {
+  init_public_prune_inputs();
+  init_public_prune_view();
+  init_shard();
+  init_shard_bridge();
+  init_generation();
+  init_bridge();
+  init_prune();
+  init_store();
+});
+
+// node_modules/@staix/agent-mem/src/memory/migrate.ts
+var init_migrate = __esm(() => {
+  init_bridge();
+  init_mutation();
+  init_platform();
+  init_generation();
+  init_style();
+});
+
+// node_modules/@staix/agent-mem/src/memory/reader-lease.ts
+var open;
+var init_reader_lease = __esm(() => {
+  init_generation();
+  init_mutation();
+  init_platform();
+  init_public_prune_view();
+  open = new Map;
+});
+
+// node_modules/@staix/agent-mem/src/memory/store.ts
+var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP;
+var init_store = __esm(() => {
+  init_public_prune_view();
+  init_shard_bridge();
+  init_cli_attribution();
+  init_platform();
+  init_private_spans();
+  init_screen();
+  init_mutation();
+  init_home();
+  init_machine();
+  init_lifecycle();
+  init_machine();
+  init_search_score();
+  init_search_fts();
+  init_shard();
+  init_capture();
+  init_ops_contract();
+  init_generation();
+  init_generation_index();
+  init_bridge();
+  init_migrate();
+  init_reader_lease();
+  DEFAULT_TTL_MS = 14 * 24 * 3600000;
+  UNSETTLED_MS = 180 * 24 * 3600000;
+  DEFAULT_LEASE_MS = 4 * 3600000;
+  MIGRATION_BOOTSTRAP = Symbol("migration index bootstrap");
+});
+
+// node_modules/@staix/agent-mem/src/memory/catalog.ts
+var init_catalog = __esm(() => {
+  init_home();
+  init_shard();
+  init_generation();
+  init_capture();
+  init_store();
+  init_lifecycle();
+});
+
+// node_modules/@staix/agent-mem/src/memory/metrics.ts
+var METRICS_MAX_BYTES;
+var init_metrics = __esm(() => {
+  METRICS_MAX_BYTES = 64 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/capacity.ts
+var init_capacity = __esm(() => {
+  init_home();
+  init_metrics();
+  init_metrics();
+  init_catalog();
+  init_lifecycle();
+  init_capture();
+  init_style();
+});
+
+// node_modules/@staix/agent-mem/src/memory/usage.ts
+var init_usage = __esm(() => {
+  init_catalog();
+});
+
+// node_modules/@staix/agent-mem/src/memory/gc.ts
+var init_gc = __esm(() => {
+  init_capture();
+  init_catalog();
+  init_lifecycle();
+});
+
+// node_modules/@staix/agent-mem/src/memory/curated-read.ts
+var init_curated_read = __esm(() => {
+  init_store();
+  init_shard();
+});
+
+// node_modules/@staix/agent-mem/src/memory/work-lists.ts
+var forbidden;
+var init_work_lists = __esm(() => {
+  init_generation();
+  init_mutation();
+  init_platform();
+  init_screen();
+  init_private_spans();
+  init_shard();
+  init_machine();
+  forbidden = new Set(["__proto__", "constructor", "prototype"]);
+});
+
+// node_modules/@staix/agent-mem/src/memory/project-export.ts
+var init_project_export = __esm(() => {
+  init_catalog();
+  init_curated_read();
+  init_lifecycle();
+  init_platform();
+  init_policy();
+  init_screen();
+  init_shard();
+  init_work_lists();
+});
+
+// node_modules/@staix/agent-mem/src/memory/project-import.ts
+var PROJECT_IMPORT_MAX_BYTES, PROJECT_IMPORT_MAX_LINE_BYTES, PROJECT_IMPORT_FUTURE_SKEW_MS, NOTE_KEYS;
+var init_project_import = __esm(() => {
+  init_bridge();
+  init_private_spans();
+  init_project_export();
+  init_shard();
+  init_store();
+  PROJECT_IMPORT_MAX_BYTES = 64 * 1024 * 1024;
+  PROJECT_IMPORT_MAX_LINE_BYTES = 64 * 1024;
+  PROJECT_IMPORT_FUTURE_SKEW_MS = 5 * 60 * 1000;
+  NOTE_KEYS = new Set(["schema", "id", "at", "machine", "op", "project", "scope", "tier", "kind", "peer", "title", "text", "task", "about", "supersedes", "promotedFrom", "source", "expires"]);
+});
+
+// node_modules/@staix/agent-mem/src/memory/candidate-pending.ts
+var CANDIDATE_AGE_MS, CANDIDATE_SHOWN_GRACE_MS, CANDIDATE_DUE_MS;
+var init_candidate_pending = __esm(() => {
+  CANDIDATE_AGE_MS = 30 * 86400000;
+  CANDIDATE_SHOWN_GRACE_MS = 7 * 86400000;
+  CANDIDATE_DUE_MS = 7 * 86400000;
+});
+
+// node_modules/@staix/agent-mem/src/memory/note-add.ts
+var init_note_add = __esm(() => {
+  init_store();
+  init_cli_attribution();
+});
+
+// node_modules/@staix/agent-mem/src/memory/candidates.ts
+var CANDIDATE_RETENTION, COUNTER_RETENTION;
+var init_candidates = __esm(() => {
+  init_candidate_pending();
+  init_note_add();
+  init_cli_attribution();
+  init_home();
+  init_platform();
+  init_private_spans();
+  CANDIDATE_RETENTION = { count: 500, ageMs: 30 * 86400000 };
+  COUNTER_RETENTION = { count: 1e4, ageMs: 90 * 86400000 };
+});
+
+// node_modules/@staix/agent-mem/src/memory/external-import.ts
+var EXTERNAL_IMPORT_LIMITS;
+var init_external_import = __esm(() => {
+  init_aliases();
+  init_candidates();
+  init_candidate_pending();
+  init_platform();
+  init_private_spans();
+  init_screen();
+  EXTERNAL_IMPORT_LIMITS = { maxFiles: 256, maxDirectories: 512, maxEntriesPerDirectory: 512, maxDepth: 16, maxFileBytes: 1024 * 1024, maxCandidatesPerRun: 100, candidateTextChars: 3000, titleChars: 200 };
+});
+
+// node_modules/@staix/agent-mem/src/memory/vault.ts
+var init_vault = __esm(() => {
+  init_generation();
+  init_policy();
+  init_style();
+  init_generation();
+});
+
+// node_modules/@staix/agent-mem/src/memory/cross-project.ts
+var init_cross_project = __esm(() => {
+  init_search_fts();
+  init_capture();
+  init_catalog();
+  init_curated_read();
+  init_lifecycle();
+  init_vault();
+});
+
+// node_modules/@staix/agent-mem/src/memory/generation-sync.ts
+var zero;
+var init_generation_sync = __esm(() => {
+  init_bridge();
+  init_generation();
+  init_mutation();
+  init_platform();
+  init_prune();
+  init_sync();
+  zero = "0".repeat(40);
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-screen.ts
+var MAX_BYTES4, GENERATED;
+var init_sync_screen = __esm(() => {
+  init_config();
+  init_policy();
+  MAX_BYTES4 = 8 * 1024 * 1024;
+  GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "target", "promotedFrom", "supersedes", "expires", "by", "tier", "scope", "kind", "source"]);
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync.ts
+var liveGroups;
+var init_sync = __esm(() => {
+  init_generation();
+  init_platform();
+  init_mutation();
+  init_generation_sync();
+  init_sync_screen();
+  liveGroups = new Set;
+});
+
+// node_modules/@staix/agent-mem/src/memory/import.ts
+var init_import = __esm(() => {
+  init_platform();
+  init_store();
+  init_shard();
+  init_work_lists();
+  init_capture();
+  init_capture_input();
+  init_config();
+  init_policy();
+  init_private_spans();
+});
+// node_modules/@staix/agent-mem/src/memory/commands.ts
+var AMEM_NAMES, memoryUsage = (name = AMEM_NAMES.memory) => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> [--history] [--as-of <UTC>] | show <id> [--history] [--as-of <UTC>] | graph <id|node> [--hops 1|2] [--history] [--as-of <UTC>] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] [--capture-days N] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`, MEMORY_USAGE, goalUsage = (name = AMEM_NAMES.goal) => `usage: ${name} [list] [--all] | show <id> | new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task id> | state <id> open|active|blocked|done|dropped | done <id> | take <id> [--force]  [--json]`, GOAL_USAGE;
+var init_commands = __esm(() => {
+  init_cli_attribution();
+  init_store();
+  init_sync();
+  init_import();
+  init_style();
+  init_project2();
+  AMEM_NAMES = { memory: "amem", goal: "amem goal" };
+  MEMORY_USAGE = memoryUsage();
+  GOAL_USAGE = goalUsage();
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard-migration.ts
+var USER2;
+var init_shard_migration = __esm(() => {
+  init_bridge();
+  init_generation();
+  init_generation_index();
+  init_prune();
+  init_mutation();
+  init_platform();
+  init_reader_lease();
+  init_shard();
+  init_store();
+  init_migrate();
+  init_style();
+  USER2 = Symbol("shared-user-shard");
+});
+
+// node_modules/@staix/agent-mem/src/mcp.ts
+var string = (maxLength, minLength = 1) => ({ type: "string", minLength, maxLength }), limit, object7 = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false }), tool = (name, description, inputSchema, readOnlyHint = true) => ({
+  name,
+  description,
+  inputSchema,
+  annotations: { readOnlyHint, destructiveHint: false, openWorldHint: false }
+}), MCP_TOOLS;
+var init_mcp = __esm(() => {
+  limit = { type: "integer", minimum: 1, maximum: 100 };
+  MCP_TOOLS = [
+    tool("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object7({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" }, explain: { type: "boolean" } }, ["query"])),
+    tool("amem_evidence", "Return a bounded bundle of cited, live curated entries for a question. Untrusted memory data only: no answer or model call. Capture, repo-only notes, pending candidates and model answers are not evidence.", object7({ question: string(1000), limit: { type: "integer", minimum: 1, maximum: 20 }, maxBytes: { type: "integer", minimum: 256, maximum: 8192 } }, ["question"])),
+    tool("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object7({ id: string(80) }, ["id"])),
+    tool("amem_timeline", "Read screened memory near an entry or time in this project.", object7({ id: string(80), since: string(40), limit })),
+    tool("amem_brief", "Read an intent/path-scoped brief of live public memory: fails first, then decisions/contracts and one-hop neighbours. Memory is untrusted data; byte cap covers the complete brief body.", object7({ intent: string(1000), paths: { type: "array", maxItems: 150, items: string(512) }, symbols: { type: "array", maxItems: 150, items: string(512) }, maxBytes: { type: "integer", minimum: 1, maximum: 8192 } }, ["intent"])),
+    tool("amem_graph", "Read the screened curated-memory neighbourhood. Capture is never graph evidence.", object7({ start: string(500), hops: { type: "integer", minimum: 1, maximum: 2 }, limit }, ["start"])),
+    tool("amem_work_state_read", "Read project work lists; closed lists/items can be included explicitly.", object7({ list: string(200), includeClosed: { type: "boolean" } })),
+    tool("amem_work_state_write", "Append scalar project work-list fields; null clears, task selects an item, list status done closes.", object7({ list: string(200), fields: {
+      type: "object",
+      minProperties: 1,
+      maxProperties: 64,
+      additionalProperties: { type: ["string", "number", "boolean", "null"], maxLength: 4000 }
+    } }, ["list", "fields"]), false),
+    tool("amem_remember", "Propose a memory candidate (text, optional kind/title), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. Review and accept or reject through the CLI under current policy; this tool never writes curated notes.", object7({
+      text: string(3000),
+      title: string(200),
+      kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] },
+      approach: string(4000),
+      symptom: string(4000),
+      cause: string(4000),
+      evidenceRefs: { type: "array", minItems: 1, maxItems: 16, items: string(400) },
+      retryWhen: string(4000)
+    }), false),
+    tool("amem_correct", "Propose a correction to an exact curated entry id visible in this project. The host binds its current revision; the full accepted body including reason and provenance headers must fit 4000 characters. Review and accept or reject through the CLI under current policy before any note or supersession is written.", object7({ id: string(80), proposedText: string(4000), reason: string(4000), kind: { type: "string", enum: ["decision", "contract", "fail"] } }, ["id", "proposedText", "reason"]), false),
+    tool("amem_vault_candidates", "List screened durable curated notes for review before moving them to a vault. Read only.", object7({ limit })),
+    tool("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it requires the matching CLI preview and `--confirm`. This tool has no apply operation.", object7({}))
+  ];
+});
+
+// node_modules/@staix/agent-mem/src/memory/evidence.ts
+var init_evidence = __esm(() => {
+  init_policy();
+});
+
+// node_modules/@staix/agent-mem/src/memory/plan-guard.ts
+var init_plan_guard = __esm(() => {
+  init_store();
+  init_project2();
+});
+
+// node_modules/@staix/agent-mem/src/memory/intent-brief.ts
+var init_intent_brief = __esm(() => {
+  init_plan_guard();
+  init_policy();
+});
+
+// node_modules/@staix/agent-mem/src/memory/recall-staleness.ts
+var init_recall_staleness = __esm(() => {
+  init_platform();
+  init_policy();
+  init_project2();
+});
+// node_modules/@staix/agent-mem/src/memory/path-glob.ts
+var init_path_glob = __esm(() => {
+  init_project2();
+});
+
+// node_modules/@staix/agent-mem/src/memory/repo-scope.ts
+var REPO_DIR = ".amem", REPO_LOG = "log.jsonl", REPO_ATTRIBUTES_LINE, MAX_LINE_BYTES, MAX_FILE_BYTES, MAX_CONFIG_BYTES3;
+var init_repo_scope = __esm(() => {
+  init_platform();
+  init_policy();
+  init_project2();
+  init_path_glob();
+  init_shard();
+  REPO_ATTRIBUTES_LINE = `${REPO_DIR}/${REPO_LOG} merge=union`;
+  MAX_LINE_BYTES = 16 * 1024;
+  MAX_FILE_BYTES = 1024 * 1024;
+  MAX_CONFIG_BYTES3 = 1024 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/mcp-memory.ts
+var init_mcp_memory = __esm(() => {
+  init_evidence();
+  init_intent_brief();
+  init_recall_staleness();
+  init_candidates();
+  init_capacity();
+  init_capture();
+  init_generation();
+  init_home();
+  init_platform();
+  init_policy();
+  init_config();
+  init_project2();
+  init_reader_lease();
+  init_search_fts();
+  init_shard();
+  init_lifecycle();
+  init_repo_scope();
+  init_store();
+  init_vault();
+  init_work_lists();
+});
+
+// node_modules/@staix/agent-mem/src/hook-git.ts
+var init_hook_git = __esm(() => {
+  init_platform();
+  init_platform();
+});
+
+// node_modules/@staix/agent-mem/src/hook-contract.ts
+var HOOK_INPUT_BYTES;
+var init_hook_contract = __esm(() => {
+  HOOK_INPUT_BYTES = 64 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/hook-spool.ts
+var RECORD_BYTES, MAX_BYTES5, DRAIN_BYTES, CAPACITY_BYTES, RETIRE_AFTER_MS;
+var init_hook_spool = __esm(() => {
+  init_capture_input();
+  init_platform();
+  init_policy();
+  init_config();
+  init_policy();
+  init_screen();
+  init_metrics();
+  init_lifecycle();
+  init_hook_contract();
+  RECORD_BYTES = HOOK_INPUT_BYTES + 8192;
+  MAX_BYTES5 = 2 * 1024 * 1024;
+  DRAIN_BYTES = 256 * 1024;
+  CAPACITY_BYTES = 256 * 1024;
+  RETIRE_AFTER_MS = 7 * 24 * 3600000;
+});
+
+// node_modules/@staix/agent-mem/src/hook-native.ts
+var SUPERVISOR;
+var init_hook_native = __esm(() => {
+  SUPERVISOR = [
+    "marker=$1; seconds=$2; shift 2; leader=$$",
+    'owned() { identity=$(/bin/ps -ww -p "$leader" -o pgid=,command=) || return 1; case "$identity" in *"$marker"*) ;; *) return 1 ;; esac; set -f; set -- $identity; [ "$1" = "$leader" ]; }',
+    'reap() { if owned; then kill -KILL "-$leader"; fi; }',
+    "[ -x /bin/sleep ] && [ -x /bin/ps ] && owned || exit 125",
+    "trap reap EXIT HUP INT TERM",
+    '( /bin/sleep "$seconds" & sleeper=$!; kill -0 "$sleeper" 2>/dev/null || { reap; exit 125; }; printf "\\n%s:ARMED\\n" "$marker"; wait "$sleeper"; reap ) & watchdog=$!',
+    'kill -0 "$watchdog" 2>/dev/null || { reap; exit 125; }',
+    '"$@" </dev/null; code=$?; printf "\\n%s:%s\\n" "$marker" "$code"',
+    "read -r ignored || :",
+    'wait "$watchdog"'
+  ].join("; ");
+});
+
+// node_modules/@staix/agent-mem/src/hook-project.ts
+var init_hook_project = __esm(() => {
+  init_hook_git();
+  init_hook_spool();
+  init_platform();
+  init_project2();
+  init_platform();
+  init_hook_native();
+});
+
+// node_modules/@staix/agent-mem/src/hook-resources.ts
+var init_hook_resources = () => {};
+
+// node_modules/@staix/agent-mem/src/hooks.ts
+var init_hooks = __esm(() => {
+  init_hook_project();
+  init_hook_native();
+  init_aliases();
+  init_hook_resources();
+  init_metrics();
+  init_hook_spool();
+  init_home();
+  init_platform();
+  init_policy();
+  init_config();
+  init_hook_contract();
+  init_hook_contract();
+});
+
+// node_modules/@staix/agent-mem/src/ingest.ts
+var MAX_BYTES6, DEFAULT_BYTES, MAX_CURSOR_BYTES, utf8, MAX_RECORD;
+var init_ingest = __esm(() => {
+  init_capture();
+  init_home();
+  init_platform();
+  init_policy();
+  init_config();
+  init_project2();
+  init_shard();
+  MAX_BYTES6 = 16 * 1024 * 1024;
+  DEFAULT_BYTES = 4 * 1024 * 1024;
+  MAX_CURSOR_BYTES = 128 * 1024;
+  utf8 = new TextDecoder("utf-8", { fatal: true });
+  MAX_RECORD = 256 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/session-brief.ts
+var init_session_brief = __esm(() => {
+  init_generation();
+  init_home();
+  init_platform();
+  init_policy();
+  init_config();
+  init_candidate_pending();
+  init_project2();
+  init_reader_lease();
+  init_shard();
+  init_lifecycle();
+  init_repo_scope();
+  init_work_lists();
+});
+
+// node_modules/@staix/agent-mem/src/memory/decay-review.ts
+var init_decay_review = __esm(() => {
+  init_generation();
+  init_candidates();
+});
+
+// node_modules/@staix/agent-mem/src/memory/goal-promotion.ts
+var init_goal_promotion = __esm(() => {
+  init_candidates();
+  init_generation();
+  init_lifecycle();
+  init_platform();
+  init_shard();
+});
+
+// node_modules/@staix/agent-mem/src/memory/consolidation-clusters.ts
+var init_consolidation_clusters = __esm(() => {
+  init_search_fts();
+  init_candidates();
+});
+
+// node_modules/@staix/agent-mem/src/memory/consolidation-model.ts
+var init_consolidation_model = __esm(() => {
+  init_candidates();
+  init_policy();
+  init_platform();
+});
+
+// node_modules/@staix/agent-mem/src/memory/consolidate.ts
+var init_consolidate = __esm(() => {
+  init_candidates();
+  init_consolidation_clusters();
+  init_policy();
+  init_platform();
+  init_consolidation_model();
+});
+
+// node_modules/@staix/agent-mem/src/index.ts
+var init_src = __esm(() => {
+  init_search_fts();
+  init_config();
+  init_store();
+  init_capture();
+  init_shard();
+  init_catalog();
+  init_capacity();
+  init_lifecycle();
+  init_usage();
+  init_gc();
+  init_project_export();
+  init_project_import();
+  init_external_import();
+  init_cross_project();
+  init_sync();
+  init_import();
+  init_project2();
+  init_home();
+  init_platform();
+  init_commands();
+  init_candidates();
+  init_ops_contract();
+  init_generation();
+  init_migrate();
+  init_prune();
+  init_shard_migration();
+  init_mcp();
+  init_mcp_memory();
+  init_policy();
+  init_work_lists();
+  init_vault();
+  init_hooks();
+  init_ingest();
+  init_session_brief();
+  init_decay_review();
+  init_goal_promotion();
+  init_recall_staleness();
+  init_intent_brief();
+  init_plan_guard();
+  init_consolidate();
+  init_consolidation_clusters();
+  init_consolidation_model();
+  init_evidence();
+});
+
+// src/hub/deliverables.ts
+var DELIVERABLE_LIMITS;
+var init_deliverables = __esm(() => {
+  DELIVERABLE_LIMITS = Object.freeze({
+    count: 16,
+    fileBytes: 256 * 1024 * 1024,
+    totalBytes: 512 * 1024 * 1024,
+    pathChars: 512,
+    formatChars: 32,
+    versionChars: 64
+  });
+});
+
+// src/hub/research-experiments.ts
 var BODY;
+var init_research_experiments = __esm(() => {
+  init_src();
+  init_packs();
+  init_deliverables();
+  BODY = 64 * 1024;
+});
+
+// src/hub/task-code-symbols.ts
+var HOST_CODE_SYMBOLS;
+var init_task_code_symbols = __esm(() => {
+  HOST_CODE_SYMBOLS = Symbol("host task code symbols");
+});
+
+// src/hub/planning.ts
+var init_planning = __esm(() => {
+  init_sdlc();
+});
+// src/hub/research-campaign.ts
+var BODY2;
 var init_research_campaign = __esm(() => {
   init_packs();
-  BODY = 64 * 1024;
+  BODY2 = 64 * 1024;
 });
 
 // src/hub/board.ts
 var CLASSES2, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
+  init_packs();
+  init_research_experiments();
   init_task_code_symbols();
   init_plan_conformance();
   init_planning();
@@ -11076,7 +12070,7 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
     return { ...tool, description, inputSchema: { ...tool.inputSchema, properties } };
   });
 }
-var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id, refs, list = (description) => ({ type: "array", items: str2, description }), deliverablesSchema, reviewFindings, costPlanProperties, evidencePlanProperties, plan, acceptPlan, tool = (name, description, properties, required = []) => ({
+var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id2, refs, list = (description) => ({ type: "array", items: str2, description }), deliverablesSchema, reviewFindings, costPlanProperties, evidencePlanProperties, plan, acceptPlan, tool2 = (name, description, properties, required = []) => ({
   name,
   description,
   inputSchema: { type: "object", properties, required, additionalProperties: false }
@@ -11095,7 +12089,7 @@ var init_hub_tools = __esm(() => {
     inputSchema: { type: "object", properties: { tool_name: { type: "string", maxLength: 128 }, input: { type: "object" }, tool_use_id: { type: "string", maxLength: 256 } }, required: ["tool_name", "input", "tool_use_id"], additionalProperties: false }
   };
   str2 = { type: "string" };
-  id = { type: "integer", description: "task id" };
+  id2 = { type: "integer", description: "task id" };
   refs = {
     type: "object",
     description: "where the work lives",
@@ -11145,45 +12139,45 @@ var init_hub_tools = __esm(() => {
   BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
   CAPABILITY_TOOLS = new Set(["hub_capabilities", "hub_capabilities_publish", "hub_invoke"]);
   TASK_TOOLS = [
-    tool("hub_task_spec", "Read complete assigned GitHub issue contracts through the bounded hub boundary. Owner/reviewer only; no repository or URL input. Refuses withheld or oversized specs.", { id }, ["id"]),
-    tool("hub_check_start", "Run an exact-head isolated Linux check for your in-progress task. Trusted opt-in runner only; no host shell or credentials. Tests require one to 32 test/*.test.ts paths. Receipt is Linux evidence.", { id, check: { type: "string", enum: ["test", "typecheck"] }, files: { type: "array", minItems: 1, maxItems: 32, items: str2 } }, ["id", "check"]),
-    tool("hub_check_result", "Read your current task-bound isolated check receipt. Stale ownership/generation refuses; output is policy screened.", { run: str2 }, ["run"]),
-    tool("hub_check_cancel", "Cancel your task-bound isolated check; only its owner or the person may cancel.", { run: str2 }, ["run"]),
-    tool("hub_delivery_retry", "Request one redelivery of your own needs_review delivery. An earlier attempt may have effects: inspect those effects before acting. Refuses another peer's row or any lineage already explicitly retried; a repeated uncertain row needs the person. Never completes/discards a delivery or changes task state.", { delivery_id: { type: "string", minLength: 1, maxLength: 256 } }, ["delivery_id"]),
-    tool("hub_backlog_list", "Read public backlog cards with planning revisions. Configured planners only; PII remains a stub.", {}),
-    tool("hub_backlog_plan", "Plan an unpinned backlog item outside frozen releases with the revision you read and a bounded reason. Omit fields or give {} for a note-only revision. fields.sdlc accepts only repo/issue identity on unstarted backlog work; relinking clears old spec acceptance. A person's rank is retained. Actual dates cannot be set.", { id, revision: { type: "integer", minimum: 0 }, reason: { type: "string", maxLength: 1000 }, fields: { type: "object", properties: { sdlc: { type: "object", minProperties: 1, properties: { repo: { type: ["string", "null"], maxLength: 400 }, issue: { type: ["integer", "null"], minimum: 1 } }, additionalProperties: false }, rank: { type: ["integer", "null"], minimum: 0 }, priority: { type: ["integer", "null"], minimum: 0, maximum: 3 }, release: { type: ["integer", "null"], minimum: 1 }, plannedStart: { type: ["integer", "null"], minimum: 1 }, due: { type: ["integer", "null"], minimum: 1 }, deps: { type: "array", maxItems: 64, uniqueItems: true, items: { type: "integer", minimum: 1 } }, reserved: { type: ["string", "null"], minLength: 1, maxLength: 32 } }, additionalProperties: false } }, ["id", "revision", "reason"]),
-    tool("hub_backlog_pull", "Reserve a WIP slot and pull ready unpinned backlog work into To Do at its current revision. Preserves person order/reservations and frozen scope; pending unowned work can be undone with hub_backlog_undo.", { id, revision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["id", "revision", "reason"]),
-    tool("hub_backlog_split", "Split unstarted backlog work into two to eight staged parts. The original card retains integration/acceptance and depends on the children. Use after for existing prerequisite ids and afterParts for earlier zero-based part indexes. Latest unused unchanged children can be undone with hub_backlog_undo.", { id, revision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 1000 }, parts: { type: "array", minItems: 2, maxItems: 8, items: { type: "object", properties: { title: { type: "string", minLength: 1, maxLength: 300 }, detail: { type: "string", maxLength: 8000 }, class: str2, refs, plan, after: { type: "array", maxItems: 64, uniqueItems: true, items: { type: "integer", minimum: 1 } }, afterParts: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "integer", minimum: 0 } } }, required: ["title"], additionalProperties: false } } }, ["id", "revision", "reason", "parts"]),
-    tool("hub_backlog_undo", "Undo your latest planning change at its current revision. Refuses intervening changes and another actor's edit.", { id, revision: { type: "integer", minimum: 1 } }, ["id", "revision"]),
-    tool("hub_release_new", "Create a future release planning row. Planner/person only; no activation, publish or release authorization.", { name: { type: "string", minLength: 1, maxLength: 64 }, goal: { type: "string", minLength: 1, maxLength: 1000 }, order: { type: "integer", minimum: 0 } }, ["name", "goal", "order"]),
-    tool("hub_release_report", "Read a planned release's task readiness and recorded metrics. Planner/person only. A due date never waives unfinished scope.", { id }, ["id"]),
-    tool("hub_release_assign", "Assign or move only a task's release, retaining its execution state and owner. Planner/person only; requires a reason and current planning revision. Frozen scope refuses.", { id, revision: { type: "integer", minimum: 0 }, release: { type: ["integer", "null"], minimum: 1 }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["id", "revision", "release", "reason"]),
-    tool("hub_release_configure", "Configure/activate a release train or record a hotfix cause. Planner/person only. At most one train is active/frozen; planning rows are future trains.", { id, revision: { type: "integer", minimum: 0 }, state: { type: "string", enum: ["active"] }, cut: { type: "integer", minimum: 1 }, hotfix: { type: "object", properties: { cause: { type: "string", enum: ["loss", "security_privacy", "upgrade_start_blocked", "core_flow_no_workaround"] }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, required: ["cause", "reason"], additionalProperties: false } }, ["id", "revision"]),
-    tool("hub_release_cut", "Freeze an active release's approved scope after host resource admission and fresh peer quota checks. Unknown evidence defers; no publish, tag, upgrade or authorization.", { id, revision: { type: "integer", minimum: 0 } }, ["id", "revision"]),
-    tool("hub_release_list", "Read public release scope and planned/actual dates for phased planning. Configured planners only.", {}),
-    tool("hub_task_propose", "Put a piece of work on the shared task board. The hub assigns an owner by class (routing.toml) unless you name one. Classes: plan, implement, bulk_edit, test, review, summarize, triage. Name the class when you know it; without one the hub tries to pick it. Name yourself as owner to claim work nobody assigned you: it starts in progress. Put the paths the work touches in refs, set refs.repo for work in another repository, and when you claim work, a plan; the hub says when they overlap another open task.", { title: str2, class: { type: "string", enum: ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] }, detail: str2, role: { type: "string", description: "catalog role id for this task class; guidance only, no routing or authority change" }, refs, plan, owner: { type: "string", description: "peer id; yours to claim the work, omit to let the hub route it. With after, the owner is reserved: offered the task first once it is ready" }, after: { type: "array", items: { type: "integer" }, description: "ids of tasks that must be approved first; until then this one waits, offered to nobody, and cannot be claimed" }, backlog: { type: "boolean", description: "stage unoffered work; owner is only a reservation, even when naming yourself" }, urgent: { type: "boolean", description: "hand it over even when its owner is paused for quota only briefly" }, goal: { type: "string", description: "id of this project's long-term task (ahub goal list) the work is part of" } }, ["title"]),
-    tool("hub_task_accept", "Take a task that was assigned to you, with your plan for it. Set refs.repo for work in another repository; acceptance may correct only that repository metadata.", { id, plan: acceptPlan, refs: { ...refs, properties: { repo: refs.properties.repo } } }, ["id"]),
-    tool("hub_task_cancel", "Cancel proposed/backlog work you proposed as its configured planner, including work an owner accepted and then declined while it has no execution, branch, commit or PR evidence; work with any such evidence is person-only. Keeps history and does not stop a native turn or delete files.", { id, reason: str2, superseded_by: str2, revision: { type: "integer", minimum: 0 } }, ["id", "reason"]),
-    tool("hub_task_decline", "Pass on a task assigned to you; the hub offers it to the next peer. A plain decline is a lasting refusal: you are never offered this task again. Pass capacity: true when you only have no room right now: you are skipped for this move only, and a later reroute or planner pull may offer it to you again.", { id, reason: str2, capacity: { type: "boolean" } }, ["id"]),
-    tool("hub_task_done", "Mark your task finished. It goes to its reviewer with your summary and refs; no duplicate hub_send chat is needed. When the project configures a check for its class, the hub runs it first and the result comes as a task message: a failed check keeps the task with you.", { id, summary: { type: "string", description: "what changed, why, and the check you ran with its result" }, refs, deliverables: deliverablesSchema }, ["id", "summary"]),
-    tool("hub_sdlc_record", "Record artifact ids or claimed local checks on your task. This grants no authority or external-check evidence. Only its owner/reviewer or the person may record; only its reviewer/person may name a reviewed head or phase checklist. Phase evidence refs are content hashes, not external verification.", { id, receipt: { type: "object", properties: { deliverables: deliverablesSchema, stage: { type: "string", enum: ["spec", "plan", "implement", "review", "verify", "merge", "release"] }, repo: str2, issue: id, pr: id, localHead: str2, localResult: { type: "string", enum: ["passed", "failed", "unknown"] }, reviewedHead: str2, phase: { type: "object", properties: { id: str2, head: str2, tasks: { type: "array", maxItems: 64, items: { type: "object", properties: { id, after: { type: "array", maxItems: 16, items: id } }, required: ["id", "after"], additionalProperties: false } }, criteria: { type: "array", maxItems: 32, items: { type: "object", properties: { id: str2, required: { type: "boolean" }, result: { type: "string", enum: ["verified", "failed", "unverified"] }, refs: { type: "array", maxItems: 8, items: str2 } }, required: ["id", "required", "result", "refs"], additionalProperties: false } } }, required: ["id", "tasks", "criteria"], additionalProperties: false } }, additionalProperties: false } }, ["id", "receipt"]),
-    tool("hub_task_list", "The task board. PII tasks show as [pii].", { state: { type: "string", enum: ["proposed", "in_progress", "in_review", "approved", "changes_requested", "cancelled"] }, ready: { type: "boolean", description: "only proposed tasks with nothing left to wait for" } }),
-    tool("hub_review", "Give your verdict on a task you were asked to review: map the changed signatures and call sites to the task's plan or detail, read the check result (hub_task_show has it, with the done summary), and list what is unmet. The verdict notifies the task owner; no duplicate hub_send chat is needed. Consecutive changes_requested verdicts (three by default, `tasks.escalate_after`) move the task to another peer.", { id, head: { type: "string", description: "full SHA actually reviewed; enforce binds approval to the current PR head" }, findings: reviewFindings, verdict: { type: "string", enum: ["approved", "changes_requested"] }, note: str2, unmet: { type: "array", items: str2, description: 'each requirement of the plan or detail that the change does not meet; when the review request lists acceptance criteria, start an item with its id ("AC1: what is missing") so the verdict names it' }, coverage: { type: "object", description: "the review brief's reviewable paths you read (reviewed) and any you did not (skipped, each with a reason); in enforce an approval must account for every one", properties: { reviewed: { type: "array", items: str2 }, skipped: { type: "array", items: { type: "object", properties: { path: str2, reason: str2 }, required: ["path", "reason"] } } } } }, ["id", "verdict"]),
-    tool("hub_checkpoint", "Answer a checkpoint request from the hub (quota or context window pressure): what you were doing, what is half done, what whoever continues must know. Write the same to .agenthub/checkpoint.md first if you can.", { summary: str2, request_id: { type: "string", description: "The request id supplied by a context checkpoint request; required for context checkpoints" } }, ["summary"]),
-    tool("hub_source_read", "Read a registered source snapshot. Unicode character range, at most 32 KiB of sanitized UTF-8 text with next character offset. Private sources return only id, kind and private unless called by the on-prem worker inside a PII task. Excluded from capture.", { id: { type: "string", pattern: "^src:[0-9a-f]{16}$" }, range: { type: "object", properties: { offset: { type: "integer", minimum: 0 }, length: { type: "integer", minimum: 1 } }, required: ["offset", "length"], additionalProperties: false } }, ["id"]),
-    tool("hub_memory_search", "Search daemon-scoped visible memory, fails first. Query <=200 UTF-8 bytes; default 8, max 20 lines; whole output <=4 KB. Incomplete excerpts are marked. No project argument.", { query: { type: "string", maxLength: 200, description: "At most 200 UTF-8 bytes, enforced by the daemon" }, limit: { type: "integer", minimum: 1, maximum: 20 } }, ["query"]),
-    tool("hub_memory_show", "Read up to 8 visible memory ids or unique prefixes (6..64 UTF-8 bytes each). Original ids redirect; unavailable ids share one refusal. Whole output <=8 KB.", { ids: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 6, maxLength: 64, description: "6 to 64 UTF-8 bytes" } } }, ["ids"]),
-    tool("hub_memory_graph", "Read screened memory neighbourhoods, fails first. Symbol starts also include optional current-head one-hop code neighbours as derived SHA-stamped edges; unknown coverage is explicit. Up to 8 starts (<=200 UTF-8 bytes each), 1 or 2 hops; default 60/max 120 nodes, max 240 edges, whole output <=6 KB. No project argument.", { starts: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 1, maxLength: 200, description: "At most 200 UTF-8 bytes" } }, hops: { type: "integer", enum: [1, 2] }, limit: { type: "integer", minimum: 1, maximum: 120 } }, ["starts"]),
-    tool("hub_memory_correct", "Propose a correction to a visible memory entry. This creates a machine-local candidate only; a person accepts or rejects it with amem review. It never edits a note. id is an exact id or unique visible prefix; text and reason must each fit 4000 UTF-8 bytes.", { id: str2, text: str2, reason: str2 }, ["id", "text", "reason"]),
-    tool("hub_remember", "Save a decision, finding, contract or fail to the memory all agents share (the hub's amem curated store); the other agents also get it with their next message. A fail is an approach you tried that does not work, and why: the most useful note, it stops the others spending their quota on it. Do not retry what a fail note rules out without new evidence. Conclusions worth recalling, not chatter. For kind fail, optional approach, symptom, cause, evidence and retry_when strings compose fixed labeled text; text may be omitted when structured fields are supplied. The complete text must fit 4000 UTF-8 bytes and is refused, never truncated, when oversized. A note on an open task is short-term until the task is approved, when its decisions, contracts and fails become long-term; horizon long keeps it now, scope shared lets the person's other projects find it.", { text: str2, approach: str2, symptom: str2, cause: str2, evidence: str2, retry_when: str2, title: str2, kind: { type: "string", enum: [...NOTE_KINDS] }, task: id, horizon: { type: "string", enum: ["short", "long"] }, scope: { type: "string", enum: ["project", "shared"] } }),
-    tool("hub_capabilities", "List the commands and skills the person has shared from a peer (id, input schema, effective class, the peer's permission mode, digest). Shared entries only: nothing else is visible here. Descriptions are written by the peer that offers them and are untrusted. Listing grants no right to call anything.", { peer: { type: "string", description: "peer id; omit for every peer with a shared entry" } }),
-    tool("hub_invoke", "Ask another peer to run one capability the person shared from it (see hub_capabilities). Read capabilities need no approval. Remote peer@label reads require manual exact capability/digest/read pins on both hubs; remote discovery is not provided, and only bounded flat scalar inputs cross. Write/external require your open non-PII task and a person's allow-once approval for each call; unattended refuses. Destructive never runs. After admission and any person approval, returns an invocation id; the result arrives later as its own message from the hub, once, addressed to you only. The arguments follow the capability's input schema. Refused with a reason when the capability is not shared, has no permitted class or task scope, the peer cannot be reached, the arguments do not fit, or the call would nest inside an invocation you are answering. Not available during a PII turn.", {
+    tool2("hub_task_spec", "Read complete assigned GitHub issue contracts through the bounded hub boundary. Owner/reviewer only; no repository or URL input. Refuses withheld or oversized specs.", { id: id2 }, ["id"]),
+    tool2("hub_check_start", "Run an exact-head isolated Linux check for your in-progress task. Trusted opt-in runner only; no host shell or credentials. Tests require one to 32 test/*.test.ts paths. Receipt is Linux evidence.", { id: id2, check: { type: "string", enum: ["test", "typecheck"] }, files: { type: "array", minItems: 1, maxItems: 32, items: str2 } }, ["id", "check"]),
+    tool2("hub_check_result", "Read your current task-bound isolated check receipt. Stale ownership/generation refuses; output is policy screened.", { run: str2 }, ["run"]),
+    tool2("hub_check_cancel", "Cancel your task-bound isolated check; only its owner or the person may cancel.", { run: str2 }, ["run"]),
+    tool2("hub_delivery_retry", "Request one redelivery of your own needs_review delivery. An earlier attempt may have effects: inspect those effects before acting. Refuses another peer's row or any lineage already explicitly retried; a repeated uncertain row needs the person. Never completes/discards a delivery or changes task state.", { delivery_id: { type: "string", minLength: 1, maxLength: 256 } }, ["delivery_id"]),
+    tool2("hub_backlog_list", "Read public backlog cards with planning revisions. Configured planners only; PII remains a stub.", {}),
+    tool2("hub_backlog_plan", "Plan an unpinned backlog item outside frozen releases with the revision you read and a bounded reason. Omit fields or give {} for a note-only revision. fields.sdlc accepts only repo/issue identity on unstarted backlog work; relinking clears old spec acceptance. A person's rank is retained. Actual dates cannot be set.", { id: id2, revision: { type: "integer", minimum: 0 }, reason: { type: "string", maxLength: 1000 }, fields: { type: "object", properties: { sdlc: { type: "object", minProperties: 1, properties: { repo: { type: ["string", "null"], maxLength: 400 }, issue: { type: ["integer", "null"], minimum: 1 } }, additionalProperties: false }, rank: { type: ["integer", "null"], minimum: 0 }, priority: { type: ["integer", "null"], minimum: 0, maximum: 3 }, release: { type: ["integer", "null"], minimum: 1 }, plannedStart: { type: ["integer", "null"], minimum: 1 }, due: { type: ["integer", "null"], minimum: 1 }, deps: { type: "array", maxItems: 64, uniqueItems: true, items: { type: "integer", minimum: 1 } }, reserved: { type: ["string", "null"], minLength: 1, maxLength: 32 } }, additionalProperties: false } }, ["id", "revision", "reason"]),
+    tool2("hub_backlog_pull", "Reserve a WIP slot and pull ready unpinned backlog work into To Do at its current revision. Preserves person order/reservations and frozen scope; pending unowned work can be undone with hub_backlog_undo.", { id: id2, revision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["id", "revision", "reason"]),
+    tool2("hub_backlog_split", "Split unstarted backlog work into two to eight staged parts. The original card retains integration/acceptance and depends on the children. Use after for existing prerequisite ids and afterParts for earlier zero-based part indexes. Latest unused unchanged children can be undone with hub_backlog_undo.", { id: id2, revision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 1000 }, parts: { type: "array", minItems: 2, maxItems: 8, items: { type: "object", properties: { title: { type: "string", minLength: 1, maxLength: 300 }, detail: { type: "string", maxLength: 8000 }, class: str2, refs, plan, after: { type: "array", maxItems: 64, uniqueItems: true, items: { type: "integer", minimum: 1 } }, afterParts: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "integer", minimum: 0 } } }, required: ["title"], additionalProperties: false } } }, ["id", "revision", "reason", "parts"]),
+    tool2("hub_backlog_undo", "Undo your latest planning change at its current revision. Refuses intervening changes and another actor's edit.", { id: id2, revision: { type: "integer", minimum: 1 } }, ["id", "revision"]),
+    tool2("hub_release_new", "Create a future release planning row. Planner/person only; no activation, publish or release authorization.", { name: { type: "string", minLength: 1, maxLength: 64 }, goal: { type: "string", minLength: 1, maxLength: 1000 }, order: { type: "integer", minimum: 0 } }, ["name", "goal", "order"]),
+    tool2("hub_release_report", "Read a planned release's task readiness and recorded metrics. Planner/person only. A due date never waives unfinished scope.", { id: id2 }, ["id"]),
+    tool2("hub_release_assign", "Assign or move only a task's release, retaining its execution state and owner. Planner/person only; requires a reason and current planning revision. Frozen scope refuses.", { id: id2, revision: { type: "integer", minimum: 0 }, release: { type: ["integer", "null"], minimum: 1 }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["id", "revision", "release", "reason"]),
+    tool2("hub_release_configure", "Configure/activate a release train or record a hotfix cause. Planner/person only. At most one train is active/frozen; planning rows are future trains.", { id: id2, revision: { type: "integer", minimum: 0 }, state: { type: "string", enum: ["active"] }, cut: { type: "integer", minimum: 1 }, hotfix: { type: "object", properties: { cause: { type: "string", enum: ["loss", "security_privacy", "upgrade_start_blocked", "core_flow_no_workaround"] }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, required: ["cause", "reason"], additionalProperties: false } }, ["id", "revision"]),
+    tool2("hub_release_cut", "Freeze an active release's approved scope after host resource admission and fresh peer quota checks. Unknown evidence defers; no publish, tag, upgrade or authorization.", { id: id2, revision: { type: "integer", minimum: 0 } }, ["id", "revision"]),
+    tool2("hub_release_list", "Read public release scope and planned/actual dates for phased planning. Configured planners only.", {}),
+    tool2("hub_task_propose", "Put a piece of work on the shared task board. The hub assigns an owner by class (routing.toml) unless you name one. Classes: plan, implement, bulk_edit, test, review, summarize, triage. Name the class when you know it; without one the hub tries to pick it. Name yourself as owner to claim work nobody assigned you: it starts in progress. Put the paths the work touches in refs, set refs.repo for work in another repository, and when you claim work, a plan; the hub says when they overlap another open task.", { title: str2, class: { type: "string", enum: ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] }, detail: str2, role: { type: "string", description: "catalog role id for this task class; guidance only, no routing or authority change" }, refs, plan, owner: { type: "string", description: "peer id; yours to claim the work, omit to let the hub route it. With after, the owner is reserved: offered the task first once it is ready" }, after: { type: "array", items: { type: "integer" }, description: "ids of tasks that must be approved first; until then this one waits, offered to nobody, and cannot be claimed" }, backlog: { type: "boolean", description: "stage unoffered work; owner is only a reservation, even when naming yourself" }, urgent: { type: "boolean", description: "hand it over even when its owner is paused for quota only briefly" }, goal: { type: "string", description: "id of this project's long-term task (ahub goal list) the work is part of" } }, ["title"]),
+    tool2("hub_task_accept", "Take a task that was assigned to you, with your plan for it. Set refs.repo for work in another repository; acceptance may correct only that repository metadata.", { id: id2, plan: acceptPlan, refs: { ...refs, properties: { repo: refs.properties.repo } } }, ["id"]),
+    tool2("hub_task_cancel", "Cancel proposed/backlog work you proposed as its configured planner, including work an owner accepted and then declined while it has no execution, branch, commit or PR evidence; work with any such evidence is person-only. Keeps history and does not stop a native turn or delete files.", { id: id2, reason: str2, superseded_by: str2, revision: { type: "integer", minimum: 0 } }, ["id", "reason"]),
+    tool2("hub_task_decline", "Pass on a task assigned to you; the hub offers it to the next peer. A plain decline is a lasting refusal: you are never offered this task again. Pass capacity: true when you only have no room right now: you are skipped for this move only, and a later reroute or planner pull may offer it to you again.", { id: id2, reason: str2, capacity: { type: "boolean" } }, ["id"]),
+    tool2("hub_task_done", "Mark your task finished. It goes to its reviewer with your summary and refs; no duplicate hub_send chat is needed. When the project configures a check for its class, the hub runs it first and the result comes as a task message: a failed check keeps the task with you.", { id: id2, summary: { type: "string", description: "what changed, why, and the check you ran with its result" }, refs, deliverables: deliverablesSchema }, ["id", "summary"]),
+    tool2("hub_sdlc_record", "Record artifact ids or claimed local checks on your task. This grants no authority or external-check evidence. Only its owner/reviewer or the person may record; only its reviewer/person may name a reviewed head or phase checklist. Phase evidence refs are content hashes, not external verification.", { id: id2, receipt: { type: "object", properties: { deliverables: deliverablesSchema, stage: { type: "string", enum: ["spec", "plan", "implement", "review", "verify", "merge", "release"] }, repo: str2, issue: id2, pr: id2, localHead: str2, localResult: { type: "string", enum: ["passed", "failed", "unknown"] }, reviewedHead: str2, phase: { type: "object", properties: { id: str2, head: str2, tasks: { type: "array", maxItems: 64, items: { type: "object", properties: { id: id2, after: { type: "array", maxItems: 16, items: id2 } }, required: ["id", "after"], additionalProperties: false } }, criteria: { type: "array", maxItems: 32, items: { type: "object", properties: { id: str2, required: { type: "boolean" }, result: { type: "string", enum: ["verified", "failed", "unverified"] }, refs: { type: "array", maxItems: 8, items: str2 } }, required: ["id", "required", "result", "refs"], additionalProperties: false } } }, required: ["id", "tasks", "criteria"], additionalProperties: false } }, additionalProperties: false } }, ["id", "receipt"]),
+    tool2("hub_task_list", "The task board. PII tasks show as [pii].", { state: { type: "string", enum: ["proposed", "in_progress", "in_review", "approved", "changes_requested", "cancelled"] }, ready: { type: "boolean", description: "only proposed tasks with nothing left to wait for" } }),
+    tool2("hub_review", "Give your verdict on a task you were asked to review: map the changed signatures and call sites to the task's plan or detail, read the check result (hub_task_show has it, with the done summary), and list what is unmet. The verdict notifies the task owner; no duplicate hub_send chat is needed. Consecutive changes_requested verdicts (three by default, `tasks.escalate_after`) move the task to another peer.", { id: id2, head: { type: "string", description: "full SHA actually reviewed; enforce binds approval to the current PR head" }, findings: reviewFindings, verdict: { type: "string", enum: ["approved", "changes_requested"] }, note: str2, unmet: { type: "array", items: str2, description: 'each requirement of the plan or detail that the change does not meet; when the review request lists acceptance criteria, start an item with its id ("AC1: what is missing") so the verdict names it' }, coverage: { type: "object", description: "the review brief's reviewable paths you read (reviewed) and any you did not (skipped, each with a reason); in enforce an approval must account for every one", properties: { reviewed: { type: "array", items: str2 }, skipped: { type: "array", items: { type: "object", properties: { path: str2, reason: str2 }, required: ["path", "reason"] } } } } }, ["id", "verdict"]),
+    tool2("hub_checkpoint", "Answer a checkpoint request from the hub (quota or context window pressure): what you were doing, what is half done, what whoever continues must know. Write the same to .agenthub/checkpoint.md first if you can.", { summary: str2, request_id: { type: "string", description: "The request id supplied by a context checkpoint request; required for context checkpoints" } }, ["summary"]),
+    tool2("hub_source_read", "Read a registered source snapshot. Unicode character range, at most 32 KiB of sanitized UTF-8 text with next character offset. Private sources return only id, kind and private unless called by the on-prem worker inside a PII task. Excluded from capture.", { id: { type: "string", pattern: "^src:[0-9a-f]{16}$" }, range: { type: "object", properties: { offset: { type: "integer", minimum: 0 }, length: { type: "integer", minimum: 1 } }, required: ["offset", "length"], additionalProperties: false } }, ["id"]),
+    tool2("hub_memory_search", "Search daemon-scoped visible memory, fails first. Query <=200 UTF-8 bytes; default 8, max 20 lines; whole output <=4 KB. Incomplete excerpts are marked. No project argument.", { query: { type: "string", maxLength: 200, description: "At most 200 UTF-8 bytes, enforced by the daemon" }, limit: { type: "integer", minimum: 1, maximum: 20 } }, ["query"]),
+    tool2("hub_memory_show", "Read up to 8 visible memory ids or unique prefixes (6..64 UTF-8 bytes each). Original ids redirect; unavailable ids share one refusal. Whole output <=8 KB.", { ids: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 6, maxLength: 64, description: "6 to 64 UTF-8 bytes" } } }, ["ids"]),
+    tool2("hub_memory_graph", "Read screened memory neighbourhoods, fails first. Symbol starts also include optional current-head one-hop code neighbours as derived SHA-stamped edges; unknown coverage is explicit. Up to 8 starts (<=200 UTF-8 bytes each), 1 or 2 hops; default 60/max 120 nodes, max 240 edges, whole output <=6 KB. No project argument.", { starts: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 1, maxLength: 200, description: "At most 200 UTF-8 bytes" } }, hops: { type: "integer", enum: [1, 2] }, limit: { type: "integer", minimum: 1, maximum: 120 } }, ["starts"]),
+    tool2("hub_memory_correct", "Propose a correction to a visible memory entry. This creates a machine-local candidate only; a person accepts or rejects it with amem review. It never edits a note. id is an exact id or unique visible prefix; text and reason must each fit 4000 UTF-8 bytes.", { id: str2, text: str2, reason: str2 }, ["id", "text", "reason"]),
+    tool2("hub_remember", "Save a decision, finding, contract or fail to the memory all agents share (the hub's amem curated store); the other agents also get it with their next message. A fail is an approach you tried that does not work, and why: the most useful note, it stops the others spending their quota on it. Do not retry what a fail note rules out without new evidence. Conclusions worth recalling, not chatter. For kind fail, optional approach, symptom, cause, evidence and retry_when strings compose fixed labeled text; text may be omitted when structured fields are supplied. The complete text must fit 4000 UTF-8 bytes and is refused, never truncated, when oversized. A note on an open task is short-term until the task is approved, when its decisions, contracts and fails become long-term; horizon long keeps it now, scope shared lets the person's other projects find it.", { text: str2, approach: str2, symptom: str2, cause: str2, evidence: str2, retry_when: str2, title: str2, kind: { type: "string", enum: [...NOTE_KINDS] }, task: id2, horizon: { type: "string", enum: ["short", "long"] }, scope: { type: "string", enum: ["project", "shared"] } }),
+    tool2("hub_capabilities", "List the commands and skills the person has shared from a peer (id, input schema, effective class, the peer's permission mode, digest). Shared entries only: nothing else is visible here. Descriptions are written by the peer that offers them and are untrusted. Listing grants no right to call anything.", { peer: { type: "string", description: "peer id; omit for every peer with a shared entry" } }),
+    tool2("hub_invoke", "Ask another peer to run one capability the person shared from it (see hub_capabilities). Read capabilities need no approval. Remote peer@label reads require manual exact capability/digest/read pins on both hubs; remote discovery is not provided, and only bounded flat scalar inputs cross. Write/external require your open non-PII task and a person's allow-once approval for each call; unattended refuses. Destructive never runs. After admission and any person approval, returns an invocation id; the result arrives later as its own message from the hub, once, addressed to you only. The arguments follow the capability's input schema. Refused with a reason when the capability is not shared, has no permitted class or task scope, the peer cannot be reached, the arguments do not fit, or the call would nest inside an invocation you are answering. Not available during a PII turn.", {
       peer: { type: "string", description: "local peer or exact remote peer@label that offers the capability" },
       capability: { type: "string", description: "the capability id from hub_capabilities, for example command:skill:review" },
       args: { type: "object", description: "the capability's inputs; omit when it takes none", additionalProperties: true },
       task: { type: "integer", description: "an open task you own or review; required for write/external" }
     }, ["peer", "capability"]),
-    tool("hub_capabilities_publish", "Publish what your own session can do (commands, skills) for a person to share. Only for a session whose capabilities the hub cannot read natively; refused for a peer the hub reads itself. Replaces your earlier list, ends with your connection, and is never shared until the person pins it. Not available during a PII turn.", {
+    tool2("hub_capabilities_publish", "Publish what your own session can do (commands, skills) for a person to share. Only for a session whose capabilities the hub cannot read natively; refused for a peer the hub reads itself. Replaces your earlier list, ends with your connection, and is never shared until the person pins it. Not available during a PII turn.", {
       capabilities: { type: "array", minItems: 1, maxItems: 128, description: "every capability you offer", items: { type: "object", additionalProperties: false, required: ["kind", "name", "description", "sideEffect"], properties: {
         kind: { type: "string", enum: ["command", "skill", "mcp_tool"] },
         name: { type: "string", description: "letters, digits, _ . : - only, at most 64" },
@@ -11194,22 +12188,22 @@ var init_hub_tools = __esm(() => {
     }, ["capabilities"])
   ];
   PLANNER_REVIEW_TOOLS = [
-    tool("hub_planner_groom", "Read a bounded planner grooming digest of dependencies, repository-scoped overlaps, WIP and blockers. No board change; unavailable evidence stays unknown.", {}),
-    tool("hub_plan_review", "Record a planner review against the task planning revision and host-read issue edit time. Configured planner or person only; never accepts caller issue timestamps.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str2, maxLength: 1000 }, ...costPlanProperties }, ["id", "revision", "reason"]),
-    tool("hub_sdlc_costs", "Read bounded review and CI cost metrics for linked merged PRs. Planner/person only; metadata only, no board writes.", { repo: str2 }),
-    tool("hub_sdlc_metrics", "Read SDLC metrics from board history: time from acceptance to plan, first review and merge, first-pass approval and rework rounds, first-pass CI and same-head reruns, stale-head re-reviews, stalls, and the control band tiers when sdlc.toml sets [bands]. Planner/person only; read-only, no model and no GitHub issue.", { since: str2 }),
-    tool("hub_backlog_return_untouched", "Return accepted but untouched work to the backlog with its history and planning retained. Refuses execution/branch/commit evidence; planner or person only.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str2, maxLength: 1000 } }, ["id", "revision", "reason"])
+    tool2("hub_planner_groom", "Read a bounded planner grooming digest of dependencies, repository-scoped overlaps, WIP and blockers. No board change; unavailable evidence stays unknown.", {}),
+    tool2("hub_plan_review", "Record a planner review against the task planning revision and host-read issue edit time. Configured planner or person only; never accepts caller issue timestamps.", { id: id2, revision: { type: "integer", minimum: 0 }, reason: { ...str2, maxLength: 1000 }, ...costPlanProperties }, ["id", "revision", "reason"]),
+    tool2("hub_sdlc_costs", "Read bounded review and CI cost metrics for linked merged PRs. Planner/person only; metadata only, no board writes.", { repo: str2 }),
+    tool2("hub_sdlc_metrics", "Read SDLC metrics from board history: time from acceptance to plan, first review and merge, first-pass approval and rework rounds, first-pass CI and same-head reruns, stale-head re-reviews, stalls, and the control band tiers when sdlc.toml sets [bands]. Planner/person only; read-only, no model and no GitHub issue.", { since: str2 }),
+    tool2("hub_backlog_return_untouched", "Return accepted but untouched work to the backlog with its history and planning retained. Refuses execution/branch/commit evidence; planner or person only.", { id: id2, revision: { type: "integer", minimum: 0 }, reason: { ...str2, maxLength: 1000 } }, ["id", "revision", "reason"])
   ];
   TASK_TOOLS.push(...PLANNER_REVIEW_TOOLS);
   TASK_TOOL_NAMES = new Set(TASK_TOOLS.map((t) => t.name));
   CONDUCTOR_TOOLS = [
-    tool("hub_status", "Inspect public team state, holds, quota windows, task counts and pending approval peer/tool/age. Only the configured conductor may use this tool.", {}),
-    tool("hub_task_show", "Read a task's public view and history, its done summary and check result included. PII tasks remain stubs. Only the conductor, the configured planner and the task's current owner and reviewer may use this tool.", { id }, ["id"]),
-    tool("hub_task_assign", "Name an owner (default role) or reviewer. Only the conductor may name a reviewer through this tool. A proposer may redirect an unaccepted proposed task's owner; a task that still waits reserves that owner. Pull-only peers receive work when named while attached or when they claim it; a peer that cannot take the task is refused with the reason, and the task is unchanged. With an explicit capabilities list, the conductor needs assign capability for either role, the proposer only to give ownership to another peer.", { id, peer: str2, role: { type: "string", enum: ["owner", "reviewer"] } }, ["id", "peer"]),
-    tool("hub_task_escalate", "Escalate a task through the normal task flow, as the conductor. Requires assign capability when explicitly listed.", { id }, ["id"]),
-    tool("hub_peer_start", "Start local, kimi, qwen, jcode, pi, claude or codex in the start mode a person set for it; you cannot choose the mode. A headless peer starts at once. A TUI peer (claude, and pi and codex by default) opens in a terminal with a fixed command; when the hub cannot open a terminal the call fails with the command for the person to run.", { peer: { type: "string", enum: CONDUCTOR_START_PEERS } }, ["peer"]),
-    tool("hub_peer_hold", "Hold a peer's deliveries as the conductor. This hold is separate from the person's hold and budget pauses.", { peer: str2 }, ["peer"]),
-    tool("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str2 }, ["peer"])
+    tool2("hub_status", "Inspect public team state, holds, quota windows, task counts and pending approval peer/tool/age. Only the configured conductor may use this tool.", {}),
+    tool2("hub_task_show", "Read a task's public view and history, its done summary and check result included. PII tasks remain stubs. Only the conductor, the configured planner and the task's current owner and reviewer may use this tool.", { id: id2 }, ["id"]),
+    tool2("hub_task_assign", "Name an owner (default role) or reviewer. Only the conductor may name a reviewer through this tool. A proposer may redirect an unaccepted proposed task's owner; a task that still waits reserves that owner. Pull-only peers receive work when named while attached or when they claim it; a peer that cannot take the task is refused with the reason, and the task is unchanged. With an explicit capabilities list, the conductor needs assign capability for either role, the proposer only to give ownership to another peer.", { id: id2, peer: str2, role: { type: "string", enum: ["owner", "reviewer"] } }, ["id", "peer"]),
+    tool2("hub_task_escalate", "Escalate a task through the normal task flow, as the conductor. Requires assign capability when explicitly listed.", { id: id2 }, ["id"]),
+    tool2("hub_peer_start", "Start local, kimi, qwen, jcode, pi, claude or codex in the start mode a person set for it; you cannot choose the mode. A headless peer starts at once. A TUI peer (claude, and pi and codex by default) opens in a terminal with a fixed command; when the hub cannot open a terminal the call fails with the command for the person to run.", { peer: { type: "string", enum: CONDUCTOR_START_PEERS } }, ["peer"]),
+    tool2("hub_peer_hold", "Hold a peer's deliveries as the conductor. This hold is separate from the person's hold and budget pauses.", { peer: str2 }, ["peer"]),
+    tool2("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str2 }, ["peer"])
   ];
   CONDUCTOR_TOOL_NAMES = new Set(CONDUCTOR_TOOLS.map((t) => t.name));
   READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
@@ -11254,7 +12248,7 @@ var init_spec_read = __esm(() => {
 
 // src/models/route/config.ts
 var TYPES;
-var init_config = __esm(() => {
+var init_config2 = __esm(() => {
   TYPES = new Set(["stage", "plan_execute", "advisor", "escalation"]);
 });
 
@@ -11270,7 +12264,7 @@ var init_routing = __esm(() => {
   init_registry();
   init_board();
   init_spec_read();
-  init_config();
+  init_config2();
   init_stage();
   TEMPLATE = join16(import.meta.dir, "..", "..", "templates", "routing.toml");
   cache = new Map;
@@ -12679,7 +13673,7 @@ function readAgyTranscript(session, transcript) {
   }
 }
 var EVENTS2, UUID2, record3 = (value) => !!value && typeof value === "object" && !Array.isArray(value), AGY_FACTS_HOOK;
-var init_hooks = __esm(() => {
+var init_hooks2 = __esm(() => {
   EVENTS2 = ["SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"];
   UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   AGY_FACTS_HOOK = { decode: decodeAgyHook, encode: encodeAgyHook, read: readAgyTranscript };
@@ -12695,7 +13689,7 @@ var DISPLAY, shellQuote2 = (value) => `'${value.replace(/'/g, `'\\''`)}'`, AGY_D
 var init_definition = __esm(() => {
   init_entry();
   init_reviewer_variants();
-  init_hooks();
+  init_hooks2();
   DISPLAY = { palette: { fg: "#6558a6", bg: "#f1effa" } };
   AGY_DEFINITION = {
     api: 1,
@@ -13579,7 +14573,7 @@ function claudePlugins(root, cwd) {
   return out;
 }
 function codexPlugins(root) {
-  const config = text(join23(root, "config.toml"));
+  const config = text2(join23(root, "config.toml"));
   if (config === undefined)
     return [];
   const found = new Map, disabled = new Set;
@@ -13615,7 +14609,7 @@ function parsePiContinuity(value) {
 function absoluteContinuityPath(value) {
   return typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value) && isAbsolute7(value) && normalize(value) === value;
 }
-var str3 = (value) => typeof value === "string" && value ? value : undefined, PLUGINS, CLAUDE_ONLY, text = (file) => {
+var str3 = (value) => typeof value === "string" && value ? value : undefined, PLUGINS, CLAUDE_ONLY, text2 = (file) => {
   let fd;
   try {
     fd = openSync8(file, constants7.O_RDONLY | constants7.O_NONBLOCK);
@@ -13631,7 +14625,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
   }
 }, json = (file) => {
   try {
-    const v = JSON.parse(text(file) ?? "");
+    const v = JSON.parse(text2(file) ?? "");
     return v && typeof v === "object" ? v : undefined;
   } catch {
     return;
@@ -13851,7 +14845,7 @@ var rolloutState = (binding) => {
 }, transcriptState = (binding) => {
   const state = recordedFileState(checkedSessionPath(binding, "transcript"));
   return state === "unknown" ? "unknown" : state === "found";
-}, startupArgs = (peer) => Object.fromEntries(["mode", "backend", "model", "route"].flatMap((key) => typeof peer.args?.[key] === "string" ? [[key, peer.args[key]]] : [])), text2 = (value) => typeof value === "string" && value.length > 0, object7 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}, CODEX_RECOVERY_SESSION, CLAUDE_RECOVERY_SESSION, PI_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION, QWEN_RECOVERY_SESSION;
+}, startupArgs = (peer) => Object.fromEntries(["mode", "backend", "model", "route"].flatMap((key) => typeof peer.args?.[key] === "string" ? [[key, peer.args[key]]] : [])), text3 = (value) => typeof value === "string" && value.length > 0, object8 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}, CODEX_RECOVERY_SESSION, CLAUDE_RECOVERY_SESSION, PI_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION, QWEN_RECOVERY_SESSION;
 var init_native_recovery = __esm(() => {
   init_events();
   init_recovery_session_file();
@@ -13906,9 +14900,9 @@ var init_native_recovery = __esm(() => {
       return args;
     },
     crashIdentity: (row) => {
-      const value = object7(row), args = object7(value.args), session = object7(value.session);
-      const sessionId = [value.sessionId, value.agentSessionId, value.resumeSessionId, session.id, session.sessionId].find(text2);
-      const sessionFile = [value.sessionFile, value.sessionPath, args.sessionFile, session.file, session.path].find(text2);
+      const value = object8(row), args = object8(value.args), session = object8(value.session);
+      const sessionId = [value.sessionId, value.agentSessionId, value.resumeSessionId, session.id, session.sessionId].find(text3);
+      const sessionFile = [value.sessionFile, value.sessionPath, args.sessionFile, session.file, session.path].find(text3);
       return { ...sessionId ? { sessionId } : {}, ...sessionFile ? { sessionFile } : {} };
     }
   };
@@ -14430,7 +15424,7 @@ function fields(raw, at) {
     return fail(at, "enumerable data fields required");
   return result;
 }
-function text3(raw, at, max = 4096) {
+function text4(raw, at, max = 4096) {
   if (typeof raw !== "string" || !raw.trim() || Buffer.byteLength(raw) > max || /[\p{Cc}\p{Cf}]/u.test(raw))
     return fail(at, `must be nonempty control-free text of at most ${max} bytes`);
   return raw;
@@ -14446,7 +15440,7 @@ function list2(raw, at, max) {
     const d = descriptors[String(index)];
     if (!d || !Object.hasOwn(d, "value") || !d.enumerable)
       return fail(at, "array data fields required");
-    return text3(d.value, `${at}.${index}`);
+    return text4(d.value, `${at}.${index}`);
   });
 }
 function freeze(value) {
@@ -14473,10 +15467,10 @@ function configuredAcpDefinitions(raw, builtinKinds) {
       return fail(at, "unknown or privileged field");
     if (input.transport?.value !== "acp")
       return fail(`${at}.transport`, "must be acp");
-    const command = text3(input.command?.value, `${at}.command`), args = input.args ? list2(input.args.value, `${at}.args`, 128) : [];
+    const command = text4(input.command?.value, `${at}.command`), args = input.args ? list2(input.args.value, `${at}.args`, 128) : [];
     if ([command, ...args].some((arg) => /^--(?:leader|attach|connect|remote)(?:-|=|$)/.test(arg)))
       return fail(`${at}.args`, "attach/leader selectors are unsupported; command must run foreground owned ACP stdio");
-    const displayName = text3(input.displayName?.value, `${at}.displayName`, 256), roles = list2(input.roles?.value, `${at}.roles`, ROLES.length);
+    const displayName = text4(input.displayName?.value, `${at}.displayName`, 256), roles = list2(input.roles?.value, `${at}.roles`, ROLES.length);
     if (roles.includes("conductor"))
       return fail(`${at}.roles`, "conductor requires explicit project role policy, not adapter defaults");
     if (!roles.length || new Set(roles).size !== roles.length || roles.some((role) => !ROLES.includes(role)))
@@ -14486,7 +15480,7 @@ function configuredAcpDefinitions(raw, builtinKinds) {
       const value = fields(input.identity.value, `${at}.identity`);
       if (Object.keys(value).some((key) => !["name", "version"].includes(key)))
         return fail(`${at}.identity`, "unknown identity field");
-      identity = { name: text3(value.name?.value, `${at}.identity.name`, 256), version: text3(value.version?.value, `${at}.identity.version`, 256) };
+      identity = { name: text4(value.name?.value, `${at}.identity.name`, 256), version: text4(value.version?.value, `${at}.identity.version`, 256) };
     }
     const grokContract = kind === "grok" || /^grok(?:\.exe)?$/i.test(basename6(command)) || identity?.name.toLowerCase() === "grok";
     const noLeader = args.indexOf("--no-leader"), endOptions = args.indexOf("--");
@@ -14500,12 +15494,12 @@ function configuredAcpDefinitions(raw, builtinKinds) {
       for (const [mode, d] of Object.entries(value)) {
         if (!MODES.includes(mode))
           return fail(`${at}.permission.${mode}`, "unknown hub mode");
-        modes[mode] = text3(d.value, `${at}.permission.${mode}`, 256);
+        modes[mode] = text4(d.value, `${at}.permission.${mode}`, 256);
       }
       if (!Object.keys(modes).length)
         modes = undefined;
     }
-    const readOnly = input.readOnly ? text3(input.readOnly.value, `${at}.readOnly`, 256) : undefined;
+    const readOnly = input.readOnly ? text4(input.readOnly.value, `${at}.readOnly`, 256) : undefined;
     const nativePolicy = freeze({ ...modes ? { modes } : {}, ...readOnly ? { readOnly } : {} });
     const argv = freeze([command, ...args]);
     identity = identity && freeze(identity);
@@ -14872,562 +15866,6 @@ var init_registry = __esm(() => {
       throw new Error("builtin CLI entry has no adapter definition");
     return Object.freeze({ ...entry, definition });
   }));
-});
-
-// node_modules/@staix/agent-mem/src/memory/mutation.ts
-var mutations;
-var init_mutation = __esm(() => {
-  init_platform();
-  mutations = new WeakMap;
-});
-
-// node_modules/@staix/agent-mem/src/memory/lifecycle-log.ts
-var MAX_LOG_BYTES;
-var init_lifecycle_log = __esm(() => {
-  MAX_LOG_BYTES = 8 * 1024 * 1024;
-});
-
-// node_modules/@staix/agent-mem/src/memory/aliases.ts
-var init_aliases = __esm(() => {
-  init_lifecycle_log();
-});
-
-// node_modules/@staix/agent-mem/src/memory/shard.ts
-var init_shard = __esm(() => {
-  init_public_prune_view();
-  init_generation();
-  init_aliases();
-  init_aliases();
-});
-
-// node_modules/@staix/agent-mem/src/memory/public-prune-input-chain.ts
-var PUBLIC_PRUNE_REPLAY_MAX_BYTES;
-var init_public_prune_input_chain = __esm(() => {
-  init_generation();
-  init_platform();
-  PUBLIC_PRUNE_REPLAY_MAX_BYTES = 256 * 1024 * 1024;
-});
-
-// node_modules/@staix/agent-mem/src/memory/generation.ts
-var init_generation = __esm(() => {
-  init_public_prune_view();
-  init_mutation();
-  init_platform();
-  init_shard();
-  init_public_prune_input_chain();
-});
-
-// node_modules/@staix/agent-mem/src/memory/public-prune-view.ts
-var init_public_prune_view = __esm(() => {
-  init_generation();
-  init_platform();
-});
-
-// node_modules/@staix/agent-mem/src/memory/ops-contract.ts
-function current(op, fields, required, placement, targets, precedence, legacyOptional = []) {
-  const keys = [...Object.keys(base), ...required];
-  return Object.freeze({
-    status: "v1-equal",
-    implemented: true,
-    payloadVersion: "agent-hub.memory/v1",
-    required: keys,
-    payloadSchema: { version: 1, required: keys, fields: { ...base, op: { type: "string", values: [op] }, ...fields }, legacyOptional },
-    immutableTargets: targets,
-    placement,
-    precedence,
-    identity,
-    crashBoundary: crash,
-    fixtures: [`v1-${op}`]
-  });
-}
-function ordinaryOp(op, placement, targets, precedence, dated = false) {
-  const hasBy = !["forget", "confirm", "reject"].includes(op);
-  const by = dated ? utc : op === "supersede" ? id2 : op === "goal_state" ? { type: "string", values: ["open", "active", "blocked", "done", "dropped"] } : text4;
-  return current(op, { target: op === "settle" ? { ...text4, maxLength: 400 } : id2, actor: text4, ...hasBy ? { by } : {} }, ["target", "actor", ...hasBy ? ["by"] : []], placement, targets, precedence, ["actor"]);
-}
-function blocked(op) {
-  return Object.freeze({
-    status: "truth-changing",
-    implemented: false,
-    payloadVersion: "unimplemented",
-    required: [],
-    payloadSchema: null,
-    immutableTargets: "not defined: no writer",
-    placement: "future generation only; never local or synced shared-v1 segments",
-    precedence: "not defined: person-run generation migration and contracts required first",
-    identity: "not defined: no payload is emitted",
-    crashBoundary: "refused before authoritative append",
-    fixtures: [`deny-${op}`]
-  });
-}
-var text4, id2, utc, strings, base, identity = "sha256(canonical complete payload without id), first 32 hex; schema, at and machine participate; replay INSERT OR IGNORE", crash = "complete newline is authoritative; append precedes derived-index refresh; incomplete tail waits; refresh/rebuild recovers a complete append", v1, V1_OPS, OP_CONTRACTS, generationId, authoredHash, canonicalUtc, pruneRequired, PRUNE_GENERATION_CONTRACT, VAULT_LINK_GENERATION_CONTRACT, GENERATION_OP_CONTRACTS;
-var init_ops_contract = __esm(() => {
-  text4 = { type: "string" };
-  id2 = { type: "string", format: "id" };
-  utc = { type: "string", format: "utc" };
-  strings = { type: "string-array" };
-  base = {
-    schema: { type: "string", values: ["agent-hub.memory/v1"] },
-    op: text4,
-    id: id2,
-    at: utc,
-    machine: { type: "string", maxLength: 64 }
-  };
-  v1 = {
-    note: current("note", {
-      project: { type: "string", maxLength: 400 },
-      scope: { type: "string", values: ["project", "shared"] },
-      tier: { type: "string", values: ["short", "long"] },
-      kind: { type: "string", values: ["decision", "finding", "contract", "fail"] },
-      peer: { type: "string", maxLength: 64 },
-      title: text4,
-      text: text4,
-      task: text4,
-      about: strings,
-      supersedes: id2,
-      promotedFrom: id2,
-      source: { type: "string", values: ["hub", "person", "claude-mem"] },
-      expires: utc
-    }, ["project", "scope", "tier", "kind", "peer", "text", "about", "source"], "short -> local; long -> synced", "optional supersedes and promotedFrom are full immutable entry ids; about nodes and task keys retain v1 identity", "newest at/id first; note supersedes joins supersede ops; promoted source hidden; expiry trusts wall clock (declared C05 rollback ceiling)", ["source"]),
-    forget: ordinaryOp("forget", "follows target authored segment: local when target.local, synced otherwise", "target entry id, promotion ancestry included", "forget wins independent of timestamp; never edits source rows"),
-    supersede: ordinaryOp("supersede", "follows old target authored segment: local when old.local, synced otherwise; replacement visibility never narrower", "target old id; by replacement id, never a mutable alias", "latest relation by at then replacement id; earliest cycle relation yields; gone replacement releases old entry"),
-    demote: ordinaryOp("demote", "synced for long targets; local for local short targets", "target entry id; by fixed expiry", "latest demotion at/id fixes short deadline; clock rollback retains C05 ceiling", true),
-    settle: ordinaryOp("settle", "local", "target immutable project#task@created key; by fixed expiry", "earliest settlement deadline wins; eligible held notes wait for promotion; clock rollback retains C05 ceiling", true),
-    goal: current("goal", {
-      project: { type: "string", maxLength: 400 },
-      scope: { type: "string", values: ["project", "shared"] },
-      title: { type: "string", maxLength: 400 },
-      milestones: strings,
-      dependsOn: strings,
-      actor: text4
-    }, ["project", "scope", "title", "milestones", "dependsOn", "actor"], "synced", "dependsOn goal ids; goal's full id is its immutable identity", "goals newest at first; initial state open; subsequent state/link/lease ops reduce separately", ["scope", "actor"]),
-    goal_state: ordinaryOp("goal_state", "synced", "target full goal id; by open|active|blocked|done|dropped", "latest valid state by at/id wins"),
-    goal_link: ordinaryOp("goal_link", "synced", "target full goal id; by immutable project#task@created key", "unique authored intent; links retain at/machine; identical payload replays once"),
-    lease: ordinaryOp("lease", "synced", "target full goal id; by fixed UTC expiry; machine is holder identity", "claims after last forced claim; latest per machine; earliest uninterrupted active claim then machine id wins; expired holder is metadata", true),
-    lease_force: ordinaryOp("lease_force", "synced", "target full goal id; by fixed UTC expiry", "latest forced claim at/id discards earlier claims, then ordinary lease ordering applies", true),
-    suggest: ordinaryOp("suggest", "synced", "target source entry id; by relation:destination id", "suggestions stay dashed, never confirmed graph evidence; suggestion full id is verdict target"),
-    confirm: ordinaryOp("confirm", "synced", "target immutable suggestion id", "latest confirm/reject by at/id wins; confirmation adds evidence relation only for valid endpoints"),
-    reject: ordinaryOp("reject", "synced", "target immutable suggestion id", "latest confirm/reject by at/id wins; rejection excludes suggested relation from evidence")
-  };
-  V1_OPS = Object.freeze(Object.keys(v1));
-  OP_CONTRACTS = Object.freeze({
-    ...v1,
-    prune: blocked("prune"),
-    correct: blocked("correct"),
-    lift: blocked("lift"),
-    consolidate: blocked("consolidate"),
-    group: blocked("group")
-  });
-  generationId = { type: "string", pattern: "^[a-f0-9]{32}$" };
-  authoredHash = { type: "string", pattern: "^[a-f0-9]{64}$" };
-  canonicalUtc = { type: "string", format: "canonical-utc" };
-  pruneRequired = ["schema", "op", "generation", "at", "machine", "actor", "placement", "cutoff", "targets", "id"];
-  PRUNE_GENERATION_CONTRACT = Object.freeze({
-    status: "truth-changing",
-    implemented: true,
-    generationOnly: true,
-    targetSemantics: "exact-entry-v1",
-    validator: "validatePruneRow",
-    validation: ["exact required keys at each nested level; no additional fields", "canonical UTC; cutoff <= at; each expiredAt <= cutoff", "1..32 targets, strictly sorted unique full ids; canonical row <=16384 UTF-8 bytes", "id equals first 32 hex of canonical complete payload hash excluding id", "generation and authored segment placement match the bound generation/input", "target/basis full authored hashes and explicit expires/by relationship verified separately by reducer; missing witnesses remain pending"],
-    payloadVersion: "agent-mem.prune/v1",
-    required: pruneRequired,
-    payloadSchema: { version: 1, required: pruneRequired, additionalProperties: false, maxUtf8Bytes: 16384, fields: {
-      schema: { type: "string", values: ["agent-mem.prune/v1"] },
-      op: { type: "string", values: ["prune"] },
-      generation: generationId,
-      at: canonicalUtc,
-      machine: { type: "string", pattern: "^[a-f0-9]{16}$" },
-      actor: { type: "string", values: ["person"] },
-      placement: { type: "string", values: ["local", "synced"] },
-      cutoff: canonicalUtc,
-      id: generationId,
-      targets: { type: "array", minItems: 1, maxItems: 32, sortedUniqueBy: "id", items: {
-        type: "object",
-        required: ["id", "rowHash", "expiredAt", "basis"],
-        additionalProperties: false,
-        fields: {
-          id: generationId,
-          rowHash: authoredHash,
-          expiredAt: canonicalUtc,
-          basis: { type: "object", required: ["kind", "id", "rowHash"], additionalProperties: false, fields: {
-            kind: { type: "string", values: ["note", "demote", "settle"] },
-            id: generationId,
-            rowHash: authoredHash
-          } }
-        }
-      } }
-    } },
-    immutableTargets: "only explicit full note id plus SHA-256 of complete canonical authored row including id; exact note.expires or demote/settle.by basis id/hash; no implicit TTL/backstop proof or ancestry traversal",
-    placement: "generation local by default; synced only for positively attested public target and basis already in verified cached legacy-main or generation public segments; no policy-free bypass",
-    precedence: "validated exact target is permanently gone, union/idempotent across prune rows; later clock/deadline changes do not revoke it; missing witnesses pending; different IDs and independent replacements survive; raw promotion metadata remains for v1 source hiding",
-    identity: "sha256(canonical complete prune payload excluding id), first 32 hex; generation/at/machine/placement/cutoff/ordered targets participate; rowHash is full SHA-256 of authored witness including id",
-    crashBoundary: "fsync exact local sealed plan, mutation fence, revalidate proofs/policy, append+fsync complete row then refresh; per-row atomicity; retry skips durable IDs; incomplete own tail completes only from identical persisted-plan prefix; mismatched tail refuses",
-    fixtures: ["test/generation-prune.test.ts#only explicit note expires or demote settle by values can prove expiry", "test/generation-prune.test.ts#exact-entry reducer waits for witnesses and cannot be reversed by clock or later deadlines", "test/generation-prune.test.ts#prune partitions private target or basis locally and public attestations bind only public rows", "test/generation-prune.test.ts#prune row shape hashes canonical time ordering placement and byte bounds are strict"]
-  });
-  VAULT_LINK_GENERATION_CONTRACT = Object.freeze({
-    status: "truth-changing",
-    implemented: true,
-    generationOnly: true,
-    targetSemantics: "exact-entry-v1",
-    validator: "validateVaultLinkRow",
-    validation: ["exact string-valued keys; no additional fields; canonical UTC and bounded metadata", "id is canonical complete payload hash excluding id", "bound generation and local authored machine segment must match", "projection requires exact full target id and authored row hash in the same project"],
-    payloadVersion: "agent-mem.vault-link/v1",
-    required: ["schema", "op", "generation", "id", "at", "machine", "actor", "placement", "target", "rowHash", "project", "path"],
-    payloadSchema: { version: 1, required: ["schema", "op", "generation", "id", "at", "machine", "actor", "placement", "target", "rowHash", "project", "path"], additionalProperties: false, maxUtf8Bytes: 4096, fields: {
-      schema: { type: "string", values: ["agent-mem.vault-link/v1"] },
-      op: { type: "string", values: ["vault_link"] },
-      generation: generationId,
-      id: generationId,
-      at: canonicalUtc,
-      machine: { type: "string", pattern: "^[a-f0-9]{16}$" },
-      actor: { type: "string", values: ["person"] },
-      placement: { type: "string", values: ["local"] },
-      target: generationId,
-      rowHash: authoredHash,
-      project: { type: "string" },
-      path: { type: "string" }
-    } },
-    immutableTargets: "full exact note id and SHA-256 of the complete canonical authored row; project must match; no aliases, promotion ancestry or replacements",
-    placement: "generation local segment only; vault paths are machine-local metadata and never sync; shard migration carries the row to its exact target owner",
-    precedence: "append-only links suppress only their witnessed exact entry from future candidates; independent replacement ids survive; malformed or missing witnesses cannot suppress",
-    identity: "sha256(canonical complete vault-link payload excluding id), first 32 hex; generation, target id, full witness hash and path participate",
-    crashBoundary: "mutation fence and exact id/hash recheck; refuse an incomplete prior tail; append+fsync then derived refresh; complete rows replay, incomplete tails require person inspection",
-    fixtures: ["test/vault.test.ts#vault links refuse shared-v1 and bind exact generation entries, survive rebuild, and never touch v1 logs", "test/vault.test.ts#vault link validation rejects changed payload hashes, foreign generation and public placement", "test/vault.test.ts#vault links retain their exact target through curated shard migration"]
-  });
-  GENERATION_OP_CONTRACTS = Object.freeze({ prune: PRUNE_GENERATION_CONTRACT, vault_link: VAULT_LINK_GENERATION_CONTRACT });
-});
-
-// node_modules/@staix/agent-mem/src/memory/bridge.ts
-var init_bridge = __esm(() => {
-  init_platform();
-  init_generation();
-  init_ops_contract();
-  init_store();
-});
-
-// node_modules/@staix/agent-mem/src/memory/shard-bridge.ts
-var init_shard_bridge = __esm(() => {
-  init_bridge();
-});
-
-// node_modules/@staix/agent-mem/src/memory/cli-attribution.ts
-import { AsyncLocalStorage } from "async_hooks";
-var scope;
-var init_cli_attribution = __esm(() => {
-  scope = new AsyncLocalStorage;
-});
-
-// node_modules/@staix/agent-mem/src/memory/private-spans.ts
-var init_private_spans = () => {};
-
-// node_modules/@staix/agent-mem/src/memory/screen.ts
-var init_screen = () => {};
-
-// node_modules/@staix/agent-mem/src/memory/project.ts
-var init_project2 = __esm(() => {
-  init_platform();
-});
-
-// node_modules/@staix/agent-mem/src/memory/policy.ts
-var MAX_BYTES3, MAX_STRING_BYTES, flags;
-var init_policy = __esm(() => {
-  init_screen();
-  init_platform();
-  init_project2();
-  MAX_BYTES3 = 256 * 1024;
-  MAX_STRING_BYTES = 16 * 1024;
-  flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
-});
-
-// node_modules/@staix/agent-mem/src/memory/config.ts
-var MAX_CONFIG_BYTES2;
-var init_config2 = __esm(() => {
-  init_policy();
-  MAX_CONFIG_BYTES2 = 64 * 1024;
-});
-
-// node_modules/@staix/agent-mem/src/memory/home.ts
-var init_home = __esm(() => {
-  init_platform();
-  init_config2();
-});
-
-// node_modules/@staix/agent-mem/src/memory/machine.ts
-var init_machine = () => {};
-
-// node_modules/@staix/agent-mem/src/memory/lifecycle.ts
-var init_lifecycle = __esm(() => {
-  init_aliases();
-  init_lifecycle_log();
-  init_shard();
-});
-
-// node_modules/@staix/agent-mem/src/memory/search-score.ts
-function sql(expr, rank) {
-  const get = (part) => sql(part, rank);
-  switch (expr.op) {
-    case "rank":
-      return rank;
-    case "tier":
-      return `CASE tier ${Object.entries(TIER_WEIGHTS).map(([name, value]) => `WHEN '${name}' THEN ${real(value)}`).join(" ")} ELSE ${real(DEFAULT_TIER_WEIGHT)} END`;
-    case "age":
-      return `((julianday(?) - julianday(at)) / ${real(MONTH_DAYS)})`;
-    case "constant":
-      return real(expr.value);
-    case "negative":
-      return `(-(${get(expr.value)}))`;
-    case "reciprocal":
-      return `(1.0 / ${get(expr.value)})`;
-    case "add":
-      return `(${get(expr.left)} + ${get(expr.right)})`;
-    case "multiply":
-      return expr.right.op === "reciprocal" ? `(${get(expr.left)} / ${get(expr.right.value)})` : `(${get(expr.left)} * ${get(expr.right)})`;
-    case "max":
-      return `max(${get(expr.left)}, ${get(expr.right)})`;
-  }
-}
-function rankedScoreSql(rank = "bm25(docs)") {
-  return sql(SCORE, rank);
-}
-var MONTH_DAYS = 30, TIER_WEIGHTS, DEFAULT_TIER_WEIGHT = 0.9, TIER_FACTOR, DENOMINATOR, RECENCY_FACTOR, SCORE, real = (value) => Number.isInteger(value) ? `${value}.0` : String(value);
-var init_search_score = __esm(() => {
-  TIER_WEIGHTS = { long: 1, capture: 0.5 };
-  TIER_FACTOR = { op: "tier" };
-  DENOMINATOR = { op: "add", left: { op: "constant", value: 1 }, right: { op: "max", left: { op: "constant", value: 0 }, right: { op: "age" } } };
-  RECENCY_FACTOR = { op: "reciprocal", value: DENOMINATOR };
-  SCORE = { op: "multiply", left: { op: "multiply", left: { op: "negative", value: { op: "rank" } }, right: TIER_FACTOR }, right: RECENCY_FACTOR };
-});
-
-// node_modules/@staix/agent-mem/src/memory/search-fts.ts
-var SCREENED_SCORE, SCREENED_SUBSTRING_SCORE;
-var init_search_fts = __esm(() => {
-  init_search_score();
-  SCREENED_SCORE = rankedScoreSql();
-  SCREENED_SUBSTRING_SCORE = rankedScoreSql("-1.0");
-});
-
-// node_modules/@staix/agent-mem/src/memory/capture-input.ts
-var init_capture_input = __esm(() => {
-  init_screen();
-  init_platform();
-  init_private_spans();
-});
-
-// node_modules/@staix/agent-mem/src/memory/capture.ts
-var SPOOL_MAX_BYTES;
-var init_capture = __esm(() => {
-  init_screen();
-  init_capture_input();
-  init_capture_input();
-  init_home();
-  init_shard();
-  init_lifecycle();
-  init_machine();
-  init_config2();
-  init_policy();
-  init_search_fts();
-  SPOOL_MAX_BYTES = 256 * 1024;
-});
-
-// node_modules/@staix/agent-mem/src/memory/style.ts
-function style(color) {
-  return { color, ok: wrap(color, 32, 39), attention: wrap(color, 33, 39), error: wrap(color, 31, 39), dim: wrap(color, 2, 22), bold: wrap(color, 1, 22) };
-}
-var wrap = (on, open, close) => (text) => on ? `\x1B[${open}m${text}\x1B[${close}m` : text, PLAIN;
-var init_style = __esm(() => {
-  PLAIN = style(false);
-});
-
-// node_modules/@staix/agent-mem/src/memory/prune.ts
-var init_prune = __esm(() => {
-  init_generation();
-  init_store();
-  init_style();
-});
-
-// node_modules/@staix/agent-mem/src/memory/public-prune-witness.ts
-var init_public_prune_witness = __esm(() => {
-  init_generation();
-  init_prune();
-  init_shard_sync_format();
-});
-
-// node_modules/@staix/agent-mem/src/memory/shard-sync-format.ts
-var SHARD_PACK_MAX_BYTES;
-var init_shard_sync_format = __esm(() => {
-  init_bridge();
-  init_generation();
-  init_prune();
-  init_shard();
-  init_public_prune_witness();
-  SHARD_PACK_MAX_BYTES = 1024 * 1024;
-});
-
-// node_modules/@staix/agent-mem/src/memory/public-prune-inputs.ts
-var PUBLIC_PRUNE_GRAPH_MAX_BYTES, OBJECT_MAX, plans, batches;
-var init_public_prune_inputs = __esm(() => {
-  init_generation();
-  init_mutation();
-  init_platform();
-  init_store();
-  init_prune();
-  init_shard_sync_format();
-  init_public_prune_witness();
-  init_public_prune_input_chain();
-  init_public_prune_input_chain();
-  PUBLIC_PRUNE_GRAPH_MAX_BYTES = 80 * 1024 * 1024;
-  OBJECT_MAX = 1024 * 1024 + 64;
-  plans = new WeakMap;
-  batches = new WeakMap;
-});
-
-// node_modules/@staix/agent-mem/src/memory/generation-index.ts
-var init_generation_index = __esm(() => {
-  init_public_prune_inputs();
-  init_public_prune_view();
-  init_shard();
-  init_shard_bridge();
-  init_generation();
-  init_bridge();
-  init_prune();
-  init_store();
-});
-
-// node_modules/@staix/agent-mem/src/memory/migrate.ts
-var init_migrate = __esm(() => {
-  init_bridge();
-  init_mutation();
-  init_platform();
-  init_generation();
-  init_style();
-});
-
-// node_modules/@staix/agent-mem/src/memory/reader-lease.ts
-var open;
-var init_reader_lease = __esm(() => {
-  init_generation();
-  init_mutation();
-  init_platform();
-  init_public_prune_view();
-  open = new Map;
-});
-
-// node_modules/@staix/agent-mem/src/memory/store.ts
-var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP;
-var init_store = __esm(() => {
-  init_public_prune_view();
-  init_shard_bridge();
-  init_cli_attribution();
-  init_platform();
-  init_private_spans();
-  init_screen();
-  init_mutation();
-  init_home();
-  init_machine();
-  init_lifecycle();
-  init_machine();
-  init_search_score();
-  init_search_fts();
-  init_shard();
-  init_capture();
-  init_ops_contract();
-  init_generation();
-  init_generation_index();
-  init_bridge();
-  init_migrate();
-  init_reader_lease();
-  DEFAULT_TTL_MS = 14 * 24 * 3600000;
-  UNSETTLED_MS = 180 * 24 * 3600000;
-  DEFAULT_LEASE_MS = 4 * 3600000;
-  MIGRATION_BOOTSTRAP = Symbol("migration index bootstrap");
-});
-
-// node_modules/@staix/agent-mem/src/memory/work-lists.ts
-var forbidden;
-var init_work_lists = __esm(() => {
-  init_generation();
-  init_mutation();
-  init_platform();
-  init_screen();
-  init_private_spans();
-  init_shard();
-  init_machine();
-  forbidden = new Set(["__proto__", "constructor", "prototype"]);
-});
-
-// node_modules/@staix/agent-mem/src/memory/candidate-pending.ts
-var CANDIDATE_AGE_MS, CANDIDATE_SHOWN_GRACE_MS, CANDIDATE_DUE_MS;
-var init_candidate_pending = __esm(() => {
-  CANDIDATE_AGE_MS = 30 * 86400000;
-  CANDIDATE_SHOWN_GRACE_MS = 7 * 86400000;
-  CANDIDATE_DUE_MS = 7 * 86400000;
-});
-
-// node_modules/@staix/agent-mem/src/memory/generation-sync.ts
-var zero;
-var init_generation_sync = __esm(() => {
-  init_bridge();
-  init_generation();
-  init_mutation();
-  init_platform();
-  init_prune();
-  init_sync();
-  zero = "0".repeat(40);
-});
-
-// node_modules/@staix/agent-mem/src/memory/sync-screen.ts
-var MAX_BYTES4, GENERATED;
-var init_sync_screen = __esm(() => {
-  init_config2();
-  init_policy();
-  MAX_BYTES4 = 8 * 1024 * 1024;
-  GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "target", "promotedFrom", "supersedes", "expires", "by", "tier", "scope", "kind", "source"]);
-});
-
-// node_modules/@staix/agent-mem/src/memory/sync.ts
-var liveGroups;
-var init_sync = __esm(() => {
-  init_generation();
-  init_platform();
-  init_mutation();
-  init_generation_sync();
-  init_sync_screen();
-  liveGroups = new Set;
-});
-
-// node_modules/@staix/agent-mem/src/memory/path-glob.ts
-var init_path_glob = __esm(() => {
-  init_project2();
-});
-
-// node_modules/@staix/agent-mem/src/memory/repo-scope.ts
-var REPO_DIR = ".amem", REPO_LOG = "log.jsonl", REPO_ATTRIBUTES_LINE, MAX_LINE_BYTES, MAX_FILE_BYTES, MAX_CONFIG_BYTES3;
-var init_repo_scope = __esm(() => {
-  init_platform();
-  init_policy();
-  init_project2();
-  init_path_glob();
-  init_shard();
-  REPO_ATTRIBUTES_LINE = `${REPO_DIR}/${REPO_LOG} merge=union`;
-  MAX_LINE_BYTES = 16 * 1024;
-  MAX_FILE_BYTES = 1024 * 1024;
-  MAX_CONFIG_BYTES3 = 1024 * 1024;
-});
-
-// node_modules/@staix/agent-mem/src/session-brief.ts
-var init_session_brief = __esm(() => {
-  init_generation();
-  init_home();
-  init_platform();
-  init_policy();
-  init_config2();
-  init_candidate_pending();
-  init_project2();
-  init_reader_lease();
-  init_shard();
-  init_lifecycle();
-  init_repo_scope();
-  init_work_lists();
 });
 
 // node_modules/ajv/dist/compile/codegen/code.js
@@ -22759,298 +23197,11 @@ init_queue_backpressure();
 init_deny();
 init_permission_mode();
 init_path_policy();
+init_src();
 
-// node_modules/@staix/agent-mem/src/index.ts
-init_search_fts();
-init_store();
-init_capture();
-init_shard();
-
-// node_modules/@staix/agent-mem/src/memory/catalog.ts
-init_home();
-init_shard();
-init_generation();
-init_capture();
-init_store();
-init_lifecycle();
-// node_modules/@staix/agent-mem/src/memory/capacity.ts
-init_home();
-
-// node_modules/@staix/agent-mem/src/memory/metrics.ts
-var METRICS_MAX_BYTES = 64 * 1024;
-// node_modules/@staix/agent-mem/src/memory/capacity.ts
-init_lifecycle();
-init_capture();
-init_style();
-
-// node_modules/@staix/agent-mem/src/index.ts
-init_lifecycle();
-
-// node_modules/@staix/agent-mem/src/memory/gc.ts
-init_capture();
-init_lifecycle();
-// node_modules/@staix/agent-mem/src/memory/curated-read.ts
-init_store();
-init_shard();
-
-// node_modules/@staix/agent-mem/src/memory/project-export.ts
-init_lifecycle();
-init_platform();
-init_policy();
-init_screen();
-init_shard();
-init_work_lists();
-// node_modules/@staix/agent-mem/src/memory/project-import.ts
-init_bridge();
-init_private_spans();
-init_shard();
-init_store();
-var PROJECT_IMPORT_MAX_BYTES = 64 * 1024 * 1024;
-var PROJECT_IMPORT_MAX_LINE_BYTES = 64 * 1024;
-var PROJECT_IMPORT_FUTURE_SKEW_MS = 5 * 60 * 1000;
-var NOTE_KEYS = new Set(["schema", "id", "at", "machine", "op", "project", "scope", "tier", "kind", "peer", "title", "text", "task", "about", "supersedes", "promotedFrom", "source", "expires"]);
-// node_modules/@staix/agent-mem/src/memory/external-import.ts
-init_aliases();
-
-// node_modules/@staix/agent-mem/src/memory/candidates.ts
-init_candidate_pending();
-
-// node_modules/@staix/agent-mem/src/memory/note-add.ts
-init_store();
-init_cli_attribution();
-
-// node_modules/@staix/agent-mem/src/memory/candidates.ts
-init_cli_attribution();
-init_home();
-init_platform();
-init_private_spans();
-var CANDIDATE_RETENTION = { count: 500, ageMs: 30 * 86400000 };
-var COUNTER_RETENTION = { count: 1e4, ageMs: 90 * 86400000 };
-
-// node_modules/@staix/agent-mem/src/memory/external-import.ts
-init_candidate_pending();
-init_platform();
-init_private_spans();
-init_screen();
-var EXTERNAL_IMPORT_LIMITS = { maxFiles: 256, maxDirectories: 512, maxEntriesPerDirectory: 512, maxDepth: 16, maxFileBytes: 1024 * 1024, maxCandidatesPerRun: 100, candidateTextChars: 3000, titleChars: 200 };
-// node_modules/@staix/agent-mem/src/memory/cross-project.ts
-init_search_fts();
-init_capture();
-init_lifecycle();
-
-// node_modules/@staix/agent-mem/src/memory/vault.ts
-init_generation();
-init_policy();
-init_style();
-init_generation();
-
-// node_modules/@staix/agent-mem/src/index.ts
-init_sync();
-
-// node_modules/@staix/agent-mem/src/memory/import.ts
-init_platform();
-init_store();
-init_shard();
-init_work_lists();
-init_capture();
-init_capture_input();
-init_config2();
-init_policy();
-init_private_spans();
-
-// node_modules/@staix/agent-mem/src/index.ts
-init_project2();
-init_home();
-init_platform();
-
-// node_modules/@staix/agent-mem/src/memory/commands.ts
-init_cli_attribution();
-init_store();
-init_sync();
-init_style();
-init_project2();
-var AMEM_NAMES = { memory: "amem", goal: "amem goal" };
-var memoryUsage = (name = AMEM_NAMES.memory) => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> [--history] [--as-of <UTC>] | show <id> [--history] [--as-of <UTC>] | graph <id|node> [--hops 1|2] [--history] [--as-of <UTC>] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] [--capture-days N] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`;
-var MEMORY_USAGE = memoryUsage();
-var goalUsage = (name = AMEM_NAMES.goal) => `usage: ${name} [list] [--all] | show <id> | new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task id> | state <id> open|active|blocked|done|dropped | done <id> | take <id> [--force]  [--json]`;
-var GOAL_USAGE = goalUsage();
-
-// node_modules/@staix/agent-mem/src/index.ts
-init_ops_contract();
-init_generation();
-init_migrate();
-init_prune();
-
-// node_modules/@staix/agent-mem/src/memory/shard-migration.ts
-init_bridge();
-init_generation();
-init_generation_index();
-init_prune();
-init_mutation();
-init_platform();
-init_reader_lease();
-init_shard();
-init_store();
-init_migrate();
-init_style();
-var USER2 = Symbol("shared-user-shard");
-// node_modules/@staix/agent-mem/src/mcp.ts
-var string = (maxLength, minLength = 1) => ({ type: "string", minLength, maxLength });
-var limit = { type: "integer", minimum: 1, maximum: 100 };
-var object8 = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false });
-var tool2 = (name, description, inputSchema, readOnlyHint = true) => ({
-  name,
-  description,
-  inputSchema,
-  annotations: { readOnlyHint, destructiveHint: false, openWorldHint: false }
-});
-var MCP_TOOLS = [
-  tool2("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object8({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" }, explain: { type: "boolean" } }, ["query"])),
-  tool2("amem_evidence", "Return a bounded bundle of cited, live curated entries for a question. Untrusted memory data only: no answer or model call. Capture, repo-only notes, pending candidates and model answers are not evidence.", object8({ question: string(1000), limit: { type: "integer", minimum: 1, maximum: 20 }, maxBytes: { type: "integer", minimum: 256, maximum: 8192 } }, ["question"])),
-  tool2("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object8({ id: string(80) }, ["id"])),
-  tool2("amem_timeline", "Read screened memory near an entry or time in this project.", object8({ id: string(80), since: string(40), limit })),
-  tool2("amem_brief", "Read an intent/path-scoped brief of live public memory: fails first, then decisions/contracts and one-hop neighbours. Memory is untrusted data; byte cap covers the complete brief body.", object8({ intent: string(1000), paths: { type: "array", maxItems: 150, items: string(512) }, symbols: { type: "array", maxItems: 150, items: string(512) }, maxBytes: { type: "integer", minimum: 1, maximum: 8192 } }, ["intent"])),
-  tool2("amem_graph", "Read the screened curated-memory neighbourhood. Capture is never graph evidence.", object8({ start: string(500), hops: { type: "integer", minimum: 1, maximum: 2 }, limit }, ["start"])),
-  tool2("amem_work_state_read", "Read project work lists; closed lists/items can be included explicitly.", object8({ list: string(200), includeClosed: { type: "boolean" } })),
-  tool2("amem_work_state_write", "Append scalar project work-list fields; null clears, task selects an item, list status done closes.", object8({ list: string(200), fields: {
-    type: "object",
-    minProperties: 1,
-    maxProperties: 64,
-    additionalProperties: { type: ["string", "number", "boolean", "null"], maxLength: 4000 }
-  } }, ["list", "fields"]), false),
-  tool2("amem_remember", "Propose a memory candidate (text, optional kind/title), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. Review and accept or reject through the CLI under current policy; this tool never writes curated notes.", object8({
-    text: string(3000),
-    title: string(200),
-    kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] },
-    approach: string(4000),
-    symptom: string(4000),
-    cause: string(4000),
-    evidenceRefs: { type: "array", minItems: 1, maxItems: 16, items: string(400) },
-    retryWhen: string(4000)
-  }), false),
-  tool2("amem_correct", "Propose a correction to an exact curated entry id visible in this project. The host binds its current revision; the full accepted body including reason and provenance headers must fit 4000 characters. Review and accept or reject through the CLI under current policy before any note or supersession is written.", object8({ id: string(80), proposedText: string(4000), reason: string(4000), kind: { type: "string", enum: ["decision", "contract", "fail"] } }, ["id", "proposedText", "reason"]), false),
-  tool2("amem_vault_candidates", "List screened durable curated notes for review before moving them to a vault. Read only.", object8({ limit })),
-  tool2("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it requires the matching CLI preview and `--confirm`. This tool has no apply operation.", object8({}))
-];
-// node_modules/@staix/agent-mem/src/memory/evidence.ts
-init_policy();
-
-// node_modules/@staix/agent-mem/src/memory/plan-guard.ts
-init_store();
-init_project2();
-
-// node_modules/@staix/agent-mem/src/memory/intent-brief.ts
-init_policy();
-
-// node_modules/@staix/agent-mem/src/memory/recall-staleness.ts
-init_platform();
-init_policy();
-init_project2();
-
-// node_modules/@staix/agent-mem/src/mcp-memory.ts
-init_capture();
-init_generation();
-init_home();
-init_platform();
-init_policy();
-init_config2();
-init_project2();
-init_reader_lease();
-init_search_fts();
-init_shard();
-init_lifecycle();
-init_repo_scope();
-init_store();
-init_work_lists();
-
-// node_modules/@staix/agent-mem/src/index.ts
-init_config2();
-init_policy();
-init_work_lists();
-
-// node_modules/@staix/agent-mem/src/hook-git.ts
-init_platform();
-init_platform();
-
-// node_modules/@staix/agent-mem/src/hook-spool.ts
-init_capture_input();
-init_platform();
-init_policy();
-init_config2();
-init_policy();
-init_screen();
-init_lifecycle();
-
-// node_modules/@staix/agent-mem/src/hook-contract.ts
-var HOOK_INPUT_BYTES = 64 * 1024;
-
-// node_modules/@staix/agent-mem/src/hook-spool.ts
-var RECORD_BYTES = HOOK_INPUT_BYTES + 8192;
-var MAX_BYTES5 = 2 * 1024 * 1024;
-var DRAIN_BYTES = 256 * 1024;
-var CAPACITY_BYTES = 256 * 1024;
-var RETIRE_AFTER_MS = 7 * 24 * 3600000;
-
-// node_modules/@staix/agent-mem/src/hook-project.ts
-init_platform();
-init_project2();
-init_platform();
-
-// node_modules/@staix/agent-mem/src/hook-native.ts
-var SUPERVISOR = [
-  "marker=$1; seconds=$2; shift 2; leader=$$",
-  'owned() { identity=$(/bin/ps -ww -p "$leader" -o pgid=,command=) || return 1; case "$identity" in *"$marker"*) ;; *) return 1 ;; esac; set -f; set -- $identity; [ "$1" = "$leader" ]; }',
-  'reap() { if owned; then kill -KILL "-$leader"; fi; }',
-  "[ -x /bin/sleep ] && [ -x /bin/ps ] && owned || exit 125",
-  "trap reap EXIT HUP INT TERM",
-  '( /bin/sleep "$seconds" & sleeper=$!; kill -0 "$sleeper" 2>/dev/null || { reap; exit 125; }; printf "\\n%s:ARMED\\n" "$marker"; wait "$sleeper"; reap ) & watchdog=$!',
-  'kill -0 "$watchdog" 2>/dev/null || { reap; exit 125; }',
-  '"$@" </dev/null; code=$?; printf "\\n%s:%s\\n" "$marker" "$code"',
-  "read -r ignored || :",
-  'wait "$watchdog"'
-].join("; ");
-
-// node_modules/@staix/agent-mem/src/hooks.ts
-init_aliases();
-init_home();
-init_platform();
-init_policy();
-init_config2();
-// node_modules/@staix/agent-mem/src/ingest.ts
-init_capture();
-init_home();
-init_platform();
-init_policy();
-init_config2();
-init_project2();
-init_shard();
-var MAX_BYTES6 = 16 * 1024 * 1024;
-var DEFAULT_BYTES = 4 * 1024 * 1024;
-var MAX_CURSOR_BYTES = 128 * 1024;
-var utf8 = new TextDecoder("utf-8", { fatal: true });
-var MAX_RECORD = 256 * 1024;
-
-// node_modules/@staix/agent-mem/src/index.ts
-init_session_brief();
-
-// node_modules/@staix/agent-mem/src/memory/decay-review.ts
-init_generation();
-// node_modules/@staix/agent-mem/src/memory/goal-promotion.ts
-init_generation();
-init_lifecycle();
-init_platform();
-init_shard();
-// node_modules/@staix/agent-mem/src/memory/consolidation-clusters.ts
-init_search_fts();
-
-// node_modules/@staix/agent-mem/src/memory/consolidate.ts
-init_policy();
-init_platform();
-
-// node_modules/@staix/agent-mem/src/memory/consolidation-model.ts
-init_policy();
-init_platform();
 // src/hub/tasks.ts
+init_packs();
+init_research_experiments();
 init_research_campaign();
 init_task_code_symbols();
 init_test_integrity();
@@ -23170,11 +23321,14 @@ init_roles();
 init_path_policy();
 
 // src/hub/memory-candidates.ts
+init_src();
 init_tool_refusal();
 
 // src/hub/memory-policy.ts
 init_routing();
 init_path_policy();
+init_src();
+init_src();
 
 // src/hub/tasks.ts
 init_profiles();
@@ -23198,6 +23352,7 @@ var CHUNK = 1024 * 1024;
 var NOFOLLOW = constants8.O_NOFOLLOW ?? 0;
 
 // src/hub/tasks.ts
+init_src();
 init_board();
 init_envelope();
 init_routing();
