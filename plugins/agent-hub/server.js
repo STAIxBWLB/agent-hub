@@ -11509,6 +11509,22 @@ var init_import = __esm(() => {
   init_policy();
   init_private_spans();
 });
+// node_modules/@staix/agent-mem/src/memory/consolidation-clusters.ts
+var init_consolidation_clusters = __esm(() => {
+  init_search_fts();
+  init_candidates();
+});
+
+// node_modules/@staix/agent-mem/src/memory/forget-nearby.ts
+var init_forget_nearby = __esm(() => {
+  init_machine();
+  init_shard();
+  init_candidates();
+  init_consolidation_clusters();
+  init_aliases();
+  init_work_lists();
+});
+
 // node_modules/@staix/agent-mem/src/memory/commands.ts
 var AMEM_NAMES, memoryUsage = (name = AMEM_NAMES.memory) => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> [--history] [--as-of <UTC>] | show <id> [--history] [--as-of <UTC>] | graph <id|node> [--hops 1|2] [--history] [--as-of <UTC>] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] [--capture-days N] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`, MEMORY_USAGE, goalUsage = (name = AMEM_NAMES.goal) => `usage: ${name} [list] [--all] | show <id> | new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task id> | state <id> open|active|blocked|done|dropped | done <id> | take <id> [--force]  [--json]`, GOAL_USAGE;
 var init_commands = __esm(() => {
@@ -11518,6 +11534,7 @@ var init_commands = __esm(() => {
   init_import();
   init_style();
   init_project2();
+  init_forget_nearby();
   AMEM_NAMES = { memory: "amem", goal: "amem goal" };
   MEMORY_USAGE = memoryUsage();
   GOAL_USAGE = goalUsage();
@@ -11602,6 +11619,14 @@ var init_recall_staleness = __esm(() => {
   init_policy();
   init_project2();
 });
+// node_modules/@staix/agent-mem/src/memory/candidate-overlaps.ts
+var init_candidate_overlaps = __esm(() => {
+  init_consolidation_clusters();
+  init_policy();
+  init_private_spans();
+  init_shard();
+});
+
 // node_modules/@staix/agent-mem/src/memory/path-glob.ts
 var init_path_glob = __esm(() => {
   init_project2();
@@ -11627,6 +11652,7 @@ var init_mcp_memory = __esm(() => {
   init_intent_brief();
   init_recall_staleness();
   init_candidates();
+  init_candidate_overlaps();
   init_capacity();
   init_capture();
   init_generation();
@@ -11768,12 +11794,6 @@ var init_goal_promotion = __esm(() => {
   init_lifecycle();
   init_platform();
   init_shard();
-});
-
-// node_modules/@staix/agent-mem/src/memory/consolidation-clusters.ts
-var init_consolidation_clusters = __esm(() => {
-  init_search_fts();
-  init_candidates();
 });
 
 // node_modules/@staix/agent-mem/src/memory/consolidation-model.ts
@@ -23253,7 +23273,7 @@ var package_default = {
     bun: ">=1.4.2"
   },
   dependencies: {
-    "@staix/agent-mem": "0.15.0"
+    "@staix/agent-mem": "0.16.0"
   },
   devDependencies: {
     "@modelcontextprotocol/sdk": "^1.27.1",
