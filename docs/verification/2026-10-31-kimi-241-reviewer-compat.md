@@ -11,9 +11,9 @@ Date: 2026-10-31. Scope: issue #888, task 578. This repeats the [2.3.2 model-fre
 | Official macOS arm64 archive | `kimi-code-darwin-arm64.tar.gz`, 62,671,109 bytes |
 | Archive SHA-256 | `17f848e7b9b159aed9b2ad0df917c4be3c484393d924a6540171ede7b87cc66d` |
 | Standalone executable SHA-256 | `1a8539eae87ffbd9bf480b8a47beafc9668f66b048b96cfa631310dc12dab3a7` |
-| Host / hub core | macOS arm64, Bun 1.4.2, own frozen `@staix/agent-mem@0.13.0` |
+| Host / hub core | macOS arm64, Bun 1.4.2, own frozen `@staix/agent-mem@0.14.0` |
 
-The archive was obtained from the official release at that tag and checked against both its GitHub asset digest and sibling checksum file before bounded extraction into a new scratch prefix. No global installer ran. An additional privately installed npm 2.4.1 distribution also passed the same two probe modes; its Node entry hash is `fd15d5c9b48892bb4f1d5fe82df9f790c8c19a44ca9a81054cc592b6fb9e2c90`. The primary receipt below is for the standalone executable, matching the previous artifact form. The npm postinstall was reviewed and invoked only in non-global mode, where it returns before global shim migration.
+The archive was obtained from the official release at that tag and checked against both its GitHub asset digest and sibling checksum file before bounded extraction into a new scratch prefix. No global installer ran. An earlier privately installed npm 2.4.1 distribution also passed the same two probe modes at the 0.13.0 hub-core checkpoint; its Node entry hash is `fd15d5c9b48892bb4f1d5fe82df9f790c8c19a44ca9a81054cc592b6fb9e2c90`. The primary receipt below is for the standalone executable, matching the previous artifact form. After rebasing onto main with the 0.14.0 core pin, both standalone modes were repeated successfully against that exact frozen dependency; prior 0.13.0 records remain separate. The npm postinstall was reviewed and invoked only in non-global mode, where it returns before global shim migration.
 
 ## Isolated production and native controls
 
@@ -58,6 +58,6 @@ Producers and result JSONs stay outside git under `scratchpad/temp/agent-hub-578
 
 | File | SHA-256 |
 | --- | --- |
-| `kimi-probe.ts` | `82b1e96ae9c4fb312fc6134b3b072ce96d5708a4c8e3ec54aada0943a0990648` |
-| `kimi-native-result.json` | `59e748060a855ef085602ed4ecfaddb18aedbf5c8ec4c95bd7fd721b5f1e672b` |
-| `kimi-verified-result.json` | `59a467fd9c8485a46adcc2155cc59cbcd381db28479cbf258553a0a89a379c06` |
+| `kimi-probe.ts` | `5985aef11fb111f3f04640323130dfae98fd8f6934d4be4433307b89abdee8a5` |
+| `kimi-native-result.json` | `0c4838f66835220103b525f05354fbe8729c1de236ec674c1eeeb9e2d05d0951` |
+| `kimi-verified-result.json` | `e69bfd33569139e05788e8c29a3a45aeb92526eb7c3cba11b402b615cfb6583c` |
