@@ -1320,7 +1320,7 @@ export class Tasks {
       if (family.size >= 512) throw new PreEffectToolRefusal("study intake family exceeds its bounded scope");
       const task = this.d.board.get(id);
       if (!task) throw new PreEffectToolRefusal("study intake family is incomplete");
-      family.add(id); pending.push(...task.deps);
+      family.add(id); pending.push(...(task.deps ?? []));
     }
     family.delete(parent.id);
     return family;
