@@ -516,6 +516,8 @@ export class Board {
         return { campaign: this.researchCampaign(id, revision)!, bindings, children: [] };
       }
       const parent = this.get(campaign.parentTaskId), latest = this.researchCampaign(id);
+      const activeRow = this.db.query("SELECT revision FROM research_campaigns WHERE id=? AND status='approved' LIMIT 1").get(id) as { revision: number } | null;
+      const active = activeRow ? this.researchCampaign(id, activeRow.revision) : undefined;
       if (campaign.status !== "draft" || latest?.revision !== revision || !researchInteger(expectedParentFlow, 0) || !parent || parent.history.length !== expectedParentFlow) throw researchFailure();
       if (this.db.query("SELECT 1 FROM research_campaigns WHERE project=? AND parent_task_id=? AND status='approved' AND id<>? LIMIT 1").get(project, campaign.parentTaskId, id)) throw new Error("another research campaign is active for this parent");
       if (this.researchBindings(campaign).length || prepared.length !== campaign.contract.units.length) throw researchFailure();
@@ -570,7 +572,11 @@ export class Board {
       this.taskWrite(() => this.db.query("UPDATE research_campaigns SET status='superseded',private=MAX(private,?) WHERE id=? AND project=? AND status='approved'").run(isPrivate ? 1 : 0, id, project));
       this.taskWrite(() => this.db.query("UPDATE research_campaigns SET status='approved',approved_by=?,approved_at=?,private=? WHERE id=? AND revision=? AND status='draft'")
         .run(by, at, isPrivate ? 1 : 0, id, revision));
-      this.update(parent.id, by, "study approved", {}, `${id} revision ${revision}`, {}, expectedParentFlow);
+      const nextUnits = new Set(campaign.contract.units.map(unit => unit.id));
+      const nextEdges = new Set(campaign.contract.units.flatMap(unit => unit.dependsOn.map(dependency => `${unit.id}:${dependency}`)));
+      const omittedUnits = active?.contract.units.filter(unit => !nextUnits.has(unit.id)).length ?? 0;
+      const omittedEdges = active?.contract.units.flatMap(unit => unit.dependsOn.map(dependency => `${unit.id}:${dependency}`)).filter(edge => !nextEdges.has(edge)).length ?? 0;
+      this.update(parent.id, by, "study approved", {}, `${id} revision ${revision}; omitted units ${omittedUnits}, dependencies ${omittedEdges}`, {}, expectedParentFlow);
       const approved = this.researchCampaign(id, revision)!;
       return { campaign: approved, bindings: this.researchBindings(approved), children };
     });

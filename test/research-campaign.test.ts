@@ -348,3 +348,16 @@ test("#930 stopping study admissions drains a pending screen and fences its writ
   await expect(f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: contract() })).rejects.toThrow(/held/);
   expect((await f.tasks.propose(USER, { title: "Ordinary dev work still uses its existing path", class: "implement", owner: "codex" })).owner).toBe("codex");
 }, 20_000);
+
+
+test("#930 an approved omission is auditable without leaking unit text into parent history", async () => {
+  const f = await fixture(), initial = contract(); initial.stopPolicy.maxUnits = 3;
+  initial.units.push({ id: "extra", round: 0, question: "OMITTED_PRIVATE_UNIT_TEXT", perspective: "analysis", requiredOutput: "An optional check", sourceIds: [SOURCE], dependsOn: ["discover"], purpose: "analysis" });
+  const draft = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: initial });
+  await f.tasks.studyApprove(USER, { id: draft.id, revision: 1 });
+  await f.tasks.studyRevise("claude", { id: draft.id, revision: 1, contract: contract() });
+  await f.tasks.studyApprove(USER, { id: draft.id, revision: 2 });
+  const entry = f.board.get(f.parent.id)!.history.findLast(item => item.event === "study approved")!;
+  expect(entry.note).toContain("omitted units 1, dependencies 1");
+  expect(entry.note).not.toContain("OMITTED_PRIVATE_UNIT_TEXT");
+});
