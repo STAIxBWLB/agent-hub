@@ -79,6 +79,9 @@ export function panelAssets(): { js: string; css: string } {
   // The view keys listen inside the panel only (the shell owns global keys), and the page title belongs to the shell.
   body = swap(body, "document.addEventListener('keydown', dashboardKey);", "root.addEventListener('keydown', dashboardKey);");
   body = swap(body, "if(document.title!==title)document.title=title;", "");
+  // An inbox link names the project that owns the item; the next project refresh selects it.
+  body = swap(body, "if (!selectedProjectId && typeof result.selectedProjectId === 'string') selectedProjectId = result.selectedProjectId;",
+    "if (wantProject && projectList.some((p) => p && p.id === wantProject)) selectedProjectId = wantProject;\n    else if (!selectedProjectId && typeof result.selectedProjectId === 'string') selectedProjectId = result.selectedProjectId;\n    wantProject = '';");
   // The shell owns the page's landmarks and the view tabs (its panel tabs are DASHBOARD_VIEWS): the panel's <main>,
   // <header> and <footer> become plain blocks marked by class, and its own view nav is hidden.
   body = body.replaceAll("'main section[data-view]'", () => "'.ahub-main section[data-view]'").replaceAll("'main > .stack'", () => "'.ahub-main > .stack'");
@@ -107,16 +110,19 @@ export default (host) => {
   host.mount.append(root);
   const template = new DOMParser().parseFromString(${JSON.stringify(`<body>${panelMarkup}</body>`)}, "text/html");
   root.append(...template.body.childNodes);
-  let started = false, stop = () => {};
+  let started = false, stop = () => {}, wantProject = '', pickProject = () => {};
   const start = () => {
     if (started) return; started = true;
     stop = (() => {
 ${body}
+      pickProject = () => { clearTimeout(projectsTimer); void refreshProjects(); };
       return () => { stopped = true; clearTimeout(timer); clearTimeout(projectsTimer); };
     })();
   };
   return {
-    show(panel) { start(); if (${JSON.stringify(DASHBOARD_VIEWS)}.includes(panel)) switchViewFromHost(panel); },
+    show(panel, params) {
+      if (typeof params?.project === "string" && params.project) { wantProject = params.project; if (started) pickProject(); }
+      start(); if (${JSON.stringify(DASHBOARD_VIEWS)}.includes(panel)) switchViewFromHost(panel); },
     hide() {},
     destroy() { stop(); root.remove(); },
   };
@@ -166,7 +172,7 @@ export function createProvider(options: { home: string; registry?: Registry; lif
         items.push({ id, group: "decision", kind: "approval", title: `${p.peer}: ${p.title}`.slice(0, 200), actor: p.peer, project: name, at,
           chip: { text: "approval", tone: "warn" },
           verbs: [...(allow ? [{ id: "approve", label: "Allow once", primary: true }] : []), ...(deny ? [{ id: "deny", label: "Deny", destructive: true }] : [])],
-          link: { panel: "agents" } });
+          link: { panel: "agents", params: { project: project.id } } });
       }
       for (const t of (snap.tasks as { id: number; title: string; state: string; reviewer: string | null; owner: string | null }[] | undefined) ?? []) {
         if (t.state !== "in_review" || t.reviewer !== "user") continue;
@@ -174,7 +180,7 @@ export function createProvider(options: { home: string; registry?: Registry; lif
         const at = seen.get(id) ?? new Date().toISOString();
         seen.set(id, at);
         items.push({ id, group: "review", kind: "review", title: `#${t.id} ${t.title}`.slice(0, 200), ...(t.owner ? { actor: t.owner } : {}), project: name, at,
-          chip: { text: "review", tone: "neutral" }, verbs: [{ id: "open", label: "Open board", primary: true }], link: { panel: "board" } });
+          chip: { text: "review", tone: "neutral" }, verbs: [{ id: "open", label: "Open board", primary: true }], link: { panel: "board", params: { project: project.id } } });
       }
     }
     // Forget ids that left the inbox, so `seen` stays the size of what is waiting now.

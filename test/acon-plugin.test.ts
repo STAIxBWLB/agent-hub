@@ -67,6 +67,7 @@ describe("acon plugin provider (D1)", () => {
     expect(first.map((i) => [i.group, i.kind, i.id])).toEqual([["decision", "approval", "perm:p1:perm-1"], ["review", "review", "review:p1:7"]]);
     expect(first[0].at).toBe(new Date(PERMISSION.createdAt).toISOString());
     expect(first[0].verbs.map((v: any) => v.id)).toEqual(["approve", "deny"]);
+    expect(first.map((i) => i.link)).toEqual([{ panel: "agents", params: { project: "p1" } }, { panel: "board", params: { project: "p1" } }]);
     await Bun.sleep(20);
     const second = (await provider.snapshot({ after: 0, panel: "inbox" })).items as any[];
     expect(second.map((i) => i.at)).toEqual(first.map((i) => i.at));
@@ -118,6 +119,7 @@ describe("dashboard assets (D2)", () => {
     for (const bad of ["fetch(", "document.cookie", "history.replaceState", "location.hash", "document.getElementById", "innerHTML", "document.addEventListener"]) expect(js).not.toContain(bad);
     expect(js).toContain("host.snapshot(");
     expect(js).toContain("host.action(body)");
+    expect(js).toContain("if (wantProject && projectList.some("); // an inbox link's project is selected on show
     expect(css.startsWith(".ahub-panel{")).toBe(true);
     expect(js).not.toMatch(/<(main|header|footer)\b/); // the shell owns the landmarks
     expect(/@import|url\(\s*["']?(https?:)?\/\//i.test(css)).toBe(false);
