@@ -1471,6 +1471,8 @@ export class Tasks {
     const instrumentedPeers = tasks.flatMap(task => task.owner && ledger?.instrumented(task.owner) ? [task.owner] : []);
     const projection = studyProjection({ campaign, bindings, tasks, handoffs: this.d.board.researchHandoffs(campaign.id), now: this.studyTime(), instrumentedPeers,
       ...(budget && !Array.isArray(budget) ? { budget: { ...budget, coveredTaskIds: tasks.filter(task => task.owner && ledger?.covers(budget.id, task.id, task.owner, [])).map(task => task.id) } } : {}) });
+    projection.reasons = [...new Set([...projection.reasons, ...tasks.flatMap(task => { const reason = this.studyDispatchReason(task, task.owner ?? undefined); return reason ? [reason] : []; })])];
+    projection.held = projection.reasons.length > 0;
     if (this.studyReplayPrivacy(campaign, this.studyParent(campaign.parentTaskId))) {
       // IDs, counts, states and resource names only. Source references are private view data too.
       for (const unit of projection.units) { unit.sourceIds = []; unit.duplicateSourceIds = []; unit.handoff.coveredSourceIds = []; }

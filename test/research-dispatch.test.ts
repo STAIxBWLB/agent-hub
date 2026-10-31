@@ -179,3 +179,18 @@ test("a queued owner offer is rechecked at delivery after its campaign closes", 
   await f.tasks.studyClose(USER,{id:campaign.id,revision:1,reason:"Closed before delivery"});
   expect(f.tasks.relevant("local",env)).toBe(false);
 });
+
+test("insufficientEvidence settles a discovery round while acceptance still refuses an expired task", async () => {
+  const f=await fixture(), campaign=await approve(f), id=await startDiscovery(f,campaign);
+  await f.tasks.studyHandoff("local",{...handoff(campaign.id,id),evidence:[],insufficientEvidence:"The fixture source provides no measurements"});
+  const projection=f.tasks.studyShow(USER,{id:campaign.id});
+  expect(projection.discoveryRounds).toEqual([{round:0,complete:true}]);
+  expect(projection.units[0]!.handoff.complete).toBe(false);
+  const next=contract(); next.stopPolicy.maxUnits=3;
+  next.units.push({id:"another",round:1,question:"Inspect a second perspective",perspective:"analysis",requiredOutput:"note",sourceIds:[SOURCE],dependsOn:[],purpose:"analysis"});
+  expect((await f.tasks.studyRevise(USER,{id:campaign.id,revision:1,contract:next})).revision).toBe(2);
+  await f.tasks.studyApprove(USER,{id:campaign.id,revision:2});
+  f.setNow(NOW+2*86_400_000);
+  expect(()=>f.tasks.accept("local",id)).toThrow(/deadline/);
+  expect(f.board.get(id)!.state).toBe("in_progress");
+});
