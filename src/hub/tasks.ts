@@ -12,7 +12,7 @@ import { completePlanInventory, planConformance, planConformanceBlockers, planFi
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
 import { qualifiedTitleRepos, siblingTitleRefs, specRefs } from "./spec-read.ts";
-import { folderDetail, MAX_NEW_PER_POLL, parseEvery, SOURCE_ID, scheduledDetail, scheduleKeyOf, type FolderEntry, type FolderRunResult, type FolderScan, type FolderStorePort, type ScannedFile, type ScheduleEntry, type ScheduleRunResult, type ScheduleStore } from "./schedules.ts";
+import { folderDetail, MAX_NEW_PER_POLL, scheduleNext, SOURCE_ID, scheduledDetail, scheduleKeyOf, type FolderEntry, type FolderRunResult, type FolderScan, type FolderStorePort, type ScannedFile, type ScheduleEntry, type ScheduleRunResult, type ScheduleStore } from "./schedules.ts";
 import { INTAKE_MAX_SOURCES, INTAKE_MAX_TEXT, intakeDetail, intakeSystemPrompt, intakeUserMessage, parseIntakeDetail, parseIntakeSplit, plannerRequestBody } from "./intake.ts";
 import { DEFAULT_BAND, EPISODE_LOOKBACK, sdlcMetrics, type BandMetric, type BandResult, type MetricTask, type MetricsReport, type SeriesPoint } from "./sdlc-metrics.ts";
 import { readSecurityScan } from "./security-baseline.ts";
@@ -3768,7 +3768,7 @@ export class Tasks {
       for (const entry of entries) {
         const row = store.ensure(entry.id, now);
         if (row.paused) continue; // #335: a person's pause is neither a run nor a skipped tick
-        if (now < row.anchor + parseEvery(entry.every)) continue;
+        if (now < scheduleNext(entry, row.anchor)) continue;
         out.push(await this.runSchedule(store, entry, now, extraHold));
       }
     } finally { this.schedulesRunning = false; }

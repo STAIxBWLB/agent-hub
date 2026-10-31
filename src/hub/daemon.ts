@@ -7450,6 +7450,19 @@ export async function startDaemon(opts: DaemonOptions) {
         } catch { return "action_policy_floor compatibility is unknown; configuration could not be read"; }
         if (namesFloor) return "target lacks action_policy_floor; the project's action_policy.floor cannot be loaded by that daemon";
       }
+      // #1017: an older target refuses a `cron` or `tz` key in a `schedules` entry ("cron not supported yet"), so the project would not load there. The raw files decide, as for the floor: a calendar
+      // entry in either file, even one an ordinary reload would reject, names the key; unreadable files are unknown, never absent.
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("calendar_schedules")) {
+        let namesCalendar = config.schedules.some(entry => entry.cron !== undefined || entry.tz !== undefined);
+        try {
+          const texts = configSourceTexts(opts.cwd);
+          namesCalendar ||= CONFIG_FILES.some(name => {
+            const list = texts[name] === null ? undefined : (JSON.parse(texts[name]!) as Record<string, unknown>).schedules;
+            return Array.isArray(list) && list.some(entry => !!entry && typeof entry === "object" && (Object.hasOwn(entry, "cron") || Object.hasOwn(entry, "tz")));
+          });
+        } catch { return "calendar_schedules compatibility is unknown; configuration could not be read"; }
+        if (namesCalendar) return "target lacks calendar_schedules; the project's schedules use cron or tz, which that daemon cannot load";
+      }
       return undefined;
     };
     const checkTarget = msg.op === "prepare" || msg.op === "commit" || msg.op === "inspect" && msg.targetFeatures !== undefined;

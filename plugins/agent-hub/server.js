@@ -23029,7 +23029,9 @@ init_spec_read();
 // src/hub/schedules.ts
 var MIN_EVERY_MS = 15 * 60000;
 var MAX_EVERY_MS = 365 * 86400000;
-var KEYS = new Set(["id", "every", "cron", "class", "title", "detail", "sources", "owner", "queue"]);
+var KEYS = new Set(["id", "every", "cron", "tz", "class", "title", "detail", "sources", "owner", "queue"]);
+var zoneFormats = new Map;
+var parsedCrons = new Map;
 var FOLDER_KEYS = new Set(["id", "folder", "glob", "class", "title", "detail", "owner", "queue"]);
 
 // src/hub/intake.ts

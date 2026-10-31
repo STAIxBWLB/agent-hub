@@ -4323,6 +4323,21 @@ A bundled adapter module is authorized by the person with `adapter_modules` (at 
 - Refresh instructions with init and restart the daemon/MCP clients to apply their resolved contracts. Existing flow-role and executable-check authority remains in `roles`/trusted `checks`. Native model/account evidence remains unverified.
 
 
+## Calendar schedules: `cron` and `tz` (#1017)
+
+A `schedules` entry in `.agenthub/config.local.json` takes either `every` (an interval, `<n>m|h|d`, 15 minutes at least) or `cron`, never both. `cron` ties the run to the clock:
+
+```json
+{ "schedules": [{ "id": "digest", "cron": "30 7 * * 1-5", "tz": "Asia/Seoul", "class": "plan", "title": "Morning digest" }] }
+```
+
+- **The expression** is the standard five fields, minute, hour, day of month, month, day of week, with numbers, lists (`1,15`), ranges (`1-5`) and steps (`*/15`, `10-50/10`). Day of week 0 and 7 are Sunday. There are no seconds, no year, no `@daily` macros and no names (`MON`, `jan`). When both day fields are restricted a day matches if either does (the classic rule); a field that begins with `*` leaves the other to decide.
+- **`tz`** is an IANA zone name (`Asia/Seoul`, `America/New_York`) and applies to `cron` only. Without it the machine's own zone is used. An unknown zone is refused with the entry named.
+- **Daylight saving, one rule.** A local time the clock skips runs at the next valid minute of that day; a local time the clock repeats runs once, at its first occurrence.
+- **Too frequent.** An expression that can fire more often than every 15 minutes (`* * * * *`, `*/5 * * * *`, `0,10 7 * * *`) is refused when the config loads, naming the schedule, as is one that never fires (`0 0 31 2 *`).
+- **Everything else is as for `every`.** A schedule never runs at first sight; a hub that was down or held through several fire times proposes one task when it can, not one per missed fire; a budget pause or hold skips and counts the tick; no second task while the first is open. `ahub schedule list`, `ahub status` and the dashboard show the expression and the next run in the schedule's zone, for example `2026-11-02 07:30 Asia/Seoul`.
+- Out of scope: holiday and exchange calendars. A task whose first step finds a non-working day can end itself.
+
 ## Staging work in Backlog (#263)
 
 Use `ahub task propose implement "Later work" --backlog --owner codex` to stage

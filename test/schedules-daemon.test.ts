@@ -116,9 +116,13 @@ test("a tracked config.local.json is not trusted either", async () => {
   expect(loadConfig(p.dir).schedules).toEqual([]);
 });
 
-test("an invalid entry (cron, a 5 minute period) is refused by the loader with the fixed reason", () => {
+test("an invalid entry (a too-frequent cron, both keys, a 5 minute period) is refused by the loader with the entry named", () => {
   const cron = project({ local: { schedules: [{ id: "c", cron: "* * * * *", class: "plan", title: "t" }] } });
-  expect(() => loadConfig(cron.dir)).toThrow("cron not supported yet; use every");
+  expect(() => loadConfig(cron.dir)).toThrow("schedules.c: cron can fire every 1 minute; the minimum is 15 minutes");
+  const both = project({ local: { schedules: [{ id: "b", cron: "0 7 * * *", every: "1d", class: "plan", title: "t" }] } });
+  expect(() => loadConfig(both.dir)).toThrow("schedules.b: give every or cron, not both");
+  const ok = project({ local: { schedules: [{ id: "d", cron: "30 7 * * 1-5", tz: "Asia/Seoul", class: "plan", title: "t" }] } });
+  expect(loadConfig(ok.dir).schedules).toEqual([{ id: "d", cron: "30 7 * * 1-5", tz: "Asia/Seoul", class: "plan", title: "t", queue: "backlog" }]);
   const fast = project({ local: { schedules: [{ id: "f", every: "5m", class: "plan", title: "t" }] } });
   expect(() => loadConfig(fast.dir)).toThrow("at least 15m");
 });
