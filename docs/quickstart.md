@@ -11,13 +11,13 @@ The registry package uses the `staix` organization scope. Install from npm:
 
 ```bash
 bun add -g @staix/agent-hub                 # installs `ahub` (also as `agent-hub`)
-ahub setup                                # installs the Claude Code channel plugin from this package, then runs doctor
+ahub setup                                # installs the channel plugin and a project-neutral hook in each Claude home in use, then runs doctor
 ```
 
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.23.1
+bun add -g github:STAIxBWLB/agent-hub#v0.24.0
 ahub setup
 ```
 
@@ -29,6 +29,14 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
+
+## Upgrading to 0.24.0
+
+Nothing changes until you opt in. `ahub autonomy on` (person only, from a terminal) previews the shipped autonomy preset for this project and applies it with one confirmation: task auto-pull and sweep switches, permission and start defaults, and `action_policy.floor: true`. `--all-projects` applies it to every registered project. `ahub autonomy status [--json]` reports each peer's effective mode, where the floor is enforced and the Claude homes. `ahub autonomy off` removes the preset keys, including hand-set values of those keys, and the retained consent (#1009, #1010; see [project autonomy](operations.md#project-autonomy-one-preset-and-one-confirmation-999-t1)). `on` also writes the machine default `~/.agenthub/defaults.json` (owner-only, 0600), which a newly initialized project inherits; `off` disables it (see [machine autonomy](operations.md#machine-autonomy-and-claude-homes-999-t2)).
+
+The floor is off by default and set only in untracked `config.local.json`. It lets a push of a literal non-default branch to `origin`, and `gh pr create|comment|review|merge` in the project's own repository, run without asking. Force pushes, default-branch and tag pushes, releases, package publishes and anything the classifier cannot decide still ask. Where the hub does not see a call first, `ahub autonomy status` says the floor is not enforced there (#1007, #1011; see [floor policy](operations.md#floor-policy-ordinary-development-work-does-not-ask-999-t3)). While the preset, retained consent or the floor is set, a restart, upgrade or recovery onto an older release is refused; turn autonomy off first.
+
+`ahub setup` now covers every Claude configuration home in use (`CLAUDE_CONFIG_DIR`, the default home and the homes of live registered Claude launches). After one confirmation it installs a project-neutral PreToolUse hook beside the plugin and leaves unrelated hooks and `statusLine` alone (#1010). The hub exact-pins `@staix/agent-mem` 0.15.0, which changes only the `amem` CLI, so memory homes are unchanged (#1015). Claude Code 2.1.316 joins the verified headless implementer versions; 2.1.315 stays unverified (#1014). Upgrade running hubs with `ahub upgrade` and restart Claude sessions so they load the 0.24.0 plugin.
 
 ## Upgrading to 0.23.1
 

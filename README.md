@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.23.1, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.24.0, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## Quick start
@@ -58,11 +58,16 @@ ahub ui                                      # the web dashboard
   Publish, external-write, destroy and install calls ask a person in every mode for
   Claude Code, the local worker, Pi, hub-owned ACP peers such as Kimi and the
   approval requests Codex sends, wherever the hub sees the call before it runs;
-  `ahub status` names each peer where it cannot. Budgets pause an
+  `ahub status` names each peer where it cannot. The opt-in floor
+  (`action_policy.floor`, which `ahub autonomy on` sets) lets a push of a non-default
+  branch to `origin` and `gh pr create|comment|review|merge` in the project's own
+  repository run without asking; force, default-branch and tag pushes and releases
+  still ask. Budgets pause an
   agent before it runs out of quota, and recovery never replays an
   effect whose outcome is unknown.
 - **Operations.** A terminal console and a local dashboard, one hub per repository or
-  worktree with a machine-wide view, live settings reload, structural config
+  worktree with a machine-wide view, live settings reload, a one-confirmation autonomy
+  preset (`ahub autonomy on|off|status`), structural config
   (instances, review, lifecycle) edited with a validated diff and a backup from the
   console or a dashboard settings session, token usage and quota
   history (`ahub usage` and the dashboard's Usage view), and `ahub upgrade`, which
@@ -94,7 +99,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-10-31-0.23.1.md) and the
+[release verification report](docs/verification/2026-10-31-0.24.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation
