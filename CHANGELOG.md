@@ -4,7 +4,11 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Pin `@staix/agent-mem` 0.14.0 (was 0.13.0). The hub uses the library API and does not activate amem 0.14.0's opt-in v2 public prune view (`amem migrate --public-prune-view`), so hub recall, capture, briefs and existing homes are unchanged. 0.13.0 and earlier readers refuse an activated v2 home: upgrade every hub and `amem` CLI sharing a memory home to 0.14.0 before a person activates it.
+## 0.23.1
+
+- Pin `@staix/agent-mem` 0.14.0 (was 0.13.0). The hub uses the library API and does not activate amem 0.14.0's opt-in v2 public prune view (`amem migrate --public-prune-view`), so hub recall, capture, briefs and existing homes are unchanged. 0.13.0 and earlier readers refuse an activated v2 home: before a person activates it, upgrade every hub sharing the memory home to 0.23.1 or later (which bundles amem 0.14.0) and every global `amem` CLI to 0.14.0.
+- Claude Code 2.1.314 is a receipt-verified headless implementer version (#888, #996): the model-free permission-transport and host shell-wrapper producers pass on it with 2.1.310 as the control (`docs/verification/2026-10-31-claude-implementer-2.1.314.md`). 2.1.311-2.1.313 stay unverified.
+- Codex 0.166.0 stays an unverified reviewer version (#888, #997): it passed the model-free isolation procedure (`docs/verification/2026-10-31-codex-0166-reviewer-isolation.md`), but its one authorized model review missed the required synthetic marker in the persisted verdict (`docs/verification/2026-10-31-codex-0166-reviewer-tool-call.md`), so the proposed verified bump was reverted. The compat receipt pointer names the 0.166.0 isolation receipt; verified stays 0.146.0, 0.163.0 and 0.164.0.
 
 ## 0.23.0
 
