@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Registry, type Project } from "../src/hub/registry.ts";
@@ -74,6 +74,13 @@ test("offline preview and registry claim fences refuse changed files and an alre
   await expect(prepared.apply()).rejects.toThrow("live owner"); prepared.close();
   expect(p.registry.get(project.id)?.instanceId).toBe("other"); p.registry.release(project.id, "other");
 });
+test("offline preview refuses a project configuration directory redirected outside the project", () => {
+  const p = fixture(), project = p.project("one"), external = join(p.root, "external-config");
+  renameSync(join(project.root, ".agenthub"), external); symlinkSync(external, join(project.root, ".agenthub"));
+  expect(() => planOfflineAutonomy(project, "terminal", true)).toThrow("configuration directory is unsafe");
+  expect(existsSync(join(external, "config.local.json"))).toBe(false);
+});
+
 test("new init inherits an opted-in machine while a machine without defaults preserves ask", async () => {
   for (const optedIn of [false, true]) {
     const p = fixture(), project = p.project("new");

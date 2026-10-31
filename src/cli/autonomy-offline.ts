@@ -12,6 +12,8 @@ import type { Project } from "../hub/registry.ts";
 export interface OfflineAutonomyPlan { fingerprint: string; operations: AutonomyOperation[]; lines: string[] }
 type Target = Pick<Project, "root" | "stateDir">;
 function scopeOf(root: string) {
+  const directory = lstatSync(join(root, ".agenthub"), { throwIfNoEntry: false });
+  if (!directory?.isDirectory() || directory.isSymbolicLink() || directory.uid !== process.getuid?.() || (directory.mode & 0o022) !== 0) throw new Error("project configuration directory is unsafe; autonomy was not changed");
   const local = lstatSync(join(root, ".agenthub/config.local.json"), { throwIfNoEntry: false });
   if (local && (!local.isFile() || local.isSymbolicLink() || local.nlink !== 1 || local.uid !== process.getuid?.() || (local.mode & 0o022) !== 0)) throw new Error("project config.local.json is unsafe; autonomy was not changed");
   const refusal = configRefusal(root, "config.local.json");
