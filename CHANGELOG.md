@@ -4,7 +4,10 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.23.1
+
 - Pin `@staix/agent-mem` 0.14.0 (was 0.13.0). The hub uses the library API and does not activate amem 0.14.0's opt-in v2 public prune view (`amem migrate --public-prune-view`), so hub recall, capture, briefs and existing homes are unchanged. 0.13.0 and earlier readers refuse an activated v2 home: upgrade every hub and `amem` CLI sharing a memory home to 0.14.0 before a person activates it.
+- Claude Code 2.1.314 is a receipt-verified headless implementer version (#888, #996): the model-free permission-transport and host shell-wrapper producers pass on it with 2.1.310 as the control (`docs/verification/2026-10-31-claude-implementer-2.1.314.md`). 2.1.311-2.1.313 stay unverified.
 
 ## 0.23.0
 
