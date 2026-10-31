@@ -26,6 +26,12 @@ ahub say "Each of you: reply with your name."
 ahub ui                                      # the web dashboard
 ```
 
+`ahub setup` also registers agent-hub as a plugin of the family console
+([agent-console](https://github.com/STAIxBWLB/agent-console), `acon ui`): the same dashboard
+appears as a panel for every registered project, and pending approvals and reviews assigned
+to you reach the console inbox. The plugin is `@staix/agent-hub/ui-plugin`; it uses the
+dashboard manager's own listing and forwarding, so it adds no protocol and no action.
+
 `ahub init --dry-run --json` shows what init would write. The
 [Quickstart](docs/quickstart.md) walks through a first session and a working day.
 

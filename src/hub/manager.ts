@@ -79,6 +79,69 @@ function removeManifest(home: string, instanceId: string) {
   rmSync(files(home).token, { force: true });
 }
 
+/** The manager's project listing and forwarding (#935): shared by `ahub ui --all` and the acon plugin, never widened for either. */
+export function projectConsole(options: { registry: Registry; lifecycle: Lifecycle; home: string; stopping?: () => boolean; forwardTimeoutMs?: ManagerOptions["forwardTimeoutMs"] }) {
+  const { registry, lifecycle, home } = options;
+  const aliases = new Map<string, { at: number; names: string[] }>();
+  const list = async () => {
+    const projects = registry.list();
+    for (const p of projects) if (!aliases.has(p.id) || Date.now() - aliases.get(p.id)!.at > 60_000) {
+      aliases.set(p.id, { at: Date.now(), names: existsSync(p.root) ? projectChain(p.root) : [] });
+    }
+    const rows = await Promise.all(projects.map(async (project) => {
+      let result: ProjectInspection;
+      try { result = await bounded(lifecycle.inspectProject(project), 7000); }
+      catch (error) { result = { state: "unavailable", error: safeError(error) }; }
+      const names = aliases.get(project.id)!.names;
+      const shared = projects.some((other) => other.id !== project.id && aliases.get(other.id)!.names.some((name) => names.includes(name)));
+      return { id: project.id, root: project.root, state: result.state,
+        instanceId: result.state === "running" ? result.status?.instanceId ?? null : null,
+        peers: result.status?.peers ?? {}, tasks: result.status?.tasks ?? {},
+        ...(shared ? { warning: "Native memory aliases are shared with another registered project." } : {}),
+        ...(result.error ? { error: result.error } : {}) };
+    }));
+    return { ok: true, mode: "all", projects: rows };
+  };
+  const act = async (input: Record<string, unknown>) => {
+    if (options.stopping?.()) return { ok: false, error: "manager is stopping" };
+    const project = typeof input.projectId === "string" ? registry.get(input.projectId) : undefined;
+    if (!project) return { ok: false, error: "unknown project" };
+    let client: ControlClient | undefined;
+    try {
+      if (input.action === "start") {
+        const status = await bounded(lifecycle.startProject(project, { unattended: false, env: { ...scrubEnv(process.env), AGENTHUB_HOME: home } }), 20_000);
+        return { ok: true, projectId: project.id, instanceId: status.instanceId };
+      }
+      if (typeof input.instanceId !== "string" || !input.instanceId) return { ok: false, error: "expected daemon instance is required" };
+      if (input.action === "stop") {
+        await bounded(lifecycle.stopProject(project, input.instanceId), 20_000);
+        return { ok: true };
+      }
+      // The settings actions (#269) reach the project hub as an ordinary session's: this dashboard opens no settings session.
+      if (!["snapshot", "send", "pause", "resume", "permit", "propose", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release"].includes(String(input.action))) return { ok: false, error: "invalid dashboard action" };
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: input.instanceId });
+      const deliveryRead = input.action === "sdlc_queue" || input.action === "sdlc_release";
+      let nominalMs = 10_000;
+      if (input.action === "start_peer") nominalMs = MAX_COMMAND_MS + 5_000;
+      else if (input.action === "backlog_split") nominalMs = BACKLOG_SPLIT_SCREEN_TIMEOUT_MS + HUB_DB_BUSY_TIMEOUT_MS + 5_000;
+      else if (deliveryRead) nominalMs = 30_000;
+      const timeoutMs = options.forwardTimeoutMs?.(String(input.action), nominalMs) ?? nominalMs;
+      const result = await client.request(input.action === "snapshot"
+        ? { t: "ui_snapshot", after: input.after ?? 0, ...(input.memory !== undefined ? { memory: input.memory } : {}), ...(dashboardView(input.view) ? { view: input.view } : {}) }
+        : { t: "ui_action", action: input, instanceId: input.instanceId }, timeoutMs);
+      // ControlClient resolves its deadline as this exact sentinel; a hub refusal stays a known failure.
+      if (["start_peer", "backlog_split"].includes(String(input.action)) && result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) {
+        const text = input.action === "backlog_split" ? "Split result is unconfirmed. Reload the task before retrying; the hub may still commit its children." : "Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.";
+        return { ok: false, unconfirmed: true, text, error: text };
+      }
+      if (deliveryRead) { const { rid: _transportId, ...report } = result; return report; }
+      return result;
+    } catch (error) { return { ok: false, error: safeError(error) }; }
+    finally { client?.close(); }
+  };
+  return { list, act };
+}
+
 export async function startManager(options: ManagerOptions = {}): Promise<ManagerHandle> {
   const home = options.home ?? hubHome();
   const existing = active.get(home);
@@ -119,63 +182,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
   };
   try {
     owner = claimOwner(f.owner, instanceId, pidSignature);
-    const aliases = new Map<string, { at: number; names: string[] }>();
-    const list = async () => {
-      const projects = registry.list();
-      for (const p of projects) if (!aliases.has(p.id) || Date.now() - aliases.get(p.id)!.at > 60_000) {
-        aliases.set(p.id, { at: Date.now(), names: existsSync(p.root) ? projectChain(p.root) : [] });
-      }
-      const rows = await Promise.all(projects.map(async (project) => {
-        let result: ProjectInspection;
-        try { result = await bounded(lifecycle.inspectProject(project), 7000); }
-        catch (error) { result = { state: "unavailable", error: safeError(error) }; }
-        const names = aliases.get(project.id)!.names;
-        const shared = projects.some((other) => other.id !== project.id && aliases.get(other.id)!.names.some((name) => names.includes(name)));
-        return { id: project.id, root: project.root, state: result.state,
-          instanceId: result.state === "running" ? result.status?.instanceId ?? null : null,
-          peers: result.status?.peers ?? {}, tasks: result.status?.tasks ?? {},
-          ...(shared ? { warning: "Native memory aliases are shared with another registered project." } : {}),
-          ...(result.error ? { error: result.error } : {}) };
-      }));
-      return { ok: true, mode: "all", projects: rows };
-    };
-    const act = async (input: Record<string, unknown>) => {
-      if (stopping) return { ok: false, error: "manager is stopping" };
-      const project = typeof input.projectId === "string" ? registry.get(input.projectId) : undefined;
-      if (!project) return { ok: false, error: "unknown project" };
-      let client: ControlClient | undefined;
-      try {
-        if (input.action === "start") {
-          const status = await bounded(lifecycle.startProject(project, { unattended: false, env: { ...scrubEnv(process.env), AGENTHUB_HOME: home } }), 20_000);
-          return { ok: true, projectId: project.id, instanceId: status.instanceId };
-        }
-        if (typeof input.instanceId !== "string" || !input.instanceId) return { ok: false, error: "expected daemon instance is required" };
-        if (input.action === "stop") {
-          await bounded(lifecycle.stopProject(project, input.instanceId), 20_000);
-          return { ok: true };
-        }
-        // The settings actions (#269) reach the project hub as an ordinary session's: this dashboard opens no settings session.
-        if (!["snapshot", "send", "pause", "resume", "permit", "propose", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release"].includes(String(input.action))) return { ok: false, error: "invalid dashboard action" };
-        client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: input.instanceId });
-        const deliveryRead = input.action === "sdlc_queue" || input.action === "sdlc_release";
-        let nominalMs = 10_000;
-        if (input.action === "start_peer") nominalMs = MAX_COMMAND_MS + 5_000;
-        else if (input.action === "backlog_split") nominalMs = BACKLOG_SPLIT_SCREEN_TIMEOUT_MS + HUB_DB_BUSY_TIMEOUT_MS + 5_000;
-        else if (deliveryRead) nominalMs = 30_000;
-        const timeoutMs = options.forwardTimeoutMs?.(String(input.action), nominalMs) ?? nominalMs;
-        const result = await client.request(input.action === "snapshot"
-          ? { t: "ui_snapshot", after: input.after ?? 0, ...(input.memory !== undefined ? { memory: input.memory } : {}), ...(dashboardView(input.view) ? { view: input.view } : {}) }
-          : { t: "ui_action", action: input, instanceId: input.instanceId }, timeoutMs);
-        // ControlClient resolves its deadline as this exact sentinel; a hub refusal stays a known failure.
-        if (["start_peer", "backlog_split"].includes(String(input.action)) && result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) {
-          const text = input.action === "backlog_split" ? "Split result is unconfirmed. Reload the task before retrying; the hub may still commit its children." : "Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.";
-          return { ok: false, unconfirmed: true, text, error: text };
-        }
-        if (deliveryRead) { const { rid: _transportId, ...report } = result; return report; }
-        return result;
-      } catch (error) { return { ok: false, error: safeError(error) }; }
-      finally { client?.close(); }
-    };
+    const { list, act } = projectConsole({ registry, lifecycle, home, stopping: () => stopping, forwardTimeoutMs: options.forwardTimeoutMs });
     dashboard = startDashboard({ projects: list, snapshot: (after, input = {}) => act({ ...input, action: "snapshot", after }), action: act });
     server = Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: 1024,
       async fetch(req) {
