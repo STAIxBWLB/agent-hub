@@ -47,7 +47,7 @@ async function rig(policy: unknown, opts: { remote?: string; branch?: string; pr
   /** Runs `command`; when the hub asks, denies, and reports whether it asked (and nothing ran on a denial). */
   const attempt = async (command: string, marker: string) => {
     const before = asks.length;
-    const pending = call(`printf ran > ${marker}; ${command}`);
+    const pending = call(`${command}; printf ran > ${marker}`);   // after the command: a redirect earlier on the line ends the floor for what follows it
     await until(() => asks.length > before || existsSync(join(cwd, marker)));
     const asked = asks.length > before;
     if (asked) client.send({ t: "permit", id: asks[before].id, option: "deny" });
@@ -128,6 +128,57 @@ test("a tag named like a branch and a nested clone keep asking; a version-shaped
   git(r.cwd, "checkout", "-q", "-b", "v2.0.0");
   expect(await r.attempt("git push origin HEAD", "v-push")).toMatchObject({ asked: false, ran: true });
 }, 60_000);
+
+test("real git configuration that redirects or widens a push keeps it asking, and a clean checkout still runs (connector findings 1 and 2)", async () => {
+  const r = await rig({ floor: true }, { branch: "feat/x" });
+  await r.mode("never-ask"); await until(() => r.probes() >= 1); await Bun.sleep(50);
+  const run = (command: string, marker: string) => r.attempt(command, marker);
+  expect(await run("git push origin feat/x", "c-clean")).toMatchObject({ asked: false, ran: true });           // nothing in the config widens it
+  const set = (...args: string[]) => git(r.cwd, "config", ...args);
+  const unset = (key: string) => hubGitSync(["config", "--unset-all", key], { cwd: r.cwd, encoding: "utf8" });
+  // each of these makes a plain `git push origin feat/x` reach somewhere or something else
+  const cases: Array<[string, () => void, () => void]> = [
+    ["pushurl to another repository", () => set("remote.origin.pushurl", "https://github.com/other/app.git"), () => unset("remote.origin.pushurl")],
+    ["pushurl to a non-GitHub host", () => set("remote.origin.pushurl", "https://example.com/acme/app.git"), () => unset("remote.origin.pushurl")],
+    ["pushInsteadOf rewriting the push URL", () => set("url.https://github.com/other/.pushInsteadOf", "https://github.com/acme/"), () => unset("url.https://github.com/other/.pushInsteadOf")],
+    ["push.followTags", () => set("push.followTags", "true"), () => unset("push.followTags")],
+    ["push.pushOption", () => set("push.pushOption", "ci.skip"), () => unset("push.pushOption")],
+    ["remote.origin.push refspec", () => set("remote.origin.push", "refs/heads/main:refs/heads/main"), () => unset("remote.origin.push")],
+    ["remote.origin.mirror", () => set("remote.origin.mirror", "true"), () => unset("remote.origin.mirror")],
+  ];
+  for (const [i, [name, apply, undo]] of cases.entries()) {
+    apply();
+    const out = await run("git push origin feat/x", `c-${i}`);
+    expect(out, name).toMatchObject({ asked: true, ran: false });
+    expect(out.title, name).toContain("Action approval (publish");
+    undo();
+  }
+  expect(await run("git push origin feat/x", "c-after")).toMatchObject({ asked: false, ran: true });             // the configuration is read per call, so undoing it restores the floor
+}, 90_000);
+
+test("gh without a selector asks when its default is not the project's, and an explicit own selector or a clean checkout runs (connector finding 3)", async () => {
+  const r = await rig({ floor: true }, { branch: "feat/x" });
+  await r.mode("never-ask"); await until(() => r.probes() >= 1); await Bun.sleep(50);
+  expect(await r.attempt("gh pr comment 3 --body x", "g-clean")).toMatchObject({ asked: false, ran: true });
+  git(r.cwd, "remote", "add", "upstream", "https://github.com/other/app.git");                                      // a second remote: gh may pick it
+  expect(await r.attempt("gh pr comment 3 --body x", "g-two")).toMatchObject({ asked: true, ran: false });
+  expect(await r.attempt("gh pr comment 3 --repo acme/app --body x", "g-sel")).toMatchObject({ asked: false, ran: true });   // naming the own repository needs no default
+  git(r.cwd, "remote", "remove", "upstream");
+  git(r.cwd, "config", "remote.origin.gh-resolved", "other/app");                                                   // `gh repo set-default other/app` writes this
+  expect(await r.attempt("gh pr comment 3 --body x", "g-set")).toMatchObject({ asked: true, ran: false });
+  git(r.cwd, "config", "remote.origin.gh-resolved", "base");                                                        // gh's own marker for the base repository
+  expect(await r.attempt("gh pr comment 3 --body x", "g-base")).toMatchObject({ asked: false, ran: true });
+}, 90_000);
+
+test("a wrapped shell and a same-line state change keep asking through the real daemon (connector finding 4)", async () => {
+  const r = await rig({ floor: true }, { branch: "feat/x" });
+  await r.mode("never-ask"); await until(() => r.probes() >= 1); await Bun.sleep(50);
+  for (const [i, command] of ["env GH_REPO=other/app sh -c 'gh pr comment 3 --body x'", "GH_REPO=other/app bash -c 'gh pr comment 3 --body x'", "sudo sh -c 'git push origin feat/x'",
+    "git config push.followTags true; git push origin feat/x", "git config remote.origin.pushurl https://github.com/other/app.git && git push origin feat/x", "git checkout -q main; git push origin HEAD",
+    "export GH_REPO=other/app; gh pr comment 3 --body x"].entries())
+    expect(await r.attempt(command, `w-${i}`), command).toMatchObject({ asked: true, ran: false });
+  expect(await r.attempt("git add -A; git commit -q -m x --allow-empty; git push origin feat/x; gh pr create --title a --body b", "w-ok")).toMatchObject({ asked: false, ran: true });
+}, 90_000);
 
 test("status names the structural guards for a peer the hub cannot see, and says it has not verified them", async () => {
   const r = await rig({ floor: true }, { branch: "feat/x" });

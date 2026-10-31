@@ -280,7 +280,19 @@ guards the hub does not verify (GitHub branch protection on the default branch,
 release only through `ahub sdlc authorize-release` and the OIDC tag workflow, the
 peer's native sandbox): `ahub status` names them on that peer's row and says they
 are not verified, never that they hold. A missing guard, such as an unprotected
-default branch, is the person's to find and report.
+default branch, is the person's to find and report. The floor also reads, per call, the
+checkout's effective push destination (`remote.origin.pushurl`, `url.*.pushInsteadOf`),
+the settings that add refs to a push (`push.followTags`, `push.pushOption`,
+`push.recurseSubmodules`, `remote.origin.push`, `remote.origin.mirror`) and gh's default
+repository (`gh repo set-default`, a second remote), and a call it cannot prove is
+ordinary asks. A wrapper takes the floor away from a shell it wraps, and a command earlier
+on the same line that can change those facts ends the floor for the rest of the line.
+What it cannot see: the environment of a native agent's own process. The hub reads its own
+`GH_REPO` and `GH_HOST`, but a `GH_REPO` exported in a Claude, Codex or Kimi shell never
+reaches the hub, so for those peers an unqualified `gh pr` comment can still reach the
+repository that variable names. The local worker and Pi run commands in a fixed
+environment the hub builds, so they do not have this gap. Name the repository
+(`gh pr ... --repo owner/name`) or keep `GH_REPO` unset where the floor is on.
 
 The `gh` classes (#636, #756, #762). `publish`: `gh release create|upload|edit|delete`.
 `external-write`: `gh issue|pr|gist create|comment|edit|close|reopen|merge|review|delete`,

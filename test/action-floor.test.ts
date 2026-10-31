@@ -12,6 +12,8 @@ const facts = (over: Partial<FloorFacts> = {}): FloorFacts => ({
   refIsTag: name => /^v\d/.test(name) || name === "release",   // a local tag named v1, v1.2.3 or release
   currentBranch: () => "feat/x",
   inOwnRepository: () => true,
+  pushIsOwn: () => true,
+  ghDefaultIsOwn: () => true,
   ...over,
 });
 const NO_FLOOR = Symbol("no floor");
@@ -127,7 +129,7 @@ test("the default branch is also whatever the remote names it, not only main and
 
 test("-C moves the directory the facts are read from", () => {
   const seen: string[] = [];
-  const floor = facts({ inOwnRepository: cwd => { seen.push(cwd); return cwd === root || cwd === `${root}/sub`; } });
+  const floor = facts({ inOwnRepository: cwd => { seen.push(cwd); return cwd === root || cwd === `${root}/sub`; }, pushIsOwn: cwd => cwd === root || cwd === `${root}/sub` });
   expect(classes("git -C sub push origin feat/x", floor)).toEqual([]);
   expect(seen).toContain(`${root}/sub`);
   expect(classes("git -C other push origin feat/x", floor)).toEqual(["publish"]);   // a directory the facts do not prove is a different repository
@@ -159,6 +161,64 @@ function gateRig(policy: unknown, floor: FloorFacts | undefined) {
   return { budgets, gate };
 }
 const call = (command: string) => ({ names: ["bash"], input: { command } });
+
+test("a push whose configuration can reach another repository or add refs keeps asking (connector findings 1 and 2)", () => {
+  const push = "git push origin feat/x";
+  expect(classes(push, facts({ pushIsOwn: () => false }))).toEqual(["publish"]);       // pushurl or pushInsteadOf names another repository, or followTags, pushOption or remote.origin.push is set
+  expect(classes(push, facts({ pushIsOwn: () => undefined }))).toEqual(["publish"]);   // the host could not read it
+  expect(classes(push, facts({ pushIsOwn: undefined }))).toEqual(["publish"]);
+  expect(classes("git -C sub push origin feat/x", facts({ pushIsOwn: cwd => cwd === root }))).toEqual(["publish"]);   // -C moves the config that is read
+  expect(classes(push, facts({ pushIsOwn: cwd => cwd === root }))).toEqual([]);
+});
+
+test("gh without a repository selector needs a proven own default, and an explicit own selector does not (connector finding 3)", () => {
+  for (const ghDefaultIsOwn of [() => false, () => undefined, undefined] as Array<FloorFacts["ghDefaultIsOwn"]>) {
+    expect(classes("gh pr comment 3 --body hi", facts({ ghDefaultIsOwn }))).toEqual(["external-write"]);
+    expect(classes("gh pr create --title a --body b", facts({ ghDefaultIsOwn }))).toEqual(["external-write"]);
+    expect(classes("gh pr merge 3 --squash", facts({ ghDefaultIsOwn }))).toEqual(["external-write"]);
+    // naming the project's own repository makes gh's default (and GH_REPO) irrelevant
+    expect(classes("gh pr comment 3 --repo acme/app --body hi", facts({ ghDefaultIsOwn }))).toEqual([]);
+    expect(classes("gh pr comment https://github.com/acme/app/pull/3 --body hi", facts({ ghDefaultIsOwn }))).toEqual([]);
+    expect(classes("gh pr comment 3 --repo other/app --body hi", facts({ ghDefaultIsOwn }))).toEqual(["external-write"]);
+  }
+  expect(classes("gh pr comment 3 --body hi", facts({ ghDefaultIsOwn: () => true }))).toEqual([]);
+});
+
+test("a wrapper's uncertainty reaches the shell inside it (connector finding 4)", () => {
+  for (const command of ["env GH_REPO=other/app sh -c 'gh pr comment 3 --body hi'", "env GH_REPO=other/app bash -c \"gh pr create --title a\"", "GH_REPO=other/app sh -c 'gh pr comment 3 --body hi'",
+    "sudo sh -c 'git push origin feat/x'", "timeout 5 sh -c 'git push origin feat/x'", "env GIT_SSH_COMMAND=x sh -c 'git push origin feat/x'", "xargs sh -c 'gh pr merge 3'"])
+    expect(classes(command).length, command).toBeGreaterThan(0);
+  // a bare shell keeps the floor for the command inside it, one level deep only as before
+  expect(classes("sh -c 'git push origin feat/x'")).toEqual([]);
+  expect(classes("bash -c 'gh pr comment 3 --body hi'")).toEqual([]);
+  expect(classes("sh -c 'git push origin main'")).toEqual(["publish"]);
+});
+
+test("an earlier command on the same line that can change the facts ends the floor for the rest of the line", () => {
+  const CHANGES_FACTS = [
+    "git config remote.origin.pushurl https://example.com/x.git && git push origin feat/x", "git config push.followTags true; git push origin feat/x",
+    "git remote set-url origin https://example.com/x.git; git push origin feat/x", "git checkout main && git push origin HEAD", "git switch main; git push origin HEAD", "git branch -m feat/x main; git push origin main",
+    "git tag feat/x; git push origin feat/x", "git reset --hard; git push origin feat/x", "git update-ref refs/heads/x HEAD && git push origin feat/x",
+    "printf x > .git/config; git push origin feat/x", "echo a >> .git/config && git push origin feat/x", "cd /tmp && git push origin feat/x",
+    "export GH_REPO=other/app; gh pr comment 3 --body x", "GH_REPO=other/app; gh pr comment 3 --body x", "gh repo set-default other/app && gh pr comment 3 --body x",
+    "git remote add other https://example.com/y.git && gh pr comment 3 --body x", "git $SUB; git push origin feat/x", "some-script; git push origin feat/x", "make deploy && gh pr merge 3 --squash",
+    "FOO=1 git status; git push origin feat/x", "git status $(git config remote.origin.pushurl x); git push origin feat/x",
+  ];
+  for (const command of CHANGES_FACTS) expect(classes(command).length, command).toBeGreaterThan(0);
+  // commands that cannot change those facts leave the floor in place
+  for (const command of ["git add -A && git commit -m work && git push origin feat/x", "git status && git diff && git push origin feat/x", "bun test && git push origin feat/x", "echo done; gh pr comment 3 --body x",
+    "git fetch origin && git log --oneline && git push origin feat/x", "git add -A; git commit -m x; git push -u origin HEAD; gh pr create --title a --body b", "cd sub && git push origin feat/x"])
+    expect(classes(command), command).toEqual([]);
+  // the floor ending later on the line never un-asks an earlier call
+  expect(classes("git push origin main && git push origin feat/x")).toEqual(["publish"]);
+});
+
+test("the shipped classifier is unchanged when nothing supplies the new facts: no floor argument, empty facts", () => {
+  for (const command of ["git push origin feat/x", "gh pr comment 3 --body hi", "env GH_REPO=x sh -c 'gh pr comment 3'", "git config push.followTags true; git push origin feat/x"]) {
+    expect(classes(command, NO_FLOOR), command).toEqual(classifyAction("bash", { command }, root));
+    expect(classes(command, {}).length, command).toBeGreaterThan(0);
+  }
+});
 
 test("the hub gate lets a floor-allowed call through without spending a class budget, and asks for the rest", () => {
   const on = gateRig({ floor: true }, facts());

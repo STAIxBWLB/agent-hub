@@ -168,7 +168,7 @@ import { createAutonomyConsent, type AutonomyConsentValues } from "./autonomy-co
 import { insideRoot } from "./path-policy.ts";
 import { autonomyPreset, planAutonomy, autonomyRemovalKeys, autonomyStatus, type AutonomyEnvironment, type AutonomyPeer } from "./autonomy.ts";
 import { AUTONOMY_UNDO, autonomyOwnershipDigest, autonomyUndoKeys, writeAutonomyPreset, LEARN_CHECKLIST, NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
-import { githubOriginRepository } from "./task-repository.ts";
+import { githubOriginRepository, githubRemoteRepository } from "./task-repository.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -3932,6 +3932,27 @@ export async function startDaemon(opts: DaemonOptions) {
         } catch { return undefined; }
       },
       refIsTag: (name, cwd) => { const found = floorGit(cwd, ["rev-parse", "-q", "--verify", `refs/tags/${name}`]); return found === undefined || found.status === null ? undefined : found.status === 0 ? true : found.status === 1 ? false : undefined; },
+      // The effective push destination, not the fetch URL: pushurl and url.<base>.pushInsteadOf can send `git push origin` to another repository, and push.followTags,
+      // push.pushOption, push.recurseSubmodules and a remote.origin.push or mirror setting add refs, tags or submodule pushes to a plain branch push. Any of them present, or any read that fails, is not proof.
+      pushIsOwn: cwd => {
+        const added = floorGit(cwd, ["config", "--get-regexp", "^(push\\.(followtags|pushoption|recursesubmodules)|remote\\.origin\\.(push|mirror|pushurl))$"]);
+        if (added === undefined || added.status !== 1) return added?.status === 0 ? false : undefined;
+        const url = floorGit(cwd, ["remote", "get-url", "--push", "origin"]);
+        if (url === undefined || url.status !== 0 || typeof url.stdout !== "string") return undefined;
+        return !!shellProjectRepository && githubRemoteRepository(url.stdout.trim()) === shellProjectRepository;
+      },
+      // gh's default repository: only origin, no `gh repo set-default` marker naming another repository, and no GH_REPO or GH_HOST in the hub's own environment. The environment of
+      // a native agent's own process is not visible to the hub, so for those peers the residual is the person's (docs/security.md).
+      ghDefaultIsOwn: cwd => {
+        if (process.env.GH_REPO || process.env.GH_HOST || process.env.GH_ENTERPRISE_TOKEN) return false;
+        const remotes = floorGit(cwd, ["remote"]);
+        if (remotes === undefined || remotes.status !== 0 || typeof remotes.stdout !== "string" || remotes.stdout.trim() !== "origin") return remotes?.status === 0 ? false : undefined;
+        const resolved = floorGit(cwd, ["config", "--get-regexp", "^remote\\..*\\.gh-resolved$"]);
+        if (resolved === undefined) return undefined;
+        if (resolved.status === 1) return true;
+        if (resolved.status !== 0 || typeof resolved.stdout !== "string") return undefined;
+        return resolved.stdout.trim().split("\n").every(line => line.trim().split(/\s+/)[1] === "base");
+      },
       currentBranch: cwd => { const found = floorGit(cwd, ["symbolic-ref", "-q", "--short", "HEAD"]); return found?.status === 0 && typeof found.stdout === "string" && found.stdout.trim() ? found.stdout.trim() : undefined; },
     };
   };
