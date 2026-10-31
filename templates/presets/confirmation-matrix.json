@@ -1,0 +1,880 @@
+{
+  "schema": 1,
+  "issue": "#999",
+  "phase": "T0",
+  "about": "Model-free inventory of every place a person is asked to confirm during a standard task (plan, implement, PR, review, merge), per agent kind and environment. It records what the code and docs say today and changes no behaviour. T1's templates/presets/autonomous.json and `ahub autonomy status` read it. A fact that could not be established is the word unknown, never a guess. Add a row for a new peer kind here (src/hub/confirmation-matrix.ts and test/confirmation-matrix.test.ts fail without one).",
+  "environments": {
+    "terminal": {
+      "detect": "No ORCA_WORKTREE_ID in the hub's environment and no Orca worktree on record for the project.",
+      "opens": "A hub-made TUI start needs the machine-local terminal.open template. With none the start is refused with the command to run by hand, never downgraded to headless."
+    },
+    "orca": {
+      "detect": "ORCA_WORKTREE_ID is set, or an earlier ahub <peer> launch of this project recorded an Orca worktree, and the orca executable is on PATH.",
+      "opens": "A hub-made TUI start runs `orca terminal create` in that worktree. A configured terminal.open template takes precedence."
+    },
+    "headless": {
+      "detect": "No terminal: peers started with start_mode headless, the hub-native local worker, or a declared headless instance.",
+      "opens": "Nothing opens for the peer. A headless Kimi or Qwen start also opens an `ahub watch` pane through the provider when one exists, and the start stands without it."
+    }
+  },
+  "kinds": {
+    "claude": { "forms": ["tui"], "extraForms": ["headless"], "conductorStartable": true, "pullOnlyForms": [], "hubMode": "mapped", "formNote": "The kind itself has only a TUI. headless is a declared headless implementer instance (the Claude headless implementer, #525-4)." },
+    "codex": { "forms": ["tui", "headless"], "extraForms": [], "conductorStartable": true, "pullOnlyForms": [], "hubMode": "mapped" },
+    "kimi": { "forms": ["tui", "headless"], "extraForms": [], "conductorStartable": true, "pullOnlyForms": ["tui"], "hubMode": "unmanaged-in-tui" },
+    "qwen": { "forms": ["headless"], "extraForms": ["tui"], "conductorStartable": true, "pullOnlyForms": [], "hubMode": "mapped", "formNote": "Headless ACP is the default. The TUI is explicit only (ahub qwen --mode tui, dual output) and the hub never opens it by itself." },
+    "jcode": { "forms": ["tui", "headless"], "extraForms": [], "conductorStartable": true, "pullOnlyForms": [], "hubMode": "unmanaged" },
+    "pi": { "forms": ["tui", "headless"], "extraForms": [], "conductorStartable": true, "pullOnlyForms": [], "hubMode": "mapped" },
+    "local": { "forms": ["headless"], "extraForms": [], "conductorStartable": true, "pullOnlyForms": [], "hubMode": "mapped" },
+    "agy": { "forms": ["tui"], "extraForms": [], "conductorStartable": false, "pullOnlyForms": ["tui"], "hubMode": "unmanaged" }
+  },
+  "keys": {
+    "permission_modes.<peer>": {
+      "kind": "setting",
+      "setting": "permission_modes.<peer>",
+      "appliesTo": ["claude", "codex", "kimi", "pi", "local", "qwen"],
+      "where": ".agenthub/config.local.json (a git-tracked value is ignored)",
+      "applies": "the peer's next start",
+      "default": "ask",
+      "setBy": "the person (a never-ask default also needs the console y at hub start)",
+      "doc": "docs/operations.md, Permission modes for running peers"
+    },
+    "permission.<peer>": {
+      "kind": "setting",
+      "setting": "permission.<peer>",
+      "appliesTo": ["claude", "codex", "kimi", "pi", "local", "qwen"],
+      "where": "the daemon's memory only (ahub permission <peer> <mode>, dashboard, ahub settings)",
+      "applies": "live, until the hub stops",
+      "default": "the permission_modes default, else ask",
+      "setBy": "the person (never-ask needs the peer id typed or --yes plus the console y)",
+      "doc": "docs/operations.md, Permission modes for running peers"
+    },
+    "action_policy": {
+      "kind": "file",
+      "setting": null,
+      "where": ".agenthub/config.local.json only (enabled, always_ask, budgets). Shared config.json cannot set it.",
+      "applies": "live through the confirmed terminal reload",
+      "default": "enabled, always_ask is publish, external-write, destroy and install, budgets 1, 5, 3, 2",
+      "setBy": "the person (settings action_policy.enabled and action_policy.budgets.<class> are registered)",
+      "doc": "docs/operations.md, Always-ask action policy foundation"
+    },
+    "tasks.auto_pull": {
+      "kind": "setting",
+      "setting": "tasks.auto_pull",
+      "where": ".agenthub/config.local.json (machine-local, a committed value is ignored)",
+      "applies": "live",
+      "default": "false",
+      "setBy": "the person (risk raises)",
+      "doc": "docs/operations.md, Settings from the dashboard and the terminal"
+    },
+    "task_sweep.enabled": {
+      "kind": "setting",
+      "setting": "task_sweep.enabled",
+      "where": ".agenthub/config.json or config.local.json",
+      "applies": "live",
+      "default": "false",
+      "setBy": "the person (risk raises)",
+      "doc": "docs/operations.md, Task idle sweep"
+    },
+    "task_sweep.auto_reassign": {
+      "kind": "setting",
+      "setting": "task_sweep.auto_reassign",
+      "where": ".agenthub/config.json or config.local.json",
+      "applies": "live",
+      "default": "false",
+      "setBy": "the person (risk raises)",
+      "doc": "docs/operations.md, Task idle sweep"
+    },
+    "peers.<peer>.start_mode": {
+      "kind": "setting",
+      "setting": "peers.<peer>.start_mode",
+      "appliesTo": ["codex", "kimi", "pi", "jcode"],
+      "where": ".agenthub/config.local.json",
+      "applies": "the peer's next start",
+      "default": "tui",
+      "setBy": "the person",
+      "doc": "docs/operations.md, Start modes: TUI by default, headless as opt-in"
+    },
+    "terminal.open": {
+      "kind": "file",
+      "setting": null,
+      "where": ".agenthub/config.local.json (an argv template with one {command} element). Not a setting: read at hub start.",
+      "applies": "the next hub start",
+      "default": "none, so a hub-made TUI start uses Orca when it can, else is refused",
+      "setBy": "the person editing the file",
+      "doc": "docs/operations.md, Start modes: TUI by default, headless as opt-in"
+    },
+    "pi.auto_start": {
+      "kind": "setting",
+      "setting": "pi.auto_start",
+      "appliesTo": ["pi"],
+      "where": ".agenthub/config.local.json",
+      "applies": "the next startup or recovery auto-start decision",
+      "default": "false",
+      "setBy": "the person",
+      "doc": "docs/operations.md, Settings from the dashboard and the terminal"
+    },
+    "approvals.timeout_s": {
+      "kind": "file",
+      "setting": null,
+      "where": ".agenthub/config.json (30 to 3600 seconds)",
+      "applies": "the next hub start",
+      "default": "120",
+      "setBy": "the person editing the file",
+      "doc": "docs/operations.md, Approvals and pauses"
+    },
+    "launch.unattended": {
+      "kind": "launch-flag",
+      "setting": null,
+      "where": "ahub up|daemon --unattended (hub level), ahub claude --unattended, ahub codex --unattended",
+      "applies": "that launch",
+      "default": "off",
+      "setBy": "the person typing the launch command",
+      "doc": "docs/security.md"
+    },
+    "sdlc.auto_merge": {
+      "kind": "file",
+      "setting": null,
+      "where": ".agenthub/sdlc.toml (top level or [repos.\"owner/name\"])",
+      "applies": "read once at hub start",
+      "default": "off",
+      "setBy": "the person editing the file",
+      "doc": "docs/sdlc.md, Guarded merge"
+    },
+    "release.authorize": {
+      "kind": "command",
+      "setting": null,
+      "where": "ahub sdlc authorize-release <version> in a person's terminal, plus the managed pre-push tag guard",
+      "applies": "per release, held in daemon memory only",
+      "default": "no authorization",
+      "setBy": "the person alone (agents and delegated calls cannot)",
+      "doc": "docs/operations.md, Release approval and optional tag guard"
+    },
+    "native.claude": {
+      "kind": "native",
+      "setting": null,
+      "appliesTo": ["claude"],
+      "where": "Claude Code's own permission rules and settings, under ~/.claude or the CLAUDE_CONFIG_DIR home in use",
+      "applies": "native",
+      "default": "Claude's own policy",
+      "setBy": "the person, outside the hub",
+      "doc": "docs/operations.md, Permission modes for running peers"
+    },
+    "native.codex": {
+      "kind": "native",
+      "setting": null,
+      "appliesTo": ["codex"],
+      "where": "Codex's own approval policy and sandbox, under CODEX_HOME",
+      "applies": "native",
+      "default": "Codex's own policy",
+      "setBy": "the person, outside the hub",
+      "doc": "docs/agent-notes/adapters.md, Permissions, modes and approvals"
+    },
+    "native.kimi": {
+      "kind": "native",
+      "setting": null,
+      "appliesTo": ["kimi"],
+      "where": "Kimi's own TUI permission mode. The hub sets ACP default, yolo or auto only for its headless session.",
+      "applies": "native",
+      "default": "Kimi's own policy",
+      "setBy": "the person, in Kimi's TUI",
+      "doc": "docs/operations.md, Kimi in its own TUI"
+    },
+    "native.qwen": {
+      "kind": "native",
+      "setting": null,
+      "appliesTo": ["qwen"],
+      "where": "Qwen's own approval mode. The dual-output TUI is launched with --approval-mode default.",
+      "applies": "native",
+      "default": "Qwen's own policy",
+      "setBy": "the person, outside the hub",
+      "doc": "docs/operations.md, Qwen's own TUI, driven through dual output"
+    },
+    "native.jcode": {
+      "kind": "native",
+      "setting": null,
+      "appliesTo": ["jcode"],
+      "where": "Jcode's native policy. permission_modes.jcode is refused by the config loader.",
+      "applies": "native",
+      "default": "Jcode's own policy",
+      "setBy": "the person, outside the hub",
+      "doc": "docs/operations.md, Optional Jcode peer"
+    },
+    "native.agy": {
+      "kind": "native",
+      "setting": null,
+      "appliesTo": ["agy"],
+      "where": "Antigravity's own TUI permission mode. --dangerously-skip-permissions and --unattended are refused by ahub agy.",
+      "applies": "native",
+      "default": "Antigravity's own policy",
+      "setBy": "the person, in Antigravity's TUI",
+      "doc": "docs/operations.md, Optional Antigravity (agy) peer"
+    }
+  },
+  "unavailable": [
+    { "kind": "agy", "environment": "headless", "reason": "Antigravity has no headless form. Headless and print starts are refused until their native mapping is verified." }
+  ],
+  "rows": [
+    {
+      "id": "claude.tool-approval.tui",
+      "kinds": ["claude"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "tool-approval",
+      "asks": "Claude's own permission dialog for a write, edit, shell or other tool call in the person's terminal.",
+      "controlledBy": ["permission_modes.<peer>", "permission.<peer>", "native.claude", "launch.unattended"],
+      "hubSeesBeforeRun": "yes",
+      "askedBy": "native-tui",
+      "note": "In a managed launch (ahub claude) the PreToolUse hook sees every call. ask gives no hook decision, so Claude's own rules ask. ask-when-needed lets project file tools run outside .agenthub, .git and agent configuration. never-ask returns a hook allow for every tool. A session not started by ahub claude has no hub hook, and an --unattended launch skips every permission check, hooks included: the hub sees nothing there.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Hook allow for every tool" },
+        { "file": "src/adapters/definitions/builtin-metadata.ts", "needle": "Claude's own permission rules decide" }
+      ]
+    },
+    {
+      "id": "claude.classed-action.tui",
+      "kinds": ["claude"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "classed-action",
+      "asks": "Claude's permission dialog for a publish, external-write, destroy or install call, returned as ask by the hub hook.",
+      "controlledBy": ["action_policy", "launch.unattended"],
+      "hubSeesBeforeRun": "yes",
+      "askedBy": "native-tui",
+      "note": "The hook returns ask in ask, ask-when-needed and never-ask alike, and ask beats every allow the hook would add. Claude's dialog cannot carry a class budget, so every classed call asks. Not enforced without a hub hook or under --unattended.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Always-ask action policy foundation" },
+        { "file": "src/hub/daemon.ts", "needle": "this Claude launch is --unattended" }
+      ]
+    },
+    {
+      "id": "claude.hub-tools.tui",
+      "kinds": ["claude"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "hub-tools",
+      "asks": "Whether Claude asks before calling the plugin's hub_* MCP tools.",
+      "controlledBy": ["permission.<peer>", "native.claude"],
+      "hubSeesBeforeRun": "unknown",
+      "askedBy": "unknown",
+      "note": "unknown: no allow rule for the hub tools was found in the plugin or the launcher. In ask and ask-when-needed Claude's own rules decide. never-ask returns a hook allow for every tool.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Hook allow for every tool" }
+      ]
+    },
+    {
+      "id": "claude.channel-confirmation.tui",
+      "kinds": ["claude"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "session-start",
+      "asks": "Claude's native development-channel confirmation for the hub channel (--dangerously-load-development-channels).",
+      "controlledBy": ["native.claude"],
+      "hubSeesBeforeRun": "no",
+      "askedBy": "native-tui",
+      "note": "Recorded as an attended step when a recovery recreates a Claude session. unknown: whether it appears on every ordinary ahub claude start, and whether Orca profile homes differ.",
+      "evidence": [
+        { "file": "docs/smoke.md", "needle": "development-channel confirmation" },
+        { "file": "src/adapters/definitions/builtin-metadata.ts", "needle": "--dangerously-load-development-channels" }
+      ]
+    },
+    {
+      "id": "claude.tool-approval.headless",
+      "kinds": ["claude"],
+      "environments": ["headless"],
+      "form": "headless",
+      "point": "tool-approval",
+      "asks": "The person's allow-once through the hub's permission prompt tool, on the console, for a write or shell call of a declared headless implementer.",
+      "controlledBy": ["permission_modes.<peer>", "permission.<peer>", "approvals.timeout_s"],
+      "hubSeesBeforeRun": "yes",
+      "askedBy": "hub-console",
+      "note": "ask asks for every write and shell call. ask-when-needed lets safe project file tools, proven read-only shell commands and bound task commands inside the owned worktree run. There is no never-ask or acceptEdits bypass: never-ask and --unattended are refused at startup. No answer is a denial after approvals.timeout_s. Only a declared headless implementer instance has this form.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "There is no `acceptEdits` or `never-ask` bypass" },
+        { "file": "src/adapters/claude-implementer.ts", "needle": "hub_permission_request" }
+      ]
+    },
+    {
+      "id": "claude.classed-action.headless",
+      "kinds": ["claude"],
+      "environments": ["headless"],
+      "form": "headless",
+      "point": "classed-action",
+      "asks": "The person's allow-once or denial for a publish, external-write, destroy or install call of the headless implementer.",
+      "controlledBy": ["action_policy", "approvals.timeout_s"],
+      "hubSeesBeforeRun": "yes",
+      "askedBy": "hub-console",
+      "note": "The managed hook asks and the current-child-bound prompt tool accepts only a person's allow-once or denial. Not enforced while there is no current managed child.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Claude headless implementer" },
+        { "file": "src/hub/daemon.ts", "needle": "no current managed Claude implementer child" }
+      ]
+    },
+    {
+      "id": "claude.hub-tools.headless",
+      "kinds": ["claude"],
+      "environments": ["headless"],
+      "form": "headless",
+      "point": "hub-tools",
+      "asks": "None: the implementer's hub tools are an explicit allowed-tools list.",
+      "controlledBy": [],
+      "hubSeesBeforeRun": "yes",
+      "askedBy": "none",
+      "evidence": [
+        { "file": "src/adapters/claude-implementer.ts", "needle": "IMPLEMENTER_HUB_TOOL_NAMES" }
+      ]
+    },
+    {
+      "id": "codex.tool-approval.tui",
+      "kinds": ["codex"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "tool-approval",
+      "asks": "Codex's approval prompts in its TUI for commands, file changes and permission profiles.",
+      "controlledBy": ["permission_modes.<peer>", "permission.<peer>", "native.codex", "launch.unattended"],
+      "hubSeesBeforeRun": "partial",
+      "askedBy": "native-tui",
+      "note": "ask-when-needed sends approval policy on-request on every turn, never-ask sends never so nothing asks, and ask restores the captured native policy once. Received command approval requests are classed by the hub before they reach the TUI. File-change, writeStdin, permission-profile and unreadable requests keep native handling, and native policy can run a call without sending a request. --unattended passes --dangerously-bypass-approvals-and-sandbox and is refused under a non-ask mode.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "on-request for every outgoing turn/start" },
+        { "file": "src/adapters/codex-appserver.ts", "needle": "interceptActionApproval" }
+      ]
+    },
+    {
+      "id": "codex.classed-action.tui",
+      "kinds": ["codex"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "classed-action",
+      "asks": "The hub console's allow-once or deny, with an optional class budget, for a classed command approval request.",
+      "controlledBy": ["action_policy", "permission.<peer>"],
+      "hubSeesBeforeRun": "partial",
+      "askedBy": "hub-console",
+      "note": "The status row says not enforceable: native policy can execute without emitting an approval request, and never-ask sends approvalPolicy never.",
+      "evidence": [
+        { "file": "src/hub/daemon.ts", "needle": "native policy can execute without sending one" }
+      ]
+    },
+    {
+      "id": "codex.tool-approval.headless",
+      "kinds": ["codex"],
+      "environments": ["headless"],
+      "form": "headless",
+      "point": "tool-approval",
+      "asks": "Approval requests of the hub-started Codex app-server, answered by whatever is attached to it.",
+      "controlledBy": ["permission_modes.<peer>", "permission.<peer>", "peers.<peer>.start_mode", "native.codex"],
+      "hubSeesBeforeRun": "unknown",
+      "askedBy": "unknown",
+      "note": "unknown: with peers.codex.start_mode headless there is no TUI, and the code gates a classed command request only while a TUI link is open. The mode override (on-request or never) applies to every hub turn/start.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "a hub-made start runs the app-server only" },
+        { "file": "src/adapters/codex-appserver.ts", "needle": "applyPermissionPolicy" }
+      ]
+    },
+    {
+      "id": "codex.classed-action.headless",
+      "kinds": ["codex"],
+      "environments": ["headless"],
+      "form": "headless",
+      "point": "classed-action",
+      "asks": "The hub console's allow-once or deny for a classed command approval request, when one is sent.",
+      "controlledBy": ["action_policy", "permission.<peer>"],
+      "hubSeesBeforeRun": "unknown",
+      "askedBy": "unknown",
+      "note": "unknown: see codex.tool-approval.headless. Never-ask sends no request at all.",
+      "evidence": [
+        { "file": "src/adapters/codex-appserver.ts", "needle": "interceptActionApproval" }
+      ]
+    },
+    {
+      "id": "kimi.tool-approval.tui",
+      "kinds": ["kimi"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "tool-approval",
+      "asks": "Kimi's own TUI permission prompts.",
+      "controlledBy": ["native.kimi"],
+      "hubSeesBeforeRun": "no",
+      "askedBy": "native-tui",
+      "note": "Pull-only: no hub permission mode, busy state, watchdog or console approval. The status row says Kimi approves tools in its own TUI.",
+      "evidence": [
+        { "file": "src/adapters/definitions/builtin-metadata.ts", "needle": "Kimi approves tools and selects its permission mode in its own TUI" }
+      ]
+    },
+    {
+      "id": "kimi.classed-action.tui",
+      "kinds": ["kimi"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "classed-action",
+      "asks": "Whatever Kimi's own TUI asks. The hub classifies nothing in this form.",
+      "controlledBy": ["native.kimi"],
+      "hubSeesBeforeRun": "no",
+      "askedBy": "native-tui",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "The TUI is pull-only." }
+      ]
+    },
+    {
+      "id": "kimi.hub-tools.tui",
+      "kinds": ["kimi"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "hub-tools",
+      "asks": "Whether Kimi's TUI asks before calling hub_* tools through its project MCP entry.",
+      "controlledBy": ["native.kimi"],
+      "hubSeesBeforeRun": "unknown",
+      "askedBy": "unknown",
+      "note": "unknown: the TUI's own prompts are not observable by the hub.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Kimi in its own TUI" }
+      ]
+    },
+    {
+      "id": "kimi.tool-approval.headless",
+      "kinds": ["kimi"],
+      "environments": ["headless"],
+      "form": "headless",
+      "point": "tool-approval",
+      "asks": "ACP session/request_permission, answered on the hub console (ahub permit or the dashboard).",
+      "controlledBy": ["permission_modes.<peer>", "permission.<peer>", "peers.<peer>.start_mode", "approvals.timeout_s", "launch.unattended"],
+      "hubSeesBeforeRun": "partial",
+      "askedBy": "hub-console",
+      "note": "ask maps to Kimi default, ask-when-needed to yolo and never-ask to auto. In yolo and auto Kimi sends no request for a call that mode allows, so the hub does not see it. An unanswered request is cancelled as a denial after approvals.timeout_s. ahub up --unattended answers unclassed requests allow-once on its own.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "ACP yolo" },
+        { "file": "src/hub/daemon.ts", "needle": "its native mode ${mode} sends no request for a call it allows" }
+      ]
+    },
+    {
+      "id": "kimi.classed-action.headless",
+      "kinds": ["kimi"],
+      "environments": ["headless"],
+      "form": "headless",
+      "point": "classed-action",
+      "asks": "A console prompt titled Action approval with the classes, never auto-approved and without allow_always.",
+      "controlledBy": ["action_policy", "permission.<peer>", "approvals.timeout_s"],
+      "hubSeesBeforeRun": "partial",
+      "askedBy": "hub-console",
+      "note": "Enforced only while the peer's native mode is ask. A request whose payload the agent did not report is not classed. Under --unattended a classed request still waits for a person.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Action approval (<classes>): <command>" }
+      ]
+    },
+    {
+      "id": "kimi.hub-tools.headless",
+      "kinds": ["kimi"],
+      "environments": ["headless"],
+      "form": "headless",
+      "point": "hub-tools",
+      "asks": "None for the hub's own tools: an exact mcp__agent-hub__<name> title is auto-approved with allow-once only.",
+      "controlledBy": [],
+      "hubSeesBeforeRun": "yes",
+      "askedBy": "none",
+      "evidence": [
+        { "file": "src/hub/daemon.ts", "needle": "HUB_TOOL_TITLES" }
+      ]
+    },
+    {
+      "id": "qwen.tool-approval.headless",
+      "kinds": ["qwen"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "headless",
+      "point": "tool-approval",
+      "asks": "ACP permission requests of the headless Qwen, answered on the hub console.",
+      "controlledBy": ["permission_modes.<peer>", "permission.<peer>", "approvals.timeout_s", "launch.unattended"],
+      "hubSeesBeforeRun": "partial",
+      "askedBy": "hub-console",
+      "note": "ask maps to default, ask-when-needed to auto-edit (file edits run, shell commands ask) and never-ask to yolo, which approves every tool outside any hub sandbox. Qwen is not a start-mode peer: a hub start is headless in every environment, plus a watch pane where a provider exists.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Modes: ask maps to default, scoped frequency maps to auto-edit" }
+      ]
+    },
+    {
+      "id": "qwen.classed-action.headless",
+      "kinds": ["qwen"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "headless",
+      "point": "classed-action",
+      "asks": "A console prompt titled Action approval with the classes, never auto-approved.",
+      "controlledBy": ["action_policy", "permission.<peer>", "approvals.timeout_s"],
+      "hubSeesBeforeRun": "partial",
+      "askedBy": "hub-console",
+      "note": "Enforced only while the native mode is ask. In auto-edit and yolo Qwen may allow a call without sending a request.",
+      "evidence": [
+        { "file": "src/hub/daemon.ts", "needle": "actionEnforcement" }
+      ]
+    },
+    {
+      "id": "qwen.hub-tools.any",
+      "kinds": ["qwen"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "hub-tools",
+      "asks": "None for the hub's own tools: an exact mcp__agent-hub__<name> title is auto-approved, in the TUI too.",
+      "controlledBy": [],
+      "hubSeesBeforeRun": "yes",
+      "askedBy": "none",
+      "evidence": [
+        { "file": "src/hub/daemon.ts", "needle": "autoApprove: name => !stopping && HUB_TOOL_TITLES.has(name)" }
+      ]
+    },
+    {
+      "id": "qwen.tool-approval.tui",
+      "kinds": ["qwen"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "tool-approval",
+      "asks": "Qwen's can_use_tool request, shown on the hub console. Answering in the Qwen terminal first withdraws the hub's pending approval.",
+      "controlledBy": ["native.qwen", "approvals.timeout_s"],
+      "hubSeesBeforeRun": "yes",
+      "askedBy": "native-and-hub",
+      "note": "Explicit only (ahub qwen --mode tui), never opened by the hub. A hub denial ends the turn without an answer. unknown: whether permission_modes.qwen changes anything for the TUI, which is launched with --approval-mode default.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "can_use_tool" }
+      ]
+    },
+    {
+      "id": "qwen.classed-action.tui",
+      "kinds": ["qwen"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "classed-action",
+      "asks": "The same console approval, with the classed title, for a classed call in the dual-output TUI.",
+      "controlledBy": ["action_policy", "native.qwen"],
+      "hubSeesBeforeRun": "yes",
+      "askedBy": "native-and-hub",
+      "evidence": [
+        { "file": "src/hub/daemon.ts", "needle": "onPermission, actionGate: (call, session) => acpActionGate(peer)" }
+      ]
+    },
+    {
+      "id": "jcode.tool-approval.any",
+      "kinds": ["jcode"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "tool-approval",
+      "asks": "Jcode's own native policy. The hub maps no mode for it.",
+      "controlledBy": ["native.jcode", "peers.<peer>.start_mode"],
+      "hubSeesBeforeRun": "no",
+      "askedBy": "native-tui",
+      "note": "permission_modes.jcode is refused by the config loader. In headless form (ACP only) unknown: whether and where Jcode asks, since no hub pre-tool approval path exists.",
+      "evidence": [
+        { "file": "src/adapters/definitions/builtin-metadata.ts", "needle": "Jcode native policy is unmanaged" }
+      ]
+    },
+    {
+      "id": "jcode.classed-action.any",
+      "kinds": ["jcode"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "classed-action",
+      "asks": "Nothing from the hub: always-ask is not enforceable for Jcode.",
+      "controlledBy": ["action_policy", "native.jcode"],
+      "hubSeesBeforeRun": "no",
+      "askedBy": "native-tui",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Jcode still has no hub pre-tool approval path" }
+      ]
+    },
+    {
+      "id": "pi.tool-approval.any",
+      "kinds": ["pi"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "tool-approval",
+      "asks": "The hub console's approval at the host permit boundary for each model tool call.",
+      "controlledBy": ["permission_modes.<peer>", "permission.<peer>", "approvals.timeout_s", "launch.unattended"],
+      "hubSeesBeforeRun": "yes",
+      "askedBy": "hub-console",
+      "note": "ask-when-needed grants write and edit outside native agent configuration paths and proven read-only shell calls, and other shell and git writes ask. never-ask grants each tool once within the existing sandbox and path guard. Two unanswered requests in a row end the turn, never the peer. Pi's own always grant lives only in that start.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Grant each tool once within the existing sandbox/guard" },
+        { "file": "docs/agent-notes/adapters.md", "needle": "Pi and local approvals (#253)" }
+      ]
+    },
+    {
+      "id": "pi.classed-action.any",
+      "kinds": ["pi"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "classed-action",
+      "asks": "The hub console's approval for a classed call, checked before never-ask, ask-when-needed or Pi's tool-wide grant.",
+      "controlledBy": ["action_policy", "approvals.timeout_s"],
+      "hubSeesBeforeRun": "yes",
+      "askedBy": "hub-console",
+      "note": "Not enforced for a Pi without a verified live tool bridge. unattended never answers a classed request.",
+      "evidence": [
+        { "file": "src/hub/daemon.ts", "needle": "Pi has no verified live tool bridge" }
+      ]
+    },
+    {
+      "id": "local.tool-approval.any",
+      "kinds": ["local"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "headless",
+      "point": "tool-approval",
+      "asks": "The hub console's approval at the host permit boundary for each model tool call of the hub-native worker.",
+      "controlledBy": ["permission_modes.<peer>", "permission.<peer>", "approvals.timeout_s", "launch.unattended"],
+      "hubSeesBeforeRun": "yes",
+      "askedBy": "hub-console",
+      "note": "The worker is headless in every environment, so no terminal is involved. The modes behave as for Pi. A local worker offline cannot be enforced.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Pi and local" },
+        { "file": "docs/agent-notes/local-worker.md", "needle": "ToolApproval" }
+      ]
+    },
+    {
+      "id": "local.classed-action.any",
+      "kinds": ["local"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "headless",
+      "point": "classed-action",
+      "asks": "The hub console's approval for a classed call, checked before any mode grant.",
+      "controlledBy": ["action_policy", "approvals.timeout_s"],
+      "hubSeesBeforeRun": "yes",
+      "askedBy": "hub-console",
+      "evidence": [
+        { "file": "src/hub/daemon.ts", "needle": "the local worker is offline" }
+      ]
+    },
+    {
+      "id": "agy.tool-approval.tui",
+      "kinds": ["agy"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "tool-approval",
+      "asks": "Antigravity's own TUI permission prompts.",
+      "controlledBy": ["native.agy"],
+      "hubSeesBeforeRun": "no",
+      "askedBy": "native-tui",
+      "note": "Pull-only and started only by the person's own ahub agy: conductor starts are refused, so terminal.open and Orca never open it. --dangerously-skip-permissions and --unattended are refused until their native mapping is verified.",
+      "evidence": [
+        { "file": "src/adapters/agy/definition.ts", "needle": "Antigravity approves tools in its own TUI" }
+      ]
+    },
+    {
+      "id": "agy.classed-action.tui",
+      "kinds": ["agy"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "classed-action",
+      "asks": "Whatever Antigravity's own TUI asks. The hub classifies nothing for it.",
+      "controlledBy": ["native.agy"],
+      "hubSeesBeforeRun": "no",
+      "askedBy": "native-tui",
+      "evidence": [
+        { "file": "src/adapters/agy/definition.ts", "needle": "unmanaged native permission policy" }
+      ]
+    },
+    {
+      "id": "agy.hub-tools.tui",
+      "kinds": ["agy"],
+      "environments": ["terminal", "orca"],
+      "form": "tui",
+      "point": "hub-tools",
+      "asks": "Whether Antigravity's TUI asks before calling hub_* tools from its project plugin.",
+      "controlledBy": ["native.agy"],
+      "hubSeesBeforeRun": "unknown",
+      "askedBy": "unknown",
+      "note": "unknown: not observable by the hub.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Optional Antigravity (agy) peer" }
+      ]
+    },
+    {
+      "id": "unobserved.hub-tools.any",
+      "kinds": ["codex", "jcode", "pi", "local"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "hub-tools",
+      "asks": "Whether the peer asks before calling the hub's own tools.",
+      "controlledBy": [],
+      "hubSeesBeforeRun": "unknown",
+      "askedBy": "unknown",
+      "note": "unknown: neither the code nor the docs state it for these kinds. Ask the T0 reviewer or probe it in the T4 receipt.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Permission modes for running peers" }
+      ]
+    },
+    {
+      "id": "tui-open.terminal.dual",
+      "kinds": ["codex", "kimi", "pi", "jcode"],
+      "environments": ["terminal"],
+      "form": "tui",
+      "point": "tui-open",
+      "asks": "Nothing when terminal.open is configured. With none, a hub-made TUI start is refused and names the command to run by hand.",
+      "controlledBy": ["terminal.open", "peers.<peer>.start_mode"],
+      "hubSeesBeforeRun": "not-applicable",
+      "askedBy": "none",
+      "note": "start_mode headless avoids the terminal. pi.auto_start starts Pi with the hub through the same path.",
+      "evidence": [
+        { "file": "src/hub/terminal-open.ts", "needle": "no terminal.open command is configured" },
+        { "file": "docs/operations.md", "needle": "No provider:" }
+      ]
+    },
+    {
+      "id": "tui-open.terminal.tui-only",
+      "kinds": ["claude"],
+      "environments": ["terminal"],
+      "form": "tui",
+      "point": "tui-open",
+      "asks": "Nothing when terminal.open is configured. With none, a hub-made Claude start is refused and names the command to run by hand.",
+      "controlledBy": ["terminal.open"],
+      "hubSeesBeforeRun": "not-applicable",
+      "askedBy": "none",
+      "note": "Claude has no start_mode: its TUI is its only form (a headless implementer is a separately declared instance).",
+      "evidence": [
+        { "file": "src/hub/terminal-open.ts", "needle": "no terminal.open command is configured" }
+      ]
+    },
+    {
+      "id": "tui-open.orca.dual",
+      "kinds": ["codex", "kimi", "pi", "jcode"],
+      "environments": ["orca"],
+      "form": "tui",
+      "point": "tui-open",
+      "asks": "Nothing from the hub: Orca creates the terminal. Native prompts of the peer then appear in that terminal.",
+      "controlledBy": ["terminal.open", "peers.<peer>.start_mode"],
+      "hubSeesBeforeRun": "not-applicable",
+      "askedBy": "none",
+      "note": "A configured terminal.open template wins over Orca.",
+      "evidence": [
+        { "file": "src/cli/terminal-recovery.ts", "needle": "[\"terminal\", \"create\", \"--worktree\"" },
+        { "file": "docs/operations.md", "needle": "Orca, when the hub runs in an Orca worktree" }
+      ]
+    },
+    {
+      "id": "tui-open.orca.tui-only",
+      "kinds": ["claude"],
+      "environments": ["orca"],
+      "form": "tui",
+      "point": "tui-open",
+      "asks": "Nothing from the hub: Orca creates the terminal. Claude's native prompts then appear in that terminal.",
+      "controlledBy": ["terminal.open"],
+      "hubSeesBeforeRun": "not-applicable",
+      "askedBy": "none",
+      "note": "Orca runs Claude under per-profile CLAUDE_CONFIG_DIR homes (issue #999). ahub setup does not read CLAUDE_CONFIG_DIR, so unknown: whether the hub plugin is installed in each profile home.",
+      "evidence": [
+        { "file": "src/cli/terminal-recovery.ts", "needle": "[\"terminal\", \"create\", \"--worktree\"" },
+        { "file": "src/adapters/definitions/builtin-metadata.ts", "needle": "configDirEnv: \"CLAUDE_CONFIG_DIR\"" }
+      ]
+    },
+    {
+      "id": "hub.mode-confirmation",
+      "kinds": ["hub"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "mode-confirmation",
+      "asks": "A separate console y (or the peer id typed in the dashboard, or --yes in a terminal) before a never-ask mode takes effect.",
+      "controlledBy": ["permission_modes.<peer>", "permission.<peer>"],
+      "hubSeesBeforeRun": "not-applicable",
+      "askedBy": "hub-console",
+      "note": "A never-ask default from an untracked config.local.json starts in ask and appears as a pending console question at hub start. There is no boot --yes bypass, and automatic config effects stop at ask-when-needed. Only the person sets a mode: no hub tool or conductor tool can.",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Only its separate console y enables that default" }
+      ]
+    },
+    {
+      "id": "hub.approval-expiry",
+      "kinds": ["hub"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "approval-expiry",
+      "asks": "Nothing: an unanswered request is cancelled as a denial after approvals.timeout_s. It decides what an unwatched run does when a prompt appears.",
+      "controlledBy": ["approvals.timeout_s"],
+      "hubSeesBeforeRun": "not-applicable",
+      "askedBy": "hub-console",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "An unanswered request is cancelled after `approvals.timeout_s`" }
+      ]
+    },
+    {
+      "id": "hub.unattended",
+      "kinds": ["hub"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "unattended",
+      "asks": "ahub up --unattended answers unclassed ACP, Pi and local requests allow-once on its own. A classed request and a person-only request are never answered for the person.",
+      "controlledBy": ["launch.unattended", "action_policy"],
+      "hubSeesBeforeRun": "not-applicable",
+      "askedBy": "none",
+      "note": "Per-launch native flags are separate: ahub claude --unattended skips every Claude permission check, hooks included, and ahub codex --unattended is refused under a non-ask mode.",
+      "evidence": [
+        { "file": "src/hub/daemon.ts", "needle": "a classed call is never answered for the person, `--unattended` included" }
+      ]
+    },
+    {
+      "id": "hub.settings-raise",
+      "kinds": ["hub"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "settings-raise",
+      "asks": "Raising a setting (auto_pull, auto_reassign, permission defaults) needs a settings session (ahub ui --settings) or the person's own terminal. An ordinary dashboard session and the conductor cannot.",
+      "controlledBy": ["tasks.auto_pull", "task_sweep.auto_reassign", "permission_modes.<peer>"],
+      "hubSeesBeforeRun": "not-applicable",
+      "askedBy": "hub-console",
+      "evidence": [
+        { "file": "src/hub/settings.ts", "needle": "can widen what agents do without asking" }
+      ]
+    },
+    {
+      "id": "hub.task-pull",
+      "kinds": ["hub"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "task-flow",
+      "asks": "No person prompt. With tasks.auto_pull off, a freed slot waits until a planner assigns or pulls a card. On, the hub pulls the top explicitly reserved ready card, never an unreserved or PII one.",
+      "controlledBy": ["tasks.auto_pull"],
+      "hubSeesBeforeRun": "not-applicable",
+      "askedBy": "none",
+      "evidence": [
+        { "file": "src/hub/tasks.ts", "needle": "autoPullAdmitted" },
+        { "file": "src/hub/settings.ts", "needle": "tasks.auto_pull" }
+      ]
+    },
+    {
+      "id": "hub.task-sweep",
+      "kinds": ["hub"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "task-flow",
+      "asks": "No person prompt. The idle sweep is off by default. When on with auto_reassign off, it posts notices and a reassignment suggestion and a planner or the person moves the task.",
+      "controlledBy": ["task_sweep.enabled", "task_sweep.auto_reassign"],
+      "hubSeesBeforeRun": "not-applicable",
+      "askedBy": "none",
+      "evidence": [
+        { "file": "src/hub/task-sweep.ts", "needle": "auto_reassign" }
+      ]
+    },
+    {
+      "id": "hub.merge",
+      "kinds": ["hub"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "merge",
+      "asks": "With auto_merge off (the default) the hub merges nothing: the person or the configured conductor runs ahub sdlc merge. On, the guarded merge runs after an approving review at the current head. A release PR always needs the person's consent.",
+      "controlledBy": ["sdlc.auto_merge"],
+      "hubSeesBeforeRun": "not-applicable",
+      "askedBy": "none",
+      "note": "The merge argv is a closed shape (squash, match-head-commit), never --admin.",
+      "evidence": [
+        { "file": "src/hub/sdlc-merge.ts", "needle": "mergeArgv" },
+        { "file": "docs/sdlc.md", "needle": "auto_merge" }
+      ]
+    },
+    {
+      "id": "hub.release",
+      "kinds": ["hub"],
+      "environments": ["terminal", "orca", "headless"],
+      "form": "any",
+      "point": "release",
+      "asks": "The person's ahub sdlc authorize-release in a person's terminal, and the pre-push guard that fails closed on version tags. Agents and delegated calls cannot authorize.",
+      "controlledBy": ["release.authorize"],
+      "hubSeesBeforeRun": "not-applicable",
+      "askedBy": "hub-console",
+      "evidence": [
+        { "file": "docs/operations.md", "needle": "Agents and delegated live-test calls cannot authorize" }
+      ]
+    }
+  ]
+}

@@ -1878,6 +1878,12 @@ permission_mode (peer/from/to) with no tool arguments under events schema 1.
 The optional control requests preserve PROTOCOL; an older hub answers unknown
 and the CLI advises upgrading.
 
+### Where a person is asked to confirm: the inventory (#999 T0)
+
+`templates/presets/confirmation-matrix.json` lists every place a person is asked to confirm during a standard task, for each agent kind (claude, codex, kimi, qwen, jcode, pi, local, agy) and each environment (plain terminal, Orca, headless). Each row names what is asked, which keys control it today (`permission_modes.<peer>`, `permission.<peer>`, `action_policy`, `tasks.auto_pull`, `task_sweep.auto_reassign`, `peers.<peer>.start_mode`, `terminal.open`, the peer's native config, and the launch and merge keys), whether the hub sees the call before it runs (`yes`, `partial`, `no`, `unknown`) and who asks (the hub console, the native TUI, both, or nobody). The data is model-free: it was read from the code and from this guide, and a fact that could not be established is the word `unknown` with a note saying what is unknown.
+
+It is an inventory, not a switch. No daemon, setting or adapter reads it, and no default changes. `test/confirmation-matrix.test.ts` fails when a kind in the adapter catalog has no row in an environment it can run in, when the matrix's facts about a kind (forms, pull-only forms, conductor start, whether the hub maps a mode) differ from its `AdapterDefinition`, when a row names a key the matrix does not describe, or when a cited source line no longer exists. Adding a peer kind means adding its rows there. The planned `templates/presets/autonomous.json` and `ahub autonomy status` read this file.
+
 ## Change the participating peers while the hub runs
 
 `ahub roster` lists every known peer, whether it participates, its start mode,
