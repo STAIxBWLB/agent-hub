@@ -18,6 +18,7 @@ Estimands, design checks, intervals and failed/unknown assumptions.
 
 ## Hub use
 Use the existing task flow for your assigned role. Name paths and evidence refs in the plan and completion summary. Report unknown or unrun checks explicitly.
+When a study has a budget or several rounds, read hub_study_show before advising: it names each unit's coverage, its handoff, whether a follow-up round is allowed yet and why dispatch is held. Do not advise a follow-up before the discovery round has stored handoffs.
 
 ## Review duties
 Check sampling, comparisons, multiple testing and the difference between association and causation.

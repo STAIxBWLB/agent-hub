@@ -28,6 +28,8 @@ import { renderScheduleChange, renderScheduleList, renderScheduleRun } from "./s
 import { renderIntake, renderIntakeChange } from "./intake-output.ts";
 import { renderLearnChange, renderLearnList } from "./learn-output.ts";
 import { renderCapabilities } from "./capabilities-output.ts";
+import { parseStudyArgs } from "./study.ts";
+import { renderStudyList, renderStudyReceipt, renderStudyShow } from "./study-output.ts";
 import { terminalText } from "./console-state.ts";
 import { parseSettingsEditArgs, runSettingsEdit, SETTINGS_EDIT_USAGE } from "./settings-edit.ts";
 import { autonomyEnvironment, runAutonomy } from "./autonomy.ts";
@@ -52,7 +54,7 @@ import { parseSettingText, settingDef, settingText, undoableDef, type SettingRow
 import { startModeOf } from "../hub/start-mode.ts";
 import { currentRouting, OVERLAY_FILE, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -1459,6 +1461,27 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!["run", "pause", "resume"].includes(sub ?? "") || !id || extra.length) return fail(usage);
     if (sub === "run") return showToolText(data => renderScheduleRun(data, present.columns), await taskOp("schedule_run", { id }, false, undefined, 90_000), present);
     return showToolText(data => renderScheduleChange(sub as "pause" | "resume", data, present.columns, Date.now()), await taskOp(sub === "pause" ? "schedule_pause" : "schedule_resume", { id }), present);
+  },
+
+  study: async () => {
+    // #601: research campaigns. The hub keeps every campaign and decides every rule (Tasks.study*); this process parses argv, reads the contract file the person names and asks.
+    // Person only for draft, revise, approve and close (a console control op the daemon refuses on any other connection, and `study` has no agent form in classifyPeerCommand besides the
+    // read-only `show`); an agent drafts through the hub_study_* tools. `show` is a read: for a private campaign, task or source the hub sends ids, counts and states only.
+    const split = splitPresentation(args, { edges: true });
+    const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
+    const parsed = parseStudyArgs(split.operands);
+    if ("usage" in parsed) return fail(parsed.usage);
+    const contract = (file: string): unknown => {
+      let text: string;
+      try { const path = resolve(invokedFrom, file), size = statSync(path).size; if (size > 64 * 1024) return fail("the contract file is over 64 KiB"); text = readFileSync(path, "utf8"); }
+      catch { return fail("cannot read the contract file"); }
+      try { return JSON.parse(text); } catch { return fail("the contract file is not valid JSON"); }
+    };
+    if (parsed.op === "show") return showToolText(data => parsed.id ? renderStudyShow(data, present.columns) : renderStudyList(data, present.columns), await taskOp("hub_study_show", parsed.id ? { id: parsed.id } : {}), present);
+    const request = parsed.op === "draft" ? { parentTaskId: parsed.parentTaskId, contract: contract(parsed.file) }
+      : parsed.op === "revise" ? { id: parsed.id, revision: parsed.revision, contract: contract(parsed.file) }
+      : parsed.op === "approve" ? { id: parsed.id, revision: parsed.revision } : { id: parsed.id, revision: parsed.revision, reason: parsed.reason };
+    return showToolText(data => renderStudyReceipt(parsed.op, data, present.columns), await taskOp(`study_${parsed.op}`, request, false, undefined, parsed.op === "approve" ? 90_000 : undefined), present);
   },
 
   capabilities: async () => {

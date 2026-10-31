@@ -481,6 +481,12 @@ export class Board {
 
   }
 
+  /** #601: the ids of a project's campaigns, oldest first, for `ahub study show` with no id. A read: no row is written. */
+  researchCampaignIds(project: string): string[] {
+    if (!researchText(project)) throw researchFailure();
+    return (this.db.query("SELECT DISTINCT id FROM research_campaigns WHERE project=? ORDER BY id").all(project) as { id: string }[]).map(row => row.id);
+  }
+
   researchCampaign(id: string, revision?: number): ResearchCampaignRecord | undefined {
     if (!researchId(id) || revision !== undefined && !researchInteger(revision)) throw researchFailure();
     const row = (revision === undefined

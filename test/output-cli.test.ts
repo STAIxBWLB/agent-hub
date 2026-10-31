@@ -12,6 +12,11 @@ import { classifyPeerCommand } from "../src/cli/identity.ts";
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
+const STUDY_PROJECTION = { id: "rc-0123456789ab", revision: 1, held: true, reasons: ["campaign deadline has passed or is unknown"], sharedPeerLedger: false, discoveryRounds: [{ round: 0, complete: false }],
+  units: [{ unitId: "alpha", round: 0, taskId: 2, state: "in_progress", purpose: "discovery", intentionalIndependentCheck: false, sourceIds: ["src:0000000000000001", "src:0000000000000002"], duplicateSourceIds: [],
+    handoff: { present: true, complete: false, insufficientEvidence: false, coveredSourceIds: ["src:0000000000000001"] }, budget: { tool_calls: { support: "supported", used: 3, limit: 10 } } },
+  { unitId: "beta", round: 0, taskId: 3, state: "approved", purpose: "discovery", intentionalIndependentCheck: true, sourceIds: [], duplicateSourceIds: [],
+    handoff: { present: true, complete: true, insufficientEvidence: false, coveredSourceIds: [] }, budget: {} }] };
 function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; kimiSource?: unknown } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-output-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
@@ -47,6 +52,8 @@ function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; ki
         : req.t === "queue" ? ["show", "resolve"].includes(req.op) ? { delivery } : { deliveries }
         : req.t === "task" && options.rejectChecked && ["task_assign_checked", "task_unassign"].includes(req.op) ? { ok: false, error: "unknown operation" }
         : req.t === "task" && options.failFullBoard && !Object.keys(req.args ?? {}).length ? { ok: false, error: "full board temporarily unavailable" }
+        : req.t === "task" && String(req.op).startsWith("study_") ? { text: JSON.stringify({ id: "rc-0123456789ab", parentTaskId: 7, revision: req.args?.revision ?? 1, status: req.op === "study_approve" ? "approved" : req.op === "study_close" ? "closed" : "draft", unitCount: 0, units: [] }) }
+        : req.t === "task" && req.op === "hub_study_show" ? { text: JSON.stringify(req.args?.id ? STUDY_PROJECTION : [{ id: "rc-0123456789ab", parentTaskId: 7, revision: 1, status: "approved", unitCount: 2, units: [] }]) }
         : req.t === "task" ? { text: JSON.stringify(req.args?.ready ? tasks.filter(t => t.state === "proposed" && (t.deps ?? []).every((id: number) => tasks.some(dep => dep.id === id && dep.state === "approved"))) : req.args?.state ? tasks.filter(t => t.state === req.args.state) : tasks) }
         : req.t === "recovery" ? { recovery: { peers: { claude: { id: "claude", state: "idle" } } } }
         : {};
@@ -272,4 +279,35 @@ test("an older daemon rejects task unassign without an unchecked fallback (#424)
   expect(f.requests.filter(request => request.t === "task")).toEqual([
     expect.objectContaining({ op: "task_unassign", args: { id: "1", role: "owner", revision: 7 } }),
   ]);
+});
+
+test("ahub study: parse before connecting, read the contract file, send the right op, and print a person's view by default and the hub's text byte for byte with --json", async () => {
+  const f = fixture();
+  writeFileSync(join(f.root, "contract.json"), JSON.stringify({ question: "q" }));
+  // usage and bad ids refuse before any connection, so nothing is sent
+  for (const argv of [["study"], ["study", "approve"], ["study", "approve", "not-an-id", "1"], ["study", "approve", "rc-0123456789abc", "1"], ["study", "approve", "rc-XYZ", "1"], ["study", "approve", "rc-0123456789ab", "0"], ["study", "approve", "rc-0123456789ab", "1x"], ["study", "close", "rc-0123456789ab", "1"], ["study", "show", "x"], ["study", "draft", "7"]]) {
+    const refused = await f.run(argv); expect(refused.code, argv.join(" ")).toBe(1); expect(refused.stderr).toContain("usage: ahub study");
+  }
+  expect((await f.run(["study", "--color=rainbow", "show"])).code).toBe(1);
+  expect(f.requests.filter(r => r.t === "task")).toHaveLength(0);
+  const missing = await f.run(["study", "draft", "7", "nope.json"]); expect(missing.code).toBe(1); expect(missing.stderr).toContain("cannot read the contract file");
+  writeFileSync(join(f.root, "bad.json"), "{not json"); const bad = await f.run(["study", "draft", "7", "bad.json"]); expect(bad.code).toBe(1); expect(bad.stderr).toContain("not valid JSON");
+  writeFileSync(join(f.root, "big.json"), "x".repeat(70 * 1024)); const big = await f.run(["study", "draft", "7", "big.json"]); expect(big.code).toBe(1); expect(big.stderr).toContain("over 64 KiB");
+  expect(f.requests.filter(r => r.t === "task")).toHaveLength(0);
+  const draft = await f.run(["study", "draft", "7", "contract.json"]);
+  expect(draft.code).toBe(0); expect(draft.stdout).toContain("drafted"); expect(draft.stdout).toContain("ahub study approve rc-0123456789ab 1"); expect(() => JSON.parse(draft.stdout)).toThrow();
+  expect(f.requests.find(r => r.t === "task" && r.op === "study_draft")).toMatchObject({ args: { parentTaskId: 7, contract: { question: "q" } } });
+  expect((await f.run(["study", "approve", "rc-0123456789ab", "1"])).stdout).toContain("approved");
+  expect(f.requests.find(r => r.op === "study_approve")).toMatchObject({ args: { id: "rc-0123456789ab", revision: 1 } });
+  const close = await f.run(["study", "close", "rc-0123456789ab", "1", "--reason", "no", "longer", "needed"]);
+  expect(close.stdout).toContain("closed"); expect(f.requests.find(r => r.op === "study_close")).toMatchObject({ args: { reason: "no longer needed" } });
+  const shown = await f.run(["study", "show", "rc-0123456789ab", "--color=never"]);
+  expect(shown.code).toBe(0); expect(shown.stdout).toContain("dispatch HELD"); expect(shown.stdout).toContain("campaign deadline has passed"); expect(shown.stdout).toContain("1/2 covered"); expect(shown.stdout).toContain("independent check");
+  expect(shown.stdout).not.toContain("\x1b"); expect(() => JSON.parse(shown.stdout)).toThrow();
+  const json = await f.run(["study", "show", "rc-0123456789ab", "--json"]); expect(json.code).toBe(0); expect(json.stdout).toBe(JSON.stringify(STUDY_PROJECTION) + "\n");
+  const listed = await f.run(["study", "show"]); expect(listed.stdout).toContain("Research campaigns (1)"); expect(listed.stdout).toContain("rc-0123456789ab");
+  const narrow = await f.run(["study", "show", "rc-0123456789ab"], { COLUMNS: "60" }); for (const line of narrow.stdout.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
+  expect(classifyPeerCommand("study", ["show", "rc-0123456789ab", "--json"])).toBe("allowed");
+  expect(classifyPeerCommand("study", ["show"])).toBe("allowed");
+  for (const argv of [["approve", "rc-0123456789ab", "1"], ["close", "rc-0123456789ab", "1", "--reason", "x"], ["draft", "7", "c.json"], ["revise", "rc-0123456789ab", "1", "c.json"], ["show", "rc-0123456789ab", "--as-user"], []]) expect(classifyPeerCommand("study", argv), argv.join(" ")).toBe("console");
 });

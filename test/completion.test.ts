@@ -21,7 +21,7 @@ test("#603 candidates follow commands, subcommands, enum values, = forms and pat
   expect(completeWords(["status", "--color=a"])).toEqual(["--color=auto", "--color=always"]);
   expect(completeWords(["init", "--profile", "w"])).toEqual(["writing"]);
   expect(completeWords(["recovery", "re"])).toEqual(["reattach", "resume"]);
-  expect(completeWords(["--project", "/x", "st"])).toEqual(["status", "stop"]);
+  expect(completeWords(["--project", "/x", "st"])).toEqual(["status", "stop", "study"]);
   expect(completeWords(["--project", ""])).toEqual([FILES]);
   expect(completeWords(["upgrade", "--to", ""])).toEqual([]); // <version> is free text, never the word "version"
   expect(completeWords(["completion", ""])).toEqual(["bash", "fish", "zsh"]);

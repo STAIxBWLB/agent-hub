@@ -360,7 +360,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -3379,7 +3379,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // shared memory and a new task could be routed to a cloud peer without matching any pattern.
-    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_sdlc_metrics" || op.startsWith("hub_release_") || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_sdlc_metrics" || op.startsWith("hub_release_") || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new" || op === "hub_study_draft" || op === "hub_study_revise")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and shared memory. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && (a.plan != null || a.refs != null)))) {
@@ -3585,6 +3585,27 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "hub_backlog_undo":
         return JSON.stringify(tasks.publicView(await tasks.undoPlanning(by, a.id, a.revision)));
+      // #601: the study tools only call Tasks. Draft and revise are the configured planner's (Tasks checks planningAuthority and the private turn); none of them approves.
+      // The arguments go to Tasks whole, never re-picked field by field: an unknown field is refused there (`studyFields`), not silently dropped here, and MCP schemas are not enforced on the way in.
+      case "hub_study_draft":
+        return JSON.stringify(await tasks.studyDraft(by, a));
+      case "hub_study_revise":
+        return JSON.stringify(await tasks.studyRevise(by, a));
+      case "hub_study_show":
+        return JSON.stringify(a.id === undefined ? tasks.studyList(by, a) : tasks.studyShow(by, a));
+      case "hub_study_handoff":
+        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "handoff")) throw new PreEffectToolRefusal("study handoff takes only a handoff object");
+        return JSON.stringify(await tasks.studyHandoff(by, a.handoff));
+      // #601: the person's own forms (a read is hub_study_show, which every connection may use). `by` is USER only on the console path; approval and close are never a tool.
+      case "study_draft":
+        return JSON.stringify(await tasks.studyDraft(by, a));
+      case "study_revise":
+        return JSON.stringify(await tasks.studyRevise(by, a));
+      case "study_approve":
+        return JSON.stringify(await tasks.studyApprove(by, a));
+      case "study_close":
+        return JSON.stringify(await tasks.studyClose(by, a));
+
       case "hub_task_propose": {
         const t = await tasks.propose(by, a);
         const repoHint = tasks.refsRepoHint(t); // #723: advice only; never part of the write
@@ -8845,6 +8866,8 @@ export async function startDaemon(opts: DaemonOptions) {
           try { const current = publicReadCurrent(sock); current(); const release = publicReleaseShow(msg.args ?? {}); current(); return void reply({ t: "task", ok: true, text: JSON.stringify(release) }); }
           catch { return void reply({ t: "task", ok: false, error: "public release read unavailable" }); }
         }
+        // #601: ahub study is the person's. A tools connection (any agent) may use the hub_study_* tools, never these op names, whatever Tasks would answer.
+        if (String(msg.op).startsWith("study_") && c.role !== "console") return void reply({ t: "task", ok: false, error: "ahub study draft, revise, approve and close are console commands; agents use the hub_study_* tools" });
         if (c.toolsOwner && !IMPLEMENTER_HUB_TOOL_NAMES.includes(String(msg.op))) return void reply({ t: "task", ok: false, error: "tool is not available to this Claude implementer child" });
         if (recoveryActive() && recoveryPhase !== "preparing" && String(msg.op) !== "hub_checkpoint") return void reply({ t: "task", ok: false, error: "recovery is holding mutations" });
         if (c.role === "tools" && c.peer && Object.hasOwn(CONDUCTOR_TASK_OPS, String(msg.op))) {

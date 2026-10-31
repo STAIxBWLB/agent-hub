@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { defaultCapturePeer } from "../adapters/definitions/native-identity-defaults.ts";
-import { BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS } from "../hub/hub-tools.ts";
+import { BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, STUDY_TOOLS } from "../hub/hub-tools.ts";
 import { MEMORY_READ_TOOLS } from "../hub/read-tools.ts";
 import { isDenied } from "../local/deny.ts";
 import type { MemoryClient } from "./client.ts";
@@ -38,7 +38,7 @@ export class Capture {
   }
 
   observe(call: { tool: string; args: string; output: string; id: string; paths: string[]; sourceId?: string }): void {
-    if (!this.sessionId || ((MEMORY_READ_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || BOUNDED_TASK_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || CAPABILITY_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, ""))) || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_memory_correct") || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_source_read" || this.opts.skip?.includes(call.tool)) return;
+    if (!this.sessionId || ((MEMORY_READ_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || BOUNDED_TASK_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || CAPABILITY_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || STUDY_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, ""))) || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_memory_correct") || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_source_read" || this.opts.skip?.includes(call.tool)) return;
     // Anything that names a denylisted path is kept out of memory entirely, input and output alike.
     if (call.paths.some((p) => isDenied(p, this.opts.deny) || p.split(/\s+/).some((word) => isDenied(word, this.opts.deny)))) return;
     // ponytail: legacy callers without a host sourceId dedupe native ids within a summary interval; all live LocalPeer calls supply invocation identity. Require that port for other hosts.

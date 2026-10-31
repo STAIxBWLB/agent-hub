@@ -1477,6 +1477,15 @@ export class Tasks {
     });
   }
 
+  /** #601: one receipt row per campaign of this project, newest revision, never its question, scope, sources or unit text. */
+  studyList(by: PeerId, input: unknown): ResearchCampaignReceipt[] {
+    requireLocalTaskPeer(by);
+    this.studyFields(input, []);
+    const rows: ResearchCampaignReceipt[] = [];
+    for (const id of this.d.board.researchCampaignIds(this.d.project)) rows.push(this.studyReceipt(this.studyRecord(id)));
+    return rows;
+  }
+
   studyShow(by: PeerId, input: unknown): ReturnType<typeof studyProjection> {
     requireLocalTaskPeer(by);
     const fields = this.studyFields(input, ["id"]), campaign = this.studyRecord(this.studyId(fields.id));

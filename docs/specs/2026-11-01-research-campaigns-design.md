@@ -274,7 +274,7 @@ All new tables live in `hub.db`, created in the `Board` constructor with `CREATE
 | Surface | Name | Who |
 |---|---|---|
 | CLI | `ahub study draft <parent> <contract.json>`, `study revise <id> <revision> <contract.json>`, `study approve <id> <revision>`, `study close <id> <revision> --reason`, `study show [<id>] [--json]`, `study experiments [--campaign <id>] [--json]`, `study attest <attempt> <field> <value>`, `study receipt <file>` | approve, attest and receipt are person only; draft and revise are person or planner; show is anyone |
-| Hub tools | `hub_study_draft` and `hub_study_revise` (configured planner only, through `planningAuthority`; they store drafts and never approve), `hub_study_show` (read-only), `hub_study_handoff` (bound task owner), `hub_experiment_record` (`kind`: `protocol`, `plan`, `attempt`, `event` or `receipt`; task owner), `hub_experiment_show` (read-only) | none of them approves or attests |
+| Hub tools | `hub_study_draft` and `hub_study_revise` (configured planner only, through `planningAuthority`; they store drafts and never approve), `hub_study_show` (read-only; no id lists this project's campaigns as receipts), `hub_study_handoff` (bound task owner), `hub_experiment_record` (`kind`: `protocol`, `plan`, `attempt`, `event` or `receipt`; task owner), `hub_experiment_show` (read-only) | none of them approves or attests |
 | CLI (person only) | `ahub study approve-protocol <hash>` | person |
 | Control | `study` (console role, CLI only) | person |
 | Feature | `research_records` | recovery gate |

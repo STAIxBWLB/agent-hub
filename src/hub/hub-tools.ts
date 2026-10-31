@@ -8,7 +8,7 @@ import { NOTE_KINDS } from "./envelope.ts";
 
 /** Restricted to the fixed current-child tools server, never an ordinary peer tool. */
 /** The fixed MCP surface of a current owned implementer child; independent of broader project roles. */
-export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request"]);
+export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_study_handoff"]);
 
 export const IMPLEMENTER_PERMISSION_TOOL = {
   name: "hub_permission_request",
@@ -81,6 +81,8 @@ const tool = (name: string, description: string, properties: Record<string, unkn
   inputSchema: { type: "object", properties, required, additionalProperties: false },
 });
 
+/** #601: a campaign's contract and handoff are model-written text about its sources. The write tools' arguments and every study result stay out of memory capture. */
+export const STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_study_handoff"]);
 export const BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
 /** #445 C1: what a peer lists and publishes. Their text is another agent's words, so neither call is captured to memory. */
 export const CAPABILITY_TOOLS = new Set(["hub_capabilities", "hub_capabilities_publish", "hub_invoke"]);
@@ -96,6 +98,10 @@ export const TASK_TOOLS: HubTool[] = [
   tool("hub_backlog_pull", "Reserve a WIP slot and pull ready unpinned backlog work into To Do at its current revision. Preserves person order/reservations and frozen scope; pending unowned work can be undone with hub_backlog_undo.", { id, revision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["id", "revision", "reason"]),
   tool("hub_backlog_split", "Split unstarted backlog work into two to eight staged parts. The original card retains integration/acceptance and depends on the children. Use after for existing prerequisite ids and afterParts for earlier zero-based part indexes. Latest unused unchanged children can be undone with hub_backlog_undo.", { id, revision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 1000 }, parts: { type: "array", minItems: 2, maxItems: 8, items: { type: "object", properties: { title: { type: "string", minLength: 1, maxLength: 300 }, detail: { type: "string", maxLength: 8000 }, class: str, refs, plan, after: { type: "array", maxItems: 64, uniqueItems: true, items: { type: "integer", minimum: 1 } }, afterParts: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "integer", minimum: 0 } } }, required: ["title"], additionalProperties: false } } }, ["id", "revision", "reason", "parts"]),
   tool("hub_backlog_undo", "Undo your latest planning change at its current revision. Refuses intervening changes and another actor's edit.", { id, revision: { type: "integer", minimum: 1 } }, ["id", "revision"]),
+  tool("hub_study_draft", "Store a research campaign contract as a DRAFT revision 1 on an approved parent task. Configured planners only; it creates no task, dispatches nothing and never approves (only the person approves, with ahub study approve). The contract is data: question, scope, exclusions, sourceIds, units, deliverableSections, stopPolicy and an optional budget.", { parentTaskId: id, contract: { type: "object" } }, ["parentTaskId", "contract"]),
+  tool("hub_study_revise", "Store the next DRAFT revision of a research campaign with the revision you read. Configured planners only; a stale revision refuses, and a draft holds older bound work until the person approves it. Never approves.", { id: str, revision: { type: "integer", minimum: 1 }, contract: { type: "object" } }, ["id", "revision", "contract"]),
+  tool("hub_study_show", "Read a research campaign's coverage and stop projection: per unit round, state, handoff completeness and budget support, and why dispatch is held. Read-only. A private campaign, task or source shows ids, counts and states only, never its question, scope, path or excerpt. Give no id to list this project's campaigns.", { id: str }),
+  tool("hub_study_handoff", "Record the handoff for the research unit you currently own and have in progress: evidence per source, unresolved questions, contradictions and limitations, or insufficientEvidence. Only the bound owner; every required field must be present. Not a task completion.", { handoff: { type: "object" } }, ["handoff"]),
   tool("hub_release_new", "Create a future release planning row. Planner/person only; no activation, publish or release authorization.", { name: { type: "string", minLength: 1, maxLength: 64 }, goal: { type: "string", minLength: 1, maxLength: 1000 }, order: { type: "integer", minimum: 0 } }, ["name", "goal", "order"]),
   tool("hub_release_report", "Read a planned release's task readiness and recorded metrics. Planner/person only. A due date never waives unfinished scope.", { id }, ["id"]),
   tool("hub_release_assign", "Assign or move only a task's release, retaining its execution state and owner. Planner/person only; requires a reason and current planning revision. Frozen scope refuses.", { id, revision: { type: "integer", minimum: 0 }, release: { type: ["integer", "null"], minimum: 1 }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["id", "revision", "release", "reason"]),
@@ -184,7 +190,7 @@ export function configuredToolContext(status: unknown, peer: string): ProjectToo
   return { startPeers, readOnly: readOnlyPeers.includes(peer) };
 }
 
-const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
 /** Publication restricts exposure only; server-side authority remains mandatory for every call. */
 export function projectToolList<T extends { name: string }>(tools: T[], readOnly = false): T[] {
   return readOnly ? tools.filter(tool => READ_ONLY_PROJECT_TOOLS.includes(tool.name)) : tools;
