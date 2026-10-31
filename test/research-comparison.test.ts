@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { comparisonPlanHash, parseComparisonPlan, type ComparisonPlanV1, type ExperimentProtocolContract } from "../src/hub/research-experiments.ts";
+import { comparisonPlanHash, parseComparisonPlan, compareExperimentProtocols, comparisonProjection, protocolHash, evaluatorIdentityHash, protocolApprovalBindingMatches,
+  type ComparisonPlanV1, type ExperimentProtocolContract } from "../src/hub/research-experiments.ts";
 
 const HASH = "a".repeat(64), SOURCE = "src:0123456789abcdef";
 function protocol(): ExperimentProtocolContract {
@@ -90,4 +91,113 @@ test("approval identity never carries to changed protocol or evaluator hashes, i
   const hostile={get protocolHash(){touched++;return binding.protocolHash;},evaluatorHash:binding.evaluatorHash};
   expect(protocolApprovalBindingMatches(p,hostile)).toBe(false);
   expect(touched).toBe(0);
+});
+
+test("comparison ignores only identity metadata while readback and fresh approval keep each full protocol identity", () => {
+  const a = protocol(), fixed = { ...plan(), varying: [] }, approval = { protocolHash: protocolHash(a), evaluatorHash: evaluatorIdentityHash(a) };
+  for (const b of [{ ...a, campaignRevision: 2 }, { ...a, lineage: "another-lineage" }, { ...a, supersedes: HASH },
+    { ...a, campaignRevision: 3, lineage: "variant-lineage", supersedes: HASH }]) {
+    expect(compareExperimentProtocols(fixed, a, b)).toEqual({ compatible: true });
+    expect(protocolApprovalBindingMatches(b, approval)).toBe(false);
+    const view = comparisonProjection(fixed, a, b);
+    expect(view.baseline).toEqual({ protocolHash: protocolHash(a), campaignRevision: a.campaignRevision });
+    expect(view.variant).toEqual({ protocolHash: protocolHash(b), campaignRevision: b.campaignRevision });
+    expect(view.baseline.protocolHash).not.toBe(view.variant.protocolHash);
+    expect(view.identityNote).toContain("excluded from compatibility only");
+    expect(view.identityNote).toContain("approval binding remains separate");
+  }
+});
+
+test("predeclared baseline code variants, parameters and seed replicas compare structurally without producing a winner", () => {
+  const a = protocol(), b: ExperimentProtocolContract = { ...protocol(), role: "variant", variantOf: protocolHash(a), code: { commit: "c".repeat(40) }, parameters: { size: 3 }, seeds: [2] };
+  expect(compareExperimentProtocols(plan(), a, b)).toEqual({ compatible: true });
+  const artifact: ExperimentProtocolContract = { ...b, code: { deliverable: { id: "d-0123456789ab", sha256: HASH } } };
+  expect(compareExperimentProtocols(plan(), a, artifact)).toEqual({ compatible: true });
+  const sameRole = { ...plan(), varying: ["seeds" as const] };
+  expect(compareExperimentProtocols(sameRole, a, { ...a, seeds: [2, 3] })).toEqual({ compatible: true });
+  const view = comparisonProjection(plan(), a, b);
+  expect(Object.keys(view).sort()).toEqual(["baseline", "compatibility", "identityNote", "planHash", "variant"]);
+  expect(view.planHash).toBe(comparisonPlanHash(plan()));
+  expect(protocolApprovalBindingMatches(b, { protocolHash: protocolHash(a), evaluatorHash: evaluatorIdentityHash(a) })).toBe(false);
+});
+
+test("every fixed invariant must exactly match the plan on both sides, even if both protocols agree with each other", () => {
+  const mutations: { field: "inputs" | "splits" | "evaluator" | "metrics"; change: (p: ExperimentProtocolContract) => void }[] = [
+    { field: "inputs", change: p => { p.inputs[0]!.sha256 = "c".repeat(64); } },
+    { field: "splits", change: p => { p.splits = ["validation"]; } },
+    { field: "evaluator", change: p => { p.evaluator.version = "v2"; } },
+    { field: "metrics", change: p => { p.metrics[0]!.unit = "percent"; } },
+    { field: "metrics", change: p => { p.metrics[0]!.direction = "lower"; } },
+  ];
+  for (const { field, change } of mutations) {
+    const a = protocol(), b = protocol(); change(a);
+    expect(compareExperimentProtocols(plan(), a, b)).toEqual({ compatible: false, field, side: "baseline" });
+    expect(compareExperimentProtocols(plan(), b, a)).toEqual({ compatible: false, field, side: "variant" });
+    expect(compareExperimentProtocols(plan(), a, a)).toEqual({ compatible: false, field, side: "baseline" });
+  }
+});
+
+test("experimental fields outside the four allowed varying groups remain exact", () => {
+  const mutations: { field: string; change: (p: ExperimentProtocolContract) => void }[] = [
+    { field: "claimIds", change: p => { p.claimIds = ["other-claim"]; } },
+    { field: "environment", change: p => { p.environment.descriptor = "Different declared CPU environment"; } },
+    { field: "environment", change: p => { p.environment.hash = HASH; } },
+    { field: "method", change: p => { p.method = "A changed experimental method"; } },
+    { field: "resourceLimits", change: p => { p.resourceLimits[0]!.value = 20; } },
+    { field: "sealed", change: p => { p.sealed = true; } },
+  ];
+  for (const { field, change } of mutations) {
+    const b = protocol(); change(b);
+    expect(compareExperimentProtocols(plan(), protocol(), b)).toEqual({ compatible: false, field, side: "pair" });
+  }
+});
+
+test("undeclared code, parameter, seed and role-group variations are incompatible", () => {
+  const fixed = { ...plan(), varying: [] };
+  const mutations: { field: string; change: (p: ExperimentProtocolContract) => void }[] = [
+    { field: "code", change: p => { p.code = { commit: "c".repeat(40) }; } },
+    { field: "parameters", change: p => { p.parameters.size = 3; } },
+    { field: "seeds", change: p => { p.seeds = [2]; } },
+    { field: "role", change: p => { p.role = "variant"; p.variantOf = HASH; } },
+  ];
+  for (const { field, change } of mutations) {
+    const b = protocol(); change(b);
+    expect(compareExperimentProtocols(fixed, protocol(), b)).toEqual({ compatible: false, field, side: "pair" });
+  }
+  const a: ExperimentProtocolContract = { ...protocol(), role: "variant", variantOf: HASH }, b = { ...a, variantOf: "c".repeat(64) };
+  expect(compareExperimentProtocols(fixed, a, b)).toEqual({ compatible: false, field: "role", side: "pair" });
+  expect(compareExperimentProtocols({ ...fixed, varying: ["role"] }, a, b)).toEqual({ compatible: true });
+});
+
+test("same-campaign checks precede fixed-field checks and report the deterministic first differing field", () => {
+  const a = protocol(), b = protocol(); a.campaignId = "rc-ffffffffffff"; b.inputs[0]!.sha256 = "c".repeat(64);
+  expect(compareExperimentProtocols(plan(), a, b)).toEqual({ compatible: false, field: "campaignId", side: "baseline" });
+  expect(compareExperimentProtocols(plan(), protocol(), a)).toEqual({ compatible: false, field: "campaignId", side: "variant" });
+  const first = protocol(), second = protocol(); first.splits = ["validation"]; second.inputs[0]!.sha256 = "c".repeat(64);
+  expect(compareExperimentProtocols(plan(), first, second)).toEqual({ compatible: false, field: "inputs", side: "variant" });
+  const changed = protocol(); changed.claimIds = ["other"]; changed.method = "Other method"; changed.environment.hash = HASH;
+  expect(compareExperimentProtocols(plan(), protocol(), changed)).toEqual({ compatible: false, field: "claimIds", side: "pair" });
+});
+
+test("fixed lists retain exact order while data-object property order is immaterial", () => {
+  const a = protocol(); a.inputs.push({ sourceId: "src:fedcba9876543210", sha256: "c".repeat(64) }); a.parameters = { alpha: 1, beta: 2 };
+  const p: ComparisonPlanV1 = { ...plan(), fixed: { inputs: a.inputs, splits: a.splits, evaluator: a.evaluator, metrics: a.metrics }, varying: [] };
+  const reordered = { ...a, parameters: { beta: 2, alpha: 1 }, evaluator: { hash: HASH, version: a.evaluator.version, id: a.evaluator.id } };
+  expect(compareExperimentProtocols(p, a, reordered)).toEqual({ compatible: true });
+  const reversed = { ...a, inputs: [...a.inputs].reverse() };
+  expect(compareExperimentProtocols(p, a, reversed)).toEqual({ compatible: false, field: "inputs", side: "variant" });
+});
+
+test("compatibility keeps input snapshots immutable and cannot execute a supplied rule, proxy or accessor", () => {
+  const p = plan(), a = protocol(), b = protocol(), before = JSON.stringify([p, a, b]);
+  expect(compareExperimentProtocols(p, a, b)).toEqual({ compatible: true });
+  expect(JSON.stringify([p, a, b])).toBe(before);
+  let touched = 0;
+  const hostile = new Proxy(a, { getPrototypeOf() { touched++; throw new Error("trap"); } });
+  expect(() => compareExperimentProtocols(p, hostile, b)).toThrow("plain data object");
+  Object.defineProperty(b, "method", { get() { touched++; return "untrusted method"; } });
+  expect(() => compareExperimentProtocols(p, a, b)).toThrow("accessors");
+  expect(touched).toBe(0);
+  const label = { ...p, rule: { kind: "test" as const, name: "never-execute-this-test-label", alpha: 0.05 } };
+  expect(compareExperimentProtocols(label, a, protocol())).toEqual({ compatible: true });
 });

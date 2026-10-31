@@ -397,6 +397,37 @@ export function comparisonPlanHash(plan: ComparisonPlanV1): string {
   return createHash("sha256").update(canonicalJson(parseComparisonPlan(plan))).digest("hex");
 }
 
+/** Structural compatibility only. Identity metadata remains in each protocol hash and approval binding. */
+export function compareExperimentProtocols(plan: ComparisonPlanV1, baseline: ExperimentProtocolContract, variant: ExperimentProtocolContract): ComparisonCompatibility {
+  const declared = parseComparisonPlan(plan), a = parseExperimentProtocol(baseline), b = parseExperimentProtocol(variant);
+  if (a.campaignId !== declared.campaignId) return { compatible: false, field: "campaignId", side: "baseline" };
+  if (b.campaignId !== declared.campaignId) return { compatible: false, field: "campaignId", side: "variant" };
+  for (const field of ["inputs", "splits", "evaluator", "metrics"] as const) {
+    const expected = canonicalJson(declared.fixed[field]);
+    if (canonicalJson(a[field]) !== expected) return { compatible: false, field, side: "baseline" };
+    if (canonicalJson(b[field]) !== expected) return { compatible: false, field, side: "variant" };
+  }
+  // Only campaignRevision, lineage and supersedes are omitted. Every experimental field outside varying stays exact.
+  for (const field of ["claimIds", "code", "environment", "method", "parameters", "seeds", "role", "resourceLimits", "sealed"] as const) {
+    if ((field === "code" || field === "parameters" || field === "seeds" || field === "role") && declared.varying.includes(field)) continue;
+    const left = field === "role" ? { role: a.role, variantOf: a.variantOf } : a[field];
+    const right = field === "role" ? { role: b.role, variantOf: b.variantOf } : b[field];
+    if (canonicalJson(left) !== canonicalJson(right)) return { compatible: false, field, side: "pair" };
+  }
+  return { compatible: true };
+}
+
+/** Keep the pair's own identities visible even when compatibility ignores identity metadata; never rank either member. */
+export function comparisonProjection(plan: ComparisonPlanV1, baseline: ExperimentProtocolContract, variant: ExperimentProtocolContract) {
+  const declared = parseComparisonPlan(plan), a = parseExperimentProtocol(baseline), b = parseExperimentProtocol(variant);
+  return {
+    planHash: comparisonPlanHash(declared), compatibility: compareExperimentProtocols(declared, a, b),
+    baseline: { protocolHash: protocolHash(a), campaignRevision: a.campaignRevision },
+    variant: { protocolHash: protocolHash(b), campaignRevision: b.campaignRevision },
+    identityNote: "campaignRevision, lineage and supersedes are excluded from compatibility only; each displayed protocol identity and approval binding remains separate.",
+  };
+}
+
 
 /** Identity of the declared evaluator object, not a measurement of evaluator execution. */
 export function evaluatorIdentityHash(protocol: ExperimentProtocolContract): string {
