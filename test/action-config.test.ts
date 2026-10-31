@@ -33,7 +33,7 @@ test("action policy overrides are local-only even when shared config is untracke
 
 test("action settings validate all configured leaves and require person confirmation to weaken", () => {
   const defs = SETTINGS.filter(def => def.key.startsWith("action_policy."));
-  expect(defs).toHaveLength(5);
+  expect(defs).toHaveLength(6);
   for (const def of defs) {
     expect(def.store).toBe("config"); expect(configApply(def.key).applies).toBe("live");
     expect(() => checkSettingValue(def, def.type === "boolean" ? "no" : -1)).toThrow();

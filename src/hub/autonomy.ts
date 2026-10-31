@@ -52,7 +52,7 @@ export interface AutonomyStatusInput {
   peers: readonly AutonomyPeer[];
   rows?: readonly ConfirmationRow[];
   terminalOpener?: { available: boolean; reason?: string; via?: string };
-  /** Host floor-verdict seam for T3; a coarse action policy alone proves no floor enforcement. */
+  /** Host floor verdicts per peer and class (`floorEnforcement` in action-policy.ts, from the running policy and where the hub sees the peer's calls); a class without a row is not enforced. */
   floorEnforcement?: Readonly<Record<string, Readonly<Record<string, AutonomyFloorStatus>>>>;
   preset?: AutonomyPreset;
   matrix?: ConfirmationMatrix;
@@ -215,7 +215,7 @@ export function autonomyStatus(input: AutonomyStatusInput): AutonomyPeerStatus[]
       }
       const guard = peer.structuralGuards?.[action];
       if (guard?.verified === true && guard.reason.trim()) return { class: action, status: "structural-guard", reason: guard.reason };
-      const reason = `Hub floor enforcement is not available until #582.${peer.actionEnforcement?.reason ? ` ${peer.actionEnforcement.reason}` : ""}`;
+      const reason = `Hub floor enforcement is not established for this peer and form.${peer.actionEnforcement?.reason ? ` ${peer.actionEnforcement.reason}` : ""}`;
       missing.push(`${action}: ${reason} No verified structural guard was supplied.`);
       return { class: action, status: "not-enforced", reason };
     });

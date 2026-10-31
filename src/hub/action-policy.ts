@@ -48,6 +48,41 @@ export const FLOOR_GUARDS: readonly { readonly asks: string; readonly guard: str
 ]);
 export const floorGuardText = (): string => FLOOR_GUARDS.map(entry => `${entry.asks}: ${entry.guard}`).join("; ");
 
+/**
+ * The eight floor classes of #999 (one list with `templates/presets/autonomous.json` `floorClasses`; a test holds them equal): each maps to the action class
+ * that asks for it and to the structural guard it rests on where the hub cannot see the call first. `guard` null means none is named: the class is then
+ * unprotected there, and status says so.
+ */
+export const FLOOR_CLASS_TABLE: Readonly<Record<string, { readonly action: ActionClass; readonly asks: string; readonly guard: string | null }>> = Object.freeze({
+  "force-push": { action: "publish", asks: "a force or delete push", guard: "GitHub branch protection on the default branch" },
+  "default-branch-push": { action: "publish", asks: "a push to the default branch", guard: "GitHub branch protection on the default branch" },
+  "tag-push": { action: "publish", asks: "a push of a tag", guard: "release only through ahub sdlc authorize-release and the OIDC tag workflow" },
+  "release-publish": { action: "publish", asks: "gh release", guard: "release only through ahub sdlc authorize-release and the OIDC tag workflow" },
+  "package-publish": { action: "publish", asks: "npm, bun, pnpm, yarn or cargo publish", guard: null },
+  "destroy-outside-root": { action: "destroy", asks: "deletion outside the execution root", guard: "the peer's native sandbox" },
+  "foreign-repo-write": { action: "external-write", asks: "a write to another repository", guard: "the peer's native sandbox" },
+  "external-send": { action: "external-write", asks: "mail and posting", guard: null },
+});
+export const FLOOR_CLASSES: readonly string[] = Object.freeze(Object.keys(FLOOR_CLASS_TABLE));
+export interface FloorEnforcementRow { readonly status: "hub-enforced" | "not-enforced"; readonly reason: string }
+/**
+ * What the hub can say about each floor class for one peer, from the running policy and where the hub sees that peer's calls (`enforcement`, as `actionEnforcement`
+ * in the daemon reports it). `hub-enforced`: the hub sees the call first and the class asks under this policy, with the floor on or off. `not-enforced`: it does not,
+ * or the policy does not ask for the class; the reason names the guard the class rests on and that the hub has not verified it, never that it holds. The hub verifies
+ * no structural guard, so no row is `structural-guard` here: that status needs evidence a person or a check supplies (`AutonomyPeer.structuralGuards`).
+ */
+export function floorEnforcement(policy: ActionPolicyConfig | undefined, enforcement: { readonly enforced: boolean; readonly reason?: string }): Record<string, FloorEnforcementRow> {
+  const config = actionPolicyConfig(policy), asked = askedClasses(config), rows: Record<string, FloorEnforcementRow> = {};
+  for (const [name, entry] of Object.entries(FLOOR_CLASS_TABLE)) {
+    const guard = entry.guard === null ? "no structural guard is named for it" : `it rests on ${entry.guard}, which the hub has not verified`;
+    if (!config.enabled) rows[name] = { status: "not-enforced", reason: `action_policy is disabled, so ${entry.asks} does not ask; ${guard}` };
+    else if (!asked.includes(entry.action)) rows[name] = { status: "not-enforced", reason: `action_policy always_ask omits ${entry.action}, so ${entry.asks} does not ask; ${guard}` };
+    else if (!enforcement.enforced) rows[name] = { status: "not-enforced", reason: `the hub does not see this peer's calls first${enforcement.reason ? ` (${enforcement.reason})` : ""}; ${guard}` };
+    else rows[name] = { status: "hub-enforced", reason: `${entry.asks} asks (class ${entry.action}${config.floor === true ? ", floor on" : ""})` };
+  }
+  return rows;
+}
+
 export interface ActionSessionBudget { readonly peer: string; readonly session: string }
 export interface ActionChallenge { readonly classes: readonly ActionClass[] }
 export type ActionDecision = { kind: "native" } | { kind: "ask"; classes: ActionClass[]; challenge?: ActionChallenge } | { kind: "budget"; classes: ActionClass[] };

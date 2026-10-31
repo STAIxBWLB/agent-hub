@@ -21,7 +21,7 @@ import { createClaudeFailureTrace, type ClaudeFailureTrace } from "./claude-fail
 import { buildNativePermissionProbe, NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH, validateNativePermissionRequest } from "./native-permission-request.ts";
 import { createClaudeLaunchProof, readClaudeLaunchProof } from "./claude-launch-proof.ts";
 import { InboxPolling } from "./inbox-polling.ts";
-import { ActionBudgets, actionPolicyConfig, type ActionPolicyConfig } from "./action-policy.ts";
+import { ActionBudgets, actionPolicyConfig, floorEnforcement, type ActionPolicyConfig } from "./action-policy.ts";
 import { actionGate, claudeActionClasses } from "./action-enforce.ts";
 import type { FloorFacts } from "./action-class.ts";
 import { ReleaseAuthorizations, releaseAuthorizationError } from "./sdlc-release-authorization.ts";
@@ -7072,7 +7072,9 @@ export async function startDaemon(opts: DaemonOptions) {
         refreshAutonomyConsent();
         for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
         const terminal = opener.available();
-        const rows = autonomyStatus({ environment: env, peers: autonomyPeers(), terminalOpener: terminal.ok ? { available: true, via: terminal.via } : { available: false, reason: terminal.why } });
+        const peers = autonomyPeers();
+        const rows = autonomyStatus({ environment: env, peers, terminalOpener: terminal.ok ? { available: true, via: terminal.via } : { available: false, reason: terminal.why },
+          floorEnforcement: Object.fromEntries(peers.map(peer => [peer.id, floorEnforcement(config.action_policy, peer.actionEnforcement ?? { enforced: false })])) });
         for (const row of rows) if (pendingPermissionDefaults.has(row.id)) row.missing.push("This never-ask default has no matching retained consent; confirm it in ahub console or run ahub autonomy on again.");
         return { ok: true, status: { environment: env, consentedPeers: [...autonomyConfirmed], peers: rows }, lines: [`Project autonomy, environment: ${env}`, ...rows.flatMap(row => [`${row.id}: ${row.effectiveMode}; preset ${row.nextMode ?? "unmanaged"} at ${row.applies}`, ...row.floor.map(floor => `  ${floor.class}: ${floor.status}; ${floor.reason}`), ...row.missing.map(reason => `  missing: ${reason}`)])] };
       }
