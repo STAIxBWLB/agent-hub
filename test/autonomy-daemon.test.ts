@@ -7,6 +7,8 @@ import { createHash } from "node:crypto";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import type { InstancesConfig } from "../src/hub/instances.ts";
+import { Registry } from "../src/hub/registry.ts";
+import { prepareAutonomyProject, runAllProjectAutonomy } from "../src/cli/autonomy-projects.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
@@ -23,7 +25,8 @@ async function fixture(instances?: InstancesConfig, local: Record<string, unknow
   writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, research: { enabled: false }, pi: { auto_start: false } }));
   const stateDir = join(cwd, "state"), file = join(cwd, ".agenthub/config.local.json");
   if (instances || Object.keys(local).length) writeFileSync(file, JSON.stringify({ ...local, ...(instances ? { instances } : {}) }));
-  const options = { cwd, stateDir, projectId: `project-${cwd.split("/").at(-1)}`, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false };
+  const registry = new Registry(join(home, "registry.db")), project = registry.register(cwd, stateDir); cleanups.push(() => registry.close());
+  const options = { cwd: project.root, stateDir: project.stateDir, projectId: project.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false };
   let daemon = await startDaemon({ ...options, config: loadConfig(cwd) });
   cleanups.push(() => daemon.stop());
   const person = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => person.close());
@@ -32,13 +35,44 @@ async function fixture(instances?: InstancesConfig, local: Record<string, unknow
     const preview = await client.request({ t: "autonomy", action: "preview", environment });
     return client.request({ t: "autonomy", action: "on", environment, confirmed: true, confirmation: preview.confirmation });
   };
-  return { person, tools, cwd, file, stateDir, home, on, read: () => JSON.parse(readFileSync(file, "utf8")), restart: async () => {
+  return { person, tools, cwd: project.root, file, stateDir: project.stateDir, home, registry, project, on, stop: () => daemon.stop(), read: () => JSON.parse(readFileSync(file, "utf8")), restart: async () => {
     await daemon.stop();
     daemon = await startDaemon({ ...options, config: loadConfig(cwd) });
     const client = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => client.close());
     return client;
   } };
 }
+
+for (const all of [false, true]) test(`offline off${all ? " --all-projects" : ""} revokes issued consent before identical defaults can be replayed`, async () => {
+  const p = await fixture();
+  expect((await p.on()).ok).toBe(true);
+  expect((await p.person.request({ t: "autonomy", action: "status", environment: "headless" })).status.consentedPeers).toContain("codex");
+  const before = readFileSync(p.file, "utf8");
+  await p.stop();
+  if (all) await runAllProjectAutonomy(["off", "--all-projects"], { home: p.home, environment: "headless", projects: [p.project], prepare: project => prepareAutonomyProject(project, "headless", false, p.registry), ask: async () => { throw new Error("off never asks"); }, print() {} });
+  else { const prepared = await prepareAutonomyProject(p.project, "headless", false, p.registry); try { await prepared.apply(); } finally { prepared.close(); } }
+  expect(p.read().permission_modes?.codex).toBeUndefined();
+  writeFileSync(p.file, before);
+  rmSync(join(p.home, "defaults.json"), { force: true });
+  const client = await p.restart();
+  const status = (await client.request({ t: "autonomy", action: "status", environment: "headless" })).status;
+  expect(status.consentedPeers).toEqual([]);
+  const peer = status.peers.find((row: any) => row.id === "codex");
+  expect(peer.effectiveMode).toBe("ask");
+  expect(peer.missing.some((line: string) => line.includes("no matching retained consent"))).toBe(true);
+});
+
+test("an offline consent-clear failure names the project and cannot report off success", async () => {
+  const p = await fixture(); expect((await p.on()).ok).toBe(true); await p.stop();
+  const privateDirectory = join(p.home, "autonomy", createHash("sha256").update(p.project.id).digest("hex"), "autonomy");
+  chmodSync(privateDirectory, 0o755);
+  const output: string[] = [];
+  await expect(runAllProjectAutonomy(["off", "--all-projects"], { home: p.home, environment: "headless", projects: [p.project], prepare: project => prepareAutonomyProject(project, "headless", false, p.registry), ask: async () => null, print: line => { output.push(line); } })).rejects.toThrow("1 project(s) were not applied");
+  expect(output.some(line => line.includes(p.project.root) && line.includes("consent"))).toBe(true);
+  expect(output.some(line => line.includes("Project autonomy off:"))).toBe(false);
+  expect(p.read().permission_modes.codex).toBe("never-ask");
+  expect(p.registry.get(p.project.id)?.instanceId).toBeNull();
+});
 
 for (const [name, machine, approved] of [
   ["matching trusted opt-in", { text: '{"schema":1,"autonomy":true}' }, true],
