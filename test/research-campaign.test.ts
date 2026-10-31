@@ -228,7 +228,7 @@ test("#930 already-approved replay keeps identities and tightens newly private m
   expect(after.campaigns).toBe(before.campaigns); expect(after.units).toBe(before.units); expect(after.digest).not.toBe(before.digest);
 });
 
-test("#930 foreign parent repositories, campaign projects and unrelated intake tasks refuse before writes", async () => {
+test("#930 foreign parent repositories and campaign projects refuse before writes", async () => {
   const f = await fixture();
   const draft = await f.tasks.studyDraft("claude", { parentTaskId: f.parent.id, contract: contract() });
   const other = new Tasks({ board: f.board, bus: f.bus, cwd: f.dir, project: "another-project", roles: f.roles, routing: () => f.routing, notify: () => {} });
