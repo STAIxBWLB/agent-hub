@@ -115,7 +115,7 @@ function scalar(input: unknown, field: string): ExperimentScalar {
 function environment(input: unknown): ExperimentProtocolContract["environment"] {
   const value = object(input, ["descriptor", "hash"], "protocol.environment"), descriptor = text(value.descriptor, LONG, "protocol.environment.descriptor");
   // ponytail: lexical exclusion only, not proof that arbitrary prose contains no secret. Reject assignments and known secret shapes; a structured environment manifest can replace this ceiling later.
-  if (/(?:^|[\s,;{])["']?[A-Za-z_][A-Za-z0-9_]*["']?\s*(?:=|:)\s*\S/.test(descriptor) || looksSecret(descriptor))
+  if (/(?:^|[\s,;{])["']?[A-Za-z_][A-Za-z0-9_]*["']?\s*(?:=|:)\s*\S/.test(descriptor) || /\bBearer\s+\S+/i.test(descriptor) || looksSecret(descriptor))
     fail("protocol.environment.descriptor", "environment values and secret-shaped text are unavailable");
   return { descriptor, ...(value.hash !== undefined ? { hash: pattern(value.hash, HASH, "protocol.environment.hash") } : {}) };
 }
