@@ -8,6 +8,8 @@ import { DASHBOARD_VIEWS, renderDashboard, startDashboard } from "../src/hub/ui.
 import type { Lifecycle, ProjectRecord } from "../src/hub/manager.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { aconManifestPath, registerAconPlugin } from "../src/cli/acon-register.ts";
+import { officeModel, type OfficeSnapshotInput } from "../src/ui/office-model.ts";
+import { mergeSpaces, officeSpace, SPACE_CAPS } from "../src/ui/office-space.ts";
 
 // #935: the acon console plugin over the manager's own listing and forwarding, against a scripted project hub.
 const dirs: string[] = [];
@@ -29,7 +31,9 @@ function fixture() {
       const m = JSON.parse(String(data));
       if (m.t === "hello") return void ws.send(JSON.stringify({ rid: m.rid, t: "welcome", cwd: project.root, projectId: project.id, instanceId: "i1" }));
       if (m.t === "ui_snapshot") { snapshots.push(m); return void ws.send(JSON.stringify({ rid: m.rid, ok: true, cursor: 1, peers: {}, permissions,
-        tasks: [{ id: 7, title: "Review the parser", state: "in_review", owner: "codex", reviewer: "user" }, { id: 8, title: "Other", state: "in_review", owner: "codex", reviewer: "claude" }] })); }
+        status: { peers: { kimi: { state: "busy", queued: 2, permissionMode: "default" }, codex: { state: "idle" } } },
+        events: [{ seq: 1, event: { t: "envelope", env: { from: "codex", to: ["kimi"], kind: "chat", priority: "status", ts: Date.now(), body: "MARKER-1012 body", refs: { task: "7" } } } }],
+        tasks: [{ id: 7, title: "Review the parser", detail: "MARKER-1012 detail", class: "implement", state: "in_review", owner: "codex", reviewer: "user" }, { id: 8, title: "Other", state: "in_review", owner: "codex", reviewer: "claude" }, { id: 9, title: "Wire the space", class: "implement", state: "in_progress", owner: "kimi" }] })); }
       if (m.t === "ui_action") { actions.push(m.action); if (m.action.action === "permit") permissions = []; return void ws.send(JSON.stringify({ rid: m.rid, ok: true })); }
     },
   } });
@@ -123,6 +127,67 @@ describe("dashboard assets (D2)", () => {
     expect(css.startsWith(".ahub-panel{")).toBe(true);
     expect(js).not.toMatch(/<(main|header|footer)\b/); // the shell owns the landmarks
     expect(/@import|url\(\s*["']?(https?:)?\/\//i.test(css)).toBe(false);
+  });
+});
+
+describe("acon Space from the office model (#1012 Part 2)", () => {
+  const MARKER = "XYZZY-MARKER-1012";
+  const dirty = {
+    status: { peers: { codex: { state: "busy", queued: 1, needsReview: 1, permissionMode: "acceptEdits" }, pi: { state: "idle" }, kimi: { state: "busy", paused: "budget" } } },
+    tasks: [
+      { id: 1, title: "[pii]", detail: `${MARKER} private detail`, class: "implement", state: "in_progress", owner: "codex", deps: [] },
+      { id: 2, title: "public title", detail: `${MARKER} other detail`, class: "test", state: "proposed", deps: [] },
+      { id: 3, title: "in review", class: "review", state: "in_review", owner: "pi", reviewer: "codex", deps: [] },
+      { id: 4, title: "shipped", class: "implement", state: "approved", owner: "pi", deps: [] },
+    ],
+    permissions: [{ id: "p1", peer: "codex", title: `${MARKER} approval title`, options: [] }],
+    links: [{ kind: "overlap", tasks: [1, 3], peers: ["codex", "pi"], reason: `${MARKER} overlap reason` }],
+    events: [{ seq: 9, event: { t: "envelope", env: { from: "codex", to: ["pi"], kind: "chat", priority: "status", ts: 1500, body: `${MARKER} body`, refs: { task: "1" } } } }],
+    budget: { codex: { windows: [], paused: null } },
+  } as unknown as OfficeSnapshotInput;
+
+  test("peers, zones, cards and links map onto the SpaceScene contract with project-prefixed ids", () => {
+    const scene = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p1" });
+    const actor = (id: string) => scene.actors.find((a) => a.id === `p1:${id}`)!;
+    expect(actor("codex")).toMatchObject({ name: "codex", state: "waiting", card: "p1:1", link: { panel: "agents" } });
+    expect(actor("codex").marks?.map((m) => m.kind)).toEqual(["approval", "inbox", "mode"]);
+    expect(actor("pi").state).toBe("idle");
+    expect(actor("kimi").marks?.map((m) => m.kind)).toContain("paused");
+    expect(scene.actors.every((a) => a.pet === undefined)).toBe(true); // the shell assigns installed pets
+    expect(scene.zones.map((z) => [z.id, z.kind, z.count])).toEqual([["p1:todo", "queue", 1], ["p1:work", "work", 1], ["p1:review", "review", 1], ["p1:done", "done", 1]]);
+    expect(scene.cards.find((c) => c.id === "p1:1")).toMatchObject({ title: "#1 [pii]", zone: "p1:work", owner: "p1:codex" });
+    expect(scene.cards.find((c) => c.id === "p1:2")?.zone).toBe("p1:todo");
+    expect(scene.links).toEqual([expect.objectContaining({ kind: "overlap", from: "p1:codex", to: "p1:pi", label: "#1 #3" })]);
+    // Message links come from envelope rows that arrive after the first snapshot (the office model's arcs), as on the dashboard.
+    const first = officeModel(dirty, null, { cols: 4, now: 3000 });
+    const flowing = officeSpace(officeModel({ ...dirty, events: [{ seq: 10, event: { t: "envelope", env: { from: "codex", to: ["pi"], kind: "chat", priority: "status", ts: 3500, body: `${MARKER} new`, refs: { task: "1" } } } }] } as OfficeSnapshotInput, first, { cols: 4, now: 4000 }), { id: "p1" });
+    expect(flowing.links).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "message", from: "p1:codex", to: "p1:pi", label: "#1" })]));
+    expect(JSON.stringify(flowing)).not.toContain(MARKER);
+  });
+
+  test("MARKER: no body, detail, approval title, reason or PII text reaches the mapped scene", () => {
+    expect(JSON.stringify(dirty)).toContain(MARKER);
+    const scene = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p1", label: "proj" });
+    expect(JSON.stringify(scene)).not.toContain(MARKER);
+    expect(scene.actors[0]!.name.startsWith("proj / ")).toBe(true);
+  });
+
+  test("merged scenes stay within acon's caps", () => {
+    const one = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p" });
+    const many = mergeSpaces(Array.from({ length: 40 }, (_, i) => ({ ...one, actors: one.actors.map((a) => ({ ...a, id: `${i}:${a.id}` })), links: Array.from({ length: 5 }, () => one.links![0]!) })));
+    expect(many.actors.length).toBe(SPACE_CAPS.actors);
+    expect(many.links!.length).toBe(SPACE_CAPS.links);
+  });
+
+  test("the provider's space panel aggregates running projects through ui_snapshot and leaks no marker", async () => {
+    const { provider, snapshots } = fixture();
+    const { scene } = await provider.snapshot({ after: 0, panel: "space" }) as { scene: any };
+    expect(snapshots.at(-1)).toMatchObject({ t: "ui_snapshot", view: "office" });
+    expect(scene.actors.map((a: any) => a.id).sort()).toEqual(["p1:codex", "p1:kimi"]);
+    expect(scene.actors.find((a: any) => a.id === "p1:kimi")).toMatchObject({ state: "waiting", card: "p1:9", marks: expect.arrayContaining([{ kind: "approval", text: "1 approval" }]) });
+    expect(scene.cards.map((c: any) => c.id)).toEqual(expect.arrayContaining(["p1:7", "p1:9"]));
+    expect(JSON.stringify(scene)).not.toContain("MARKER-1012");
+    expect(plugin.manifest.capabilities?.space).toBe(true);
   });
 });
 

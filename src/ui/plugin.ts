@@ -14,6 +14,8 @@ import { Registry } from "../hub/registry.ts";
 import { projectConsole, type Lifecycle } from "../hub/manager.ts";
 // lifecycle.ts reaches the whole daemon; it is imported only when a project is inspected, started or stopped.
 import { DASHBOARD_VIEWS, renderDashboard } from "../hub/ui.ts";
+import { officeModel, type OfficeScene } from "./office-model.ts";
+import { mergeSpaces, officeSpace } from "./office-space.ts";
 import { VERSION as version } from "../version.ts";
 
 type Tone = "ok" | "warn" | "err" | "neutral";
@@ -37,7 +39,7 @@ export interface ConsolePlugin {
   manifest: {
     api: 1; tool: string; version: string; title: string; icon?: string; pollMs?: number;
     panels: { id: string; title: string; order?: number }[];
-    capabilities?: { actions?: string[]; confirm?: boolean; multiProject?: boolean; inbox?: boolean };
+    capabilities?: { actions?: string[]; confirm?: boolean; multiProject?: boolean; inbox?: boolean; space?: boolean };
   };
   open(ctx: { home: string; log(line: string): void }): Promise<ConsoleProvider>;
 }
@@ -189,6 +191,26 @@ export function createProvider(options: { home: string; registry?: Registry; lif
     return items;
   }
 
+  /**
+   * #1012 Part 2: every running project's office as one acon SpaceScene. The office model is kept per project as
+   * `previous`, as the dashboard keeps it, so desk slots and message arcs persist across polls.
+   */
+  const offices = new Map<string, OfficeScene>();
+  async function space() {
+    const projects = await running();
+    for (const id of offices.keys()) if (!projects.some((p) => p.id === id)) offices.delete(id);
+    const scenes = [];
+    for (const project of projects) {
+      const snap = await act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "office" }) as Record<string, unknown>;
+      if (snap.ok === false) continue;
+      const model = officeModel(snap as never, offices.get(project.id) ?? null, { cols: 4, now: Date.now() });
+      offices.set(project.id, model);
+      const label = projects.length > 1 ? (project.root.split("/").filter(Boolean).pop() ?? project.id) : undefined;
+      scenes.push(officeSpace(model, { id: project.id, ...(label ? { label } : {}) }));
+    }
+    return mergeSpaces(scenes);
+  }
+
   /** approve/deny resolve to the hub's own `permit` with the request's option; nothing else is reachable from an item. */
   async function inboxVerb(input: Record<string, unknown>): Promise<ActionResult> {
     const m = typeof input.id === "string" ? /^perm:([^:]+):(.+)$/.exec(input.id) : null;
@@ -211,6 +233,7 @@ export function createProvider(options: { home: string; registry?: Registry; lif
     assets,
     async snapshot(input) {
       if (input.panel === "inbox") return { items: await inbox() };
+      if (input.panel === "space") return { scene: await space() };
       const view = (DASHBOARD_VIEWS as readonly string[]).includes(String(input.view)) ? input.view : (DASHBOARD_VIEWS as readonly string[]).includes(input.panel) ? input.panel : undefined;
       if (typeof input.projectId !== "string" || typeof input.instanceId !== "string") {
         // A bare panel poll (the shell's own, and conformance) gets the listing; the dashboard polls with a project.
@@ -246,7 +269,7 @@ const plugin: ConsolePlugin = {
   manifest: {
     api: 1, tool: "ahub", version, title: "agent-hub", icon: "agents", pollMs: 3000,
     panels: DASHBOARD_VIEWS.map((id, order) => ({ id, title: TITLES[id], order })),
-    capabilities: { actions: [...FORWARDED, ...INBOX_VERBS], confirm: true, multiProject: true, inbox: true },
+    capabilities: { actions: [...FORWARDED, ...INBOX_VERBS], confirm: true, multiProject: true, inbox: true, space: true },
   },
   async open(ctx) { return createProvider({ home: ctx.home, log: ctx.log }); },
 };
