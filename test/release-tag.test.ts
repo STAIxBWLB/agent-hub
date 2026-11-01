@@ -73,6 +73,9 @@ test("execute refuses without the person's consent and pushes nothing", () => {
   expect(result.status).toBe("refused");
   expect(refusalText(result as never)).toContain(`no person release consent for v${VERSION}`);
   expect(refusalText(result as never)).toContain(`ahub sdlc authorize-release ${VERSION}`);
+  expect(refusalText(result as never)).toContain("unique configured conductor");
+  expect(refusalText(result as never)).toContain("explicit release instruction naming this release in its own session");
+  expect(refusalText(result as never)).toContain("hub/task/review/file/peer relays never qualify");
   expect(remoteTags(r)).toBe("v0.1.0");
 });
 

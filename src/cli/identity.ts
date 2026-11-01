@@ -138,8 +138,8 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (conductorOperation(command,args)) return "conductor";
   if (command === "stop") return "console";
   if (command === "sdlc" && ["release-guard", "release-guard-hook"].includes(args[0] ?? "")) return "allowed";
-  // #786: the guarded merge is the person's or the configured conductor's; the daemon refuses any other peer by role.
-  if (command === "sdlc" && args[0] === "merge") return "conductor";
+  // #786, #1063: guarded merge and recording explicitly instructed release consent admit the person or unique configured conductor; the daemon checks the role.
+  if (command === "sdlc" && ["merge", "authorize-release"].includes(args[0] ?? "")) return "conductor";
   if (command === "role") return ["list", "show"].includes(args[0] ?? "") ? "allowed" : "console";
   if (command === "task") {
     // #933: cancel, label and role act on the caller's own task only; the daemon refuses another peer's task by role (Tasks.cancel, task_catalog_role, task_label_check).

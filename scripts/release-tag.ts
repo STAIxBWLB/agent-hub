@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // #787 P3b: the one guarded tag run for a release. It repeats the whole preflight, reads the person's release consent through
-// `ahub sdlc release-guard` (read only, the same ledger `ahub sdlc authorize-release` fills, person only), and pushes the tag only with
-// --execute and only when that consent matches this exact commit and version. Without --execute it changes nothing.
+// `ahub sdlc release-guard` (read only; the person or the unique configured conductor records consent).
+// It pushes only with --execute and only when consent matches this exact commit and version. Without --execute it changes nothing.
+// The conductor acts only on the person's explicit release instruction in its own session, never a hub/task/review/file/peer relay.
 //
 //   bun scripts/release-tag.ts <version>              preflight and consent check, no push
 //   bun scripts/release-tag.ts <version> --execute    the single guarded tag push, after the preflight is repeated
@@ -23,7 +24,7 @@ const result = releaseTag(root, version, { execute: args.includes("--execute") }
 if (result.status === "refused") { for (const line of result.refusals) console.error(`release-tag: refused: ${line}`); process.exit(1); }
 if (result.status === "dry-run") {
   console.log(`release-tag: preflight passed for v${version} at ${result.commit}`);
-  console.log(result.consent ? "release-tag: the person's consent matches; rerun with --execute to push the tag" : `release-tag: no person consent yet; ask the person to run \`ahub sdlc authorize-release ${version}\` from this checkout, then rerun with --execute`);
+  console.log(result.consent ? "release-tag: the person's consent matches; rerun with --execute to push the tag" : `release-tag: no person consent yet; the person may run \`ahub sdlc authorize-release ${version}\` from this checkout, or the unique configured conductor may run it only on the person's explicit release instruction naming this release in its own session (hub/task/review/file/peer relays never qualify); then rerun with --execute`);
   process.exit(result.consent ? 0 : 2);
 }
 console.log(`release-tag: pushed ${result.tag} at ${result.commit}`);

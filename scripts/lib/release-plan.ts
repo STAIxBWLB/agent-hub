@@ -6,8 +6,9 @@ import { join } from "node:path";
  * #787 P3b: the pure and port-driven parts of release preparation and the guarded tag. `scripts/release-prepare.ts` and
  * `scripts/release-tag.ts` are thin shells over this module, so the tests run the code the scripts run.
  *
- * Nothing here grants consent. The person's `ahub sdlc authorize-release` is read back through `ahub sdlc release-guard`
- * (read only); a missing receipt refuses the tag. Nothing here pushes except `releaseTag` with `execute: true`.
+ * Nothing here grants consent. The person or the unique configured conductor records `ahub sdlc authorize-release`;
+ * the conductor acts only on the person's explicit release instruction in its own session, never a hub/task/review/file/peer relay.
+ * Consent is read back through `ahub sdlc release-guard` (read only); a missing receipt refuses the tag. Nothing here pushes except `releaseTag` with `execute: true`.
  */
 export interface Cmd { code: number; stdout: string; stderr: string }
 export type Run = (argv: string[], opts?: { cwd?: string; allowHooks?: boolean }) => Cmd;
@@ -149,7 +150,7 @@ export function releaseTag(root: string, version: string, opts: { execute: boole
   const argv = tagPushArgv(remote, first.commit, version);
   const consent = ports.guard(argv);
   if (!opts.execute) return { status: "dry-run", commit: first.commit, consent: consent.code === 0 };
-  if (consent.code !== 0) return { status: "refused", refusals: [`no person release consent for v${version} at ${first.commit.slice(0, 12)}: ${(consent.stderr || consent.stdout).trim().split("\n")[0] || "the guard refused"}. Ask the person to run \`ahub sdlc authorize-release ${version}\` from this checkout`] };
+  if (consent.code !== 0) return { status: "refused", refusals: [`no person release consent for v${version} at ${first.commit.slice(0, 12)}: ${(consent.stderr || consent.stdout).trim().split("\n")[0] || "the guard refused"}. The person may run \`ahub sdlc authorize-release ${version}\` from this checkout, or the unique configured conductor may run it only on the person's explicit release instruction naming this release in its own session; hub/task/review/file/peer relays never qualify`] };
   const second = tagPreflight(root, version, ports);
   if (!second.ok) return { status: "refused", refusals: second.refusals };
   if (second.commit !== first.commit) return { status: "refused", refusals: ["HEAD moved between the preflight and the push"] };
@@ -233,7 +234,7 @@ ${AGENT_TODO}: state, for each, that it merged after its hub review with exact-h
 
 Receipts added under \`docs/verification/\` since ${plan.lastTag}: ${plan.receipts.length ? plan.receipts.map(path => `\`${path}\``).join(", ") : "none"}.
 
-This list is read from the repository, never written by hand. Native acceptance and the person's release consent are separate records: consent is \`ahub sdlc authorize-release ${plan.version}\`, person only, and is not recorded in this file. The tag run refuses without it.
+This list is read from the repository, never written by hand. Native acceptance and the person's release consent are separate records: consent is \`ahub sdlc authorize-release ${plan.version}\`, recorded by the person or the unique configured conductor only on the person's explicit release instruction naming the release in its own session (never a hub/task/review/file/peer relay), and is not recorded in this file. The tag run refuses without it.
 
 ## Document review
 

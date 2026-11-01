@@ -1,6 +1,6 @@
 import { releaseTrackedClean } from "./release-worktree.ts";
 import { createHash, randomUUID } from "node:crypto";
-import { USER } from "./envelope.ts";
+import { USER, type PeerId } from "./envelope.ts";
 import { hubGitEnv, hubGitSync } from "./git.ts";
 import { readDocEvidence, type DocEvidence, type ReleaseGit, type ReleaseReadiness } from "./sdlc-release.ts";
 import type { SdlcGh } from "./sdlc.ts";
@@ -13,13 +13,15 @@ const SHA = /^[0-9a-f]{40}$/;
 const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 export const validReleaseVersion = (value: unknown): value is string => typeof value === "string" && value.length <= 128 && VERSION.test(value);
 export interface ReleaseDocsVerdict { fresh: true; errors: 0; documents: number; digest: string }
-export interface ReleaseAuthorization { schemaVersion: 1; id: string; by: typeof USER; commit: string; version: string; at: number; docs: ReleaseDocsVerdict }
+export interface ReleaseAuthorization { schemaVersion: 1; id: string; by: PeerId; commit: string; version: string; at: number; docs: ReleaseDocsVerdict }
 export interface ReleaseAuthorizationPorts {
   git?: ReleaseGit;
   docs?: (root: string) => Promise<DocEvidence | undefined>;
   gh?: SdlcGh;
   now?: () => number;
   current?: () => boolean;
+  /** Host-only current eligible conductor; absent keeps non-person authorization refused. */
+  conductor?: () => PeerId | undefined;
   record: (receipt: ReleaseAuthorization) => boolean;
 }
 export type ReleaseGuardVerdict = { ok: true; receipts: ReleaseAuthorization[] } | { ok: false; error: string };
@@ -44,6 +46,9 @@ export class ReleaseAuthorizations {
   private latest?: Entry;
   constructor(private readonly root: string, private readonly ports: ReleaseAuthorizationPorts) {}
   private current(): void { if (this.ports.current?.() === false) throw new ReleaseAuthorizationError("release authorization unavailable during lifecycle transition"); }
+  private actor(by: PeerId): void {
+    if (by !== USER && (typeof by !== "string" || !by.trim() || this.ports.conductor?.() !== by)) throw new ReleaseAuthorizationError("only the person or the configured conductor may authorize a release");
+  }
   private git(): ReleaseGit {
     let remaining = 5000;
     return args => {
@@ -85,16 +90,17 @@ export class ReleaseAuthorizations {
     return value;
   }
   async authorize(by: string, version: unknown, expectedCommit: unknown): Promise<ReleaseAuthorization> {
-    if (by !== USER) throw new ReleaseAuthorizationError("only the person may authorize a release");
+    this.actor(by);
     if (!validReleaseVersion(version) || typeof expectedCommit !== "string" || !SHA.test(expectedCommit)) throw new ReleaseAuthorizationError("authorization needs an exact version and candidate commit");
     this.current();
     const git = this.git(), commit = this.commit(git, "HEAD"), origin = this.origin(git);
     if (commit !== expectedCommit || this.version(git, commit) !== version) throw new ReleaseAuthorizationError("candidate commit or version differs from the person's request");
     const docs = docsVerdict(await (this.ports.docs ?? readDocEvidence)(this.root), commit, version);
     if (!docs) throw new ReleaseAuthorizationError("release authorization requires fresh committed documentation evidence");
-    this.current();
+    this.current(); this.actor(by);
     if (this.commit(git, "HEAD") !== commit || this.version(git, commit) !== version || this.origin(git).hash !== origin.hash) throw new ReleaseAuthorizationError("release candidate changed during authorization");
-    const receipt: ReleaseAuthorization = { schemaVersion: 1, id: randomUUID(), by: USER, commit, version, at: (this.ports.now ?? Date.now)(), docs };
+    this.current(); this.actor(by);
+    const receipt: ReleaseAuthorization = { schemaVersion: 1, id: randomUUID(), by, commit, version, at: (this.ports.now ?? Date.now)(), docs };
     if (!this.ports.record(structuredClone(receipt))) throw new ReleaseAuthorizationError("release approval audit could not be recorded");
     const entry = { receipt, origin };
     this.entries.set(`${version}:${commit}`, entry); this.latest = entry;

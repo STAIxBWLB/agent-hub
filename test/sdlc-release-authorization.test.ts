@@ -1,14 +1,14 @@
 import { tmpdir } from "node:os";
 import { realPath } from "../src/hub/project.ts";
 import { expect, test } from "bun:test";
-import { ReleaseAuthorizations, type ReleaseAuthorization } from "../src/hub/sdlc-release-authorization.ts";
+import { ReleaseAuthorizations, type ReleaseAuthorization, type ReleaseAuthorizationPorts } from "../src/hub/sdlc-release-authorization.ts";
 import type { DocEvidence, ReleaseGit, ReleaseReadiness } from "../src/hub/sdlc-release.ts";
 import type { ReleasePushUpdate } from "../src/cli/sdlc-release-guard.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40), OBJECT = "c".repeat(40), ZERO = "0".repeat(40);
 const URL = "https://github.com/example/repo.git";
 const fresh = (head = A, version = "1.2.3"): DocEvidence => ({ schemaVersion: 1, head, version, fresh: true, errors: 0, documents: [{ path: "README.md", state: "fresh", verifiedAgainst: head, commits: 0, dirty: false }] });
-function fixture() {
+function fixture(conductor?: ReleaseAuthorizationPorts["conductor"]) {
   const state = {
     head: A, tagCommit: A, tagOid: A, push: [URL], fetch: [URL], docs: fresh() as DocEvidence | undefined,
     versions: new Map([[A, "1.2.3"], [B, "1.2.4"]]), live: true, audit: true, dirty: "",
@@ -38,7 +38,7 @@ function fixture() {
     throw new Error("unexpected Git fixture operation: " + args.join(" "));
   };
   const ports = {
-    git, now: () => 1234, current: () => state.live,
+    git, now: () => 1234, current: () => state.live, conductor,
     docs: () => docsRead(),
     record: (receipt: ReleaseAuthorization) => { recorded.push(receipt); return state.audit; },
     gh: async (args: string[]) => {
@@ -58,6 +58,76 @@ test("S6 authorization is person-only before any evidence or audit read", async 
   expect(f.reads).toEqual([]); expect(f.remoteReads).toEqual([]); expect(f.recorded).toEqual([]);
   await expect(f.host.authorize("user", "1.2.3", "short")).rejects.toThrow();
   expect(f.reads).toEqual([]);
+});
+
+test("#1063 an explicitly eligible conductor records its real actor and keeps existing guard and restart bindings", async () => {
+  const f = fixture(() => "codex"), receipt = await f.host.authorize("codex", "1.2.3", A);
+  expect(receipt).toMatchObject({ by: "codex", commit: A, version: "1.2.3", docs: { fresh: true, errors: 0 } });
+  expect(f.recorded).toEqual([receipt]);
+  expect(f.host.guardPush("origin", URL, [f.update()])).toEqual({ ok: true, receipts: [receipt] });
+  expect(await f.host.guardRequest({ kind: "npm-publish" })).toEqual({ ok: true, receipts: [receipt] });
+  const restarted = new ReleaseAuthorizations(realPath(tmpdir()), f.ports);
+  expect(restarted.guardPush("origin", URL, [f.update()])).toMatchObject({ ok: false });
+  expect(restarted.report(f.report()).authorization).toBeUndefined();
+});
+
+test("#1063 another peer cannot use a configured conductor's authority before evidence or audit", async () => {
+  const f = fixture(() => "codex");
+  await expect(f.host.authorize("claude", "1.2.3", A)).rejects.toThrow("configured conductor");
+  expect(f.reads).toEqual([]); expect(f.remoteReads).toEqual([]); expect(f.recorded).toEqual([]);
+});
+
+for (const [name, by] of [["undefined", undefined], ["null", null], ["empty", ""], ["blank", " "]] as const) {
+  test(`#1063 a ${name} actor is refused before evidence with an absent or empty conductor getter`, async () => {
+    for (const conductor of [undefined, () => undefined, () => "", () => " "]) {
+      const f = fixture(conductor);
+      await expect(f.host.authorize(by as string, "1.2.3", A)).rejects.toThrow("only the person");
+      expect(f.reads).toEqual([]); expect(f.remoteReads).toEqual([]); expect(f.recorded).toEqual([]);
+    }
+  });
+}
+
+for (const change of ["removed", "replaced", "private"] as const) {
+  test(`#1063 a conductor that becomes ${change} during the documentation read cannot save consent`, async () => {
+    let peer: string | undefined = "codex", privateTurn = false;
+    const f = fixture(() => privateTurn ? undefined : peer);
+    let release!: (docs: DocEvidence) => void;
+    f.docsRead(() => new Promise(resolve => { release = resolve; }));
+    const pending = f.host.authorize("codex", "1.2.3", A);
+    if (change === "private") privateTurn = true; else peer = change === "replaced" ? "claude" : undefined;
+    release(fresh());
+    await expect(pending).rejects.toThrow("configured conductor");
+    expect(f.recorded).toEqual([]);
+    expect(f.host.guardPush("origin", URL, [f.update()])).toMatchObject({ ok: false });
+  });
+}
+
+for (const change of ["head", "version", "push", "fetch"] as const) {
+  test(`#1063 delegated consent still refuses ${change} drift during the documentation read`, async () => {
+    const f = fixture(() => "codex");
+    let release!: (docs: DocEvidence) => void;
+    f.docsRead(() => new Promise(resolve => { release = resolve; }));
+    const pending = f.host.authorize("codex", "1.2.3", A);
+    if (change === "head") f.state.head = B;
+    else if (change === "version") f.state.versions.set(A, "1.2.4");
+    else f.state[change] = ["https://github.com/other/repo.git"];
+    release(fresh());
+    await expect(pending).rejects.toThrow("changed during authorization");
+    expect(f.recorded).toEqual([]);
+  });
+}
+
+test("#1063 conductor authority is checked again after the final synchronous evidence reads", async () => {
+  let peer: string | undefined = "codex", docsRead = false;
+  const f = fixture(() => peer), git = f.ports.git;
+  f.docsRead(async () => { docsRead = true; return fresh(); });
+  f.ports.git = args => {
+    const result = git(args);
+    if (docsRead && args[0] === "remote" && !args.includes("--push")) peer = undefined;
+    return result;
+  };
+  await expect(f.host.authorize("codex", "1.2.3", A)).rejects.toThrow("configured conductor");
+  expect(f.recorded).toEqual([]);
 });
 
 test("S6 a fresh authorization binds exact commit, version, docs verdict and daemon generation", async () => {

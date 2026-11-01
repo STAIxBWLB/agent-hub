@@ -185,3 +185,16 @@ test("agent-shell CLI exercises every promoted read form without console identit
   }
   expect((await r.person.request({ t: "task", op: "hub_task_list", args: {} })).text).toBe(before);
 }, 20_000);
+
+test("ordinary public lifecycle reads do not promote authorize-release into a read or mint consent", async () => {
+  const r = await rig(), agent = await r.agent();
+  const head = hubGitSync(["rev-parse", "HEAD"], { cwd: r.root, encoding: "utf8", timeout: 1000 }); expect(head.status).toBe(0);
+  const calls = readFileSync(r.calls, "utf8"), events = readFileSync(join(r.stateDir, "events.jsonl"), "utf8");
+  const denied = await agent.request({ t: "sdlc", op: "authorize-release", version: "1.0.0", commit: head.stdout.trim() });
+  expect(denied).toMatchObject({ ok: false, error: "only the console user or the configured conductor may authorize a release" });
+  expect(denied).not.toHaveProperty("authorization");
+  expect(readFileSync(r.calls, "utf8")).toBe(calls);
+  expect(readFileSync(join(r.stateDir, "events.jsonl"), "utf8").includes('"type":"release_authorization"')).toBe(false);
+  expect(events.includes('"type":"release_authorization"')).toBe(false);
+  expect((await agent.request({ t: "sdlc", op: "status" })).ok).toBe(true);
+}, 20_000);

@@ -88,7 +88,7 @@ test("the real tag run refuses until the person authorizes through the real daem
   expect(refused.out).toContain(`no person release consent for v${VERSION}`);
   expect(tagOnRemote()).toBe("v0.1.0");
 
-  // 2. An agent cannot grant consent, and the tag script does not try to.
+  // 2. A non-conductor agent cannot grant consent, and the tag script does not try to.
   expect((await run([cli, "sdlc", "authorize-release", VERSION], asAgent)).code).toBe(1);
   expect(tagOnRemote()).toBe("v0.1.0");
 
