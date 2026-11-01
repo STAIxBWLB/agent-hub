@@ -8289,10 +8289,14 @@ export async function startDaemon(opts: DaemonOptions) {
             const { fingerprint, ...body } = plan ?? {} as UpgradePlan;
             if (!plan || !["restart", "upgrade"].includes(plan.kind) || plan.projects.some(row => row.terminals.length > 0) || planFingerprint(body) !== fingerprint || fingerprint !== raw.planFingerprint || plan.kind !== raw.kind || existsSync(operationPath(raw.operationId))
               || raw.sourceInstanceId !== instanceId || recoveryActive() || recoveryLock(undefined, opts.cwd) || !plan.projects.some(row => row.project.id === projectId && row.project.root === opts.cwd && row.project.stateDir === opts.stateDir && row.source.instanceId === instanceId)) throw new RecoveryAuthorityError();
+            const { recoveryScope } = await import("../cli/upgrade.ts"); current();
+            const scope = recoveryScope(plan);
+            if (scope !== undefined && scope !== opts.cwd) throw new RecoveryAuthorityError();
             if (plan.kind === "restart" && plan.projects.length !== 1) throw new RecoveryAuthorityError();
             if (plan.kind === "upgrade") {
-              // Shared package/plugin effects cover every running or uncertain registered project, not a caller-selected subset.
+              // Scoped upgrades bind the source's one registered project; retained shared upgrades still cover every affected project.
               const affected = registeredProjects().filter(project => {
+                if (scope !== undefined) return project.root === scope;
                 const control = readControl(project.stateDir);
                 return control ? processLiveness(control.pid, control.pidSignature) !== "gone" : project.pid !== null && processLiveness(project.pid, project.pidSignature) !== "gone";
               });
@@ -8338,9 +8342,11 @@ export async function startDaemon(opts: DaemonOptions) {
             if (raw.kind === "restart") {
               if (!sourcePackageDigest || raw.targetDigest !== sourcePackageDigest) throw new RecoveryAuthorityError();
             } else {
-              const staged = join(hubHome(), "releases", plan.version);
-              if (raw.targetRoot !== join(staged, "node_modules/@staix/agent-hub")) throw new RecoveryAuthorityError();
-              const verified = JSON.parse(readFileSync(join(staged, "verified.json"), "utf8"));
+              const staged = join(scope === undefined ? hubHome() : realPath(hubHome()), "releases", plan.version);
+              const expectedTarget = scope === undefined ? join(staged, "node_modules/@staix/agent-hub") : join(staged, `source-${raw.targetDigest}`);
+              if (raw.targetRoot !== expectedTarget) throw new RecoveryAuthorityError();
+              // A new/expired grant still needs registry proof; verification of an already issued grant below uses only retained target bytes.
+              const verified = JSON.parse(readFileSync(join(scope === undefined ? staged : join(staged, "registry"), "verified.json"), "utf8"));
               if (verified.digest !== raw.targetDigest || verified.integrity !== plan.integrity) throw new RecoveryAuthorityError();
             }
             if (!sourcePackageDigest || plan.sourceDigest !== sourcePackageDigest && (plan.kind !== "upgrade" || plan.sourceDigest !== raw.targetDigest)) throw new RecoveryAuthorityError();

@@ -292,7 +292,16 @@ export async function inspectRecovery(project: Project, targetFeatures?: readonl
     return { state: "unavailable", instanceId: status.instanceId, version: status.version, ...wire,
       peers: [], blockers: ["runtime changed during recovery inspection"] };
   }
-  const peers = Object.values(response.recovery?.peers ?? {}) as any[];
+  const recovery = response?.recovery;
+  const unavailable = () => {
+    const message = "source recovery metadata is unavailable";
+    if (targetFeatures !== undefined) throw new Error(message);
+    return { state: "unavailable", instanceId: status.instanceId, version: status.version, ...wire, peers: [], blockers: [message] };
+  };
+  if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)
+    || !recovery.peers || typeof recovery.peers !== "object" || Array.isArray(recovery.peers)) return unavailable();
+  const peers = Object.values(recovery.peers) as any[];
+  if (peers.some(peer => !peer || typeof peer !== "object" || Array.isArray(peer) || typeof peer.id !== "string" || typeof peer.state !== "string")) return unavailable();
   if (peers.some(peer => peer && Object.hasOwn(peer, "externalInstance") && !validExternalInstanceBinding(peer.externalInstance, project.root, peer.id))) {
     return { state: "incompatible", instanceId: status.instanceId, version: status.version, ...wire, peers: [], blockers: ["source external module instance binding is invalid"] };
   }

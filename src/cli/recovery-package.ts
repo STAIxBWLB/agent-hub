@@ -150,7 +150,7 @@ function preserveRuntimeAssets(sourceRoot: string, destination: string, expected
     try { info = lstatSync(destination); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
     if (info.isSymbolicLink() || !info.isDirectory() || digest(destination, true) !== expectedDigest)
-      throw new Error("preserved runtime changed; refusing it");
+      throw new Error(version === undefined ? "preserved source package changed" : "preserved runtime changed; refusing it");
     return { root: realPath(destination), digest: expectedDigest };
   };
   const previous = cached(); if (previous) return previous;
@@ -182,7 +182,8 @@ export function preserveRuntimePackage(sourceRoot: string, destination: string, 
 
 /** Retained legacy coordinators keep their digest-only contract and still require their own exact dependency. */
 export function preserveRuntimeSource(sourceRoot: string, destination: string, expectedDigest: string): string {
-  return preserveRuntimeAssets(sourceRoot, destination, expectedDigest).root;
+  preserveRuntimeAssets(sourceRoot, destination, expectedDigest);
+  return destination; // Legacy receipts retain the path spelling their coordinator already bound.
 }
 
 /** Ordinary startup preserves the invoking package, including unpublished builds, below its version namespace. */
