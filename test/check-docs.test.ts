@@ -186,7 +186,7 @@ test("installed-layout release reader finds the explicitly published checker and
   try {
     mkdirSync(join(target, "src/hub"), { recursive: true });
     // This covers standalone document evidence, without the default reader's full lazy import closure.
-    for (const name of ["sdlc-release.ts", "sdlc.ts", "workflow.ts", "git.ts", "child-process.ts", "host-executable.ts", "project.ts"]) {
+    for (const name of ["sdlc-release.ts", "sdlc.ts", "workflow.ts", "git.ts", "child-process.ts", "orca-env.ts", "host-executable.ts", "project.ts"]) {
       copyFileSync(resolve(import.meta.dir, "../src/hub", name), join(target, "src/hub", name));
     }
     // Copy only the published first-party package, not the workspace dependency tree.
@@ -232,7 +232,7 @@ test("lazy release-reader import failure emits one fixed diagnostic and remains 
   const target = mkdtempSync(join(tmpdir(), "ahub-missing-release-reader-"));
   try {
     mkdirSync(join(target, "src/hub"), { recursive: true });
-    for (const name of ["sdlc-release.ts", "git.ts", "child-process.ts", "host-executable.ts", "project.ts"]) copyFileSync(resolve(import.meta.dir, "../src/hub", name), join(target, "src/hub", name));
+    for (const name of ["sdlc-release.ts", "git.ts", "child-process.ts", "orca-env.ts", "host-executable.ts", "project.ts"]) copyFileSync(resolve(import.meta.dir, "../src/hub", name), join(target, "src/hub", name));
     const memoryPackage = dirname(dirname(fileURLToPath(import.meta.resolve("@staix/agent-mem"))));
     cpSync(memoryPackage, join(target, "node_modules/@staix/agent-mem"), { recursive: true });
     writeFileSync(join(target, "src/hub/sdlc.ts"), 'throw new Error("PRIVATE_IMPORT_FAILURE_CANARY");');
