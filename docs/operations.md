@@ -5537,3 +5537,26 @@ What comes back: each change is recorded in `ahub board --handoffs`, and an agen
 Refusals, each named with the action: an unregistered target, this very project, a hub that is not running, a request over 8 KiB or with an unknown field, a caller that is not a planner, the conductor or the person, a private (PII) turn, a `[pii]` task named with `--task`, text that matches the target's PII patterns or that the target's screen cannot clear, a target hub in recovery or shutting down (hand it off again after that ends), and an older target hub (it lacks the `task_handoff` feature: run `ahub upgrade` in that project).
 
 Recovery: `task_handoff` is its own recovery label. A project that holds a handoff row, in either direction, refuses a recovery target that lacks it.
+
+## The agents `ahub up` starts (#608, agent-hub#1040)
+
+`ahub up` starts the hub, then asks it to start this project's default agents: `claude` and `codex` unless you chose others. Each goes through the same hub start as the dashboard's Start button and `ahub <peer>` from the console, so the peer's own start mode applies (`peers.<id>.start_mode`), the terminal comes from `terminal.open` or Orca, and a peer that is already attached answers `already attached`. There is no headless fallback: a peer whose TUI cannot be opened is refused with the command to run by hand.
+
+```
+ahub up                  # the hub, then one line per agent
+ahub up --no-agents      # the hub alone, for this run
+ahub setup --agents kimi,codex      # this machine's choice, once
+ahub settings set start.agents claude,codex,kimi     # this project's own list; none for no agent; inherit removes it
+```
+
+```
+claude: started tui (terminal.open), it attaches when its TUI is ready
+codex: already attached
+kimi: not started: kimi starts in its TUI and the hub could not open a terminal for it (...). Run ahub kimi in a terminal
+```
+
+- **Where the list comes from, in order:** `start.agents` in the project's `.agenthub/config.local.json` (an empty list starts none), else the machine default `start.agents` in `~/.agenthub/defaults.json`, else `["claude", "codex"]`. `ahub setup` asks once ("Agents to start with ahub up"); `--agents <a,b>` answers it, `--yes` keeps the current choice or the default, and a run with no terminal and neither flag keeps the default and says so. `ahub init` of a new project copies the machine default into its `config.local.json`; a project that has its own value keeps it, and nothing is written into a file git tracks.
+- **Machine-local and trust tier:** `start.agents` is in `MACHINE_LOCAL` (`ALL_MACHINE_LOCAL`): a committed `.agenthub/config.json` that sets it is ignored with a notice, because a clone must not open terminals on someone else's machine. It is a settings row in the Start group that raises what the hub does on its own, so it needs a settings session (`ahub ui --settings`) or a person's terminal. `defaults.json` stays owner-only (mode 0600, outside every project root); a `start` entry that is not an object with an `agents` list of allowed peers makes the whole file ignored with the existing notice.
+- **Who and when:** only a person's own `ahub up` and the dashboard manager's "start" (which counts as one). An agent's `ahub up` is refused by the CLI before this runs. A daemon restart, a crash recovery, a config reload (`start` applies at the next `ahub up`) and the `ahub up` that an upgrade or recovery relaunches (it carries `AGENTHUB_RECOVERY_OPERATION`) start nothing from the list, and the running hub never reads it. `--live-test` starts none either.
+- **What can be listed:** `claude`, `codex`, `kimi`, `pi`, `local` and `jcode`. `qwen` is refused when saved ("the hub never opens its TUI"), as are `agy`, a declared instance, a Claude channel extra, an unknown id and a duplicate, each with a named reason; the loader and the settings writer say the same words. Pi in the list is the user-facing switch; `pi.auto_start` keeps working for configs that have it.
+- **Failure is local to one agent:** a refusal, a terminal provider that fails or a request that times out prints its own line and never stops the hub or the other agents. The lines come from the hub's own reply, so a provider's error text stays in `hub.log`.

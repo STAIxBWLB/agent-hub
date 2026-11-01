@@ -12,7 +12,7 @@ export function stateDirFor(cwd: string): string {
 export const PROTOCOL = 17;
 /** The descriptor's legacy protocol field remains this floor for previous published clients. */
 export const PROTOCOL_MIN = 16;
-export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "task_handoff", "session_identity", "schema_guard"] as const;
+export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "research_runners", "task_handoff", "session_identity", "schema_guard"] as const;
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
 export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, 16, PROTOCOL] as const;
 

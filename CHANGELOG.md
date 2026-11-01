@@ -6,10 +6,12 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Retain each project's verified runtime across stop/start, preserve other projects when upgrading one, prune unreferenced source captures with reference checks, and report stopped projects before source preservation (#1039 follow-up). Runtime selection protection begins with the 0.26.0 resolver.
 
+- Bind signed external runner receipts to research attempts (#1018). Keep runner-attested evidence separate, show current key revocation status, preserve idempotent replay, and guard first-attestation format-2 storage and recovery. Registration is person-only; the hub runs no external job.
 - Re-review approved, unmerged tasks at a new owner-reported head, or let the reviewer withdraw approval (#1047). Keep each verdict bound to its head, show stale approvals, and block stale-head merges.
 
 - Upgrade one project while other projects keep working (#1039, #1045): negotiate protocol 17/16, use per-project recovery holds and verified versioned daemon captures, and update the global CLI and shared plugin separately. Doctor reports older shared tools.
 - Refuse incompatible `hub.db` formats before daemon effects or database writes, with a named required-version message. Preserve legacy recovery contracts and require guard-aware targets for new controlled replacements.
+- `ahub up` now also starts a default set of agents (task 608, #1040): `claude` and `codex` unless chosen, each through the hub's own start (its start mode, the `terminal.open` or Orca terminal, `already attached` for an attached peer), one line per agent, and a refusal names the command to run by hand without stopping the hub or the others. The set is the new machine-local setting `start.agents` (ignored from a committed `config.json`, a Start-group settings row, an empty list starts none); `ahub setup` asks once (`--agents <a,b>`, `--yes`, no terminal keeps the default) and writes `~/.agenthub/defaults.json`, which `ahub init` copies into a new project; `ahub up --no-agents` skips it for one run. The dashboard's Start counts as `ahub up`. A daemon restart, recovery, config reload or upgrade relaunch starts none from it, and qwen, a declared instance or a channel extra cannot be listed.
 
 ## 0.25.0
 

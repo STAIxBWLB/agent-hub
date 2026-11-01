@@ -6,7 +6,9 @@ import { VERSION } from "../version.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 
 /** Bump only for an incompatible hub.db format; compatible releases keep the introducing version. */
-export const HUB_DB_SCHEMA = 1;
+export const HUB_DB_SCHEMA = 2;
+/** New/legacy databases keep format 1 until an incompatible record is committed. */
+export const HUB_DB_BASE_SCHEMA = 1;
 /** schema is the maximum supported format, never a request to migrate an existing compatible database. */
 export interface HubDbSchemaReader { schema: number; version: string }
 export interface HubDatabaseOptions {
@@ -124,9 +126,18 @@ export function openHubDatabase(file: string, options: HubDatabaseOptions = {}):
       const stored = checkOn(db, reader);
       if (!stored) {
         db.run("CREATE TABLE hub_schema (id INTEGER PRIMARY KEY CHECK(id=1),schema INTEGER NOT NULL,required_version TEXT NOT NULL)");
-        db.query("INSERT INTO hub_schema(id,schema,required_version) VALUES(1,?,?)").run(HUB_DB_SCHEMA, VERSION);
+        db.query("INSERT INTO hub_schema(id,schema,required_version) VALUES(1,?,?)").run(HUB_DB_BASE_SCHEMA, VERSION);
       }
     }).immediate();
     return db;
   } catch (error) { db.close(); throw error; }
+}
+
+/** The format marker advances only in the same transaction as the incompatible data it protects. */
+export function advanceHubDbSchema(db: Database, schema: number, requiredVersion: string): void {
+  if (!db.inTransaction || !Number.isSafeInteger(schema) || schema < HUB_DB_BASE_SCHEMA || schema > HUB_DB_SCHEMA || !safeVersion(requiredVersion))
+    throw new HubDbSchemaError("hub.db schema advance requires an active data transaction and a supported format");
+  const stored = checkOn(db, defaultReader());
+  if (!stored) throw invalidSchema();
+  if (stored.schema < schema) db.query("UPDATE hub_schema SET schema=?,required_version=? WHERE id=1").run(schema, requiredVersion);
 }

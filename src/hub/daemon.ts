@@ -187,6 +187,7 @@ import { ClaudeTodoSource, DoingTracker, readAiTitle, type DoingKind, type PeerD
 import { MemoryClient } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { appendRecords, taskRecords } from "./research.ts";
+import { parseResearchRunners, type RegisteredRunnerV1 } from "./research-runner.ts";
 import { benchReport, MIN_ATTEMPTS, readRuns, runSummary, type Measures, type RunSummary } from "./bench.ts";
 import { projectChain } from "@staix/agent-mem";
 import { recallFor } from "../memory/recall.ts";
@@ -201,6 +202,7 @@ import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContin
 import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate, launcherOf } from "../cli/terminal-recovery.ts";
 import { TerminalLaunches, terminalOwnerReads } from "./terminal-launch.ts";
 
+import { START_AGENTS_DEFAULT, checkStartAgents } from "./start-agents.ts";
 import { peerStartConfig, PEER_START_RETRY_MS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
 import { hasKimiHubMcp } from "../cli/kimi-mcp.ts";
 import type { TerminalOpener } from "./terminal-open.ts";
@@ -283,13 +285,15 @@ export interface HubConfig {
   /** A git tree at each turn boundary for `ahub turns` and `ahub undo`, the last `keep` per peer (issue #33). */
   snapshots: { enabled: boolean; keep: number };
   /** #247: opt-in research records of each approved task in ~/.agenthub/research (ids, counts and tokens only). */
-  research: { enabled: boolean };
+  research: { enabled: boolean; runners?: Record<string, RegisteredRunnerV1> };
   /** #251: a project kept for benchmarks: `ahub bench run` resets its work tree between attempts. */
   bench: { enabled: boolean };
   /** #269: per peer, how a start comes up when nothing more specific was asked: `tui` (the default) or `headless`. Pi and Codex only. */
   peers: PeerStartConfig;
   /** #269: a machine-local argv that opens a terminal for a hub-made TUI start; `{command}` in one element is the command to run. */
   terminal: { open: string[] };
+  /** #608: the peers `ahub up` asks the hub to start, machine-local. Read by the CLI at a person's `ahub up` and by the dashboard manager's start; the daemon itself never starts one from it. */
+  start: { agents: string[] };
   /** Per-sender rate limits and repeat suppression for what agents send (issue #38). */
   limits: LimitsConfig;
   /** Reviewer choice from recorded review outcomes, once a reviewer has `min_reviews` of an implementer (issue #35). */
@@ -355,6 +359,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   bench: { enabled: false },
   peers: {},
   terminal: { open: [] },
+  start: { agents: [...START_AGENTS_DEFAULT] },
   limits: DEFAULT_LIMITS,
   review: { adaptive: false, min_reviews: 5 },
   recovery: { auto_resume_after_crash: false, reconnect_wait_s: RECOVERY_RECONNECT_WAIT_SETTING.defaultValue, unmanaged_reconnect_wait_s: RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING.defaultValue, control_timeout_s: RECOVERY_CONTROL_TIMEOUT_SETTING.defaultValue, shutdown_wait_s: RECOVERY_SHUTDOWN_WAIT_SETTING.defaultValue, terminal_idle_wait_s: RECOVERY_TERMINAL_IDLE_WAIT_SETTING.defaultValue },
@@ -372,7 +377,22 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
+const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet"];
+
+/** Older targets parse raw keys before placement/trust checks, so even an empty or refused declaration needs the floor. */
+function rawResearchRunnersPresent(cwd: string): boolean {
+  const texts = configSourceTexts(cwd);
+  let present = false;
+  for (const name of CONFIG_FILES) {
+    if (texts[name] === null) continue;
+    const raw: unknown = JSON.parse(texts[name]!);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid configuration");
+    const research = (raw as Record<string, unknown>).research;
+    if (research !== undefined && (!research || typeof research !== "object" || Array.isArray(research))) throw new Error("invalid research configuration");
+    present ||= research !== undefined && Object.hasOwn(research, "runners");
+  }
+  return present;
+}
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
 export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[], scope: Pick<ReturnType<typeof readInstanceConfig>, "instances" | "catalog"> = readInstanceConfig(cwd, layers)): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string | string[]; notices?: string[] } {
@@ -480,6 +500,8 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     peerStartConfig(file.peers, instances, adapterCatalog);
     if (file.terminal != null && (typeof file.terminal !== "object" || Array.isArray(file.terminal))) throw new Error("terminal must be an object");
     terminalTemplate(file.terminal?.open);
+    if (file.start != null && (typeof file.start !== "object" || Array.isArray(file.start) || Object.keys(file.start).some((key: string) => key !== "agents"))) throw new Error("start must be an object with an agents list");
+    if (file.start?.agents !== undefined) checkStartAgents(file.start.agents);
     if (file.pet !== undefined) validatePetConfig(file.pet, "config.pet");
     if (file.pet && typeof file.pet === "object" && !Object.keys(file.pet).length) delete file.pet;
     delete file.declaredExternalInstances; // host-derived refusal rows, never a file claim
@@ -489,8 +511,11 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
       if (name !== "config.local.json" || configTracked(cwd, name) !== false) throw new Error("remote checks require untracked config.local.json");
       if (file.checks.remote !== undefined) remoteRunnerConfig(file.checks.remote);
     }
+    if (file.research !== undefined && (!file.research || typeof file.research !== "object" || Array.isArray(file.research))) throw new Error("research must be an object");
+    const hasRunners = file.research && Object.hasOwn(file.research, "runners"), runnerDeclarations: unknown = hasRunners ? file.research.runners : undefined;
     const why = stripUntrusted(file, DEFAULT_CONFIG, cwd, name);
     if (why) ignored.push(why);
+    if (hasRunners) file.research.runners = parseResearchRunners(runnerDeclarations);
     for (const [peer, mode] of Object.entries(permissionDefaults(file.permission_modes, instances, adapterCatalog))) appliedPermissionSources[peer] = { mode, source: `.agenthub/${name}` };
     return [file];
   });
@@ -577,10 +602,11 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks, runner: file.checks?.runner === "remote" ? "remote" : file.checks?.runner === "container" ? "container" : undefined,
       ...(file.checks?.remote !== undefined || file.checks?.runner === "remote" ? { remote: remoteRunnerConfig(file.checks?.remote) } : {}) },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
-    research: { enabled: file.research?.enabled === true }, // opt-in: anything but true is off
+    research: { enabled: file.research?.enabled === true, ...(file.research?.runners !== undefined ? { runners: parseResearchRunners(file.research.runners) } : {}) }, // opt-in: anything but true is off
     bench: { enabled: file.bench?.enabled === true }, // opt-in: a run resets this project's work tree
     peers: { ...instanceModes, ...peerStartConfig(file.peers, instances, adapterCatalog) },
     terminal: { open: terminalTemplate(file.terminal?.open) },
+    start: { agents: file.start?.agents === undefined ? [...START_AGENTS_DEFAULT] : checkStartAgents(file.start.agents) },
     limits: { ...PROJECT_LIMITS, ...file.limits }, // on with any project config (issue #38)
     review: { ...DEFAULT_CONFIG.review, ...file.review },
     recovery: { ...DEFAULT_CONFIG.recovery, ...file.recovery },
@@ -2053,6 +2079,12 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const tasks: Tasks = new Tasks({
     releaseWindow,
+    researchRunners: () => {
+      if (config.research.runners === undefined) return {};
+      const why = configRefusal(opts.cwd, "config.local.json");
+      if (why || configSourceTexts(opts.cwd)["config.local.json"] === null) throw new Error(`research.runners source trust unavailable${why ? `: ${why}` : ""}`);
+      return parseResearchRunners(config.research.runners);
+    },
     capabilities: peerCapabilities, repository: memoryRepo,
     contextAdmission: () => ({
       policy: { max_used: config.context.max_assignment_used ?? 0, stale_min: config.context.stale_min },
@@ -4428,7 +4460,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const researchDispatch = board.researchDispatchIntegrity();
     const researchExperiments = board.researchExperimentsIntegrity();
     const researchComparisons = board.researchComparisonIntegrity();
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    const researchRunners = board.runnerReceiptIntegrity();
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -6714,6 +6747,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // Retired dictionaries never enter active publication; hub ids remain opaque keys.
     if (prefix === "routing.targets" || prefix === "routing.routes") return [];
     if (prefix === "routing.hub_routes") return [prefix];
+    if (prefix === "research.runners") return [prefix];
     if (value && typeof value === "object" && !Array.isArray(value)) return Object.entries(value).flatMap(([key, child]) => declaredPaths(child, prefix ? `${prefix}.${key}` : key));
     return prefix ? [prefix] : [];
   }
@@ -7591,6 +7625,12 @@ export async function startDaemon(opts: DaemonOptions) {
         } catch { return "research_records compatibility is unknown; configuration could not be read"; }
         // Raw presence matters even for a disabled or ignored shared declaration: an older target parses the unknown key first.
         if (namesRunners) return "target lacks research_records; the project's research.runners cannot be loaded by that daemon";
+      }
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_runners")) {
+        if (board.hasRunnerReceipts()) return "target lacks research_runners; persisted runner attestations require a supporting daemon";
+        try {
+          if (config.research.runners !== undefined || rawResearchRunnersPresent(opts.cwd)) return "target lacks research_runners; the project's research.runners requires a supporting daemon";
+        } catch { return "research_runners compatibility is unknown; configuration could not be read"; }
       }
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_dispatch")) && board.hasResearchDispatchState())
         return "target lacks research_dispatch; persisted campaign stop policies and handoffs require a supporting daemon";

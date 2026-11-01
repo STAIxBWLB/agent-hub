@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { types } from "node:util";
 import { looksSecret } from "@staix/agent-mem";
 import { canonicalJson } from "./packs.ts";
+import { parseAttemptReceipt, runnerSealing, type AttemptReceiptV1 } from "./research-runner.ts";
 import { parseDeliverableClaims, parseDeliverableRecords, deliverableId, DELIVERABLE_LIMITS, type DeliverableClaim, type DeliverableRecord } from "./deliverables.ts";
 
 export type ExperimentScalar = string | number | boolean | null;
@@ -46,6 +47,10 @@ export type DeclaredExperimentEventInput =
   | { kind: "note"; body: { text: string } };
 /** Host supplies ordering/time; this T1 parser never admits caller-written evidence elevation. */
 export type DeclaredExperimentEvent = DeclaredExperimentEventInput & { seq: number; at: number; provenance: "declared" };
+export interface RunnerAttestationEvent { kind: "attestation"; body: { receiptId: string }; seq: number; at: number; provenance: "runner-attested" }
+export type ExperimentEvent = DeclaredExperimentEvent | RunnerAttestationEvent;
+export const declaredExperimentEvents = (events: readonly ExperimentEvent[]): DeclaredExperimentEvent[] =>
+  events.filter((event): event is DeclaredExperimentEvent => event.provenance === "declared");
 export type ExperimentStatus = "declared" | "running" | "succeeded" | "failed" | "cancelled" | "unknown";
 
 const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/, HASH = /^[0-9a-f]{64}$/, SOURCE = /^src:[0-9a-f]{16}$/;
@@ -302,17 +307,41 @@ export function deliverableObservation(record: DeliverableRecord): ExperimentHos
 }
 
 /** Keep conflicting declarations and measurements side by side; neither changes the attempt's declared terminal event. */
-export function projectExperimentWithObservations(protocol: ExperimentProtocolContract, events: readonly DeclaredExperimentEvent[], observations: readonly { eventSeq: number; observation: ExperimentHostEvidence }[]) {
-  const declared = projectExperimentEvidence(protocol, events), seqs = new Set(events.map(event => event.seq));
+export function projectExperimentWithObservations(protocol: ExperimentProtocolContract, events: readonly ExperimentEvent[], observations: readonly { eventSeq: number; observation: ExperimentHostEvidence }[]) {
+  const declaredEvents = declaredExperimentEvents(events);
+  const declared = projectExperimentEvidence(protocol, declaredEvents), seqs = new Set(declaredEvents.map(event => event.seq));
   return { declared, measured: observations.map(row => {
     integer(row.eventSeq, "observation.eventSeq", 1);
     if (!seqs.has(row.eventSeq)) fail("observation.eventSeq", "declared event is unavailable");
-    const observation = parseExperimentHostEvidence(row.observation), event = events.find(event => event.seq === row.eventSeq)!;
+    const observation = parseExperimentHostEvidence(row.observation), event = declaredEvents.find(event => event.seq === row.eventSeq)!;
     if (observation.source === "check" && (event.kind !== "end" || event.body.run !== observation.evidence)) fail("observation", "check evidence must name its declared end run");
     if (observation.source === "deliverable" && (event.kind !== "output" || !("path" in event.body) || deliverableId(event.body.path, event.body.format) !== observation.evidence)) fail("observation", "output evidence must match a host hash request");
     return { eventSeq: row.eventSeq, source: observation.source, evidence: observation.evidence,
       values: Object.fromEntries(Object.entries(observation.values).map(([field, value]) => [field, { value, provenance: "host-observed" as const, evidence: observation.evidence }])) };
   }) };
+}
+
+export interface RunnerReceiptProjection {
+  receiptId: string;
+  runner: string;
+  provenance: "runner-attested";
+  values: Record<string, ExperimentValue<unknown>>;
+  sealing: ExperimentValue<boolean>;
+  codeMatch: ExperimentValue<boolean>;
+}
+const RUNNER_RECEIPT_FIELDS = ["codeCommit", "imageDigest", "containers", "mounts", "network", "resourceLimits", "startedAt", "endedAt", "exitStatus", "outputs", "metricsFile"] as const;
+const runnerAttested = <T>(value: T | undefined, evidence: string): ExperimentValue<T> => value === undefined
+  ? { value: null, provenance: "unknown" } : { value, provenance: "runner-attested", evidence };
+
+/** Project stored signature-verified receipts only; this view authenticates nothing and changes no declared or host-observed evidence. */
+export function projectRunnerReceipt(protocol: ExperimentProtocolContract, receipt: AttemptReceiptV1): RunnerReceiptProjection {
+  const parsed = parseAttemptReceipt(receipt);
+  if ("commit" in protocol.code && parsed.codeCommit !== undefined && parsed.codeCommit !== protocol.code.commit)
+    fail("receipt.codeCommit", "protocol commit mismatch");
+  return { receiptId: parsed.receiptId, runner: parsed.runner, provenance: "runner-attested",
+    values: Object.fromEntries(RUNNER_RECEIPT_FIELDS.map(field => [field, runnerAttested(parsed[field], parsed.receiptId)])),
+    sealing: runnerSealing(parsed) ? runnerAttested(true, parsed.receiptId) : declared(protocol.sealed),
+    codeMatch: "commit" in protocol.code && parsed.codeCommit !== undefined ? runnerAttested(true, parsed.receiptId) : runnerAttested<boolean>(undefined, parsed.receiptId) };
 }
 
 /** Storage records carry host-issued identity separately from the immutable caller body. */
@@ -337,7 +366,7 @@ export interface ExperimentAttemptRecord {
 export interface ExperimentEventRecord {
   attemptId: string;
   idempotencyKey: string;
-  event: DeclaredExperimentEvent;
+  event: ExperimentEvent;
   bodyHash: string;
   by: string;
   private: boolean;
