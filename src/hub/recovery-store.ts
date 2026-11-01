@@ -1,14 +1,15 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Database } from "bun:sqlite";
-import { hubHome } from "./project.ts";
+import { canonicalPath, hubHome } from "./project.ts";
+import { isDatabaseBusy } from "./recovery-error.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
 const RUNNER_DB_BUSY_TIMEOUT_MS = 3000;
 export const operationIdPattern = /^[a-f0-9-]{36}$/;
 export function operationPath(id: string, home = hubHome()): string {
-  if (!operationIdPattern.test(id)) throw new Error("invalid recovery operation ID");
+  if (typeof id !== "string" || id.length !== 36 || !operationIdPattern.test(id)) throw new Error("invalid recovery operation ID");
   return join(home, "recovery", `${id}.json`);
 }
 
@@ -31,11 +32,11 @@ export function writeOperation(id: string, value: unknown, home = hubHome()): vo
   atomicPrivateJSON(operationPath(id, home), value);
 }
 
-export function recoveryLock(home = hubHome()): string | undefined {
+function legacyRecoveryLock(home: string): string | undefined {
   const file = join(home, "recovery.lock");
   try {
     const data = JSON.parse(readFileSync(file, "utf8"));
-    if (!operationIdPattern.test(data.operationId)) throw new Error("invalid recovery lock");
+    if (typeof data.operationId !== "string" || data.operationId.length !== 36 || !operationIdPattern.test(data.operationId)) throw new Error("invalid recovery lock");
     return data.operationId;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
@@ -43,8 +44,81 @@ export function recoveryLock(home = hubHome()): string | undefined {
   }
 }
 
-export function acquireRecoveryLock(id: string, home = hubHome()): void {
+const projectLocksPath = (home: string) => join(home, "recovery", "project-locks.db");
+const projectLockError = () => new Error("project recovery coordination state is unreadable; inspect it before changing runtimes");
+function recoveryProjectKey(root: string): string {
+  if (typeof root !== "string" || !isAbsolute(root) || root.includes(String.fromCharCode(0))) throw new Error("recovery scope needs a canonical project root");
+  try { return canonicalPath(root); }
+  catch (error) {
+    // Receipts retain the already-canonical registration spelling so a removed project can still be disposed.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return resolve(root);
+    throw error;
+  }
+}
+function projectLocksExist(file: string): boolean {
+  try {
+    const info = lstatSync(file);
+    if (!info.isFile() || info.isSymbolicLink()) throw projectLockError();
+    return true;
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+}
+function projectLocks(home: string, create = false): Database | undefined {
+  const file = projectLocksPath(home);
+  if (!projectLocksExist(file)) {
+    if (!create) return undefined;
+    mkdirSync(join(home, "recovery"), { recursive: true, mode: 0o700 });
+    // Publish a complete DELETE-journal database, never an empty coordination file another process could misread.
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    try {
+      const prepared = new Database(temporary, { create: true });
+      try { prepared.run("CREATE TABLE project_locks (project_root TEXT PRIMARY KEY, operation_id TEXT NOT NULL)"); }
+      finally { prepared.close(); }
+      chmodSync(temporary, 0o600);
+      try { linkSync(temporary, file); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    } finally { rmSync(temporary, { force: true }); }
+  }
+  if (!projectLocksExist(file)) throw projectLockError();
+  let db: Database | undefined;
+  try {
+    db = new Database(file, create ? { create: false } : { readonly: true, create: false });
+    db.run(`PRAGMA busy_timeout = ${RUNNER_DB_BUSY_TIMEOUT_MS}`);
+    if (!db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_locks'").get()) throw projectLockError();
+    return db;
+  } catch (error) { db?.close(); if (isDatabaseBusy(error)) throw error; throw projectLockError(); }
+}
+function projectLockOn(db: Database, key: string): string | undefined {
+  const rows = db.query("SELECT CASE WHEN typeof(operation_id)='text' AND length(operation_id)=36 THEN operation_id END AS id FROM project_locks WHERE project_root=? LIMIT 2").all(key) as { id: string | null }[];
+  if (!rows.length) return undefined;
+  if (rows.length !== 1 || typeof rows[0]!.id !== "string" || !operationIdPattern.test(rows[0]!.id)) throw projectLockError();
+  return rows[0]!.id;
+}
+
+/** Legacy machine holds remain authoritative; new project holds affect only their canonical project. */
+export function recoveryLock(home = hubHome(), projectRoot?: string): string | undefined {
+  const legacy = legacyRecoveryLock(home);
+  if (legacy || projectRoot === undefined) return legacy;
+  const key = recoveryProjectKey(projectRoot), db = projectLocks(home);
+  if (!db) return undefined;
+  try { return projectLockOn(db, key); }
+  finally { db.close(); }
+}
+
+export function acquireRecoveryLock(id: string, home = hubHome(), projectRoot?: string): void {
   operationPath(id, home);
+  if (projectRoot !== undefined) {
+    const key = recoveryProjectKey(projectRoot), legacy = legacyRecoveryLock(home);
+    if (legacy && legacy !== id) throw new Error(`another recovery operation owns this machine: ${legacy}`);
+    const db = projectLocks(home, true)!;
+    try {
+      db.transaction(() => {
+        const existing = projectLockOn(db, key);
+        if (existing && existing !== id) throw new Error(`another recovery operation owns this project: ${existing}`);
+        if (!existing) db.query("INSERT INTO project_locks(project_root,operation_id) VALUES(?,?)").run(key, id);
+      }).immediate();
+    } finally { db.close(); }
+    return;
+  }
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const existing = recoveryLock(home);
   if (existing === id) return;
@@ -52,14 +126,24 @@ export function acquireRecoveryLock(id: string, home = hubHome()): void {
   catch { throw new Error(`another recovery operation owns this machine: ${recoveryLock(home) ?? "unknown"}`); }
 }
 
-export function releaseRecoveryLock(id: string, home = hubHome()): void {
+export function releaseRecoveryLock(id: string, home = hubHome(), projectRoot?: string): void {
+  operationPath(id, home);
+  if (projectRoot !== undefined) {
+    const key = recoveryProjectKey(projectRoot), db = projectLocks(home, true)!;
+    try {
+      if (db.query("DELETE FROM project_locks WHERE project_root=? AND operation_id=?").run(key, id).changes !== 1)
+        throw new Error("recovery lock ownership changed");
+    } finally { db.close(); }
+    return;
+  }
+  // Legacy release is called under the operation's exclusive runner claim. Project releases compare/delete atomically.
   if (recoveryLock(home) !== id) throw new Error("recovery lock ownership changed");
   rmSync(join(home, "recovery.lock"));
 }
 
 /** Used by CLI and manager lifecycle paths. A detached operation carries its own ID. */
-export function assertLifecycleAvailable(): void {
-  const owner = recoveryLock();
+export function assertLifecycleAvailable(projectRoot?: string): void {
+  const owner = recoveryLock(undefined, projectRoot);
   if (owner && process.env.AGENTHUB_RECOVERY_OPERATION !== owner) throw new Error(activeOperation(owner));
 }
 

@@ -84,6 +84,7 @@ import { childEnv, personEnv } from "../hub/child-process.ts";
 import { abortRecovery, createOperation, disposeRecovery, recordRecoveryDelegation, repairedFreshSession, reattachRecovery, liveProjects, nextChoices, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation, type Inspection } from "./upgrade.ts";
 import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
+import { runtimeVersionWarnings } from "./runtime-version-warning.ts";
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
 import { readRecoveryPresentationFlags } from "./upgrade-presentation-flags.ts";
 import { renderOperation, renderBlocked, renderSummary, type RecoveryPresentationOptions } from "./upgrade-presentation.ts";
@@ -140,6 +141,16 @@ while (argv[0] === "--project" || argv[0] === "--live-test") {
     if (selector !== undefined) fail("--project may appear only once");
     selector = argv.shift();
     if (!selector || selector.startsWith("--")) fail("--project needs a path or project ID");
+  }
+}
+// Upgrade accepts its documented command-local selector as well as the leading global form.
+if (argv[0] === "upgrade") {
+  const at = argv.indexOf("--project", 1);
+  if (at >= 0) {
+    if (selector !== undefined || argv.indexOf("--project", at + 1) >= 0) fail("--project may appear only once");
+    selector = argv[at + 1];
+    if (!selector || selector.startsWith("--")) fail("--project needs a path or project ID");
+    argv.splice(at, 2);
   }
 }
 const [given = "help", ...rest] = argv;
@@ -385,10 +396,10 @@ function matchingProject(): Project | undefined {
   finally { registry.close(); }
 }
 const hubManifest = () => !!readControl(stateDir) || existsSync(join(stateDir, "hub.pid"));
-/** A reset is never part of an upgrade or recovery: any operation holding the machine's lock refuses it, whatever
+/** A reset is never part of an upgrade or recovery: this project's or a legacy machine hold refuses it, whatever
  *  AGENTHUB_RECOVERY_OPERATION says (assertLifecycleAvailable lets that operation's own processes through). */
 function resetLockFree(): void {
-  const owner = recoveryLock();
+  const owner = recoveryLock(undefined, cwd);
   if (owner) throw new Error(`${activeOperation(owner)}; nothing was changed`);
 }
 /** A manifest whose daemon is alive or uncertain, by inspectProject's rule; a crashed daemon's leftovers do not count. */
@@ -680,11 +691,11 @@ async function onTerminal(screens: (io: ScreenIO) => Promise<void>, presentation
 }
 
 function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost {
-  const scope = kind === "restart" ? cwd : undefined;
+  const scope = cwd;
   return {
     plan: () => makeUpgradePlan(kind, version, scope),
     apply: async (plan, interrupted) => {
-      assertLifecycleAvailable();
+      assertLifecycleAvailable(cwd);
       const current = await makeUpgradePlan(kind, plan.version, scope);
       if (current.fingerprint !== plan.fingerprint) throw new Error("the plan changed during review; review it again");
       // The check above takes seconds: a Ctrl+C in that time is still a no.
@@ -693,7 +704,7 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
       spawnRecovery(operation, true);
       return operation;
     },
-    lock: recoveryLock,
+    lock: (projectRoot = cwd) => recoveryLock(undefined, projectRoot),
     read: (id) => readOperation<RecoveryOperation>(id),
     runner: recoveryRunner,
     live: (op) => liveProjects(op, makeRecoveryDriver(undefined, delegatedPeer, undefined, conductorPeer).inspect),
@@ -710,7 +721,6 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   const display = recoveryDisplay();
   const { one, rest } = takeFlags(display.args, ["--to"], []);
   if (rest.some((a) => !["--dry-run", "--yes"].includes(a)) || (kind === "restart" && one["--to"])) fail("usage: ahub upgrade [--to <version>] [--dry-run] [--yes] | ahub restart [--dry-run] [--yes]");
-  if (kind === "upgrade" && selector) fail("upgrade changes the shared package/plugin; omit --project to review all affected running projects");
   const yes = rest.includes("--yes"), dry = rest.includes("--dry-run") || (display.json && !yes);
   // #272: on a terminal, with neither flag, the plan is reviewed, applied and followed in one session.
   const interactive = !dry && !yes && humanRecovery(display.json);
@@ -725,7 +735,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   // An older CLI must not coordinate a newer target (docs/operations.md): the target's own coordinator takes over.
   if (conductorPeer && kind === "upgrade" && newerVersion(to!, VERSION)) fail("a supporting target coordinator is required; the person runs it in ahub console or a terminal");
   if (kind === "upgrade" && newerVersion(to!, VERSION) && process.env.AGENTHUB_UPGRADE_HANDOVER !== "1") {
-    const argv = ["x", "--package", `@staix/agent-hub@${to}`, "ahub", ...liveTestArgs, "upgrade", "--to", to!, ...rest, ...display.flags, ...(dry && !rest.includes("--dry-run") ? ["--dry-run"] : [])];
+    const argv = ["x", "--package", `@staix/agent-hub@${to}`, "ahub", "--project", cwd, ...liveTestArgs, "upgrade", "--to", to!, ...rest, ...display.flags, ...(dry && !rest.includes("--dry-run") ? ["--dry-run"] : [])];
     console.error(`ahub: ${to} is newer than this CLI (${VERSION}), so its own coordinator runs the upgrade: bun ${argv.join(" ")}`);
     if (interactive) {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -743,7 +753,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   }
   if (kind === "upgrade") console.error("ahub: Kimi now defaults to its own TUI (pull-only) in projects without peers.kimi.start_mode. To keep ACP: ahub settings set peers.kimi.start_mode headless");
   if (interactive) return onTerminal((io) => planScreen(upgradeHost(kind, to ?? VERSION), io), display.options);
-  const plan = await makeUpgradePlan(kind, to ?? VERSION, kind === "restart" ? cwd : undefined, undefined, conductorPeer);
+  const plan = await makeUpgradePlan(kind, to ?? VERSION, cwd, undefined, conductorPeer);
   if (conductorPeer) await preflightConductorRecovery(plan, conductorPeer);
   const jsonApply = display.json && yes && !dry;
   // #814: a person reading a pipe or a dry run gets the plan screen's rows, with every blocker, reconnect-only session and
@@ -757,7 +767,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   if (display.json) for (const blocker of blockers) console.error(`ahub: blocker: ${blocker}`);
   if (dry) return;
   if (blockers.length) { if (jsonApply) console.log(JSON.stringify(plan, null, 2)); fail(conductorPeer ? "conductor recovery cannot prove this plan; no runtime was changed; the person runs it in ahub console or a terminal" : "plan has blockers; no runtime was changed"); }
-  assertLifecycleAvailable();
+  assertLifecycleAvailable(cwd);
   if (!yes) {
     if (!process.stdin.isTTY) fail("review --dry-run and use --yes in non-interactive sessions");
     const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -765,14 +775,14 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
       if (!/^(y|yes)$/i.test((await rl.question("Apply this project list and restore its sessions? [y/N] ")).trim())) return;
     } finally { rl.close(); }
   }
-  const current = await makeUpgradePlan(kind, plan.version, kind === "restart" ? cwd : undefined, undefined, conductorPeer);
+  const current = await makeUpgradePlan(kind, plan.version, cwd, undefined, conductorPeer);
   if (current.fingerprint !== plan.fingerprint) fail("plan changed during review; run the command again");
   const routingDefaults = conductorPeer ? await preflightConductorRecovery(plan, conductorPeer) : undefined;
   const sourceRoot = preserveSource(plan);
   let operation: RecoveryOperation;
   if (conductorPeer) {
     const id = randomUUID();
-    const pending: RecoveryOperation = { schema: 1, id, plan, sourceRoot, createdAt: Date.now(), updatedAt: Date.now(), phase: "pending", step: "stage", ...(routingDefaults ? { conductorRoutingDefaults: routingDefaults } : {}), projects: plan.projects.map(row => ({ id: row.project.id, phase: "pending", terminals: {} })) };
+    const pending: RecoveryOperation = { schema: 3, id, plan, sourceRoot, createdAt: Date.now(), updatedAt: Date.now(), phase: "pending", step: "stage", ...(routingDefaults ? { conductorRoutingDefaults: routingDefaults } : {}), projects: plan.projects.map(row => ({ id: row.project.id, phase: "pending", terminals: {} })) };
     const target = await makeRecoveryDriver().stage(pending);
     pending.targetRoot = target.root; pending.targetDigest = target.digest; pending.targetFeatures = target.targetFeatures;
     await issueConductorOperation(pending, conductorPeer);
@@ -868,9 +878,9 @@ const commands: Record<string, () => Promise<void> | void> = {
       printRecovery(renderBlocked(result, nextChoices(result, undefined, live), display.options));
       return;
     }
-    // #272: without an id, the operation that holds the machine's lock; bare on a terminal, its screen.
+    // #272: without an id, this project's hold (or a retained legacy machine hold); bare on a terminal, its screen.
     const named = !!given && operationIdPattern.test(given);
-    const id = named ? given : recoveryLock();
+    const id = named ? given : recoveryLock(undefined, cwd);
     const rest = named || given === undefined ? more : [given, ...more];
     if (action === undefined && humanRecovery(display.json)) {
       if (!id) return console.log("no recovery operation is open");
@@ -1016,7 +1026,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   setup: async () => {
     recoveryLauncherCurrent?.();
-    assertLifecycleAvailable();
+    assertLifecycleAvailable(cwd);
     const root = join(import.meta.dir, "..", "..");
     const registry = new Registry(), rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
     try {
@@ -1024,7 +1034,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       for (const notice of found.notices) console.log(terminalText(notice));
       await setupClaudeHomes({ homes: found.homes, env: process.env, packageRoot: root, yes: args.includes("--yes"),
         interactive: !!rl,
-        current: () => { recoveryLauncherCurrent?.(); assertLifecycleAvailable(); },
+        current: () => { recoveryLauncherCurrent?.(); assertLifecycleAvailable(cwd); },
         print: line => console.log(terminalText(line)), ask: async prompt => rl ? rl.question(prompt) : null,
         probe: (argv, options) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8", env: options.env, timeout: options.timeoutMs, maxBuffer: 1024 * 1024 }); recoveryLauncherCurrent?.(); return { status: result.status ?? -1, stdout: result.stdout ?? "" }; },
         run: async (argv, env) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { stdio: "inherit", env, timeout: 30_000 }); recoveryLauncherCurrent?.(); return result.status ?? -1; },
@@ -1050,7 +1060,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (defaults.notice) console.error(defaults.notice);
       return console.log(args.includes("--json") ? JSON.stringify(plan, null, 2) : plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`).join("\n") || "already up to date");
     }
-    assertLifecycleAvailable();
+    assertLifecycleAvailable(cwd);
     if (newProject && delegatedPeer && readAutonomyDefaults(hubHome(), [cwd]).enabled) fail("machine autonomy inheritance is person-only; delegated live tests cannot apply it");
     const changed = init(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"));
     const project = registeredProject();
@@ -1091,7 +1101,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   ...Object.fromEntries(BUILTIN_CLI_ENTRIES.map(entry => [entry.command, async () => {
     // Preserve the original guard before native effects; previews remain read-only and precede this guard.
-    if (entry.lifecycleAdmission && !args.includes("--print-command") && !args.includes("--dry-run")) assertLifecycleAvailable();
+    if (entry.lifecycleAdmission && !args.includes("--print-command") && !args.includes("--dry-run")) assertLifecycleAvailable(cwd);
     const nativeConnect = async () => {
       const hub = await connectLaunch();
       try { if (selectedInstance) { requirePeerInstances(hub.features); requireActiveInstance((await hub.request({ t: "status" })).status, selectedInstance); } return hub; }
@@ -1959,7 +1969,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     try {
       const environment = autonomyEnvironment(process.env, !!process.stdin.isTTY), home = hubHome();
       if (args.includes("--all-projects")) {
-        assertLifecycleAvailable();
+        assertLifecycleAvailable(cwd);
+        for (const project of registry.list()) assertLifecycleAvailable(project.root);
         await runAllProjectAutonomy(args, { home, environment, projects: registry.list(),
           prepare: (project, enabled) => prepareAutonomyProject(project, environment, enabled, registry),
           ask: async prompt => rl ? rl.question(prompt) : null, print: line => console.log(terminalText(line)),
@@ -1994,7 +2005,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         contextLines: [...(defaults.notice ? [defaults.notice] : []), "On/off also changes this machine's autonomy default for new projects; --all-projects applies the change to every registered project."],
         confirmPrompt: "Apply this project's preset and this machine's autonomy default? [y/N] ",
         beforeApply: action => {
-          assertLifecycleAvailable();
+          assertLifecycleAvailable(cwd);
           if (action === "off" && defaults.fingerprint === "untrusted") console.log("Unsafe machine defaults are already ignored; their file was left unchanged.");
           else writeAutonomyDefaults(home, action === "on", defaults.fingerprint, roots);
           console.log(`Machine autonomy default: ${action}.`);
@@ -2550,7 +2561,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         throw new Error(holder?.instanceId?.startsWith("reset-") ? `another ahub reset of this project is running (pid ${holder.pid}); nothing was reset` : "a hub started after the stop; nothing was reset, run ahub reset again");
       }
       if (liveManifest()) throw new Error("a hub started after the stop; nothing was reset, run ahub reset again");
-      // An upgrade or recovery that took the machine's lock after the first check must not run beside the reset.
+      // A recovery that took this project's hold after the first check must not run beside its reset.
       resetLockFree();
       if (all) {
         let archived: string;
@@ -2646,11 +2657,13 @@ const commands: Record<string, () => Promise<void> | void> = {
         row(!!v, bin, v ?? "not found on PATH");
       }
       const up = await healthy();
+      let daemonVersion: unknown;
       row(up, "ahub daemon", up ? readControl(stateDir)!.url : "not running (ahub up)");
       if (up) {
         const hub = await connect();
         try {
           const { status } = await hub.request({ t: "status" });
+          daemonVersion = status.version; // Authenticated reply, never the unauthenticated disk manifest.
           const pending = Object.values(status.peers as Record<string, PeerRow>).reduce((n, peer) => n + (peer.needsReview ?? 0), 0);
           row(!status.deliveryError && pending === 0, "delivery recovery", status.deliveryError ?? (pending ? `${pending} deliveries need review; run ahub queue list` : "journal healthy; no deliveries need review"));
           // #285 AC10: where Kimi's number comes from, and whether the hub can trust it right now. An older hub answers without `kimiSource`: no row, not a failure.
@@ -2666,6 +2679,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
       const plugin = pluginState(parseList<InstalledPlugin>(spawnSync(DOCTOR_PLUGIN_PROBE.command, [...DOCTOR_PLUGIN_PROBE.argv], { encoding: "utf8" }).stdout ?? ""), join(import.meta.dir, "..", ".."));
       row(plugin.state === "current", DOCTOR_PLUGIN_PROBE.name, plugin.state === "missing" ? "missing: run ahub setup" : plugin.state === "current" ? `agent-hub@agent-hub ${plugin.version}` : `agent-hub@agent-hub is stale (${plugin.why}): run ahub setup`);
+      if (up) checks.push(...runtimeVersionWarnings(daemonVersion, VERSION, plugin.state === "missing" ? undefined : plugin.version));
 
       const config = loadConfig(cwd);
       row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
@@ -2862,7 +2876,7 @@ async function runConductorCommand(): Promise<void> {
 }
 const runConfigured = configuredCommand ? async () => {
   const selection = parseConfiguredAcpArguments(cmd, args, projectCatalog, declaredInstances, peerConfig.declaredExternalInstances);
-  if (!selection.preview) assertLifecycleAvailable();
+  if (!selection.preview) assertLifecycleAvailable(cwd);
   await runConfiguredAcpEntry({ kind: cmd, raw: args, catalog: projectCatalog, instances: declaredInstances, declaredExternalInstances: peerConfig.declaredExternalInstances, projectRoot: cwd, connect: connectLaunch, print: text => console.log(text), operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
 } : undefined;
 const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : (Object.hasOwn(commands, cmd) ? commands[cmd] : undefined) ?? runConfigured ?? (() => fail(`unknown command "${cmd}"; run ahub help`));

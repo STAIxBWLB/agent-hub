@@ -2,14 +2,19 @@ import { isDatabaseBusyReply, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createServer, type Server } from "node:net";
-import { ControlClient, PROTOCOL, readControl } from "./control-client.ts";
+import { ControlClient, PROTOCOL, PROTOCOL_MIN, controlProtocolWindow, readControl } from "./control-client.ts";
+import { negotiateProtocol, protocolWindow } from "./protocol-window.ts";
+import { assertHubDbCompatible } from "./db-schema.ts";
+import { stageCurrentRuntime, verifyPackage, verifyRecoveryTarget } from "../cli/recovery-package.ts";
+import { VERSION } from "../version.ts";
 import { startDaemon } from "./daemon.ts";
 import { terminalOpener } from "./terminal-open.ts";
 import { Registry, type Project } from "./registry.ts";
 import { CODEX_APP, CODEX_PROXY, CONTROL } from "./ports.ts";
-import { assertLifecycleAvailable, recoveryLock } from "./recovery-store.ts";
+import { assertLifecycleAvailable, readOperation, recoveryLock } from "./recovery-store.ts";
+import { realPath } from "./project.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
 export type ProjectInspection = {
@@ -25,7 +30,9 @@ export async function inspectProject(project: Project, timeoutMs = 3000, readerP
   const control = readControl(project.stateDir);
   if (control) {
     if (processLiveness(control.pid, control.pidSignature) === "gone") return { state: "stopped" };
-    if (control.protocol !== undefined && control.protocol !== PROTOCOL) {
+    const advertised = controlProtocolWindow(control);
+    if ((control.protocol !== undefined || control.protocolMin !== undefined || control.protocolMax !== undefined)
+      && (!advertised || negotiateProtocol(protocolWindow(PROTOCOL, PROTOCOL_MIN)!, advertised) === undefined)) {
       return { state: "incompatible", error: `hub protocol ${control.protocol}; stop with its matching CLI before upgrading` };
     }
     if ((control.projectId && control.projectId !== project.id) || control.cwd !== project.root) {
@@ -87,9 +94,24 @@ async function available(base: number): Promise<boolean> {
 /** The signals the project daemon stops on (see `runProjectDaemon`). */
 export const STOP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const;
 
+function startupRuntime(project: Project, env: NodeJS.ProcessEnv) {
+  const sourceRoot = resolve(import.meta.dir, "../.."), id = env.AGENTHUB_RECOVERY_OPERATION;
+  if (id && recoveryLock(undefined, project.root) === id) {
+    const op = readOperation<{ targetRoot?: string; targetDigest?: string; plan: { kind: "restart" | "upgrade"; version: string; projects: { project: Project }[] } }>(id);
+    if (!op.targetRoot || !op.targetDigest || op.plan.version !== VERSION || realPath(op.targetRoot) !== realPath(sourceRoot)
+      || !op.plan.projects.some(row => row.project.id === project.id && row.project.root === project.root && row.project.stateDir === project.stateDir))
+      throw new Error("recovery startup does not match its retained target runtime");
+    // Authority binds this exact target path. Do not re-stage it at a different, byte-identical path.
+    return { root: sourceRoot, digest: op.targetDigest, check: () => verifyRecoveryTarget(op.plan.kind, sourceRoot, VERSION) };
+  }
+  const staged = stageCurrentRuntime(sourceRoot, VERSION);
+  return { ...staged, check: () => verifyPackage(staged.root, VERSION, { ownDependencies: true }) };
+}
+
 /** Called only in the detached daemon process. A competing starter exits without touching state. */
 export async function runProjectDaemon(project: Project, unattended = false): Promise<void> {
-  assertLifecycleAvailable();
+  assertLifecycleAvailable(project.root);
+  assertHubDbCompatible(join(project.stateDir, "hub.db"));
   const registry = new Registry();
   const instanceId = randomUUID();
   let claimed = false;
@@ -145,7 +167,7 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
 
 export async function startProject(project: Project, options: { unattended?: boolean; env?: NodeJS.ProcessEnv; liveTest?: boolean; current?: () => void } = {}): Promise<any> {
   options.current?.();
-  assertLifecycleAvailable();
+  assertLifecycleAvailable(project.root);
   const registry = new Registry();
   try {
     const current = registry.get(project.id);
@@ -156,6 +178,14 @@ export async function startProject(project: Project, options: { unattended?: boo
     if (before.state !== "stopped" && before.state !== "starting") throw new Error(before.error ?? before.state);
     if (!existsSync(join(project.root, ".agenthub", "config.json"))) throw new Error("project is not initialized; run ahub init there first");
     if (before.state === "stopped") {
+      assertHubDbCompatible(join(project.stateDir, "hub.db"));
+      const launchEnv = { ...(options.env ?? process.env) };
+      // Expired operation ids must not make an ordinary startup load a retired snapshot.
+      if (launchEnv.AGENTHUB_RECOVERY_OPERATION !== recoveryLock(undefined, project.root)) delete launchEnv.AGENTHUB_RECOVERY_OPERATION;
+      const runtime = startupRuntime(project, launchEnv);
+      options.current?.();
+      assertLifecycleAvailable(project.root);
+      if (runtime.check() !== runtime.digest) throw new Error("staged startup runtime changed");
       mkdirSync(project.stateDir, { recursive: true });
       const marker = join(project.stateDir, "project.json");
       const temporary = `${marker}.${randomUUID()}.tmp`;
@@ -163,12 +193,8 @@ export async function startProject(project: Project, options: { unattended?: boo
       renameSync(temporary, marker);
       const log = openSync(join(project.stateDir, "hub.log"), "a");
       try {
-        const launchEnv = { ...(options.env ?? process.env) };
-        // Native sessions can outlive the operation which launched them. An expired
-        // operation ID must not make a later ordinary startup load a retired snapshot.
-        if (launchEnv.AGENTHUB_RECOVERY_OPERATION !== recoveryLock()) delete launchEnv.AGENTHUB_RECOVERY_OPERATION;
         options.current?.();
-        const child = spawn(process.execPath, [join(import.meta.dir, "../cli/main.ts"), "--project", project.root, ...(options.liveTest ? ["--live-test"] : []), "daemon",
+        const child = spawn(process.execPath, [join(runtime.root, "src/cli/main.ts"), "--project", project.root, ...(options.liveTest ? ["--live-test"] : []), "daemon",
           ...(options.unattended ? ["--unattended"] : [])], {
           cwd: project.root, detached: true, stdio: ["ignore", log, log],
           env: { ...launchEnv, AGENTHUB_STATE_DIR: project.stateDir, AGENTHUB_PROJECT_DIR: project.root,
@@ -200,7 +226,7 @@ function claimHeld(id: string, instanceId: string): boolean {
 }
 
 export async function stopProject(project: Project, expectedInstance?: string): Promise<void> {
-  assertLifecycleAvailable();
+  assertLifecycleAvailable(project.root);
   const inspection = await inspectProject(project);
   if (inspection.state === "stopped") return;
   if (inspection.state !== "running" && inspection.state !== "stopping") throw new Error(inspection.error ?? "hub ownership is not verified; not stopping it");

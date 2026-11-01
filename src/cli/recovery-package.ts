@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { hubHome, realPath } from "../hub/project.ts";
 
@@ -109,7 +109,11 @@ export function verifyPackage(root: string, version: string, options: { ownDepen
 export function recoveryPackageOptions(kind: "restart" | "upgrade", root: string): { ownDependencies?: boolean; dependencyRoot?: string } {
   if (kind === "restart") return { ownDependencies: true };
   if (kind !== "upgrade") throw new Error("unsupported recovery package kind");
-  const canonical = realPath(root), dependencyRoot = resolve(canonical, "../../..");
+  const canonical = realPath(root);
+  // Project captures own the exact dependency and keep the registry install separate below this version.
+  if (canonical === root && /^source-[a-f0-9]{64}$/.test(basename(canonical)) && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(basename(dirname(canonical)))
+    && basename(dirname(dirname(canonical))) === "releases") return { ownDependencies: true };
+  const dependencyRoot = resolve(canonical, "../../..");
   if (canonical !== root || canonical !== join(dependencyRoot, "node_modules", "@staix", "agent-hub")) throw new Error("invalid staged recovery package path");
   return { dependencyRoot };
 }
@@ -206,10 +210,10 @@ export function newerVersion(a: string, b: string): boolean {
 }
 
 /** Stage outside the mutable global install; retain successful versions for recovery. */
-export async function stageRelease(version: string, integrity: string, run: RunCommand = runCommand, home = hubHome()): Promise<{ root: string; digest: string }> {
+export async function stageRelease(version: string, integrity: string, run: RunCommand = runCommand, home = hubHome(), project = false): Promise<{ root: string; digest: string }> {
   exactVersion(version);
   const base = join(home, "releases");
-  const destination = join(base, version);
+  const destination = project ? join(base, version, "registry") : join(base, version);
   const root = join(destination, "node_modules/@staix/agent-hub");
   if (existsSync(destination)) {
     const saved = JSON.parse(readFileSync(join(destination, "verified.json"), "utf8"));
@@ -218,6 +222,7 @@ export async function stageRelease(version: string, integrity: string, run: RunC
     return { root, digest };
   }
   mkdirSync(base, { recursive: true, mode: 0o700 });
+  if (project) runtimeDirectory(join(base, version));
   const temporary = join(base, `.stage-${randomUUID()}`);
   mkdirSync(temporary, { mode: 0o700 });
   try {

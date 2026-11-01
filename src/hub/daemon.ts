@@ -174,6 +174,7 @@ import { githubOriginRepository, githubRemoteRepository } from "./task-repositor
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
+import { assertHubDbCompatible } from "./db-schema.ts";
 import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { codeGroup } from "./task-code-group.ts";
 import { ControlClient, DAEMON_FEATURES, PROTOCOL, PROTOCOL_MIN, readControl, stateDirFor } from "./control-client.ts";
@@ -749,6 +750,8 @@ function capturedRecoverySourceDigest(): string | undefined {
 }
 
 export async function startDaemon(opts: DaemonOptions) {
+  // Refuse unknown formats before logs, session cleanup, module factories or any writable store is opened.
+  assertHubDbCompatible(join(opts.stateDir, "hub.db"));
   const resolveExecutionCwd = (peer: string, currentDeclarations: InstancesConfig | undefined, currentRoles: readonly string[], catalog: ReturnType<typeof createProjectAdapterCatalog>): string =>
     resolveInstanceExecutionCwd(opts.cwd, peer, currentDeclarations, currentRoles, catalog, undefined, undefined, opts.instanceExecutionGit);
   const projectId = opts.projectId ?? randomUUID();
@@ -4402,6 +4405,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const metadata = peer.recoveryMetadata?.() ?? {};
     const row: RestartPeerSnapshot = { id, state: peer.state, queueIds: bus.queueIds(id), ...(metadata.launch ? { launch: metadata.launch as Record<string, unknown> } : {}) };
     if (typeof metadata.threadId === "string") row.threadId = metadata.threadId;
+    if (typeof metadata.controlProtocol === "number" && Number.isSafeInteger(metadata.controlProtocol) && metadata.controlProtocol > 0) row.controlProtocol = metadata.controlProtocol;
     const sessionId = definitionOf(id)?.transport === "claude-channel" ? claudeSession(id).sessionId : metadata.sessionId;
     if (typeof sessionId === "string" && sessionId) row.sessionId = sessionId;
     return [id, row];
@@ -7603,6 +7607,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return "target lacks research_experiments; persisted experiment records require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_comparisons")) && board.hasResearchComparisonState())
         return "target lacks research_comparisons; persisted comparison plans, approvals or protocol context require a supporting daemon";
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("schema_guard"))
+        return "target lacks schema_guard; controlled recovery requires a guard-aware runtime";
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("project_autonomy")) {
         let needsAutonomy = autonomyConfirmed.size > 0;
         try {
@@ -8276,7 +8282,7 @@ export async function startDaemon(opts: DaemonOptions) {
             const plan = msg.plan as UpgradePlan;
             const { fingerprint, ...body } = plan ?? {} as UpgradePlan;
             if (!plan || !["restart", "upgrade"].includes(plan.kind) || plan.projects.some(row => row.terminals.length > 0) || planFingerprint(body) !== fingerprint || fingerprint !== raw.planFingerprint || plan.kind !== raw.kind || existsSync(operationPath(raw.operationId))
-              || raw.sourceInstanceId !== instanceId || recoveryActive() || recoveryLock() || !plan.projects.some(row => row.project.id === projectId && row.project.root === opts.cwd && row.project.stateDir === opts.stateDir && row.source.instanceId === instanceId)) throw new RecoveryAuthorityError();
+              || raw.sourceInstanceId !== instanceId || recoveryActive() || recoveryLock(undefined, opts.cwd) || !plan.projects.some(row => row.project.id === projectId && row.project.root === opts.cwd && row.project.stateDir === opts.stateDir && row.source.instanceId === instanceId)) throw new RecoveryAuthorityError();
             if (plan.kind === "restart" && plan.projects.length !== 1) throw new RecoveryAuthorityError();
             if (plan.kind === "upgrade") {
               // Shared package/plugin effects cover every running or uncertain registered project, not a caller-selected subset.

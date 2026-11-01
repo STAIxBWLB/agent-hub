@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { afterAll, expect, test } from "bun:test";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -7,10 +7,13 @@ import * as currentDaemon from "../src/hub/daemon.ts";
 import { ControlClient, PROTOCOL, readControl } from "../src/hub/control-client.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
+import { packageDigest, preserveRuntimePackage } from "../src/cli/recovery-package.ts";
 
 // Installed separately by the gate with its own frozen lock. No fixture package is installed or fetched by a test.
-// The old source and committed plugin bundle execute unchanged, with their actual amem0.15 runtime dependency.
-// Old daemon source resolves its dev-only SDK through the checkout: both released/current locks pin SDK1.30.0.
+// The bounded preservation helper copies unchanged executable assets and the sole amem0.15 dependency to unique
+// scratch inodes, then verifies the same package digest. It never copies an entire node_modules tree.
+// The old daemon and self-contained plugin need only their own core; the current source plugin uses SDK1.30.0,
+// the same version in the published release's lock. Neither installed nor copied old source is patched.
 const OLD_ROOT = join(import.meta.dir, "fixtures/protocol-v16/node_modules/@staix/agent-hub");
 const CURRENT_ROOT = join(import.meta.dir, "..");
 type Config = Record<string, unknown> & { memory: Record<string, unknown>; snapshots: Record<string, unknown>; inference: Record<string, unknown>;
@@ -19,7 +22,7 @@ interface DaemonHandle { stop(): Promise<void>; bus: { publish(envelope: Envelop
 interface DaemonModule { DEFAULT_CONFIG: Config; startDaemon(options: { cwd: string; stateDir: string; controlPort: number; codexAppPort: number; codexProxyPort: number; configWatch: false; config: Record<string, unknown> }): Promise<DaemonHandle> }
 interface ClientPort { request(message: Record<string, unknown>, timeoutMs?: number): Promise<unknown>; close(): void }
 interface ClientModule { PROTOCOL: number; ControlClient: { connect(stateDir: string, hello: { role: "console"; projectRoot: string }, timeoutMs?: number): Promise<ClientPort> } }
-interface Published { daemon: DaemonModule; client: ClientModule }
+interface Published { root: string; daemon: DaemonModule; client: ClientModule }
 
 function metadata(root: string): Record<string, unknown> { return JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as Record<string, unknown>; }
 function packageFor(entry: string, name: string): Record<string, unknown> {
@@ -31,16 +34,26 @@ function packageFor(entry: string, name: string): Record<string, unknown> {
   throw new Error(`fixture dependency metadata unavailable for ${name}`);
 }
 let loaded: Promise<Published> | undefined;
+let preservedParent: string | undefined;
+afterAll(() => { if (preservedParent) rmSync(preservedParent, { recursive: true, force: true }); });
 function published(): Promise<Published> {
   return loaded ??= (async () => {
     expect(metadata(OLD_ROOT)).toMatchObject({ name: "@staix/agent-hub", version: "0.24.0", dependencies: { "@staix/agent-mem": "0.15.0" } });
     expect(packageFor(Bun.resolveSync("@staix/agent-mem", join(OLD_ROOT, "src")), "@staix/agent-mem").version).toBe("0.15.0");
-    for (const root of [OLD_ROOT, CURRENT_ROOT]) expect(packageFor(Bun.resolveSync("@modelcontextprotocol/sdk/server/index.js", root), "@modelcontextprotocol/sdk").version).toBe("1.30.0");
+    expect(packageFor(Bun.resolveSync("@modelcontextprotocol/sdk/server/index.js", CURRENT_ROOT), "@modelcontextprotocol/sdk").version).toBe("1.30.0");
+    preservedParent = mkdtempSync(join(tmpdir(), "ahub-published-runtime-"));
+    const digest = packageDigest(OLD_ROOT), captured = preserveRuntimePackage(OLD_ROOT, join(preservedParent, "runtime"), digest);
+    expect(captured).toMatchObject({ version: "0.24.0", digest });
+    expect(packageDigest(captured.root, { ownDependencies: true })).toBe(digest);
+    expect(metadata(captured.root)).toMatchObject({ name: "@staix/agent-hub", version: "0.24.0" });
+    expect(packageFor(Bun.resolveSync("@staix/agent-mem", join(captured.root, "src")), "@staix/agent-mem").version).toBe("0.15.0");
+    const installed = lstatSync(join(OLD_ROOT, "src/hub/control-client.ts")), copied = lstatSync(join(captured.root, "src/hub/control-client.ts"));
+    expect(copied.nlink).toBe(1); expect([copied.dev, copied.ino]).not.toEqual([installed.dev, installed.ino]);
     // Computed URLs deliberately keep old package source outside the current TypeScript compilation graph.
-    const client = await import(pathToFileURL(join(OLD_ROOT, "src/hub/control-client.ts")).href) as unknown as ClientModule;
-    const daemon = await import(pathToFileURL(join(OLD_ROOT, "src/hub/daemon.ts")).href) as unknown as DaemonModule;
+    const client = await import(pathToFileURL(join(captured.root, "src/hub/control-client.ts")).href) as unknown as ClientModule;
+    const daemon = await import(pathToFileURL(join(captured.root, "src/hub/daemon.ts")).href) as unknown as DaemonModule;
     expect(client.PROTOCOL).toBe(16); expect(PROTOCOL).toBe(17);
-    return { daemon, client };
+    return { root: captured.root, daemon, client };
   })();
 }
 
@@ -129,7 +142,7 @@ test("published0.24 client and unchanged plugin bundle connect to the new17 daem
     expect(readControl(f.stateDir)).toMatchObject({ protocol: 16, protocolMin: 16, protocolMax: 17 });
     client = await old.client.ControlClient.connect(f.stateDir, { role: "console", projectRoot: f.root });
     expect(await client.request({ t: "status" })).toMatchObject({ status: { protocol: 16, protocolMin: 16, protocolMax: 17 } });
-    channel = await plugin(join(OLD_ROOT, "plugins/agent-hub/server.js"), f);
+    channel = await plugin(join(old.root, "plugins/agent-hub/server.js"), f);
     await channel.digest("published-v16-plugin-to-new-v17-daemon");
   } finally { try { await channel?.close(); client?.close(); } finally { await f.close(); } }
 }, 20_000);
