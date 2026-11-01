@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROTOCOL } from "../src/hub/control-client.ts";
+import { realPath } from "../src/hub/project.ts";
 
 async function client(permission: boolean) {
-  const root = mkdtempSync(join(tmpdir(), "ahub-print-permission-client-"));
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-print-permission-client-")));   // the plugin compares resolved paths (#604 item 10)
   const requests: Record<string, any>[] = [], replies = new Map<number, (value: any) => void>();
   let sequence = 0, diagnostics = "", mode: "allow" | "wrapper" | "bad-wrapper" | "future-wrapper" | "deny" | "error" | "disconnect" = "allow";
   let probeMode: "allow" | "error" | "disconnect" | "hold" = "error", releaseProbe: (() => void) | undefined;

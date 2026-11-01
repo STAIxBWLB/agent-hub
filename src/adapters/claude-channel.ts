@@ -12,7 +12,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS, stateDirFor } from "../hub/control-client.ts";
+import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS } from "../hub/control-client.ts";
+import { channelProject } from "../hub/channel-project.ts";
 import { VERSION } from "../version.ts";
 import { IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION, projectConductorTools, projectToolList, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
 import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
@@ -22,8 +23,23 @@ import { acceptsNativePermissionRequest, buildNativePermissionProbe, NATIVE_PERM
 // A native session is pinned at launch. Unlike a new CLI invocation after `cd`,
 // its MCP server must not silently move to another hub (including while offline).
 // ControlClient verifies the manifest identity on every connection.
-const stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
-const projectRoot = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
+//
+// agent-hub#1036: which project this plugin joins is decided by `channelProject`, the same decision the CLI makes at startup. An inherited AGENTHUB_STATE_DIR is used as the peer only when the
+// root recorded in it equals the resolved root of this process's cwd, or (a declared extra instance) when its managed worktree is this cwd. A session started in `<repo>/.worktrees/<name>`
+// uses its own project. A session with no project of its own that inherited another project's state joins THAT hub as a distinct session (`<peer>~<id>`, minted by the hub): it can send and
+// read, holds none of the peer's roles, and never replaces the attached session. Nothing is refused. Limit: this makes sessions distinguishable, it does not authenticate them.
+const own = channelProject(process.cwd(), process.env, root => {
+  const read = (name: string) => { try { return JSON.parse(readFileSync(join(root, ".agenthub", name), "utf8")).roles ?? {}; } catch { return {}; } };
+  return { ...DEFAULT_ROLES, ...read("config.json"), ...read("config.local.json") };
+});
+/** Set when this process joins as a distinct session. The hub's answer names the minted id; until then the session is only "a session". */
+const sessionJoin = own?.session;
+/** A hub that predates `session_identity` would ignore the request and bind the real peer id, which is the takeover this exists to prevent: such a session does not connect, and says why. */
+const NO_SESSION_SUPPORT = "this process has no project of its own and the hub it inherited predates session identities, so it would be taken for the peer it names; restart the hub (ahub restart) or start this session from its own project";
+const NO_PROJECT = "agent-hub has no hub to join: this process has no project of its own and inherited no state directory. Start it from a project that runs agent-hub.";
+if (process.env.AGENTHUB_STATE_DIR && own && !own.inherited && !own.session) console.error(`[agent-hub] ignoring an inherited AGENTHUB_STATE_DIR: it records another project, not ${own.root}. Using this project's own hub.`);
+const stateDir = own?.stateDir ?? "";
+const projectRoot = own?.root ?? "";
 /** tools mode: the same server, run by Kimi (ACP mcpServers), Codex (mcp_servers override) or Jcode. Their messages arrive through their own adapters, so no channel here. Not the "tools-only" Claude below. */
 const toolsMode = process.env.AGENTHUB_MODE === "tools";
 const permissionTool = toolsMode && process.env.AGENTHUB_PERMISSION_TOOL === "1";
@@ -111,6 +127,10 @@ const INBOX_CAP = 200;
  * whoever said hello last, so reconnecting blind would evict the session that just took it and the two
  * would trade the peer forever. This file is advisory: a standby hello also checks live ownership at the daemon.
  */
+/** Whether the hub this process would join as a session knows `session_identity`, from the daemon's own status file. Unknown reads as unsupported. */
+function sessionSupported(): boolean {
+  try { return (JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).features ?? []).includes("session_identity"); } catch { return false; }
+}
 function peerHeld(): boolean {
   try {
     const status = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")) as { peers?: Record<string, { state?: string; claiming?: boolean; toolsOnly?: string }> };
@@ -266,7 +286,8 @@ async function connectLoop(): Promise<void> {
         try { executionCwd = realPath(process.cwd()); }
         catch { /* A removed native cwd revokes root evidence, never the messaging connection. */ }
       }
-      const client = await ControlClient.connect(stateDir, { role: toolsMode ? "tools" : "peer", peer: peerId, ...(toolsMode ? {} : { channel }),
+      const client = await ControlClient.connect(stateDir, { role: toolsMode || sessionJoin ? "tools" : "peer", peer: peerId, ...(toolsMode || sessionJoin ? {} : { channel }),
+        ...(sessionJoin ? { session: sessionJoin.label } : {}),
         ...(process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {}),
         ...(executionCwd !== undefined ? { cwd: executionCwd } : {}),
         ...(!toolsMode && standingBy ? { standby: true } : {}),
@@ -293,7 +314,7 @@ async function connectLoop(): Promise<void> {
       attempt = -1;
       standingBy = false;
       detached = undefined;
-      log(`connected to hub as "${peerId}"`);
+      log(sessionJoin ? `connected to hub as the distinct session "${client.sessionId ?? "?"}", not as "${peerId}": it can send and read, and holds none of ${peerId}'s roles` : `connected to hub as "${peerId}"`);
       // The tool list depends on the connected hub (its lifecycle): when it differs from what the host last listed,
       // ask the host to list it again (#490).
       if (listedTools !== undefined) void reannounce(client).catch(() => {});
@@ -394,6 +415,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 async function callTool(req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal) {
   const { name, arguments: args } = req.params;
   if (unidentified) return { ...text(UNIDENTIFIED), isError: true };
+  if (!own) return { ...text(NO_PROJECT), isError: true };
+  if (sessionJoin && !sessionSupported()) return { ...text(NO_SESSION_SUPPORT), isError: true };
   if (permissionTool && !IMPLEMENTER_HUB_TOOL_NAMES.includes(name)) return { ...text("tool unavailable to this owned implementer child"), isError: true };
   if (name === "hub_permission_request") {
     const deny = (message: string) => text(JSON.stringify({ behavior: "deny", message }));
@@ -473,4 +496,4 @@ await server.connect(new StdioServerTransport());
 // The host (Claude Code, Codex, Kimi) talks over stdin; once it is gone nothing can use this server, and a leftover would keep reconnecting.
 process.stdin.on("end", () => process.exit(0));
 process.stdin.on("close", () => process.exit(0));
-if (unidentified) log(UNIDENTIFIED); else void connectLoop();
+if (unidentified) log(UNIDENTIFIED); else if (!own) log(NO_PROJECT); else if (sessionJoin && !sessionSupported()) log(NO_SESSION_SUPPORT); else void connectLoop();

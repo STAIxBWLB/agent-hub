@@ -176,6 +176,8 @@ import { DeliveryJournal } from "./delivery-journal.ts";
 import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { codeGroup } from "./task-code-group.ts";
 import { DAEMON_FEATURES, PROTOCOL, readControl, stateDirFor } from "./control-client.ts";
+import { attachEvent, originOf, type Origin } from "./provenance.ts";
+import { mintSessionId, sessionGate } from "./session-identity.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type FrontendProxyPort, type PeerAdapter } from "./peers.ts";
 import { ClaudeTodoSource, DoingTracker, readAiTitle, type DoingKind, type PeerDoing, type TitleCursor } from "./peer-doing.ts";
@@ -697,6 +699,8 @@ interface Client {
   authed: boolean;
   role?: "peer" | "console" | "tools";
   peer?: PeerId;
+  /** agent-hub#1036: this connection is a distinct session; `peer` is the id the daemon minted for it (`<peer>~<origin>`), never a bus peer. */
+  session?: true;
   launchId?: string;
   externalOwner?: { owner: PeerAdapter; launchId: string; generation?: string };
   toolsOwner?: { owner: PeerAdapter; launchId: string; generation: string; cwd: string };
@@ -805,6 +809,27 @@ export async function startDaemon(opts: DaemonOptions) {
   const childToolAuthority = new AsyncLocalStorage<{ by: string; current: () => boolean }>();
   const implementerTranscripts = new Map<string, string>();
   const executionOwners = new Map<string, { owner: PeerAdapter; cwd: string; socket?: Sock; launchId?: string; generation?: string | number }>();
+  /** #604 PR B: envelope id to the connection that sent it, written where a connection builds an envelope and read once when the envelope event is logged. Bounded: an entry whose event never comes ages out. */
+  const envelopeOrigins = new Map<string, Origin>();
+  /** agent-hub#1036: the ids this daemon minted for live distinct sessions. Only the daemon makes them, so `PEER_ID` is not widened and no `@` reaches the remote-room paths. */
+  const sessionIds = new Set<string>();
+  const rememberOrigin = (id: string, origin: Origin): void => { envelopeOrigins.set(id, origin); if (envelopeOrigins.size > 1024) envelopeOrigins.delete(envelopeOrigins.keys().next().value as string); };
+  const takeOrigin = (id: string): Origin | undefined => { const origin = envelopeOrigins.get(id); envelopeOrigins.delete(id); return origin; };
+  /**
+   * agent-hub#1036: the origin of an envelope that no control connection sent, one an adapter published itself (a native peer's final answer goes through `peer.onMessage`, not the `send` case).
+   * It names the sending peer and, where the adapter knows one, the launch it runs under: a channel session's `managedLaunchId`, an owned Jcode's launch id. The hub's own writers (`hub`, `user`,
+   * `digest`) and remote room ids have none, as before. Evidence for the log, never a path or text.
+   */
+  const adapterOrigin = (env: Envelope): Origin | undefined => {
+    if (env.from === "hub" || env.from === USER || env.from === "digest" || env.from.includes("@")) return undefined;
+    const peer = bus.peers.get(env.from);
+    if (!peer) return undefined;
+    // Read by shape, not by a native-branch predicate: a channel session reports `managedLaunchId`, an owned Jcode `ownedLaunchId`, and the value only labels the log. Nothing here decides
+    // authority or ownership, so it is not an `isWsPeer` host branch (the #625 ratchet lists those, and this is not one).
+    const evidence = peer as { managedLaunchId?: unknown; ownedLaunchId?: unknown };
+    const launchId = [evidence.managedLaunchId, evidence.ownedLaunchId].find((value): value is string => typeof value === "string" && value.length > 0);
+    return originOf({ role: "peer", peer: env.from, ...(launchId ? { launchId } : {}) });
+  };
   const externalLaunches = new Map<string, { owner: PeerAdapter; options: AcpOptions; launchId: string; binding: ExternalInstanceBinding; workspace: string; generation?: string }>();
   const externalBindings = new Map<string, ExternalInstanceBinding>();
   const externalSessions = new Map<string, string>();
@@ -1154,6 +1179,7 @@ export async function startDaemon(opts: DaemonOptions) {
         for (const request of sock.data.invocationRequests?.values() ?? []) request.abort();
         sock.data.invocationRequests?.clear();
         nativeHookLaunches.endOwner(sock);
+        if (sock.data.session && sock.data.peer) sessionIds.delete(sock.data.peer);
         consoles.delete(sock);
         operationalLogSubscribers.delete(sock);
         sock.data.tail?.();
@@ -1353,6 +1379,18 @@ export async function startDaemon(opts: DaemonOptions) {
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (isWsPeer(p)) p.notifyQueued(counts); } });
   startupCleanup.push(() => bus.closeJournal());
   const claudeLaunchProof = createClaudeLaunchProof({ stateDir: opts.stateDir, cwd: opts.cwd, instanceId, definitionOf, peer: peer => bus.peers.get(peer) });
+  /**
+   * agent-hub#1036: whether a tools hello is a distinct session instead of the peer it names. True when the plugin asked for it (`session`: it has no project of its own and inherited this hub's
+   * state), or when the name is a Claude channel peer and the hello PRESENTS a launch id that is not the current launch record's. An ABSENT id is never enough: the facts hook, a native
+   * helper or a person's own shell connects as the peer with none, and it must keep working (agent-hub#1036 AC4). Everything else keeps its admission as before: codex, kimi, qwen, agent
+   * shells without an inherited id, owned ACP peers and the Claude implementer child are not affected.
+   */
+  const sessionHello = (msg: Record<string, any>): boolean => {
+    if (typeof msg.session === "string") return true;
+    const peer = String(msg.peer ?? "");
+    if (definitionOf(peer)?.transport !== "claude-channel" || definitionOf(peer)?.start.daemonPort === "claude-implementer") return false;
+    try { const launch = readClaudeLaunchProof(opts.stateDir, peer, instanceId); return !!launch && typeof msg.launchId === "string" && msg.launchId !== launch.launchId; } catch { return false; }
+  };
   function frontendProxyState(peer: string, owner: PeerAdapter | undefined): { present: boolean; port: FrontendProxyPort | undefined } {
     if (!owner || !isFixedBuiltinDefinition(definitionOf(peer)) || !("frontendProxy" in owner)) return { present: false, port: undefined };
     return { present: true, port: owner.frontendProxy };
@@ -4976,7 +5014,8 @@ export async function startDaemon(opts: DaemonOptions) {
     } else {
       log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} ${e.env.priority} hop=${e.env.hop}${e.dropped ? ` NOT DELIVERED(${e.dropped})` : ""}: ${e.env.body.slice(0, 200)}`);
       const env = e.env;
-      event({ type: "envelope", id: env.id, from: env.from, ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, ...(env.kind ? { kind: env.kind } : {}), ...(env.refs?.task ? { task: env.refs.task } : {}), ...(env.private ? {} : { bytes: Buffer.byteLength(env.body) }), ...(env.private ? { private: true } : {}), ...(e.dropped ? { dropped: e.dropped } : {}) });
+      const origin = takeOrigin(env.id) ?? adapterOrigin(env);
+      event({ type: "envelope", id: env.id, from: env.from, ...(origin ? { origin } : {}), ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, ...(env.kind ? { kind: env.kind } : {}), ...(env.refs?.task ? { task: env.refs.task } : {}), ...(env.private ? {} : { bytes: Buffer.byteLength(env.body) }), ...(env.private ? { private: true } : {}), ...(e.dropped ? { dropped: e.dropped } : {}) });
     }
     if (!stopping) writeStatus();
   });
@@ -7479,6 +7518,10 @@ export async function startDaemon(opts: DaemonOptions) {
         return "target lacks research_dispatch; persisted campaign stop policies and handoffs require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_dropped_offers")) && board.hasResearchDroppedOffers())
         return "target lacks research_dropped_offers; persisted study re-offers require a supporting daemon";
+      // agent-hub#1036: an unsettled delivery that holds a distinct session's message is an envelope with `session: true` and a minted `<peer>~<id>` sender. A target without the feature
+      // would read that sender as a peer it does not know and queue a reply to it; this is its own label, so a daemon that has the older floors but not this one is still refused.
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("session_identity")) && bus.queueList(undefined, true).some(row => (row.originals as Envelope[]).some(env => env.session === true)))
+        return "target lacks session_identity; unsettled deliveries hold messages from distinct sessions that require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_experiments")) && board.hasResearchExperimentState())
         return "target lacks research_experiments; persisted experiment records require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_comparisons")) && board.hasResearchComparisonState())
@@ -7801,12 +7844,22 @@ export async function startDaemon(opts: DaemonOptions) {
       c.authed = true;
       c.role = msg.role;
       if (c.role === "console") consoles.add(sock);
+      else if (c.role === "tools" && sessionHello(msg)) {
+        // agent-hub#1036: a connection that names a peer id but is not that peer's current session gets an id of its own instead of becoming the peer. It can send and read; it holds none of the
+        // peer's board roles, is never a bus peer (no delivery, no push) and replaces nobody. Nothing is refused: a hello that worked before still works, as a session.
+        const named = String(msg.peer ?? "");
+        if (!PEER_ID.test(named) || named === USER || named === "hub") return sock.close(4403, "peer id is reserved or malformed");
+        c.peer = mintSessionId(named, msg.session, id => sessionIds.has(id) || bus.peers.has(id), () => crypto.randomUUID().slice(0, 6));
+        c.session = true; sessionIds.add(c.peer);
+        if (typeof msg.launchId === "string" && msg.launchId.length <= 128) c.launchId = msg.launchId;
+      }
       else if (c.role === "tools") {
         // Acts for a peer the hub manages itself (kimi, codex): may send and use the board as that peer, is never a delivery target.
         c.peer = String(msg.peer ?? "");
         if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === "hub") return sock.close(4403, "peer id is reserved or malformed");
         if (externalRefusedRows.has(c.peer)) return sock.close(4403, "instance kind is unavailable in the startup catalog");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
+        if (typeof msg.launchId === "string" && msg.launchId.length <= 128) c.launchId = msg.launchId;
         if (definitionOf(c.peer)?.start.daemonPort === "claude-implementer") {
           const owner = bus.peers.get(c.peer), launch = owner?.ownedTools?.(msg.launchId), root = ownerWriteRoot(c.peer);
           if (!owner || !launch || launch.signal.aborted || !root || root === opts.cwd || typeof msg.launchId !== "string") return sock.close(4403, "this process is not the current Claude child");
@@ -7873,7 +7926,9 @@ export async function startDaemon(opts: DaemonOptions) {
           if (important) ws.notifyQueued({ queued: bus.queued(c.peer!), important });
         });
       }
-      return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL, features: DAEMON_FEATURES });
+      // #604 PR B: one attach event per admitted peer or tools hello, with the same fields an envelope's `origin` carries. A refused hello returned above and writes none.
+      if (c.role === "peer" || c.role === "tools") event(attachEvent({ role: c.role, peer: c.peer, launchId: c.launchId, ...(c.session ? { session: true } : {}) }));
+      return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL, features: DAEMON_FEATURES, ...(c.session ? { session: c.peer } : {}) });
     }
     const committedSourceProof = c.role === "tools" && msg.t === "recovery_authority" && msg.op === "verify" && recoveryCommitted
       && msg.binding?.operationId === recoveryOperationId && msg.binding?.sourceInstanceId === instanceId;
@@ -7881,6 +7936,11 @@ export async function startDaemon(opts: DaemonOptions) {
     if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });
     if (c.externalOwner && !currentExternalTools(c)) return void reply({ ok: false, error: "external instance launch or execution root changed" });
     if (c.toolsOwner && !currentImplementerTools(c)) return void reply({ ok: false, error: "Claude child generation or execution root changed" });
+    if (c.session) {
+      // agent-hub#1036: a distinct session sends and reads, and nothing else. The gate runs before any case, so a new control message is refused to a session unless it is added to the list.
+      const refusal = sessionGate(c.peer!, msg);
+      if (refusal) return void reply({ t: msg.t, ok: false, error: refusal });
+    }
     switch (msg.t) {
       case "request_cancel": {
         if (!Number.isSafeInteger(msg.request) || msg.request < 1) return void reply({ t: "request_cancel", ok: false, error: "invalid request id" });
@@ -8253,6 +8313,8 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         // Built first: limits count the audience it really has (a reply goes to the parent's sender).
         let env = newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) });
+        if (c.session) env = { ...env, session: true };   // agent-hub#1036: sent by a distinct session; `from` is its minted id, and the header a recipient reads shows it as is
+        rememberOrigin(env.id, originOf({ role: c.role, peer: c.peer, launchId: c.launchId, ...(c.session ? { session: true } : {}) })); // the connection that sent it, for events.jsonl (never a path or text)
         try { bus.checkRemotePublication(env); }
         catch (error) { return void reply({ t: "sent", ok: false, error: error instanceof Error && /^(?:room|remote) /.test(error.message) ? sanitize(error.message).slice(0, 8192) : "message admission unavailable" }); }
         const offRoster = bus.offRosterRecipients(env);
