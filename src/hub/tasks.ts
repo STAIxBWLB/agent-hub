@@ -1701,7 +1701,7 @@ export class Tasks {
     if (task.owner !== by || task.state !== "in_progress") throw new PreEffectToolRefusal("experiment records require the current in-progress task owner");
     if (this.d.privateTurn?.(by) && !this.isPii(task)) throw new PreEffectToolRefusal("a private turn cannot write experiment records on a public task");
     const campaign = bound?.campaign;
-    // ponytail: T1 refuses protocol carry across revisions; #599 adds explicit invalidation/comparison bindings.
+    // ponytail: new attempts against an older revision's protocol are refused; upgrade: explicit membership+source fence.
     if (!bound?.binding || !campaign || campaign.project !== this.d.project || campaign.id !== protocol.campaignId || campaign.revision !== protocol.campaignRevision || campaign.status !== "approved")
       throw new PreEffectToolRefusal("experiment task must be a unit of the protocol's current approved campaign revision");
     const recording = this.d.board.researchDispatchBinding(recordedForTaskId), origin = this.studyParent(recordedForTaskId);

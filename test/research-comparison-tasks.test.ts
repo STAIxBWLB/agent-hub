@@ -196,6 +196,9 @@ test("#599 historical and current revisions compare without hiding identities or
   await f.tasks.experimentApproveProtocol(USER,{hash:oldHash});
   const revised=await f.tasks.studyRevise("claude",{id:f.campaign.id,revision:1,contract:{...f.contract,scope:"Revised synthetic scope"}});
   await f.tasks.studyApprove(USER,{id:f.campaign.id,revision:revised.revision});
+  await expect(attempt(f,oldHash,"old-revision-new-attempt")).rejects.toThrow("current approved campaign revision");
+  await expect(f.tasks.experimentRecord(f.owner,{kind:"event",attemptId:oldAttempt,idempotencyKey:"old-revision-late-event",event:{kind:"note",body:{text:"Late historical write"}}})).rejects.toThrow("current approved campaign revision");
+
   const nextHash=await saveProtocol(f,{...originalProtocol,campaignRevision:2,supersedes:oldHash}), nextAttempt=await attempt(f,nextHash,"new-revision");
   const shown=await pair(f,planHash,oldAttempt,nextAttempt);
   expect(shown.attempts.map(row=>({revision:row.campaignRevision,approval:row.approval}))).toEqual([{revision:1,approval:"approved"},{revision:2,approval:"unapproved"}]);
