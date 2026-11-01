@@ -169,12 +169,7 @@ export class ControlClient {
         client.pending.delete(msg.rid);
         done(msg);
       };
-      // agent-hub#1036: a tools hello that names a Claude peer is that peer only when it presents the launch id of its current launch; without it the daemon makes the connection a distinct session.
-      // The launcher put the id into the session's environment, so every shell and helper the session spawns carries it; send it unless the caller named one, so a session's own `ahub` shells
-      // stay the peer. A process with none (a person's own shell, another project's session) sends none, and the daemon decides.
-      const inheritedLaunch = hello.role === "tools" && hello.launchId === undefined && typeof process.env.AGENTHUB_LAUNCH_ID === "string" && process.env.AGENTHUB_LAUNCH_ID.length > 0 && process.env.AGENTHUB_LAUNCH_ID.length <= 128
-        ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {};
-      ws.onopen = () => void client.request({ t: "hello", v: protocol, token: control.token, ...inheritedLaunch, ...hello, ...expected }, timeoutMs).then((reply) => {
+      ws.onopen = () => void client.request({ t: "hello", v: protocol, token: control.token, ...hello, ...expected }, timeoutMs).then((reply) => {
         if (reply.t !== "welcome" || reply.ok === false) return refuse(new Error(reply.error ?? "hub refused handshake"));
         if ((expected.projectId && reply.projectId !== expected.projectId) ||
             (expected.instanceId && reply.instanceId !== expected.instanceId) ||
