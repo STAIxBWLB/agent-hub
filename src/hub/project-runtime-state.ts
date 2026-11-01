@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import type { Project } from "./registry.ts";
@@ -13,6 +13,8 @@ export interface ProjectRuntimeIdentity extends ProjectRuntimeSelection {
 }
 export const PROJECT_RUNTIME_FILE = "runtime.json";
 const LIMIT = 16 * 1024;
+// ponytail: three opens bound publication churn; use snapshots bound to publication generations if continuous writers need progress.
+const RUNTIME_REFERENCE_READ_ATTEMPTS = 3;
 const version = (v: unknown): v is string => typeof v === "string" && v.length <= 64 && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.exec(v)?.[0] === v;
 const pathText = (v: unknown): v is string => typeof v === "string" && v.length <= 4096 && isAbsolute(v) && normalize(v) === v && !/[\x00-\x1f\x7f]/.test(v);
 export const projectRuntimeFile = (project: RuntimeProject): string => join(project.stateDir, PROJECT_RUNTIME_FILE);
@@ -103,20 +105,43 @@ export function readProjectRuntime(project: RuntimeProject, access?: ProjectRunt
   return accessFor(project, access).read();
 }
 
+function runtimeReferenceReplaced(file: string, opened: Stats): boolean {
+  let named: Stats;
+  try { named = lstatSync(file); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && opened.nlink === 0) return true;
+    throw invalid();
+  }
+  if (!named.isFile() || named.isSymbolicLink() || named.nlink !== 1 || named.size > LIMIT) throw invalid();
+  const replaced = opened.nlink === 0 || named.dev !== opened.dev || named.ino !== opened.ino;
+  if (!replaced && (named.size !== opened.size || named.mtimeMs !== opened.mtimeMs || named.ctimeMs !== opened.ctimeMs)) throw invalid();
+  return replaced;
+}
+
 /** Metadata-only retention reference: bounded binding/JSON checks confer no Git trust or execution authority. */
 export function readProjectRuntimeReference(project: RuntimeProject): ProjectRuntimeIdentity | undefined {
-  let fd: number;
-  try { fd = openSync(projectRuntimeFile(project), constants.O_RDONLY | constants.O_NOFOLLOW); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw invalid(); }
-  try {
-    const before = fstatSync(fd);
-    if (!before.isFile() || before.nlink !== 1 || before.size > LIMIT) throw invalid();
-    const bytes = Buffer.alloc(LIMIT + 1);
-    const count = readSync(fd, bytes, 0, bytes.length, 0), after = fstatSync(fd);
-    if (count > LIMIT || count !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) throw invalid();
-    return parseProjectRuntime(project, JSON.parse(bytes.subarray(0, count).toString("utf8")));
-  } catch { throw invalid(); }
-  finally { closeSync(fd); }
+  const file = projectRuntimeFile(project);
+  for (let attempt = 0; attempt < RUNTIME_REFERENCE_READ_ATTEMPTS; attempt++) {
+    let fd: number;
+    try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT" && attempt === 0) return undefined; throw invalid(); }
+    try {
+      const before = fstatSync(fd);
+      if (!before.isFile() || before.size > LIMIT) throw invalid();
+      if (before.nlink !== 1) {
+        if (before.nlink === 0 && runtimeReferenceReplaced(file, before)) continue;
+        throw invalid();
+      }
+      const bytes = Buffer.alloc(LIMIT + 1);
+      const count = readSync(fd, bytes, 0, bytes.length, 0), after = fstatSync(fd);
+      if (!after.isFile() || after.nlink !== 0 && after.nlink !== 1) throw invalid();
+      if (runtimeReferenceReplaced(file, after)) continue;
+      if (count > LIMIT || count !== before.size || after.nlink !== 1 || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) throw invalid();
+      return parseProjectRuntime(project, JSON.parse(bytes.subarray(0, count).toString("utf8")));
+    } catch { throw invalid(); }
+    finally { closeSync(fd); }
+  }
+  throw invalid();
 }
 
 /** Caller holds the shared runtime-capture lock until publication and its launch/reference effects finish. */
