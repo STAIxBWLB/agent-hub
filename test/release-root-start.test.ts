@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { packageDigest, preserveRuntimePackage, stageCurrentRuntime, verifyPackage } from "../src/cli/recovery-package.ts";
+import { packageDigest, preserveRuntimePackage, stageCurrentRuntime, stageRelease, verifyPackage, type RunCommand } from "../src/cli/recovery-package.ts";
 import { realPath } from "../src/hub/project.ts";
 
 const VERSION = "0.99.0", CORE_VERSION = "0.18.0";
@@ -145,4 +145,31 @@ test("#607 symlinked cache leaves are refused without replacing the link or foll
   expect(lstatSync(leaf).isSymbolicLink()).toBe(true);
   expect(readdirSync(external)).toEqual(["marker.txt"]);
   expect(readFileSync(join(external, "marker.txt"), "utf8")).toBe("untouched symlink target\n");
+});
+
+function localRegistryFixture(source: string): RunCommand {
+  return async (argv) => {
+    const at = argv.indexOf("--cwd"), install = argv[at + 1];
+    if (at < 0 || !install) throw new Error("fixture accepts only bounded package staging");
+    const target = join(install, "node_modules/@staix/agent-hub"); mkdirSync(dirname(target), { recursive: true });
+    preserveRuntimePackage(source, target, packageDigest(source));
+    writeFileSync(join(install, "bun.lock"), JSON.stringify({ packages: { "@staix/agent-hub": ["fixture", "sha512-fixture"] } }));
+    return { code: 0, stdout: "", stderr: "" };
+  };
+}
+
+test("#607 an unstaged legacy release uses a separate registry cache beside ordinary runtime captures", async () => {
+  const f = fixture(), captured = stageCurrentRuntime(f.source, VERSION, f.home);
+  const release = await stageRelease(VERSION, "sha512-fixture", localRegistryFixture(f.source), f.home);
+  expect(release.root).toBe(join(f.home, "releases", VERSION, "registry/node_modules/@staix/agent-hub"));
+  expect(release.digest).toBe(captured.digest);
+  expect(stageCurrentRuntime(f.source, VERSION, f.home)).toEqual(captured);
+  expect(await stageRelease(VERSION, "sha512-fixture", async () => { throw new Error("cached release must not install twice"); }, f.home)).toEqual(release);
+});
+
+test("#607 an existing legacy verified release keeps its exact path after ordinary runtime capture", async () => {
+  const f = fixture(), release = await stageRelease(VERSION, "sha512-fixture", localRegistryFixture(f.source), f.home);
+  expect(release.root).toBe(join(f.home, "releases", VERSION, "node_modules/@staix/agent-hub"));
+  stageCurrentRuntime(f.source, VERSION, f.home);
+  expect(await stageRelease(VERSION, "sha512-fixture", async () => { throw new Error("retained legacy target must not move"); }, f.home)).toEqual(release);
 });

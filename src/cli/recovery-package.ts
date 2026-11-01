@@ -213,7 +213,15 @@ export function newerVersion(a: string, b: string): boolean {
 export async function stageRelease(version: string, integrity: string, run: RunCommand = runCommand, home = hubHome(), project = false): Promise<{ root: string; digest: string }> {
   exactVersion(version);
   const base = join(home, "releases");
-  const destination = project ? join(base, version, "registry") : join(base, version);
+  const versionRoot = join(base, version);
+  // Ordinary startup can create this parent before an unstaged legacy receipt resumes.
+  // An actual legacy install (even a damaged one) must retain its original path and validation.
+  if (!project && existsSync(versionRoot) && !existsSync(join(versionRoot, "verified.json")) && !existsSync(join(versionRoot, "node_modules"))) {
+    runtimeDirectory(versionRoot);
+    if (!readdirSync(versionRoot).every(name => name === "registry" || /^source-[a-f0-9]{64}$/.test(name))) throw new Error("cached release state is unknown; refusing it");
+    project = true;
+  }
+  const destination = project ? join(versionRoot, "registry") : versionRoot;
   const root = join(destination, "node_modules/@staix/agent-hub");
   if (existsSync(destination)) {
     const saved = JSON.parse(readFileSync(join(destination, "verified.json"), "utf8"));
