@@ -11,6 +11,7 @@ import { Board } from "../src/hub/board.ts";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { readRestartSnapshot, writeRestartSnapshot, type RestartSnapshot } from "../src/hub/restart.ts";
+import { projectChain } from "@staix/agent-mem";
 import { USER } from "../src/hub/envelope.ts";
 import { campaignHash, parseResearchCampaign } from "../src/hub/research-campaign.ts";
 
@@ -35,6 +36,7 @@ async function fixture(options: { draft?: boolean; experiment?: boolean; legacy?
       rmSync(root, { recursive: true, force: true });
     }
   };
+  const project = projectChain(root).at(-1)!;
   let expectedResearch: ReturnType<Board["researchIntegrity"]> | undefined;
   try {
     if (options.draft || options.experiment) {
@@ -44,19 +46,19 @@ async function fixture(options: { draft?: boolean; experiment?: boolean; legacy?
         const contract = parseResearchCampaign({ question: "Which observations distinguish the alternatives?", scope: "Isolated recovery fixture", exclusions: [], sourceIds: [],
           units: [{ id: "discovery", round: 0, question: "Collect observations", perspective: "Independent", requiredOutput: "Evidence list", sourceIds: [], dependsOn: [], purpose: "discovery" }],
           deliverableSections: [], stopPolicy: { maxUnits: 1, maxFollowUpRounds: 0, deadline: "2030-01-01T00:00:00Z" } });
-        board.saveResearchCampaignDraft({ id: "rc-000000000001", project: root, parentTaskId: parent.id, revision: 1, status: "draft", contract,
+        board.saveResearchCampaignDraft({ id: "rc-000000000001", project, parentTaskId: parent.id, revision: 1, status: "draft", contract,
           hash: campaignHash(contract), private: false, createdBy: USER, createdAt: 1 }, undefined, parent.history.length);
         if (options.experiment) {
-          const activated = board.activateCampaign("rc-000000000001", 1, root, USER, 2, [{ unitId: "discovery", create: { title: "Experiment fixture", class: "implement", signals: [] } }], board.get(parent.id)!.history.length, false, {});
+          const activated = board.activateCampaign("rc-000000000001", 1, project, USER, 2, [{ unitId: "discovery", create: { title: "Experiment fixture", class: "implement", signals: [] } }], board.get(parent.id)!.history.length, false, {});
           const task = board.update(activated.bindings[0]!.taskId, USER, "backlog pulled", {state:"proposed",owner:"local"});
           board.update(task.id, "local", "accepted", {state:"in_progress"});
           const protocol: ExperimentProtocolContract = {campaignId:activated.campaign.id,campaignRevision:1,lineage:"fixture",claimIds:[],inputs:[],code:{commit:"b".repeat(40)},environment:{descriptor:"Synthetic Linux CPU"},method:"Record synthetic evidence",parameters:{},seeds:[1],evaluator:{id:"count",version:"1"},metrics:[],role:"baseline",splits:[],resourceLimits:[],sealed:false};
-          const fence = () => ({project:root,taskId:task.id,taskFlowRevision:board.get(task.id)!.history.length,owner:"local",campaignId:activated.campaign.id,campaignRevision:1,campaignHash:activated.campaign.hash});
+          const fence = () => ({project,taskId:task.id,taskFlowRevision:board.get(task.id)!.history.length,owner:"local",campaignId:activated.campaign.id,campaignRevision:1,campaignHash:activated.campaign.hash});
           const hash = protocolHash(protocol);
-          board.saveExperimentProtocol({hash,project:root,recordedForTaskId:task.id,protocol,by:"local",at:3,private:false},fence());
+          board.saveExperimentProtocol({hash,project,recordedForTaskId:task.id,protocol,by:"local",at:3,private:false},fence());
           if (options.legacy) (board as unknown as {db:Database}).db.query("DELETE FROM research_protocol_context").run();
           const attempt={protocolHash:hash,taskId:task.id,phase:"final" as const,idempotencyKey:"recovery-fixture"};
-          board.createExperimentAttempt({attemptId:"ra-000000000001",project:root,attempt,bodyHash:createHash("sha256").update(canonicalJson(attempt)).digest("hex"),by:"local",at:4,private:false},fence());
+          board.createExperimentAttempt({attemptId:"ra-000000000001",project,attempt,bodyHash:createHash("sha256").update(canonicalJson(attempt)).digest("hex"),by:"local",at:4,private:false},fence());
           board.appendExperimentEvent("ra-000000000001","end",{kind:"end",body:{status:"failed"}},[],"local",5,false,0,fence());
         }
         expectedResearch = board.researchIntegrity();
