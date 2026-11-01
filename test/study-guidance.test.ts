@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { IMPLEMENTER_HUB_TOOL_NAMES, STUDY_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS, projectToolList } from "../src/hub/hub-tools.ts";
+import { IMPLEMENTER_HUB_TOOL_NAMES, STUDY_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools, projectToolList } from "../src/hub/hub-tools.ts";
+import { PROFILE_NAMES } from "../src/hub/profiles.ts";
 import { classifyPeerCommand, liveTestRefusal } from "../src/cli/identity.ts";
 
 // #601: the guidance an agent reads must name only tools that exist, and no tool or role text may let an agent approve a campaign.
@@ -23,12 +24,12 @@ test("no study tool approves, closes or attests, and the guidance says only the 
   expect(guidance).not.toMatch(/hub_study_approve|hub_study_close/);
 });
 
-test("who may call which tool: a read-only project keeps show only, and an implementer child gets show and handoff, never draft or revise", () => {
+test("who may call which tool: a read-only project keeps show only, and an implementer child can record metadata but never draft or revise", () => {
   const names = (list: { name: string }[]) => list.filter(tool => STUDY_TOOLS.has(tool.name)).map(tool => tool.name).sort();
-  // #602: hub_experiment_show reads the recorded attempts and, like hub_study_show, is everyone's read; the writers stay out of a read-only project and an implementer child.
+  // #615: owner-bound experiment metadata is an implementer write; campaign draft/revise remain planner-only, and read-only projects keep only show.
   expect(names(projectToolList(TASK_TOOLS, true))).toEqual(["hub_experiment_show", "hub_study_show"]);
   expect(names(projectToolList(TASK_TOOLS, false))).toEqual([...STUDY_TOOLS].sort());
-  expect(IMPLEMENTER_HUB_TOOL_NAMES.filter(name => STUDY_TOOLS.has(name)).sort()).toEqual(["hub_experiment_show", "hub_study_handoff", "hub_study_show"]);
+  expect(IMPLEMENTER_HUB_TOOL_NAMES.filter(name => STUDY_TOOLS.has(name)).sort()).toEqual(["hub_experiment_record", "hub_experiment_show", "hub_study_handoff", "hub_study_show"]);
   for (const writer of ["hub_study_draft", "hub_study_revise"]) {
     expect(names(projectToolList(TASK_TOOLS, true))).not.toContain(writer);
     expect(IMPLEMENTER_HUB_TOOL_NAMES).not.toContain(writer);
@@ -46,3 +47,31 @@ test("the shell: a campaign may be read from an agent shell, never approved, clo
   expect(liveTestRefusal("study", ["experiments", "--campaign", "rc-0123456789ab"])).toBe(false);
   for (const sub of ["approve", "close", "draft", "revise"]) expect(liveTestRefusal("study", [sub, "rc-0123456789ab", "1"])).toBe(true);
 });
+
+
+test("#615 experiment recording publishes the existing inert five-kind Tasks envelope without execution fields", () => {
+  const matches = TASK_TOOLS.filter(tool => tool.name === "hub_experiment_record");
+  expect(matches).toHaveLength(1);
+  const tool = matches[0]!, schema = tool.inputSchema, kind = schema.properties.kind as { type: string; enum: string[] };
+  expect(TASK_TOOL_NAMES.has(tool.name)).toBe(true); expect(STUDY_TOOLS.has(tool.name)).toBe(true);
+  expect(IMPLEMENTER_HUB_TOOL_NAMES).toContain(tool.name);
+  expect(projectToolList(TASK_TOOLS, false)).toContain(tool);
+  expect(projectToolList(TASK_TOOLS, true).some(row => row.name === tool.name)).toBe(false);
+  expect(schema.type).toBe("object"); expect(schema.required).toEqual(["kind"]); expect(schema.additionalProperties).toBe(false);
+  expect(kind.type).toBe("string"); expect([...kind.enum].sort()).toEqual(["attempt", "event", "plan", "protocol", "receipt"]);
+  expect(Object.keys(schema.properties).sort()).toEqual(["attempt", "attemptId", "event", "idempotencyKey", "kind", "plan", "protocol", "receipt", "signature", "taskId"]);
+  for (const payload of ["protocol", "attempt", "event", "plan", "receipt"]) expect(schema.properties[payload], payload).toEqual({ type: "object" });
+  expect(schema.properties.signature).toEqual({ type: "string" });
+});
+
+for (const profile of PROFILE_NAMES) {
+  test(`#615 ${profile} profile preserves experiment protocol/plan/receipt schemas instead of substituting task-plan keys`, () => {
+    const base = TASK_TOOLS.find(tool => tool.name === "hub_experiment_record")!;
+    for (const tools of [profileTaskTools(profile), profileTaskTools(profile, ["intent", "build", "review"], true)]) {
+      const tool = tools.find(row => row.name === base.name)!;
+      expect(tool.inputSchema).toEqual(base.inputSchema);
+      expect(tool.inputSchema.properties.plan).toEqual({ type: "object" });
+      expect(projectToolList(tools, true).some(row => row.name === base.name)).toBe(false);
+    }
+  });
+}

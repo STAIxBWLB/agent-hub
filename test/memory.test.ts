@@ -208,3 +208,26 @@ test("cached capture adopts changed home R6 bounds at the next append", async ()
  const store=new CaptureStore({home:r.home,project:"project-a"});clean.push(()=>store.close());
  expect(store.rows().map(row=>row.excerpt)).toEqual(["current row"]);expect(store.stats()).toMatchObject({capMb:1,retentionDays:1});
 });
+
+
+for (const tool of ["hub_experiment_record", "mcp__agent_hub__hub_experiment_record", "mcp__agent-hub__hub_experiment_record"]) {
+  test(`#615 ${tool} arguments and signed receipt results never reach memory capture`, async () => {
+    const r = rig(), captured: Parameters<MemoryClient["appendCapture"]>[0][] = [], append = r.client.appendCapture.bind(r.client);
+    // Observe the real persistence boundary so a downstream secret-screen refusal cannot falsely prove the tool was excluded.
+    r.client.appendCapture = event => { captured.push(event); return append(event); };
+    const capture = new Capture(r.client, { project: "project-a", cwd: r.home });
+    capture.init("615-experiment-record", "public fixture start");
+    capture.observe({ tool: "read", args: '{"path":"public.txt"}', output: "PUBLIC_CAPTURE_CONTROL", id: "control", paths: ["public.txt"] });
+    const canaries = ["RAW_RECEIPT_ARGUMENT_CANARY", "RAW_SIGNATURE_ARGUMENT_CANARY", "RAW_RECEIPT_RESULT_CANARY", "RAW_SIGNATURE_RESULT_CANARY"];
+    capture.observe({ tool, args: JSON.stringify({ kind: "receipt", receipt: { receiptId: "fixture-receipt", runner: "fixture",
+      projectId: "project-a", attemptId: "ra-0123456789ab", protocolHash: "a".repeat(64), outputs: [{ name: canaries[0], sha256: "b".repeat(64) }] }, signature: canaries[1] }),
+      output: JSON.stringify({ ok: true, receipt: canaries[2], signature: canaries[3] }), id: "signed-receipt", paths: [], sourceId: "signed-receipt-source" });
+    await capture.end();
+    expect(captured.filter(event => event.event === "PostToolUse").map(event => event.tool)).toEqual(["read"]);
+    const stored = new CaptureStore({ home: r.home, project: "project-a" }); clean.push(() => stored.close());
+    const rows = stored.rows({ limit: 100 });
+    expect(rows.filter(row => row.event === "PostToolUse").map(row => row.tool)).toEqual(["read"]);
+    expect(JSON.stringify(rows)).toContain("PUBLIC_CAPTURE_CONTROL");
+    for (const canary of canaries) { expect(JSON.stringify(captured)).not.toContain(canary!); expect(JSON.stringify(rows)).not.toContain(canary!); }
+  });
+}

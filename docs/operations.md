@@ -1519,8 +1519,15 @@ ahub study experiments --campaign rc-0123456789ab [--after 50]   # read the reco
 - **Experiments.** Protocols, comparison plans and attempts are stored with their provenance (`declared`,
   `host-observed` from a check receipt or a hub-hashed deliverable), and `ahub study approve-protocol` binds an
   approval to one exact protocol hash and its evaluator; a changed protocol needs its own approval. The hub
-  never ranks results. There is still no hub tool or CLI that records experiments; they are host storage. They
-  are read with `ahub study experiments` or `hub_experiment_show` (see Experiment readback below).
+  never ranks results. The current in-progress owner of a bound unit task records inert data through
+  `hub_experiment_record`: `kind` is `protocol`, `plan`, `attempt`, `event` or `receipt`, using the existing
+  protocol/attempt/event/plan envelope or `{ kind: "receipt", receipt, signature }` for a signed runner receipt.
+  The person may relay a signed receipt through the authenticated console connection; this does not grant
+  agents person authority or allow a person to bypass the current task/source/campaign checks. Every PII turn
+  refuses the tool. It returns only record metadata (kind, ids/hashes, sequence and receipt id as applicable),
+  and neither starts an experiment nor signs or verifies a receipt in the relay. Existing host evidence and
+  signature verification remain inside `Tasks`. Read records with `ahub study experiments` or
+  `hub_experiment_show` (see Experiment readback below).
 - **Experiment readback (#602, #932 T3).** `ahub study experiments --campaign <id>` lists a campaign's attempts
   (50 rows a page, `--after <cursor>` continues), `--attempt <ra-id>` shows one, and `--plan <hash> --baseline
   <ra-id> --variant <ra-id>` shows one comparison under a recorded plan. `hub_experiment_show` takes the same three

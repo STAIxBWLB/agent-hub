@@ -12173,7 +12173,7 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
     }
     if (customProfile && tool.name === "hub_task_propose")
       properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter((v) => projectProfile("dev").classes[v])])] };
-    if (customProfile && properties.plan && tool.name !== "hub_task_accept")
+    if (customProfile && properties.plan && tool.name !== "hub_task_accept" && tool.name !== "hub_experiment_record")
       properties.plan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) } };
     if (customProfile && tool.name === "hub_task_done" && data.name !== "dev") {
       const summaryProp = properties.summary;
@@ -12187,7 +12187,7 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
       const selectedPlan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) } };
       properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: selectedPlan } } };
     }
-    if (criteria && properties.plan) {
+    if (criteria && properties.plan && tool.name !== "hub_experiment_record") {
       const current = properties.plan;
       properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties, ...evidencePlanProperties } };
     }
@@ -12220,7 +12220,7 @@ var init_hub_tools = __esm(() => {
   init_roles();
   init_registry();
   init_envelope();
-  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_study_handoff"]);
+  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff"]);
   IMPLEMENTER_PERMISSION_TOOL = {
     name: "hub_permission_request",
     description: "Native permission prompt for this current owned child. The person allows once or denies; failure is deny.",
@@ -12274,7 +12274,7 @@ var init_hub_tools = __esm(() => {
     additionalProperties: false
   };
   acceptPlan = { ...plan, properties: { ...plan.properties, sections: list("document heading anchors, such as report.md#methods"), sources: list("citation ids, DOI or source URL ids"), claims: list("short claim ids to verify") } };
-  STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_experiment_show", "hub_study_handoff"]);
+  STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff"]);
   HANDOFF_TOOLS = new Set(["hub_task_handoff", "hub_task_handoffs"]);
   BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
   CAPABILITY_TOOLS = new Set(["hub_capabilities", "hub_capabilities_publish", "hub_invoke"]);
@@ -12292,6 +12292,7 @@ var init_hub_tools = __esm(() => {
     tool2("hub_study_draft", "Store a research campaign contract as a DRAFT revision 1 on an approved parent task. Configured planners only; it creates no task, dispatches nothing and never approves (only the person approves, with ahub study approve). The contract is data: question, scope, exclusions, sourceIds, units, deliverableSections, stopPolicy and an optional budget.", { parentTaskId: id2, contract: { type: "object" } }, ["parentTaskId", "contract"]),
     tool2("hub_study_revise", "Store the next DRAFT revision of a research campaign with the revision you read. Configured planners only; a stale revision refuses, and a draft holds older bound work until the person approves it. Never approves.", { id: str2, revision: { type: "integer", minimum: 1 }, contract: { type: "object" } }, ["id", "revision", "contract"]),
     tool2("hub_study_show", "Read a research campaign's coverage and stop projection: per unit round, state, handoff completeness and budget support, and why dispatch is held. Read-only. A private campaign, task or source shows ids, counts and states only, never its question, scope, path or excerpt. Give no id to list this project's campaigns, at most 50 per call: when the reply carries `next`, pass it as `after` for the following page.", { id: str2, after: str2 }),
+    tool2("hub_experiment_record", "Record experiment metadata for your current in-progress campaign unit: protocol, attempt, event or comparison plan, or relay a signed runner receipt. The hub validates ownership, sources, campaign and signatures. It runs no command, starts no experiment and contacts no runner. Refused during a PII turn.", { kind: { type: "string", enum: ["protocol", "attempt", "event", "plan", "receipt"] }, taskId: id2, protocol: { type: "object" }, attempt: { type: "object" }, attemptId: str2, idempotencyKey: str2, event: { type: "object" }, plan: { type: "object" }, receipt: { type: "object" }, signature: str2 }, ["kind"]),
     tool2("hub_experiment_show", "Read the experiment attempts of a research campaign, one attempt, or one baseline/variant comparison under a recorded plan. Read-only: it runs no command and reads no file. Every metric, hash and setting says where it came from (declared by an agent, host-observed, runner-attested or person-attested); a declared value is never shown as observed, failed, cancelled and unknown attempts stay in the counts, and a repeat is never an independent reproduction. A private campaign, task or source shows ids, counts and states only. Give campaignId (with after to page, at most 50 rows), or attemptId, or planHash with baselineAttemptId and variantAttemptId.", { campaignId: str2, attemptId: str2, after: { type: "integer", minimum: 0 }, eventAfter: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 50 }, planHash: str2, baselineAttemptId: str2, variantAttemptId: str2 }),
     tool2("hub_task_handoff", "Hand work that belongs to ANOTHER project that runs agent-hub to that project's board. Use it instead of implementing it from this session: a feature or behavior change first needs a spec issue in that project (pass its number as issue); a mechanical chore (an exact version pin, a regenerated file) goes straight to a task. The target is a registered project (its root or id) whose hub is running; it is not queued. Planner, conductor or person only. Never for a [pii] task or during a private turn. You learn the task's state changes as kind task messages.", { project: str2, title: str2, class: { type: "string", description: "task class, default implement" }, detail: str2, paths: { type: "array", items: str2, description: "repository-relative paths in the TARGET project" }, issue: { type: "integer", minimum: 1, description: "the target repository's issue number" }, task: { type: "integer", minimum: 1, description: "your own task in THIS project that this work comes from; a [pii] task is refused" } }, ["project", "title"]),
     tool2("hub_task_handoffs", "List what this project handed to other projects, with the last state each target reported. Read-only.", {}),
@@ -23436,7 +23437,7 @@ init_security_baseline();
 init_version();
 
 // src/hub/no-writes.ts
-var OWNER_TOOL_EFFECTS = new Set(["hub_task_propose", "hub_task_decline", "hub_task_done", "hub_task_cancel", "hub_task_assign", "hub_task_escalate", "hub_review", "hub_checkpoint", "hub_remember", "hub_memory_correct", "hub_check_start", "hub_check_cancel", "hub_sdlc_record", "hub_plan_review", "hub_backlog_plan", "hub_backlog_pull", "hub_backlog_undo", "hub_backlog_split", "hub_backlog_return_untouched", "hub_release_new", "hub_release_configure", "hub_release_assign", "hub_release_cut", "hub_study_handoff"]);
+var OWNER_TOOL_EFFECTS = new Set(["hub_task_propose", "hub_task_decline", "hub_task_done", "hub_task_cancel", "hub_task_assign", "hub_task_escalate", "hub_review", "hub_checkpoint", "hub_remember", "hub_memory_correct", "hub_check_start", "hub_check_cancel", "hub_sdlc_record", "hub_plan_review", "hub_backlog_plan", "hub_backlog_pull", "hub_backlog_undo", "hub_backlog_split", "hub_backlog_return_untouched", "hub_release_new", "hub_release_configure", "hub_release_assign", "hub_release_cut", "hub_study_handoff", "hub_experiment_record"]);
 
 // src/hub/github-import.ts
 init_sdlc();
