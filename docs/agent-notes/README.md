@@ -70,4 +70,10 @@ Background moved out of the area notes for 0.21.0:
 
 Issue #1047 records approved tasks that could not accept a new head or a withdrawn verdict on hub 0.23.1. The prior in-review-only rule left the board bound to an older commit while reviewers handled later PR heads in comments. The approval reopening rules in tasks.md replace that restriction; fixture coverage includes a legacy receipt-only approval, a configured check without a prior reviewer, and a PR merged while a screen is pending.
 
+Task 610 follows the staged-upgrade review: ordinary startup forgot the scoped target, scoped refresh replaced the shared manager, verified captures accumulated, and an empty plan reached source preservation before its not-running refusal. Runtime selection now starts at the first resolver release (0.26.0); earlier published binaries do not read the pointer, so that ceiling is documented rather than enforced by a broader database floor.
+
 Review of PR #1050 found that including accepted runner configuration and raw-key presence in release-equality integrity made pending config edits and legacy no-receipt snapshots fail the release step. Runner configuration is mutable startup policy; receipt rows are retained board state. The runner integrity rule now separates those roles, with two-daemon prepare/commit/release fixtures covering both transitions.
+
+Review of PR #1052 found that full-index trust sweeps and hashing every retained capture under the registry writer lock made ordinary startup refuse large repositories or starve other project writers. Per-start scoped trust and bounded quarantine transactions separate execution authority and deletion safety from maintenance cost.
+
+The ledger review of PR #1052 found that applying the startup admission wait to worker completion could strand the ledger in running state after contention or a crash. Signed process ownership, an atomic dead-owner replacement, a normal worker wait and read-only doctor paths keep deferred maintenance recoverable and visible.

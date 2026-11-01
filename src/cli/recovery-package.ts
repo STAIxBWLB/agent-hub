@@ -4,6 +4,7 @@ import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, re
 import { basename, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { hubHome, realPath } from "../hub/project.ts";
+import { Registry } from "../hub/registry.ts";
 
 export type CommandResult = { code: number; stdout: string; stderr: string };
 export type RunCommand = (args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }) => Promise<CommandResult>;
@@ -187,13 +188,19 @@ export function preserveRuntimeSource(sourceRoot: string, destination: string, e
 }
 
 /** Ordinary startup preserves the invoking package, including unpublished builds, below its version namespace. */
-export function stageCurrentRuntime(sourceRoot: string, version: string, home = hubHome()): { root: string; digest: string; version: string } {
+export function stageCurrentRuntime(sourceRoot: string, version: string, home = hubHome(), registry?: Registry): { root: string; digest: string; version: string } {
   exactVersion(version);
   const digest = verifyPackage(sourceRoot, version);
-  mkdirSync(home, { recursive: true, mode: 0o700 });
-  const releases = join(realPath(home), "releases"); runtimeDirectory(releases);
-  const versionRoot = join(releases, version); runtimeDirectory(versionRoot);
-  return preserveRuntimePackage(sourceRoot, join(versionRoot, `source-${digest}`), digest);
+  const owner = registry ?? new Registry(join(home, "registry.db"));
+  try {
+    if (realPath(owner.path) !== realPath(join(home, "registry.db"))) throw new Error("runtime capture registry belongs to another home");
+    return owner.runtimeCaptureLocked(() => {
+      mkdirSync(home, { recursive: true, mode: 0o700 });
+      const releases = join(realPath(home), "releases"); runtimeDirectory(releases);
+      const versionRoot = join(releases, version); runtimeDirectory(versionRoot);
+      return preserveRuntimePackage(sourceRoot, join(versionRoot, `source-${digest}`), digest);
+    });
+  } finally { if (!registry) owner.close(); }
 }
 
 export async function registryRelease(version: string, run: RunCommand = runCommand): Promise<{ version: string; integrity: string }> {

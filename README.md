@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.25.0, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.26.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## Quick start
@@ -14,10 +14,12 @@ You need [Bun](https://bun.sh) 1.4.2 or later on PATH.
 
 ```bash
 bun add -g @staix/agent-hub && ahub setup
-cd <your project> && ahub init && ahub up   # daemon plus the operator console
+cd <your project> && ahub init && ahub up   # daemon, claude and codex, then the operator console
 ```
 
-Then start the agents you use, one terminal each, and talk to them:
+`ahub up` opens the default agents (claude and codex; choose them at `ahub setup`,
+skip them with `--no-agents`) through `terminal.open` or Orca. Where it cannot, it
+names the command; run the agents you use by hand, one terminal each, and talk to them:
 
 ```bash
 ahub claude                                  # Claude Code with the hub channel
@@ -97,7 +99,10 @@ become links. The scene carries labels and states only, never message bodies or 
 
 ## Upgrading
 
-Run `ahub upgrade` while your hubs are running. Read the notes for your version in
+Run `ahub upgrade` in a project while its hub is running (`--project` selects
+another); other projects keep their version. Update the global CLI
+(`bun add -g @staix/agent-hub@<version>`) and run `ahub setup` for the plugin
+yourself. Read the notes for your version in
 the [Quickstart](docs/quickstart.md) ("Upgrading to ...") and the
 [Changelog](CHANGELOG.md) first: some releases need a one-time step, such as
 refreshing an agent's MCP entry.
@@ -121,7 +126,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-11-01-0.25.0.md) and the
+[release verification report](docs/verification/2026-11-01-0.26.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation

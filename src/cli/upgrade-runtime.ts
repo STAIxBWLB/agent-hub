@@ -428,6 +428,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
 
 /** Freeze the coordinator/source package before its mutable global installation is replaced. */
 export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
+  if (plan.projects?.length === 0) throw new Error("no running projects to recover");
   if (packageDigest(plan.sourceRoot) !== plan.sourceDigest) throw new Error("source package changed since planning");
   const base = join(home, "releases");
   mkdirSync(base, { recursive: true, mode: 0o700 });
@@ -1136,7 +1137,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         } catch { return { continuity: "unavailable" }; } // optional metadata must not wedge stop-and-archive
       }
     },
-    refreshManager: async (op) => { if (conductorPeer && op.plan.kind === "restart") return; await refreshManager({ home: hubHome(), cli: join(op.targetRoot!, "src/cli/main.ts") }); },
+    refreshManager: async (op) => { if (recoveryScope(op.plan) !== undefined || conductorPeer && op.plan.kind === "restart") return; await refreshManager({ home: hubHome(), cli: join(op.targetRoot!, "src/cli/main.ts") }); },
     verify: async (planned, progress, op, save) => {
       const live = await inspectRecovery(planned.project);
       if (live.instanceId !== progress.instanceId || live.version !== op.plan.version || live.recovery?.operationId !== op.id) throw new Error("target identity verification failed");

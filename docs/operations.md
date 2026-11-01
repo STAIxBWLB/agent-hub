@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.21.0 and control protocol 16. Live verification
+This guide describes ahub 0.26.0 and control protocols 16 through 17. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -1168,14 +1168,18 @@ and start): a committed file must not choose commands the hub runs. Keys that
 are not task classes are ignored with a log line. A hub stopped mid-check leaves
 the task in progress (`check interrupted`); the owner marks it done again.
 
-The owner may call `hub_task_done` again while the task is in review, with a
-different full lowercase commit SHA in `refs.commit` (#1000, #1021). It replaces the
+The owner may call `hub_task_done` again while the task is in review, or approved with its PR not merged, with a
+different full lowercase commit SHA in `refs.commit` (#1000, #1021, #1047). It replaces the
 delivered artifact, not a verdict: the reviewer gets a fresh request for the new
 head, the old CI watch is replaced, stale observed, reviewed and merge evidence is
 cleared, and open Important findings, spec acceptance and the rejection count stay.
 A configured completion check first returns the task to in progress until it passes.
 The same head, a malformed SHA, another owner or a running check refuse without
-effect, and a verdict started on the old request no longer applies.
+effect, and a verdict started on the old request no longer applies. Reopening an
+approval first reads the PR state with `gh`: a merged PR, an unreadable state or a
+private task with a linked PR refuses without effect, and an approved task with no
+reviewer goes to the person. The reviewer may instead withdraw an approval of an
+unmerged PR with `hub_review` `changes_requested`, which returns the task to its owner.
 
 While the project root checkout is on a branch other than its default
 (`origin/HEAD`, else `main`), finishing a task adds `the main checkout is on
@@ -1539,7 +1543,8 @@ ahub study experiments --campaign rc-0123456789ab [--after 50]   # read the reco
   ids, counts, states and provenance and stubs its text as `[pii]`. Study tool arguments and results are kept out
   of hub-managed memory capture.
 - **Upgrades.** The daemon advertises `research_records`, `research_dispatch`, `research_dropped_offers`,
-  `research_experiments` and `research_comparisons`. While the matching rows exist, a restart, upgrade or
+  `research_experiments`, `research_comparisons` and `research_runners`. While the matching rows exist (for
+  `research_runners`, stored runner receipts or any `research.runners` block), a restart, upgrade or
   recovery onto a release without the feature is refused.
 
 ## Hub memory
@@ -2165,6 +2170,7 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Permissions | `permission_modes.<peer>` (the default mode) | `config.local.json` | next peer start |
 | Start | `peers.pi.start_mode`, `peers.codex.start_mode`, `peers.kimi.start_mode`, `peers.jcode.start_mode` (`tui` or `headless`) | `config.local.json` | that peer's next start |
 | Start | `pi.auto_start` | `config.local.json` | next startup/recovery auto-start decision; never starts a peer merely on reload |
+| Start | `start.agents` (peer list; `none` for an empty list) | `config.local.json` | next use; the next person's `ahub up` reads it |
 | Routing | `routing.stay_switch`, `routing.classes.<class>.peers`, `.escalate_to`, `.route`, `.pi_backend` | `routing.local.toml` | at once |
 | Switches | `research.enabled`, `approvals.notify`, `snapshots.enabled` | `config.local.json` | live, without disturbing an active turn |
 | Switches | `coordination` | `config.local.json` | newly created tasks only |
@@ -3053,12 +3059,57 @@ upgrade. The registry and manager still serialize their short ownership writes.
 Legacy unscoped recovery receipts retain their machine-wide hold and original
 shared installation steps; finish or dispose those before a new project upgrade.
 
-Ordinary `ahub up` captures the invoking package and its exact first-party memory
-core under `~/.agenthub/releases/<VERSION>/source-<digest>/`, then starts the
-daemon there. Captures are verified on reuse and do not depend on a mutable global
-installation. Scoped upgrade targets use the same version directory, with their
-verified registry install kept separately in `registry/`. Recovery reuses the
-exact retained target path bound to its authority receipt.
+From 0.26.0, `ahub up`, manager Start and dashboard Start honor the selected
+project's `<state dir>/runtime.json`. It binds the project identity to a verified
+runtime version, root and capture digest. A caller at that version or later uses
+the retained runtime; an older caller refuses with `this project runs X; use X or
+later / ahub upgrade`. A scoped upgrade changes only that project's selection and
+does not refresh the shared manager. The daemon records its claimed instance,
+and readiness confirms the same selection before returning.
+
+With no runtime record, the first managed startup captures the invoking package
+and its exact first-party memory core under
+`~/.agenthub/releases/<VERSION>/source-<digest>/`. Existing records with invalid
+bindings or missing/changed captures refuse rather than selecting another
+package. Runtime selection is machine-local state: a Git-tracked runtime record
+or indeterminate Git tracking check refuses before launch. Each startup checks
+only the runtime file's containing paths in Git once, with a bounded deadline;
+unrelated index entries are not enumerated. Plain directories without a
+repository remain supported. Capture reuse does not depend on a mutable global installation. Scoped
+upgrade targets use the same version directory, with the verified registry
+install kept separately in `registry/`. Recovery uses its authority receipt's
+exact target path and records that selection through the updated startup path.
+
+This selector/refusal guarantee starts with 0.26.0. Published CLIs older than
+0.26.0 ignore the runtime record. After a scoped upgrade, invoke `ahub up` with a
+0.26.0-or-later CLI that is at least the selected project's version; keeping an
+older global CLI does not retrofit this protection. No database schema or
+bootstrap floor is raised for runtime selection. Tests of the updated resolver
+are not receipts from those older published binaries.
+
+After a confirmed new startup, a separate, rate-limited maintenance worker keeps
+the newest three source captures per version plus every registered runtime, live
+manager runtime and retained recovery reference. Metadata snapshots and atomic
+quarantine use short registry writer transactions. Only removal candidates are
+hashed; package verification and recursive deletion run outside that lock and
+outside the startup result. Active recovery, uncertain owners, exhausted
+inventory budgets or an unreadable/incomplete inventory defer deletion.
+Only verified versioned `source-<digest>` directories are eligible;
+registry installs, unversioned coordinator sources, unknown layouts and symlinks
+remain. Reserved `.runtime-prune-*` quarantine paths cannot launch a managed
+runtime. Changed or unknown quarantined contents remain undeleted for inspection.
+Admission is home-wide, at most once per hour with at most three removals per
+run. `~/.agenthub/runtime-prune.db` records admission and the bounded outcome.
+Admission stores the worker's PID and process signature. The next admission
+atomically replaces a worker proven gone; live or uncertain owners remain
+fenced. Worker completion uses the normal database wait bound, while startup
+admission keeps its 1 ms contention bound. `ahub doctor` names an uncertain or
+stuck ledger and leftover quarantine paths without changing either. Leftover
+containers remain available for inspection even after a dead worker is replaced.
+Startup still succeeds when maintenance defers. A damaged runtime
+record/capture requires inspection or restoration.
+Archiving the record deliberately resets first-use selection; archived copies
+are not active pruning references.
 
 A scoped upgrade leaves the global CLI and shared Claude plugin unchanged.
 Update the CLI separately with `bun add --global @staix/agent-hub@<version>`, then
@@ -3068,7 +3119,7 @@ version is older than the selected running daemon; it installs nothing.
 | Runtime | Control protocol window | Legacy status field |
 | --- | --- | --- |
 | 0.12.20 through 0.25.0 | 16 only | `protocol: 16` |
-| Next release (planned 0.26.0) | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
+| 0.26.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
 
 New clients choose the highest common protocol. The runtime supports N-1, so the
 published protocol-16 client and channel plugin remain usable; unrelated feature
@@ -5548,7 +5599,7 @@ kimi: not started: kimi starts in its TUI and the hub could not open a terminal 
 ```
 
 - **Where the list comes from, in order:** `start.agents` in the project's `.agenthub/config.local.json` (an empty list starts none), else the machine default `start.agents` in `~/.agenthub/defaults.json`, else `["claude", "codex"]`. `ahub setup` asks once ("Agents to start with ahub up"); `--agents <a,b>` answers it, `--yes` keeps the current choice or the default, and a run with no terminal and neither flag keeps the default and says so. `ahub init` of a new project copies the machine default into its `config.local.json`; a project that has its own value keeps it, and nothing is written into a file git tracks.
-- **Machine-local and trust tier:** `start.agents` is in `MACHINE_LOCAL` (`ALL_MACHINE_LOCAL`): a committed `.agenthub/config.json` that sets it is ignored with a notice, because a clone must not open terminals on someone else's machine. It is a settings row in the Start group that raises what the hub does on its own, so it needs a settings session (`ahub ui --settings`) or a person's terminal. `defaults.json` stays owner-only (mode 0600, outside every project root); a `start` entry that is not an object with an `agents` list of allowed peers makes the whole file ignored with the existing notice.
+- **Machine-local and trust tier:** `start.agents` is in `ALL_MACHINE_LOCAL`: a committed `.agenthub/config.json` that sets it is ignored with a notice, because a clone must not open terminals on someone else's machine. It is a settings row in the Start group that raises what the hub does on its own, so it needs a settings session (`ahub ui --settings`) or a person's terminal. `defaults.json` stays owner-only (mode 0600, outside every project root); a `start` entry that is not an object with an `agents` list of allowed peers makes the whole file ignored with the existing notice.
 - **Who and when:** only a person's own `ahub up` and the dashboard manager's "start" (which counts as one). An agent's `ahub up` is refused by the CLI before this runs. A daemon restart, a crash recovery, a config reload (`start` applies at the next `ahub up`) and the `ahub up` that an upgrade or recovery relaunches (it carries `AGENTHUB_RECOVERY_OPERATION`) start nothing from the list, and the running hub never reads it. `--live-test` starts none either.
 - **What can be listed:** `claude`, `codex`, `kimi`, `pi`, `local` and `jcode`. `qwen` is refused when saved ("the hub never opens its TUI"), as are `agy`, a declared instance, a Claude channel extra, an unknown id and a duplicate, each with a named reason; the loader and the settings writer say the same words. Pi in the list is the user-facing switch; `pi.auto_start` keeps working for configs that have it.
 - **Failure is local to one agent:** a refusal, a terminal provider that fails or a request that times out prints its own line and never stops the hub or the other agents. The lines come from the hub's own reply, so a provider's error text stays in `hub.log`.

@@ -11931,7 +11931,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "@staix/agent-hub",
-    version: "0.25.0",
+    version: "0.26.0",
     description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
     license: "MIT",
     type: "module",
@@ -12220,7 +12220,7 @@ var init_hub_tools = __esm(() => {
   init_roles();
   init_registry();
   init_envelope();
-  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_study_handoff"]);
+  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_study_handoff"]);
   IMPLEMENTER_PERMISSION_TOOL = {
     name: "hub_permission_request",
     description: "Native permission prompt for this current owned child. The person allows once or denies; failure is deny.",
@@ -12274,7 +12274,7 @@ var init_hub_tools = __esm(() => {
     additionalProperties: false
   };
   acceptPlan = { ...plan, properties: { ...plan.properties, sections: list("document heading anchors, such as report.md#methods"), sources: list("citation ids, DOI or source URL ids"), claims: list("short claim ids to verify") } };
-  STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_experiment_show", "hub_study_handoff"]);
+  STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_study_handoff"]);
   HANDOFF_TOOLS = new Set(["hub_task_handoff", "hub_task_handoffs"]);
   BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
   CAPABILITY_TOOLS = new Set(["hub_capabilities", "hub_capabilities_publish", "hub_invoke"]);
@@ -12292,7 +12292,6 @@ var init_hub_tools = __esm(() => {
     tool2("hub_study_draft", "Store a research campaign contract as a DRAFT revision 1 on an approved parent task. Configured planners only; it creates no task, dispatches nothing and never approves (only the person approves, with ahub study approve). The contract is data: question, scope, exclusions, sourceIds, units, deliverableSections, stopPolicy and an optional budget.", { parentTaskId: id2, contract: { type: "object" } }, ["parentTaskId", "contract"]),
     tool2("hub_study_revise", "Store the next DRAFT revision of a research campaign with the revision you read. Configured planners only; a stale revision refuses, and a draft holds older bound work until the person approves it. Never approves.", { id: str2, revision: { type: "integer", minimum: 1 }, contract: { type: "object" } }, ["id", "revision", "contract"]),
     tool2("hub_study_show", "Read a research campaign's coverage and stop projection: per unit round, state, handoff completeness and budget support, and why dispatch is held. Read-only. A private campaign, task or source shows ids, counts and states only, never its question, scope, path or excerpt. Give no id to list this project's campaigns, at most 50 per call: when the reply carries `next`, pass it as `after` for the following page.", { id: str2, after: str2 }),
-    tool2("hub_experiment_show", "Read the experiment attempts of a research campaign, one attempt, or one baseline/variant comparison under a recorded plan. Read-only: it runs no command and reads no file. Every metric, hash and setting says where it came from (declared by an agent, host-observed, runner-attested or person-attested); a declared value is never shown as observed, failed, cancelled and unknown attempts stay in the counts, and a repeat is never an independent reproduction. A private campaign, task or source shows ids, counts and states only. Give campaignId (with after to page, at most 50 rows), or attemptId, or planHash with baselineAttemptId and variantAttemptId.", { campaignId: str2, attemptId: str2, after: { type: "integer", minimum: 0 }, eventAfter: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 50 }, planHash: str2, baselineAttemptId: str2, variantAttemptId: str2 }),
     tool2("hub_task_handoff", "Hand work that belongs to ANOTHER project that runs agent-hub to that project's board. Use it instead of implementing it from this session: a feature or behavior change first needs a spec issue in that project (pass its number as issue); a mechanical chore (an exact version pin, a regenerated file) goes straight to a task. The target is a registered project (its root or id) whose hub is running; it is not queued. Planner, conductor or person only. Never for a [pii] task or during a private turn. You learn the task's state changes as kind task messages.", { project: str2, title: str2, class: { type: "string", description: "task class, default implement" }, detail: str2, paths: { type: "array", items: str2, description: "repository-relative paths in the TARGET project" }, issue: { type: "integer", minimum: 1, description: "the target repository's issue number" }, task: { type: "integer", minimum: 1, description: "your own task in THIS project that this work comes from; a [pii] task is refused" } }, ["project", "title"]),
     tool2("hub_task_handoffs", "List what this project handed to other projects, with the last state each target reported. Read-only.", {}),
     tool2("hub_study_handoff", "Record the handoff for the research unit you currently own and have in progress: evidence per source, unresolved questions, contradictions and limitations, or insufficientEvidence. Only the bound owner; every required field must be present. Not a task completion.", { handoff: { type: "object" } }, ["handoff"]),
@@ -12353,7 +12352,7 @@ var init_hub_tools = __esm(() => {
     tool2("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str2 }, ["peer"])
   ];
   CONDUCTOR_TOOL_NAMES = new Set(CONDUCTOR_TOOLS.map((t) => t.name));
-  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
   ROLE_TEXT = {
     conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses.",
     planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.",
