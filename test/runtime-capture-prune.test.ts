@@ -219,7 +219,8 @@ test("#610 invalid receipt inventory defers all deletion and tampered candidate 
   rmSync(join(f.home, "recovery"), { recursive: true });
   put(second.root, "src/changed.ts", "// deliberately altered capture\n");
   const before = lstatSync(second.root), result = pruneRuntimeCaptures(f.home, 0);
-  expect(result).toMatchObject({ deferred: expect.stringContaining("verification"), quarantined: [expect.any(String)] });
+  // ponytail: Bun 1.4.2 replaces matched array elements; isolate the matcher until the runner preserves its input.
+  expect(structuredClone(result)).toMatchObject({ deferred: expect.stringContaining("verification"), quarantined: [expect.any(String)] });
   expect(result.removed).not.toContain(second.root);
   const retained = join(result.quarantined![0]!, "capture"), after = lstatSync(retained);
   expect([after.dev, after.ino]).toEqual([before.dev, before.ino]);
