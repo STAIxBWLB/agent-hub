@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- `ahub up` now also starts a default set of agents (task 608, #1040): `claude` and `codex` unless chosen, each through the hub's own start (its start mode, the `terminal.open` or Orca terminal, `already attached` for an attached peer), one line per agent, and a refusal names the command to run by hand without stopping the hub or the others. The set is the new machine-local setting `start.agents` (ignored from a committed `config.json`, a Start-group settings row, an empty list starts none); `ahub setup` asks once (`--agents <a,b>`, `--yes`, no terminal keeps the default) and writes `~/.agenthub/defaults.json`, which `ahub init` copies into a new project; `ahub up --no-agents` skips it for one run. The dashboard's Start counts as `ahub up`. A daemon restart, recovery, config reload or upgrade relaunch starts none from it, and qwen, a declared instance or a channel extra cannot be listed.
+
 ## 0.25.0
 
 - Pin `@staix/agent-mem` 0.18.0 (was 0.17.0), which adds forward-tolerant amem hook-spool handling, an amem console Recap panel and screened tool-input capture. The hub continues to use the library API and does not call the hook spool.
