@@ -35,13 +35,15 @@ test("the main checkout keeps its own inherited state dir; a linked worktree wit
   expect(fromWorktree).toMatchObject({ inherited: false, stateDir: join(r.worktree, ".agenthub", "state") });
 });
 
-test("a cwd with no project of its own and a state dir that records another root is refused or confined, never joined", () => {
+test("a cwd with no project of its own and a state dir that records another root joins that hub as a distinct session, never as the peer (agent-hub#1036)", () => {
   const r = repos(), elsewhere = realPath(mkdtempSync(join(tmpdir(), "ahub-identity-elsewhere-")));
   cleanup.push(() => rmSync(elsewhere, { recursive: true, force: true }));
-  const inherited = { AGENTHUB_STATE_DIR: r.stateDir, AGENTHUB_PROJECT_DIR: r.main } as NodeJS.ProcessEnv;
+  const inherited = { AGENTHUB_STATE_DIR: r.stateDir, AGENTHUB_PROJECT_DIR: r.main, AGENTHUB_PEER_ID: "claude" } as NodeJS.ProcessEnv;
   const project = channelProject(elsewhere, inherited, roles);
-  expect(project?.stateDir).not.toBe(r.stateDir);
-  expect(project?.inherited).toBe(false);
+  expect(project).toMatchObject({ stateDir: r.stateDir, inherited: false, session: { label: "" } });   // it reaches the hub it inherited, and asks to be a session
+  expect(channelProject(r.main, inherited, roles)?.session).toBeUndefined();                          // the project's own session is the peer, as before
+  expect(channelProject(r.worktree, inherited, roles)?.session).toBeUndefined();                      // a linked worktree has a project of its own: its own hub, not a session
+  expect(channelProject(elsewhere, {} as NodeJS.ProcessEnv, roles)?.session).toBeUndefined();         // nothing inherited: nothing to join as a session
 });
 
 test("a fresh state dir that records no root is taken only when the declared project dir names this process's own root", () => {
@@ -78,3 +80,40 @@ test("AC8: the real channel plugin started in a linked worktree with the main ch
   expect(fromWorktree).toContain("ignoring an inherited AGENTHUB_STATE_DIR");
   expect(fromWorktree).not.toContain("connected to hub");
 }, 30_000);
+
+// agent-hub#1036, the real plugin with no project of its own that inherited another project's state: against a hub that has `session_identity` it sends a tools hello asking to be a session (never a peer
+// hello, never as `claude`), and says it is one. Against a hub that predates the feature it connects to nothing, because that hub would bind the real peer id.
+async function noProject(features: readonly string[]) {
+  const r = repos(), hellos: any[] = [];
+  const elsewhere = realPath(mkdtempSync(join(tmpdir(), "ahub-identity-nowhere-"))); cleanup.push(() => rmSync(elsewhere, { recursive: true, force: true }));
+  const hub = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { return server.upgrade(req) ? undefined : new Response("ws only", { status: 400 }); },
+    websocket: { message(ws, raw) { const message = JSON.parse(String(raw)); if (message.t === "hello") { hellos.push(message); ws.send(JSON.stringify({ t: "welcome", rid: message.rid, ok: true, projectId: "main", instanceId: "main-instance", cwd: r.main, protocol: PROTOCOL, features, ...(typeof message.session === "string" ? { session: "claude~fixture" } : {}) })); } else ws.send(JSON.stringify({ rid: message.rid, ok: true })); } } });
+  cleanup.push(() => hub.stop(true));
+  writeFileSync(join(r.stateDir, "status.json"), JSON.stringify({ protocol: PROTOCOL, controlPort: hub.port, projectId: "main", instanceId: "main-instance", cwd: r.main, features }));
+  writeFileSync(join(r.stateDir, "control-token"), "fixture-token");
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: r.main, AGENTHUB_HOME: join(r.main, "hub-home"), AMEM_HOME: join(r.main, "memory-home"), CLAUDE_CONFIG_DIR: join(r.main, "claude-home"),
+    AGENTHUB_STATE_DIR: r.stateDir, AGENTHUB_PROJECT_DIR: r.main, AGENTHUB_PEER_ID: "claude", AGENTHUB_INSTANCE_ID: "main-instance" };
+  delete env.AGENTHUB_CHANNEL; delete env.AGENTHUB_MODE; delete env.AGENTHUB_LAUNCH_ID;
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/adapters/claude-channel.ts")], { cwd: elsewhere, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  let diagnostics = ""; const err = (async () => { for await (const data of child.stderr) diagnostics += Buffer.from(data).toString(); })();
+  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "t", version: "1" } } }) + "\n");
+  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+  for (let n = 0; n < 300 && !diagnostics.includes("connected to hub") && !diagnostics.includes("predates session identities"); n++) await Bun.sleep(10);
+  child.stdin.end(); const timer = setTimeout(() => child.kill("SIGKILL"), 1500); await child.exited; clearTimeout(timer); await err;
+  return { diagnostics, hellos };
+}
+
+test("a plugin with no project of its own joins the inherited hub as a distinct session, never as claude", async () => {
+  const { diagnostics, hellos } = await noProject(["session_identity"]);
+  expect(hellos).toHaveLength(1);
+  expect(hellos[0]).toMatchObject({ role: "tools", peer: "claude", session: "" });   // a tools hello that asks to be a session; no label from a directory name
+  expect(diagnostics).toContain('connected to hub as the distinct session "claude~fixture", not as "claude"');
+});
+
+test("against a hub that predates session_identity the same plugin connects to nothing, and says why", async () => {
+  const { diagnostics, hellos } = await noProject([]);
+  expect(hellos).toHaveLength(0);                                                      // that hub would have bound the real peer id
+  expect(diagnostics).toContain("predates session identities");
+  expect(diagnostics).not.toContain("connected to hub");
+});
+

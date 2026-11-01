@@ -17,11 +17,12 @@ export const SESSION_MESSAGES: ReadonlySet<string> = new Set(["send", "status", 
 
 const LABEL = /^[a-z][a-z0-9-]{0,23}$/;
 
-/** A label is the other project's name or a short session id. Anything that is not a plain lowercase token is dropped, never copied: it ends up in a header another agent reads. */
+/**
+ * A label is the other project's name or a short session id, and it ends up in a header another agent reads. It is kept only when it already IS a plain lowercase token: nothing is cleaned up into
+ * one, so a path, a sentence or an instruction cannot leave a fragment of itself in a sender name. Anything else is dropped, and the hub mints a random short id instead.
+ */
 export function sessionLabel(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const lowered = value.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24).replace(/-+$/g, "");
-  return LABEL.test(lowered) ? lowered : undefined;
+  return typeof value === "string" && LABEL.test(value) && !value.endsWith("-") ? value : undefined;
 }
 
 /** `taken(id)` says whether a live session already has the id. A second session from the same origin gets a short suffix, so no two live sessions share an id. */

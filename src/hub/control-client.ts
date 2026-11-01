@@ -9,7 +9,7 @@ export function stateDirFor(cwd: string): string {
 
 /** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap; 8 = controlled recovery; 9 = Pi bridge metadata; 10 = durable delivery receipts; 11 = queue hold diagnostics; 12 = generation-bound channel settlement and execution budgets; 13 = turn-free facts (`facts` with tool, session and transcript binding, `silenced`) and per-recipient send results (issue #108). 14 = native context-window status and session-bound context checkpoint request ids (issue #185). 15 = conductor tools and permission deadlines/closed events (issues #190, #194). 16 = a Claude session without channel evidence: hello `channel: false` and `inbox` (issue #205). The plugin is installed apart from the daemon, so they can drift. */
 export const PROTOCOL = 16;
-export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons"] as const;
+export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "session_identity"] as const;
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
 export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL] as const;
 
@@ -42,6 +42,12 @@ export interface Hello {
   launchId?: string;
   /** Optional canonical native execution cwd; ownership requires independent host proof. */
   cwd?: string;
+  /**
+   * agent-hub#1036: the plugin has no project of its own and its inherited state directory belongs to another project. It asks to join as a distinct session; the value is the origin label
+   * (possibly empty). The daemon mints `<peer>~<label>` for it and never binds the peer id it names. A daemon without the `session_identity` feature ignores the field, so a client checks
+   * `features` in `status.json` before sending it.
+   */
+  session?: string;
   /** Reclaim after replacement, never an intentional initial takeover. */
   standby?: boolean;
   projectId?: string;
@@ -97,6 +103,8 @@ export function controlRequestTimeout(msg: Record<string, unknown>, requested = 
 /** One authenticated control connection. `request` correlates replies by `rid`; everything else goes to `onPush`. */
 export class ControlClient {
   features: readonly string[] = [];
+  /** The id the hub minted for a distinct session (agent-hub#1036); absent for every ordinary connection. */
+  sessionId?: string;
   private welcomeInstanceId?: string;
   /** Identity from the authenticated welcome, never the unauthenticated descriptor alone. */
   get instanceId(): string | undefined { return this.welcomeInstanceId; }
@@ -161,8 +169,9 @@ export class ControlClient {
         client.pending.delete(msg.rid);
         done(msg);
       };
-      // #604 PR B item 9: a tools hello acts for a native peer, and the daemon admits it only with that peer's launch id. The launcher put the id into the session's environment, so every
-      // shell and helper the session spawns carries it; send it unless the caller named one. A process with none (a person's own shell) sends none, and the daemon decides.
+      // agent-hub#1036: a tools hello that names a Claude peer is that peer only when it presents the launch id of its current launch; without it the daemon makes the connection a distinct session.
+      // The launcher put the id into the session's environment, so every shell and helper the session spawns carries it; send it unless the caller named one, so a session's own `ahub` shells
+      // stay the peer. A process with none (a person's own shell, another project's session) sends none, and the daemon decides.
       const inheritedLaunch = hello.role === "tools" && hello.launchId === undefined && typeof process.env.AGENTHUB_LAUNCH_ID === "string" && process.env.AGENTHUB_LAUNCH_ID.length > 0 && process.env.AGENTHUB_LAUNCH_ID.length <= 128
         ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {};
       ws.onopen = () => void client.request({ t: "hello", v: protocol, token: control.token, ...inheritedLaunch, ...hello, ...expected }, timeoutMs).then((reply) => {
@@ -174,6 +183,7 @@ export class ControlClient {
         }
         client.features = Object.freeze(Array.isArray(reply.features) ? reply.features.filter((feature: unknown): feature is string => typeof feature === "string") : []);
         client.welcomeInstanceId = typeof reply.instanceId === "string" && reply.instanceId ? reply.instanceId : undefined;
+        client.sessionId = typeof reply.session === "string" && reply.session.length <= 64 ? reply.session : undefined;
         clearTimeout(timer);
         resolve(client);
       });
