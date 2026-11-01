@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { packageDigest, preserveRuntimePackage, stageCurrentRuntime, stageRelease, verifyPackage, type RunCommand } from "../src/cli/recovery-package.ts";
@@ -155,6 +155,11 @@ function localRegistryFixture(source: string): RunCommand {
     if (at < 0 || !install) throw new Error("fixture accepts only bounded package staging");
     const target = join(install, "node_modules/@staix/agent-hub"); mkdirSync(dirname(target), { recursive: true });
     preserveRuntimePackage(source, target, packageDigest(source));
+    const ownCore = join(target, "node_modules/@staix/agent-mem");
+    if (existsSync(ownCore)) {
+      const hoistedCore = join(install, "node_modules/@staix/agent-mem");
+      mkdirSync(dirname(hoistedCore), { recursive: true }); renameSync(ownCore, hoistedCore);
+    }
     writeFileSync(join(install, "bun.lock"), JSON.stringify({ packages: { "@staix/agent-hub": ["fixture", "sha512-fixture"] } }));
     return { code: 0, stdout: "", stderr: "" };
   };
