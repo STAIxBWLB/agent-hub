@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.27.0
+
 - Let the configured conductor record release consent on the person's explicit version-naming instruction (#1063). Receipt and audit retain the real asker; exact candidate/docs/origin bindings, restart revocation and live-test refusal remain.
 - Record inert experiment protocols, plans, attempts, events and signed runner receipts through `hub_experiment_record` (#932, task 615). Existing Tasks authority and verification apply; PII turns refuse, raw arguments/results stay out of memory capture, and the relay starts no experiment.
 - Concurrent `ahub up` cold starts tolerate an atomically replaced runtime record, while malformed, linked and oversized records still refuse (task 616).

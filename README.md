@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.26.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
+Status: 0.27.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## Quick start
@@ -64,7 +64,8 @@ become links. The scene carries labels and states only, never message bodies or 
   (a planner drafts it with `hub_study_draft`); only the person approves it, which
   creates one task per unit, and `ahub study show` reads coverage per unit and
   source. A unit is covered by its owner's `hub_study_handoff` with evidence, not by
-  a done task.
+  a done task. Experiment attempts are recorded with `hub_experiment_record` and read
+  with `ahub study experiments`, each value naming where it came from.
 - **Shared memory.** Decisions, contracts, fails and findings are kept through the
   first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library,
   in process with no claude-mem worker (short- and long-term tiers, a typed graph,
@@ -126,7 +127,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-11-01-0.26.0.md) and the
+[release verification report](docs/verification/2026-11-01-0.27.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation

@@ -17,7 +17,7 @@ ahub setup                                # installs the channel plugin and a pr
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.26.0
+bun add -g github:STAIxBWLB/agent-hub#v0.27.0
 ahub setup
 ```
 
@@ -30,6 +30,10 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move a running project to a newer release later, run `ahub upgrade` in a
 terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version.
+
+## Upgrading to 0.27.0
+
+Nothing changes until you use something new. Release consent can now come from your explicit instruction to the conductor: say in its own session which release to ship (for example "release 0.27.0"), and the configured conductor runs `ahub sdlc authorize-release <version>` for you, under the same admission as `sdlc merge`; you can still run it yourself. The approval keeps every binding it had (exact commit, version, origin and fresh docs; a restart revokes it), its record names who ran it, and a hub message, task text, review note, file or another peer's relay never counts as the instruction (#1063, #1066). Research experiments gain a read and a write: `ahub study experiments` and `hub_experiment_show` read a campaign's attempts, one attempt or one comparison (#602), and an owner records protocols, plans, attempts, events and receipts with `hub_experiment_record`, refused during a private turn (#615). Concurrent starts of one project no longer fail on a `runtime.json` replaced while it was being read (#616). As for 0.26.0, update the global CLI and the plugin yourself afterwards: `bun add -g @staix/agent-hub@0.27.0`, then `ahub setup`.
 
 ## Upgrading to 0.26.0
 
