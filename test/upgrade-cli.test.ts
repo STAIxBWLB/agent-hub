@@ -351,6 +351,11 @@ await import(${JSON.stringify(main)});
       "ahub: the latest release is 99.0.0",
       `ahub: 99.0.0 is newer than this CLI (${VERSION}), so its own coordinator runs the upgrade: bun ${handed(["--dry-run"]).join(" ")}`,
     ] });
+    // The issue's command-local selector preserves the same canonical project in the target coordinator.
+    expect(await cli(["upgrade", "--project", root, "--dry-run"])).toEqual(await cli(["--project", root, "upgrade", "--dry-run"]));
+    const duplicated = await cli(["--project", root, "upgrade", "--project", root, "--dry-run"]);
+    expect(duplicated.code).toBe(1); expect(duplicated.ran).toBeUndefined();
+    expect(duplicated.err.join("\n")).toContain("--project may appear only once");
     // An explicit newer target with --yes is handed over without a prompt.
     expect((await cli(["upgrade", "--to", "99.0.0", "--yes"])).ran).toEqual(handed(["--yes"]));
     // --yes still names its release, and through a pipe so does a plain run: nothing is resolved or run.
