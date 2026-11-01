@@ -806,6 +806,12 @@ var init_agy_mcp = __esm(() => {
   MAX_CONFIG_BYTES = 256 * 1024;
 });
 
+// src/hub/orca-env.ts
+var ORCA_LAUNCHER_ENV;
+var init_orca_env = __esm(() => {
+  ORCA_LAUNCHER_ENV = Object.freeze(["ORCA_CLI_COMMAND", "ORCA_DEV_REPO_ROOT", "ORCA_TERMINAL_HANDLE", "ORCA_WORKTREE_ID"]);
+});
+
 // src/hub/child-process.ts
 function childEnv(source = process.env) {
   const env = { ...source };
@@ -1066,6 +1072,7 @@ var PS, PS_OPTIONS, own = (text) => {
   proc.stderr?.destroy();
 }, emptied;
 var init_child_process = __esm(() => {
+  init_orca_env();
   PS = ["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="];
   PS_OPTIONS = { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, detached: true };
   emptied = new WeakSet;
