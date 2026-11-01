@@ -3048,8 +3048,8 @@ version is older than the selected running daemon; it installs nothing.
 
 | Runtime | Control protocol window | Legacy status field |
 | --- | --- | --- |
-| 0.12.20 through 0.24.0 | 16 only | `protocol: 16` |
-| 0.25.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
+| 0.12.20 through 0.25.0 | 16 only | `protocol: 16` |
+| Next release (planned 0.26.0) | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
 
 New clients choose the highest common protocol. The runtime supports N-1, so the
 published protocol-16 client and channel plugin remain usable; unrelated feature
@@ -3086,7 +3086,7 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.24.0), plus the current 17/16 window, and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.25.0), plus the current 17/16 window, and only
 a target with a common protocol and the required recovery capabilities, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
@@ -3100,7 +3100,7 @@ bunx --package @staix/agent-hub@0.12.43 ahub upgrade --to 0.12.43 --yes
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.24.0 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.25.0 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
