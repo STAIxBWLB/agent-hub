@@ -11,7 +11,10 @@ import { attachEvent, originOf, sameOrigin } from "../src/hub/provenance.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
-async function rig() {
+async function rig(options: { roster?: Record<string, boolean>; roles?: Record<string, string[]> } = {}) {
+  // A tools hello carries the launch id its process inherited (#604 item 9). The expected origins below name only what each test sends, so the run must not inherit one from the session running it.
+  const inheritedLaunch = process.env.AGENTHUB_LAUNCH_ID; delete process.env.AGENTHUB_LAUNCH_ID;
+  cleanup.push(() => { if (inheritedLaunch !== undefined) process.env.AGENTHUB_LAUNCH_ID = inheritedLaunch; });
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-provenance-"))), stateDir = join(root, "state");
   mkdirSync(stateDir); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const envKeys = ["HOME", "CLAUDE_CONFIG_DIR", "AGENTHUB_HOME", "AMEM_HOME", "KIMI_CODE_HOME"] as const;
@@ -19,7 +22,7 @@ async function rig() {
   for (const key of envKeys) { const dir = join(root, key.toLowerCase()); mkdirSync(dir); process.env[key] = dir; }
   cleanup.push(() => { for (const key of envKeys) { const previous = saved[key]; if (previous === undefined) delete process.env[key]; else process.env[key] = previous; } });
   const daemon = await startDaemon({ cwd: root, stateDir, projectId: root, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, notifier: () => {},
-    config: { ...DEFAULT_CONFIG, roles: { claude: ["planner"], codex: ["implementer"] }, roster: {}, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
+    config: { ...DEFAULT_CONFIG, roles: options.roles ?? { claude: ["planner"], codex: ["implementer"] }, roster: options.roster ?? {}, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, research: { ...DEFAULT_CONFIG.research, enabled: false },
       task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } });
   cleanup.push(() => daemon.stop());
@@ -74,4 +77,34 @@ test("two sessions that both claim claude are told apart in the log by their lau
   const fromClaude = events.filter(event => event.type === "envelope" && event.from === "claude" && event.origin);
   expect(fromClaude.map(event => event.origin.launch)).toEqual(["aaaaaaaa-0000-4000-8000-000000000001", "bbbbbbbb-0000-4000-8000-000000000002"]);   // same `from`, two origins
   expect(new Set(fromClaude.map(event => event.id)).size).toBe(2);
+}, 30_000);
+
+// AC7 (scoped by the ruling to peers that already have a verifiable launch id): a tools hello that names such a peer without its current launch id is refused with the named error, and
+// nothing can then be sent as that peer. Tested for `claude` (the incident) and for `jcode` (an owned ACP peer). The existing admissions still pass.
+test("AC7: a tools hello naming claude without its launch id is refused with the named error while a launch record exists, and nothing is sent as claude", async () => {
+  const r = await rig();
+  const { writeFileSync } = await import("node:fs");
+  const instanceId = JSON.parse(readFileSync(join(r.stateDir, "status.json"), "utf8")).instanceId as string;
+  const refusals = async (hello: Record<string, unknown>) => { try { await r.connect(hello); return "admitted"; } catch (error) { return (error as Error).message; } };
+  // No launch record yet: a first launch or plain session is admitted, as before (the plain-session path is not broken).
+  expect(await refusals({ role: "tools", peer: "claude" })).toBe("admitted");
+  writeFileSync(join(r.stateDir, "claude-launch.json"), JSON.stringify({ instanceId, launchId: "11111111-aaaa-4aaa-8aaa-000000000001" }));
+  const noId = await refusals({ role: "tools", peer: "claude" });
+  expect(noId).toContain("peer id claude belongs to this project's own launch; another project's session hands work over with hub_task_handoff");
+  expect(await refusals({ role: "tools", peer: "claude", launchId: "some-other-launch" })).toContain("hands work over with hub_task_handoff");
+  const before = r.events().filter(event => event.type === "envelope").length;
+  expect(r.events().filter(event => event.type === "attach" && event.launch === "some-other-launch")).toEqual([]);         // a refused hello writes no attach event
+  expect(await refusals({ role: "tools", peer: "claude", launchId: "11111111-aaaa-4aaa-8aaa-000000000001" })).toBe("admitted");   // the real launch is admitted
+  expect(r.events().filter(event => event.type === "envelope").length).toBe(before);
+  // The roles that never claimed a peer are unchanged: the console and an unrelated native peer (no launch evidence exists for codex yet, so it keeps marker admission).
+  expect(await refusals({ role: "console" })).toBe("admitted");
+  expect(await refusals({ role: "tools", peer: "codex" })).toBe("admitted");
+}, 30_000);
+
+test("AC7: a tools hello naming jcode without an owned launch is refused with the same named error; the claude-implementer, external and console admissions are not widened", async () => {
+  const r = await rig({ roster: { jcode: true }, roles: { claude: ["planner"], jcode: ["implementer"] } });
+  const refusals = async (hello: Record<string, unknown>) => { try { await r.connect(hello); return "admitted"; } catch (error) { return (error as Error).message; } };
+  const noLaunch = await refusals({ role: "tools", peer: "jcode" });
+  expect(noLaunch).toContain("peer id jcode belongs to this project's own launch; another project's session hands work over with hub_task_handoff");
+  expect(await refusals({ role: "tools", peer: "jcode", launchId: "forged-launch" })).toContain("hands work over with hub_task_handoff");
 }, 30_000);

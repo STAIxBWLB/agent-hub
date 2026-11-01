@@ -161,7 +161,11 @@ export class ControlClient {
         client.pending.delete(msg.rid);
         done(msg);
       };
-      ws.onopen = () => void client.request({ t: "hello", v: protocol, token: control.token, ...hello, ...expected }, timeoutMs).then((reply) => {
+      // #604 PR B item 9: a tools hello acts for a native peer, and the daemon admits it only with that peer's launch id. The launcher put the id into the session's environment, so every
+      // shell and helper the session spawns carries it; send it unless the caller named one. A process with none (a person's own shell) sends none, and the daemon decides.
+      const inheritedLaunch = hello.role === "tools" && hello.launchId === undefined && typeof process.env.AGENTHUB_LAUNCH_ID === "string" && process.env.AGENTHUB_LAUNCH_ID.length > 0 && process.env.AGENTHUB_LAUNCH_ID.length <= 128
+        ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {};
+      ws.onopen = () => void client.request({ t: "hello", v: protocol, token: control.token, ...inheritedLaunch, ...hello, ...expected }, timeoutMs).then((reply) => {
         if (reply.t !== "welcome" || reply.ok === false) return refuse(new Error(reply.error ?? "hub refused handshake"));
         if ((expected.projectId && reply.projectId !== expected.projectId) ||
             (expected.instanceId && reply.instanceId !== expected.instanceId) ||

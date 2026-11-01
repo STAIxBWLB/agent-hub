@@ -177,6 +177,7 @@ import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { codeGroup } from "./task-code-group.ts";
 import { DAEMON_FEATURES, PROTOCOL, readControl, stateDirFor } from "./control-client.ts";
 import { attachEvent, originOf, type Origin } from "./provenance.ts";
+import { ownPeerRefusal } from "./peer-identity.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type FrontendProxyPort, type PeerAdapter } from "./peers.ts";
 import { ClaudeTodoSource, DoingTracker, readAiTitle, type DoingKind, type PeerDoing, type TitleCursor } from "./peer-doing.ts";
@@ -7813,6 +7814,11 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === "hub") return sock.close(4403, "peer id is reserved or malformed");
         if (externalRefusedRows.has(c.peer)) return sock.close(4403, "instance kind is unavailable in the startup catalog");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
+        // #604 PR B item 9 (scoped by the ruling to peers that already have a verifiable launch id): a tools hello that names a Claude channel peer must present that peer's current launch id
+        // whenever a launch record exists for it, exactly as the channel hello must (item 10). With no record (a first launch, a plain session) it is admitted as before. codex, kimi, qwen and
+        // an agent shell without an inherited launch id keep marker admission until the daemon mints launch ids for them (agent-hub#1036).
+        if (definitionOf(c.peer)?.start.daemonPort !== "claude-implementer" && definitionOf(c.peer)?.transport === "claude-channel" && claudeLaunchProof.helloLaunch(c.peer, msg.launchId) === "refuse") return sock.close(4403, ownPeerRefusal(c.peer));
+        if (typeof msg.launchId === "string" && msg.launchId.length <= 128) c.launchId = msg.launchId;
         if (definitionOf(c.peer)?.start.daemonPort === "claude-implementer") {
           const owner = bus.peers.get(c.peer), launch = owner?.ownedTools?.(msg.launchId), root = ownerWriteRoot(c.peer);
           if (!owner || !launch || launch.signal.aborted || !root || root === opts.cwd || typeof msg.launchId !== "string") return sock.close(4403, "this process is not the current Claude child");
@@ -7832,7 +7838,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // peer's current owned launch. A forged AGENTHUB_PEER_ID in some other process has no such id, so it never acts as that peer.
         if (definitionOf(c.peer)?.start.daemonPort === "owned-acp") {
           const owner = jcodeLaunches.get(c.peer);
-          if (!owner || !owner.ownsLaunch(msg.launchId)) return sock.close(4403, "this process is not an owned launch of that peer; start it with ahub jcode");
+          if (!owner || !owner.ownsLaunch(msg.launchId)) return sock.close(4403, `${ownPeerRefusal(c.peer)}; start it with ahub jcode`);
         }
       } else {
         c.peer = String(msg.peer ?? defaultChannelPeer(undefined));
