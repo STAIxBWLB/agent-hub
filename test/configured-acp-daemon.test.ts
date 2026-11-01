@@ -204,12 +204,12 @@ test("the bundled MCP server publishes configured targets and enforces read-only
 
     const readOnly = await session("fixture-check");
     const names = (await readOnly.listTools()).tools.map(tool => tool.name);
-    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_capabilities", "hub_study_show"];   // #601: the one study tool that only reads. The three that write are not here, and the next line proves it
+    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_capabilities", "hub_study_show", "hub_experiment_show"];   // #601: the one study tool that only reads. The three that write are not here, and the next line proves it
     expect(names.length).toBeGreaterThan(0);
     expect(names.every(name => allowed.includes(name))).toBe(true);
     expect(names).toContain("hub_review"); expect(names).toContain("hub_task_list");
     expect(names).toContain("hub_source_read");
-    expect(names).toContain("hub_study_show"); for (const writer of ["hub_study_draft", "hub_study_revise", "hub_study_handoff"]) expect(names).not.toContain(writer);
+    expect(names).toContain("hub_study_show"); expect(names).toContain("hub_experiment_show"); for (const writer of ["hub_study_draft", "hub_study_revise", "hub_study_handoff"]) expect(names).not.toContain(writer);
     const sources = new SourceRegistry(f.stateDir);
     const body = "public source through a read-only MCP client";
     const source = sources.add({ bytes: Buffer.from(body), text: body, kind: "file", origin: "public.txt", private: false });

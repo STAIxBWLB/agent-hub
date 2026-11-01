@@ -55,6 +55,7 @@ function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; ki
         : req.t === "task" && options.rejectChecked && ["task_assign_checked", "task_unassign"].includes(req.op) ? { ok: false, error: "unknown operation" }
         : req.t === "task" && options.failFullBoard && !Object.keys(req.args ?? {}).length ? { ok: false, error: "full board temporarily unavailable" }
         : req.t === "task" && String(req.op).startsWith("study_") ? { text: JSON.stringify({ id: "rc-0123456789ab", parentTaskId: 7, revision: req.args?.revision ?? 1, status: req.op === "study_approve" ? "approved" : req.op === "study_close" ? "closed" : "draft", unitCount: 0, units: [] }) }
+        : req.t === "task" && req.op === "hub_experiment_show" ? { text: JSON.stringify({ attempts: [], counts: { all: 0, statuses: { declared: 0, running: 0, succeeded: 0, failed: 0, cancelled: 0, unknown: 0 } } }) }
         : req.t === "task" && req.op === "hub_study_show" ? { text: JSON.stringify(req.args?.id ? STUDY_PROJECTION : req.args?.after ? { campaigns: [{ id: "rc-0123456789ac", parentTaskId: 7, revision: 1, status: "draft", unitCount: 1 }] } : { campaigns: [{ id: "rc-0123456789ab", parentTaskId: 7, revision: 1, status: "approved", unitCount: 2 }], next: "rc-0123456789ab" }) }
         : req.t === "task" ? { text: JSON.stringify(req.args?.ready ? tasks.filter(t => t.state === "proposed" && (t.deps ?? []).every((id: number) => tasks.some(dep => dep.id === id && dep.state === "approved"))) : req.args?.state ? tasks.filter(t => t.state === req.args.state) : tasks) }
         : req.t === "recovery" ? { recovery: { peers: { claude: { id: "claude", state: "idle" } } } }
@@ -311,6 +312,30 @@ test("an older daemon rejects task unassign without an unchecked fallback (#424)
   expect(f.requests.filter(request => request.t === "task")).toEqual([
     expect.objectContaining({ op: "task_unassign", args: { id: "1", role: "owner", revision: 7 } }),
   ]);
+});
+
+test("review P2 (#602): ahub study experiments sends exactly the read the hub takes, and forwards the event cursor of one attempt", async () => {
+  const f = fixture(), campaign = "rc-0123456789ab", attempt = "ra-0123456789ab", other = "ra-abcdef012345", plan = "c".repeat(64);
+  const last = () => f.requests.filter(r => r.op === "hub_experiment_show").at(-1);
+  expect((await f.run(["study", "experiments", "--campaign", campaign])).code).toBe(0);
+  expect(last()).toMatchObject({ t: "task", op: "hub_experiment_show", args: { campaignId: campaign } });
+  expect((await f.run(["study", "experiments", "--campaign", campaign, "--after", "50"])).code).toBe(0);
+  expect(last()!.args).toEqual({ campaignId: campaign, after: 50 });
+  expect((await f.run(["study", "experiments", "--attempt", attempt])).code).toBe(0);
+  expect(last()!.args).toEqual({ attemptId: attempt });
+  expect((await f.run(["study", "experiments", "--attempt", attempt, "--events-after", "50"])).code).toBe(0);
+  expect(last()!.args).toEqual({ attemptId: attempt, eventAfter: 50 });                                       // the cursor reaches the hub
+  expect((await f.run(["study", "experiments", "--plan", plan, "--baseline", attempt, "--variant", other])).code).toBe(0);
+  expect(last()!.args).toEqual({ planHash: plan, baselineAttemptId: attempt, variantAttemptId: other });
+  // a bad form refuses before any connection: nothing more is sent
+  const sent = f.requests.length;
+  for (const bad of [["--attempt", attempt, "--after", "1"], ["--campaign", campaign, "--events-after", "1"], ["--evil", "x"], []]) {
+    const refused = await f.run(["study", "experiments", ...bad]); expect(refused.code, bad.join(" ")).toBe(1); expect(refused.stderr).toContain("usage: ahub study");
+  }
+  expect(f.requests).toHaveLength(sent);
+  expect(classifyPeerCommand("study", ["experiments", "--attempt", attempt, "--events-after", "50"])).toBe("allowed");   // an agent shell reads later event pages too
+  const empty = await f.run(["study", "experiments", "--campaign", campaign]); expect(empty.stdout).toContain("no attempts recorded");
+  const json = await f.run(["study", "experiments", "--campaign", campaign, "--json"]); expect(json.code).toBe(0); expect(JSON.parse(json.stdout)).toMatchObject({ attempts: [], counts: { all: 0 } });
 });
 
 test("ahub study: parse before connecting, read the contract file, send the right op, and print a person's view by default and the hub's text byte for byte with --json", async () => {
