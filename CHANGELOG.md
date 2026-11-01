@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Bind signed external runner receipts to research attempts (#1018). Keep runner-attested evidence separate, show current key revocation status, preserve idempotent replay, and guard first-attestation format-2 storage and recovery. Registration is person-only; the hub runs no external job.
 - Re-review approved, unmerged tasks at a new owner-reported head, or let the reviewer withdraw approval (#1047). Keep each verdict bound to its head, show stale approvals, and block stale-head merges.
 
 - Upgrade one project while other projects keep working (#1039, #1045): negotiate protocol 17/16, use per-project recovery holds and verified versioned daemon captures, and update the global CLI and shared plugin separately. Doctor reports older shared tools.

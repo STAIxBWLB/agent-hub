@@ -41,6 +41,9 @@ export function configTier(file: ConfigEditFile, path: readonly string[], value?
   const key = path.join(".");
   if (file === "sdlc.toml") return path.length === 1 && (SDLC_KEYS as readonly string[]).includes(path[0]!) ? { tier: 2 } : refuse(`sdlc.${key} is not editable here: only mode and required_checks are; edit .agenthub/sdlc.toml in your editor`);
   if (registryKey(key)) return { refused: `${key} is already editable with ahub settings set ${key}; nothing was written` };
+  if (path[0] === "research" && path[1] === "runners") {
+    return path.length === 2 ? { tier: 2 } : refuse("research.runners: edit the whole registration block");
+  }
   if (path[0] === "instances") {
     if (path.length === 1) return refuse("instances: name one instance (instances.<id>)");
     if (!PEER.test(path[1]!)) return refuse(`instances.${path[1]}: an instance id is lower-case letters, digits and hyphens`);
