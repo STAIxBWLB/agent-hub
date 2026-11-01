@@ -7607,8 +7607,6 @@ export async function startDaemon(opts: DaemonOptions) {
         return "target lacks research_experiments; persisted experiment records require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_comparisons")) && board.hasResearchComparisonState())
         return "target lacks research_comparisons; persisted comparison plans, approvals or protocol context require a supporting daemon";
-      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("schema_guard"))
-        return "target lacks schema_guard; controlled recovery requires a guard-aware runtime";
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("project_autonomy")) {
         let needsAutonomy = autonomyConfirmed.size > 0;
         try {
@@ -7645,6 +7643,8 @@ export async function startDaemon(opts: DaemonOptions) {
         } catch { return "calendar_schedules compatibility is unknown; configuration could not be read"; }
         if (namesCalendar) return "target lacks calendar_schedules; the project's schedules use cron or tz, which that daemon cannot load";
       }
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("schema_guard"))
+        return "target lacks schema_guard; controlled recovery requires a guard-aware runtime";
       return undefined;
     };
     // Preserve lifecycle fences before capability probes; the prepare branch rechecks them after resume capture awaits.
@@ -8305,23 +8305,26 @@ export async function startDaemon(opts: DaemonOptions) {
               if (!Array.isArray(selected.reconnectOnly) || new Set(selected.reconnectOnly).size !== selected.reconnectOnly.length) throw new RecoveryAuthorityError();
               for (const id of selected.reconnectOnly) {
                 const row = selected.source.peers.find(peer => peer.id === id), owner = bus.peers.get(id), definition = definitionOf(id);
-                if (!row || selected.freshStart?.includes(id) || Object.keys(row).some(key => !["id", "state", "observation"].includes(key)) || !row.observation
+                if (!row || selected.freshStart?.includes(id) || Object.keys(row).some(key => !["id", "state", "observation", "controlProtocol"].includes(key)) || !row.observation
                   || Object.keys(row.observation).some(key => !["kind", "attached", "sessionDigest"].includes(key))
                   || !isWsPeer(owner) || definition?.transport !== "claude-channel" || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)
+                  || !protocolWindow(row.controlProtocol) || owner.recoveryMetadata().controlProtocol !== row.controlProtocol
                   || row.observation.kind !== definition.kind || row.observation.attached !== owner.attached || row.observation.sessionDigest !== recoverySessionDigest(claudeSession(id).sessionId)) throw new RecoveryAuthorityError();
                 const generation = owner.sessionGeneration;
                 const launcher = await launcherOf(id, opts.cwd, { stateDir: opts.stateDir, instanceId }); current();
-                if (launcher && launcher.state !== "gone" || bus.peers.get(id) !== owner || owner.sessionGeneration !== generation || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)) throw new RecoveryAuthorityError();
+                if (launcher && launcher.state !== "gone" || bus.peers.get(id) !== owner || owner.sessionGeneration !== generation || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)
+                  || owner.recoveryMetadata().controlProtocol !== row.controlProtocol) throw new RecoveryAuthorityError();
                 reconnectCurrent.push(() => bus.peers.get(id) === owner && owner.sessionGeneration === generation && owner.attached && !owner.managedLaunchId && !claudeLaunchProof.verified(id)
+                  && owner.recoveryMetadata().controlProtocol === row.controlProtocol
                   && definitionOf(id)?.kind === row.observation!.kind && owner.attached === row.observation!.attached && recoverySessionDigest(claudeSession(id).sessionId) === row.observation!.sessionDigest);
                 reconnect.set(id, row.observation);
               }
             }
             if (reconnectCurrent.some(check => !check())) throw new RecoveryAuthorityError();
-            const normalize = (row: { id: string; state: string; observation?: { kind: string; attached: boolean; sessionDigest?: string }; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
+            const normalize = (row: { id: string; state: string; controlProtocol?: number; observation?: { kind: string; attached: boolean; sessionDigest?: string }; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
               const launch = row.args ?? row.launch ?? {};
               const observed = reconnect.get(row.id);
-              return { id: row.id, active: row.state !== "offline", threadId: row.threadId, sessionId: observed ? undefined : row.sessionId,
+              return { id: row.id, active: row.state !== "offline", controlProtocol: row.controlProtocol, threadId: row.threadId, sessionId: observed ? undefined : row.sessionId,
                 ...(observed ? { sessionDigest: row.observation?.sessionDigest ?? recoverySessionDigest(row.sessionId) } : {}),
                 ...(observed ? { kind: row.observation?.kind ?? definitionOf(row.id)?.kind, attached: row.observation?.attached ?? (isWsPeer(bus.peers.get(row.id)) && (bus.peers.get(row.id) as import("../adapters/channel-peer.ts").WsPeer).attached) } : {}),
                 sessionFile: row.sessionFile ?? (typeof launch.sessionFile === "string" ? launch.sessionFile : undefined),

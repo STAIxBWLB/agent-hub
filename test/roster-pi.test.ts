@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { newEnvelope, USER } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
@@ -138,7 +138,7 @@ test("controlled recovery refuses a removed personal Pi owner until the person e
     const signature = processSignature(f.owner.pid), instance = (await client.request({ t: "status" })).status.instanceId;
     expect((await client.request({ t: "settings_set", key: "roster.pi", value: false, confirm: "pi" })).ok).toBe(true);
     expect(f.peer.state).toBe("offline"); expect(processSignature(f.owner.pid)).toBe(signature);
-    const request = { t: "recovery", operationId: "roster-pi-recovery", expectedInstanceId: instance };
+    const request = { t: "recovery", operationId: "roster-pi-recovery", expectedInstanceId: instance, targetFeatures: DAEMON_FEATURES };
     for (const op of ["prepare", "inspect"]) {
       const reply = await client.request({ ...request, op });
       expect(reply).toMatchObject({ ok: true, recovery: { phase: "preparing", ready: false, blockers: ["pi is not settled; end the retained Pi TUI, then prepare again"] } });

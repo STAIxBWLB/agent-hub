@@ -1,5 +1,5 @@
 import { definitionOf, type KindMap, type ProjectAdapterCatalog } from "../adapters/registry.ts";
-import type { Database } from "bun:sqlite";
+import type { Database } from "./db-schema.ts";
 import { openHubDatabase } from "./db-schema.ts";
 import type { Task } from "./board.ts";
 import { CONDUCTOR_TOOL_NAMES } from "./hub-tools.ts";
@@ -12,7 +12,6 @@ import type { SupervisionFeed } from "./supervision.ts";
 import { DOING_STUB, type PeerDoing } from "./peer-doing.ts";
 import type { Budget } from "./budget.ts";
 import { windowKind, type WindowKind } from "./window-kind.ts";
-import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { supportsHeadlessInstances } from "./instances.ts";
 
 /** The production ProgressObserver sink forwards structured verdicts, never its observations/reasoning. */
@@ -74,7 +73,6 @@ export class ConductorHolds {
   private readonly db: Database;
   constructor(dbPath: string, private readonly now: () => number = Date.now) {
     this.db = openHubDatabase(dbPath, { create: true });
-    this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run("CREATE TABLE IF NOT EXISTS conductor_holds (peer TEXT PRIMARY KEY, actor TEXT NOT NULL, since INTEGER NOT NULL)");
     this.db.run("CREATE TABLE IF NOT EXISTS supervision_rounds (peer TEXT PRIMARY KEY, signature TEXT NOT NULL)");
   }

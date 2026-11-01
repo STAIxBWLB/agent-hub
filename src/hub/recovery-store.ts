@@ -70,9 +70,11 @@ function projectLocks(home: string, create = false): Database | undefined {
     // Publish a complete DELETE-journal database, never an empty coordination file another process could misread.
     const temporary = `${file}.${randomUUID()}.tmp`;
     try {
-      const prepared = new Database(temporary, { create: true });
-      try { prepared.run("CREATE TABLE project_locks (project_root TEXT PRIMARY KEY, operation_id TEXT NOT NULL)"); }
-      finally { prepared.close(); }
+      const db = new Database(temporary, { create: true });
+      try {
+        db.run(`PRAGMA busy_timeout = ${RUNNER_DB_BUSY_TIMEOUT_MS}`);
+        db.run("CREATE TABLE project_locks (project_root TEXT PRIMARY KEY, operation_id TEXT NOT NULL)");
+      } finally { db.close(); }
       chmodSync(temporary, 0o600);
       try { linkSync(temporary, file); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }

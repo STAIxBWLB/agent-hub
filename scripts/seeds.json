@@ -4452,7 +4452,7 @@
     {
       "id": "conductor-recovery-reconnect-no-restoration",
       "file": "src/hub/daemon.ts",
-      "search": "Object.keys(row).some(key => ![\"id\", \"state\", \"observation\"].includes(key))",
+      "search": "Object.keys(row).some(key => ![\"id\", \"state\", \"observation\", \"controlProtocol\"].includes(key))",
       "replacement": "false",
       "testFile": "test/conductor-recovery-reconnect.test.ts",
       "testName": "reconnect-only source authority refuses changed restore-session after a fresh plan fingerprint"

@@ -51,6 +51,15 @@ const isEnvelope = (v: unknown) => isObject(v) && typeof v.id === "string";
 /** Valid JSON of the wrong shape is damage as well: the journal refuses it on every open, so the message says so. */
 const shaped = (ok: boolean, what: string) => { if (!ok) throw new Error(`invalid delivery journal: ${what} has the wrong shape`); };
 
+/** The existing quiet archive preview owns its raw URI handle and sets its one bounded timeout at open. */
+function quietResetDatabase(file: string): Database {
+  const db = new Database(`file:${file.replace(/[%?#]/g, (c) => `%${c.charCodeAt(0).toString(16)}`)}?immutable=1`, constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI);
+  try {
+    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
+    return db;
+  } catch (error) { db.close(); throw error; }
+}
+
 /** What a reset would act on, read from the state directory without changing it (hub.db opened read-only). */
 export function planReset(stateDir: string, projectId: string): ResetPlan {
   const plan: ResetPlan = { queued: [], needsReview: [], inFlight: [], manualHolds: [], budgetPauses: [], conductorHolds: [],
@@ -64,9 +73,8 @@ export function planReset(stateDir: string, projectId: string): ResetPlan {
   // it go unlisted; open plainly in that corner if it ever matters. SQLITE_OPEN_URI is passed because Linux builds do
   // not parse `file:` names by default (the name then fails as a plain path).
   const quiet = !existsSync(`${file}-wal`) || !existsSync(`${file}-shm`);
-  const db = quiet ? new Database(`file:${file.replace(/[%?#]/g, (c) => `%${c.charCodeAt(0).toString(16)}`)}?immutable=1`, constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI) : openHubDatabase(file, { readonly: true });
+  const db = quiet ? quietResetDatabase(file) : openHubDatabase(file, { readonly: true });
   try {
-    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     const has = (table: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
     const peers = (table: string) => has(table) ? (db.query(`SELECT peer FROM ${table} ORDER BY peer`).all() as { peer: string }[]).map((row) => row.peer) : [];
     plan.budgetPauses = peers("budget_pauses");
@@ -140,7 +148,6 @@ export function resetRuntime(stateDir: string, project: Project): { settled: str
     } finally { bus.closeJournal(); }
     const db = openHubDatabase(file);
     try {
-      db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
       db.transaction(() => {
         for (const table of ["budget_pauses", "conductor_holds"]) {
           if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) db.run(`DELETE FROM ${table}`);

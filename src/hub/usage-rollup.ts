@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
+import type { Database } from "./db-schema.ts";
 import { openHubDatabase } from "./db-schema.ts";
 import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
-import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 
 /**
  * The usage roll-up (#683 U2): `events.jsonl` folded into `hub.db`, so a view never rescans the whole log.
@@ -79,7 +78,6 @@ export class UsageRollup {
 
   constructor(dbPath: string, private readonly eventsFile: string, private readonly opts: { maxBytesPerPass?: number } = {}) {
     this.db = openHubDatabase(dbPath, { create: true });
-    this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     const counters = KINDS.map(kind => `${kind} INTEGER NOT NULL DEFAULT 0, ${kind}_n INTEGER NOT NULL DEFAULT 0`).join(", ");
     this.db.run(`CREATE TABLE IF NOT EXISTS usage_rollup (day TEXT NOT NULL, peer TEXT NOT NULL, model TEXT NOT NULL, source TEXT NOT NULL, task INTEGER NOT NULL,
       pii INTEGER NOT NULL, records INTEGER NOT NULL DEFAULT 0, with_usage INTEGER NOT NULL DEFAULT 0, ${counters}, PRIMARY KEY (day, peer, model, source, task, pii))`);

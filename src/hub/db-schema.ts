@@ -1,4 +1,5 @@
 import { constants, Database } from "bun:sqlite";
+export type { Database } from "bun:sqlite";
 import { closeSync, lstatSync, openSync, readSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { VERSION } from "../version.ts";
@@ -12,7 +13,6 @@ export interface HubDatabaseOptions {
   readonly?: boolean;
   create?: boolean;
   reader?: HubDbSchemaReader;
-  busyTimeoutMs?: number;
 }
 export class HubDbSchemaError extends Error {
   readonly code = "HUB_DB_SCHEMA";
@@ -45,7 +45,9 @@ function schemaOn(db: Database): HubDbSchema | undefined {
     if (rows.length !== 1 || !row || row.id !== 1 || !Number.isSafeInteger(row.schema) || row.schema < 1 || !safeVersion(row.required_version)) throw invalidSchema();
     return { schema: row.schema, requiredVersion: row.required_version };
   } catch (error) {
-    if (error instanceof HubDbSchemaError || busy(error)) throw error;
+    // Native corruption is unreadable storage, not a parsed schema claim; reset may archive it intact.
+    const code = (error as { code?: unknown } | null)?.code;
+    if (error instanceof HubDbSchemaError || busy(error) || typeof code === "string" && /^(?:SQLITE_NOTADB|SQLITE_CORRUPT)(?:_|$)/.test(code)) throw error;
     throw invalidSchema();
   }
 }
@@ -109,13 +111,12 @@ export function assertHubDbCompatible(file: string, reader: HubDbSchemaReader = 
 
 /** Every hub.db writer enters here before its own persistent PRAGMAs, migrations or maintenance writes. */
 export function openHubDatabase(file: string, options: HubDatabaseOptions = {}): Database {
-  const reader = readerValue(options.reader ?? defaultReader()), timeout = options.busyTimeoutMs ?? HUB_DB_BUSY_TIMEOUT_MS;
-  if (!Number.isSafeInteger(timeout) || timeout < 0 || timeout > HUB_DB_BUSY_TIMEOUT_MS) throw new Error("invalid hub database busy timeout");
+  const reader = readerValue(options.reader ?? defaultReader());
   // Refuse a future file without opening a writable connection, which can perform SQLite recovery work itself.
   assertHubDbCompatible(file, reader);
   const db = new Database(file, options.readonly ? { readonly: true, create: false } : { readwrite: true, create: options.create ?? true });
   try {
-    db.run(`PRAGMA busy_timeout = ${timeout}`);
+    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     if (options.readonly) { checkOn(db, reader); return db; }
     // The second read and legacy baseline stamp share the writer lock, without filesystem work in SQL.
     // Existing compatible markers never advance here; an incompatible migration must advance its marker with its actual DDL/data transaction.

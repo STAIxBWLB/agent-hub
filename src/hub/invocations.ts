@@ -1,10 +1,9 @@
 // #445 C2: read invocations. A peer asks the hub to have another peer run one capability the person shared; the target runs it in its own turn with its own
 // permissions, and the hub returns a bounded, sanitized, hub-headed result to the caller only. This file is the pure part (the gates, the argument check, the
 // two texts the hub writes) and the ledger (an ids-only `invocations` table in hub.db). It never reads a peer, a socket or the bus.
-import type { Database } from "bun:sqlite";
+import type { Database } from "./db-schema.ts";
 import { openHubDatabase } from "./db-schema.ts";
 import { createHash } from "node:crypto";
-import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { MAX_HOP, sanitize } from "./envelope.ts";
 import type { FlatSchema, ShareState, SideEffect } from "./capabilities.ts";
 
@@ -232,7 +231,6 @@ export class InvocationLedger {
   private readonly db: Database;
   constructor(path: string, private readonly now: () => number = Date.now) {
     this.db = openHubDatabase(path, { create: true });
-    this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run(`CREATE TABLE IF NOT EXISTS invocations (
       id TEXT PRIMARY KEY, trace TEXT NOT NULL, caller TEXT NOT NULL, target TEXT NOT NULL, capability TEXT NOT NULL, digest TEXT NOT NULL,

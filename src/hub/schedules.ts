@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
+import type { Database } from "./db-schema.ts";
 import { openHubDatabase } from "./db-schema.ts";
-import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { corpusPathProblem } from "./corpus-config.ts";
 
 // agent-hub #512 (hub task #330): machine-local schedules. Spec: "Schedules and folder triggers (#512)".
@@ -379,7 +378,6 @@ export class ScheduleStore {
   private readonly db: Database;
   constructor(dbPath: string) {
     this.db = openHubDatabase(dbPath, { create: true });
-    this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run("CREATE TABLE IF NOT EXISTS schedule_runs (id TEXT PRIMARY KEY, anchor INTEGER NOT NULL, last_run INTEGER, last_task INTEGER, coalesced INTEGER NOT NULL DEFAULT 0, last_error TEXT)");
     // #335: a person's pause. A column on the existing table, so an older database gains it and every older row reads as not paused.
     if (!(this.db.query("PRAGMA table_info(schedule_runs)").all() as { name: string }[]).some(column => column.name === "paused")) this.db.run("ALTER TABLE schedule_runs ADD COLUMN paused INTEGER NOT NULL DEFAULT 0");

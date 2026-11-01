@@ -16,7 +16,7 @@ import { negotiateProtocol, protocolWindow } from "../hub/protocol-window.ts";
 import { awaitStopped, inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { canonicalPath, hubHome, realPath } from "../hub/project.ts";
-import { packageDigest, preserveRuntimePackage, stageCurrentRuntime, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
+import { packageDigest, preserveRuntimePackage, preserveRuntimeSource, stageCurrentRuntime, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectSavedTerminal, inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
 import { ReattachmentRequired, MissingRecordedSession, FinalRefusal, planFingerprint, recoveryScope, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
 import { SHARED_CHANNEL_VERSION_ARGV, nativeRecordedSessionState } from "../adapters/definitions/native-recovery.ts";
@@ -422,7 +422,9 @@ export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
   if (packageDigest(plan.sourceRoot) !== plan.sourceDigest) throw new Error("source package changed since planning");
   const base = join(home, "releases");
   mkdirSync(base, { recursive: true, mode: 0o700 });
-  return preserveRuntimePackage(plan.sourceRoot, join(base, `source-${plan.sourceDigest}`), plan.sourceDigest).root;
+  const destination = join(base, `source-${plan.sourceDigest}`);
+  return recoveryScope(plan) === undefined ? preserveRuntimeSource(plan.sourceRoot, destination, plan.sourceDigest)
+    : preserveRuntimePackage(plan.sourceRoot, destination, plan.sourceDigest).root;
 }
 
 const unboundRecoveryInspection = inspectRecovery;
@@ -709,8 +711,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       const committed = op.projects?.every(project => ["stopped", "started", "peers-restored", "verified"].includes(project.phase));
       // A legacy coordinator already chose and started this target. Resume its retained evidence without retroactive staging gates.
       if (cached && committed && op.schema !== 3) return { ...target, ...(op.targetFeatures === undefined ? {} : { targetFeatures: [...op.targetFeatures] }) };
-      if (cached && op.targetFeatures !== undefined && !op.targetFeatures.includes("schema_guard")) throw new FinalRefusal("target lacks schema_guard; choose a supporting target before recovery effects");
       if (cached && committed && op.targetFeatures !== undefined) {
+        if (!op.targetFeatures.includes("schema_guard")) throw new FinalRefusal("target lacks schema_guard; choose a supporting target before recovery effects");
         return { ...target, targetFeatures: [...op.targetFeatures] };
       }
       if (cached && op.targetFeatures !== undefined) {
@@ -721,6 +723,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         if (!op.targetFeatures.includes("external_adapter_modules") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && (readInstanceConfig(planned.project.root).adapter_modules?.length ?? 0) > 0)) throw new FinalRefusal("target lacks external_adapter_modules; module peers require a supporting target before recovery effects");
         if (!op.targetFeatures.includes("configured_acp") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).adapters ?? {}).length > 0)) throw new FinalRefusal("target lacks configured_acp; configured adapters require a supporting target before recovery effects");
         if (!op.targetFeatures.includes("peer_instances") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).instances ?? {}).length > 0)) throw new FinalRefusal("target lacks peer_instances; declared project instances require a supporting target before recovery effects");
+        if (!op.targetFeatures.includes("schema_guard")) throw new FinalRefusal("target lacks schema_guard; choose a supporting target before recovery effects");
         return { ...target, targetFeatures: [...op.targetFeatures] };
       }
       // A prepared commitSent receipt remains uncertain and must still obtain proof before a possible commit.
@@ -733,9 +736,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       const targetFeatures: readonly string[] = [...metadata.features];
       const targetWindow = protocolWindow(metadata.protocol, metadata.protocolMin);
       if (!targetWindow || negotiateProtocol(protocolWindow(PROTOCOL, PROTOCOL_MIN)!, targetWindow) === undefined) throw new FinalRefusal("target protocol requires a compatible coordinator; staged package retained, runtimes unchanged");
-      if (!targetFeatures.includes("schema_guard")) throw new FinalRefusal("target lacks schema_guard; choose a supporting target before recovery effects");
       const verified = { ...target, targetFeatures };
-      if (cached && committed) return verified;
+      if (cached && committed) {
+        if (!targetFeatures.includes("schema_guard")) throw new FinalRefusal("target lacks schema_guard; choose a supporting target before recovery effects");
+        return verified;
+      }
       for (const planned of op.plan.projects) {
         const refusal = typeof planned.project?.root === "string" ? instanceRecoveryTargetRefusal(planned.project.root, targetFeatures, planned.source.peers) : undefined;
         if (refusal) throw new FinalRefusal(refusal);
@@ -743,6 +748,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (!targetFeatures.includes("external_adapter_modules") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && (readInstanceConfig(planned.project.root).adapter_modules?.length ?? 0) > 0)) throw new FinalRefusal("target lacks external_adapter_modules; module peers require a supporting target before recovery effects");
       if (!targetFeatures.includes("configured_acp") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).adapters ?? {}).length > 0)) throw new FinalRefusal("target lacks configured_acp; configured adapters require a supporting target before recovery effects");
       if (!targetFeatures.includes("peer_instances") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).instances ?? {}).length > 0)) throw new FinalRefusal("target lacks peer_instances; declared project instances require a supporting target before recovery effects");
+      if (!targetFeatures.includes("schema_guard")) throw new FinalRefusal("target lacks schema_guard; choose a supporting target before recovery effects");
       // Existing peer/waiver compatibility checks remain properties of the already verified bytes.
       if (op.targetDigest && op.targetDigest === target.digest && op.targetRoot === target.root) return verified;
       for (const adapter of ADAPTERS) {

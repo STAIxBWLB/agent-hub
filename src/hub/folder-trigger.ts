@@ -1,11 +1,10 @@
-import type { Database } from "bun:sqlite";
+import type { Database } from "./db-schema.ts";
 import { openHubDatabase } from "./db-schema.ts";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { isDenied } from "../local/deny.ts";
 import { checkCorpusRoot } from "./corpus.ts";
-import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { realPath } from "./project.ts";
 import { folderGlobMatches, MAX_NEW_PER_POLL, type FolderEntry, type FolderRunResult, type FolderScan, type ScannedFile } from "./schedules.ts";
 import { MAX_SOURCE_BYTES, screenRegistration, type SourceRegistry } from "./sources.ts";
@@ -171,7 +170,6 @@ export class FolderStore {
   private readonly db: Database;
   constructor(dbPath: string) {
     this.db = openHubDatabase(dbPath, { create: true });
-    this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run("CREATE TABLE IF NOT EXISTS folder_seen (trigger TEXT NOT NULL, real_path TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL, sha256 TEXT NOT NULL, task INTEGER, at INTEGER NOT NULL, PRIMARY KEY (trigger, real_path, sha256))");
     this.db.run("CREATE INDEX IF NOT EXISTS folder_seen_hash ON folder_seen (trigger, sha256)");
     this.db.run("CREATE TABLE IF NOT EXISTS folder_poll (trigger TEXT PRIMARY KEY, started INTEGER NOT NULL, baselined INTEGER NOT NULL DEFAULT 0, last_poll INTEGER, last_error TEXT)");

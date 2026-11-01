@@ -139,18 +139,19 @@ function runtimeDirectory(directory: string): void {
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("runtime cache must contain real directories");
 }
 
-/** Capture only executable package assets and the exact first-party dependency, never a node_modules tree. */
-export function preserveRuntimePackage(sourceRoot: string, destination: string, expectedDigest: string): { root: string; digest: string; version: string } {
-  const version = exactVersion(JSON.parse(readFileSync(join(sourceRoot, "package.json"), "utf8")).version);
-  if (verifyPackage(sourceRoot, version) !== expectedDigest) throw new Error("source package changed before preservation");
+/** Preserve the exact bounded asset set; legacy coordinators need not have a plugin identity manifest. */
+function preserveRuntimeAssets(sourceRoot: string, destination: string, expectedDigest: string, version?: string): { root: string; digest: string } {
+  const digest = (root: string, ownDependencies = false) => version === undefined
+    ? packageDigest(root, { ownDependencies }) : verifyPackage(root, version, { ownDependencies });
+  if (digest(sourceRoot) !== expectedDigest) throw new Error("source package changed before preservation");
   runtimeDirectory(dirname(destination));
   const cached = () => {
     let info;
     try { info = lstatSync(destination); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
-    if (info.isSymbolicLink() || !info.isDirectory() || verifyPackage(destination, version, { ownDependencies: true }) !== expectedDigest)
+    if (info.isSymbolicLink() || !info.isDirectory() || digest(destination, true) !== expectedDigest)
       throw new Error("preserved runtime changed; refusing it");
-    return { root: realPath(destination), digest: expectedDigest, version };
+    return { root: realPath(destination), digest: expectedDigest };
   };
   const previous = cached(); if (previous) return previous;
   const temporary = join(dirname(destination), `.source-${randomUUID()}`);
@@ -158,7 +159,7 @@ export function preserveRuntimePackage(sourceRoot: string, destination: string, 
   try {
     for (const name of RUNTIME_ASSETS) cpSync(join(sourceRoot, name), join(temporary, name), { recursive: true, dereference: false });
     preserveRuntimeDependencies(sourceRoot, temporary);
-    if (verifyPackage(temporary, version, { ownDependencies: true }) !== expectedDigest || verifyPackage(sourceRoot, version) !== expectedDigest)
+    if (digest(temporary, true) !== expectedDigest || digest(sourceRoot) !== expectedDigest)
       throw new Error("source package changed while being preserved");
     try { renameSync(temporary, destination); }
     catch (error) {
@@ -171,6 +172,17 @@ export function preserveRuntimePackage(sourceRoot: string, destination: string, 
     if (!published) throw new Error("preserved runtime vanished after publication");
     return published;
   } finally { rmSync(temporary, { recursive: true, force: true }); }
+}
+
+/** Capture a verified package identity and its exact first-party dependency, never a node_modules tree. */
+export function preserveRuntimePackage(sourceRoot: string, destination: string, expectedDigest: string): { root: string; digest: string; version: string } {
+  const version = exactVersion(JSON.parse(readFileSync(join(sourceRoot, "package.json"), "utf8")).version);
+  return { ...preserveRuntimeAssets(sourceRoot, destination, expectedDigest, version), version };
+}
+
+/** Retained legacy coordinators keep their digest-only contract and still require their own exact dependency. */
+export function preserveRuntimeSource(sourceRoot: string, destination: string, expectedDigest: string): string {
+  return preserveRuntimeAssets(sourceRoot, destination, expectedDigest).root;
 }
 
 /** Ordinary startup preserves the invoking package, including unpublished builds, below its version namespace. */
