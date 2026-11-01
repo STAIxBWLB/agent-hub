@@ -9,6 +9,8 @@
 
 ## Open live legs by class
 
+Autonomy T4 (#999 AC8): [2026-11-02 live inventory](verification/2026-11-02-autonomy-t4.md). Hub and both CLI paths are 0.27.0 and machine opt-in is present; the running project's action policy is disabled. The standard task, person-prompt count and both disposable-repository floor probes remain unverified.
+
 | Leg | Section | Class | Person verdict or blocker |
 | --- | --- | --- | --- |
 | Off-campus Cloudflare Access headers (#1) | Issue #7 verification ledger | external-blocked | Access credential files; then agent-executable |
