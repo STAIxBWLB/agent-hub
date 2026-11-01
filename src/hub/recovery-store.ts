@@ -122,8 +122,12 @@ export function acquireRecoveryLock(id: string, home = hubHome(), projectRoot?: 
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const existing = recoveryLock(home);
   if (existing === id) return;
-  try { writeFileSync(join(home, "recovery.lock"), JSON.stringify({ operationId: id }), { mode: 0o600, flag: "wx" }); }
-  catch { throw new Error(`another recovery operation owns this machine: ${recoveryLock(home) ?? "unknown"}`); }
+  const temporary = join(home, `.recovery-lock-${randomUUID()}.tmp`);
+  try {
+    writeFileSync(temporary, JSON.stringify({ operationId: id }), { mode: 0o600, flag: "wx" });
+    try { linkSync(temporary, join(home, "recovery.lock")); }
+    catch { throw new Error(`another recovery operation owns this machine: ${recoveryLock(home) ?? "unknown"}`); }
+  } finally { rmSync(temporary, { force: true }); }
 }
 
 export function releaseRecoveryLock(id: string, home = hubHome(), projectRoot?: string): void {
