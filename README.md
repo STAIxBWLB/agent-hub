@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.24.0, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.25.0, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## Quick start
@@ -54,7 +54,15 @@ become links. The scene carries labels and states only, never message bodies or 
   Claude Code instances can implement in their own worktree, in a terminal or
   headless with one session per task. `ahub sdlc metrics` reads lead times,
   rework and stalls from board history, and
-  optional control bands turn a breach into a backlog card.
+  optional control bands turn a breach into a backlog card. Work that belongs to
+  another project running agent-hub on this machine goes onto that project's board
+  with `ahub task handoff` (agents: `hub_task_handoff`), and its state changes come
+  back as task messages.
+- **Research campaigns.** `ahub study` keeps a multi-unit study contract as a draft
+  (a planner drafts it with `hub_study_draft`); only the person approves it, which
+  creates one task per unit, and `ahub study show` reads coverage per unit and
+  source. A unit is covered by its owner's `hub_study_handoff` with evidence, not by
+  a done task.
 - **Shared memory.** Decisions, contracts, fails and findings are kept through the
   first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library,
   in process with no claude-mem worker (short- and long-term tiers, a typed graph,
@@ -71,11 +79,16 @@ become links. The scene carries labels and states only, never message bodies or 
   (`action_policy.floor`, which `ahub autonomy on` sets) lets a push of a non-default
   branch to `origin` and `gh pr create|comment|review|merge` in the project's own
   repository run without asking; force, default-branch and tag pushes and releases
-  still ask. Budgets pause an
+  still ask. Every message records its sender's origin, and a session that is not
+  the project's own peer appears as `<peer>~<origin>` with none of that peer's
+  roles: sessions are distinguishable, which is provenance, not authentication.
+  Budgets pause an
   agent before it runs out of quota, and recovery never replays an
   effect whose outcome is unknown.
 - **Operations.** A terminal console and a local dashboard, one hub per repository or
-  worktree with a machine-wide view, live settings reload, a one-confirmation autonomy
+  worktree with a machine-wide view, live settings reload, machine-local schedules
+  that propose tasks by interval or by a `cron` expression in a time zone
+  (`ahub schedule list`), a one-confirmation autonomy
   preset (`ahub autonomy on|off|status`), structural config
   (instances, review, lifecycle) edited with a validated diff and a backup from the
   console or a dashboard settings session, token usage and quota
@@ -108,7 +121,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-10-31-0.24.0.md) and the
+[release verification report](docs/verification/2026-11-01-0.25.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation

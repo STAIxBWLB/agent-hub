@@ -17,7 +17,7 @@ ahub setup                                # installs the channel plugin and a pr
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.24.0
+bun add -g github:STAIxBWLB/agent-hub#v0.25.0
 ahub setup
 ```
 
@@ -29,6 +29,10 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
+
+## Upgrading to 0.25.0
+
+Nothing changes until you use something new. `ahub setup` now also registers agent-hub as a plugin of the family console ([agent-console](https://github.com/STAIxBWLB/agent-console), `acon ui`): it writes `~/.agenthub/console/plugins/ahub.json` with the sha256 of the installed `@staix/agent-hub/ui-plugin` module, so acon shows the dashboard's views as panels for every running project, lists pending approvals (Allow once / Deny) and in-review tasks whose reviewer is you in its inbox, and asks you to confirm every outward or destructive action first (#935, #1032). The same plugin feeds acon's Space view from the dashboard's office model: peers are actors, the board columns are zones and task links and recent messages are links, with labels and states only, never bodies, details or approval titles (#1012, #1033). acon refuses a module that changed after setup, so run `ahub setup` again after this and every later upgrade. The hub exact-pins `@staix/agent-mem` 0.18.0 (was 0.15.0); since agent-mem 0.16.0 every amem writer on one memory home, hub pins included, must run 0.16.0 or later, because an older drain deletes hook-spool records a newer one staged without reading them, so upgrade the hub together with a global `amem` of 0.16.0 or later (#1035, #1042). `ahub doctor` now reads its `memory capture: codex` and `memory capture: kimi` rows from that `amem` (`amem setup <tool> --json`, a preview that writes nothing) instead of `dot ai memory status`, and names `amem setup <tool> --apply` when setup is pending (#1025). Research campaigns are new and start only when you draft one: `ahub study draft` stores a contract (question, scope, sources, units and a stop policy) as a draft, a configured planner may draft and revise it with `hub_study_draft` and `hub_study_revise`, only your `ahub study approve` creates the unit tasks as Backlog cards for the planner to offer, unit owners record their evidence with `hub_study_handoff`, and `ahub study show` reports coverage per unit, budget support and why dispatch is held; `ahub study approve-protocol` approves one exact experiment protocol hash (#1024, #1027, #1028, #1029, #1031, #1041; see [research campaigns](operations.md#research-campaigns-ahub-study-930)). While campaign or experiment records exist, a restart, upgrade or recovery onto an older release is refused. A schedule in `config.local.json` can now take a five-field `cron` expression with an optional IANA `tz` instead of `every`; while one does, a restart or recovery onto an older release is refused (#1022; see [calendar schedules](operations.md#calendar-schedules-cron-and-tz-1017)). An owner can now re-file `hub_task_done` during review with a different full commit SHA, and the reviewer gets a fresh request for the new head (#1021). Work that belongs to another project that runs agent-hub on this machine can now go onto that project's board: `ahub task handoff --project <root|id> <title...>` (you) or `hub_task_handoff` (a planner or the conductor) files it there as an ownerless proposal when that hub is running and has the `task_handoff` feature, and `ahub board --handoffs` and the requesting agent learn each state change it reaches (#1030, #1043; see [handing work to another project](operations.md#handing-work-to-another-project-604-agent-hub1030)); while a handoff record exists, a restart, upgrade or recovery onto an older release is refused. A connection that names a peer but is not that peer's current Claude session, such as a plugin that inherited another project's hub, now joins as a distinct `<peer>~<id>` sender that can send and read but holds none of that peer's roles, and every message and attach in `events.jsonl` records the sending connection; nothing that connected before is refused, this tells sessions apart without authenticating them, and while an unsettled delivery holds such a session's message, a restart, upgrade or recovery onto an older release is refused (#1036, #1037). Upgrade running hubs with `ahub upgrade` and restart Claude sessions so they load the 0.25.0 plugin.
 
 ## Upgrading to 0.24.0
 
@@ -249,6 +253,9 @@ The stream retains the latest 200 events since the daemon started; it does not
 load historical logs. An unopened dashboard has no listener. A paused budget
 window cannot be overridden on the page; the CLI's `ahub budget resume <peer>`
 remains the explicit override.
+
+If you use the family console (`acon ui`), `ahub setup` registers the same
+dashboard there as a plugin; see [the acon console plugin](operations.md#acon-console-plugin-935-1012).
 
 
 ## Concurrent project development (0.4.0)

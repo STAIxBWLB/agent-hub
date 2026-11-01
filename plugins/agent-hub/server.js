@@ -22953,7 +22953,7 @@ var MACHINE_LOCAL = [
   "corpus.paths",
   "invocation"
 ];
-var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances", "start.agents"];
+var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"];
 function configRefusal(cwd, name) {
   const tracked = configTracked(cwd, name);
   return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;
@@ -23292,7 +23292,7 @@ init_security_baseline();
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.24.0",
+  version: "0.25.0",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   license: "MIT",
   type: "module",

@@ -557,7 +557,7 @@ and so is every help entry the gate has no class for yet;
 
 | Command | Class | Why |
 | --- | --- | --- |
-| `ahub doctor [--json] [--full] [--color=...]` | Allowed | a read-only check of tools, daemon, plugin, gateway, models and memory; the `memory capture: codex` and `memory capture: kimi` rows come from agent-mem's setup state (`amem setup <tool> --json`), as set up, `amem setup <tool> --apply` needed, or client missing (#1008) |
+| `ahub doctor [--json] [--full] [--color=...]` | Allowed | a read-only check of tools, daemon, plugin, gateway, models and memory; the `memory capture: codex` and `memory capture: kimi` rows come from agent-mem's setup state (`amem setup <tool> --json` on PATH, a preview that writes nothing), as set up, `amem setup <tool> --apply` needed, client missing, or unknown when `amem` is missing, refuses or prints no setup plan (#1008) |
 | `ahub doctor --stale-anchors [--json]` | Allowed | a bounded read-only report of memory symbol anchors at current HEAD |
 | `ahub queue list [--peer <id>] [--json] [--full] [--color=...]` | Allowed | public queue metadata only; held bodies and resolution remain conductor operations |
 | `ahub roster [--json] [--color=...]` | Allowed | public roster status; add/remove retain conductor admission |
@@ -573,6 +573,7 @@ and so is every help entry the gate has no class for yet;
 | `ahub task cancel\|label\|role <id> ...` | Allowed | the daemon decides per task (#933): `label` and `role` only on a task the caller owns, `role` not while it is in review, and `cancel` by the `hub_task_cancel` rule (the planner's own unaccepted backlog or proposed work) |
 | `ahub deliverables [--task <id>] [--approved] [--check] [--json]` | Allowed | only the rows `hub_task_show` would show the caller, through the same public screening (#933) |
 | `ahub room list [--json]`, `ahub room status [<name>] [--json]` | Allowed | room metadata only; every other `room` form, the inbox included, stays Console |
+| `ahub study show [<id> \| --after <id>] [--json] [--color=...]` | Allowed | the same read as `hub_study_show`: a private campaign, task or source shows ids, counts and states only; `study draft\|revise\|approve\|approve-protocol\|close` stay Console (#930) |
 
 `backlog list`, `release list` and `sdlc costs|metrics` retain their existing
 planner/person policy. Their CLI forms stay Console for ordinary agents; a
@@ -926,6 +927,37 @@ Incompatible or unverified processes are shown explicitly and are never killed b
 PID-name matching. See the operations guide and the
 [multi-project specification](specs/2026-09-19-multi-project-design.md).
 
+## acon console plugin (#935, #1012)
+
+`ahub setup` registers agent-hub as a plugin of the family console
+([agent-console](https://github.com/STAIxBWLB/agent-console), `acon ui`). It writes
+`$AGENTHUB_HOME/console/plugins/ahub.json` (default `~/.agenthub/console/plugins/ahub.json`;
+the directory 0700, the file 0600, replaced atomically) naming the installed module
+`@staix/agent-hub/ui-plugin` and its sha256, and prints `acon plugin registered`, `acon plugin
+up to date` or why it was not registered. acon reads the file at its next start and marks the
+plugin stale when the module changed after setup, so run `ahub setup` again after each upgrade.
+
+- **Panels.** The plugin's panels are the dashboard's seven views, and the panel is the `ahub ui`
+  page itself, following acon's theme. It reaches project hubs only through the manager's own
+  listing and forwarding (`ahub ui --all`): registered project and instance ids, the manager's
+  closed action list and the seven view names. There is no new protocol or action.
+- **Inbox.** acon's inbox lists each running project's pending approvals (Allow once / Deny,
+  answered with the hub's own `permit` and an option the request offers) and in-review tasks whose
+  reviewer is you (Open board). A local-worker or Pi approval stays deny-only there, as on the
+  dashboard: answer it with `ahub permit` after `ahub tail`.
+- **Confirmation.** `stop`, `permit`, `send`, the settings writes (`setting`, `setting_undo`,
+  `setting_reload`, `config_edit_apply`), `start_peer`, `backlog_split` and the inbox's Allow once
+  and Deny answer `needsConfirm` with a preview first; acon runs them after you confirm.
+  Previews and the other dashboard actions run directly, as on the page.
+- **Space.** The plugin feeds acon's Space view from the dashboard's office model
+  (`src/ui/office-space.ts`): peers are actors (state from condition, approvals and review, with
+  approval, queue, paused and mode marks), the office rooms are queue, work, review and done zones,
+  tasks are cards, and overlap, conflict and cohort links and recent message arcs are links. Ids
+  are project-prefixed, every running project's scene is merged within acon's caps (32 actors, 200
+  cards, 64 links, newest links kept), and a project that has not answered within about 3 s is left
+  out of that poll. Only labels and states reach the scene, never message bodies, task details,
+  approval titles or reasons; a PII task's card shows the `[pii]` stub.
+
 ## Install and start
 
 Use Bun 1.4.2 or newer. Source checks and CI use the version pinned in
@@ -943,7 +975,8 @@ ahub up
 `ahub init` writes the project configuration and managed instruction blocks.
 Run it after an upgrade when those blocks need refreshing. `ahub setup`
 installs or updates the Claude plugin and a project-neutral PreToolUse hook in each
-Claude configuration home in use (see "Machine autonomy and Claude homes"). Keep `ahub console` open when a local worker
+Claude configuration home in use (see "Machine autonomy and Claude homes"), and
+registers the acon console plugin (see "acon console plugin"). Keep `ahub console` open when a local worker
 may request an approval.
 
 `.agenthub/config.json` can be committed and shared. The fields that choose
@@ -1134,6 +1167,15 @@ with its owner and tells it what failed. `checks` is machine-local (see Install
 and start): a committed file must not choose commands the hub runs. Keys that
 are not task classes are ignored with a log line. A hub stopped mid-check leaves
 the task in progress (`check interrupted`); the owner marks it done again.
+
+The owner may call `hub_task_done` again while the task is in review, with a
+different full lowercase commit SHA in `refs.commit` (#1000, #1021). It replaces the
+delivered artifact, not a verdict: the reviewer gets a fresh request for the new
+head, the old CI watch is replaced, stale observed, reviewed and merge evidence is
+cleared, and open Important findings, spec acceptance and the rejection count stay.
+A configured completion check first returns the task to in progress until it passes.
+The same head, a malformed SHA, another owner or a running check refuse without
+effect, and a verdict started on the old request no longer applies.
 
 While the project root checkout is on a branch other than its default
 (`origin/HEAD`, else `main`), finishing a task adds `the main checkout is on
@@ -1426,6 +1468,60 @@ ahub research export --format csv  # the records, for your own analysis
 ahub research backfill             # build this project's records once from events.jsonl
 ahub task label 12 reverted        # a later verdict (ok, regressed, reverted, incomplete, wrong, abandoned)
 ```
+
+## Research campaigns: `ahub study` (#930)
+
+A research campaign splits one question on an approved parent task into bounded units, each a task with
+its own sources and required output. Nothing happens until a campaign is drafted, and the `ahub research`
+telemetry above is unrelated. The contract, its bounds and the slices are in the
+[research campaigns spec](specs/2026-11-01-research-campaigns-design.md); the worked three-source example is in
+[profiles](profiles.md).
+
+```bash
+ahub study draft 12 contract.json            # store revision 1 as a draft; creates no task
+ahub study revise rc-0123456789ab 1 next.json  # store the next draft; a stale revision refuses
+ahub study approve rc-0123456789ab 2         # person only: create the unit tasks as Backlog cards
+ahub study show [rc-0123456789ab]            # list campaigns (50 per page, --after continues) or one projection
+ahub study close rc-0123456789ab 2 --reason "answered"
+ahub study approve-protocol <64-hex hash>    # person only: approve one exact experiment protocol
+```
+
+- **Contract.** The JSON names the question, scope, exclusions, registered source ids, 1 to 32 units
+  (round, question, perspective, required output, sources, dependencies and a purpose: discovery,
+  independent check, analysis or synthesis), deliverable sections, a stop policy (`maxUnits`,
+  `maxFollowUpRounds` up to 5, a deadline at most 90 days after approval) and an optional execution budget.
+  A contract over its bounds refuses whole, naming the field.
+- **Who does what.** Draft and revise are the person's (`ahub study`) or a configured planner's
+  (`hub_study_draft`, `hub_study_revise`); they store drafts only. Approve, approve-protocol and close are
+  console commands. Approval is the only step that creates unit tasks: they go to Backlog and the planner
+  offers them through its ordinary pull; the campaign never assigns owners or approves a task. Re-running
+  approve on an approved revision creates nothing.
+- **Dispatch gate.** Before a unit task is offered, assigned, pulled or handed to another owner the hub
+  re-reads the campaign and holds the task with a reason when its revision is no longer the latest approved
+  one, the deadline has passed or the stop policy is exceeded. A newer draft holds older bound work until it
+  is approved, and an owner offer held this way is re-offered after approval, across a restart too. A hold
+  never stops a native turn already running.
+- **Handoffs and coverage.** The current in-progress owner of a unit records `hub_study_handoff`: evidence per
+  source, unresolved questions, contradictions and limitations, or `insufficientEvidence`. `ahub study show` and
+  `hub_study_show` report per unit its round, task state, handoff completeness, covered sources and duplicate
+  discovery assignments, the budget support label per resource (`enforceable`, `advisory`, `unknown` or
+  `unavailable`) and why dispatch is held. A follow-up round needs every discovery unit of the previous round
+  settled by a complete handoff or `insufficientEvidence`.
+- **Budgets.** A contract's `budget: { id, hardCap: [...] }` names an existing execution budget. With a non-empty
+  `hardCap`, approval refuses unless the budget is enabled, every capped resource has a limit and is not
+  `tokens`, and at least one of its peers is instrumented (today `pi` and `local`); every later dispatch and
+  owner change rechecks that same budget. The ledger is shared with the peers' other work.
+- **Experiments.** Protocols, comparison plans and attempts are stored with their provenance (`declared`,
+  `host-observed` from a check receipt or a hub-hashed deliverable), and `ahub study approve-protocol` binds an
+  approval to one exact protocol hash and its evaluator; a changed protocol needs its own approval. The hub
+  never ranks results. This release has no hub tool or CLI that records experiments; they are host storage
+  for the slices that follow.
+- **Privacy.** A campaign whose parent task is PII, or that names a private source, is private: every view keeps
+  ids, counts, states and provenance and stubs its text as `[pii]`. Study tool arguments and results are kept out
+  of hub-managed memory capture.
+- **Upgrades.** The daemon advertises `research_records`, `research_dispatch`, `research_dropped_offers`,
+  `research_experiments` and `research_comparisons`. While the matching rows exist, a restart, upgrade or
+  recovery onto a release without the feature is refused.
 
 ## Hub memory
 
@@ -4336,6 +4432,7 @@ A `schedules` entry in `.agenthub/config.local.json` takes either `every` (an in
 - **Daylight saving, one rule.** A local time the clock skips runs at the next valid minute of that day; a local time the clock repeats runs once, at its first occurrence.
 - **Too frequent.** An expression that can fire more often than every 15 minutes (`* * * * *`, `*/5 * * * *`, `0,10 7 * * *`) is refused when the config loads, naming the schedule, as is one that never fires (`0 0 31 2 *`).
 - **Everything else is as for `every`.** A schedule never runs at first sight; a hub that was down or held through several fire times proposes one task when it can, not one per missed fire; a budget pause or hold skips and counts the tick; no second task while the first is open. `ahub schedule list`, `ahub status` and the dashboard show the expression and the next run in the schedule's zone, for example `2026-11-02 07:30 Asia/Seoul`.
+- **Upgrades.** The daemon advertises `calendar_schedules`. While a schedule uses `cron` or `tz`, a restart, upgrade or recovery onto a release without it is refused, naming the reason.
 - Out of scope: holiday and exchange calendars. A task whose first step finds a non-working day can end itself.
 
 ## Staging work in Backlog (#263)
@@ -5352,7 +5449,7 @@ settled stubs fit the current response ceiling.
 
 ## Handing work to another project (#604, agent-hub#1030)
 
-Work that belongs to another repository that runs agent-hub on this machine goes onto that repository's board, not into this session. Its own roles plan, implement and review it, and you are told when it changes state. The first case: after a library you maintain publishes a release, raising its exact pin in a consumer belongs on the consumer's board.
+Work that belongs to another repository that runs agent-hub on this machine goes onto that repository's board, not into this session. Its own roles plan, implement and review it, and each state change it reaches is reported back here. The first case: after a library you maintain publishes a release, raising its exact pin in a consumer belongs on the consumer's board.
 
 ```
 ahub task handoff --project <root|id> [<class>] <title...> [--path <p>]... [--issue <n>] [--task <n>] [--detail <text>]
@@ -5361,13 +5458,13 @@ ahub task handoff --project <root|id> [<class>] <title...> [--path <p>]... [--is
 - `--project` is the other project's canonical root or its id from `ahub projects`. It must be registered and its hub must be running (`ahub up` in that project). Nothing is queued: a hub that is not running is refused with that action.
 - A feature or behavior change first gets a spec issue in the other repository: pass its number as `--issue`. A mechanical chore (an exact version pin, a regenerated file) goes straight to a task.
 - `--path` names files in the other project, repository-relative (no absolute path, `~` or `..`). `--task` names your own task this comes from, so a `[pii]` one is refused.
-- Agents use `hub_task_handoff` (the same fields) when they hold the planner or conductor role; `hub_task_handoffs` and `ahub board --handoffs` list what this project handed over and the last state each target reported.
+- `ahub task handoff` is the person's command (an agent's shell is refused it as a console command). Agents use `hub_task_handoff` (the same fields) when they hold the planner or conductor role; `hub_task_handoffs` and `ahub board --handoffs` list what this project handed over and the last state each target reported.
 
 What the other project sees: an ownerless proposed task, made by its hub, whose detail ends with where it came from; `ahub board` and `ahub task show` there name the origin project and peer. Its own routing offers it as it would a local proposal. The requesting peer has no identity or authority there: it cannot accept, review, approve, assign or cancel.
 
-What you are told: one `kind: task` message per change, `agent-hub task 123 accepted`, `in review`, `approved: PR #7 at <sha>`, `declined` or `cancelled`. It carries an event name, a PR number and a full head, never the other project's text. If this project's hub was stopped meanwhile, it asks the other hub where each open handoff stands when it starts again.
+What comes back: each change is recorded in `ahub board --handoffs`, and an agent that handed the task over also gets one `kind: task` message per change, `agent-hub task 123 accepted`, `in review`, `approved: PR #7 at <sha>`, `declined` or `cancelled` (a handoff you made from the terminal sends you no message: read the list). It carries an event name, a PR number and a full head, never the other project's text. If this project's hub was stopped meanwhile, it asks each running target hub where its open handoffs stand when it starts again; a target that is down then is asked at the next start.
 
-Refusals, each named with the action: an unregistered target, this very project, a hub that is not running, a request over 8 KiB or with an unknown field, a caller that is not a planner, the conductor or the person, a private (PII) turn, a `[pii]` task named with `--task`, text that matches a PII pattern or that the target's screen cannot clear, and an older target hub (it lacks the `task_handoff` feature: run `ahub upgrade` in that project).
+Refusals, each named with the action: an unregistered target, this very project, a hub that is not running, a request over 8 KiB or with an unknown field, a caller that is not a planner, the conductor or the person, a private (PII) turn, a `[pii]` task named with `--task`, text that matches the target's PII patterns or that the target's screen cannot clear, a target hub in recovery or shutting down (hand it off again after that ends), and an older target hub (it lacks the `task_handoff` feature: run `ahub upgrade` in that project).
 
 Recovery: `task_handoff` is its own recovery label. A project that holds a handoff row, in either direction, refuses a recovery target that lacks it.
 

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "9af51bfd4afbb2ffc8e7b41b6ee474916ad70820",
+      "verifiedAgainst": "aaccc30bd32653ba1925220334445e020be21732",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "9af51bfd4afbb2ffc8e7b41b6ee474916ad70820",
+      "verifiedAgainst": "aaccc30bd32653ba1925220334445e020be21732",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "9af51bfd4afbb2ffc8e7b41b6ee474916ad70820",
+      "verifiedAgainst": "aaccc30bd32653ba1925220334445e020be21732",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "9af51bfd4afbb2ffc8e7b41b6ee474916ad70820",
+      "verifiedAgainst": "aaccc30bd32653ba1925220334445e020be21732",
       "paths": [
         "package.json",
         "src/",
@@ -43,7 +43,7 @@
       ]
     },
     "docs/agent-notes/adapters.md": {
-      "verifiedAgainst": "9af51bfd4afbb2ffc8e7b41b6ee474916ad70820",
+      "verifiedAgainst": "aaccc30bd32653ba1925220334445e020be21732",
       "paths": [
         "src/adapters/",
         "src/pi/",
@@ -93,7 +93,7 @@
       ]
     },
     "docs/agent-notes/budget.md": {
-      "verifiedAgainst": "9af51bfd4afbb2ffc8e7b41b6ee474916ad70820",
+      "verifiedAgainst": "aaccc30bd32653ba1925220334445e020be21732",
       "paths": [
         "src/hub/budget.ts",
         "src/cli/statusline-tee.ts",
@@ -117,7 +117,7 @@
       ]
     },
     "docs/agent-notes/bus.md": {
-      "verifiedAgainst": "9af51bfd4afbb2ffc8e7b41b6ee474916ad70820",
+      "verifiedAgainst": "aaccc30bd32653ba1925220334445e020be21732",
       "paths": [
         "src/hub/bus.ts",
         "src/hub/envelope.ts",
@@ -132,7 +132,7 @@
       ]
     },
     "docs/agent-notes/daemon.md": {
-      "verifiedAgainst": "9af51bfd4afbb2ffc8e7b41b6ee474916ad70820",
+      "verifiedAgainst": "aaccc30bd32653ba1925220334445e020be21732",
       "paths": [
         "src/hub/daemon.ts",
         "src/hub/control-client.ts",
@@ -201,11 +201,20 @@
         "src/hub/memory-code-head.ts",
         "src/hub/memory-stale-anchors.ts",
         "src/memory/brief.ts",
-        "src/hub/memory-plan-guard.ts"
+        "src/hub/memory-plan-guard.ts",
+        "src/ui/plugin.ts",
+        "src/ui/office-space.ts",
+        "src/cli/acon-register.ts",
+        "src/cli/study.ts",
+        "src/cli/study-output.ts",
+        "src/hub/session-identity.ts",
+        "src/hub/provenance.ts",
+        "src/hub/channel-project.ts",
+        "src/hub/project.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {
-      "verifiedAgainst": "ce8da3ec141f7ef17e2e1cd6a8104ddc36304efe",
+      "verifiedAgainst": "aaccc30bd32653ba1925220334445e020be21732",
       "paths": [
         "src/adapters/local-worker.ts",
         "src/local/",
@@ -225,7 +234,7 @@
       ]
     },
     "docs/agent-notes/tasks.md": {
-      "verifiedAgainst": "9af51bfd4afbb2ffc8e7b41b6ee474916ad70820",
+      "verifiedAgainst": "aaccc30bd32653ba1925220334445e020be21732",
       "paths": [
         "src/hub/tasks.ts",
         "src/hub/board.ts",
@@ -260,11 +269,18 @@
         "src/hub/deliverable-files.ts",
         "src/hub/sdlc-merge.ts",
         "src/hub/sdlc-mirror.ts",
-        "src/hub/ci-watch.ts"
+        "src/hub/ci-watch.ts",
+        "src/hub/research-campaign.ts",
+        "src/hub/research-experiments.ts",
+        "src/hub/schedules.ts",
+        "src/hub/folder-trigger.ts",
+        "src/hub/handoff.ts",
+        "src/cli/handoff-args.ts",
+        "src/cli/handoff-output.ts"
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "9af51bfd4afbb2ffc8e7b41b6ee474916ad70820",
+      "verifiedAgainst": "aaccc30bd32653ba1925220334445e020be21732",
       "paths": [
         "test/",
         "scripts/check.sh",
@@ -292,7 +308,7 @@
       ]
     },
     "docs/agent-notes/README.md": {
-      "verifiedAgainst": "9af51bfd4afbb2ffc8e7b41b6ee474916ad70820",
+      "verifiedAgainst": "aaccc30bd32653ba1925220334445e020be21732",
       "paths": [
         "src/cli/console-state.ts",
         "src/cli/attention.ts",
@@ -301,7 +317,7 @@
       ]
     },
     "src/cli/help.ts": {
-      "verifiedAgainst": "9af51bfd4afbb2ffc8e7b41b6ee474916ad70820",
+      "verifiedAgainst": "aaccc30bd32653ba1925220334445e020be21732",
       "paths": [
         "src/cli/main.ts",
         "src/cli/launch.ts",
