@@ -22,6 +22,8 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
     || (command === "room" && !["list", "status"].includes(sub ?? ""))
     || (command === "backlog" && sub !== "list") || (command === "release" && !["list", "show"].includes(sub ?? ""))
     || (command === "memory" && sub !== "graph")
+    // #601: a campaign's draft, revise, approve and close are the person's verdicts; only `show` is a read. Without this an agent shell could run them as the person through `--live-test`.
+    || (command === "study" && sub !== "show")
     || (command === "recovery" && (sub === "reattach" || sub === "dispose" && context.repairedFresh === true))
     || (command === "board" && args[0] === "import") || (command === "sdlc" && (args[0] === "record" || args[0] === "accept" || args[0] === "accept-departure"))
     || (command === "bench" && args.find(arg => arg !== "--json") === "run") || command === "pet"
@@ -83,7 +85,7 @@ const peerReadForms: Readonly<Record<string, Readonly<Record<string, PeerReadFor
   sdlc: { status: { positional: 1, displayFlags: sdlcReadDisplayFlags }, explain: { positional: 1, displayFlags: sdlcReadDisplayFlags }, queue: { positional: 1, minimum: 1, displayFlags: sdlcReadDisplayFlags }, release: { positional: 33, minimum: 1, displayFlags: sdlcReadDisplayFlags } },
   release: { show: { positional: 1, minimum: 1, displayFlags: [] } },
   // #601: reading a campaign is harmless for any agent (the hub stubs a private one); draft, revise, approve and close fall to `console`.
-  study: { show: { positional: 1, displayFlags: sdlcReadDisplayFlags } },
+  study: { show: { positional: 1, valueFlags: ["--after"], displayFlags: sdlcReadDisplayFlags } },
   projects: { "": {} },
   models: { status: {} },
   recovery: { status: { positional: 1 } },

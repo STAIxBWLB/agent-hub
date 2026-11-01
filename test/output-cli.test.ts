@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROTOCOL } from "../src/hub/control-client.ts";
@@ -12,9 +13,9 @@ import { classifyPeerCommand } from "../src/cli/identity.ts";
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
-const STUDY_PROJECTION = { id: "rc-0123456789ab", revision: 1, held: true, reasons: ["campaign deadline has passed or is unknown"], sharedPeerLedger: false, discoveryRounds: [{ round: 0, complete: false }],
+const STUDY_PROJECTION = { id: "rc-0123456789ab", revision: 1, held: true, reasons: ["campaign deadline has passed or is unknown"], sharedPeerLedger: false, budgetNamed: true, discoveryRounds: [{ round: 0, complete: false }],
   units: [{ unitId: "alpha", round: 0, taskId: 2, state: "in_progress", purpose: "discovery", intentionalIndependentCheck: false, sourceIds: ["src:0000000000000001", "src:0000000000000002"], duplicateSourceIds: [],
-    handoff: { present: true, complete: false, insufficientEvidence: false, coveredSourceIds: ["src:0000000000000001"] }, budget: { tool_calls: { support: "supported", used: 3, limit: 10 } } },
+    handoff: { present: true, complete: false, insufficientEvidence: false, coveredSourceIds: ["src:0000000000000001"] }, budget: { tool_calls: { support: "enforceable", used: 3, limit: 10 }, tokens: { support: "unavailable", used: null, limit: null }, model_calls: { support: "advisory", used: null, limit: null } } },
   { unitId: "beta", round: 0, taskId: 3, state: "approved", purpose: "discovery", intentionalIndependentCheck: true, sourceIds: [], duplicateSourceIds: [],
     handoff: { present: true, complete: true, insufficientEvidence: false, coveredSourceIds: [] }, budget: {} }] };
 function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; kimiSource?: unknown } = {}) {
@@ -53,7 +54,7 @@ function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; ki
         : req.t === "task" && options.rejectChecked && ["task_assign_checked", "task_unassign"].includes(req.op) ? { ok: false, error: "unknown operation" }
         : req.t === "task" && options.failFullBoard && !Object.keys(req.args ?? {}).length ? { ok: false, error: "full board temporarily unavailable" }
         : req.t === "task" && String(req.op).startsWith("study_") ? { text: JSON.stringify({ id: "rc-0123456789ab", parentTaskId: 7, revision: req.args?.revision ?? 1, status: req.op === "study_approve" ? "approved" : req.op === "study_close" ? "closed" : "draft", unitCount: 0, units: [] }) }
-        : req.t === "task" && req.op === "hub_study_show" ? { text: JSON.stringify(req.args?.id ? STUDY_PROJECTION : [{ id: "rc-0123456789ab", parentTaskId: 7, revision: 1, status: "approved", unitCount: 2, units: [] }]) }
+        : req.t === "task" && req.op === "hub_study_show" ? { text: JSON.stringify(req.args?.id ? STUDY_PROJECTION : req.args?.after ? { campaigns: [{ id: "rc-0123456789ac", parentTaskId: 7, revision: 1, status: "draft", unitCount: 1 }] } : { campaigns: [{ id: "rc-0123456789ab", parentTaskId: 7, revision: 1, status: "approved", unitCount: 2 }], next: "rc-0123456789ab" }) }
         : req.t === "task" ? { text: JSON.stringify(req.args?.ready ? tasks.filter(t => t.state === "proposed" && (t.deps ?? []).every((id: number) => tasks.some(dep => dep.id === id && dep.state === "approved"))) : req.args?.state ? tasks.filter(t => t.state === req.args.state) : tasks) }
         : req.t === "recovery" ? { recovery: { peers: { claude: { id: "claude", state: "idle" } } } }
         : {};
@@ -293,7 +294,18 @@ test("ahub study: parse before connecting, read the contract file, send the righ
   const missing = await f.run(["study", "draft", "7", "nope.json"]); expect(missing.code).toBe(1); expect(missing.stderr).toContain("cannot read the contract file");
   writeFileSync(join(f.root, "bad.json"), "{not json"); const bad = await f.run(["study", "draft", "7", "bad.json"]); expect(bad.code).toBe(1); expect(bad.stderr).toContain("not valid JSON");
   writeFileSync(join(f.root, "big.json"), "x".repeat(70 * 1024)); const big = await f.run(["study", "draft", "7", "big.json"]); expect(big.code).toBe(1); expect(big.stderr).toContain("over 64 KiB");
-  expect(f.requests.filter(r => r.t === "task")).toHaveLength(0);
+  // Review thread on #1031: a FIFO or a device reports size zero, so the old statSync-then-readFileSync check let one block this process or fill its memory. One descriptor now decides.
+  expect(spawnSync("mkfifo", [join(f.root, "pipe.json")]).status).toBe(0);
+  const fifo = await f.run(["study", "draft", "7", "pipe.json"]); expect(fifo.code).toBe(1); expect(fifo.stderr).toMatch(/not a regular file|cannot read the contract file/);
+  symlinkSync("/dev/zero", join(f.root, "zero.json"));
+  const zero = await f.run(["study", "draft", "7", "zero.json"]); expect(zero.code).toBe(1); expect(zero.stderr).toMatch(/not a regular file|cannot read the contract file/);
+  const limit = 64 * 1024, pad = (n: number) => JSON.stringify({ question: "q", pad: "x".repeat(n - JSON.stringify({ question: "q", pad: "" }).length) });
+  writeFileSync(join(f.root, "exact.json"), pad(limit)); writeFileSync(join(f.root, "plusone.json"), pad(limit + 1));
+  expect((await f.run(["study", "draft", "7", "plusone.json"])).stderr).toContain("over 64 KiB");
+  expect(f.requests.filter(r => r.t === "task")).toHaveLength(0);                                      // none of the refused files reached the hub
+  expect((await f.run(["study", "draft", "7", "exact.json"])).stderr).not.toContain("over 64 KiB");   // the cap itself is accepted
+  expect(f.requests.filter(r => r.t === "task" && r.op === "study_draft")).toHaveLength(1);            // and it was sent
+  f.requests.length = 0;
   const draft = await f.run(["study", "draft", "7", "contract.json"]);
   expect(draft.code).toBe(0); expect(draft.stdout).toContain("drafted"); expect(draft.stdout).toContain("ahub study approve rc-0123456789ab 1"); expect(() => JSON.parse(draft.stdout)).toThrow();
   expect(f.requests.find(r => r.t === "task" && r.op === "study_draft")).toMatchObject({ args: { parentTaskId: 7, contract: { question: "q" } } });
@@ -305,8 +317,17 @@ test("ahub study: parse before connecting, read the contract file, send the righ
   expect(shown.code).toBe(0); expect(shown.stdout).toContain("dispatch HELD"); expect(shown.stdout).toContain("campaign deadline has passed"); expect(shown.stdout).toContain("1/2 covered"); expect(shown.stdout).toContain("independent check");
   expect(shown.stdout).not.toContain("\x1b"); expect(() => JSON.parse(shown.stdout)).toThrow();
   const json = await f.run(["study", "show", "rc-0123456789ab", "--json"]); expect(json.code).toBe(0); expect(json.stdout).toBe(JSON.stringify(STUDY_PROJECTION) + "\n");
-  const listed = await f.run(["study", "show"]); expect(listed.stdout).toContain("Research campaigns (1)"); expect(listed.stdout).toContain("rc-0123456789ab");
+  const listed = await f.run(["study", "show"]); expect(listed.stdout).toContain("Research campaigns (1, more follow)"); expect(listed.stdout).toContain("rc-0123456789ab");
+  expect(listed.stdout).toContain("ahub study show --after rc-0123456789ab");                              // the continuation is printed, not left to guesswork
+  const later = await f.run(["study", "show", "--after", "rc-0123456789ab"]);
+  expect(later.stdout).toContain("rc-0123456789ac"); expect(later.stdout).not.toContain("more campaigns");   // the last page names no cursor
+  expect(f.requests.filter(r => r.op === "hub_study_show").at(-1)).toMatchObject({ args: { after: "rc-0123456789ab" } });
+  for (const bad of [["--after"], ["--after", "nope"], ["--after", "rc-0123456789ab", "extra"]]) expect((await f.run(["study", "show", ...bad])).stderr).toContain("usage: ahub study");
+  expect(classifyPeerCommand("study", ["show", "--after", "rc-0123456789ab"])).toBe("allowed");           // an agent shell reads later pages too
   const narrow = await f.run(["study", "show", "rc-0123456789ab"], { COLUMNS: "60" }); for (const line of narrow.stdout.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
+  // Review thread on #1031: a resource whose limit is null still has a support state a person needs (`unavailable`, `advisory`), shown with `-` placeholders, not dropped.
+  expect(shown.stdout).toContain("Budget"); expect(shown.stdout).toMatch(/alpha\s+tool_calls\s+enforceable\s+3\s+10/);
+  expect(shown.stdout).toMatch(/alpha\s+tokens\s+unavailable\s+-\s+-/); expect(shown.stdout).toMatch(/alpha\s+model_calls\s+advisory\s+-\s+-/);
   expect(classifyPeerCommand("study", ["show", "rc-0123456789ab", "--json"])).toBe("allowed");
   expect(classifyPeerCommand("study", ["show"])).toBe("allowed");
   for (const argv of [["approve", "rc-0123456789ab", "1"], ["close", "rc-0123456789ab", "1", "--reason", "x"], ["draft", "7", "c.json"], ["revise", "rc-0123456789ab", "1", "c.json"], ["show", "rc-0123456789ab", "--as-user"], []]) expect(classifyPeerCommand("study", argv), argv.join(" ")).toBe("console");

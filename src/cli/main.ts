@@ -1472,12 +1472,24 @@ const commands: Record<string, () => Promise<void> | void> = {
     const parsed = parseStudyArgs(split.operands);
     if ("usage" in parsed) return fail(parsed.usage);
     const contract = (file: string): unknown => {
+      // One descriptor decides everything: opened non-blocking and without following a final symlink (a FIFO would otherwise block the open), checked to be a regular file with fstat, and
+      // read for at most the cap plus one byte, so a file that grows or is replaced after the check, or a device that reports size zero, cannot exhaust memory or hang this process.
+      const cap = 64 * 1024;
       let text: string;
-      try { const path = resolve(invokedFrom, file), size = statSync(path).size; if (size > 64 * 1024) return fail("the contract file is over 64 KiB"); text = readFileSync(path, "utf8"); }
+      try {
+        const fd = openSync(resolve(invokedFrom, file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try {
+          if (!fstatSync(fd).isFile()) return fail("the contract file is not a regular file");
+          const bytes = Buffer.alloc(cap + 1); let got = 0;
+          while (got < bytes.length) { const n = readSync(fd, bytes, got, bytes.length - got, null); if (!n) break; got += n; }
+          if (got > cap) return fail("the contract file is over 64 KiB");
+          text = bytes.subarray(0, got).toString("utf8");
+        } finally { closeSync(fd); }
+      }
       catch { return fail("cannot read the contract file"); }
       try { return JSON.parse(text); } catch { return fail("the contract file is not valid JSON"); }
     };
-    if (parsed.op === "show") return showToolText(data => parsed.id ? renderStudyShow(data, present.columns) : renderStudyList(data, present.columns), await taskOp("hub_study_show", parsed.id ? { id: parsed.id } : {}), present);
+    if (parsed.op === "show") return showToolText(data => parsed.id ? renderStudyShow(data, present.columns) : renderStudyList(data, present.columns), await taskOp("hub_study_show", parsed.id ? { id: parsed.id } : parsed.after ? { after: parsed.after } : {}), present);
     const request = parsed.op === "draft" ? { parentTaskId: parsed.parentTaskId, contract: contract(parsed.file) }
       : parsed.op === "revise" ? { id: parsed.id, revision: parsed.revision, contract: contract(parsed.file) }
       : parsed.op === "approve" ? { id: parsed.id, revision: parsed.revision } : { id: parsed.id, revision: parsed.revision, reason: parsed.reason };

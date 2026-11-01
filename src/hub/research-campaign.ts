@@ -219,6 +219,8 @@ export interface ResearchProjection {
   held: boolean;
   reasons: string[];
   sharedPeerLedger: boolean;
+  /** Whether the contract names a budget at all. A named budget that cannot be read still has its rows (`unknown`, `unavailable`); with none named the resource labels carry no information. */
+  budgetNamed: boolean;
   units: { unitId: string; round: number; taskId: number | null; state: string; purpose: ResearchUnit["purpose"];
     intentionalIndependentCheck: boolean; sourceIds: string[]; duplicateSourceIds: string[];
     handoff: { present: boolean; complete: boolean; insufficientEvidence: boolean; coveredSourceIds: string[] };
@@ -259,5 +261,5 @@ export function studyProjection(input: ResearchProjectionInput): ResearchProject
   const discoveryRounds = [...new Set(units.filter(unit => unit.purpose === "discovery").map(unit => unit.round))].sort((a, b) => a - b)
     .map(round => ({ round, complete: units.filter(unit => unit.round === round && unit.purpose === "discovery").every(unit => unit.handoff.complete || unit.handoff.insufficientEvidence) }));
   return { id: campaign.id, revision: campaign.revision, held: reasons.length > 0, reasons,
-    sharedPeerLedger: !!contract.budget && input.budget?.id === contract.budget.id && input.budget.kind === "run", units, discoveryRounds };
+    sharedPeerLedger: !!contract.budget && input.budget?.id === contract.budget.id && input.budget.kind === "run", budgetNamed: !!contract.budget, units, discoveryRounds };
 }

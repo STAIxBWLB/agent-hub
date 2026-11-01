@@ -65,7 +65,7 @@ test("the person drafts and approves through the control socket, and every unit 
   expect(approved.units.map((unit: any) => unit.unitId).sort()).toEqual(["alpha", "beta"]);
   const shown = json(await task(r.person, "hub_study_show", { id: draft.id }));
   expect(shown.units.map((unit: any) => unit.unitId).sort()).toEqual(["alpha", "beta"]);
-  expect(json(await task(r.person, "hub_study_show", {}))).toEqual([expect.objectContaining({ id: draft.id, status: "approved", unitCount: 2 })]);
+  expect(json(await task(r.person, "hub_study_show", {}))).toEqual({ campaigns: [expect.objectContaining({ id: draft.id, status: "approved", unitCount: 2 })] });   // one page, no cursor: nothing follows
   const closed = json(await task(r.person, "study_close", { id: draft.id, revision: 1, reason: "fixture done" }));
   expect(closed.status).toBe("closed");
 }, 30_000);
@@ -111,6 +111,10 @@ test("hub_study_show is read-only for every connection and a public campaign sho
   }
   expect((await task(r.agent, "hub_study_show", { id: "not-a-campaign" })).ok).toBe(false);
   expect((await task(r.agent, "hub_study_show", { id: draft.id, extra: 1 })).ok).toBe(false);
+  // The list is paged through the real tool: an unknown field and a malformed cursor are refused, a valid cursor past the end is an empty page.
+  expect((await task(r.agent, "hub_study_show", { extra: 1 })).ok).toBe(false);
+  expect((await task(r.agent, "hub_study_show", { after: "not-a-campaign" })).ok).toBe(false);
+  expect(json(await task(r.agent, "hub_study_show", { after: "rc-ffffffffffff" }))).toEqual({ campaigns: [] });
 }, 30_000);
 
 test("a campaign with a private source shows ids, counts and states only: no source id, question, scope or path, to anyone", async () => {
@@ -245,6 +249,15 @@ test("the real ahub process: an agent shell reads a campaign and is refused ever
   }
   const board = new Board(join(r.stateDir, "hub.db"));
   try { expect(board.researchCampaign(id)!.revision).toBe(2); expect(board.researchCampaign(id)!.status).toBe("draft"); expect(board.researchCampaignBindings(id, 2)).toHaveLength(0); } finally { board.close(); }
+  // Review thread on #1031: `--live-test` delegates an agent shell to the console role for commands the central list does not refuse, so a missing `study` entry would let it approve as the person.
+  for (const argv of [["approve", id, "2"], ["close", id, "2", "--reason", "x"], ["draft", String(r.parent.id), "contract.json"], ["revise", id, "2", "contract2.json"]]) {
+    const refused = await agent("--live-test", "study", ...argv);
+    expect(refused.code, `agent --live-test study ${argv[0]}`).toBe(1);
+    expect(refused.stderr, `agent --live-test study ${argv[0]}`).toContain("live-test cannot write person-attributed content");
+  }
+  expect((await agent("--live-test", "study", "show")).code).toBe(0);                       // the read stays allowed
+  const afterLive = new Board(join(r.stateDir, "hub.db"));
+  try { expect(afterLive.researchCampaign(id)!.revision).toBe(2); expect(afterLive.researchCampaign(id)!.status).toBe("draft"); expect(afterLive.researchCampaignBindings(id, 2)).toHaveLength(0); } finally { afterLive.close(); }
   const approved = await person("study", "approve", id, "2"); expect(approved.code, approved.stderr).toBe(0); expect(approved.stdout).toContain("approved");
 }, 90_000);
 
@@ -261,7 +274,7 @@ test("a campaign survives a daemon restart: show and close still work, and the u
   const person = await r.connect("console");
   const shown = json(await task(person, "hub_study_show", { id: draft.id }));
   expect(shown.units.map((unit: any) => [unit.unitId, unit.taskId]).sort()).toEqual(approved.units.map((unit: any) => [unit.unitId, unit.taskId]).sort());
-  expect(json(await task(person, "hub_study_show", {}))).toEqual([expect.objectContaining({ id: draft.id, status: "approved", unitCount: 2 })]);
+  expect(json(await task(person, "hub_study_show", {}))).toEqual({ campaigns: [expect.objectContaining({ id: draft.id, status: "approved", unitCount: 2 })] });
   const replay = json(await task(person, "study_approve", { id: draft.id, revision: 1 }));   // re-running approve returns the stored mapping and creates nothing
   expect(replay.units.map((unit: any) => unit.taskId).sort()).toEqual(approved.units.map((unit: any) => unit.taskId).sort());
   expect(json(await task(person, "study_close", { id: draft.id, revision: 1, reason: "after restart" })).status).toBe("closed");

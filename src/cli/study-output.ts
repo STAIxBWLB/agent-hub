@@ -7,18 +7,19 @@ const list = (value: unknown): any[] => Array.isArray(value) ? value : [];
 const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? value : 0;
 const STATUS_TONE: Record<string, Tone | undefined> = { approved: undefined, draft: "attention", superseded: "muted", closed: "muted" };
 
-/** `ahub study show` with no id: one row per campaign of this project. */
-export function renderStudyList(rows: unknown, columns?: number): Span[][] {
-  const campaigns = list(rows);
+/** `ahub study show` with no id: one page of campaigns of this project, with the command that continues it when the hub says there is more. */
+export function renderStudyList(page: unknown, columns?: number): Span[][] {
+  const campaigns = list((page as any)?.campaigns), next = typeof (page as any)?.next === "string" ? (page as any).next as string : undefined;
   if (!campaigns.length) return [[s("no research campaigns in this project; a planner or you draft one with `ahub study draft <parent> <contract.json>`", "muted")]];
-  const out: Span[][] = [...heading(`Research campaigns (${campaigns.length})`, columns)];
+  const out: Span[][] = [...heading(`Research campaigns (${campaigns.length}${next ? ", more follow" : ""})`, columns)];
   out.push(...grid(["ID", "REV", "STATUS", "PARENT", "UNITS"], campaigns.map((row: any) => [
     s(row.id, "issueRef"), s(`r${count(row.revision)}`), s(row.status, STATUS_TONE[row.status]), s(`#${count(row.parentTaskId)}`, "taskRef"), s(count(row.unitCount)),
   ]), columns));
+  if (next) out.push(blank, [s(`more campaigns: ahub study show --after ${next}`, "muted")]);
   return out;
 }
 
-const SUPPORT_TONE: Record<string, Tone | undefined> = { supported: undefined, unsupported: "attention", unknown: "attention" };
+const SUPPORT_TONE: Record<string, Tone | undefined> = { enforceable: undefined, supported: undefined, advisory: "muted", unavailable: "attention", unsupported: "attention", unknown: "attention" };
 
 /** `ahub study show <id>`: the coverage and stop projection the hub computed. Held work is said first, with every reason. */
 export function renderStudyShow(projection: unknown, columns?: number): Span[][] {
@@ -37,11 +38,13 @@ export function renderStudyShow(projection: unknown, columns?: number): Span[][]
     return [s(unit.unitId, "issueRef"), s(count(unit.round)), s(unit.taskId == null ? "-" : `#${unit.taskId}`, "taskRef"), s(unit.state), s(unit.purpose), s(evidence, handoff.complete || handoff.insufficientEvidence ? undefined : "attention"),
       s(covered ? `${list(handoff.coveredSourceIds).length}/${covered} covered${note ? `, ${note}` : ""}` : note || "-", "muted")];
   }), columns));
-  const budgeted = units.flatMap((unit: any) => Object.entries(unit.budget ?? {}).filter(([, value]: [string, any]) => value && value.limit !== null).map(([name, value]: [string, any]) => ({ unit: unit.unitId, name, value })));
-  if (budgeted.length) {
+  // Every resource of a unit is shown whenever the campaign names a budget, with its support state: a limit the ledger does not carry (`null`) is a placeholder, not a reason to hide a row that says
+  // `unavailable` or `advisory`. A campaign that names no budget has nothing to say (its `tokens` row reads `unavailable` whatever the ledger is), so the hub's `budgetNamed` decides, not the values.
+  const budgeted = units.flatMap((unit: any) => Object.entries(unit.budget ?? {}).filter(([, value]: [string, any]) => value && typeof value === "object").map(([name, value]: [string, any]) => ({ unit: unit.unitId, name, value })));
+  if (budgeted.length && p?.budgetNamed === true) {
     out.push(blank, ...heading("Budget", columns));
     out.push(...grid(["UNIT", "RESOURCE", "SUPPORT", "USED", "LIMIT"], budgeted.map(({ unit, name, value }) => [
-      s(unit, "issueRef"), s(name), s(value.support, SUPPORT_TONE[value.support]), s(value.used === null ? "unknown" : value.used), s(value.limit),
+      s(unit, "issueRef"), s(name), s(value.support, SUPPORT_TONE[value.support]), s(value.used === null || value.used === undefined ? "-" : value.used), s(value.limit === null || value.limit === undefined ? "-" : value.limit),
     ]), columns));
   }
   return out;

@@ -273,8 +273,8 @@ All new tables live in `hub.db`, created in the `Board` constructor with `CREATE
 
 | Surface | Name | Who |
 |---|---|---|
-| CLI | `ahub study draft <parent> <contract.json>`, `study revise <id> <revision> <contract.json>`, `study approve <id> <revision>`, `study close <id> <revision> --reason`, `study show [<id>] [--json]`, `study experiments [--campaign <id>] [--json]`, `study attest <attempt> <field> <value>`, `study receipt <file>` | approve, attest and receipt are person only; draft and revise are person or planner; show is anyone |
-| Hub tools | `hub_study_draft` and `hub_study_revise` (configured planner only, through `planningAuthority`; they store drafts and never approve), `hub_study_show` (read-only; no id lists this project's campaigns as receipts), `hub_study_handoff` (bound task owner), `hub_experiment_record` (`kind`: `protocol`, `plan`, `attempt`, `event` or `receipt`; task owner), `hub_experiment_show` (read-only) | none of them approves or attests |
+| CLI | `ahub study draft <parent> <contract.json>`, `study revise <id> <revision> <contract.json>`, `study approve <id> <revision>`, `study close <id> <revision> --reason`, `study show [<id> | --after <id>] [--json]`, `study experiments [--campaign <id>] [--json]`, `study attest <attempt> <field> <value>`, `study receipt <file>` | approve, attest and receipt are person only; draft and revise are person or planner; show is anyone |
+| Hub tools | `hub_study_draft` and `hub_study_revise` (configured planner only, through `planningAuthority`; they store drafts and never approve), `hub_study_show` (read-only; no id lists this project's campaigns as receipts, one page of at most 50 as `{ campaigns, next? }`, and `after` continues from the `next` of the previous page), `hub_study_handoff` (bound task owner), `hub_experiment_record` (`kind`: `protocol`, `plan`, `attempt`, `event` or `receipt`; task owner), `hub_experiment_show` (read-only) | none of them approves or attests |
 | CLI (person only) | `ahub study approve-protocol <hash>` | person |
 | Control | `study` (console role, CLI only) | person |
 | Feature | `research_records` | recovery gate |
@@ -301,6 +301,7 @@ Each slice amends this spec in its own PR if it must differ, and updates `docs/d
 - Runner registration is person only in V1. #1018 proposed "the person or conductor". A public key is a trust root, so the conductor path is deferred until a reviewed change gives it the same confirmation as other trust settings.
 - Claim ids in a protocol are free ids until #931 defines claims; they are not validated against a claim store.
 - `ahub study attest` covers `person-attested` fields. #932 names a "person attestation" without a command.
+- The #601 list is paged at the Board query (`LIMIT`, at most 50 rows, id-ordered cursor), as the readback bound requires, so its reply is `{ campaigns, next? }` rather than a bare array; the feature is unreleased, so no caller depends on the array. `ahub study show --after <id>` continues a list. `--live-test` refuses every `study` form but `show`.
 - `hub_study_handoff`, `hub_study_draft` and `hub_study_revise` are new tools. #930 lists only `hub_study_show`, but a handoff needs a write path that is not a task completion, and a planner needs a draft route that is not the person-only CLI.
 - Protocol approval is the person-only `ahub study approve-protocol`; #932 asks for approvals bound to hashes without naming the operation.
 - The budget support map adds an `unknown` label for a unit with no owner yet, since enforceability depends on the owner peer.

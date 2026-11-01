@@ -487,6 +487,18 @@ export class Board {
     return (this.db.query("SELECT DISTINCT id FROM research_campaigns WHERE project=? ORDER BY id").all(project) as { id: string }[]).map(row => row.id);
   }
 
+  /**
+   * One page of a project's campaign ids, in id order: at most `limit` (never more than 50, the spec's readback bound) strictly after the cursor `after`. `next` is the last id of a full page that
+   * has more behind it, to pass as the next `after`; absent when this is the last page. The query itself carries the bound, so a project with many drafts costs one page, not all of them.
+   */
+  researchCampaignPage(project: string, after?: string, limit = 50): { ids: string[]; next?: string } {
+    if (!researchText(project) || after !== undefined && !researchId(after) || !Number.isSafeInteger(limit) || limit < 1) throw researchFailure();
+    const size = Math.min(limit, 50);
+    const rows = this.db.query("SELECT DISTINCT id FROM research_campaigns WHERE project=? AND id>? ORDER BY id LIMIT ?").all(project, after ?? "", size + 1) as { id: string }[];
+    const ids = rows.slice(0, size).map(row => row.id);
+    return rows.length > size ? { ids, next: ids[ids.length - 1]! } : { ids };
+  }
+
   researchCampaign(id: string, revision?: number): ResearchCampaignRecord | undefined {
     if (!researchId(id) || revision !== undefined && !researchInteger(revision)) throw researchFailure();
     const row = (revision === undefined
