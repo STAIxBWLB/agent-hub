@@ -722,7 +722,7 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
 async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   const display = recoveryDisplay();
   const { one, rest } = takeFlags(display.args, ["--to"], []);
-  if (rest.some((a) => !["--dry-run", "--yes"].includes(a)) || (kind === "restart" && one["--to"])) fail("usage: ahub upgrade [--to <version>] [--dry-run] [--yes] | ahub restart [--dry-run] [--yes]");
+  if (rest.some((a) => !["--dry-run", "--yes"].includes(a)) || (kind === "restart" && one["--to"])) fail("usage: ahub upgrade [--project <path|id>] [--to <version>] [--dry-run] [--yes] | ahub restart [--dry-run] [--yes]");
   const yes = rest.includes("--yes"), dry = rest.includes("--dry-run") || (display.json && !yes);
   // #272: on a terminal, with neither flag, the plan is reviewed, applied and followed in one session.
   const interactive = !dry && !yes && humanRecovery(display.json);

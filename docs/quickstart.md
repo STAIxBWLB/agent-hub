@@ -17,7 +17,7 @@ ahub setup                                # installs the channel plugin and a pr
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.25.0
+bun add -g github:STAIxBWLB/agent-hub#v0.26.0
 ahub setup
 ```
 
@@ -27,8 +27,13 @@ From a clone instead: `git clone`, `bun install`, `bun link`.
 
 For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
-move running projects to a newer release later, run `ahub upgrade` in a
-terminal: it reviews the plan with you, applies it and follows it.
+move a running project to a newer release later, run `ahub upgrade` in a
+terminal in that project: it reviews the plan with you, applies it and follows
+it; other projects keep their version.
+
+## Upgrading to 0.26.0
+
+`ahub upgrade` now upgrades one project: the one in the current directory, or the one `--project <path|id>` names; other projects keep their running version (#1039, #1045). From a 0.25.0 CLI, run it in the project directory, since 0.25.0 refuses `--project` for upgrade; it hands over to the 0.26.0 coordinator as before. It no longer updates the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.26.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon. The daemon speaks control protocol 17 and still accepts 16, so a 0.25.0 plugin keeps connecting. Each project keeps its verified runtime across stop and start; start it with a 0.26.0 or later CLI, because an older CLI ignores that record (#1052). A daemon refuses a `hub.db` in a newer format and names the version it needs. `ahub up` now also starts `claude` and `codex` (see [First session](#first-session)): `ahub setup` asks once which agents (`--agents <a,b>`, `none` for no agent), `ahub settings set start.agents <a,b>` changes one project, and `ahub up --no-agents` skips them for one run; a restart, recovery or upgrade relaunch starts none (#1046). An owner can re-file `hub_task_done` on an approved, unmerged task with a new head, which sends it back to review, and a reviewer can withdraw an approval with `changes_requested` (#1049). Signed external runner receipts for research attempts are opt-in: the person registers a runner under `research.runners` in untracked `.agenthub/config.local.json` (#1050). Restart Claude sessions so they load the 0.26.0 plugin.
 
 ## Upgrading to 0.25.0
 

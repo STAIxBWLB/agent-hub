@@ -210,7 +210,16 @@
         "src/hub/session-identity.ts",
         "src/hub/provenance.ts",
         "src/hub/channel-project.ts",
-        "src/hub/project.ts"
+        "src/hub/project.ts",
+        "src/hub/project-runtime-state.ts",
+        "src/hub/project-runtime.ts",
+        "src/hub/runtime-capture-prune.ts",
+        "src/hub/runtime-prune-health.ts",
+        "src/hub/db-schema.ts",
+        "src/hub/protocol-window.ts",
+        "src/hub/start-agents.ts",
+        "src/cli/start-agents-run.ts",
+        "src/cli/runtime-version-warning.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {
@@ -276,7 +285,9 @@
         "src/hub/folder-trigger.ts",
         "src/hub/handoff.ts",
         "src/cli/handoff-args.ts",
-        "src/cli/handoff-output.ts"
+        "src/cli/handoff-output.ts",
+        "src/hub/task-approval.ts",
+        "src/hub/research-runner.ts"
       ]
     },
     "docs/agent-notes/tests.md": {
@@ -304,7 +315,8 @@
         "scripts/progress-tee.sh",
         "scripts/release-prepare.ts",
         "scripts/release-tag.ts",
-        "scripts/lib/release-plan.ts"
+        "scripts/lib/release-plan.ts",
+        "src/hub/orca-env.ts"
       ]
     },
     "docs/agent-notes/README.md": {
