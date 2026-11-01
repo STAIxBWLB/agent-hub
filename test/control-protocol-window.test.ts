@@ -36,7 +36,7 @@ test("control descriptors retain the compatibility floor and modern supported wi
   expect(controlProtocolWindow(readControl(f.root)!)).toEqual({ v: 17, vMin: 16 });
   expect(controlProtocolWindow({ protocol: 16 })).toEqual({ v: 16, vMin: 16 });
   expect(controlProtocolWindow({})).toBeUndefined();
-  for (const malformed of [{ protocol: "16" }, { protocol: null }, { protocol: 16, protocolMax: 17, protocolMin: 18 }, { protocol: 16, protocolMax: Infinity }])
+  for (const malformed of [{ protocol: "16" }, { protocol: null }, { protocol: 6, protocolMin: 16, protocolMax: 17 }, { protocol: 18, protocolMin: 16, protocolMax: 17 }, { protocol: 16, protocolMax: 17, protocolMin: 18 }, { protocol: 16, protocolMax: Infinity }])
     expect(controlProtocolWindow(malformed)).toBeUndefined();
 });
 
@@ -127,6 +127,12 @@ test("a real daemon advertises the legacy floor but welcomes each selected contr
   for (const explicit of [undefined, 16, 17]) {
     const client = await ControlClient.connect(stateDir, { role: "console", projectRoot: root }, 3000, explicit); clean.push(() => client.close());
     expect(client.protocol).toBe(explicit ?? 17);
-    expect((await client.request({ t: "status" })).status).toMatchObject({ protocol: 16, protocolMin: 16, protocolMax: 17 });
+    const status = (await client.request({ t: "status" })).status;
+    expect(status).toMatchObject({ protocol: 16, protocolMin: 16, protocolMax: 17 });
+    const targetFeatures = status.features.filter((feature: string) => feature !== "schema_guard");
+    for (const op of ["prepare", "commit", "inspect"])
+      expect(await client.request({ t: "recovery", op, operationId: "fixture-schema-floor", expectedInstanceId: status.instanceId, targetFeatures }))
+        .toMatchObject({ ok: false, error: expect.stringContaining("target lacks schema_guard") });
+    expect((await client.request({ t: "recovery", op: "inspect", expectedInstanceId: status.instanceId })).recovery.phase).toBeUndefined();
   }
 }, 20_000);

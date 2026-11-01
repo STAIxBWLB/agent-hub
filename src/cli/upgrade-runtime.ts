@@ -255,7 +255,11 @@ export async function inspectRecovery(project: Project, targetFeatures?: readonl
     else blockers = [base.error ?? base.state];
     return {
     state: base.state, peers: [], blockers,
-    ...(control?.instanceId ? { instanceId: control.instanceId } : {}), ...wire, ...(snapshot ? { snapshot } : {}), ...(snapshotError ? { snapshotError } : {}),
+    ...(control?.instanceId ? { instanceId: control.instanceId } : {}),
+    ...(control?.protocol === undefined ? {} : { protocol: control.protocol }),
+    ...(control?.protocolMin === undefined ? {} : { protocolMin: control.protocolMin }),
+    ...(control?.protocolMax === undefined ? {} : { protocolMax: control.protocolMax }),
+    ...(snapshot ? { snapshot } : {}), ...(snapshotError ? { snapshotError } : {}),
     };
   }
   let status = base.status;
@@ -690,10 +694,12 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       }
       // Reuse capability proof only after verifying the cached root and digest still identify these exact bytes.
       const cached = op.targetDigest === target.digest && op.targetRoot === target.root;
-      if (cached && op.targetFeatures !== undefined && !op.targetFeatures.includes("schema_guard")) throw new FinalRefusal("target lacks schema_guard; choose a supporting target before recovery effects");
       // Once every source committed, compatibility cannot be re-applied using mutable project declarations.
       // Package identity/hash and live-test authority above still bind these retained bytes.
       const committed = op.projects?.every(project => ["stopped", "started", "peers-restored", "verified"].includes(project.phase));
+      // A legacy coordinator already chose and started this target. Resume its retained evidence without retroactive staging gates.
+      if (cached && committed && op.schema !== 3) return { ...target, ...(op.targetFeatures === undefined ? {} : { targetFeatures: [...op.targetFeatures] }) };
+      if (cached && op.targetFeatures !== undefined && !op.targetFeatures.includes("schema_guard")) throw new FinalRefusal("target lacks schema_guard; choose a supporting target before recovery effects");
       if (cached && committed && op.targetFeatures !== undefined) {
         return { ...target, targetFeatures: [...op.targetFeatures] };
       }

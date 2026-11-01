@@ -18,7 +18,10 @@ export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, 16, PROTOCO
 
 /** Modern descriptors advertise their maximum separately; old descriptors represent singleton windows. */
 export function controlProtocolWindow(descriptor: { protocol?: unknown; protocolMin?: unknown; protocolMax?: unknown }): ProtocolWindow | undefined {
-  return protocolWindow(descriptor.protocolMax ?? descriptor.protocol, descriptor.protocolMin ?? descriptor.protocol);
+  const legacy = protocolWindow(descriptor.protocol);
+  const window = protocolWindow(descriptor.protocolMax ?? descriptor.protocol, descriptor.protocolMin ?? descriptor.protocol);
+  if (!legacy || !window || legacy.v < window.vMin || legacy.v > window.v) return undefined;
+  return window;
 }
 
 /** Only a launch retries transient transport failures. Refusals and identity mismatches
