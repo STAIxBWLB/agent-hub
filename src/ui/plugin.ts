@@ -147,7 +147,7 @@ function lazyLifecycle(): Lifecycle {
 }
 
 /** Build the provider over an injectable registry and lifecycle (tests use a temp home and fakes). */
-export function createProvider(options: { home: string; registry?: Registry; lifecycle?: Lifecycle; log?: (line: string) => void }): ConsoleProvider {
+export function createProvider(options: { home: string; registry?: Registry; lifecycle?: Lifecycle; log?: (line: string) => void; spaceBudgetMs?: number }): ConsoleProvider {
   const registry = options.registry ?? new Registry(join(options.home, "registry.db"));
   const owned = !options.registry;
   const lifecycle = options.lifecycle ?? lazyLifecycle();
@@ -197,18 +197,26 @@ export function createProvider(options: { home: string; registry?: Registry; lif
    * (new instanceId) restarts its event sequence at zero, so its previous model is dropped.
    */
   const offices = new Map<string, { instanceId: string | null; model: OfficeScene }>();
+  /** Projects are read concurrently; one that has not answered within the budget is left out of this poll (acon wants a snapshot within 5 s). */
+  const SPACE_BUDGET_MS = options.spaceBudgetMs ?? 3_500;
   async function space() {
     const projects = await running();
     for (const id of offices.keys()) if (!projects.some((p) => p.id === id)) offices.delete(id);
     const scenes = [];
-    for (const project of projects) {
-      const snap = await act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "office" }) as Record<string, unknown>;
-      if (snap.ok === false) continue;
+    const snaps = await Promise.all(projects.map(async (project) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), SPACE_BUDGET_MS); });
+      const read = act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "office" }) as Promise<Record<string, unknown>>;
+      try { return await Promise.race([read, late]); } catch { return null; } finally { clearTimeout(timer); }
+    }));
+    for (const [i, project] of projects.entries()) {
+      const snap = snaps[i];
+      if (!snap || snap.ok === false) continue;
       const cached = offices.get(project.id);
       const model = officeModel(snap as never, cached?.instanceId === project.instanceId ? cached.model : null, { cols: 4, now: Date.now() });
       offices.set(project.id, { instanceId: project.instanceId, model });
       const label = projects.length > 1 ? (project.root.split("/").filter(Boolean).pop() ?? project.id) : undefined;
-      scenes.push(officeSpace(model, { id: project.id, ...(label ? { label } : {}) }));
+      scenes.push(officeSpace(model, { id: project.id, ...(label ? { label } : {}) }, Date.now()));
     }
     return mergeSpaces(scenes);
   }
@@ -269,7 +277,7 @@ export function createProvider(options: { home: string; registry?: Registry; lif
 
 const plugin: ConsolePlugin = {
   manifest: {
-    api: 1, tool: "ahub", version, title: "agent-hub", icon: "agents", pollMs: 3000,
+    api: 1, tool: "ahub", version, title: "agent-hub", icon: "agents", pollMs: 2000,
     panels: DASHBOARD_VIEWS.map((id, order) => ({ id, title: TITLES[id], order })),
     capabilities: { actions: [...FORWARDED, ...INBOX_VERBS], confirm: true, multiProject: true, inbox: true, space: true },
   },

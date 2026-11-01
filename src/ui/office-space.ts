@@ -42,7 +42,7 @@ function actorState(condition: string, attached: boolean, approvals: number, nee
  * Maps one project's office scene. `project.id` prefixes every id so scenes from several projects never collide;
  * `project.label` (set when more than one project runs) is prefixed to actor names.
  */
-export function officeSpace(model: OfficeScene, project: { id: string; label?: string }): SpaceScene {
+export function officeSpace(model: OfficeScene, project: { id: string; label?: string }, now?: number): SpaceScene {
   const pre = (id: string | number) => safeId(`${project.id}:${id}`);
   const name = (peer: string) => clip(project.label ? `${project.label} / ${peer}` : peer, 64);
   // Links name the owning project so a multi-project console opens the right one (the panel's show() selects it).
@@ -89,6 +89,8 @@ export function officeSpace(model: OfficeScene, project: { id: string; label?: s
   }
   for (const arc of model.arcs) {
     if (!desks.has(arc.from)) continue;
+    // The model's arc clock stops in a quiet project; with the wall clock, an expired arc never takes a slot under the link cap.
+    if (now !== undefined && Number.isFinite(arc.until) && arc.until <= now) continue;
     const at = Number.isFinite(arc.until) ? new Date(arc.until - 10_000).toISOString() : undefined;
     // A broadcast arc has an empty `to` (office-model contract): it reaches every visible desk but the sender, as on the dashboard.
     const targets = arc.to.length ? arc.to : [...desks];

@@ -19,7 +19,7 @@ afterEach(() => { for (const s of servers.splice(0)) s.stop(true); for (const d 
 const PERMISSION = { t: "permission", id: "perm-1", peer: "kimi", title: "execute: fixture command", createdAt: 1_790_000_000_000, expiresAt: Date.now() + 60_000,
   options: [{ optionId: "yes", kind: "allow_once", name: "Allow" }, { optionId: "no", kind: "reject_once", name: "Deny" }] };
 
-function fixture() {
+function fixture(o: { stallSnapshots?: boolean; spaceBudgetMs?: number } = {}) {
   const home = mkdtempSync(join(tmpdir(), "ahub-acon-")); dirs.push(home);
   const project: ProjectRecord = { id: "p1", root: "/tmp/acon-project", stateDir: join(home, "state"), basePort: 4700, instanceId: "i1", pid: 42 };
   const registry = { get: (id: string) => id === project.id ? project : undefined, list: () => [project], close() {} } as any;
@@ -30,6 +30,7 @@ function fixture() {
     message(ws, data) {
       const m = JSON.parse(String(data));
       if (m.t === "hello") return void ws.send(JSON.stringify({ rid: m.rid, t: "welcome", cwd: project.root, projectId: project.id, instanceId: "i1" }));
+      if (m.t === "ui_snapshot" && o.stallSnapshots) { snapshots.push(m); return; }
       if (m.t === "ui_snapshot") { snapshots.push(m); return void ws.send(JSON.stringify({ rid: m.rid, ok: true, cursor: 1, peers: {}, permissions,
         status: { peers: { kimi: { state: "busy", queued: 2, permissionMode: "default" }, codex: { state: "idle" } } },
         events: [{ seq: 1, event: { t: "envelope", env: { from: "codex", to: ["kimi"], kind: "chat", priority: "status", ts: Date.now(), body: "MARKER-1012 body", refs: { task: "7" } } } }],
@@ -41,7 +42,7 @@ function fixture() {
   mkdirSync(project.stateDir, { recursive: true });
   writeFileSync(join(project.stateDir, "status.json"), JSON.stringify({ pid: process.pid, controlPort: hub.port, protocol: PROTOCOL, cwd: project.root, projectId: project.id, instanceId: "i1" }));
   writeFileSync(join(project.stateDir, "control-token"), "scripted-token");
-  const provider = createProvider({ home, registry, lifecycle });
+  const provider = createProvider({ home, registry, lifecycle, ...(o.spaceBudgetMs ? { spaceBudgetMs: o.spaceBudgetMs } : {}) });
   return { home, provider, actions, snapshots };
 }
 
@@ -165,6 +166,11 @@ describe("acon Space from the office model (#1012 Part 2)", () => {
     const flowing = officeSpace(officeModel({ ...dirty, events: [{ seq: 10, event: { t: "envelope", env: { from: "codex", to: ["pi"], kind: "chat", priority: "status", ts: 3500, body: `${MARKER} new`, refs: { task: "1" } } } }] } as OfficeSnapshotInput, first, { cols: 4, now: 4000 }), { id: "p1" });
     expect(flowing.links).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "message", from: "p1:codex", to: "p1:pi", label: "#1" })]));
     expect(JSON.stringify(flowing)).not.toContain(MARKER);
+    // With the wall clock passed in, an arc whose time has passed is not forwarded (a quiet project's model clock stands still).
+    const flowModel = officeModel({ ...dirty, events: [{ seq: 10, event: { t: "envelope", env: { from: "codex", to: ["pi"], kind: "chat", priority: "status", ts: 3500, body: "x", refs: { task: "1" } } } }] } as OfficeSnapshotInput, first, { cols: 4, now: 4000 });
+    const arcUntil = flowModel.arcs[0]!.until;
+    expect(officeSpace(flowModel, { id: "p1" }, arcUntil - 1).links?.some((l) => l.kind === "message")).toBe(true);
+    expect(officeSpace(flowModel, { id: "p1" }, arcUntil).links?.some((l) => l.kind === "message")).toBe(false);
   });
 
   test("MARKER: no body, detail, approval title, reason or PII text reaches the mapped scene", () => {
@@ -229,6 +235,15 @@ describe("acon Space from the office model (#1012 Part 2)", () => {
     expect(scene.cards.map((c: any) => c.id)).toEqual(expect.arrayContaining(["p1:7", "p1:9"]));
     expect(JSON.stringify(scene)).not.toContain("MARKER-1012");
     expect(plugin.manifest.capabilities?.space).toBe(true);
+    expect(plugin.manifest.pollMs).toBeLessThan(3000); // acon treats a sample gap over 3000 ms as a break in message links
+  });
+
+  test("a project that never answers is left out of the space poll within the budget", async () => {
+    const { provider } = fixture({ stallSnapshots: true, spaceBudgetMs: 200 });
+    const started = Date.now();
+    const { scene } = await provider.snapshot({ after: 0, panel: "space" }) as { scene: any };
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(scene).toEqual({ actors: [], zones: [], cards: [], links: [] });
   });
 });
 
