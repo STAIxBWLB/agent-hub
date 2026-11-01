@@ -201,7 +201,12 @@
         "src/hub/memory-code-head.ts",
         "src/hub/memory-stale-anchors.ts",
         "src/memory/brief.ts",
-        "src/hub/memory-plan-guard.ts"
+        "src/hub/memory-plan-guard.ts",
+        "src/ui/plugin.ts",
+        "src/ui/office-space.ts",
+        "src/cli/acon-register.ts",
+        "src/cli/study.ts",
+        "src/cli/study-output.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {
@@ -260,7 +265,11 @@
         "src/hub/deliverable-files.ts",
         "src/hub/sdlc-merge.ts",
         "src/hub/sdlc-mirror.ts",
-        "src/hub/ci-watch.ts"
+        "src/hub/ci-watch.ts",
+        "src/hub/research-campaign.ts",
+        "src/hub/research-experiments.ts",
+        "src/hub/schedules.ts",
+        "src/hub/folder-trigger.ts"
       ]
     },
     "docs/agent-notes/tests.md": {

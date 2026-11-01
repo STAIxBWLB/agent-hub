@@ -55,6 +55,11 @@ become links. The scene carries labels and states only, never message bodies or 
   headless with one session per task. `ahub sdlc metrics` reads lead times,
   rework and stalls from board history, and
   optional control bands turn a breach into a backlog card.
+- **Research campaigns.** `ahub study` keeps a multi-unit study contract as a draft
+  (a planner drafts it with `hub_study_draft`); only the person approves it, which
+  creates one task per unit, and `ahub study show` reads coverage per unit and
+  source. A unit is covered by its owner's `hub_study_handoff` with evidence, not by
+  a done task.
 - **Shared memory.** Decisions, contracts, fails and findings are kept through the
   first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library,
   in process with no claude-mem worker (short- and long-term tiers, a typed graph,
@@ -75,7 +80,9 @@ become links. The scene carries labels and states only, never message bodies or 
   agent before it runs out of quota, and recovery never replays an
   effect whose outcome is unknown.
 - **Operations.** A terminal console and a local dashboard, one hub per repository or
-  worktree with a machine-wide view, live settings reload, a one-confirmation autonomy
+  worktree with a machine-wide view, live settings reload, machine-local schedules
+  that propose tasks by interval or by a `cron` expression in a time zone
+  (`ahub schedule list`), a one-confirmation autonomy
   preset (`ahub autonomy on|off|status`), structural config
   (instances, review, lifecycle) edited with a validated diff and a backup from the
   console or a dashboard settings session, token usage and quota
@@ -108,7 +115,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-10-31-0.24.0.md) and the
+[release verification report](docs/verification/2026-11-01-0.25.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation
