@@ -1,4 +1,5 @@
 import { parseAttemptReceipt, parseResearchRunners, verifyAttemptReceipt } from "./research-runner.ts";
+import { approvalBinding, approvalText } from "./task-approval.ts";
 import type { InvocationRow } from "./invocations.ts";
 import type { ContextAdmission } from "./context-window.ts";
 import { queueBackpressure, queueBackpressurePolicy, type QueueBackpressureCode, type QueueBackpressurePolicy, type QueueBackpressureStatus, type QueuePressure } from "./queue-backpressure.ts";
@@ -408,7 +409,7 @@ export interface ExperimentAttemptView {
 export interface ExperimentView { attempts: ExperimentAttemptView[]; counts: { all: number; statuses: Record<ExperimentStatus, number> }; nextCursor?: number;
   comparison?: { planHash: string; baselineAttemptId: string; variantAttemptId: string; approved: boolean; private: boolean; projection: ReturnType<typeof comparisonProjection> | "[pii]" } }
 interface ExperimentContext { task: Task; campaign: ResearchCampaignRecord; private: boolean; key: string; fence: ExperimentWriteFence }
-interface CompletionRefresh { revision: number; commit: string }
+interface CompletionRefresh { revision: number; commit: string; state: "in_review" | "approved" }
 interface IdentityLink { repo: string; pr: number; basis: { commit?: string; branch?: string } }
 
 /** What one live check of a task's files says as a whole (#317): `unchanged` only when EVERY file measured unchanged. A change outranks a missing file, which outranks one the hub could not read. */
@@ -921,6 +922,7 @@ export class Tasks {
       ...(h.selfReview ? { selfReview: true } : {}),
       ...(h.reviewerFamily ? { reviewerFamily: screenHistoryText(h.reviewerFamily, "reviewer family") } : {}),
       ...(h.reviewerReason ? { reviewerReason: h.reviewerReason } : {}),
+      ...(h.reviewedHead ? { reviewedHead: h.reviewedHead } : {}),
       ...(h.reviewScope === "code" ? { reviewScope: "code" as const } : {}),
       ...(h.evidenceOnly ? { evidenceOnly: true as const } : {}),
       ...(h.unmetCriteria?.length ? { unmetCriteria: h.unmetCriteria } : {}),
@@ -936,7 +938,7 @@ export class Tasks {
     const symbolRepository = codeSymbols && this.codeSymbolsRepository(task);
     const publicSymbols = codeSymbols && symbolRepository ? publicTaskCodeSymbols(codeSymbols, this.reviewHead(task), symbolRepository.key, this.publicMetadataText) : undefined;
     const handedOff = this.d.board.handoffOrigin(task.id);   // #604: where another project's handoff came from; two ids, never text
-    return { ...rest, ...(handedOff ? { handoffOrigin: { projectId: handedOff.projectId, peer: handedOff.peer, ...(handedOff.originTask === null ? {} : { task: handedOff.originTask }) } } : {}), ...(publicSymbols ? { codeSymbols: publicSymbols } : {}), ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
+    return { ...rest, ...(approvalBinding(task) ? { approval: approvalBinding(task) } : {}), ...(handedOff ? { handoffOrigin: { projectId: handedOff.projectId, peer: handedOff.peer, ...(handedOff.originTask === null ? {} : { task: handedOff.originTask }) } } : {}), ...(publicSymbols ? { codeSymbols: publicSymbols } : {}), ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
@@ -4909,7 +4911,7 @@ export class Tasks {
 
   /** The board as the merge queue and the guarded merge read it (#786): ids, dependencies, privacy, receipts, findings and plans. */
   private deliveryLinks(config: SdlcConfig): DeliveryTask[] {
-    return this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
+    return this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), latestHead: this.reviewHead(t), approval: approvalBinding(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
   }
 
   /**
@@ -5036,6 +5038,8 @@ export class Tasks {
   private mergeRecordCurrent(id:number,by:PeerId,record:MergeRecord,artifactCurrent:()=>boolean):Task|undefined {
     const now=this.d.board.get(id);
     return artifactCurrent() && now && now.sdlc?.repo===record.repo && now.sdlc.pr===record.pr && now.sdlc.reviewedHead===record.head
+      && (!approvalBinding(now) || approvalBinding(now)!.current && approvalBinding(now)!.head === record.head)
+      && (!this.reviewHead(now) || this.reviewHead(now) === record.head)
       && now.state==="approved" && !this.isPii(now) && !this.d.privateTurn?.(by) && this.mergeAuthority(by)
       && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError ? now : undefined;
   }
@@ -5676,7 +5680,7 @@ export class Tasks {
   isChecking = (id: number) => this.checking.has(id);
 
   /** Invalidate stale artifact evidence without changing spec acceptance or open findings. */
-  private completionDraft(task: Task, refresh?: CompletionRefresh): Task {
+  private completionDraft(task: Task, refresh?: Pick<CompletionRefresh, "commit">): Task {
     if (!refresh || !task.sdlc) return task;
     const sdlc = { ...task.sdlc };
     if (sdlc.head !== refresh.commit) { delete sdlc.head; delete sdlc.observed; }
@@ -5689,13 +5693,14 @@ export class Tasks {
   private completionCurrent(id: unknown, by: PeerId, preEffect: boolean, refresh?: CompletionRefresh): Task {
     const task = this.need(id, false, preEffect);
     this.mine(task, by, "owner", preEffect);
-    if (refresh && (task.state !== "in_review" || task.history.length !== refresh.revision))
+    if (refresh && (task.state !== refresh.state || task.history.length !== refresh.revision))
       throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: review changed during re-file; retry on current work`);
     if (preEffect) {
-      if (task.state === "in_review" && !refresh || isClosedTaskState(task.state)) throw new PreEffectToolRefusal(`task #${task.id} is already ${task.state}`);
+      if (task.state === "in_review" && !refresh || isClosedTaskState(task.state) && !(task.state === "approved" && refresh)) throw new PreEffectToolRefusal(`task #${task.id} is already ${task.state}`);
     } else {
-      if (task.state === "in_review" && !refresh || isClosedTaskState(task.state)) throw new Error(`task #${task.id} is already ${task.state}`);
+      if (task.state === "in_review" && !refresh || isClosedTaskState(task.state) && !(task.state === "approved" && refresh)) throw new Error(`task #${task.id} is already ${task.state}`);
     }
+    if (task.sdlc?.merge?.state === "merged") throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: PR is merged`);
     this.ready(task, preEffect);
     if (task.state === "proposed" || task.state === "changes_requested") this.acceptanceCapacity(task);
     if (this.checking.has(task.id)) {
@@ -5705,18 +5710,42 @@ export class Tasks {
     return this.completionDraft(task, refresh);
   }
 
+  /** An approval may reopen only while its linked PR is known not to be merged, even with lifecycle gates off. */
+  private async unmergedForReopen(task: Task, valid: () => Task): Promise<void> {
+    valid();
+    if (task.sdlc?.merge?.state === "merged") throw new PreEffectToolRefusal(`task #${task.id}: PR is merged`);
+    const { repo, pr } = task.sdlc ?? {};
+    if (!repo || !pr) return;
+    if (this.isPii(task)) throw new PreEffectToolRefusal(`task #${task.id}: PR merge state unavailable for private work`);
+    const original = this.need(task.id, false, true);
+    const identity = JSON.stringify([original.sdlc, original.refs, original.history.length]);
+    let state: unknown;
+    try {
+      const reply = await (this.d.sdlc?.gh ?? sdlcGh)(["pr", "view", String(pr), "--repo", repo, "--json", "state"]);
+      if (reply.code === 0) state = JSON.parse(reply.stdout).state;
+    } catch { /* unknown merge state refuses before effects */ }
+    valid();
+    const current = this.need(task.id, false, true);
+    if (JSON.stringify([current.sdlc, current.refs, current.history.length]) !== identity) throw new PreEffectToolRefusal(`task #${task.id}: task changed during merge-state read`);
+    if (state === "MERGED") throw new PreEffectToolRefusal(`task #${task.id}: PR is merged`);
+    if (state !== "OPEN" && state !== "CLOSED") throw new PreEffectToolRefusal(`task #${task.id}: PR merge state unavailable; cannot reopen approval`);
+  }
+
   async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs, deliverables?: unknown): Promise<Task> {
     const requestCheck = this.requestCheck(by);
     const initial = this.need(id, false, true);
     this.mine(initial, by, "owner", true);
     let refresh: CompletionRefresh | undefined;
-    if (initial.state === "in_review") {
+    if (initial.state === "in_review" || initial.state === "approved") {
       const commit = cleanRefs(refs).commit;
       if (!commit || !/^[a-f0-9]{40}$/.test(commit) || commit === this.reviewHead(initial))
-        throw new PreEffectToolRefusal(`task #${initial.id} is already in_review; re-file requires a different full head SHA`);
-      refresh = { revision: initial.history.length, commit };
+        throw new PreEffectToolRefusal(`task #${initial.id} is already ${initial.state}; re-file requires a different full head SHA`);
+      refresh = { revision: initial.history.length, commit, state: initial.state };
     }
-    const valid = () => { requestCheck(); return this.completionCurrent(id, by, true, refresh); };
+    const submittedCommit = cleanRefs(refs).commit;
+    const draft = refresh ?? (submittedCommit && /^[a-f0-9]{40}$/.test(submittedCommit) ? { commit: submittedCommit } : undefined);
+    const valid = () => { requestCheck(); return this.completionDraft(this.completionCurrent(id, by, true, refresh), draft); };
+    if (initial.state === "approved") { await this.unmergedForReopen(initial, valid); valid(); }
     // #509a: a bad claim (a claimed hash, an outside or denied path, a missing file) is refused before any effect, with nothing recorded.
     const claims = deliverables === undefined ? undefined : this.deliverableClaims(deliverables, valid());
     // The PII screen reads the summary of a done that passes these checks (issue #198); they run again after it.
@@ -5738,7 +5767,7 @@ export class Tasks {
     task = current();
     let reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review"); task = current(); }
-    const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, refresh), link, refs), !task.reviewer) : undefined;
+    const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, draft), link, refs), !task.reviewer) : undefined;
     task = current();
     // A member of a silent cohort (issue #107): its done is an intent, and the last of them integrates first.
     const cohort = this.cohorts.of(task.id);
@@ -5772,10 +5801,11 @@ export class Tasks {
     const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
     if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records, requestCheck, refresh);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
+    if (refresh?.state === "approved") { await this.unmergedForReopen(task, valid); task = current(); }
     this.checking.set(task.id, task.owner);
     const checkedRefs = cleanRefs(refs);
     this.warmRepository({ ...task, refs: { ...task.refs, ...checkedRefs } });
-    const pending = this.d.board.update(task.id, by, "done (checking)", { ...(refresh ? { state: "in_progress" as const } : {}), codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...checkedRefs } }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    const pending = this.d.board.update(task.id, by, "done (checking)", { ...(refresh ? { state: "in_progress" as const } : {}), ...(refresh?.state === "approved" && !task.reviewer ? { reviewer: USER } : {}), codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...checkedRefs } }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     if (refresh) { this.ciWatchers.cancel(pending.id); this.heldReviews.delete(pending.id); }
     this.releaseNotice(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
@@ -5925,31 +5955,38 @@ export class Tasks {
     requestCheck();
     // A check's completion carries the records its `done (checking)` bound: the same bytes the owner delivered, not a later read.
     records ??= latestPendingDeliverables(task);
+    const submittedCommit = cleanRefs(refs).commit;
+    const draft = refresh ?? (submittedCommit && /^[a-f0-9]{40}$/.test(submittedCommit) ? { commit: submittedCommit } : undefined);
+    task = this.completionDraft(task, draft);
     let selection = this.poolReview(task, refs);
-    let reviewer = selection?.reviewer ?? task.reviewer, reviewEvidence: PrEvidence | undefined;
+    let reviewer = selection?.reviewer ?? task.reviewer ?? (refresh?.state === "approved" ? USER : undefined), reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
       reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
       requestCheck();
-      task = this.withLink(this.completionCurrent(task.id, by, false, refresh), link, refs);
+      task = this.withLink(this.completionDraft(this.completionCurrent(task.id, by, false, refresh), draft), link, refs);
       selection = this.poolReview(task, refs);
-      reviewer = selection?.reviewer ?? task.reviewer;
+      reviewer = selection?.reviewer ?? task.reviewer ?? (refresh?.state === "approved" ? USER : undefined);
     }
     // A delayed local check needs a new readback; a completion-selected reviewer also needs optional facts in off mode.
     if (!admission && ((reviewer && (this.d.sdlc?.config().mode ?? "off") !== "off") || this.d.prepareReviewBrief)) {
-      admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, refresh), link, refs), !reviewer);
+      admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, draft), link, refs), !reviewer);
       requestCheck();
-      task = this.withLink(this.completionCurrent(task.id, by, false, refresh), link, refs);
+      task = this.withLink(this.completionDraft(this.completionCurrent(task.id, by, false, refresh), draft), link, refs);
     }
     selection = this.poolReview(task, refs);
-    reviewer = selection?.reviewer ?? task.reviewer;
+    reviewer = selection?.reviewer ?? task.reviewer ?? (refresh?.state === "approved" ? USER : undefined);
     const reviewCost: ReviewCost | undefined = reviewer && task.plan && (task.plan.review || task.plan.ci)
       ? { ...cleanCostPlan(task.plan), ...(admission?.ready && admission.head ? { head: admission.head } : {}) } : undefined;
     const routedSummary = selection?.reviewSelection?.blocked ? `${summary ?? ""}\nReview routing: ${this.assignmentNote("pool unavailable", selection)}`.trim() : summary;
+    if (refresh?.state === "approved") {
+      await this.unmergedForReopen(task, () => { requestCheck(); return this.completionCurrent(task.id, by, true, refresh); });
+      task = this.withLink(this.completionDraft(this.completionCurrent(task.id, by, true, refresh), draft), link, refs);
+    }
     const completedRefs = cleanRefs(refs);
     this.warmRepository({ ...task, refs: { ...task.refs, ...completedRefs } });
     const noWrites = this.noWritesRecorded({ ...task, refs: { ...task.refs, ...completedRefs } });
     const capacity = this.capacityBefore(task);
-    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...completedRefs } }), state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, refs: { ...task.refs, ...completedRefs } }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...completedRefs } }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, refs: { ...task.refs, ...completedRefs } }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.queueReviewWritten(next);
     this.writePlannerNotices(next, capacity, next.state === "approved");
     this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id); // a newer head or a move ends the old head's watcher (#785 P1b)
@@ -6378,12 +6415,15 @@ export class Tasks {
 
   /** #520: the rendered review brief of a non-PII task's commit, or why there is none; empty without a commit. */
   briefText(task: Task): string {
-    if (this.isPii(task) || !task.refs.commit) return "";
+    if (this.isPii(task)) return "";
+    const approval = approvalText(approvalBinding(task));
+    const prefix = (brief: string) => [approval, brief].filter(Boolean).join("\n");
+    if (!task.refs.commit) return approval;
     try {
       const brief = this.d.reviewBrief?.(task);
-      if (!brief) return "";
-      return "unavailable" in brief ? `Review brief unavailable: ${brief.unavailable}.` : sanitize(renderReviewBrief(brief));
-    } catch { return "Review brief unavailable: it could not be built."; }
+      if (!brief) return approval;
+      return prefix("unavailable" in brief ? `Review brief unavailable: ${brief.unavailable}.` : sanitize(renderReviewBrief(brief)));
+    } catch { return prefix("Review brief unavailable: it could not be built."); }
   }
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown): Promise<Task> {
@@ -6395,17 +6435,21 @@ export class Tasks {
     let covered: { commit: string | undefined; receipt: string } | undefined;
     let conformanceIdentity: string | undefined;
     let reviewRound: number | undefined;
+    let withdrawalRevision: number | undefined;
+    const withdrawing = this.need(id, false, true).state === "approved" && verdict === "changes_requested";
     const valid = (): Task => {
       requestCheck();
       const refused = authority?.();
       if (refused) throw new PreEffectToolRefusal(refused); // rechecked after every await, right before each write
       const t = this.need(id, false, true);
+      if (withdrawalRevision !== undefined && t.history.length !== withdrawalRevision) throw new PreEffectToolRefusal(`task #${t.id}: approval changed during withdrawal`);
       if (reviewRound !== undefined && this.reviewRequestRevision(t) !== reviewRound) throw new PreEffectToolRefusal(`task #${t.id}: review request changed during the verdict; review the new head`);
       if (covered && (t.refs.commit !== covered.commit || JSON.stringify(t.sdlc ?? null) !== covered.receipt)) throw new PreEffectToolRefusal(`task #${t.id}'s commit or lifecycle receipt changed during the verdict: review the new head`);
       this.mine(t, by, "reviewer", true);
       if (verdict !== "approved" && verdict !== "changes_requested") throw new PreEffectToolRefusal('verdict must be "approved" or "changes_requested"');
-      if (t.state !== "in_review") throw new PreEffectToolRefusal(`task #${t.id} is ${t.state}: cannot move to ${verdict} before its owner calls hub_task_done`);
+      if (t.state !== (withdrawing ? "approved" : "in_review")) throw new PreEffectToolRefusal(`task #${t.id} is ${t.state}: cannot move to ${verdict} before its owner calls hub_task_done`);
       if (conformanceIdentity !== undefined && conformanceIdentity !== this.planIdentity(t)) throw new PreEffectToolRefusal("plan conformance identity changed during verdict");
+      if (t.sdlc?.merge?.state === "merged") throw new PreEffectToolRefusal(`task #${t.id}: PR is merged`);
       findingGuard?.(t);
       return t;
     };
@@ -6417,6 +6461,8 @@ export class Tasks {
     const mode = this.d.sdlc?.config().mode ?? "off";
     const initial = valid(), suppliedFindings = findings !== undefined;
     reviewRound = this.reviewRequestRevision(initial);
+    if (withdrawing) withdrawalRevision = initial.history.length;
+    if (withdrawing) { await this.unmergedForReopen(initial, valid); valid(); }
     let parsed: ReviewFinding[];
     try { parsed = parseReviewFindings(findings, { person: by === USER, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS }); }
     catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid structured findings"); }
@@ -6521,6 +6567,7 @@ export class Tasks {
       task = valid();
       if (cleared && context === JSON.stringify({ title: task.title, detail: task.detail, refs: task.refs, plan: task.plan, signals: task.signals })) candidate = input; // Async screening cannot authorize a verdict under an obsolete role/state.
     }
+    if (withdrawing) { await this.unmergedForReopen(task, valid); task = valid(); }
     const pii = this.isPii(task);
     const reviewContext = by === USER ? undefined : this.d.reviewContext?.(by, task.id);
     const poolRequest = task.history.findLast(entry => ["done", "reviewer changed", "reviewer unavailable"].includes(entry.event));
@@ -6530,7 +6577,7 @@ export class Tasks {
     // #507b: unmet items that start with a recorded criterion id name that criterion. The ids come from the checklist on the board as it is at this
     // write (the `task` just rechecked by valid()), never from the caller; a PII task carries none, its checklist being private.
     const unmetCriteria = pii ? [] : unmetCriteriaIds(items, checklistOf(task.sdlc));
-    const flag = { ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(evidenceOnly ? { evidenceOnly: true as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
+    const flag = { ...(findingHead ? { reviewedHead: findingHead } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(evidenceOnly ? { evidenceOnly: true as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
     if (verdict === "approved") {
       const capacity = this.capacityBefore(task);
       this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);
@@ -6556,7 +6603,7 @@ export class Tasks {
       return next;
     }
     this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);
-    const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: evidenceOnly ? task.rejections : task.rejections + 1 }, note, flag);
+    const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: evidenceOnly ? task.rejections : task.rejections + 1 }, note, flag, task.history.length);
     void this.mirrorVerdict(rejected, by, "changes_requested", reviewedHead ?? rejected.sdlc?.reviewedHead, note, withheld);
     if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));
     if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-criterion proposal unavailable`, () => this.proposeCriterionCandidates(rejected, by, withheld));
@@ -6569,6 +6616,11 @@ export class Tasks {
     if (!evidenceOnly) this.contradict(rejected);
     this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}\n${note ?? ""}`, withheld);
     if (evidenceOnly) this.tellConductorEvidenceOnly(rejected, by);
+    if (withdrawing) {
+      this.releaseNotice(`task ${this.publicTitle(rejected)}: could not tell its owner the approval was withdrawn`, () =>
+        this.tell(rejected, `Task #${rejected.id}: ${by} withdrew approval and requests changes. Review the findings, then call hub_task_done with the updated head.`, pii));
+      return rejected;
+    }
     if (!evidenceOnly && rejected.rejections >= (this.d.escalateAfter?.() ?? ESCALATE_AFTER)) {
       let moved: Task;
       try {

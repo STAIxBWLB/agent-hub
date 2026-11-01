@@ -103,6 +103,28 @@ test("AC2: every gate refuses and names itself: head, checks (failing, pending, 
   expect(await refusals(down)).toEqual(["PR evidence unavailable"]);
 });
 
+test("#1047 an old receipt and unchanged PR cannot merge past a newer reported head or stale verdict binding", async () => {
+  const approved = { head: A, latestHead: A, mismatch: false, current: true };
+  const cases: [string, Partial<DeliveryTask>, string][] = [
+    ["new owner head", { latestHead: B }, "latest reported head differs from approved head"],
+    ["withdrawn verdict", { latestHead: A, approval: { ...approved, current: false } }, "approval is not current at the latest reported head"],
+    ["mismatched verdict", { latestHead: A, approval: { ...approved, mismatch: true } }, "approval is not current at the latest reported head"],
+    ["foreign bound head", { latestHead: A, approval: { ...approved, head: B } }, "approval is not current at the latest reported head"],
+    ["unknown bound head", { latestHead: A, approval: { ...approved, head: undefined } }, "approval is not current at the latest reported head"],
+    ["binding reports newer head", { approval: { ...approved, latestHead: B } }, "approval is not current at the latest reported head"],
+  ];
+  for (const [label, metadata, gate] of cases) {
+    const i = input({ 1: pr() }, [task(1, 1, metadata)]);
+    const outcome = await guardedMerge({ ...i.args, mode: "on" });
+    expect(outcome.ran, label).toBe(false);
+    expect(outcome.decision, label).toMatchObject({ refused: expect.arrayContaining([gate]) });
+    expect(i.gh.merges(), label).toHaveLength(0);
+  }
+  const current = input({ 1: pr() }, [task(1, 1, { latestHead: A, approval: approved })]);
+  expect((await guardedMerge({ ...current.args, mode: "on" })).ran).toBe(true);
+  expect(current.gh.merges()).toHaveLength(1);
+});
+
 /** Which read of one PR this call is: the 1st `pr view` is the decision's, the 2nd the queue's, the 3rd the last one. */
 const viewCounter = () => { let n = 0; return { next: (args: string[]) => (args[0] === "pr" && args[1] === "view" ? ++n : n) }; };
 
@@ -157,14 +179,14 @@ test("a gate that changes between the reads refuses at the SAME head: check, rev
  * decision rested on: the task's state, repo, PR and reviewed head, its privacy, every dependency's state and its edges, its open Important findings for the head, the
  * merge mode and required checks in force, and the asker's authority. `quiet` proves the same rig merges when nothing flips.
  */
-interface LiveBoard { states: Record<number, string>; state: string; findings: NonNullable<DeliveryTask["findings"]>; private: boolean; after: number[]; repo: string; pr: number; reviewedHead: string | undefined; stage: string; config: ReturnType<typeof config>; mode: "on" | "dry-run"; allowed: boolean; gone: boolean }
-const liveBoard = (): LiveBoard => ({ states: { 2: "approved" }, state: "approved", findings: [], private: false, after: [2], repo: "owner/repo", pr: 1, reviewedHead: A, stage: "merge", config: config(), mode: "on", allowed: true, gone: false });
+interface LiveBoard { states: Record<number, string>; state: string; findings: NonNullable<DeliveryTask["findings"]>; private: boolean; after: number[]; repo: string; pr: number; reviewedHead: string | undefined; latestHead: string | undefined; approval: DeliveryTask["approval"]; stage: string; config: ReturnType<typeof config>; mode: "on" | "dry-run"; allowed: boolean; gone: boolean }
+const liveBoard = (): LiveBoard => ({ states: { 2: "approved" }, state: "approved", findings: [], private: false, after: [2], repo: "owner/repo", pr: 1, reviewedHead: A, latestHead: A, approval: { head: A, latestHead: A, mismatch: false, current: true }, stage: "merge", config: config(), mode: "on", allowed: true, gone: false });
 async function heldFinalRead(flip: (board: LiveBoard) => void) {
   const prs: Record<number, World> = { 1: pr({ paths: ["src/a.ts"] }), 2: pr({ state: "MERGED", paths: ["src/b.ts"] }) };
   const board = liveBoard(), counter = viewCounter();
-  const subject = task(1, 1, { after: [2] }), dependency = task(2, 2);
+  const subject = task(1, 1, { after: [2], latestHead: board.latestHead, approval: { ...board.approval! } }), dependency = task(2, 2);
   const gh = fakeGh(prs, { onCall: args => { if (args[0] === "pr" && args[1] === "view" && args[2] === "1" && counter.next(args) === 3) flip(board); } });
-  const fresh = () => board.gone ? undefined : { subject: { ...subject, after: board.after, findings: board.findings, private: board.private, receipt: { ...subject.receipt!, repo: board.repo, pr: board.pr, ...(board.reviewedHead ? { reviewedHead: board.reviewedHead } : { reviewedHead: undefined }), stage: board.stage } }, state: board.state, config: board.config, mode: board.mode, allowed: board.allowed };
+  const fresh = () => board.gone ? undefined : { subject: { ...subject, after: board.after, findings: board.findings, private: board.private, latestHead: board.latestHead, approval: board.approval, receipt: { ...subject.receipt!, repo: board.repo, pr: board.pr, ...(board.reviewedHead ? { reviewedHead: board.reviewedHead } : { reviewedHead: undefined }), stage: board.stage } }, state: board.state, config: board.config, mode: board.mode, allowed: board.allowed };
   const outcome = await guardedMerge({ ...input(prs, [subject, dependency], { taskState: id => board.states[id], tasks: [subject, dependency] }, gh).args, mode: "on", fresh });
   return { outcome, gh };
 }
@@ -178,6 +200,13 @@ const flips: [string, (board: LiveBoard) => void, string | RegExp][] = [
   ["an open Important finding appears for the head", board => { board.findings = [{ head: A, items: [{ id: "f9", pass: "security", severity: "important", disposition: "open" }] }]; }, "open Important finding"],
   ["the reviewed head moves", board => { board.reviewedHead = B; }, "task changed during the merge check: nothing was run"],
   ["the reviewed head is dropped", board => { board.reviewedHead = undefined; }, "task changed during the merge check: nothing was run"],
+  ["the latest reported head moves", board => { board.latestHead = B; }, "task changed during the merge check: nothing was run"],
+  ["the latest reported head is dropped", board => { board.latestHead = undefined; }, "task changed during the merge check: nothing was run"],
+  ["the approval is withdrawn", board => { board.approval!.current = false; }, "task changed during the merge check: nothing was run"],
+  ["the approval bound head moves", board => { board.approval!.head = B; }, "task changed during the merge check: nothing was run"],
+  ["the approval latest head moves", board => { board.approval!.latestHead = B; }, "task changed during the merge check: nothing was run"],
+  ["the approval mismatch appears", board => { board.approval!.mismatch = true; }, "task changed during the merge check: nothing was run"],
+  ["the approval binding is dropped", board => { board.approval = undefined; }, "task changed during the merge check: nothing was run"],
   ["the task is relinked to another PR", board => { board.pr = 9; }, "task changed during the merge check: nothing was run"],
   ["the task is relinked to another repository", board => { board.repo = "owner/other"; }, "task changed during the merge check: nothing was run"],
   ["the task moves to a release stage", board => { board.stage = "release"; }, "release PR: person consent required"],
