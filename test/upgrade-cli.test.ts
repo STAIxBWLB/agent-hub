@@ -345,7 +345,7 @@ await import(${JSON.stringify(main)});
   };
   try {
     const { VERSION } = await import("../src/version.ts");
-    const handed = (flags: string[]) => ["x", "--package", "@staix/agent-hub@99.0.0", "ahub", "upgrade", "--to", "99.0.0", ...flags];
+    const handed = (flags: string[]) => ["x", "--package", "@staix/agent-hub@99.0.0", "ahub", "--project", root, "upgrade", "--to", "99.0.0", ...flags];
     // A dry run without --to: the latest release, named, then handed over with the same flag; its exit code is ours.
     expect(await cli(["upgrade", "--dry-run"])).toEqual({ code: 7, out: "", ran: handed(["--dry-run"]), err: [
       "ahub: the latest release is 99.0.0",

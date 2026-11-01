@@ -80,8 +80,8 @@ test("journal recovery releases a committed offline peer without reconnecting it
   // Close detection is asynchronous; a loaded runner can take longer than a few hundred ms.
   for (const deadline = Date.now() + 5000; Date.now() < deadline && first.bus.peers.get("claude")?.state !== "offline";) await Bun.sleep(10);
   expect(first.bus.peers.get("claude")?.state).toBe("offline");
-  expect((await one.request({ t: "recovery", op: "prepare", operationId: "op-offline", expectedInstanceId: "offline-source" })).recovery.phase).toBe("prepared");
-  expect((await one.request({ t: "recovery", op: "commit", operationId: "op-offline", expectedInstanceId: "offline-source" })).committed).toBe(true);
+  expect((await one.request({ t: "recovery", op: "prepare", operationId: "op-offline", expectedInstanceId: "offline-source", targetFeatures: DAEMON_FEATURES })).recovery.phase).toBe("prepared");
+  expect((await one.request({ t: "recovery", op: "commit", operationId: "op-offline", expectedInstanceId: "offline-source", targetFeatures: DAEMON_FEATURES })).committed).toBe(true);
   await first.stopped;
   const previous = process.env.AGENTHUB_RECOVERY_OPERATION;
   let second: Awaited<ReturnType<typeof startDaemon>>;
@@ -164,13 +164,13 @@ test("recovery RPC is console-only, fences sends, commits, restores and releases
   expect((await consoleOne.request({ t: "recovery", op: "inspect", expectedInstanceId: "wrong" })).ok).toBe(false);
   expect((await peer.request({ t: "recovery", op: "inspect", expectedInstanceId: "instance-1" })).ok).toBe(false);
   expect((await consoleOne.request({ t: "recovery", op: "inspect", expectedInstanceId: "instance-1" })).ok).toBe(true);
-  expect((await consoleOne.request({ t: "recovery", op: "prepare", operationId: "op-1", expectedInstanceId: "instance-1" })).recovery.phase).toBe("prepared");
+  expect((await consoleOne.request({ t: "recovery", op: "prepare", operationId: "op-1", expectedInstanceId: "instance-1", targetFeatures: DAEMON_FEATURES })).recovery.phase).toBe("prepared");
   expect((await consoleOne.request({ t: "send", body: "held" })).ok).toBe(false);
   peer.close();
   for (let n = 0; n < 100 && first.bus.peers.get("claude-2")?.state !== "offline"; n++) await Bun.sleep(5);
   expect(first.bus.peers.get("claude-2")?.state).toBe("offline");
-  await consoleOne.request({ t: "recovery", op: "prepare", operationId: "op-1", expectedInstanceId: "instance-1" });
-  const committed = await consoleOne.request({ t: "recovery", op: "commit", operationId: "op-1", expectedInstanceId: "instance-1" });
+  await consoleOne.request({ t: "recovery", op: "prepare", operationId: "op-1", expectedInstanceId: "instance-1", targetFeatures: DAEMON_FEATURES });
+  const committed = await consoleOne.request({ t: "recovery", op: "commit", operationId: "op-1", expectedInstanceId: "instance-1", targetFeatures: DAEMON_FEATURES });
   expect(committed.committed).toBe(true);
   expect(readRestartSnapshot(stateDir, { projectRoot: options.cwd, projectId: "project-1", operationId: "op-1" })?.peers[0]?.state).toBe("idle");
   await first.stopped;
@@ -194,7 +194,7 @@ test("recovery RPC is console-only, fences sends, commits, restores and releases
   expect((await consoleTwo.request({ t: "recovery", op: "release", operationId: "op-1", expectedInstanceId: "instance-2" })).released).toBe(true);
   expect(JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).recovery.phase).toBe("released");
   expect((await consoleTwo.request({ t: "send", body: "ordinary after release" })).ok).toBe(true);
-  expect((await consoleTwo.request({ t: "recovery", op: "prepare", operationId: "op-2", expectedInstanceId: "instance-2" })).recovery.phase).toBe("prepared");
+  expect((await consoleTwo.request({ t: "recovery", op: "prepare", operationId: "op-2", expectedInstanceId: "instance-2", targetFeatures: DAEMON_FEATURES })).recovery.phase).toBe("prepared");
   expect((await consoleTwo.request({ t: "recovery", op: "abort", operationId: "op-2", expectedInstanceId: "instance-2" })).aborted).toBe(true);
   consoleTwo.close();
   restoredPeer.close();
@@ -259,12 +259,12 @@ test("prepare remains blocked by a pending permission, then preserves a manual p
   const permission = pushes.find((message) => message.t === "permission");
   expect(permission).toBeDefined();
   await console_.request({ t: "pause", peer: "kimi" });
-  const preparing = await console_.request({ t: "recovery", op: "prepare", operationId: "op-1", expectedInstanceId: "instance-1" });
+  const preparing = await console_.request({ t: "recovery", op: "prepare", operationId: "op-1", expectedInstanceId: "instance-1", targetFeatures: DAEMON_FEATURES });
   expect(preparing.recovery.ready).toBe(false);
   console_.send({ t: "permit", id: permission.id, option: "yes" });
   // Pushes are append-only history: permission_closed correlates settlement; native idle makes recovery ready despite the pause.
   await until(() => pushes.some(message => message.t === "permission_closed" && message.id === permission.id) && daemon.bus.peers.get("kimi")?.state === "idle", "permission settled and Kimi native turn ended");
-  const prepared = await console_.request({ t: "recovery", op: "prepare", operationId: "op-1", expectedInstanceId: "instance-1" });
+  const prepared = await console_.request({ t: "recovery", op: "prepare", operationId: "op-1", expectedInstanceId: "instance-1", targetFeatures: DAEMON_FEATURES });
   expect(prepared.recovery.phase).toBe("prepared");
   expect((await console_.request({ t: "status" })).status.peers.kimi.state).toBe("paused");
   expect((await console_.request({ t: "recovery", op: "abort", operationId: "op-1", expectedInstanceId: "instance-1" })).aborted).toBe(true);
@@ -366,7 +366,7 @@ test("a detached peer does not wedge recovery readiness; a changed thread still 
   cleanup.push(() => console_.close());
   const ready = async () => (await console_.request({ t: "recovery", op: "inspect", operationId: "op-wedge", expectedInstanceId: "instance-wedge" })).recovery.ready;
 
-  const prepared = await console_.request({ t: "recovery", op: "prepare", operationId: "op-wedge", expectedInstanceId: "instance-wedge" });
+  const prepared = await console_.request({ t: "recovery", op: "prepare", operationId: "op-wedge", expectedInstanceId: "instance-wedge", targetFeatures: DAEMON_FEATURES });
   expect(prepared.recovery.phase).toBe("prepared");
   expect(prepared.recovery.ready).toBe(true);
 
@@ -401,8 +401,8 @@ test("commit records whether the Claude session has a persisted transcript", asy
     const console_ = await ControlClient.connect(stateDir, { role: "console" });
     const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
     writeFileSync(join(stateDir, "claude-session.json"), JSON.stringify({ instanceId: "instance-persisted", sessionId: "s-old", transcriptPath: transcript }));
-    expect((await console_.request({ t: "recovery", op: "prepare", operationId: "op-persisted", expectedInstanceId: "instance-persisted" })).recovery.phase).toBe("prepared");
-    expect((await console_.request({ t: "recovery", op: "commit", operationId: "op-persisted", expectedInstanceId: "instance-persisted" })).committed).toBe(true);
+    expect((await console_.request({ t: "recovery", op: "prepare", operationId: "op-persisted", expectedInstanceId: "instance-persisted", targetFeatures: DAEMON_FEATURES })).recovery.phase).toBe("prepared");
+    expect((await console_.request({ t: "recovery", op: "commit", operationId: "op-persisted", expectedInstanceId: "instance-persisted", targetFeatures: DAEMON_FEATURES })).committed).toBe(true);
     const snapshot = readRestartSnapshot(stateDir, { projectRoot: stateDir, projectId: "project-persisted", operationId: "op-persisted" });
     expect(snapshot?.peers.find((p) => p.id === "claude")?.sessionPersisted).toBe(persisted);
     console_.close();
@@ -534,8 +534,8 @@ test("a target started twice from one committed snapshot keeps the first target'
   for (const deadline = Date.now() + 5000; Date.now() < deadline && source.bus.peers.get("claude")?.state !== "offline";) await Bun.sleep(10);
   expect((await one.request({ t: "send", body: "kept for claude" })).ok).not.toBe(false);
   expect(source.bus.queued("claude")).toBe(1);
-  expect((await one.request({ t: "recovery", op: "prepare", operationId: "op-twice", expectedInstanceId: "twice-source" })).recovery.phase).toBe("prepared");
-  expect((await one.request({ t: "recovery", op: "commit", operationId: "op-twice", expectedInstanceId: "twice-source" })).committed).toBe(true);
+  expect((await one.request({ t: "recovery", op: "prepare", operationId: "op-twice", expectedInstanceId: "twice-source", targetFeatures: DAEMON_FEATURES })).recovery.phase).toBe("prepared");
+  expect((await one.request({ t: "recovery", op: "commit", operationId: "op-twice", expectedInstanceId: "twice-source", targetFeatures: DAEMON_FEATURES })).committed).toBe(true);
   await source.stopped;
   const startTarget = async (instanceId: string) => {
     const previous = process.env.AGENTHUB_RECOVERY_OPERATION;

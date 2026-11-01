@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { AcpPeer } from "../src/adapters/acp.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "../src/hub/db-timeout.ts";
@@ -203,7 +203,7 @@ test("a quota refusal during the daemon recovery hold is unconfirmed and held wi
   daemon.bus.publish(original);
   await until(() => daemon.bus.stateOf("kimi") === "busy");
   const status = (await console_.request({ t: "status" })).status;
-  expect((await console_.request({ t: "recovery", op: "prepare", operationId: "quota-held", expectedInstanceId: status.instanceId })).ok).toBe(true);
+  expect((await console_.request({ t: "recovery", op: "prepare", operationId: "quota-held", expectedInstanceId: status.instanceId, targetFeatures: DAEMON_FEATURES })).ok).toBe(true);
   await acp.setPermissionMode("ask"); // native refusal was held until this consumed transport barrier
   await until(() => daemon.bus.queueSummary("kimi").needsReview === 1);
   expect(daemon.bus.isPaused("kimi")).toBe(false); expect(daemon.bus.attemptState()).toEqual({});

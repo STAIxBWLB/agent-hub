@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { abortRecovery, abortRefusal, createOperation, disposeRecovery, FinalRefusal, liveProjects, nextActions, nextChoices, planFingerprint, publicOperation, recordRecoveryDelegation, recordRestart, recoveryCommand, registeredProjects, runRecovery, type Inspection, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { acquireRecoveryLock, activeOperation, claimRunner, readOperation, recoveryLock, recoveryRunner, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
 import { exactVersion, packageDigest, registryRelease } from "../src/cli/recovery-package.ts";
-import { PROTOCOL } from "../src/hub/control-client.ts";
+import { PROTOCOL, PROTOCOL_MIN } from "../src/hub/control-client.ts";
 import { inspectRecovery, makeRecoveryDriver, PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
 
 const homes: string[] = [];
@@ -291,7 +291,7 @@ test("protocol-9 source recovery stages only the current protocol target", async
   f.operation.plan.version = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version;
   f.operation.plan.sourceDigest = packageDigest(PACKAGE_ROOT);
   const driver = makeRecoveryDriver(async (argv) => argv[1] === "-e"
-    ? { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [] }), stderr: "" }
+    ? { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, protocolMin: PROTOCOL_MIN, features: ["schema_guard"] }), stderr: "" }
     : { code: 0, stdout: "", stderr: "" });
   const target = await driver.stage(f.operation);
   expect(target.root).toBe(PACKAGE_ROOT);
@@ -547,7 +547,8 @@ test("staging refuses a target that cannot read recovery waivers when a reconnec
   f.operation.sourceRoot = older;
   Object.assign(f.operation.plan, { sourceRoot: older, sourceDigest: packageDigest(older) });
   f.operation.plan.projects[0]!.reconnectOnly = ["claude"];
-  const driver = makeRecoveryDriver(async () => ({ code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [] }), stderr: "" }));
+  f.operation.plan.projects[0]!.source.peers = [{ id: "claude", state: "idle", controlProtocol: PROTOCOL_MIN }];
+  const driver = makeRecoveryDriver(async () => ({ code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, protocolMin: PROTOCOL_MIN, features: ["schema_guard"] }), stderr: "" }));
   await expect(driver.stage(f.operation)).rejects.toThrow("predates recovery waivers");
   await expect(driver.stage(f.operation)).rejects.toBeInstanceOf(FinalRefusal); // the staged target never changes back
   f.operation.sourceRoot = PACKAGE_ROOT;
@@ -990,7 +991,7 @@ test("a failing staging probe is retried, and never run again once the target wa
   const { fingerprint: _ignored, ...body } = f.plan;
   f.plan.fingerprint = planFingerprint(body);
   writeOperation(f.operation.id, f.operation, f.home);
-  const answered = { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [] }), stderr: "" }, killed = { code: 1, stdout: "", stderr: "" };
+  const answered = { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, protocolMin: PROTOCOL_MIN, features: ["schema_guard"] }), stderr: "" }, killed = { code: 1, stdout: "", stderr: "" };
   let probe = killed, probes = 0;
   const real = makeRecoveryDriver(async () => { probes++; return probe; });
   f.driver.stage = real.stage;

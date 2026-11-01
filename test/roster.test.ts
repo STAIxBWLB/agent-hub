@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DEFAULT_CONFIG, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { peerRosterConfig, rosterAllows, staleInstanceKey, type PeerRoster } from "../src/hub/roster.ts";
 import { KNOWN_PEERS } from "../src/hub/peer-catalog.ts";
 import { newEnvelope, USER, type Envelope } from "../src/hub/envelope.ts";
@@ -563,8 +563,8 @@ test("recovery commit and release preserve an off-roster peer's retained work fo
     await first.client.request({ t: "settings_set", key: "roster.claude", value: false, confirm: "claude" });
     const original = newEnvelope("hub", "retained recovery review", { to: ["claude"], kind: "review", priority: "important" }); first.daemon.bus.publish(original);
     const instance = (await first.client.request({ t: "status" })).status.instanceId;
-    expect((await first.client.request({ t: "recovery", op: "prepare", operationId: "roster-recovery", expectedInstanceId: instance })).recovery.phase).toBe("prepared");
-    expect((await first.client.request({ t: "recovery", op: "commit", operationId: "roster-recovery", expectedInstanceId: instance })).committed).toBe(true);
+    expect((await first.client.request({ t: "recovery", op: "prepare", operationId: "roster-recovery", expectedInstanceId: instance, targetFeatures: DAEMON_FEATURES })).recovery.phase).toBe("prepared");
+    expect((await first.client.request({ t: "recovery", op: "commit", operationId: "roster-recovery", expectedInstanceId: instance, targetFeatures: DAEMON_FEATURES })).committed).toBe(true);
     await first.daemon.stopped;
     const recovery = process.env.AGENTHUB_RECOVERY_OPERATION;
     try { process.env.AGENTHUB_RECOVERY_OPERATION = "roster-recovery"; second = await legacyHub(root, false, { claude: false }); }
