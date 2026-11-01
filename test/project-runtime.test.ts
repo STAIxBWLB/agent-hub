@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { stageCurrentRuntime } from "../src/cli/recovery-package.ts";
+import { stageCurrentRuntime, verifyPackage } from "../src/cli/recovery-package.ts";
 import { realPath } from "../src/hub/project.ts";
 import { Registry, type Project } from "../src/hub/registry.ts";
 import { confirmProjectRuntime, recordProjectRuntime, resolveProjectRuntime, verifyProjectRuntime } from "../src/hub/project-runtime.ts";
@@ -207,3 +207,54 @@ for (const change of ["owner-instance", "runtime-kind", "observed-version"] as c
     expect(stateBytes(p)).toBe(before);
   });
 }
+
+
+function gitFixture(cwd: string, args: string[]): void {
+  const result = Bun.spawnSync(["/usr/bin/git", "-C", cwd, ...args], { env: { PATH: "/usr/bin:/bin", HOME: cwd,
+    GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdout: "pipe", stderr: "pipe" });
+  expect(result.exitCode, result.stderr.toString()).toBe(0);
+}
+
+test("#610 a repo-provided executable runtime pointer is refused before selection or overwrite", () => {
+  const f = fixture(), p = f.project(); gitFixture(p.root, ["init", "-q"]);
+  const source = f.source("0.27.0", "repo controlled runtime"), repoRuntime = join(p.root, "repo-runtime"); renameSync(source, repoRuntime);
+  const runtime: ProjectRuntimeSelection = { root: repoRuntime, version: "0.27.0", digest: verifyPackage(repoRuntime, "0.27.0"), kind: "restart" };
+  f.bind(p, runtime); // The untracked, local publication is initially allowed.
+  gitFixture(p.root, ["add", "-f", ".agenthub/state/runtime.json", "repo-runtime"]);
+  const before = stateBytes(p);
+  expect(() => readProjectRuntime(p)).toThrow(/committed to git/);
+  expect(() => resolveProjectRuntime(p, "0.28.0", f.source("0.28.0"), f.registry)).toThrow(/committed to git/);
+  expect(() => f.bind(p, runtime)).toThrow(/committed to git/);
+  expect(stateBytes(p)).toBe(before);
+  rmSync(projectRuntimeFile(p));
+  expect(() => f.bind(p, runtime)).toThrow(/committed to git/); // A tracked but absent leaf is not first-use authority.
+  expect(existsSync(projectRuntimeFile(p))).toBe(false);
+});
+
+test("#610 a Git marker with indeterminate runtime-file trust refuses instead of accepting valid JSON", () => {
+  const f = fixture(), p = f.project(), runtime = retain(f, p), before = stateBytes(p);
+  mkdirSync(join(p.root, ".git"));
+  expect(() => readProjectRuntime(p)).toThrow(/could not confirm/);
+  expect(() => f.bind(p, runtime.selection)).toThrow(/could not confirm/);
+  expect(stateBytes(p)).toBe(before);
+});
+
+test("#610 custom state in another repository must be untracked in that containing repository", () => {
+  const f = fixture(), original = f.project(), stateRepo = join(f.root, "state-repository"), state = join(stateRepo, "state");
+  mkdirSync(stateRepo); gitFixture(stateRepo, ["init", "-q"]);
+  const p = f.registry.register(original.root, state), runtime = f.capture(); f.bind(p, runtime.selection);
+  expect(readProjectRuntime(p)).toMatchObject(runtime.selection);
+  gitFixture(stateRepo, ["add", "-f", "state/runtime.json"]);
+  const before = stateBytes(p);
+  expect(() => readProjectRuntime(p)).toThrow(/committed to git/);
+  expect(() => resolveProjectRuntime(p, "0.28.0", runtime.sourceRoot, f.registry)).toThrow(/committed to git/);
+  expect(() => f.bind(p, runtime.selection)).toThrow(/committed to git/);
+  expect(stateBytes(p)).toBe(before);
+});
+
+test("#610 a nested state repository cannot hide a tracked runtime from the outer .agenthub policy", () => {
+  const f = fixture(), p = f.project(), runtime = retain(f, p); gitFixture(p.root, ["init", "-q"]); gitFixture(p.stateDir, ["init", "-q"]);
+  gitFixture(p.stateDir, ["add", "-f", "runtime.json"]);
+  expect(() => readProjectRuntime(p)).toThrow(/committed to git/);
+  expect(() => f.bind(p, runtime.selection)).toThrow(/committed to git/);
+});

@@ -3,7 +3,7 @@ import { stageCurrentRuntime, verifyRecoveryTarget, newerVersion, exactVersion }
 import { hubHome, realPath } from "./project.ts";
 import { Registry, type Project } from "./registry.ts";
 import { processLiveness } from "../pi/process-signature.ts";
-import { readProjectRuntime, writeProjectRuntimeState, type ProjectRuntimeSelection } from "./project-runtime-state.ts";
+import { readProjectRuntime, writeProjectRuntimeState, type ProjectRuntimeIdentity, type ProjectRuntimeSelection } from "./project-runtime-state.ts";
 export { readProjectRuntime } from "./project-runtime-state.ts";
 export type { ProjectRuntimeIdentity, ProjectRuntimeSelection } from "./project-runtime-state.ts";
 
@@ -17,15 +17,19 @@ export function verifyProjectRuntime(runtime: ProjectRuntimeSelection): ProjectR
   } catch { throw projectRuntimeRefusal(runtime.version, "recorded runtime is missing or changed"); }
 }
 
-/** Selectors first ship in 0.26.0; unmodified earlier published CLIs cannot honor this record. */
-export function resolveProjectRuntime(project: Project, invokingVersion: string, sourceRoot = resolve(import.meta.dir, "../.."), registry?: Registry): ProjectRuntimeSelection {
+/** Read-only caller admission also covers an already-running daemon; no capture is staged or hashed here. */
+export function readProjectRuntimeForCaller(project: Project, invokingVersion: string): ProjectRuntimeIdentity | undefined {
   exactVersion(invokingVersion);
   const retained = readProjectRuntime(project);
-  if (retained) {
-    // ponytail: only updated resolver code honors runtime.json; bootstrap shared CLI to 0.26.0+ before relying on this floor.
-    if (newerVersion(retained.version, invokingVersion)) throw projectRuntimeRefusal(retained.version);
-    return verifyProjectRuntime(retained);
-  }
+  // ponytail: only updated resolver code honors runtime.json; bootstrap shared CLI to 0.26.0+ before relying on this floor.
+  if (retained && newerVersion(retained.version, invokingVersion)) throw projectRuntimeRefusal(retained.version);
+  return retained;
+}
+
+/** Selectors first ship in 0.26.0; unmodified earlier published CLIs cannot honor this record. */
+export function resolveProjectRuntime(project: Project, invokingVersion: string, sourceRoot = resolve(import.meta.dir, "../.."), registry?: Registry): ProjectRuntimeSelection {
+  const retained = readProjectRuntimeForCaller(project, invokingVersion);
+  if (retained) return verifyProjectRuntime(retained);
   const staged = stageCurrentRuntime(sourceRoot, invokingVersion, hubHome(), registry);
   return { ...staged, kind: "restart" };
 }

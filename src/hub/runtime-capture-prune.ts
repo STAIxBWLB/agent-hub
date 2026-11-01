@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { verifyPackage } from "../cli/recovery-package.ts";
+import { verifyPackage, verifyRecoveryTarget } from "../cli/recovery-package.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 import { hubHome, realPath } from "./project.ts";
 import { readProjectRuntime } from "./project-runtime-state.ts";
@@ -84,7 +84,14 @@ function retainedRoots(home: string, registry: Registry): Set<string> {
       || project.instanceId !== null && (typeof project.instanceId !== "string" || !project.instanceId)
       || project.pid !== null && (!Number.isSafeInteger(project.pid) || project.pid < 1)) fail("project registry runtime inventory is invalid");
     const runtime = readProjectRuntime(project);
-    if (runtime) roots.add(pathValue(runtime.root));
+    if (runtime) {
+      try {
+        const root = realPath(runtime.root);
+        if (root !== runtime.root || verifyRecoveryTarget(runtime.kind, root, runtime.version) !== runtime.digest)
+          fail("project runtime package reference is missing or changed");
+        roots.add(root);
+      } catch { fail("project runtime package reference cannot be verified"); }
+    }
     const active = project.instanceId !== null && (project.pid === null || processLiveness(project.pid, project.pidSignature) !== "gone");
     if (active && (!runtime || runtime.instanceId !== project.instanceId)) fail("a live or uncertain project has no matching retained runtime identity");
     if (!project.instanceId && optionalInfo(join(project.stateDir, "status.json"))) {
@@ -126,6 +133,15 @@ function retainedRoots(home: string, registry: Registry): Set<string> {
   }
   return roots;
 }
+function knownLayout(root: string, directories: readonly string[], files: readonly string[], optionalDirectories: readonly string[] = []): void {
+  const names = readdirSync(root), allowed = new Set([...directories, ...files, ...optionalDirectories]);
+  if ([...directories, ...files].some(name => !names.includes(name))) fail("a runtime capture known asset layout is incomplete");
+  for (const name of names) {
+    const info = lstatSync(join(root, name));
+    if (!allowed.has(name) || info.isSymbolicLink() || (files.includes(name) ? !info.isFile() : !info.isDirectory()))
+      fail("a runtime capture contains an unknown asset layout");
+  }
+}
 function eligibleCaptures(home: string): Capture[] {
   const releases = join(home, "releases"), captures: Capture[] = [];
   if (!directory(releases)) return captures;
@@ -136,16 +152,15 @@ function eligibleCaptures(home: string): Capture[] {
       const match = CAPTURE.exec(entry.name);
       if (!match || match[0] !== entry.name || !entry.isDirectory() || entry.isSymbolicLink()) continue;
       const root = join(versionRoot, entry.name), info = lstatSync(root), digest = match[1]!;
-      if (verifyPackage(root, version.name, { ownDependencies: true }) !== digest) fail("a runtime capture failed identity or digest verification");
-      const allowed = new Set(["src", "plugins", "templates", ".claude-plugin", "package.json", "README.md", "LICENSE", "CHANGELOG.md", "node_modules"]);
-      if (readdirSync(root).some(name => !allowed.has(name) || lstatSync(join(root, name)).isSymbolicLink())) fail("a runtime capture contains an unknown layout");
+      knownLayout(root, ["src", "plugins", "templates", ".claude-plugin"], ["package.json", "README.md", "LICENSE", "CHANGELOG.md"], ["node_modules"]);
       const modules = join(root, "node_modules");
       if (optionalInfo(modules)) {
-        if (!directory(modules) || readdirSync(modules).some(name => name !== "@staix")) fail("a runtime capture contains unknown dependencies");
+        knownLayout(modules, ["@staix"], []);
         const scope = join(modules, "@staix"), memory = join(scope, "agent-mem");
-        if (!directory(scope) || readdirSync(scope).some(name => name !== "agent-mem") || !directory(memory)
-          || readdirSync(memory).some(name => !["src", "bin", "package.json", "README.md", "LICENSE"].includes(name))) fail("a runtime capture contains unknown dependencies");
+        knownLayout(scope, ["agent-mem"], []);
+        knownLayout(memory, ["src", "bin"], ["package.json", "README.md", "LICENSE"]);
       }
+      if (verifyPackage(root, version.name, { ownDependencies: true }) !== digest) fail("a runtime capture failed identity or digest verification");
       captures.push({ root, version: version.name, digest, dev: info.dev, ino: info.ino, modified: info.mtimeMs });
     }
   }

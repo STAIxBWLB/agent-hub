@@ -1,4 +1,4 @@
-import { resolveProjectRuntime, recordProjectRuntime, confirmProjectRuntime, projectRuntimeRefusal, type ProjectRuntimeSelection } from "./project-runtime.ts";
+import { resolveProjectRuntime, recordProjectRuntime, confirmProjectRuntime, readProjectRuntimeForCaller, projectRuntimeRefusal, type ProjectRuntimeSelection } from "./project-runtime.ts";
 import { pruneRuntimeCaptures } from "./runtime-capture-prune.ts";
 import { isDatabaseBusyReply, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { spawn } from "node:child_process";
@@ -181,9 +181,14 @@ export async function startProject(project: Project, options: { unattended?: boo
   try {
     const current = registry.get(project.id);
     if (!current || current.root !== project.root || current.stateDir !== project.stateDir) throw new Error("project registration changed; refresh before starting");
+    const admitRunningRuntime = () => {
+      const fresh = registry.get(project.id);
+      if (!fresh || fresh.root !== project.root || fresh.stateDir !== project.stateDir) throw new Error("project registration changed; refresh before starting");
+      readProjectRuntimeForCaller(fresh, VERSION);
+    };
     const before = await inspectProject(current);
     options.current?.();
-    if (before.state === "running") return before.status;
+    if (before.state === "running") { admitRunningRuntime(); return before.status; }
     if (before.state !== "stopped" && before.state !== "starting") throw new Error(before.error ?? before.state);
     if (!existsSync(join(project.root, ".agenthub", "config.json"))) throw new Error("project is not initialized; run ahub init there first");
     let launchedRuntime: ProjectRuntimeSelection | undefined;
@@ -227,6 +232,7 @@ export async function startProject(project: Project, options: { unattended?: boo
       const observed = await inspectProject(registry.get(project.id) ?? project);
       options.current?.();
       if (observed.state === "running") {
+        admitRunningRuntime();
         if (launchedRuntime) confirmProjectRuntime(project, launchedRuntime, observed.status, registry);
         // Unknown references defer maintenance; cache cleanup never changes a confirmed startup outcome.
         try { pruneRuntimeCaptures(); } catch { /* retain captures on unreadable inventory or cleanup failure */ }

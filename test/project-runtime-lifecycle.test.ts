@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -37,13 +37,13 @@ async function fixture() {
   const lifecycle = await import("../src/hub/lifecycle.ts"), manager = await import("../src/hub/manager.ts");
   let registry = new Registry(join(env.AGENTHUB_HOME!, "registry.db")), packages = 0;
   const owners: Owner[] = [], projects: Project[] = [];
-  const fake = (marker: string) => `
+  const fake = (marker: string, version = VERSION, readyGate?: string) => `
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { Registry } from ${JSON.stringify(resolve(import.meta.dir, "../src/hub/registry.ts"))};
 import { processSignature } from ${JSON.stringify(resolve(import.meta.dir, "../src/pi/process-signature.ts"))};
-const fixture = ${JSON.stringify(id)}, marker = ${JSON.stringify(marker)}, version = ${JSON.stringify(VERSION)};
+const fixture = ${JSON.stringify(id)}, marker = ${JSON.stringify(marker)}, version = ${JSON.stringify(version)};
 const cwd = process.env.AGENTHUB_PROJECT_DIR, stateDir = process.env.AGENTHUB_STATE_DIR;
 if (!cwd || !stateDir || !process.argv.includes('daemon')) throw new Error('fixture daemon arguments missing');
 const registry = new Registry(), project = registry.list().find(row => row.root === cwd && row.stateDir === stateDir);
@@ -68,6 +68,9 @@ const stop = () => {
 };
 for (const signal of ['SIGINT','SIGTERM','SIGHUP','SIGQUIT']) process.on(signal, stop);
 if (!registry.claim(project.id, instanceId, process.pid, pidSignature)) { stop(); throw new Error('fixture claim refused'); }
+${readyGate ? `writeFileSync(${JSON.stringify(`${readyGate}.claimed`)}, instanceId);
+for (let attempt = 0; attempt < 2000 && !existsSync(${JSON.stringify(readyGate)}); attempt++) await Bun.sleep(5);
+if (!existsSync(${JSON.stringify(readyGate)})) { stop(); throw new Error('fixture readiness gate was not released'); }` : ""}
 server = Bun.serve({ hostname:'127.0.0.1',port:0,
   fetch(req,server) {
     if (req.headers.has('origin')) return new Response('origin refused',{status:403});
@@ -107,14 +110,14 @@ writeFileSync(join(stateDir,'status.json'),JSON.stringify(status));
       task_sweep: { enabled: false }, approvals: { notify: false }, terminal: { open: [] } }));
     const value = registry.register(cwd); projects.push(value); return value;
   };
-  const capture = (marker: string) => {
+  const capture = (marker: string, version = VERSION, readyGate?: string) => {
     const source = join(root, `fake-package-${++packages}`);
-    put(source, "package.json", JSON.stringify({ name: "@staix/agent-hub", version: VERSION }));
-    put(source, "src/cli/main.js", "// synthetic entry identity only\n"); put(source, "src/cli/main.ts", fake(marker));
-    put(source, "plugins/agent-hub/.claude-plugin/plugin.json", JSON.stringify({ name: "agent-hub", version: VERSION }));
+    put(source, "package.json", JSON.stringify({ name: "@staix/agent-hub", version }));
+    put(source, "src/cli/main.js", "// synthetic entry identity only\n"); put(source, "src/cli/main.ts", fake(marker, version, readyGate));
+    put(source, "plugins/agent-hub/.claude-plugin/plugin.json", JSON.stringify({ name: "agent-hub", version }));
     for (const directory of ["templates", ".claude-plugin"]) mkdirSync(join(source, directory));
     for (const name of ["README.md", "LICENSE", "CHANGELOG.md"]) put(source, name, `fixture ${name}\n`);
-    const runtime: ProjectRuntimeSelection = { ...stageCurrentRuntime(source, VERSION, env.AGENTHUB_HOME!, registry), kind: "restart" };
+    const runtime: ProjectRuntimeSelection = { ...stageCurrentRuntime(source, version, env.AGENTHUB_HOME!, registry), kind: "restart" };
     return { source, runtime };
   };
   const bind = (p: Project, runtime: ProjectRuntimeSelection) => recordProjectRuntime(p, runtime, null, registry);
@@ -239,3 +242,52 @@ test("#610 current mutable-source internal daemon cannot impersonate a byte-iden
     await f.close();
   }
 }, 20_000);
+
+
+type LifecycleFixture = Awaited<ReturnType<typeof fixture>>;
+const newerFixtureVersion = () => `${Number(VERSION.split(".")[0]) + 1}.0.0`;
+function launchFixtureRuntime(f: LifecycleFixture, p: Project, runtime: ProjectRuntimeSelection) {
+  return Bun.spawn([process.execPath, join(runtime.root, "src/cli/main.ts"), "daemon"], {
+    cwd: p.root, env: { ...f.env, AGENTHUB_PROJECT_DIR: p.root, AGENTHUB_STATE_DIR: p.stateDir }, stdout: "ignore", stderr: "pipe",
+  });
+}
+async function fixtureBarrier(child: ReturnType<typeof launchFixtureRuntime>, condition: () => boolean) {
+  const deadline = Date.now() + 10_000;
+  while (!condition() && child.exitCode === null && Date.now() < deadline) await Bun.sleep(5);
+  if (child.exitCode !== null && !condition()) throw new Error(`owned fake runtime exited before its barrier: ${await new Response(child.stderr).text()}`);
+  expect(condition(), "owned fake runtime did not reach its readiness barrier").toBe(true);
+}
+
+for (const waiting of [false, true]) {
+  test(`#610 updated older caller refuses a newer ${waiting ? "competing starter" : "already-running runtime"} before returning startup success`, async () => {
+    const f = await fixture(), newer = newerFixtureVersion();
+    let child: ReturnType<typeof launchFixtureRuntime> | undefined;
+    try {
+      const p = f.project(waiting ? "newer-competing-starter" : "newer-already-running");
+      const gate = waiting ? join(f.root, "publish-newer-runtime") : undefined;
+      const selected = f.capture("newer fixture runtime", newer, gate); f.bind(p, selected.runtime);
+      const before = readFileSync(projectRuntimeFile(p), "utf8");
+      child = launchFixtureRuntime(f, p, selected.runtime);
+      if (gate) await fixtureBarrier(child, () => existsSync(`${gate}.claimed`));
+      else await fixtureBarrier(child, () => {
+        try { return JSON.parse(readFileSync(join(p.stateDir, "status.json"), "utf8")).pid === child!.pid; } catch { return false; }
+      });
+      f.remember(p);
+      const claim = f.registry.get(p.id), releases = join(f.env.AGENTHUB_HOME!, "releases");
+      const inventory = () => readdirSync(releases).sort().map(version => [version, readdirSync(join(releases, version)).sort()]);
+      const capturesBefore = inventory();
+      let currentChecks = 0, released = false;
+      const call = f.lifecycle.startProject(p, { env: f.env, current: () => {
+        if (++currentChecks === 2 && gate) { writeFileSync(gate, "publish readiness now"); released = true; }
+      } });
+      await expect(call).rejects.toThrow(`this project runs ${newer}; use ${newer} or later / ahub upgrade`);
+      if (waiting) expect(released).toBe(true); // The caller saw starting, then observed the other starter's readiness.
+      expect(readFileSync(projectRuntimeFile(p), "utf8")).toBe(before);
+      expect(f.registry.get(p.id)).toEqual(claim);
+      expect(inventory()).toEqual(capturesBefore);
+    } finally {
+      if (child) { if (child.exitCode === null) child.kill("SIGTERM"); await child.exited; }
+      await f.close();
+    }
+  }, 20_000);
+}

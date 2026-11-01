@@ -3046,7 +3046,9 @@ With no runtime record, the first managed startup captures the invoking package
 and its exact first-party memory core under
 `~/.agenthub/releases/<VERSION>/source-<digest>/`. Existing records with invalid
 bindings or missing/changed captures refuse rather than selecting another
-package. Capture reuse does not depend on a mutable global installation. Scoped
+package. Runtime selection is machine-local state: a Git-tracked runtime record
+or indeterminate Git tracking check refuses before launch. Plain directories
+without a repository remain supported. Capture reuse does not depend on a mutable global installation. Scoped
 upgrade targets use the same version directory, with the verified registry
 install kept separately in `registry/`. Recovery uses its authority receipt's
 exact target path and records that selection through the updated startup path.
@@ -3059,8 +3061,8 @@ bootstrap floor is raised for runtime selection. Tests of the updated resolver
 are not receipts from those older published binaries.
 
 After a confirmed new startup, cache maintenance keeps the newest three verified
-source captures per version plus every registered runtime and retained recovery
-reference. Publication, selection and pruning share the registry writer lock.
+source captures per version plus every registered runtime, live manager runtime
+and retained recovery reference. Publication, selection and pruning share the registry writer lock.
 Active recovery, uncertain owners or an unreadable/incomplete inventory defer
 all deletion. Only verified versioned `source-<digest>` directories are eligible;
 registry installs, unversioned coordinator sources, unknown layouts and symlinks

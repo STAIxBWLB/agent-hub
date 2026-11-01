@@ -1,7 +1,10 @@
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { isAbsolute, join, normalize } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative } from "node:path";
 import type { Project } from "./registry.ts";
+import { configRefusal, configRepositoryPresent } from "./config-trust.ts";
+import { childEnv } from "./child-process.ts";
+import { hubGitSync } from "./git.ts";
 
 export type RuntimeProject = Pick<Project, "id" | "root" | "stateDir">;
 export interface ProjectRuntimeSelection { version: string; root: string; digest: string; kind: "restart" | "upgrade" }
@@ -27,8 +30,43 @@ export function parseProjectRuntime(project: RuntimeProject, input: unknown): Pr
     version: row.version, root: row.root, digest: row.digest, kind: row.kind, instanceId: row.instanceId as string | null };
 }
 
+/** Plain folders remain supported; where a Git marker exists, unknown is never machine-local trust. */
+function requireRuntimeTrust(project: RuntimeProject): void {
+  const file = projectRuntimeFile(project), local = relative(join(project.root, ".agenthub"), file);
+  const refuse = (why: string): never => { throw new Error(`project runtime selection is machine-local: ${why}`); };
+  if (local !== ".." && !local.startsWith("../") && !isAbsolute(local) && configRepositoryPresent(project.root)) {
+    const why = configRefusal(project.root, local); if (why) refuse(why);
+  }
+  const checked = new Set<string>();
+  for (const cwd of new Set([project.root, dirname(file)])) {
+    if (!configRepositoryPresent(cwd)) continue;
+    let at = cwd;
+    while (!existsSync(at) && dirname(at) !== at) at = dirname(at);
+    const options = { encoding: "utf8" as const, env: childEnv(process.env), maxBuffer: 8 * 1024 * 1024 };
+    const top = hubGitSync(["-C", at, "rev-parse", "--show-toplevel"], options);
+    if (top.status !== 0 || !isAbsolute(top.stdout.trim())) refuse("git could not confirm runtime.json is untracked");
+    const root = top.stdout.trim(), selected = relative(root, file);
+    if (checked.has(root)) continue;
+    checked.add(root);
+    const tracked = hubGitSync(["-C", root, "ls-files", "-s", "-z", "--"], options);
+    if (tracked.status !== 0) refuse("git could not confirm runtime.json is untracked");
+    let opened: { dev: number; ino: number } | undefined;
+    try { opened = statSync(file); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") refuse("runtime.json identity is unavailable"); }
+    for (const row of tracked.stdout.split("\0").filter(Boolean)) {
+      const name = row.slice(row.indexOf("\t") + 1);
+      if (name === selected || selected.startsWith(`${name}/`)) refuse("runtime.json or its parent is committed to git");
+      if (opened) {
+        let info;
+        try { info = statSync(join(root, name)); } catch { continue; }
+        if (info.dev === opened.dev && info.ino === opened.ino) refuse("runtime.json is committed to git");
+      }
+    }
+  }
+}
+
 /** Missing is distinct from malformed, linked, oversized or unreadable state. */
 export function readProjectRuntime(project: RuntimeProject): ProjectRuntimeIdentity | undefined {
+  requireRuntimeTrust(project);
   let fd: number;
   try { fd = openSync(projectRuntimeFile(project), constants.O_RDONLY | constants.O_NOFOLLOW); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw invalid(); }

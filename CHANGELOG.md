@@ -5,7 +5,6 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Retain each project's verified runtime across stop/start, preserve other projects when upgrading one, prune unreferenced source captures with reference checks, and report stopped projects before source preservation (#1039 follow-up). Runtime selection protection begins with the 0.26.0 resolver.
-
 - Bind signed external runner receipts to research attempts (#1018). Keep runner-attested evidence separate, show current key revocation status, preserve idempotent replay, and guard first-attestation format-2 storage and recovery. Registration is person-only; the hub runs no external job.
 - Re-review approved, unmerged tasks at a new owner-reported head, or let the reviewer withdraw approval (#1047). Keep each verdict bound to its head, show stale approvals, and block stale-head merges.
 

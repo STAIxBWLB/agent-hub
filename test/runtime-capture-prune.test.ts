@@ -126,6 +126,33 @@ for (const kind of ["missing", "different-instance", "invalid"] as const) {
   });
 }
 
+for (const kind of ["missing-capture", "wrong-digest", "linked-root", "noncanonical-root", "changed-capture"] as const) {
+  test(`#610 a matching live claim with a ${kind} package reference defers every deletion`, () => {
+    const f = fixture(), capture = f.capture(), orphan = f.capture(), project = f.project(), instance = "fixture-live";
+    f.registry.runtimeCaptureLocked(() => {
+      expect(f.registry.claim(project.id, instance, process.pid, processSignature(process.pid))).toBe(true);
+      const selected = { ...capture, kind: "restart" as const };
+      if (kind === "wrong-digest") selected.digest = capture.digest === "e".repeat(64) ? "f".repeat(64) : "e".repeat(64);
+      if (kind === "linked-root") { const link = join(f.root, "capture-alias"); symlinkSync(capture.root, link); selected.root = link; }
+      const record = writeProjectRuntimeState(project, selected, instance);
+      if (kind === "noncanonical-root") put(project.stateDir, "runtime.json", JSON.stringify({ ...record, root: `${capture.root}/.` }));
+      if (kind === "missing-capture") rmSync(capture.root, { recursive: true });
+      if (kind === "changed-capture") put(capture.root, "src/revision.ts", "// changed referenced package\n");
+    });
+    const result = pruneRuntimeCaptures(f.home, 0);
+    expect(result).toMatchObject({ removed: [], deferred: expect.any(String) });
+    expect(existsSync(orphan.root)).toBe(true);
+  });
+}
+
+test("#610 an unverifiable stopped-project package reference also defers pruning", () => {
+  const f = fixture(), capture = f.capture(), orphan = f.capture(), project = f.project();
+  const digest = capture.digest === "e".repeat(64) ? "f".repeat(64) : "e".repeat(64);
+  f.registry.runtimeCaptureLocked(() => writeProjectRuntimeState(project, { ...capture, digest, kind: "restart" }, null));
+  expect(pruneRuntimeCaptures(f.home, 0)).toMatchObject({ removed: [], deferred: expect.any(String) });
+  expect(existsSync(capture.root)).toBe(true); expect(existsSync(orphan.root)).toBe(true);
+});
+
 function recovery(f: ReturnType<typeof fixture>, source: ReturnType<typeof f.capture>, target: ReturnType<typeof f.capture>) {
   const project = f.project(), body: Omit<UpgradePlan, "fingerprint"> = { schema: 1, kind: "upgrade", version: target.version,
     sourceRoot: source.root, sourceDigest: source.digest, integrity: "sha512-fixture", scope: { projectRoot: project.root },
@@ -179,6 +206,35 @@ test("#610 invalid receipt inventory or tampered captures defer all deletion", (
   expect(existsSync(first.root)).toBe(true); expect(existsSync(second.root)).toBe(true);
 });
 
+for (const name of ["README.md", "LICENSE", "CHANGELOG.md"] as const) {
+  test(`#610 a ${name} directory with unknown contents defers pruning without removing any capture`, () => {
+    const f = fixture(), orphan = f.capture(), capture = f.capture();
+    rmSync(join(capture.root, name));
+    put(capture.root, `${name}/arbitrary.txt`, "unknown directory contents must remain\n");
+    expect(pruneRuntimeCaptures(f.home, 0)).toMatchObject({ removed: [], deferred: expect.stringContaining("layout") });
+    expect(existsSync(orphan.root)).toBe(true);
+    expect(readFileSync(join(capture.root, name, "arbitrary.txt"), "utf8")).toBe("unknown directory contents must remain\n");
+  });
+}
+
+test("#610 first-party core metadata directories are not valid capture assets", () => {
+  const f = fixture(), orphan = f.capture(), capture = f.capture();
+  const readme = join(capture.root, "node_modules/@staix/agent-mem/README.md");
+  rmSync(readme); put(readme, "arbitrary.txt", "unknown core metadata contents\n");
+  expect(pruneRuntimeCaptures(f.home, 0)).toMatchObject({ removed: [], deferred: expect.stringContaining("layout") });
+  expect(existsSync(orphan.root)).toBe(true); expect(existsSync(join(readme, "arbitrary.txt"))).toBe(true);
+});
+
+test("#610 missing required metadata and a source directory replaced by a file both defer pruning", () => {
+  for (const name of ["LICENSE", "src"]) {
+    const f = fixture(), orphan = f.capture(), capture = f.capture();
+    rmSync(join(capture.root, name), { recursive: true });
+    if (name === "src") put(capture.root, name, "not a directory\n");
+    expect(pruneRuntimeCaptures(f.home, 0)).toMatchObject({ removed: [], deferred: expect.stringContaining("layout") });
+    expect(existsSync(orphan.root)).toBe(true); expect(existsSync(capture.root)).toBe(true);
+  }
+});
+
 test("#610 registry installs, legacy sources, temporary directories and capture symlinks are never pruned", () => {
   const f = fixture(), capture = f.capture(), version = join(f.home, "releases", VERSION), outside = join(f.root, "outside");
   mkdirSync(outside); put(outside, "keep.txt", "outside\n");
@@ -207,7 +263,7 @@ test("#610 a CLI executing from a verified capture protects itself without prote
   // Copy this one production module into a tiny package, with narrow re-exports to its real dependencies.
   put(f.source, "src/hub/runtime-capture-prune.ts", readFileSync(module, "utf8"));
   const reexport = (file: string, names: string, actual: string) => put(f.source, file, `export { ${names} } from ${JSON.stringify(new URL(actual, import.meta.url).href)};\n`);
-  reexport("src/cli/recovery-package.ts", "verifyPackage", "../src/cli/recovery-package.ts");
+  reexport("src/cli/recovery-package.ts", "verifyPackage, verifyRecoveryTarget", "../src/cli/recovery-package.ts");
   reexport("src/pi/process-signature.ts", "processLiveness", "../src/pi/process-signature.ts");
   reexport("src/hub/project.ts", "hubHome, realPath", "../src/hub/project.ts");
   reexport("src/hub/project-runtime-state.ts", "readProjectRuntime", "../src/hub/project-runtime-state.ts");
