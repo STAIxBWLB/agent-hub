@@ -3173,7 +3173,7 @@ export async function startDaemon(opts: DaemonOptions) {
    * #604 ORIGIN side. Order matters: the caller's authority and the PII gates run first (nothing has left this project), then the target is resolved from the machine registry and its own
    * status descriptor is read, and only then is the request sent. The target answers with the task id it created, which is recorded here. A refusal at any step leaves no row in either board.
    */
-  async function handoffOut(by: PeerId, input: unknown): Promise<{ project: string; task: number; state: string }> {
+  async function handoffOut(by: PeerId, input: unknown): Promise<{ project: string; task: number; state: string; note?: string }> {
     const request = parseHandoff(input);
     const own = request.task === undefined ? undefined : board.get(request.task);
     if (request.task !== undefined && !own) throw new HandoffRefusal("invalid", `no task #${request.task} in this project to hand off from`);
@@ -3192,7 +3192,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const remote = Number(reply.task);
       if (!Number.isSafeInteger(remote) || remote < 1) throw new HandoffRefusal("invalid", "the target answered without a task id");
       tasks.handoffSent(by, { projectId: target.id }, remote, request.title, request.task);
-      return { project: target.id, task: remote, state: String(reply.state ?? "proposed") };
+      return { project: target.id, task: remote, state: String(reply.state ?? "proposed"), ...(typeof reply.note === "string" && reply.note ? { note: sanitize(reply.note).slice(0, 300) } : {}) };
     } finally { client.close(); }
   }
   /** The head a handoff reports: the owner's `refs.commit`, else the receipt's verified head. Only a full 40-hex SHA crosses; anything else is dropped. */
@@ -9124,9 +9124,12 @@ export async function startDaemon(opts: DaemonOptions) {
       case "task_handoff": {
         if (c.role !== "console") return void reply({ t: "task_handoff", ok: false, error: "a handoff comes from another project's hub, not from an agent connection" });
         if (recoveryActive()) return void reply({ t: "task_handoff", ok: false, error: "recovery is holding mutations; hand the task off again after it ends" });
-        void tasks.handoffIn(msg.origin ?? {}, msg.request).then(
+        // Counted like a task op: a recovery commit waits for it (`recoveryReady` reads `taskOpsInFlight`), and the fence is asked again right before the board write, after the PII screen.
+        taskOpsInFlight++;
+        const recoveryFence = (): string | undefined => recoveryActive() || stopping ? "recovery or shutdown is holding mutations; hand the task off again after it ends" : undefined;
+        void tasks.handoffIn(msg.origin ?? {}, msg.request, recoveryFence).then(
           result => reply({ t: "task_handoff", ok: true, ...result }),
-          error => reply({ t: "task_handoff", ok: false, error: error instanceof HandoffRefusal ? error.message : "the handoff was refused" }));
+          error => reply({ t: "task_handoff", ok: false, error: error instanceof HandoffRefusal ? error.message : "the handoff was refused" })).finally(() => { taskOpsInFlight--; });
         return;
       }
       case "task_handoff_event": {

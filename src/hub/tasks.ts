@@ -1545,23 +1545,36 @@ export class Tasks {
    * The request was parsed closed by the origin and is parsed again here, because a control message is data from another process: the body is bounded, control characters are refused and the
    * text is sanitized before it is stored. A `[pii]` result is refused whole, and nothing is left behind.
    */
-  async handoffIn(origin: { projectId: unknown; peer: unknown; taskId?: unknown }, input: unknown): Promise<{ task: number; state: string }> {
+  async handoffIn(origin: { projectId: unknown; peer: unknown; taskId?: unknown }, input: unknown, fence: () => string | undefined = () => undefined): Promise<{ task: number; state: string; note?: string }> {
     const request = parseHandoff({ ...(input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : { invalid: true }), project: "local" });
     if (typeof origin.projectId !== "string" || !origin.projectId || origin.projectId.length > 200 || typeof origin.peer !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(origin.peer)
       || origin.taskId !== undefined && (!Number.isSafeInteger(origin.taskId) || (origin.taskId as number) < 1)) throw new HandoffRefusal("invalid", "handoff origin is malformed");
     if (origin.projectId === this.d.project) throw new HandoffRefusal("same_project", "that is this project: a task for this project goes through hub_task_propose");
-    const detail = sanitize([request.detail, `[handed off from project ${origin.projectId} by ${origin.peer}${origin.taskId === undefined ? "" : ` (their task #${origin.taskId})`}]`].filter(Boolean).join("\n\n"));
+    // The fence is asked right before the board write and after every await: a recovery that began while the PII screen was pending must find nothing written (agent-hub#1030, review).
+    const held = (): void => { const reason = fence(); if (reason) throw new HandoffRefusal("invalid", reason); };
+    held();
+    // The spec issue the caller named is kept in the task itself, as its own line: the target's planner reads it from the detail, and `ahub task show` shows it there.
+    const issueLine = request.issue === undefined ? "" : `spec issue: #${request.issue} in this repository`;
+    const detail = sanitize([request.detail, issueLine, `[handed off from project ${origin.projectId} by ${origin.peer}${origin.taskId === undefined ? "" : ` (their task #${origin.taskId})`}]`].filter(Boolean).join("\n\n"));
     const refs: TaskRefs = { ...(request.paths.length ? { paths: request.paths } : {}) };
     const signals = this.signalsFor({ title: request.title, detail, refs, plan: {} });
     if (signals.includes("pii")) throw new HandoffRefusal("pii_task", "the handed-off text matches a PII pattern; it is not stored here");
     const screening = this.screenOn();
     const screened = screening ? await this.screenCall(screenText({ title: request.title, detail: [detail, ...request.paths].join("\n"), plan: {} })) : undefined;
+    held();
     if (screening && (!screened || screened.label !== "clear")) throw new HandoffRefusal("pii_task", "the handed-off text could not be cleared by the PII screen; it is not stored here");
     let task = this.d.board.propose(HUB, { title: request.title, detail, class: request.class, refs, plan: {}, signals });
     this.d.board.setHandoffOrigin(task.id, { projectId: origin.projectId, peer: origin.peer, ...(origin.taskId === undefined ? {} : { originTask: origin.taskId as number }) });
-    this.d.notify(`task ${this.publicTitle(task)} handed off from project ${origin.projectId} by ${origin.peer}`);
-    task = await this.assignOwner(task, HUB, {});
-    return { task: task.id, state: task.state };
+    // From here the task and its origin are saved, so nothing below may fail the handoff: the origin must learn the task id, or the target keeps work nobody can track.
+    try { task = this.linkOnWrite(task); } catch { /* the lifecycle link is advice */ }
+    try { this.d.notify(`task ${this.publicTitle(task)} handed off from project ${origin.projectId} by ${origin.peer}`); } catch { /* never throw after a board write */ }
+    let note: string | undefined;
+    try { task = await this.assignOwner(task, HUB, {}); }
+    catch (error) {
+      if (error instanceof AssignmentUndeliveredError) { task = error.task; note = "the assignment is saved but its delivery is not confirmed yet; this hub retries it"; }
+      else note = "the task is saved but was not offered to an owner yet; this hub's routing offers it"; // a routing refusal leaves an ordinary proposal for the planner
+    }
+    return { task: task.id, state: task.state, ...(note ? { note } : {}) };
   }
 
   /** TARGET side: the origin recorded for a task, for `ahub task show` and the board. */

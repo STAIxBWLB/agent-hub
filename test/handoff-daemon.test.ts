@@ -21,13 +21,13 @@ const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
 type Project = Awaited<ReturnType<typeof project>>;
-async function project(name: string, home: string, options: { roles?: Record<string, string[]>; features?: string[] } = {}) {
+async function project(name: string, home: string, options: { roles?: Record<string, string[]>; features?: string[]; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }> } = {}) {
   const root = realPath(mkdtempSync(join(tmpdir(), `ahub-handoff-${name}-`))), stateDir = join(root, ".agenthub", "state");
   mkdirSync(stateDir, { recursive: true }); writeFileSync(join(root, ".agenthub", "config.json"), "{}");
-  writeFileSync(join(root, ".agenthub", "routing.toml"), '[local]\nfixed_model = "coding"\n[signals]\npii_patterns = ["\\\\b\\\\d{6}-\\\\d{7}\\\\b"]\n');   // the shipped PII pattern (Korean resident numbers), and nothing else
+  writeFileSync(join(root, ".agenthub", "routing.toml"), '[local]\nfixed_model = "coding"\n[signals]\npii_patterns = ["\\\\b\\\\d{6}-\\\\d{7}\\\\b"]\n' + (options.screen ? 'pii_screen = "local"\n' : ""));   // the shipped PII pattern (Korean resident numbers), and nothing else
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const registry = new Registry(join(home, "registry.db")), registered = registry.register(root); registry.close?.();
-  const daemon = await startDaemon({ cwd: root, stateDir, projectId: registered.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, notifier: () => {},
+  const daemon = await startDaemon({ cwd: root, stateDir, projectId: registered.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, notifier: () => {}, ...(options.screen ? { piiScreen: options.screen } : {}),
     config: { ...DEFAULT_CONFIG, roles: options.roles ?? { claude: ["planner"], codex: ["implementer"] }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, research: { ...DEFAULT_CONFIG.research, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false },
@@ -287,3 +287,32 @@ test("the real ahub process hands a task to another project, shows it in the tar
   const after = boardOf(b);
   try { expect(after.board.list()).toHaveLength(1); } finally { after.close(); }                                  // neither refused form created a second task
 }, 120_000);
+
+test("review P1: a handoff whose PII screen is pending when a recovery starts writes nothing, the origin gets a named refusal, and the recovery waits for it as for a task op", async () => {
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; }), inside = new Promise<void>(resolve => { entered = resolve; });
+  const { a, b } = await pair({ b: { screen: async () => { entered(); await held; return { label: "clear", ms: 0 }; } } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const handoff = task(planner, "hub_task_handoff", { project: b.id, title: "Chore that must not outlive a recovery" });
+  await inside;
+  const status = (await b.person.request({ t: "status" })).status;
+  const prepare = b.person.request({ t: "recovery", op: "prepare", operationId: "handoff-fence", expectedInstanceId: status.instanceId, targetFeatures: DAEMON_FEATURES }, 30_000);
+  const first = await prepare;
+  expect(first.recovery).toMatchObject({ phase: "preparing", ready: false });          // the in-flight handoff blocks the recovery like a task command
+  expect(first.recovery.blockers).toContain("a task command in flight");
+  release();
+  const refused = await handoff;
+  expect(refused.ok).toBe(false); expect(String(refused.error)).toContain("recovery");
+  const readB = boardOf(b), readA = boardOf(a);
+  try { expect(readB.board.list()).toEqual([]); expect(readB.board.hasHandoffState()).toBe(false); expect(readA.board.handoffOutbound()).toEqual([]); } finally { readB.close(); readA.close(); }
+}, 60_000);
+
+test("review P2: the spec issue the caller named is kept in the target task and shown by task show", async () => {
+  const { a, b } = await pair();
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const sent = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Raise the exact amem pin", issue: 12 }));
+  const shown = body(await task(b.person, "task_show", { id: sent.task }));
+  expect(shown.detail).toContain("spec issue: #12");
+  const read = boardOf(b);
+  try { expect(read.board.get(sent.task)!.detail).toContain("spec issue: #12"); } finally { read.close(); }
+}, 60_000);
