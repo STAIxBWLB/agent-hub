@@ -9,6 +9,7 @@ import { configApply, validateRawConfig } from "../src/hub/config-apply.ts";
 import { START_AGENTS_ALLOWED, START_AGENTS_DEFAULT, checkStartAgents, parseStartAgents, startAgentRefusal } from "../src/hub/start-agents.ts";
 import { effectiveStartAgents, inheritMachineStart, setupStartAgents, startLine } from "../src/cli/start-agents-run.ts";
 import { realPath } from "../src/hub/project.ts";
+import { SUPPORTED_PEERS, definitionOf } from "../src/adapters/registry.ts";
 
 // #608 (agent-hub#1040): the start.agents setting, its machine default and the setup and init that carry it. The `ahub up`
 // behavior against a running hub is in start-agents-up.test.ts.
@@ -186,4 +187,19 @@ test("each agent prints one line: started, already attached, or refused with the
   expect(startLine("claude", { ok: false, error: "claude starts in its TUI and the hub could not open a terminal for it (no terminal.open command is configured). Run ahub claude in a terminal" }))
     .toBe("claude: not started: claude starts in its TUI and the hub could not open a terminal for it (no terminal.open command is configured). Run ahub claude in a terminal");
   expect(startLine("pi", { ok: false })).toBe("pi: not started: the hub refused");
+});
+
+test("#451: which kinds ahub up may start, which are in the default set and why qwen is refused come from each definition's start.upStart, not from a peer name", () => {
+  const upStart = (id: string) => definitionOf(id)?.start.upStart;
+  expect(upStart("claude")).toEqual({ allowed: true, default: true }); expect(upStart("codex")).toEqual({ allowed: true, default: true });
+  for (const id of ["kimi", "pi", "local", "jcode"]) expect(upStart(id)).toEqual({ allowed: true });
+  expect(upStart("qwen")).toMatchObject({ allowed: false, refusal: expect.stringContaining("never opens its TUI") });
+  expect(upStart("agy")).toBeUndefined();
+  // the derived lists are exactly what the definitions say, in registry order
+  expect([...START_AGENTS_DEFAULT]).toEqual(SUPPORTED_PEERS.filter(id => { const s = upStart(id); return s?.allowed === true && s.default === true; }));
+  expect([...START_AGENTS_ALLOWED]).toEqual(SUPPORTED_PEERS.filter(id => definitionOf(id)?.start.conductorStartable === true && upStart(id)?.allowed === true));
+  // the refusal is the definition's own text, and a kind with none of its own gets the generic one
+  const own = upStart("qwen"); if (own?.allowed !== false) throw new Error("qwen must carry a refusal");
+  expect(startAgentRefusal("qwen")).toBe(`qwen cannot be started by ahub up: ${own.refusal}`);
+  expect(startAgentRefusal("agy")).toBe("agy cannot be started by ahub up: the hub does not start it; run ahub agy in a terminal");
 });
