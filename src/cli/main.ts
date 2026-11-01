@@ -29,7 +29,7 @@ import { renderIntake, renderIntakeChange } from "./intake-output.ts";
 import { renderLearnChange, renderLearnList } from "./learn-output.ts";
 import { renderCapabilities } from "./capabilities-output.ts";
 import { parseStudyArgs } from "./study.ts";
-import { renderStudyList, renderStudyReceipt, renderStudyShow } from "./study-output.ts";
+import { renderExperiments, renderStudyList, renderStudyReceipt, renderStudyShow } from "./study-output.ts";
 import { renderHandoffReceipt, renderHandoffs } from "./handoff-output.ts";
 import { parseHandoffArgs } from "./handoff-args.ts";
 import { terminalText } from "./console-state.ts";
@@ -1524,6 +1524,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       catch { return fail("cannot read the contract file"); }
       try { return JSON.parse(text); } catch { return fail("the contract file is not valid JSON"); }
     };
+    if (parsed.op === "experiments") {
+      // A read of the records Tasks keeps (hub_experiment_show): it runs no command and reads no file, and the hub blanks a private record itself.
+      const args = parsed.attempt ? { attemptId: parsed.attempt } : parsed.plan ? { planHash: parsed.plan, baselineAttemptId: parsed.baseline, variantAttemptId: parsed.variant } : { campaignId: parsed.campaign, ...(parsed.after === undefined ? {} : { after: parsed.after }) };
+      return showToolText(data => renderExperiments(data, present.columns), await taskOp("hub_experiment_show", args), present);
+    }
     if (parsed.op === "show") return showToolText(data => parsed.id ? renderStudyShow(data, present.columns) : renderStudyList(data, present.columns), await taskOp("hub_study_show", parsed.id ? { id: parsed.id } : parsed.after ? { after: parsed.after } : {}), present);
     const request = parsed.op === "draft" ? { parentTaskId: parsed.parentTaskId, contract: contract(parsed.file) }
       : parsed.op === "revise" ? { id: parsed.id, revision: parsed.revision, contract: contract(parsed.file) }

@@ -69,3 +69,58 @@ export function renderStudyReceipt(op: string, receipt: unknown, columns?: numbe
   if (op === "draft" || op === "revise") out.push(blank, [s(`nothing is dispatched until you approve: ahub study approve ${r?.id} ${count(r?.revision)}`, "muted")]);
   return out;
 }
+
+const ATTEMPT_TONE: Record<string, Tone | undefined> = { succeeded: undefined, running: undefined, declared: "muted", failed: "attention", cancelled: "attention", unknown: "attention" };
+const PROVENANCE_TONE: Record<string, Tone | undefined> = { declared: "muted", unknown: "attention" };
+const clip = (text: string, max = 48) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
+/** A value cell: the value and where it came from, so a declared number never reads as an observed one. Anything the hub withheld prints as the hub wrote it. */
+const sourced = (cell: any): [string, string] => {
+  if (cell === "[pii]") return ["[pii]", "withheld"];
+  if (!cell || typeof cell !== "object" || !("provenance" in cell)) return ["-", "unknown"];
+  const value = cell.value === null || cell.value === undefined ? "-" : typeof cell.value === "object" ? "(structured)" : String(cell.value);
+  return [clip(value), String(cell.provenance)];
+};
+
+/**
+ * `ahub study experiments`: the attempts of one campaign, one attempt, or one baseline/variant comparison, as the hub's `Tasks.experimentShow` returned them. Pure: it reads no file, runs
+ * no command and asks for no protocol text. Every row says whether it is approved, post-hoc or predeclared and that a repeat is not an independent reproduction; every value says where it
+ * came from; failed, cancelled and unknown attempts are in the counts. A private record arrives from the hub already as ids, counts and states.
+ */
+export function renderExperiments(view: unknown, columns?: number): Span[][] {
+  const v = view as any, attempts = list(v?.attempts), counts = v?.counts ?? {}, statuses = counts.statuses ?? {};
+  const out: Span[][] = [...heading(`Experiment attempts (${attempts.length} of ${count(counts.all)} in this campaign${v?.nextCursor !== undefined ? ", more follow" : ""})`, columns)];
+  const order = ["declared", "running", "succeeded", "failed", "cancelled", "unknown"];
+  out.push(...pair("all", order.map(name => `${name} ${count(statuses[name])}`).join(", "), columns, 8, "muted"));
+  if (v?.comparison) {
+    const c = v.comparison, compat = c.projection?.compatibility;
+    out.push(blank, ...heading("Comparison", columns));
+    if (c.projection === "[pii]") out.push(...pair("plan", `${String(c.planHash).slice(0, 12)}: withheld (a private source or record)`, columns, 8, "attention"));
+    else {
+      out.push(...pair("plan", String(c.planHash).slice(0, 12), columns, 8));
+      out.push(...pair("compatible", compat?.compatible ? "yes, under this plan" : `no: ${compat?.field ?? "unknown"} differs (${compat?.side ?? "pair"}); shown, not ranked together`, columns, 8, compat?.compatible ? undefined : "attention"));
+    }
+    out.push(...pair("approved", c.approved ? "both protocols bound to a person's approval" : "not both approved", columns, 8, c.approved ? undefined : "attention"));
+    out.push(...pair("pair", `${c.baselineAttemptId} (baseline) and ${c.variantAttemptId} (variant)`, columns, 8, "muted"));
+  }
+  if (!attempts.length) return [...out, blank, [s("no attempts recorded", "muted")]];
+  out.push(blank, ...grid(["ATTEMPT", "TASK", "PHASE", "STATUS", "APPROVAL", "POST-HOC", "NOTE"], attempts.map((row: any) => [
+    s(row.id, "issueRef"), s(`#${count(row.taskId)}`, "taskRef"), s(row.phase), s(row.status, ATTEMPT_TONE[row.status]), s(row.approval, row.approval === "approved" ? undefined : "attention"), s(row.postHoc, row.postHoc === "post-hoc" ? "attention" : "muted"),
+    s([row.private ? "private, details withheld" : "", row.retryOf ? `retry of ${row.retryOf}` : "", row.reproducesAttemptId ? `repeat of ${row.reproducesAttemptId}, not independent` : "", row.eventsComplete === false ? "events continue" : ""].filter(Boolean).join("; ") || "-", "muted"),
+  ]), columns));
+  for (const row of attempts) {
+    if (row.private) continue;
+    const declared = row.evidence?.declared, metrics = list(declared?.metrics), measured = list(row.evidence?.measured), runners = list(row.evidence?.runnerAttested);
+    const lines: [string, string, string][] = [];
+    for (const metric of metrics) { const [value, from] = sourced(metric.latest); lines.push([`${metric.name} (${metric.unit})`, value, from]); }
+    for (const field of ["exitStatus", "startedAt"]) { const [value, from] = sourced(declared?.[field]); if (value !== "-") lines.push([field, value, from]); }
+    for (const m of measured) for (const [field, cell] of Object.entries(m.values ?? {})) { const [value, from] = sourced(cell); lines.push([`${field} (${m.source})`, value, from]); }
+    for (const r of runners) { const [value, from] = sourced(r.sealing); lines.push([`sealed (runner ${clip(String(r.runner), 24)})`, value, from]); const [match, matchFrom] = sourced(r.codeMatch); lines.push(["code matches protocol", match, matchFrom]); }
+    const [sealed, sealedFrom] = sourced(declared?.sealed);
+    if (!runners.length) lines.push(["sealed", sealed, `${sealedFrom}; isolation unverified`]);
+    if (!lines.length) continue;
+    out.push(blank, ...heading(`Evidence of ${row.id}`, columns), ...grid(["FIELD", "VALUE", "SOURCE"], lines.map(([field, value, from]) => [s(field), s(value), s(from, PROVENANCE_TONE[from] ?? (from.startsWith("declared") ? "muted" : undefined))]), columns));
+  }
+  out.push(blank, [s(`declared values are an agent's own words; only host-observed, runner-attested or person-attested rows are evidence, and none of them proves the science. A repeat is never an independent reproduction.`, "muted")]);
+  if (v?.nextCursor !== undefined) out.push([s(`more attempts: ahub study experiments --campaign <id> --after ${v.nextCursor}`, "muted")]);
+  return out;
+}

@@ -23,7 +23,7 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
     || (command === "backlog" && sub !== "list") || (command === "release" && !["list", "show"].includes(sub ?? ""))
     || (command === "memory" && sub !== "graph")
     // #601: a campaign's draft, revise, approve and close are the person's verdicts; only `show` is a read. Without this an agent shell could run them as the person through `--live-test`.
-    || (command === "study" && sub !== "show")
+    || (command === "study" && sub !== "show" && sub !== "experiments")
     || (command === "recovery" && (sub === "reattach" || sub === "dispose" && context.repairedFresh === true))
     || (command === "board" && args[0] === "import") || (command === "sdlc" && (args[0] === "record" || args[0] === "accept" || args[0] === "accept-departure"))
     || (command === "bench" && args.find(arg => arg !== "--json") === "run") || command === "pet"
@@ -85,7 +85,7 @@ const peerReadForms: Readonly<Record<string, Readonly<Record<string, PeerReadFor
   sdlc: { status: { positional: 1, displayFlags: sdlcReadDisplayFlags }, explain: { positional: 1, displayFlags: sdlcReadDisplayFlags }, queue: { positional: 1, minimum: 1, displayFlags: sdlcReadDisplayFlags }, release: { positional: 33, minimum: 1, displayFlags: sdlcReadDisplayFlags } },
   release: { show: { positional: 1, minimum: 1, displayFlags: [] } },
   // #601: reading a campaign is harmless for any agent (the hub stubs a private one); draft, revise, approve and close fall to `console`.
-  study: { show: { positional: 1, valueFlags: ["--after"], displayFlags: sdlcReadDisplayFlags } },
+  study: { show: { positional: 1, valueFlags: ["--after"], displayFlags: sdlcReadDisplayFlags }, experiments: { valueFlags: ["--campaign", "--attempt", "--after", "--plan", "--baseline", "--variant"], displayFlags: sdlcReadDisplayFlags } },
   projects: { "": {} },
   models: { status: {} },
   recovery: { status: { positional: 1 } },
@@ -196,7 +196,7 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   if (command === "learn") return ["list", "accept", "reject"].includes(args.find(arg => arg !== "--json") ?? "") ? `learn ${args.find(arg => arg !== "--json")}` : "learn";
   if (command === "source") return ["add", "list"].includes(args.find(arg => arg !== "--json") ?? "") ? `source ${args.find(arg => arg !== "--json")}` : "source";
   // #601: a campaign id and a contract path are text the person chose, so the audit names the subcommand only.
-  if (command === "study") return ["draft", "revise", "approve", "close", "show"].includes(args[0] ?? "") ? `study ${args[0]}` : "study";
+  if (command === "study") return ["draft", "revise", "approve", "close", "show", "experiments"].includes(args[0] ?? "") ? `study ${args[0]}` : "study";
   if (command === "release") return ["new", "list", "show", "plan", "activate", "freeze", "ship", "drop"].includes(args[0] ?? "") ? `release ${args[0]}` : "release";
   if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "down", "reset", "doctor", "agents", "source", "broker", "schedule", "intake", "learn", "study"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench", "agents", "roster", "settings"].includes(command)) {

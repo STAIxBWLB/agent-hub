@@ -370,7 +370,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -3734,6 +3734,9 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify(await tasks.studyRevise(by, a));
       case "hub_study_show":
         return JSON.stringify(a.id === undefined ? tasks.studyList(by, a) : tasks.studyShow(by, a));
+      // #602 (issue 932 T3): the read of the experiment records Tasks already keeps; it runs nothing and reads no file, and a private record is blanked inside the view.
+      case "hub_experiment_show":
+        return JSON.stringify(await tasks.experimentShow(by, a));
       case "hub_study_handoff":
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "handoff")) throw new PreEffectToolRefusal("study handoff takes only a handoff object");
         return JSON.stringify(await tasks.studyHandoff(by, a.handoff));

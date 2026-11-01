@@ -9,7 +9,7 @@
 
 /** The task ops a distinct session may run: reads that need no role. Everything else is refused with `sessionRefusal`. */
 export const SESSION_READ_OPS: ReadonlySet<string> = new Set([
-  "hub_task_show", "hub_task_list", "hub_status", "hub_capabilities", "hub_study_show", "hub_backlog_list", "hub_release_list",
+  "hub_task_show", "hub_task_list", "hub_status", "hub_capabilities", "hub_study_show", "hub_experiment_show", "hub_backlog_list", "hub_release_list",
 ]);
 
 /** The control messages a distinct session may send besides task ops. `task` is gated again by `SESSION_READ_OPS`. */
