@@ -210,6 +210,9 @@ export class JcodePeer extends AcpPeer {
   }
 
   /** True only for the id of this peer's current owned launch, while it is not ending: the proof a hub-tools hello must carry (#368). */
+  /** The id of this peer's current owned launch, for the provenance of what it publishes (agent-hub#1036). Evidence for the log, never a credential: nothing admits a connection by reading it. */
+  get ownedLaunchId(): string | undefined { return this.ending ? undefined : this.launchId; }
+
   ownsLaunch(launchId: unknown): boolean { return !this.ending && typeof launchId === "string" && launchId === this.launchId; }
 
   override async start(): Promise<void> {

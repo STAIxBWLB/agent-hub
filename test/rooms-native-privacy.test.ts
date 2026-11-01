@@ -6,6 +6,7 @@ import { LocalPeer } from "../src/adapters/local-worker.ts";
 import type { DeliveryReceipt } from "../src/hub/peers.ts";
 import { HUB, newEnvelope, remoteEnvelope, sanitize, type Envelope } from "../src/hub/envelope.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
+import { realPath } from "../src/hub/project.ts";
 import type { Capture } from "../src/memory/capture.ts";
 import type { ChatMessage, ChatResult, OmniRoute } from "../src/omniroute/client.ts";
 import { toolCall } from "./fakes/model-server.ts";
@@ -17,7 +18,7 @@ async function until(check: () => boolean, diagnostic: () => string = () => "ada
   expect(check(), diagnostic()).toBe(true);
 }
 async function channel() {
-  const root = mkdtempSync(join(tmpdir(), "ahub-room-channel-"));
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-room-channel-")));   // the plugin compares resolved paths (#604 item 10)
   const notifications: { content: string; meta: Record<string, unknown> }[] = [];
   const replies = new Map<number, (value: any) => void>();
   let socket: { send(value: string): unknown } | undefined, diagnostics = "", sequence = 0;

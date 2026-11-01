@@ -12,6 +12,7 @@ import { AcpOwnedGroup } from "../src/adapters/acp-owned-group.ts";
 import { isAcpPeer } from "../src/adapters/acp.ts";
 import { DAEMON_FEATURES, ControlClient } from "../src/hub/control-client.ts";
 import { hubGitSync } from "../src/hub/git.ts";
+import { realPath } from "../src/hub/project.ts";
 import { definitionOf } from "../src/adapters/registry.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
 
@@ -20,7 +21,7 @@ async function until(check: () => boolean, label: string) {
   expect(check(), label).toBe(true);
 }
 async function fixture(options: { on?: boolean; pin?: string; readOnly?: boolean; configured?: boolean; productionConfig?: boolean } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "ahub-configured-acp-daemon-")), stateDir = join(root, "state"), home = join(root, "home"), protocol = join(root, "protocol.jsonl");
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-configured-acp-daemon-"))), stateDir = join(root, "state"), home = join(root, "home"), protocol = join(root, "protocol.jsonl");
   const previousHome = process.env.HOME;
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined, client: ControlClient | undefined;
   const clients: ControlClient[] = [];
