@@ -197,18 +197,25 @@ export function createProvider(options: { home: string; registry?: Registry; lif
    * (new instanceId) restarts its event sequence at zero, so its previous model is dropped.
    */
   const offices = new Map<string, { instanceId: string | null; model: OfficeScene }>();
-  /** Projects are read concurrently; one that has not answered within the budget is left out of this poll (acon wants a snapshot within 5 s). */
-  const SPACE_BUDGET_MS = options.spaceBudgetMs ?? 3_500;
+  /**
+   * acon wants a snapshot within 5 s. The project listing asks every daemon for its status, so it gets its own budget and
+   * falls back to the last listing; projects are then read concurrently, and one that has not answered is left out of this poll.
+   */
+  const SPACE_BUDGET_MS = options.spaceBudgetMs ?? 3_000;
+  const within = async <T,>(work: Promise<T>, ms: number): Promise<T | null> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); });
+    try { return await Promise.race([work, late]); } catch { return null; } finally { clearTimeout(timer); }
+  };
+  let lastRunning: ProjectRow[] = [];
   async function space() {
-    const projects = await running();
+    const listed = await within(running(), Math.round(SPACE_BUDGET_MS / 2));
+    if (listed) lastRunning = listed;
+    const projects = listed ?? lastRunning;
     for (const id of offices.keys()) if (!projects.some((p) => p.id === id)) offices.delete(id);
     const scenes = [];
-    const snaps = await Promise.all(projects.map(async (project) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), SPACE_BUDGET_MS); });
-      const read = act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "office" }) as Promise<Record<string, unknown>>;
-      try { return await Promise.race([read, late]); } catch { return null; } finally { clearTimeout(timer); }
-    }));
+    const snaps = await Promise.all(projects.map((project) =>
+      within(act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "office" }) as Promise<Record<string, unknown>>, SPACE_BUDGET_MS)));
     for (const [i, project] of projects.entries()) {
       const snap = snaps[i];
       if (!snap || snap.ok === false) continue;
