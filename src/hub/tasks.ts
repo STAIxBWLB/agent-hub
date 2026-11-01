@@ -1763,7 +1763,7 @@ export class Tasks {
     const requestCheck = this.requestCheck(by, () => this.studyHold());
     if (by !== USER) throw new PreEffectToolRefusal("protocol approval is person only");
     const fields = this.studyFields(input, ["hash"]);
-    if (typeof fields.hash !== "string" || !/^[a-f0-9]{64}$/.test(fields.hash)) throw new PreEffectToolRefusal("protocol approval needs an exact protocol hash");
+    if (typeof fields.hash !== "string" || fields.hash.length !== 64 || !/^[a-f0-9]{64}$/.test(fields.hash)) throw new PreEffectToolRefusal("protocol approval needs an exact protocol hash");
     const hash = fields.hash;
     return this.studyWrite(async () => {
       requestCheck();
@@ -1877,7 +1877,7 @@ export class Tasks {
     if (limit > 50) throw new PreEffectToolRefusal("experiment readback is limited to 50 rows");
     if (fields.planHash !== undefined || fields.baselineAttemptId !== undefined || fields.variantAttemptId !== undefined) {
       if (fields.attemptId !== undefined || fields.campaignId !== undefined || fields.after !== undefined
-        || typeof fields.planHash !== "string" || !/^[a-f0-9]{64}$/.test(fields.planHash))
+        || typeof fields.planHash !== "string" || fields.planHash.length !== 64 || !/^[a-f0-9]{64}$/.test(fields.planHash))
         throw new PreEffectToolRefusal("comparison readback needs one plan hash and two attempt ids");
       const plan = this.d.board.experimentComparisonPlan(fields.planHash);
       if (!plan || plan.project !== this.d.project) throw new PreEffectToolRefusal("comparison plan is unavailable in this project");

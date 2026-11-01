@@ -113,7 +113,7 @@ const EXPERIMENT_ATTEMPT_SELECT = "SELECT rowid AS row_id,attempt_id,project,cam
 const EXPERIMENT_EVENT_SELECT = "SELECT attempt_id,project,seq,idempotency_key,kind,CASE WHEN length(CAST(body AS BLOB))<=65536 THEN body END AS body,body_sha256,by_peer,at,private FROM research_attempt_events";
 const experimentFailure = (): Error => new Error("experiment state is invalid, changed or corrupt");
 const experimentHash = (value: unknown): string => createHash("sha256").update(canonicalJson(value)).digest("hex");
-const experimentHashValid = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+const experimentHashValid = (value: unknown): value is string => typeof value === "string" && value.length === 64 && /^[0-9a-f]{64}$/.test(value);
 const experimentIdValid = (value: unknown): value is string => typeof value === "string" && /^ra-[0-9a-f]{12}$/.test(value);
 const experimentPage = (after: number, limit: number): void => {
   if (!researchInteger(after, 0) || !researchInteger(limit) || limit > 50) throw experimentFailure();

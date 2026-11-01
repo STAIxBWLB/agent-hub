@@ -26,7 +26,7 @@ test("study approve-protocol refuses missing, malformed and excess operands usin
 });
 
 test("all pre-existing study forms retain their request shapes", () => {
-  const cases: [string[], unknown][] = [
+  const cases: [string[], ReturnType<typeof parseStudyArgs>][] = [
     [["draft", "3", "contract.json"], { op: "draft", parentTaskId: 3, file: "contract.json" }],
     [["revise", ID, "2", "revised.json"], { op: "revise", id: ID, revision: 2, file: "revised.json" }],
     [["approve", ID, "2"], { op: "approve", id: ID, revision: 2 }],
