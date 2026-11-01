@@ -108,7 +108,7 @@ export function openHubDatabase(file: string, options: HubDatabaseOptions = {}):
   if (!Number.isSafeInteger(timeout) || timeout < 0 || timeout > HUB_DB_BUSY_TIMEOUT_MS) throw new Error("invalid hub database busy timeout");
   // Refuse a future file without opening a writable connection, which can perform SQLite recovery work itself.
   assertHubDbCompatible(file, reader);
-  const db = new Database(file, options.readonly ? { readonly: true, create: false } : { create: options.create ?? true });
+  const db = new Database(file, options.readonly ? { readonly: true, create: false } : { readwrite: true, create: options.create ?? true });
   try {
     db.run(`PRAGMA busy_timeout = ${timeout}`);
     if (options.readonly) { checkOn(db, reader); return db; }

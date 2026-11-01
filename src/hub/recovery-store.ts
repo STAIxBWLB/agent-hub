@@ -81,7 +81,7 @@ function projectLocks(home: string, create = false): Database | undefined {
   if (!projectLocksExist(file)) throw projectLockError();
   let db: Database | undefined;
   try {
-    db = new Database(file, create ? { create: false } : { readonly: true, create: false });
+    db = new Database(file, create ? { readwrite: true, create: false } : { readonly: true, create: false });
     db.run(`PRAGMA busy_timeout = ${RUNNER_DB_BUSY_TIMEOUT_MS}`);
     if (!db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_locks'").get()) throw projectLockError();
     return db;

@@ -86,7 +86,7 @@ test("welcome version must match when supplied, while legacy omitted versions re
 test("manager descriptor and authenticated health publish the same bridge window and refresh retains the current manager", async () => {
   const home = mkdtempSync(join(tmpdir(), "ahub-manager-window-"));
   const registry = { list: () => [], get: () => undefined } as unknown as NonNullable<Parameters<typeof startManager>[0]>["registry"];
-  const handle = await startManager({ home, registry });
+  const handle = await startManager({ home, registry, lifecycle: { inspectProject: async () => ({ state: "stopped" }), startProject: async () => { throw new Error("fixture must not start a project"); }, stopProject: async () => { throw new Error("fixture must not stop a project"); } } });
   clean.push(async () => { try { await handle.stop(); } finally { rmSync(home, { recursive: true, force: true }); } });
   const statusFile = join(home, "manager/status.json"), before = JSON.parse(readFileSync(statusFile, "utf8"));
   expect(before).toMatchObject({ protocol: 16, protocolMin: 16, protocolMax: 17 });
