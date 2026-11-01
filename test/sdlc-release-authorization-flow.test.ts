@@ -222,7 +222,7 @@ for (const change of ["head", "origin", "role", "private-context"] as const) {
       else if (change === "role") {
         const next = structuredClone(f.roles); next.codex = next.codex!.filter(role => role !== "conductor"); next.local!.push("conductor");
         const changed = await f.reloadRoles(next); expect(changed.ok === true, changed.error).toBe(true);
-        expect(await f.liveRoles("codex")).toEqual(next.codex); expect(await f.liveRoles("local")).toEqual(next.local);
+        expect(await f.liveRoles("codex")).toEqual(next.codex!); expect(await f.liveRoles("local")).toEqual(next.local!);
         expect((await f.liveRoles("codex")).includes("conductor")).toBe(false);
         expect((await f.liveRoles("local")).includes("conductor")).toBe(true);
       }
