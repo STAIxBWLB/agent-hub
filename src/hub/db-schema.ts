@@ -56,8 +56,13 @@ function checkOn(db: Database, reader: HubDbSchemaReader): HubDbSchema | undefin
 }
 function existingFile(file: string): boolean {
   if (file === ":memory:") return false;
-  try { return statSync(file).isFile(); }
+  let info;
+  try { info = lstatSync(file); }
   catch (error) { if ((error as { code?: string }).code === "ENOENT") return false; throw error; }
+  // A dangling link or non-file is unknown storage, never a missing legacy database.
+  if (info.isSymbolicLink()) { try { info = statSync(file); } catch { throw invalidSchema(); } }
+  if (!info.isFile()) throw invalidSchema();
+  return true;
 }
 
 /** Closed, checkpointed WAL files need a quiet metadata probe on macOS; unknown file/mode state never qualifies. */

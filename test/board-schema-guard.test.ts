@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { assertHubDbCompatible, HUB_DB_SCHEMA, HubDbSchemaError, openHubDatabase } from "../src/hub/db-schema.ts";
@@ -81,6 +81,16 @@ test("an unversioned legacy database keeps its rows and receives one introducing
   const before = fingerprint(file), compatible = openHubDatabase(file, { reader: { schema: HUB_DB_SCHEMA, version: "99.1.0" } });
   try { expect(compatible.query("SELECT required_version FROM hub_schema").get()).toEqual({ required_version: VERSION }); } finally { compatible.close(); }
   expect(fingerprint(file)).toEqual(before);
+});
+
+for (const kind of ["directory", "dangling link"] as const) test(`an existing ${kind} hub.db fails closed before database effects`, () => {
+  const file = fixture();
+  if (kind === "directory") mkdirSync(file);
+  else symlinkSync(join(dirname(file), "absent.db"), file);
+  expect(() => assertHubDbCompatible(file)).toThrow(HubDbSchemaError);
+  expect(() => openHubDatabase(file)).toThrow(HubDbSchemaError);
+  expect(existsSync(`${file}-wal`)).toBe(false);
+  expect(existsSync(join(dirname(file), "absent.db"))).toBe(false);
 });
 
 test("readonly checks on legacy storage never create schema metadata or an absent database", () => {
