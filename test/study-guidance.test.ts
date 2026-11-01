@@ -25,12 +25,21 @@ test("no study tool approves, closes or attests, and the guidance says only the 
 
 test("who may call which tool: a read-only project keeps show only, and an implementer child gets show and handoff, never draft or revise", () => {
   const names = (list: { name: string }[]) => list.filter(tool => STUDY_TOOLS.has(tool.name)).map(tool => tool.name).sort();
-  expect(names(projectToolList(TASK_TOOLS, true))).toEqual(["hub_study_show"]);
+  // #602: hub_experiment_show reads the recorded attempts and, like hub_study_show, is everyone's read; the writers stay out of a read-only project and an implementer child.
+  expect(names(projectToolList(TASK_TOOLS, true))).toEqual(["hub_experiment_show", "hub_study_show"]);
   expect(names(projectToolList(TASK_TOOLS, false))).toEqual([...STUDY_TOOLS].sort());
-  expect(IMPLEMENTER_HUB_TOOL_NAMES.filter(name => STUDY_TOOLS.has(name)).sort()).toEqual(["hub_study_handoff", "hub_study_show"]);
+  expect(IMPLEMENTER_HUB_TOOL_NAMES.filter(name => STUDY_TOOLS.has(name)).sort()).toEqual(["hub_experiment_show", "hub_study_handoff", "hub_study_show"]);
+  for (const writer of ["hub_study_draft", "hub_study_revise"]) {
+    expect(names(projectToolList(TASK_TOOLS, true))).not.toContain(writer);
+    expect(IMPLEMENTER_HUB_TOOL_NAMES).not.toContain(writer);
+  }
 });
 
 test("the shell: a campaign may be read from an agent shell, never approved, closed, drafted or revised", () => {
   expect(classifyPeerCommand("study", ["show", "rc-0123456789ab"])).toBe("allowed");
   for (const sub of ["approve", "close", "draft", "revise"]) expect(classifyPeerCommand("study", [sub, "rc-0123456789ab", "1"])).toBe("console");
+  // #602: the experiments readback is a read too, in exactly its three closed forms; a stray flag or a mix is not an allowed read.
+  expect(classifyPeerCommand("study", ["experiments", "--campaign", "rc-0123456789ab"])).toBe("allowed");
+  expect(classifyPeerCommand("study", ["experiments", "--attempt", "ra-0123456789ab", "--json"])).toBe("allowed");
+  expect(classifyPeerCommand("study", ["experiments", "--evil", "x"])).not.toBe("allowed");
 });
