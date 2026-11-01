@@ -848,16 +848,17 @@ role admission.
   contract's `budget.hardCap` is checked against that exact budget id at approval
   and again at every dispatch and owner change; another budget covering the task
   proves nothing. A hold never stops a running native turn.
-- **Provenance is never upgraded.** Experiment fields are `declared` unless the hub
-  measured them itself from a finished check receipt for the same task and commit,
-  or by hashing a deliverable through the #509 path policy; an agent-supplied hash
-  is never host evidence. `ahub study approve-protocol` binds approval to one exact
+- **Provenance stays separate.** Experiment declarations remain `declared`. Separate
+  `host-observed` values come from a finished check receipt for the same task and
+  commit, or from hashing a deliverable through the #509 path policy; an
+  agent-supplied hash is never host evidence. `ahub study approve-protocol` binds approval to one exact
   protocol hash and evaluator identity hash, and nothing copies it to a changed
   protocol. Environment descriptors are refused when they contain assignment
   forms, Bearer credentials or known secret shapes; that screen detects those forms
-  only and does not prove a secret is absent. This release exposes no hub tool for
-  recording experiments, and runner attestation (`research.runners`) is not
-  implemented yet.
+  only and does not prove a secret is absent. Signed external receipts use the
+  separate `runner-attested` level described below; their fields never overwrite
+  declared or host-measured evidence. Public experiment recording tools and the
+  receipt CLI are the separate #602 slice.
 - **Privacy.** A campaign whose parent task is PII, or that names a private source,
   is private, and so is an attempt with a private task, input or output path.
   Public views keep ids, counts, states and provenance and stub every question,
@@ -868,6 +869,46 @@ role admission.
 - **Recovery.** A restart, upgrade or recovery onto a daemon lacking the matching
   `research_*` feature is refused while campaign, dispatch, re-offer, experiment or
   comparison rows exist, or while `research.runners` is configured.
+
+### Registered external runner receipts (#1018)
+
+A runner registration is a trust root, not permission to execute a command. The
+person registers an Ed25519 SPKI public key, allowed project ids and a revocation
+flag under `research.runners` in untracked `.agenthub/config.local.json`. Shared,
+tracked or untrusted sources refuse even an empty block. Whole-block structural
+edits require the person's tier2 confirmation; the conductor cannot register a
+key. The hub stores no private key, contacts no runner and schedules no compute.
+
+Receipt admission verifies the domain-separated canonical body, signature,
+current accepted registration and exact project/attempt/protocol binding. A
+commit-based protocol also requires an explicitly supplied commit claim to match.
+The current owner or the person may relay a receipt; signature authority never
+bypasses current task, source, campaign, privacy or request authority. All checks
+are repeated after asynchronous screening before any write. An unknown/revoked
+key, foreign project, changed identity or tampered signature refuses before write.
+
+Stored fields are `runner-attested`, including claimed timestamps, exit status,
+image, network, resources and file hashes. Missing fields remain unknown. A signed
+commit for a deliverable-based protocol stays an independent claim with unknown
+code match. Sealing is attested only with distinct candidate/evaluator containers,
+valid mount references and nonempty evaluator code/data mounts that are all
+read-only and absent from candidates. Other receipts retain declared/unverified
+sealing. This is a signed runner statement, not host observation or proof of
+scientific correctness, isolation enforcement or evaluator secrecy.
+
+An identical canonical receipt and signature with a known receipt id returns its
+stored proof without re-verification or writes, including after revocation. A
+changed body/signature at that id refuses; every new id needs a currently trusted
+key. Readback retains as-of-signing provenance and separately shows whether the
+signing key is active, revoked, replaced or unavailable now. Private records stub
+the signed fields, mount/output names, signer identity and key details.
+
+The first stored attestation, its event and the `hub.db` format-2 marker commit in
+one transaction; unused databases keep the format-1 baseline. Recovery requires
+`research_runners` for stored receipts or raw/accepted registration presence,
+including empty blocks. Its integrity digest covers stored proofs and accepted
+registrations without replacing the earlier research recovery guards. Fixtures
+use test key pairs with no GPU, runner network request or live account.
 
 ## Cross-project task handoff (#604, #1030)
 

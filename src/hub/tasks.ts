@@ -1,3 +1,4 @@
+import { parseAttemptReceipt, parseResearchRunners, verifyAttemptReceipt } from "./research-runner.ts";
 import type { InvocationRow } from "./invocations.ts";
 import type { ContextAdmission } from "./context-window.ts";
 import { queueBackpressure, queueBackpressurePolicy, type QueueBackpressureCode, type QueueBackpressurePolicy, type QueueBackpressureStatus, type QueuePressure } from "./queue-backpressure.ts";
@@ -5,7 +6,7 @@ import { canonicalMemorySymbolNode, normalizeMemorySymbolInput, MEMORY_SYMBOL_LI
 import { createHash, randomBytes } from "node:crypto";
 import { types } from "node:util";
 import { canonicalJson } from "./packs.ts";
-import { parseExperimentProtocol, parseExperimentAttempt, parseExperimentEvent, protocolHash, checkRunObservation, deliverableObservation, projectExperimentWithObservations,
+import { parseExperimentProtocol, parseExperimentAttempt, parseExperimentEvent, protocolHash, checkRunObservation, deliverableObservation, projectExperimentWithObservations, projectRunnerReceipt,
   type ExperimentProtocolContract, type ExperimentProtocolRecord, type ExperimentAttemptRecord, type ExperimentWriteFence, type ExperimentHostEvidence, type ExperimentStatus } from "./research-experiments.ts";
 import { parseComparisonPlan, comparisonPlanHash, comparisonProjection, evaluatorIdentityHash, protocolApprovalBindingMatches, type ComparisonPlanV1 } from "./research-experiments.ts";
 import { parseResearchHandoff, studyProjection, campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus } from "./research-campaign.ts";
@@ -190,6 +191,8 @@ export interface TasksDeps {
   studyNow?: () => number;
   /** Host-only reader for this project's check-runner receipts; record inputs never supply a receipt. */
   experimentCheck?: (run: string) => Promise<unknown>;
+  /** Fresh trusted machine-local runner registrations. A source-trust failure refuses new receipts. */
+  researchRunners?: () => unknown;
   /** Reviewer choice from recorded review outcomes (issue #35); off unless the project config turns it on. */
   review?: { adaptive: boolean; min_reviews: number; pool?: readonly string[]; rerotate?: boolean; same_family?: "fallback" | "never" };
   /** Peers whose recent deliveries all failed, with the reason (issue #89); routing skips them. */
@@ -393,7 +396,7 @@ export const GROOM_FYI_WINDOW_MS = 10 * 60_000;
 /** #694: a PR staged at done with the commit or branch it was read for. */
 export interface ResearchCampaignReceipt { id: string; parentTaskId: number; revision: number; status: ResearchCampaignStatus; unitCount: number; units: ResearchUnitBinding[] }
 interface StudyReferences { parent: Task; adopted: Map<string, Task>; reused: Map<string, Task>; private: boolean; key: string }
-export interface ExperimentReceipt { kind: "protocol" | "attempt" | "event"; protocolHash: string; attemptId?: string; seq?: number }
+export interface ExperimentReceipt { kind: "protocol" | "attempt" | "event" | "receipt"; protocolHash: string; attemptId?: string; seq?: number; receiptId?: string }
 export interface ComparisonPlanReceipt { kind: "plan"; planHash: string }
 export interface ProtocolApprovalReceipt { protocolHash: string; evaluatorHash: string; approvedBy: string; approvedAt: number }
 export interface ExperimentAttemptView {
@@ -1891,13 +1894,43 @@ export class Tasks {
 
   /** Record evidence only: this path never runs a check, a shell command or a runner. */
   async experimentRecord(by: PeerId, input: { kind: "plan"; [key: string]: unknown }): Promise<ComparisonPlanReceipt>;
-  async experimentRecord(by: PeerId, input: { kind: "protocol" | "attempt" | "event"; [key: string]: unknown }): Promise<ExperimentReceipt>;
+  async experimentRecord(by: PeerId, input: { kind: "protocol" | "attempt" | "event" | "receipt"; [key: string]: unknown }): Promise<ExperimentReceipt>;
   async experimentRecord(by: PeerId, input: unknown): Promise<ExperimentReceipt | ComparisonPlanReceipt>;
   async experimentRecord(by: PeerId, input: unknown): Promise<ExperimentReceipt | ComparisonPlanReceipt> {
     const requestCheck = this.requestCheck(by, () => this.studyHold());
-    const envelope = this.studyFields(input, ["kind", "taskId", "protocol", "attempt", "attemptId", "idempotencyKey", "event", "plan"]);
+    const envelope = this.studyFields(input, ["kind", "taskId", "protocol", "attempt", "attemptId", "idempotencyKey", "event", "plan", "receipt", "signature"]);
     return this.studyWrite(async () => {
       try {
+        if (envelope.kind === "receipt") {
+          const fields = this.studyFields(input, ["kind", "receipt", "signature"]), receipt = parseAttemptReceipt(fields.receipt);
+          const attempt = this.experimentAttempt(receipt.attemptId), record = this.experimentProtocol(attempt.attempt.protocolHash);
+          const relayOwner = by === USER ? this.studyParent(attempt.attempt.taskId).owner : by;
+          if (!relayOwner) throw new PreEffectToolRefusal("receipt relay requires a current task owner");
+          const before = this.experimentContext(relayOwner, attempt.attempt.taskId, record.protocol, record.recordedForTaskId);
+          requestCheck();
+          const proof = (stored: NonNullable<ReturnType<Board["runnerReceipt"]>>): ExperimentReceipt => ({ kind: "receipt", protocolHash: record.hash,
+            attemptId: attempt.attemptId, seq: stored.seq, receiptId: receipt.receiptId });
+          const known = this.d.board.runnerReceipt(receipt.receiptId);
+          if (known) {
+            if (canonicalJson(known.receipt) !== canonicalJson(receipt) || known.signature !== fields.signature)
+              throw new PreEffectToolRefusal("receiptId already records different signed bytes");
+            this.experimentFresh(before, relayOwner, record.protocol, record.recordedForTaskId); requestCheck();
+            return proof(known); // immutable stored proof: do not re-verify against a revoked/replaced registration or write on replay
+          }
+          const registrations = parseResearchRunners(this.d.researchRunners?.() ?? {}), registrationKey = canonicalJson(registrations);
+          const context = { projectId: this.d.project, attempt: { id: attempt.attemptId, projectId: attempt.project, protocolHash: attempt.attempt.protocolHash,
+            ...("commit" in record.protocol.code ? { codeCommit: record.protocol.code.commit } : {}) } };
+          verifyAttemptReceipt(receipt, fields.signature, { ...context, runners: registrations });
+          const lastSeq = this.d.board.experimentLastSeq(attempt.attemptId);
+          await this.experimentScreen(canonicalJson(receipt), before.task); requestCheck();
+          const current = this.experimentFresh(before, relayOwner, record.protocol, record.recordedForTaskId);
+          const latest = parseResearchRunners(this.d.researchRunners?.() ?? {});
+          if (canonicalJson(latest) !== registrationKey) throw new PreEffectToolRefusal("runner registration changed during receipt admission");
+          verifyAttemptReceipt(receipt, fields.signature, { ...context, runners: latest }); requestCheck();
+          const saved = this.d.board.appendRunnerReceipt({ receipt, signature: fields.signature as string, publicKey: latest[receipt.runner]!.publicKey,
+            by, at: this.studyTime(), private: current.private || record.private || attempt.private }, lastSeq, current.fence);
+          return proof(saved);
+        }
         if (envelope.kind === "plan") {
           const fields = this.studyFields(input, ["kind", "taskId", "plan"]), taskId = this.studyNumber(fields.taskId, "taskId"), plan = parseComparisonPlan(fields.plan);
           const before = this.experimentPlanContext(by, taskId, plan);
@@ -1970,6 +2003,17 @@ export class Tasks {
     });
   }
 
+  private runnerKeyStatus(stored: NonNullable<ReturnType<Board["runnerReceipt"]>>): "active" | "revoked" | "replaced" | "unavailable" {
+    try {
+      const runners = parseResearchRunners(this.d.researchRunners?.() ?? {});
+      if (!Object.hasOwn(runners, stored.receipt.runner)) return "unavailable";
+      const current = runners[stored.receipt.runner]!;
+      if (current.publicKey !== stored.publicKey) return "replaced";
+      if (current.revoked) return "revoked";
+      return current.projects.includes(stored.receipt.projectId) ? "active" : "unavailable";
+    } catch { return "unavailable"; }
+  }
+
   private experimentPrivate(record: ExperimentProtocolRecord, attempt: ExperimentAttemptRecord): boolean {
     try {
       const campaign = this.d.board.researchCampaign(record.protocol.campaignId, record.protocol.campaignRevision), task = this.d.board.get(attempt.attempt.taskId);
@@ -2025,17 +2069,20 @@ export class Tasks {
     const summary = this.d.board.experimentSummary(this.d.project, campaignId), views: ExperimentAttemptView[] = [];
     for (const attempt of attempts) {
       const record = this.experimentProtocol(attempt.attempt.protocolHash), page = this.d.board.experimentEvents(attempt.attemptId, eventAfter, limit);
-      const privateRecord = this.experimentPrivate(record, attempt) || page.rows.some(row => row.private);
+      const runnerReceipts = this.d.board.runnerReceipts(attempt.attemptId);
+      const privateRecord = this.experimentPrivate(record, attempt) || page.rows.some(row => row.private)
+        || runnerReceipts.some(row => row.private || !this.nameable(canonicalJson(row.receipt)) || looksSecret(canonicalJson(row.receipt)));
       const status = this.d.board.experimentAttemptStatus(attempt.attemptId);
       const observations = page.rows.flatMap(row => row.observations), events = page.rows.map(row => row.event);
-      const evidence = projectExperimentWithObservations(record.protocol, events, observations);
+      const evidence = { ...projectExperimentWithObservations(record.protocol, events, observations),
+        ...(runnerReceipts.length ? { runnerAttested: runnerReceipts.map(row => ({ ...projectRunnerReceipt(record.protocol, row.receipt), key: { hash: row.keyHash, status: this.runnerKeyStatus(row) } })) } : {}) };
       views.push({ id: attempt.attemptId, protocolHash: record.hash, taskId: attempt.attempt.taskId, phase: attempt.attempt.phase, status, private: privateRecord,
         campaignRevision: record.protocol.campaignRevision, approval: this.experimentApproved(record) ? "approved" : "unapproved",
         postHoc: this.d.board.experimentProtocolContext(record.hash).state,
         ...(attempt.attempt.retryOf ? { retryOf: attempt.attempt.retryOf } : {}), ...(attempt.attempt.reproducesAttemptId ? { reproducesAttemptId: attempt.attempt.reproducesAttemptId } : {}), independentlyReproduced: false,
         protocol: { value: privateRecord ? "[pii]" : record.protocol, provenance: "declared" },
         events: page.rows.map(row => privateRecord ? { seq: row.event.seq, kind: row.event.kind, at: row.event.at, provenance: row.event.provenance, body: "[pii]" } : row.event),
-        evidence: privateRecord ? { declared: "[pii]", measured: evidence.measured.map(row => ({ eventSeq: row.eventSeq, source: row.source, provenance: "host-observed", values: "[pii]" })) } : evidence,
+        evidence: privateRecord ? { declared: "[pii]", measured: evidence.measured.map(row => ({ eventSeq: row.eventSeq, source: row.source, provenance: "host-observed", values: "[pii]" })), ...(runnerReceipts.length ? { runnerAttested: runnerReceipts.map(() => ({ provenance: "runner-attested", values: "[pii]" })) } : {}) } : evidence,
         eventsComplete: page.done, ...(!page.done ? { nextEventCursor: page.afterSeq } : {}) });
     }
     return { attempts: views, counts: { all: summary.total, statuses: summary.statuses }, ...(nextCursor === undefined ? {} : { nextCursor }) };

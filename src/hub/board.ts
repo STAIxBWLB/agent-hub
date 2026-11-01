@@ -1,5 +1,6 @@
+import { parseAttemptReceipt, parseResearchRunners, verifyAttemptReceipt, type AttemptReceiptV1 } from "./research-runner.ts";
 import { canonicalJson } from "./packs.ts";
-import { parseComparisonPlan, comparisonPlanHash, evaluatorIdentityHash, parseExperimentProtocol, protocolHash, parseExperimentAttempt, parseExperimentEvent, parseExperimentHostEvidence, experimentStatus, projectExperimentWithObservations,
+import { parseComparisonPlan, comparisonPlanHash, evaluatorIdentityHash, parseExperimentProtocol, protocolHash, parseExperimentAttempt, parseExperimentEvent, parseExperimentHostEvidence, experimentStatus, projectExperimentWithObservations, declaredExperimentEvents,
   type ComparisonPlanV1, type ExperimentProtocolRecord, type ExperimentAttemptRecord, type ExperimentEventRecord, type ExperimentWriteFence, type DeclaredExperimentEventInput, type ExperimentHostEvidence, type ExperimentStatus } from "./research-experiments.ts";
 import type { InvocationRow } from "./invocations.ts";
 import { HOST_CODE_SYMBOLS, parseTaskCodeSymbols, type TaskCodeSymbols } from "./task-code-symbols.ts";
@@ -9,7 +10,7 @@ import type { PlannerReason } from "./routing.ts";
 import type { ReviewerPoolReason } from "./reviewer-pool.ts";
 import type { GitHubSource } from "./github-import.ts";
 import type { Database } from "./db-schema.ts";
-import { openHubDatabase } from "./db-schema.ts";
+import { openHubDatabase, advanceHubDbSchema } from "./db-schema.ts";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { HUB, USER, type PeerId } from "./envelope.ts";
 import type { SweepRecord } from "./task-sweep.ts";
@@ -107,6 +108,12 @@ const EXPERIMENT_PLAN_SELECT = "SELECT rowid AS row_id,hash,project,campaign_id,
 interface ExperimentProtocolRow { hash: string; project: string; campaign_id: string; campaign_revision: number; task_id: number; body: string | null; by_peer: string; at: number; private: number }
 interface ExperimentAttemptRow { row_id?: number; attempt_id: string; project: string; campaign_id: string; campaign_revision: number; protocol_hash: string; task_id: number; idempotency_key: string; body: string | null; body_sha256: string; by_peer: string; at: number; private: number }
 interface ExperimentEventRow { attempt_id: string; project: string; seq: number; idempotency_key: string; kind: string; body: string | null; body_sha256: string; by_peer: string; at: number; private: number }
+export interface RunnerReceiptRecord {
+  receipt: AttemptReceiptV1; signature: string; publicKey: string; keyHash: string; bodyHash: string;
+  seq: number; by: PeerId; at: number; private: boolean;
+}
+interface RunnerReceiptRow { receipt_id: string; project: string; attempt_id: string; event_seq: number; body: string | null; body_sha256: string; by_peer: string; at: number; private: number }
+const RUNNER_RECEIPT_SELECT = "SELECT receipt_id,project,attempt_id,event_seq,CASE WHEN length(CAST(body AS BLOB))<=131072 THEN body END AS body,body_sha256,by_peer,at,private FROM research_runner_receipts";
 interface ExperimentObservationRow { attempt_id: string; event_seq: number; body: string | null; body_sha256: string }
 const EXPERIMENT_PROTOCOL_SELECT = "SELECT hash,project,campaign_id,campaign_revision,task_id,CASE WHEN length(CAST(body AS BLOB))<=65536 THEN body END AS body,by_peer,at,private FROM research_protocols";
 const EXPERIMENT_ATTEMPT_SELECT = "SELECT rowid AS row_id,attempt_id,project,campaign_id,campaign_revision,protocol_hash,task_id,idempotency_key,CASE WHEN length(CAST(body AS BLOB))<=65536 THEN body END AS body,body_sha256,by_peer,at,private FROM research_attempts";
@@ -504,6 +511,10 @@ export class Board {
     this.db.run(`CREATE TABLE IF NOT EXISTS research_attempt_observations (
       attempt_id TEXT NOT NULL, event_seq INTEGER NOT NULL, body TEXT NOT NULL, body_sha256 TEXT NOT NULL,
       PRIMARY KEY(attempt_id,event_seq))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS research_runner_receipts (
+      receipt_id TEXT PRIMARY KEY, project TEXT NOT NULL, attempt_id TEXT NOT NULL, event_seq INTEGER NOT NULL,
+      body TEXT NOT NULL, body_sha256 TEXT NOT NULL, by_peer TEXT NOT NULL, at INTEGER NOT NULL, private INTEGER NOT NULL,
+      UNIQUE(attempt_id,event_seq))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS research_plans (
       hash TEXT PRIMARY KEY, project TEXT NOT NULL, campaign_id TEXT NOT NULL, campaign_revision INTEGER NOT NULL,
       task_id INTEGER NOT NULL, body TEXT NOT NULL, by_peer TEXT NOT NULL, at INTEGER NOT NULL, private INTEGER NOT NULL)`);
@@ -866,7 +877,7 @@ export class Board {
   }
 
   hasResearchState(): boolean {
-    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_campaigns) OR EXISTS(SELECT 1 FROM research_units) OR EXISTS(SELECT 1 FROM research_protocols) OR EXISTS(SELECT 1 FROM research_attempts) OR EXISTS(SELECT 1 FROM research_attempt_events) OR EXISTS(SELECT 1 FROM research_attempt_observations) AS present").get() as { present: number }).present === 1;
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_campaigns) OR EXISTS(SELECT 1 FROM research_units) OR EXISTS(SELECT 1 FROM research_protocols) OR EXISTS(SELECT 1 FROM research_attempts) OR EXISTS(SELECT 1 FROM research_attempt_events) OR EXISTS(SELECT 1 FROM research_attempt_observations) OR EXISTS(SELECT 1 FROM research_runner_receipts) AS present").get() as { present: number }).present === 1;
   }
 
   /** A consistent, streaming digest includes metadata and body hashes, not merely row counts. */
@@ -1103,6 +1114,15 @@ export class Board {
       if (typeof row.body !== "string" || !researchInteger(row.seq) || !researchInteger(row.at, 0) || !researchText(row.by_peer) || ![0, 1].includes(row.private) || !researchText(row.idempotency_key, 64)) throw experimentFailure();
       const attempt = this.experimentAttempt(row.attempt_id), protocol = attempt && this.experimentProtocol(attempt.attempt.protocolHash);
       if (!attempt || !protocol || row.project !== attempt.project) throw experimentFailure();
+      if (row.kind === "attestation") {
+        const raw = JSON.parse(row.body), body = raw?.body, receipt = typeof body?.receiptId === "string" && this.runnerReceipt(body.receiptId);
+        if (!receipt || raw.kind !== "attestation" || Object.keys(raw).length !== 2 || Object.keys(body).length !== 1 || receipt.receipt.attemptId !== row.attempt_id || receipt.seq !== row.seq || receipt.at !== row.at
+          || receipt.by !== row.by_peer || row.body_sha256 !== experimentHash({ kind: "attestation", body }) || row.idempotency_key !== `rr-${receipt.bodyHash.slice(0, 61)}`
+          || this.db.query("SELECT 1 FROM research_attempt_observations WHERE attempt_id=? AND event_seq=?").get(row.attempt_id, row.seq)) throw experimentFailure();
+        return { attemptId: row.attempt_id, idempotencyKey: row.idempotency_key,
+          event: { kind: "attestation", body: { receiptId: receipt.receipt.receiptId }, seq: row.seq, at: row.at, provenance: "runner-attested" },
+          bodyHash: row.body_sha256, by: row.by_peer, private: row.private === 1 || attempt.private || receipt.private, observations: [] };
+      }
       const input = parseExperimentEvent(JSON.parse(row.body), protocol.protocol);
       if (input.kind !== row.kind || experimentHash(input) !== row.body_sha256) throw experimentFailure();
       const event = { ...input, seq: row.seq, at: row.at, provenance: "declared" as const };
@@ -1146,6 +1166,87 @@ export class Board {
     });
   }
 
+  private runnerReceiptFromRow(row: RunnerReceiptRow): RunnerReceiptRecord {
+    try {
+      if (typeof row.body !== "string" || !researchInteger(row.event_seq) || !researchInteger(row.at, 0) || !researchText(row.by_peer) || ![0, 1].includes(row.private)) throw experimentFailure();
+      const raw = JSON.parse(row.body);
+      if (!raw || Object.keys(raw).sort().join(",") !== "publicKey,receipt,signature") throw experimentFailure();
+      const receipt = parseAttemptReceipt(raw.receipt);
+      const runner = parseResearchRunners({ [receipt.runner]: { publicKey: raw.publicKey, projects: [receipt.projectId], revoked: false } })[receipt.runner]!;
+      if (typeof raw.signature !== "string" || raw.signature.length !== 88 || Buffer.from(raw.signature, "base64").length !== 64
+        || Buffer.from(raw.signature, "base64").toString("base64") !== raw.signature) throw experimentFailure();
+      const body = { receipt, signature: raw.signature as string, publicKey: runner.publicKey };
+      const attempt = this.experimentAttempt(receipt.attemptId), protocol = attempt && this.experimentProtocol(attempt.attempt.protocolHash);
+      if (!attempt || !protocol || row.receipt_id !== receipt.receiptId || row.attempt_id !== receipt.attemptId || row.project !== receipt.projectId || row.project !== attempt.project
+        || receipt.protocolHash !== attempt.attempt.protocolHash || experimentHash(body) !== row.body_sha256
+        || receipt.codeCommit !== undefined && "commit" in protocol.protocol.code && receipt.codeCommit !== protocol.protocol.code.commit) throw experimentFailure();
+      const event = this.db.query(`${EXPERIMENT_EVENT_SELECT} WHERE attempt_id=? AND seq=?`).get(row.attempt_id, row.event_seq) as ExperimentEventRow | null;
+      const expectedEvent = { kind: "attestation", body: { receiptId: receipt.receiptId } };
+      if (!event || event.kind !== "attestation" || typeof event.body !== "string" || event.body !== canonicalJson(expectedEvent)
+        || event.body_sha256 !== experimentHash(expectedEvent) || event.project !== row.project || event.by_peer !== row.by_peer || event.at !== row.at
+        || event.idempotency_key !== `rr-${row.body_sha256.slice(0, 61)}` || ![0, 1].includes(event.private)
+        || this.db.query("SELECT 1 FROM research_attempt_observations WHERE attempt_id=? AND event_seq=?").get(row.attempt_id, row.event_seq)) throw experimentFailure();
+      return { ...body, keyHash: createHash("sha256").update(Buffer.from(runner.publicKey, "base64")).digest("hex"), bodyHash: row.body_sha256,
+        seq: row.event_seq, by: row.by_peer, at: row.at, private: row.private === 1 || event.private === 1 || attempt.private };
+    } catch { throw experimentFailure(); }
+  }
+
+  runnerReceipt(id: string): RunnerReceiptRecord | undefined {
+    const row = this.db.query(`${RUNNER_RECEIPT_SELECT} WHERE receipt_id=?`).get(id) as RunnerReceiptRow | null;
+    return row ? this.runnerReceiptFromRow(row) : undefined;
+  }
+
+  runnerReceipts(attemptId: string): RunnerReceiptRecord[] {
+    if (!this.experimentAttempt(attemptId)) throw experimentFailure();
+    // ponytail: at most 64 signed receipts per attempt; paginate only with a reviewed evidence-page contract.
+    const rows = this.db.query(`${RUNNER_RECEIPT_SELECT} WHERE attempt_id=? ORDER BY event_seq LIMIT 65`).all(attemptId) as RunnerReceiptRow[];
+    if (rows.length > 64) throw experimentFailure();
+    return rows.map(row => this.runnerReceiptFromRow(row));
+  }
+
+  appendRunnerReceipt(record: Pick<RunnerReceiptRecord, "receipt" | "signature" | "publicKey" | "by" | "at" | "private">, expectedLastSeq: number, fence: ExperimentWriteFence): RunnerReceiptRecord {
+    const receipt = parseAttemptReceipt(record.receipt), attempt = this.experimentAttempt(receipt.attemptId), protocol = attempt && this.experimentProtocol(attempt.attempt.protocolHash);
+    if (!attempt || !protocol || record.by !== fence.owner && record.by !== USER || !researchInteger(record.at, 0) || typeof record.private !== "boolean" || !researchInteger(expectedLastSeq, 0)) throw experimentFailure();
+    const body = { receipt, signature: record.signature, publicKey: record.publicKey }, bodyHash = experimentHash(body);
+    return this.atomic(() => {
+      const { campaign } = this.experimentFence(fence);
+      if (attempt.project !== fence.project || attempt.attempt.taskId !== fence.taskId || protocol.protocol.campaignId !== campaign.id || protocol.protocol.campaignRevision !== campaign.revision) throw experimentFailure();
+      const prior = this.runnerReceipt(receipt.receiptId);
+      if (prior) {
+        if (prior.bodyHash !== bodyHash || canonicalJson({ receipt: prior.receipt, signature: prior.signature, publicKey: prior.publicKey }) !== canonicalJson(body)) throw new Error("receiptId already records different signed bytes");
+        return prior;
+      }
+      verifyAttemptReceipt(receipt, record.signature, { runners: { [receipt.runner]: { publicKey: record.publicKey, projects: [fence.project], revoked: false } }, projectId: fence.project,
+        attempt: { id: attempt.attemptId, projectId: attempt.project, protocolHash: attempt.attempt.protocolHash, ...("commit" in protocol.protocol.code ? { codeCommit: protocol.protocol.code.commit } : {}) } });
+      if (this.runnerReceipts(attempt.attemptId).length >= 64) throw new Error("an attempt supports at most 64 runner receipts");
+      if (this.experimentLastSeq(attempt.attemptId) !== expectedLastSeq || !researchInteger(expectedLastSeq + 1)) throw new Error("experiment event sequence changed");
+      const seq = expectedLastSeq + 1, event = { kind: "attestation", body: { receiptId: receipt.receiptId } };
+      // The first attestation is incompatible with older event readers, so both writes and the format floor commit together.
+      advanceHubDbSchema(this.db, 2, "0.26.0");
+      this.taskWrite(() => this.db.query("INSERT INTO research_attempt_events(attempt_id,project,seq,idempotency_key,kind,body,body_sha256,by_peer,at,private) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .run(attempt.attemptId, fence.project, seq, `rr-${bodyHash.slice(0, 61)}`, "attestation", canonicalJson(event), experimentHash(event), record.by, record.at, record.private || attempt.private ? 1 : 0));
+      this.taskWrite(() => this.db.query("INSERT INTO research_runner_receipts(receipt_id,project,attempt_id,event_seq,body,body_sha256,by_peer,at,private) VALUES(?,?,?,?,?,?,?,?,?)")
+        .run(receipt.receiptId, fence.project, attempt.attemptId, seq, canonicalJson(body), bodyHash, record.by, record.at, record.private || attempt.private ? 1 : 0));
+      if (record.private || attempt.private) this.taskWrite(() => this.db.query("UPDATE research_attempts SET private=1 WHERE attempt_id=? AND private=0").run(attempt.attemptId));
+      return this.runnerReceipt(receipt.receiptId)!;
+    });
+  }
+
+  hasRunnerReceipts(): boolean {
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_runner_receipts) OR EXISTS(SELECT 1 FROM research_attempt_events WHERE kind='attestation') AS present").get() as { present: number }).present === 1;
+  }
+
+  runnerReceiptIntegrity(): { count: number; digest: string } {
+    return this.db.transaction(() => {
+      if (this.db.query("SELECT 1 FROM research_attempt_events AS e LEFT JOIN research_runner_receipts AS r ON r.attempt_id=e.attempt_id AND r.event_seq=e.seq WHERE e.kind='attestation' AND r.receipt_id IS NULL LIMIT 1").get()) throw experimentFailure();
+      const digest = createHash("sha256").update("agent-hub.runner-receipts-integrity/v1\n"); let count = 0;
+      for (const row of this.db.query(`${RUNNER_RECEIPT_SELECT} ORDER BY receipt_id`).iterate() as Iterable<RunnerReceiptRow>) {
+        digest.update(canonicalJson(this.runnerReceiptFromRow(row))).update("\n"); count++;
+      }
+      return { count, digest: digest.digest("hex") };
+    }).deferred();
+  }
+
   experimentLastSeq(attemptId: string): number {
     if (!this.experimentAttempt(attemptId)) throw experimentFailure();
     const last = this.db.query("SELECT MAX(seq) AS seq,COUNT(*) AS count FROM research_attempt_events WHERE attempt_id=?").get(attemptId) as { seq: number | null; count: number };
@@ -1176,7 +1277,7 @@ export class Board {
     if (endRows.length > 1) throw experimentFailure();
     const end = endRows[0], start = !end && this.db.query(`${EXPERIMENT_EVENT_SELECT} WHERE attempt_id=? AND kind='start' ORDER BY seq LIMIT 1`).get(attemptId) as ExperimentEventRow | null;
     const events = end ? [this.experimentEventFromRow(end).event] : start ? [this.experimentEventFromRow(start).event] : [];
-    return experimentStatus(events, this.get(attempt.attempt.taskId)?.state);
+    return experimentStatus(declaredExperimentEvents(events), this.get(attempt.attempt.taskId)?.state);
   }
 
   // ponytail: exact counts validate all campaign attempts on each show (linear in attempt count). Upgrade to a transactional status projection maintained on event and task-state changes.
@@ -1193,7 +1294,7 @@ export class Board {
   }
 
   hasResearchExperimentState(): boolean {
-    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_protocols) OR EXISTS(SELECT 1 FROM research_attempts) OR EXISTS(SELECT 1 FROM research_attempt_events) OR EXISTS(SELECT 1 FROM research_attempt_observations) AS present").get() as { present: number }).present === 1;
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_protocols) OR EXISTS(SELECT 1 FROM research_attempts) OR EXISTS(SELECT 1 FROM research_attempt_events) OR EXISTS(SELECT 1 FROM research_attempt_observations) OR EXISTS(SELECT 1 FROM research_runner_receipts) AS present").get() as { present: number }).present === 1;
   }
 
   researchExperimentsIntegrity(): { protocols: number; attempts: number; events: number; observations: number; digest: string } {

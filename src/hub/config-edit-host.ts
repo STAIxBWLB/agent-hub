@@ -160,6 +160,7 @@ export function createConfigEditor(host: ConfigEditHost) {
 function leafKeys(plan: Extract<ConfigEditPlan, { ok: true }>): string[] {
   const out = new Set<string>();
   const walk = (prefix: string, before: unknown, after: unknown): void => {
+    if (prefix === "research.runners") { out.add(prefix); return; }
     const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
     if (object(before) || object(after)) {
       const old = object(before) ? before : {}, next = object(after) ? after : {};

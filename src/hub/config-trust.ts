@@ -36,7 +36,7 @@ export const MACHINE_LOCAL = [
   "invocation", // #445 C1: what another agent may be offered from this machine's agents (a digest-pinned allowlist); a committed config may not share a person's agents' commands with someone else's peers
 ] as const;
 /** Legacy exported field list stays compatible; new policies use the complete list below. */
-export const ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"] as const;
+export const ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "research.runners", "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"] as const;
 
 /** A known repository, including an unreadable marker, must never be mistaken for a plain directory. */
 export function configRepositoryPresent(cwd: string): boolean {
@@ -102,6 +102,12 @@ const drop = (file: Record<string, unknown>, path: string) => {
  * once resolved to the project root). A committed copy of the template sets them to defaults and asks git nothing.
  */
 export function stripUntrusted(file: Record<string, unknown>, defaults: object, cwd: string, name: string): string | undefined {
+  const research = file.research;
+  if (research && typeof research === "object" && Object.hasOwn(research, "runners")) {
+    if (name !== "config.local.json") throw new Error("research.runners requires untracked config.local.json");
+    const why = configRefusal(cwd, name);
+    if (why) throw new Error(`research.runners requires untracked config.local.json: ${why}`);
+  }
   if (name !== "config.local.json") delete file.rooms;
   const localOnly = name !== "config.local.json" && file.action_policy !== undefined;
   if (localOnly) delete file.action_policy;

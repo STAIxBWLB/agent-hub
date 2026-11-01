@@ -1,4 +1,5 @@
 import { operationalNumber, OPERATIONAL_NUMBERS } from "./operational-settings.ts";
+import { parseResearchRunners } from "./research-runner.ts";
 import { QUEUE_BACKPRESSURE_LIMITS } from "./queue-backpressure.ts";
 import { operationalSettingKey } from "./operational-authority.ts";
 import { remoteRunnerConfig } from "./check-runner.ts";
@@ -62,6 +63,12 @@ export interface ConfigAuthorizationDecision { key: string; allowed: boolean; gu
 export function authorizeConfigLeaf(input: ConfigAuthorizationInput): ConfigAuthorizationDecision {
   const { key, before, after } = input;
   const result = (allowed: boolean, guarded: boolean, reason: string): ConfigAuthorizationDecision => ({ key, allowed, guarded, reason });
+  const runners = key === "research.runners" || key.startsWith("research.runners.") || key === "research"
+    && [before, after].some(value => !!value && typeof value === "object" && Object.hasOwn(value, "runners"));
+  if (runners) {
+    if (input.source !== "config" || input.sourceFile !== "config.local.json" || input.tracked !== false) return result(false, true, "research.runners requires untracked config.local.json");
+    if (input.authority === "conductor") return result(false, true, "runner registration is person only");
+  }
   if (key === "action_policy" || key.startsWith("action_policy.")) {
     if (input.sourceFile !== "config.local.json") return result(false, true, "action policy requires .agenthub/config.local.json");
     if (input.tracked !== false) return result(false, true, "action policy requires an untracked machine-local source");
@@ -175,6 +182,8 @@ export const validatePetConfig: Check = (v, k) => {
 };
 shapes.set(validatePetConfig, { fields: petFields });
 const nativeValidators = { bool, text, strings, argv, number, words, block };
+const researchRunners: Check = value => { parseResearchRunners(value); };
+shapes.set(researchRunners, { item: block({ publicKey: text, projects: strings, revoked: bool }) });
 const schema: Record<string, Check> = {
   _autonomy: v => { autonomyOwnership(v); },
   ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.schema?.(nativeValidators) ?? {})),
@@ -214,7 +223,7 @@ const schema: Record<string, Check> = {
     else if (key === "remote") remoteRunnerConfig(value);
     else if (/^[a-z][a-z0-9_]{0,47}$/.test(key)) text(value, `${k}.${key}`); else fail(`${k}.${key}`, "unknown key");
   } },
-  snapshots: block({ enabled: bool, keep: number(1, 1_000_000, true) }), research: block({ enabled: bool }), bench: block({ enabled: bool }),
+  snapshots: block({ enabled: bool, keep: number(1, 1_000_000, true) }), research: block({ enabled: bool, runners: researchRunners }), bench: block({ enabled: bool }),
   peers: (v, k) => { map(block({ start_mode: words(["tui", "headless"]) }), START_MODE_PEERS)(v, k); peerStartConfig(v); },
   terminal: (v, k) => { block({ open: strings })(v, k); terminalTemplate(object(v, k).open); },
   limits: block({ sender_per_min: number(0), pair_per_min: number(0), important_per_hour: number(0), repeat_window_s: number(0) }),

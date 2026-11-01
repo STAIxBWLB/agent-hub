@@ -53,6 +53,7 @@ export interface RestartSnapshot {
     researchDispatch?: { activations: number; handoffs: number; digest: string };
     researchExperiments?: { protocols: number; attempts: number; events: number; observations: number; digest: string };
     researchComparisons?: { plans: number; approvals: number; contexts: number; digest: string };
+    researchRunners?: { count: number; digest: string };
   };
 }
 
@@ -122,6 +123,11 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
   if (s.integrity && Object.hasOwn(s.integrity, "researchComparisons")) {
     const value = s.integrity.researchComparisons;
     if (!value || typeof value !== "object" || Array.isArray(value) || ![value.plans, value.approvals, value.contexts].every(count => Number.isSafeInteger(count) && count >= 0)
+      || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "researchRunners")) {
+    const value = s.integrity.researchRunners;
+    if (!value || typeof value !== "object" || Array.isArray(value) || !Number.isSafeInteger(value.count) || value.count < 0
       || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }
   if (bus.journal !== undefined) { try { validateJournalSnapshot(bus.journal); } catch { return undefined; } }
