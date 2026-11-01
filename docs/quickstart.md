@@ -17,7 +17,7 @@ ahub setup                                # installs the channel plugin and a pr
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.26.0
+bun add -g github:STAIxBWLB/agent-hub#v0.27.0
 ahub setup
 ```
 
