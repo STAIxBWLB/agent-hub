@@ -422,7 +422,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
     }
     body.projects.push({ project, source, terminals: terminals.bindings, blockers, ...(reconnectOnly.length ? { reconnectOnly } : {}), ...(unrecordedTerminals.length ? { unrecordedTerminals } : {}), ...(freshStart.length ? { freshStart } : {}) });
   }
-  if (!body.projects.length) body.blockers.push(selected === undefined ? "no running projects to recover" : `selected project is not running: ${selected}`);
+  if (!body.projects.length) body.blockers.push("no running registered projects in scope");
   return { ...body, fingerprint: planFingerprint(body) };
 }
 

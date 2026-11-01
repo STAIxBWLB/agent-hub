@@ -99,7 +99,7 @@ for (const kind of ["restart", "upgrade"] as const) {
       const plan = await makeUpgradePlan(kind, TARGET, selected, f.run);
       expect(plan.projects).toEqual([]);
       expect(plan.scope).toEqual({ projectRoot: selected });
-      expect(plan.blockers).toEqual([`selected project is not running: ${selected}`]);
+      expect(plan.blockers).toEqual(["no running registered projects in scope"]);
       expect(() => createOperation(plan, plan.sourceRoot, f.home, undefined, ID)).toThrow("no running projects");
       expect(() => preserveSource(plan, f.home)).toThrow("no running projects");
       expect(f.calls).toEqual(kind === "upgrade" ? [["npm", "view", `@staix/agent-hub@${TARGET}`, "version", "dist.integrity", "--json"]] : []);
@@ -113,7 +113,7 @@ for (const kind of ["restart", "upgrade"] as const) {
 test("#610 an empty machine restart names no running projects before any preservation effects", async () => {
   const f = fixture(), plan = await makeUpgradePlan("restart", TARGET, undefined, f.run);
   expect(plan.scope).toBeUndefined(); expect(plan.projects).toEqual([]);
-  expect(plan.blockers).toEqual(["no running projects to recover"]); expect(f.calls).toEqual([]);
+  expect(plan.blockers).toEqual(["no running registered projects in scope"]); expect(f.calls).toEqual([]);
   expect(() => preserveSource(plan, f.home)).toThrow("no running projects");
   expect(() => createOperation(plan, plan.sourceRoot, f.home, undefined, ID)).toThrow("no running projects");
   noPreservationEffects(f);
