@@ -150,7 +150,20 @@ async function conductorReleaseRig(actor: "codex" | "local" = "codex") {
       try { expect(board.get(id)?.owner).toBe("local"); expect(board.get(id)?.signals).toContain("pii"); } finally { board.close(); }
       return id;
     };
-    return { temp, root, stateDir, remote, commit, actor, roles, peers, git, audit, evidence, authorize, guard, cli, privateTask, close,
+    const liveRoles = async (peer: string): Promise<string[]> => {
+      const reply = await person.request({ t: "status" }); expect(reply.ok === true, reply.error).toBe(true);
+      const value: unknown = reply.status?.roleInfo?.[peer]?.flowRoles;
+      if (!Array.isArray(value) || value.some(role => typeof role !== "string")) throw new Error("fixture cannot read the daemon's accepted flow roles");
+      return value as string[];
+    };
+    const reloadRoles = async (next: Record<string, string[]>) => {
+      mkdirSync(join(root, ".agenthub"), { recursive: true });
+      writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ roles: next }), { mode: 0o600 });
+      let reply = await person.request({ t: "settings_reload" });
+      if (reply.confirmation?.token) reply = await person.request({ t: "settings_reload", confirm: reply.confirmation.token });
+      return reply;
+    };
+    return { temp, root, stateDir, remote, commit, actor, roles, peers, git, audit, evidence, authorize, guard, cli, privateTask, close, liveRoles, reloadRoles,
       get person() { return person; }, get conductor() { return conductor; }, get other() { return other; }, get docsCalls() { return docsCalls; },
       setDocs(value: typeof docs) { docs = value; },
       async restart() { for (const client of clients.splice(0)) client.close(); await daemon!.stop(); daemon = undefined; await start(); } };
@@ -194,21 +207,25 @@ for (const context of ["associated-private-task", "latched-private-turn"] as con
   }, 20_000);
 }
 
-for (const change of ["head", "origin", "role", "ambiguous-role", "private-context"] as const) {
+for (const change of ["head", "origin", "role", "private-context"] as const) {
   test(`#1063 conductor authorization rechecks ${change} after the committed-doc await`, async () => {
     const f = await conductorReleaseRig(change === "private-context" ? "local" : "codex");
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     let entered!: () => void; const started = new Promise<void>(resolve => { entered = resolve; });
-    const originalRoles: Record<string, string[]> = Object.fromEntries(Object.entries(f.roles).map(([peer, roles]) => [peer, [...roles]]));
     try {
       const captured = f.evidence(); f.setDocs(async () => { entered(); await gate; return captured; });
       const call = f.authorize(), outcome = call.then(reply => ({ reply }), error => ({ error }));
       await Promise.race([started, call.then(() => { throw new Error("authorization missed the committed-doc barrier"); })]);
       if (change === "head") f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "changed release candidate");
       else if (change === "origin") f.git("remote", "set-url", "--push", "origin", join(f.temp, "other-local-remote.git"));
-      else if (change === "role") f.roles[f.actor]!.splice(f.roles[f.actor]!.indexOf("conductor"), 1);
-      else if (change === "ambiguous-role") f.roles.claude!.push("conductor");
+      else if (change === "role") {
+        const next = structuredClone(f.roles); next.codex = next.codex!.filter(role => role !== "conductor"); next.local!.push("conductor");
+        const changed = await f.reloadRoles(next); expect(changed.ok === true, changed.error).toBe(true);
+        expect(await f.liveRoles("codex")).toEqual(next.codex); expect(await f.liveRoles("local")).toEqual(next.local);
+        expect((await f.liveRoles("codex")).includes("conductor")).toBe(false);
+        expect((await f.liveRoles("local")).includes("conductor")).toBe(true);
+      }
       else await f.privateTask();
       release();
       const settled = await outcome; if ("error" in settled) throw settled.error;
@@ -216,7 +233,6 @@ for (const change of ["head", "origin", "role", "ambiguous-role", "private-conte
       expect((await f.guard()).ok).toBe(false);
     } finally {
       release();
-      for (const [peer, roles] of Object.entries(originalRoles)) f.roles[peer]!.splice(0, f.roles[peer]!.length, ...roles);
       await f.close();
     }
   }, 20_000);
@@ -230,5 +246,23 @@ test("#1063 conductor authority still cannot consent to the wrong candidate/vers
     expect(f.docsCalls).toBe(0); expect(f.audit()).toEqual([]);
     f.setDocs(async () => ({ ...f.evidence(), fresh: false }));
     expect((await f.authorize()).ok).toBe(false); expect(f.audit()).toEqual([]); expect((await f.guard()).ok).toBe(false);
+  } finally { await f.close(); }
+}, 20_000);
+
+
+test("#1063 an ambiguous conductor reload is refused without granting the proposed second peer authority", async () => {
+  const f = await conductorReleaseRig();
+  try {
+    const codexBefore = await f.liveRoles("codex"), localBefore = await f.liveRoles("local");
+    const ambiguous = structuredClone(f.roles); ambiguous.local!.push("conductor");
+    const rejected = await f.reloadRoles(ambiguous); expect(rejected.ok).toBe(false);
+    expect(await f.liveRoles("codex")).toEqual(codexBefore); expect(await f.liveRoles("local")).toEqual(localBefore);
+    expect((await f.liveRoles("codex")).includes("conductor")).toBe(true);
+    expect((await f.liveRoles("local")).includes("conductor")).toBe(false);
+    const refused = await f.authorize(f.other); expect(refused.ok).toBe(false);
+    expect(f.docsCalls).toBe(0); expect(f.audit()).toEqual([]); expect((await f.guard()).ok).toBe(false);
+    // Invalid raw policy never replaces the accepted map. This is not an invented mid-call authority revocation.
+    const stillUnique = await f.authorize(); expect(stillUnique.ok === true, stillUnique.error).toBe(true);
+    expect(stillUnique.authorization.by).toBe("codex");
   } finally { await f.close(); }
 }, 20_000);
