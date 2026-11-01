@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { IMPLEMENTER_HUB_TOOL_NAMES, STUDY_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS, projectToolList } from "../src/hub/hub-tools.ts";
-import { classifyPeerCommand } from "../src/cli/identity.ts";
+import { classifyPeerCommand, liveTestRefusal } from "../src/cli/identity.ts";
 
 // #601: the guidance an agent reads must name only tools that exist, and no tool or role text may let an agent approve a campaign.
 const roles = readdirSync("templates/roles/research").map(name => ({ name, text: readFileSync(join("templates/roles/research", name), "utf8") }));
@@ -42,4 +42,7 @@ test("the shell: a campaign may be read from an agent shell, never approved, clo
   expect(classifyPeerCommand("study", ["experiments", "--campaign", "rc-0123456789ab"])).toBe("allowed");
   expect(classifyPeerCommand("study", ["experiments", "--attempt", "ra-0123456789ab", "--json"])).toBe("allowed");
   expect(classifyPeerCommand("study", ["experiments", "--evil", "x"])).not.toBe("allowed");
+  // a delegated live test (an agent borrowing the console) may read experiments, and still none of the person's study verdicts
+  expect(liveTestRefusal("study", ["experiments", "--campaign", "rc-0123456789ab"])).toBe(false);
+  for (const sub of ["approve", "close", "draft", "revise"]) expect(liveTestRefusal("study", [sub, "rc-0123456789ab", "1"])).toBe(true);
 });
