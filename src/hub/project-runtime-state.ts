@@ -1,8 +1,8 @@
 import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname, isAbsolute, join, normalize, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import type { Project } from "./registry.ts";
-import { configRefusal, configRepositoryPresent } from "./config-trust.ts";
+import { configRepositoryPresent } from "./config-trust.ts";
 import { childEnv } from "./child-process.ts";
 import { hubGitSync } from "./git.ts";
 
@@ -30,43 +30,80 @@ export function parseProjectRuntime(project: RuntimeProject, input: unknown): Pr
     version: row.version, root: row.root, digest: row.digest, kind: row.kind, instanceId: row.instanceId as string | null };
 }
 
-/** Plain folders remain supported; where a Git marker exists, unknown is never machine-local trust. */
+const ACCESS = Symbol("project runtime access");
+export interface ProjectRuntimeAccess {
+  readonly [ACCESS]: true;
+  readonly projectId: string; readonly projectRoot: string; readonly stateDir: string;
+  read(): ProjectRuntimeIdentity | undefined;
+  write(runtime: ProjectRuntimeSelection, instanceId: string | null): ProjectRuntimeIdentity;
+}
+const TRUST_GIT_MS = 2000;
+const exactGlob = (value: string) => value.replace(/([*?[\]\\])/g, "\\$1");
+const trustRefusal = (why: string): never => { throw new Error(`project runtime selection is machine-local: ${why}`); };
+
+/** Plain folders remain supported. A repository must affirm this file is untracked using only its parent/ancestor paths. */
 function requireRuntimeTrust(project: RuntimeProject): void {
-  const file = projectRuntimeFile(project), local = relative(join(project.root, ".agenthub"), file);
-  const refuse = (why: string): never => { throw new Error(`project runtime selection is machine-local: ${why}`); };
-  if (local !== ".." && !local.startsWith("../") && !isAbsolute(local) && configRepositoryPresent(project.root)) {
-    const why = configRefusal(project.root, local); if (why) refuse(why);
-  }
-  const checked = new Set<string>();
+  const file = projectRuntimeFile(project), checked = new Set<string>(), deadline = performance.now() + TRUST_GIT_MS;
+  const git = (args: string[]) => {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) trustRefusal("git could not confirm runtime.json is untracked");
+    return hubGitSync(args, { encoding: "utf8", env: childEnv(process.env), timeout: Math.max(1, Math.ceil(remaining)), maxBuffer: 256 * 1024 });
+  };
   for (const cwd of new Set([project.root, dirname(file)])) {
     if (!configRepositoryPresent(cwd)) continue;
     let at = cwd;
     while (!existsSync(at) && dirname(at) !== at) at = dirname(at);
-    const options = { encoding: "utf8" as const, env: childEnv(process.env), maxBuffer: 8 * 1024 * 1024 };
-    const top = hubGitSync(["-C", at, "rev-parse", "--show-toplevel"], options);
-    if (top.status !== 0 || !isAbsolute(top.stdout.trim())) refuse("git could not confirm runtime.json is untracked");
-    const root = top.stdout.trim(), selected = relative(root, file);
-    if (checked.has(root)) continue;
+    const top = git(["-C", at, "rev-parse", "--show-toplevel"]);
+    if (top.status !== 0 || !isAbsolute(top.stdout.trim())) trustRefusal("git could not confirm runtime.json is untracked");
+    const root = top.stdout.trim(), selected = relative(root, file).split(sep).join("/");
+    if (checked.has(root) || selected === ".." || selected.startsWith("../") || isAbsolute(selected)) continue;
     checked.add(root);
-    const tracked = hubGitSync(["-C", root, "ls-files", "-s", "-z", "--"], options);
-    if (tracked.status !== 0) refuse("git could not confirm runtime.json is untracked");
+    const parts = selected.split("/"), parent = parts.slice(0, -1).join("/");
+    const specs = [`:(icase,literal)${parent || selected}`];
+    for (let i = 1; i < parts.length - 1; i++) specs.push(`:(icase,glob)${exactGlob(parts.slice(0, i).join("/"))}`);
+    const tracked = git(["-C", root, "ls-files", "-s", "-z", "--", ...specs]);
+    if (tracked.status !== 0) trustRefusal("git could not confirm runtime.json is untracked");
     let opened: { dev: number; ino: number } | undefined;
-    try { opened = statSync(file); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") refuse("runtime.json identity is unavailable"); }
+    try { opened = statSync(file); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") trustRefusal("runtime.json identity is unavailable"); }
     for (const row of tracked.stdout.split("\0").filter(Boolean)) {
       const name = row.slice(row.indexOf("\t") + 1);
-      if (name === selected || selected.startsWith(`${name}/`)) refuse("runtime.json or its parent is committed to git");
+      if (name === selected || selected.startsWith(`${name}/`)) trustRefusal("runtime.json or its parent is committed to git");
       if (opened) {
-        let info;
-        try { info = statSync(join(root, name)); } catch { continue; }
-        if (info.dev === opened.dev && info.ino === opened.ino) refuse("runtime.json is committed to git");
+        let info; try { info = statSync(join(root, name)); } catch { continue; }
+        if (info.dev === opened.dev && info.ino === opened.ino) trustRefusal("runtime.json is committed to git");
       }
     }
   }
 }
 
-/** Missing is distinct from malformed, linked, oversized or unreadable state. */
-export function readProjectRuntime(project: RuntimeProject): ProjectRuntimeIdentity | undefined {
+/** This reserved sibling namespace is exclusively for captures withdrawn for pruning. */
+export function assertExecutableRuntimeRoot(root: string): void {
+  for (let at = root; ; at = dirname(at)) {
+    if (basename(at).startsWith(".runtime-prune-")) throw new Error("runtime root is quarantined for pruning");
+    if (dirname(at) === at) return;
+  }
+}
+
+/** Host-only, project-bound admission for one call; callers create it before acquiring the registry lock. */
+export function createProjectRuntimeAccess(project: RuntimeProject): ProjectRuntimeAccess {
   requireRuntimeTrust(project);
+  const bound = { id: project.id, root: project.root, stateDir: project.stateDir };
+  return Object.freeze({ [ACCESS]: true as const, projectId: bound.id, projectRoot: bound.root, stateDir: bound.stateDir,
+    read: () => readProjectRuntimeReference(bound), write: (runtime: ProjectRuntimeSelection, instanceId: string | null) => writeRuntimeState(bound, runtime, instanceId) });
+}
+function accessFor(project: RuntimeProject, access?: ProjectRuntimeAccess): ProjectRuntimeAccess {
+  if (!access) return createProjectRuntimeAccess(project);
+  if (access[ACCESS] !== true || access.projectId !== project.id || access.projectRoot !== project.root || access.stateDir !== project.stateDir)
+    throw new Error("project runtime access belongs to another project");
+  return access;
+}
+
+export function readProjectRuntime(project: RuntimeProject, access?: ProjectRuntimeAccess): ProjectRuntimeIdentity | undefined {
+  return accessFor(project, access).read();
+}
+
+/** Metadata-only retention reference: bounded binding/JSON checks confer no Git trust or execution authority. */
+export function readProjectRuntimeReference(project: RuntimeProject): ProjectRuntimeIdentity | undefined {
   let fd: number;
   try { fd = openSync(projectRuntimeFile(project), constants.O_RDONLY | constants.O_NOFOLLOW); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw invalid(); }
@@ -82,10 +119,11 @@ export function readProjectRuntime(project: RuntimeProject): ProjectRuntimeIdent
 }
 
 /** Caller holds the shared runtime-capture lock until publication and its launch/reference effects finish. */
-export function writeProjectRuntimeState(project: RuntimeProject, runtime: ProjectRuntimeSelection, instanceId: string | null): ProjectRuntimeIdentity {
+function writeRuntimeState(project: RuntimeProject, runtime: ProjectRuntimeSelection, instanceId: string | null): ProjectRuntimeIdentity {
   const record = parseProjectRuntime(project, { schema: 1, projectId: project.id, projectRoot: project.root, stateDir: project.stateDir,
     version: runtime.version, root: runtime.root, digest: runtime.digest, kind: runtime.kind, instanceId });
-  readProjectRuntime(project); // refuse to overwrite an unknown binding or an unsafe file
+  assertExecutableRuntimeRoot(record.root);
+  readProjectRuntimeReference(project); // refuse to overwrite an unknown binding or an unsafe file
   const body = JSON.stringify(record);
   if (Buffer.byteLength(body) > LIMIT) throw invalid();
   mkdirSync(project.stateDir, { recursive: true });
@@ -93,4 +131,8 @@ export function writeProjectRuntimeState(project: RuntimeProject, runtime: Proje
   try { writeFileSync(temporary, body, { mode: 0o600, flag: "wx" }); renameSync(temporary, file); }
   finally { rmSync(temporary, { force: true }); }
   return record;
+}
+
+export function writeProjectRuntimeState(project: RuntimeProject, runtime: ProjectRuntimeSelection, instanceId: string | null, access?: ProjectRuntimeAccess): ProjectRuntimeIdentity {
+  return accessFor(project, access).write(runtime, instanceId);
 }

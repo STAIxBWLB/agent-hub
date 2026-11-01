@@ -1,3 +1,4 @@
+import { assertExecutableRuntimeRoot } from "./project-runtime-state.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS } from "./planning.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { Database } from "bun:sqlite";
@@ -194,6 +195,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
     const publicationRegistry = typeof registry.runtimeCaptureLocked === "function" && typeof registry.path === "string"
       && resolve(registry.path) === resolve(join(home, "registry.db")) ? registry : new Registry(join(home, "registry.db"));
     try { publicationRegistry.runtimeCaptureLocked(() => {
+      assertExecutableRuntimeRoot(realPath(resolve(import.meta.dir, "../..")));
       owner = claimOwner(f.owner, instanceId, pidSignature);
       const { list, act } = projectConsole({ registry, lifecycle, home, stopping: () => stopping, forwardTimeoutMs: options.forwardTimeoutMs, ...(options.afterStart && !options.liveTest ? { afterStart: options.afterStart } : {}) });
       dashboard = startDashboard({ projects: list, snapshot: (after, input = {}) => act({ ...input, action: "snapshot", after }), action: act });

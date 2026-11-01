@@ -3047,8 +3047,10 @@ and its exact first-party memory core under
 `~/.agenthub/releases/<VERSION>/source-<digest>/`. Existing records with invalid
 bindings or missing/changed captures refuse rather than selecting another
 package. Runtime selection is machine-local state: a Git-tracked runtime record
-or indeterminate Git tracking check refuses before launch. Plain directories
-without a repository remain supported. Capture reuse does not depend on a mutable global installation. Scoped
+or indeterminate Git tracking check refuses before launch. Each startup checks
+only the runtime file's containing paths in Git once, with a bounded deadline;
+unrelated index entries are not enumerated. Plain directories without a
+repository remain supported. Capture reuse does not depend on a mutable global installation. Scoped
 upgrade targets use the same version directory, with the verified registry
 install kept separately in `registry/`. Recovery uses its authority receipt's
 exact target path and records that selection through the updated startup path.
@@ -3060,13 +3062,22 @@ older global CLI does not retrofit this protection. No database schema or
 bootstrap floor is raised for runtime selection. Tests of the updated resolver
 are not receipts from those older published binaries.
 
-After a confirmed new startup, cache maintenance keeps the newest three verified
-source captures per version plus every registered runtime, live manager runtime
-and retained recovery reference. Publication, selection and pruning share the registry writer lock.
-Active recovery, uncertain owners or an unreadable/incomplete inventory defer
-all deletion. Only verified versioned `source-<digest>` directories are eligible;
+After a confirmed new startup, a separate, rate-limited maintenance worker keeps
+the newest three source captures per version plus every registered runtime, live
+manager runtime and retained recovery reference. Metadata snapshots and atomic
+quarantine use short registry writer transactions. Only removal candidates are
+hashed; package verification and recursive deletion run outside that lock and
+outside the startup result. Active recovery, uncertain owners, exhausted
+inventory budgets or an unreadable/incomplete inventory defer deletion.
+Only verified versioned `source-<digest>` directories are eligible;
 registry installs, unversioned coordinator sources, unknown layouts and symlinks
-remain. A damaged runtime record/capture requires inspection or restoration.
+remain. Reserved `.runtime-prune-*` quarantine paths cannot launch a managed
+runtime. Changed or unknown quarantined contents remain undeleted for inspection.
+Admission is home-wide, at most once per hour with at most three removals per
+run. `~/.agenthub/runtime-prune.db` records admission and the bounded outcome.
+A crashed or uncertain running worker leaves its row in place and defers future
+maintenance until inspection; startup still succeeds. A damaged runtime
+record/capture requires inspection or restoration.
 Archiving the record deliberately resets first-use selection; archived copies
 are not active pruning references.
 

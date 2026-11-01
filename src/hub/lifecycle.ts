@@ -1,5 +1,6 @@
 import { resolveProjectRuntime, recordProjectRuntime, confirmProjectRuntime, readProjectRuntimeForCaller, projectRuntimeRefusal, type ProjectRuntimeSelection } from "./project-runtime.ts";
-import { pruneRuntimeCaptures } from "./runtime-capture-prune.ts";
+import { scheduleRuntimeCapturePrune } from "./runtime-capture-prune.ts";
+import { createProjectRuntimeAccess, type ProjectRuntimeAccess } from "./project-runtime-state.ts";
 import { isDatabaseBusyReply, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -96,7 +97,7 @@ async function available(base: number): Promise<boolean> {
 /** The signals the project daemon stops on (see `runProjectDaemon`). */
 export const STOP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const;
 
-function startupRuntime(project: Project, env: NodeJS.ProcessEnv, registry: Registry) {
+function startupRuntime(project: Project, env: NodeJS.ProcessEnv, registry: Registry, access: ProjectRuntimeAccess) {
   const sourceRoot = resolve(import.meta.dir, "../.."), id = env.AGENTHUB_RECOVERY_OPERATION;
   if (id && recoveryLock(undefined, project.root) === id) {
     const op = readOperation<{ targetRoot?: string; targetDigest?: string; plan: { kind: "restart" | "upgrade"; version: string; projects: { project: Project }[] } }>(id);
@@ -106,7 +107,7 @@ function startupRuntime(project: Project, env: NodeJS.ProcessEnv, registry: Regi
     // Authority binds this exact target path. Do not re-stage it at a different, byte-identical path.
     return { root: sourceRoot, digest: op.targetDigest, version: VERSION, kind: op.plan.kind, check: () => verifyRecoveryTarget(op.plan.kind, sourceRoot, VERSION) };
   }
-  const retained = resolveProjectRuntime(project, VERSION, sourceRoot, registry);
+  const retained = resolveProjectRuntime(project, VERSION, sourceRoot, registry, access);
   return { ...retained, check: () => verifyRecoveryTarget(retained.kind, retained.root, retained.version) };
 }
 
@@ -132,17 +133,18 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
     forcedExit.unref();
   };
   try {
+    const runtimeAccess = createProjectRuntimeAccess(project);
     const before = await inspectProject(registry.get(project.id) ?? project);
     if (before.state === "running" || before.state === "starting") return;
     if (before.state !== "stopped") throw new Error(before.error ?? before.state);
     claimed = registry.claim(project.id, instanceId, process.pid, processSignature(process.pid));
     if (!claimed) return;
     registry.runtimeCaptureLocked(() => {
-      const runtime = startupRuntime(project, process.env, registry);
+      const runtime = startupRuntime(project, process.env, registry, runtimeAccess);
       // Direct internal daemon entry must not bypass the selected runtime. Normal up already spawned its verified capture.
       if (realPath(resolve(import.meta.dir, "../..")) !== runtime.root || verifyPackage(resolve(import.meta.dir, "../.."), VERSION) !== runtime.digest)
         throw projectRuntimeRefusal(runtime.version, "start with ahub up so the recorded runtime is used");
-      recordProjectRuntime(project, runtime, instanceId, registry);
+      recordProjectRuntime(project, runtime, instanceId, registry, runtimeAccess);
     });
     let base = registry.get(project.id)!.basePort;
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -181,10 +183,11 @@ export async function startProject(project: Project, options: { unattended?: boo
   try {
     const current = registry.get(project.id);
     if (!current || current.root !== project.root || current.stateDir !== project.stateDir) throw new Error("project registration changed; refresh before starting");
+    const runtimeAccess = createProjectRuntimeAccess(current);
     const admitRunningRuntime = () => {
       const fresh = registry.get(project.id);
       if (!fresh || fresh.root !== project.root || fresh.stateDir !== project.stateDir) throw new Error("project registration changed; refresh before starting");
-      readProjectRuntimeForCaller(fresh, VERSION);
+      readProjectRuntimeForCaller(fresh, VERSION, runtimeAccess);
     };
     const before = await inspectProject(current);
     options.current?.();
@@ -201,12 +204,12 @@ export async function startProject(project: Project, options: { unattended?: boo
         if (!claim || claim.root !== project.root || claim.stateDir !== project.stateDir) throw new Error("project registration changed; refresh before starting");
         // A competing starter owns readiness now. Never replace its selection or create a second native start.
         if (claim.instanceId && processLiveness(claim.pid, claim.pidSignature) !== "gone") return;
-        const runtime = startupRuntime(project, launchEnv, registry);
+        const runtime = startupRuntime(project, launchEnv, registry, runtimeAccess);
         options.current?.();
         assertLifecycleAvailable(project.root);
         if (runtime.check() !== runtime.digest) throw new Error("staged startup runtime changed");
         // The selected runtime's own preflight decides schema compatibility; an older invoking CLI cannot preflight for it.
-        recordProjectRuntime(project, runtime, null, registry);
+        recordProjectRuntime(project, runtime, null, registry, runtimeAccess);
         launchedRuntime = runtime;
         mkdirSync(project.stateDir, { recursive: true });
         const marker = join(project.stateDir, "project.json");
@@ -233,9 +236,9 @@ export async function startProject(project: Project, options: { unattended?: boo
       options.current?.();
       if (observed.state === "running") {
         admitRunningRuntime();
-        if (launchedRuntime) confirmProjectRuntime(project, launchedRuntime, observed.status, registry);
+        if (launchedRuntime) confirmProjectRuntime(project, launchedRuntime, observed.status, registry, runtimeAccess);
         // Unknown references defer maintenance; cache cleanup never changes a confirmed startup outcome.
-        try { pruneRuntimeCaptures(); } catch { /* retain captures on unreadable inventory or cleanup failure */ }
+        try { scheduleRuntimeCapturePrune(); } catch { /* retain captures on unreadable inventory or cleanup failure */ }
         return observed.status;
       }
       if (observed.state === "incompatible" || observed.state === "missing") throw new Error(observed.error ?? observed.state);

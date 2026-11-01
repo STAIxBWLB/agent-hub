@@ -1,14 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { realPath } from "../src/hub/project.ts";
 import { Registry, REGISTRY_DB_BUSY_TIMEOUT_MS } from "../src/hub/registry.ts";
 import { projectRuntimeFile, writeProjectRuntimeState } from "../src/hub/project-runtime-state.ts";
-import { planRuntimeCapturePrune, pruneRuntimeCaptures } from "../src/hub/runtime-capture-prune.ts";
+import { planRuntimeCapturePrune, pruneRuntimeCaptures, scheduleRuntimeCapturePrune, RUNTIME_PRUNE_INTERVAL_MS, RUNTIME_PRUNE_MAX_BATCH } from "../src/hub/runtime-capture-prune.ts";
 import { stageCurrentRuntime } from "../src/cli/recovery-package.ts";
 import { createOperation, planFingerprint, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
@@ -70,6 +70,14 @@ test("#610 pruning keeps newest captures per version and only removes verified o
   for (const value of [third, other]) expect(existsSync(value.root)).toBe(true);
 });
 
+test("#610 one prune call limits deletion work to a small candidate batch", () => {
+  const f = fixture(), captures = Array.from({ length: RUNTIME_PRUNE_MAX_BATCH + 2 }, () => f.capture());
+  const result = pruneRuntimeCaptures(f.home, 0);
+  expect(result.deferred).toBeUndefined(); expect(result.removed).toHaveLength(RUNTIME_PRUNE_MAX_BATCH);
+  expect(result.kept).toHaveLength(2);
+  expect(captures.filter(row => existsSync(row.root))).toHaveLength(2);
+});
+
 test("#610 stopped project pointers and matching live claims retain their captures beyond newest N", () => {
   const f = fixture(), stopped = f.capture(), live = f.capture(), orphan = f.capture();
   const one = f.project("stopped"), two = f.project("live"), instance = "fixture-live";
@@ -126,7 +134,7 @@ for (const kind of ["missing", "different-instance", "invalid"] as const) {
   });
 }
 
-for (const kind of ["missing-capture", "wrong-digest", "linked-root", "noncanonical-root", "changed-capture"] as const) {
+for (const kind of ["missing-capture", "wrong-digest", "linked-root", "noncanonical-root"] as const) {
   test(`#610 a matching live claim with a ${kind} package reference defers every deletion`, () => {
     const f = fixture(), capture = f.capture(), orphan = f.capture(), project = f.project(), instance = "fixture-live";
     f.registry.runtimeCaptureLocked(() => {
@@ -137,13 +145,21 @@ for (const kind of ["missing-capture", "wrong-digest", "linked-root", "noncanoni
       const record = writeProjectRuntimeState(project, selected, instance);
       if (kind === "noncanonical-root") put(project.stateDir, "runtime.json", JSON.stringify({ ...record, root: `${capture.root}/.` }));
       if (kind === "missing-capture") rmSync(capture.root, { recursive: true });
-      if (kind === "changed-capture") put(capture.root, "src/revision.ts", "// changed referenced package\n");
     });
     const result = pruneRuntimeCaptures(f.home, 0);
     expect(result).toMatchObject({ removed: [], deferred: expect.any(String) });
     expect(existsSync(orphan.root)).toBe(true);
   });
 }
+
+test("#610 referenced capture contents are retained without hashing or treating their mutation as deletion authority", () => {
+  const f = fixture(), capture = f.capture(), orphan = f.capture(), project = f.project();
+  f.registry.runtimeCaptureLocked(() => writeProjectRuntimeState(project, { ...capture, kind: "restart" }, null));
+  put(capture.root, "src/revision.ts", "// referenced capture remains protected despite changed contents\n");
+  const result = pruneRuntimeCaptures(f.home, 0);
+  expect(result.deferred).toBeUndefined(); expect(result.kept).toEqual([capture.root]); expect(result.removed).toEqual([orphan.root]);
+  expect(readFileSync(join(capture.root, "src/revision.ts"), "utf8")).toContain("remains protected");
+});
 
 test("#610 an unverifiable stopped-project package reference also defers pruning", () => {
   const f = fixture(), capture = f.capture(), orphan = f.capture(), project = f.project();
@@ -195,15 +211,19 @@ test("#610 cancelled pre-stage and legacy terminal receipt schemas remain readab
   }
 });
 
-test("#610 invalid receipt inventory or tampered captures defer all deletion", () => {
+test("#610 invalid receipt inventory defers all deletion and tampered candidate contents remain inspectable", () => {
   const f = fixture(), first = f.capture(), second = f.capture();
   put(f.home, `recovery/${randomUUID()}.json`, "{");
   expect(pruneRuntimeCaptures(f.home, 0)).toMatchObject({ removed: [], deferred: expect.any(String) });
   expect(existsSync(first.root)).toBe(true); expect(existsSync(second.root)).toBe(true);
   rmSync(join(f.home, "recovery"), { recursive: true });
   put(second.root, "src/changed.ts", "// deliberately altered capture\n");
-  expect(pruneRuntimeCaptures(f.home, 0)).toMatchObject({ removed: [], deferred: expect.stringContaining("verification") });
-  expect(existsSync(first.root)).toBe(true); expect(existsSync(second.root)).toBe(true);
+  const before = lstatSync(second.root), result = pruneRuntimeCaptures(f.home, 0);
+  expect(result).toMatchObject({ deferred: expect.stringContaining("verification"), quarantined: [expect.any(String)] });
+  expect(result.removed).not.toContain(second.root);
+  const retained = join(result.quarantined![0]!, "capture"), after = lstatSync(retained);
+  expect([after.dev, after.ino]).toEqual([before.dev, before.ino]);
+  expect(readFileSync(join(retained, "src/changed.ts"), "utf8")).toBe("// deliberately altered capture\n");
 });
 
 for (const name of ["README.md", "LICENSE", "CHANGELOG.md"] as const) {
@@ -263,11 +283,12 @@ test("#610 a CLI executing from a verified capture protects itself without prote
   // Copy this one production module into a tiny package, with narrow re-exports to its real dependencies.
   put(f.source, "src/hub/runtime-capture-prune.ts", readFileSync(module, "utf8"));
   const reexport = (file: string, names: string, actual: string) => put(f.source, file, `export { ${names} } from ${JSON.stringify(new URL(actual, import.meta.url).href)};\n`);
-  reexport("src/cli/recovery-package.ts", "verifyPackage, verifyRecoveryTarget", "../src/cli/recovery-package.ts");
+  reexport("src/cli/recovery-package.ts", "verifyPackage", "../src/cli/recovery-package.ts");
   reexport("src/pi/process-signature.ts", "processLiveness", "../src/pi/process-signature.ts");
   reexport("src/hub/project.ts", "hubHome, realPath", "../src/hub/project.ts");
-  reexport("src/hub/project-runtime-state.ts", "readProjectRuntime", "../src/hub/project-runtime-state.ts");
+  reexport("src/hub/project-runtime-state.ts", "readProjectRuntimeReference, projectRuntimeFile", "../src/hub/project-runtime-state.ts");
   reexport("src/hub/registry.ts", "Registry, REGISTRY_DB_BUSY_TIMEOUT_MS", "../src/hub/registry.ts");
+  reexport("src/hub/child-process.ts", "childEnv", "../src/hub/child-process.ts");
   const executing = f.capture(), orphan = f.capture();
   const captured = await import(pathToFileURL(join(executing.root, "src/hub/runtime-capture-prune.ts")).href) as typeof import("../src/hub/runtime-capture-prune.ts");
   const result = captured.pruneRuntimeCaptures(f.home, 0);
@@ -318,5 +339,66 @@ writeFileSync(${JSON.stringify(result)}, JSON.stringify(pruneRuntimeCaptures(${J
     writeFileSync(release, "release");
     for (const child of children) if (child.exitCode === null) child.kill("SIGTERM");
     await Promise.all(children.map(child => child.exited));
+  }
+}, 20_000);
+
+interface ScheduleRow { id: string; admitted_at: number; phase: string; pid: number | null; outcome: string | null }
+function scheduleRow(home: string): ScheduleRow | undefined {
+  const file = join(home, "runtime-prune.db"); if (!existsSync(file)) return undefined;
+  let db: Database | undefined;
+  try {
+    db = new Database(file, { readonly: true });
+    db.run(`PRAGMA busy_timeout = ${REGISTRY_DB_BUSY_TIMEOUT_MS}`);
+    return db.query("SELECT id,admitted_at,phase,pid,outcome FROM admission WHERE slot=1").get() as ScheduleRow | undefined;
+  } catch { return undefined; } // another process may still be initializing the exclusively created ledger
+  finally { db?.close(); }
+}
+
+test("#610 maintenance admits after startup returns, rate-limits across processes and fences stale children", async () => {
+  const f = fixture(); f.capture();
+  let identity: { pid: number; signature: string } | undefined;
+  try {
+    scheduleRuntimeCapturePrune(f.home);
+    expect(existsSync(join(f.home, "runtime-prune.db"))).toBe(false);
+    let completed: ScheduleRow | undefined;
+    for (let i = 0; i < 2000; i++) {
+      const row = scheduleRow(f.home);
+      if (row?.pid && !identity) { const signature = processSignature(row.pid); if (signature) identity = { pid: row.pid, signature }; }
+      if (row?.phase === "complete") { completed = row; break; }
+      await Bun.sleep(5);
+    }
+    expect(completed?.phase).toBe("complete");
+    expect(lstatSync(join(f.home, "runtime-prune.db")).mode & 0o077).toBe(0);
+    expect(JSON.parse(completed!.outcome!)).toMatchObject({ removed: 0, quarantined: [] });
+    const module = new URL("../src/hub/runtime-capture-prune.ts", import.meta.url).pathname, caller = join(f.root, "schedule.ts");
+    writeFileSync(caller, `import { scheduleRuntimeCapturePrune } from ${JSON.stringify(module)}; scheduleRuntimeCapturePrune(${JSON.stringify(f.home)});\n`);
+    const env: NodeJS.ProcessEnv = { ...process.env, AGENTHUB_HOME: f.home };
+    for (const key of Object.keys(env)) if (key.startsWith("ORCA_")) delete env[key];
+    const other = Bun.spawn([process.execPath, caller], { cwd: f.root, env, stdout: "ignore", stderr: "pipe" });
+    expect(await other.exited, await new Response(other.stderr).text()).toBe(0);
+    expect(scheduleRow(f.home)?.id).toBe(completed!.id);
+    const replacement = randomUUID(), db = new Database(join(f.home, "runtime-prune.db"));
+    try {
+      db.run(`PRAGMA busy_timeout = ${REGISTRY_DB_BUSY_TIMEOUT_MS}`);
+      db.query("UPDATE admission SET id=?,phase='scheduled' WHERE slot=1").run(replacement);
+    } finally { db.close(); }
+    const stale = Bun.spawn([process.execPath, module, f.home, completed!.id], { cwd: f.root, env, stdout: "ignore", stderr: "pipe" });
+    expect(await stale.exited, await new Response(stale.stderr).text()).toBe(0);
+    expect(scheduleRow(f.home)).toMatchObject({ id: replacement, phase: "scheduled" });
+    const active = new Database(join(f.home, "runtime-prune.db"));
+    try {
+      active.run(`PRAGMA busy_timeout = ${REGISTRY_DB_BUSY_TIMEOUT_MS}`);
+      active.query("UPDATE admission SET phase='running',admitted_at=? WHERE slot=1").run(Date.now() - RUNTIME_PRUNE_INTERVAL_MS * 2);
+    } finally { active.close(); }
+    scheduleRuntimeCapturePrune(f.home);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(scheduleRow(f.home)).toMatchObject({ id: replacement, phase: "running" });
+  } finally {
+    // Only the worker this private fixture ledger admitted may be signaled; a reused PID never qualifies.
+    if (identity && processSignature(identity.pid) === identity.signature) {
+      try { process.kill(identity.pid, "SIGTERM"); } catch {}
+      for (let i = 0; i < 200 && processLiveness(identity.pid, identity.signature) !== "gone"; i++) await Bun.sleep(5);
+      expect(processLiveness(identity.pid, identity.signature)).toBe("gone");
+    }
   }
 }, 20_000);

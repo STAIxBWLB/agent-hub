@@ -1,12 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { stageCurrentRuntime, verifyPackage } from "../src/cli/recovery-package.ts";
 import { realPath } from "../src/hub/project.ts";
 import { Registry, type Project } from "../src/hub/registry.ts";
 import { confirmProjectRuntime, recordProjectRuntime, resolveProjectRuntime, verifyProjectRuntime } from "../src/hub/project-runtime.ts";
-import { projectRuntimeFile, readProjectRuntime, writeProjectRuntimeState, type ProjectRuntimeSelection } from "../src/hub/project-runtime-state.ts";
+import { createProjectRuntimeAccess, projectRuntimeFile, readProjectRuntime, readProjectRuntimeReference, writeProjectRuntimeState, type ProjectRuntimeSelection } from "../src/hub/project-runtime-state.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -258,3 +258,91 @@ test("#610 a nested state repository cannot hide a tracked runtime from the oute
   expect(() => readProjectRuntime(p)).toThrow(/committed to git/);
   expect(() => f.bind(p, runtime.selection)).toThrow(/committed to git/);
 });
+
+
+function scopedGitFixture(root: string): { count(): number } {
+  const bin = join(root, "scoped-git"), log = join(root, "scoped-git.log"), before = process.env.PATH;
+  mkdirSync(bin); writeFileSync(log, "");
+  put(bin, "git", `#!/bin/sh
+listing=0
+past=0
+scopes=0
+for arg in "$@"; do
+  if [ "$arg" = "ls-files" ]; then listing=1; fi
+  if [ "$past" = 1 ]; then
+    case "$arg" in
+      ':(icase,literal)'*|':(icase,glob)'*) scopes=$((scopes + 1)) ;;
+      *) echo 'fixture rejects an unscoped oversized index' >&2; exit 73 ;;
+    esac
+  fi
+  if [ "$arg" = "--" ]; then past=1; fi
+done
+if [ "$listing" = 1 ]; then
+  if [ "$scopes" = 0 ]; then echo 'fixture rejects an unscoped oversized index' >&2; exit 73; fi
+  echo scoped >> ${"'" + log.replace(/'/g, "'\\''") + "'"}
+fi
+exec /usr/bin/git "$@"
+`);
+  chmodSync(join(bin, "git"), 0o700); process.env.PATH = `${bin}:${before ?? "/usr/bin:/bin"}`;
+  cleanup.push(() => { if (before === undefined) delete process.env.PATH; else process.env.PATH = before; });
+  return { count: () => readFileSync(log, "utf8").split("\n").filter(Boolean).length };
+}
+
+test("#610 one call-bound access reuses a scoped trust check, while each standalone access is fresh", () => {
+  const f = fixture(), p = f.project(), runtime = retain(f, p); gitFixture(p.root, ["init", "-q"]);
+  const git = scopedGitFixture(f.root), access = createProjectRuntimeAccess(p);
+  expect(git.count()).toBe(1);
+  f.registry.runtimeCaptureLocked(() => {
+    expect(readProjectRuntime(p, access)).toMatchObject(runtime.selection);
+    writeProjectRuntimeState(p, runtime.selection, null, access);
+    expect(readProjectRuntime(p, access)).toMatchObject(runtime.selection);
+  });
+  expect(git.count()).toBe(1);
+  expect(readProjectRuntime(p)).toMatchObject(runtime.selection); expect(git.count()).toBe(2);
+  const other = f.project("other-project");
+  expect(() => readProjectRuntime(other, access)).toThrow(/another project/);
+});
+
+test("#610 custom runtime trust skips a project repository that does not contain the runtime file", () => {
+  const f = fixture(), original = f.project(), stateRepo = join(f.root, "custom-state-repo");
+  gitFixture(original.root, ["init", "-q"]); mkdirSync(stateRepo); gitFixture(stateRepo, ["init", "-q"]);
+  const p = f.registry.register(original.root, join(stateRepo, "state")), runtime = retain(f, p), git = scopedGitFixture(f.root);
+  expect(readProjectRuntime(p)).toMatchObject(runtime.selection); expect(git.count()).toBe(1);
+});
+
+test("#610 scoped runtime trust still rejects a tracked ancestor directory entry", () => {
+  const f = fixture(), p = f.project(), runtime = retain(f, p); gitFixture(p.root, ["init", "-q"]);
+  gitFixture(p.root, ["update-index", "--add", "--cacheinfo", `160000,${"1".repeat(40)},.agenthub`]);
+  const git = scopedGitFixture(f.root), before = stateBytes(p);
+  expect(() => readProjectRuntime(p)).toThrow(/committed to git/); expect(git.count()).toBe(1);
+  expect(() => f.bind(p, runtime.selection)).toThrow(/committed to git/); expect(stateBytes(p)).toBe(before);
+});
+
+test("#610 metadata-only runtime references retain tracked pointers without conferring execution authority", () => {
+  const f = fixture(), p = f.project(), runtime = retain(f, p); gitFixture(p.root, ["init", "-q"]);
+  gitFixture(p.root, ["add", "-f", ".agenthub/state/runtime.json"]);
+  const git = scopedGitFixture(f.root);
+  expect(readProjectRuntimeReference(p)).toMatchObject(runtime.selection); expect(git.count()).toBe(0);
+  expect(() => resolveProjectRuntime(p, "0.28.0", runtime.sourceRoot, f.registry)).toThrow(/committed to git/);
+  expect(git.count()).toBe(1);
+});
+
+for (const nested of [false, true]) {
+  test(`#610 a ${nested ? "descendant of a" : "direct"} pruning quarantine cannot be selected or published for execution`, () => {
+    const f = fixture(), p = f.project(), captured = f.capture("0.27.0", "withdrawn", "restart"), quarantine = join(f.root, ".runtime-prune-fixture");
+    const destination = nested ? join(quarantine, "package") : quarantine;
+    if (nested) mkdirSync(quarantine);
+    renameSync(captured.selection.root, destination);
+    const runtime = { ...captured.selection, root: destination };
+    put(p.stateDir, "runtime.json", JSON.stringify({ schema: 1, projectId: p.id, projectRoot: p.root, stateDir: p.stateDir, ...runtime, instanceId: null }));
+    const before = stateBytes(p);
+    expect(readProjectRuntimeReference(p)).toMatchObject(runtime); // Retention sees raw references without granting publication or execution.
+    expect(() => writeProjectRuntimeState(p, runtime, null)).toThrow(/quarantined for pruning/);
+    const access = createProjectRuntimeAccess(p);
+    expect(() => access.write(runtime, null)).toThrow(/quarantined for pruning/);
+    expect(() => verifyProjectRuntime(runtime)).toThrow(/quarantined for pruning/);
+    expect(() => resolveProjectRuntime(p, "0.28.0", captured.sourceRoot, f.registry)).toThrow(/quarantined for pruning/);
+    expect(() => f.bind(p, runtime)).toThrow(/quarantined for pruning/);
+    expect(stateBytes(p)).toBe(before);
+  });
+}

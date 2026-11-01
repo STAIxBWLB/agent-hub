@@ -3,6 +3,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { stageCurrentRuntime, verifyPackage } from "../src/cli/recovery-package.ts";
 import { PROTOCOL, PROTOCOL_MIN } from "../src/hub/control-client.ts";
 import { realPath } from "../src/hub/project.ts";
@@ -15,6 +17,32 @@ import { ADAPTERS } from "../src/adapters/registry.ts";
 
 const put = (root: string, name: string, text: string) => { const file = join(root, name); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); };
 type Owner = { fixture: string; pid: number; pidSignature: string; instanceId: string };
+function watchScopedGit(root: string, bin: string): () => number {
+  const log = join(root, "trust-git.log"); writeFileSync(log, "");
+  put(bin, "git", `#!/bin/sh
+listing=0
+past=0
+scopes=0
+for arg in "$@"; do
+  if [ "$arg" = "ls-files" ]; then listing=1; fi
+  if [ "$past" = 1 ]; then
+    case "$arg" in
+      ':(icase,literal)'*|':(icase,glob)'*) scopes=$((scopes + 1)) ;;
+      *) echo 'fixture rejects oversized full-index query' >&2; exit 73 ;;
+    esac
+  fi
+  if [ "$arg" = "--" ]; then past=1; fi
+done
+if [ "$listing" = 1 ]; then
+  if [ "$scopes" = 0 ]; then echo 'fixture rejects oversized full-index query' >&2; exit 73; fi
+  echo scoped >> ${"'" + log.replace(/'/g, "'\\''") + "'"}
+fi
+exec /usr/bin/git "$@"
+`);
+  chmodSync(join(bin, "git"), 0o700);
+  return () => readFileSync(log, "utf8").split("\n").filter(Boolean).length;
+}
+
 
 /** The capture factory is synthetic; Registry, control client, lifecycle and manager are production code. */
 async function fixture() {
@@ -125,7 +153,7 @@ writeFileSync(join(stateDir,'status.json'),JSON.stringify(status));
     const owner = JSON.parse(readFileSync(join(p.stateDir, "fixture-runtime-owner.json"), "utf8")) as Owner;
     expect(owner.fixture).toBe(id); owners.push(owner); return owner;
   };
-  return { root, env, lifecycle, manager, project, capture, bind, remember, get registry() { return registry; },
+  return { root, env, lifecycle, manager, project, capture, bind, remember, watchTrustGit: () => watchScopedGit(root, bin), get registry() { return registry; },
     reopen() { registry.close(); registry = new Registry(join(env.AGENTHUB_HOME!, "registry.db")); },
     async close() {
       const failures: unknown[] = [];
@@ -218,6 +246,9 @@ test("#610 current mutable-source internal daemon cannot impersonate a byte-iden
     const runtime: ProjectRuntimeSelection = { ...stageCurrentRuntime(source, VERSION, f.env.AGENTHUB_HOME!, f.registry), kind: "restart" };
     expect(runtime.root).not.toBe(source); expect(runtime.digest).toBe(verifyPackage(source, VERSION)); f.bind(p, runtime);
     const before = readFileSync(projectRuntimeFile(p), "utf8");
+    const initialized = Bun.spawnSync(["/usr/bin/git", "-C", p.root, "init", "-q"], { env: f.env, stdout: "pipe", stderr: "pipe" });
+    expect(initialized.exitCode, initialized.stderr.toString()).toBe(0);
+    const trustChecks = f.watchTrustGit();
     child = Bun.spawn([process.execPath, join(source, "src/cli/main.ts"), "--project", p.root, "daemon"],
       { cwd: p.root, env: f.env, stdout: "pipe", stderr: "pipe" });
     let expired = false;
@@ -236,6 +267,7 @@ test("#610 current mutable-source internal daemon cannot impersonate a byte-iden
     expect(existsSync(join(p.stateDir, "control-token"))).toBe(false);
     expect(f.registry.get(p.id)?.instanceId).toBeNull();
     expect(readFileSync(projectRuntimeFile(p), "utf8")).toBe(before);
+    expect(trustChecks()).toBe(1);
   } finally {
     clearTimeout(timer); clearTimeout(hardStop);
     if (child && !settled) { child.kill("SIGKILL"); await child.exited; }
@@ -291,3 +323,35 @@ for (const waiting of [false, true]) {
     }
   }, 20_000);
 }
+
+
+test("#610 each actual startProject call performs one scoped trust admission outside its repeated runtime reads", async () => {
+  const f = await fixture();
+  try {
+    const p = f.project("scoped-trust-project"), runtime = f.capture("scoped trust retained"); f.bind(p, runtime.runtime);
+    const initialized = Bun.spawnSync(["/usr/bin/git", "-C", p.root, "init", "-q"], { env: f.env, stdout: "pipe", stderr: "pipe" });
+    expect(initialized.exitCode, initialized.stderr.toString()).toBe(0);
+    const count = f.watchTrustGit();
+    const first = await f.lifecycle.startProject(p, { env: f.env }); f.remember(p);
+    expect(first.fixtureMarker).toBe("scoped trust retained"); expect(count()).toBe(1);
+    const second = await f.lifecycle.startProject(f.registry.get(p.id)!, { env: f.env });
+    expect(second.instanceId).toBe(first.instanceId); expect(count()).toBe(2);
+  } finally { await f.close(); }
+}, 20_000);
+
+test("#610 a manager executing beneath a pruning quarantine cannot publish a live runtime reference", async () => {
+  const f = await fixture();
+  try {
+    const actual = resolve(import.meta.dir, "../src/hub/manager.ts"), root = join(f.root, ".runtime-prune-manager"), module = join(root, "src/hub/manager.ts");
+    // One production module with explicit imports to the updated source; no product/dependency tree is copied or run as an older binary.
+    const source = readFileSync(actual, "utf8").replace(/from "([^"]+)"/g, (whole, name: string) => {
+      const selected = name.startsWith(".") ? pathToFileURL(resolve(dirname(actual), name)).href
+        : name === "@staix/agent-mem" ? pathToFileURL(createRequire(import.meta.url).resolve(name)).href : undefined;
+      return selected ? `from ${JSON.stringify(selected)}` : whole;
+    });
+    put(root, "src/hub/manager.ts", source);
+    const quarantined = await import(pathToFileURL(module).href) as typeof import("../src/hub/manager.ts");
+    await expect(quarantined.startManager({ home: f.env.AGENTHUB_HOME, registry: f.registry, lifecycle: f.lifecycle })).rejects.toThrow(/quarantined for pruning/);
+    for (const name of ["owner.db", "status.json", "control-token"]) expect(existsSync(join(f.env.AGENTHUB_HOME!, "manager", name))).toBe(false);
+  } finally { await f.close(); }
+}, 20_000);
