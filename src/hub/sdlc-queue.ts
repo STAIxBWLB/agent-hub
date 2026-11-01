@@ -101,6 +101,11 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
       const integrity = rawIntegrity ? publicTestIntegrity(rawIntegrity, readableMetadata) : undefined;
       if (integrity) (row.testIntegrity ??= []).push({ task: holder!.id, ...integrity });
       row.blockers.push(...sdlcStatus(config, holder?.receipt, read, holder?.phase).blockers);
+      const approved = holder?.receipt?.reviewedHead, binding = holder?.approval;
+      if (holder?.latestHead !== undefined && holder.latestHead !== approved) row.blockers.push("latest reported head differs from approved head");
+      if (binding && (!binding.current || binding.mismatch || !binding.head || binding.head !== approved
+        || holder?.latestHead !== undefined && binding.head !== holder.latestHead
+        || binding.latestHead !== undefined && binding.head !== binding.latestHead)) row.blockers.push("approval is not current at the latest reported head");
       // #481 S5: the eval check itself is a required check inside sdlcStatus; its recorded pass rate and suite are read once per PR here.
       if (!row.evalGate) {
         const gate = evalGateView(config, read, await readEvalFor(config, read, repo, bounded));
