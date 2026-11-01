@@ -10877,14 +10877,6 @@ var init_packs = __esm(() => {
   init_workflow();
 });
 
-// src/hub/research-runner.ts
-var BODY, RUNNER_RECEIPT_DOMAIN;
-var init_research_runner = __esm(() => {
-  init_packs();
-  BODY = 64 * 1024;
-  RUNNER_RECEIPT_DOMAIN = "agent-hub.runner-receipt/v1" + String.fromCharCode(0);
-});
-
 // node_modules/@staix/agent-mem/src/memory/mutation.ts
 var mutations;
 var init_mutation = __esm(() => {
@@ -11904,13 +11896,12 @@ var init_deliverables = __esm(() => {
 });
 
 // src/hub/research-experiments.ts
-var BODY2;
+var BODY;
 var init_research_experiments = __esm(() => {
   init_src();
   init_packs();
-  init_research_runner();
   init_deliverables();
-  BODY2 = 64 * 1024;
+  BODY = 64 * 1024;
 });
 
 // src/hub/task-code-symbols.ts
@@ -11996,16 +11987,15 @@ var init_planning = __esm(() => {
 });
 
 // src/hub/research-campaign.ts
-var BODY3;
+var BODY2;
 var init_research_campaign = __esm(() => {
   init_packs();
-  BODY3 = 64 * 1024;
+  BODY2 = 64 * 1024;
 });
 
 // src/hub/board.ts
 var CLASSES2, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
-  init_research_runner();
   init_packs();
   init_research_experiments();
   init_task_code_symbols();
@@ -15196,6 +15186,7 @@ var init_builtin_metadata = __esm(() => {
         version: claudeObservedVersion,
         ...CLAUDE_LAUNCH_POLICY,
         conductorStartable: true,
+        upStart: { allowed: true, default: true },
         unattended: true,
         hubSwitches: switches,
         ownedFlags: Object.freeze(["--dangerously-load-development-channels", "--dangerously-skip-permissions"])
@@ -15237,6 +15228,7 @@ var init_builtin_metadata = __esm(() => {
         version: codexObservedVersion,
         ...CODEX_LAUNCH_POLICY,
         conductorStartable: true,
+        upStart: { allowed: true, default: true },
         unattended: true,
         hubSwitches: switches,
         ownedFlags: Object.freeze(["--remote", "--remote-auth-token-env", "--yolo", "--dangerously-bypass-approvals-and-sandbox"])
@@ -15262,7 +15254,7 @@ var init_builtin_metadata = __esm(() => {
       roles: implementerRoles,
       defaultOnRoster: true,
       trust: { onPrem: false, hubSandboxed: false },
-      start: { create: createKimi, acpCommand: kimiAcpCommand, explicitHeadlessMode: true, planCommand: () => "ahub kimi", daemonPort: "acp", forms: dualForms, defaultForm: "tui", conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+      start: { create: createKimi, acpCommand: kimiAcpCommand, explicitHeadlessMode: true, planCommand: () => "ahub kimi", daemonPort: "acp", forms: dualForms, defaultForm: "tui", conductorStartable: true, upStart: { allowed: true }, hubSwitches: [], ownedFlags: [] },
       identity: { mcp: "acp-session" },
       instances: { mode: "headless" },
       attach: {
@@ -15296,7 +15288,7 @@ var init_builtin_metadata = __esm(() => {
       roles: implementerRoles,
       defaultOnRoster: false,
       trust: { onPrem: false, hubSandboxed: true },
-      start: { create: createPi, exclusiveStartRefusal: "Pi start is in progress; inspect status before retrying", refreshTools: true, explicitHeadlessMode: true, daemonPort: "pi-rpc", forms: dualForms, defaultForm: "tui", conductorStartable: true, autoStart: "pi.auto_start", conductorStartArgs: piConductorStartArgs, hubSwitches: [], ownedFlags: [] },
+      start: { create: createPi, exclusiveStartRefusal: "Pi start is in progress; inspect status before retrying", refreshTools: true, explicitHeadlessMode: true, daemonPort: "pi-rpc", forms: dualForms, defaultForm: "tui", conductorStartable: true, upStart: { allowed: true }, autoStart: "pi.auto_start", conductorStartArgs: piConductorStartArgs, hubSwitches: [], ownedFlags: [] },
       identity: { mcp: "env" },
       instances: { mode: "headless" },
       permission: { grants: { ...hubGrants } },
@@ -15319,7 +15311,7 @@ var init_builtin_metadata = __esm(() => {
       roles: implementerRoles,
       defaultOnRoster: true,
       trust: { onPrem: true, hubSandboxed: true },
-      start: { create: createLocal, reconfigureWhileAttached: true, refreshTools: true, daemonPort: "local-worker", forms: headlessForms, defaultForm: "headless", conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+      start: { create: createLocal, reconfigureWhileAttached: true, refreshTools: true, daemonPort: "local-worker", forms: headlessForms, defaultForm: "headless", conductorStartable: true, upStart: { allowed: true }, hubSwitches: [], ownedFlags: [] },
       identity: { mcp: "env" },
       instances: { mode: "headless" },
       permission: { grants: { ...hubGrants } },
@@ -15342,7 +15334,7 @@ var init_builtin_metadata = __esm(() => {
       optional: true,
       defaultOnRoster: false,
       trust: { onPrem: false, hubSandboxed: false },
-      start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: dualForms, defaultForm: "tui", explicitHeadlessMode: true, conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+      start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: dualForms, defaultForm: "tui", explicitHeadlessMode: true, conductorStartable: true, upStart: { allowed: true }, hubSwitches: [], ownedFlags: [] },
       identity: { mcp: "project-file" },
       instances: { mode: "headless", nativeHome: true },
       permission: { unmanaged: "Jcode native policy is unmanaged; no hub mode mapping", grants: {
@@ -15500,6 +15492,7 @@ var init_qwen = __esm(() => {
       forms: ["headless"],
       defaultForm: "headless",
       conductorStartable: true,
+      upStart: { allowed: false, refusal: "the hub never opens its TUI, and a Qwen is started only by ahub qwen" },
       hubSwitches: [],
       ownedFlags: [],
       preflight: (request) => request.form !== undefined && request.form !== "headless" && request.form !== "tui" ? "unknown Qwen mode; usage: ahub qwen [--mode headless|tui]" : undefined,
@@ -15927,6 +15920,7 @@ function assertNativeCapabilityScope(definition) {
     ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
     ["start.daemonPort qwen-dual", definition.start.daemonPort === "qwen-dual"],
     ["start.createTui", declared(definition.start, "createTui")],
+    ["start.upStart", declared(definition.start, "upStart")],
     ["routing", definition.routing !== undefined],
     ["projection", definition.projection !== undefined],
     ["instances.nativeHome", declared(definition.instances, "nativeHome")],
@@ -23042,7 +23036,7 @@ var MACHINE_LOCAL = [
   "corpus.paths",
   "invocation"
 ];
-var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "research.runners", "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"];
+var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "start.agents", "adapters", "adapter_modules", "text_projection", "instances"];
 function configRefusal(cwd, name) {
   const tracked = configTracked(cwd, name);
   return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;
@@ -23372,7 +23366,6 @@ init_hub_tools();
 init_envelope();
 
 // src/hub/tasks.ts
-init_research_runner();
 init_queue_backpressure();
 
 // src/hub/memory-symbols.ts

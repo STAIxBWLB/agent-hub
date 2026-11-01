@@ -26,6 +26,8 @@ export const QWEN_DEFINITION: AdapterDefinition = {
     forms: ["headless"],
     defaultForm: "headless",
     conductorStartable: true,
+    // #608: the TUI is explicit only, so `ahub up` never starts Qwen from the start set; the text names why.
+    upStart: { allowed: false, refusal: "the hub never opens its TUI, and a Qwen is started only by ahub qwen" },
     hubSwitches: [],
     ownedFlags: [],
     // The TUI (#286 Part 3) is explicit only: forms stays headless, so Qwen never becomes a start-mode peer and the hub never opens it by itself.

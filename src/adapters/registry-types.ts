@@ -188,6 +188,8 @@ export interface AdapterDefinition {
     preflight?(ctx: StartRequest): string | undefined;
     version?(ctx: VersionContext): string | undefined;
     conductorStartable: boolean;
+    /** #608: whether `ahub up` may start this kind from the `start.agents` set, and whether it is in the default set. `allowed: false` carries the reason a listing is refused. Absent: not startable by `ahub up`, refused with the generic reason. Fixed builtins only. */
+    upStart?: { allowed: true; default?: true } | { allowed: false; refusal: string };
     passthrough?: boolean;
     autoStart?: "pi.auto_start";
     exclusiveStartRefusal?: string;
