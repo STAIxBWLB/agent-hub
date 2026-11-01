@@ -106,6 +106,11 @@ export class Registry {
     return (this.db.query(`SELECT ${PROJECT_COLUMNS}, pid_signature FROM projects ORDER BY root`).all() as Record<string, unknown>[]).map(projectFromRow);
   }
 
+  /** Serialize capture publication, durable project references and pruning with registry writers. */
+  runtimeCaptureLocked<T>(fn: () => T): T {
+    return this.db.inTransaction ? fn() : this.db.transaction(fn).immediate();
+  }
+
   allocate(root: string): number {
     return this.register(root).basePort;
   }

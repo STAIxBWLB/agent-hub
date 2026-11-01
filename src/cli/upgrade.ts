@@ -10,7 +10,7 @@ import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { REGISTRY_DB_BUSY_TIMEOUT_MS, PROJECT_COLUMNS, projectFromRow, type Project } from "../hub/registry.ts";
+import { Registry, REGISTRY_DB_BUSY_TIMEOUT_MS, PROJECT_COLUMNS, projectFromRow, type Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { readRecoveryWaits } from "./recovery-waits.ts";
 import { acquireRecoveryLock, claimRunner, coordinatorCurrent, operationIdPattern, readOperation, recoveryCommand, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
@@ -447,8 +447,8 @@ function sealScopedPlan(op: RecoveryOperation): void {
 
 export function createOperation(plan: UpgradePlan, sourceRoot: string, home = hubHome(), delegation?: RecoveryDelegation, operationId: string = randomUUID()): RecoveryOperation {
   if (!operationIdPattern.test(operationId)) throw new Error("invalid recovery operation ID");
-  if (plan.blockers.length || plan.projects.some((p) => p.blockers.length)) throw new Error("upgrade plan has blockers; no runtimes were changed");
   if (!plan.projects.length) throw new Error("no running projects to recover");
+  if (plan.blockers.length || plan.projects.some((p) => p.blockers.length)) throw new Error("upgrade plan has blockers; no runtimes were changed");
   const { fingerprint, ...body } = plan;
   if (planFingerprint(body) !== fingerprint) throw new Error("upgrade plan fingerprint is invalid");
   const scope = recoveryScope(plan);
@@ -459,8 +459,10 @@ export function createOperation(plan: UpgradePlan, sourceRoot: string, home = hu
   };
   if (delegation) appendRecoveryDelegation(op, delegation, op.createdAt);
   sealScopedPlan(op);
-  writeOperation(id, op, home);
-  acquireRecoveryLock(id, home, scope);
+  // Publish the nonterminal receipt and its hold atomically with capture pruning's inventory.
+  const registry = new Registry(join(home, "registry.db"));
+  try { registry.runtimeCaptureLocked(() => { writeOperation(id, op, home); acquireRecoveryLock(id, home, scope); }); }
+  finally { registry.close(); }
   return op;
 }
 
