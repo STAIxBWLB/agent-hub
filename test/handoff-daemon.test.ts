@@ -250,3 +250,40 @@ test("task_handoff is its own recovery label: a stored handoff row in either dir
     expect((await request(p.person, instanceOf(p), DAEMON_FEATURES)).error ?? "", label).not.toContain("task_handoff");
   }
 }, 60_000);
+
+// The real `ahub` process against the real daemons: argv parsing, the control socket, the daemon's op and the renderer, with nothing in between faked. The CLI finds its project from --project and
+// the inherited environment is cleared, as a person's shell has none of an agent's markers.
+test("the real ahub process hands a task to another project, shows it in the target's board, and lists it with --handoffs", async () => {
+  const { a, b } = await pair();
+  const cli = async (project: Project, ...args: string[]) => {
+    const env = { ...process.env, NO_COLOR: "1", COLUMNS: "120" } as Record<string, string>;
+    for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") && key !== "AGENTHUB_HOME" || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CODEX_THREAD_ID", "KIMI_CODE"].includes(key)) delete env[key];
+    const proc = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", project.root, ...args], { cwd: project.root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    return { code: await proc.exited, stdout, stderr };
+  };
+  const usage = await cli(a, "task", "handoff", "--project", b.id);                                             // no title: usage, nothing sent
+  expect(usage.code).toBe(1); expect(usage.stderr).toContain("usage: ahub task handoff");
+  const badIssue = await cli(a, "task", "handoff", "--project", b.id, "--issue", "x", "A chore");
+  expect(badIssue.code).toBe(1); expect(badIssue.stderr).toContain("--issue is the target repository's issue number");
+  const sent = await cli(a, "task", "handoff", "--project", b.id, "implement", "Raise", "the", "pin", "--path", "package.json", "--issue", "12", "--detail", "to 0.18.0");
+  expect(sent.code, sent.stderr).toBe(0); expect(sent.stdout).toContain(`Handed off to project ${b.id}`); expect(sent.stdout).toContain("#1");
+  const readB = boardOf(b);
+  try { expect(readB.board.get(1)).toMatchObject({ title: "Raise the pin", class: "implement", refs: { paths: ["package.json"] } }); expect(readB.board.get(1)!.detail).toContain("to 0.18.0"); } finally { readB.close(); }
+  const showB = await cli(b, "task", "show", "1");
+  expect(showB.code, showB.stderr).toBe(0); expect(showB.stdout).toContain(`project ${a.id}`); expect(showB.stdout).toContain("handed off by");
+  const boardB = await cli(b, "board");
+  expect(boardB.stdout).toContain("handed off from"); expect(boardB.stdout).toContain("Raise the pin");
+  const listed = await cli(a, "board", "--handoffs");
+  expect(listed.code, listed.stderr).toBe(0); expect(listed.stdout).toContain("Handoffs (1)"); expect(listed.stdout).toContain(b.id.slice(0, 24)); expect(listed.stdout).toContain("proposed");
+  const json = await cli(a, "board", "--handoffs", "--json");
+  expect(JSON.parse(json.stdout).handoffs).toHaveLength(1);                                                    // --json prints the hub's own text
+  // an agent shell is refused: the form is the person's, and --live-test does not delegate it
+  const agentEnv = { AGENTHUB_PEER_ID: "codex" };
+  const refused = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", a.root, "task", "handoff", "--project", b.id, "A chore"], { cwd: a.root, env: { ...process.env, ...agentEnv, AGENTHUB_STATE_DIR: a.stateDir, AGENTHUB_PROJECT_DIR: a.root } as Record<string, string>, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const refusedErr = await new Response(refused.stderr).text(); expect(await refused.exited).toBe(1); expect(refusedErr).toContain("codex cannot run ahub task"); expect(refusedErr).toContain("inherited agent markers");
+  const live = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--live-test", "--project", a.root, "task", "handoff", "--project", b.id, "A chore"], { cwd: a.root, env: { ...process.env, ...agentEnv, AGENTHUB_STATE_DIR: a.stateDir, AGENTHUB_PROJECT_DIR: a.root } as Record<string, string>, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const liveErr = await new Response(live.stderr).text(); expect(await live.exited).toBe(1); expect(liveErr).toContain("live-test cannot write person-attributed content");
+  const after = boardOf(b);
+  try { expect(after.board.list()).toHaveLength(1); } finally { after.close(); }                                  // neither refused form created a second task
+}, 120_000);
