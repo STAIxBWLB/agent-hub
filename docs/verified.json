@@ -206,7 +206,11 @@
         "src/ui/office-space.ts",
         "src/cli/acon-register.ts",
         "src/cli/study.ts",
-        "src/cli/study-output.ts"
+        "src/cli/study-output.ts",
+        "src/hub/session-identity.ts",
+        "src/hub/provenance.ts",
+        "src/hub/channel-project.ts",
+        "src/hub/project.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {
@@ -269,7 +273,10 @@
         "src/hub/research-campaign.ts",
         "src/hub/research-experiments.ts",
         "src/hub/schedules.ts",
-        "src/hub/folder-trigger.ts"
+        "src/hub/folder-trigger.ts",
+        "src/hub/handoff.ts",
+        "src/cli/handoff-args.ts",
+        "src/cli/handoff-output.ts"
       ]
     },
     "docs/agent-notes/tests.md": {

@@ -54,7 +54,10 @@ become links. The scene carries labels and states only, never message bodies or 
   Claude Code instances can implement in their own worktree, in a terminal or
   headless with one session per task. `ahub sdlc metrics` reads lead times,
   rework and stalls from board history, and
-  optional control bands turn a breach into a backlog card.
+  optional control bands turn a breach into a backlog card. Work that belongs to
+  another project running agent-hub on this machine goes onto that project's board
+  with `ahub task handoff` (agents: `hub_task_handoff`), and its state changes come
+  back as task messages.
 - **Research campaigns.** `ahub study` keeps a multi-unit study contract as a draft
   (a planner drafts it with `hub_study_draft`); only the person approves it, which
   creates one task per unit, and `ahub study show` reads coverage per unit and
@@ -76,7 +79,10 @@ become links. The scene carries labels and states only, never message bodies or 
   (`action_policy.floor`, which `ahub autonomy on` sets) lets a push of a non-default
   branch to `origin` and `gh pr create|comment|review|merge` in the project's own
   repository run without asking; force, default-branch and tag pushes and releases
-  still ask. Budgets pause an
+  still ask. Every message records its sender's origin, and a session that is not
+  the project's own peer appears as `<peer>~<origin>` with none of that peer's
+  roles: sessions are distinguishable, which is provenance, not authentication.
+  Budgets pause an
   agent before it runs out of quota, and recovery never replays an
   effect whose outcome is unknown.
 - **Operations.** A terminal console and a local dashboard, one hub per repository or

@@ -417,6 +417,33 @@ This is an honest default against accidental impersonation and injected commands
 It does not make the token inaccessible to an agent with unrestricted project
 shell access. The existing OS sandbox and loopback authentication boundaries apply.
 
+Distinguishable sessions and sender provenance (#1036, #1037) make a mix-up
+between two sessions of one person visible; they are not authentication. A tools
+hello that names a Claude channel peer while presenting a launch id that is not
+that peer's current launch record, or that asks to be a session (the channel
+plugin does when its process has no project of its own and inherited another
+project's state directory), is bound to an id the daemon mints, `<peer>~<origin>`.
+Such a session may send, read status and run the read task ops in
+`SESSION_READ_OPS`; every other message is refused with `this session is <id>,
+not this project's <peer>`. It is never a bus peer: no delivery, no push, none of
+the peer's roles, and it replaces nobody. Its envelopes carry `session: true` and
+recipients see the minted id in the header; an origin label is kept only when it
+already is a plain lowercase token, so no path or sentence reaches a sender name.
+Every envelope event and one `attach` event per admitted peer or tools hello in
+`events.jsonl` carry `origin`: the connection's role, peer and launch or instance
+id, never a path, cwd, token or body. The channel plugin applies the CLI's
+ownership proof to an inherited `AGENTHUB_STATE_DIR` instead of trusting it, and
+does not join a hub whose `status.json` lacks `session_identity` as a session,
+since that hub would bind the real peer id. What this does not guarantee: a hello
+with no launch id still becomes the peer (the native facts hook, helpers and a
+person's shell connect that way), a launch id is an environment value every child
+of the session inherits, not a secret, and a same-user process that reads the
+control token can present the right id, present none, or connect as the console.
+Nothing that connected before is refused. A recipient weighs a `<peer>~<origin>`
+sender as another session's message; a plain peer id proves no more than it did
+before. A restart, upgrade or recovery onto a daemon without `session_identity`
+is refused while an unsettled delivery holds a session's message.
+
 Steering tools require an explicit `conductor` role, independent of default-allow
 capabilities. Only one peer may hold that role. Two task-scoped exceptions need
 no role: a task's current owner and reviewer may read its public view with
@@ -841,6 +868,49 @@ role admission.
 - **Recovery.** A restart, upgrade or recovery onto a daemon lacking the matching
   `research_*` feature is refused while campaign, dispatch, re-offer, experiment or
   comparison rows exist, or while `research.runners` is configured.
+
+## Cross-project task handoff (#604, #1030)
+
+A handoff crosses a project boundary, but not a security boundary: both projects
+belong to the same machine user. The origin daemon reads the target's control
+token file and connects to the target's daemon as the `console` role through
+`ControlClient`, like every control message; the hello checks the target's project
+root and instance. It sends that connection only the three handoff messages, and
+it has no reach a same-user process lacks (see "What is not defended").
+
+- **Who may hand off.** `ahub task handoff` is Console in `classifyPeerCommand`;
+  agents use `hub_task_handoff`, admitted for the person, a configured planner or
+  the conductor only, and never for a remote room peer. The target is chosen only
+  from the machine registry by canonical root or id, this project is refused, and
+  the target's own `status.json` must advertise `task_handoff` and name no other project. A target
+  that is not running is refused with the action; nothing is queued.
+- **No authority in the target.** The target answers `task_handoff`,
+  `task_handoff_event` and `task_handoff_states` to a console connection only, and
+  refuses a new handoff while it recovers or shuts down. The task is an ownerless proposal
+  its own hub makes and routes. The origin project and peer are a record in
+  `task_handoff_origin` and a line at the end of the detail, never an actor, a
+  roster peer or a role: the origin cannot accept, review, approve, assign or
+  cancel there.
+- **What crosses.** To the target: a title (300 characters), a class, a detail
+  (4,000), up to 16 repository-relative paths, a spec issue number, and the origin
+  project id, peer id and task id, at most 8 KiB in all. The request is parsed
+  closed on both sides: an unknown field, an accessor or a control character is
+  refused, never dropped, and the target sanitizes before it stores. No memory,
+  evidence, turn content or task history crosses. Back to the origin: an event
+  name, a PR number and a full 40-hex head, never the target's title, notes or
+  other text; the restart catch-up answers only for tasks whose recorded origin
+  is the asking project, with the same fields. The origin peer gets that as a
+  hub-written `kind: task` message.
+- **Privacy.** The origin refuses during a private turn and for a `[pii]` task
+  named as the source, before anything leaves. The text itself is checked by the
+  target, against the target's PII patterns and, when the target's model screen is
+  on, that screen under the target's routing; a match or an uncleared verdict
+  refuses the whole handoff and nothing is stored on either board. The origin's
+  own patterns are not applied to the text, so keep private text out of a handoff.
+  `hub_task_handoff` and `hub_task_handoffs` arguments and results are excluded
+  from hub-managed memory capture.
+- **Recovery.** A restart, upgrade or recovery onto a daemon lacking
+  `task_handoff` is refused while either handoff table holds a row.
 
 ## Bounded task specs and isolated checks (#418)
 
