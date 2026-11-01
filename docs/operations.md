@@ -3060,8 +3060,10 @@ Guard-aware runtimes read `hub.db` format metadata before startup effects and
 before writable database opens. A newer incompatible format refuses with
 `this project was opened by agent-hub X; use X or later`. The format counter
 advances for incompatible storage changes, not every package release. Controlled
-recovery refuses a target without `schema_guard`. Published binaries from before
-this guard cannot enforce it; use their matching CLI for bootstrap and never open
+recovery refuses a target without `schema_guard` before source replacement. A
+fully committed legacy receipt continues from retained target identity evidence;
+new staging gates are not applied retroactively to a target already started.
+Published binaries from before this guard cannot enforce it; use their matching CLI for bootstrap and never open
 a newer database directly with an unguarded old binary. New scoped receipts use
 schema 3 so an older recovery coordinator refuses them rather than applying its
 machine-wide upgrade steps.

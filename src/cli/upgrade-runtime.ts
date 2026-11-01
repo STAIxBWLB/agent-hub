@@ -726,17 +726,6 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (!targetFeatures.includes("schema_guard")) throw new FinalRefusal("target lacks schema_guard; choose a supporting target before recovery effects");
       const verified = { ...target, targetFeatures };
       if (cached && committed) return verified;
-      // Reconnect-only (#206) and fresh sessions (#215) need a target hub that reads recovery-waivers.json.
-      if (op.plan.projects.some((p) => p.reconnectOnly?.length || p.freshStart?.length) && !targetReadsWaivers({ targetRoot: target.root })) {
-        throw new FinalRefusal(`target ${op.plan.version} predates recovery waivers, so its hub could never accept a reconnect-only Claude or a fresh Codex start; staged package retained, runtimes unchanged; choose a newer target once this operation is cancelled or ended`);
-      }
-      for (const planned of op.plan.projects) for (const id of planned.reconnectOnly ?? []) {
-        const peer = planned.source.peers.find(peer => peer.id === id);
-        const sourceWindow = planned.source.protocolMin === undefined || planned.source.protocolMax === undefined ? undefined : controlProtocolWindow(planned.source);
-        const pluginProtocol = peer?.controlProtocol ?? (sourceWindow?.v === sourceWindow?.vMin ? sourceWindow?.v : undefined);
-        const pluginWindow = protocolWindow(pluginProtocol);
-        if (!pluginWindow || negotiateProtocol(targetWindow, pluginWindow) === undefined) throw new FinalRefusal(`${id}: unmanaged plugin protocol cannot reconnect to the staged target; runtimes unchanged`);
-      }
       for (const planned of op.plan.projects) {
         const refusal = typeof planned.project?.root === "string" ? instanceRecoveryTargetRefusal(planned.project.root, targetFeatures, planned.source.peers) : undefined;
         if (refusal) throw new FinalRefusal(refusal);
@@ -750,6 +739,17 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         const probe = adapter.session.legacyTargetSupport;
         if (!probe || !op.plan.projects.some(p => p.source.peers.some(peer => peer.id === adapter.kind && peer.state !== "offline"))) continue;
         if (!legacyTargetLists(target.root, probe, adapter.kind)) throw new FinalRefusal(probe.refusal);
+      }
+      // Reconnect-only (#206) and fresh sessions (#215) need a target hub that reads recovery-waivers.json.
+      if (op.plan.projects.some((p) => p.reconnectOnly?.length || p.freshStart?.length) && !targetReadsWaivers({ targetRoot: target.root })) {
+        throw new FinalRefusal(`target ${op.plan.version} predates recovery waivers, so its hub could never accept a reconnect-only Claude or a fresh Codex start; staged package retained, runtimes unchanged; choose a newer target once this operation is cancelled or ended`);
+      }
+      for (const planned of op.plan.projects) for (const id of planned.reconnectOnly ?? []) {
+        const peer = planned.source.peers.find(peer => peer.id === id);
+        const sourceWindow = planned.source.protocolMin === undefined || planned.source.protocolMax === undefined ? undefined : controlProtocolWindow(planned.source);
+        const pluginProtocol = peer?.controlProtocol ?? (sourceWindow?.v === sourceWindow?.vMin ? sourceWindow?.v : undefined);
+        const pluginWindow = protocolWindow(pluginProtocol);
+        if (!pluginWindow || negotiateProtocol(targetWindow, pluginWindow) === undefined) throw new FinalRefusal(`${id}: unmanaged plugin protocol cannot reconnect to the staged target; runtimes unchanged`);
       }
       return verified;
     },
