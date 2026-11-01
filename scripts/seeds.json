@@ -3196,7 +3196,7 @@
     {
       "id": "sdlc-done-fence-after-readback",
       "file": "src/hub/tasks.ts",
-      "search": "if (task.state === \"in_review\" && !refresh || isClosedTaskState(task.state)) throw new Error(`task #${task.id} is already ${task.state}`);",
+      "search": "if (task.state === \"in_review\" && !refresh || isClosedTaskState(task.state) && !(task.state === \"approved\" && refresh)) throw new Error(`task #${task.id} is already ${task.state}`);",
       "replacement": "void 0;",
       "testFile": "test/sdlc.test.ts",
       "testName": "advise: overlapping dones record one done after a single readback and one advice notice (#382)"
@@ -4308,8 +4308,8 @@
     {
       "id": "conductor-recovery-effect-after-await",
       "file": "src/cli/upgrade.ts",
-      "search": "finally { await authorizeRecoveryDriver(driver, operation(), \"effect\"); }",
-      "replacement": "finally {}",
+      "search": "finally { await authorizeRecoveryDriver(driver, operation(), \"effect\"); current?.(); }",
+      "replacement": "finally { current?.(); }",
       "testFile": "test/conductor-recovery-driver.test.ts",
       "testName": "every closed recovery effect authorizes before and after its await while inspection remains read-only"
     },
@@ -4388,8 +4388,8 @@
     {
       "id": "conductor-recovery-terminal-race",
       "file": "src/cli/upgrade.ts",
-      "search": "    validateReceipt(id, op);\n    if (op.phase === \"completed\" || op.phase === \"cancelled\") {\n      if (recoveryLock(home) === id) releaseRecoveryLock(id, home);\n      releaseRunner();\n      return op;\n    }\n    if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, \"run\");",
-      "replacement": "    validateReceipt(id, op);\n    if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, \"run\");\n    if (op.phase === \"completed\" || op.phase === \"cancelled\") {\n      if (recoveryLock(home) === id) releaseRecoveryLock(id, home);\n      releaseRunner();\n      return op;\n    }",
+      "search": "    validateReceipt(id, op);\n    if (op.phase === \"completed\" || op.phase === \"cancelled\") {\n      if (recoveryLock(home, scope) === id) releaseRecoveryLock(id, home, scope);\n      releaseRunner();\n      return op;\n    }\n    if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, \"run\");",
+      "replacement": "    validateReceipt(id, op);\n    if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, \"run\");\n    if (op.phase === \"completed\" || op.phase === \"cancelled\") {\n      if (recoveryLock(home, scope) === id) releaseRecoveryLock(id, home, scope);\n      releaseRunner();\n      return op;\n    }",
       "testFile": "test/conductor-recovery-driver.test.ts",
       "testName": "a concurrent terminal receipt releases the contender lock before checking a retired grant"
     },
@@ -4452,7 +4452,7 @@
     {
       "id": "conductor-recovery-reconnect-no-restoration",
       "file": "src/hub/daemon.ts",
-      "search": "Object.keys(row).some(key => ![\"id\", \"state\", \"observation\"].includes(key))",
+      "search": "Object.keys(row).some(key => ![\"id\", \"state\", \"observation\", \"controlProtocol\"].includes(key))",
       "replacement": "false",
       "testFile": "test/conductor-recovery-reconnect.test.ts",
       "testName": "reconnect-only source authority refuses changed restore-session after a fresh plan fingerprint"

@@ -120,6 +120,11 @@ function taskBlock(task: any, columns: number | undefined, now: number, detail: 
   const refText = [refs.repo, refs.branch ? `branch ${refs.branch}` : "", refs.commit ? `commit ${short(refs.commit)}` : ""].filter(Boolean).join(", ");
   if (refText) out.push(blank, ...pair("refs", refText, columns, w, undefined, "  "));
   out.push(...bullets("ref paths", list(refs.paths), columns, undefined, "  "));
+  if (!isStub(task) && task?.approval) {
+    const approval = task.approval;
+    const binding = `head ${approval.head ?? "unknown"}; latest ${approval.latestHead ?? "unknown"}; ${approval.mismatch ? "HEAD MISMATCH, approval is stale" : approval.current ? "current" : "not current, review required"}`;
+    out.push(...pair("approval", binding, columns, w, approval.current ? "success" : "attention", "  "));
+  }
   const plan = planBlock(task?.plan, columns);
   if (plan.length) out.push(blank, [s("plan", "muted")], ...plan);
   const sdlc = task?.sdlc;

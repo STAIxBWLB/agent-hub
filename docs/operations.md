@@ -3025,6 +3025,50 @@ Agent CLIs update themselves often, and a hub release cannot follow every one. O
 
 ## Upgrade and crash recovery
 
+### Side by side project versions (#1039)
+
+`ahub --project <path|id> upgrade --to <version>` reviews and changes only that
+project. With no selector, the current project is selected. Its recovery hold is
+per project, so another project can keep working, start, or perform its own
+upgrade. The registry and manager still serialize their short ownership writes.
+Legacy unscoped recovery receipts retain their machine-wide hold and original
+shared installation steps; finish or dispose those before a new project upgrade.
+
+Ordinary `ahub up` captures the invoking package and its exact first-party memory
+core under `~/.agenthub/releases/<VERSION>/source-<digest>/`, then starts the
+daemon there. Captures are verified on reuse and do not depend on a mutable global
+installation. Scoped upgrade targets use the same version directory, with their
+verified registry install kept separately in `registry/`. Recovery reuses the
+exact retained target path bound to its authority receipt.
+
+A scoped upgrade leaves the global CLI and shared Claude plugin unchanged.
+Update the CLI separately with `bun add --global @staix/agent-hub@<version>`, then
+run `ahub setup` for the plugin. `ahub doctor` reports either tool when its known
+version is older than the selected running daemon; it installs nothing.
+
+| Runtime | Control protocol window | Legacy status field |
+| --- | --- | --- |
+| 0.12.20 through 0.25.0 | 16 only | `protocol: 16` |
+| Next release (planned 0.26.0) | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
+
+New clients choose the highest common protocol. The runtime supports N-1, so the
+published protocol-16 client and channel plugin remain usable; unrelated feature
+capabilities still require their own labels. A disjoint window refuses with 4426.
+The compatibility-floor `protocol` field remains readable by old clients.
+
+Guard-aware runtimes read `hub.db` format metadata before startup effects and
+before writable database opens. A newer incompatible format refuses with
+`this project was opened by agent-hub X; use X or later`. The format counter
+advances for incompatible storage changes, not every package release. Controlled
+recovery refuses a target without `schema_guard` before source replacement. A
+fully committed legacy receipt continues from retained target identity evidence;
+new staging gates are not applied retroactively to a target already started.
+Published binaries from before this guard cannot enforce it; use their matching CLI for bootstrap and never open
+a newer database directly with an unguarded old binary. New scoped receipts use
+schema 3 so an older recovery coordinator refuses them rather than applying its
+machine-wide upgrade steps.
+
+
 On a terminal, one command reviews, applies and follows an upgrade:
 
 ```bash
@@ -3042,8 +3086,8 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.21.0), and only
-a target on its own protocol, so the target's coordinator fits every supported
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.25.0), plus the current 17/16 window, and only
+a target with a common protocol and the required recovery capabilities, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
@@ -3056,7 +3100,7 @@ bunx --package @staix/agent-hub@0.12.43 ahub upgrade --to 0.12.43 --yes
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.21.0 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.25.0 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -3080,11 +3124,10 @@ one queued); and one with the 0.11.0 coordinator from a 0.10.0 hub with
 `local.bash_network` on.
 
 The coordinator verifies and retains the exact target package, preserves its
-own source, and promotes the global CLI only after restored projects pass
-readback.
+own source, and verifies the selected project before releasing its hold. Legacy
+unscoped receipts additionally promote the global CLI after project readback.
 
-Once the installed CLI matches the target release, review the current project or all registered
-projects first:
+Once the installed CLI matches the target release, review the selected project first:
 
 ```bash
 ahub restart --dry-run
@@ -3107,8 +3150,8 @@ ahub recovery dispose [<operation-id>] --stop-and-archive --reason <text>
 `--yes` needs `--to`; a dry run without `--to` plans the latest release. A target
 newer than the CLI is handed to that release's coordinator with the same flags,
 and the command is printed on stderr first. The `recovery` commands take the
-operation that holds the machine's lock when the id is left out, and say `no
-recovery operation holds the lock` when none does.
+operation that holds the selected project's lock (or a legacy machine hold) when
+the id is left out, and report no operation when neither exists.
 
 The coordinator commits only once the source is quiet: no turn running, no
 approval pending, no completion check queued or running. It waits up to 10

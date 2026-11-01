@@ -8,16 +8,17 @@ import { readAdapterModuleDeclarations } from "../adapters/external-modules.ts";
 import { configRefusal } from "../hub/config-trust.ts";
 import { validExternalInstanceBinding } from "../hub/external-instance.ts";
 import { isDatabaseBusy, isDatabaseBusyReply, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
-import { ControlClient, PROTOCOL, RECOVERY_SOURCE_PROTOCOLS, readControl } from "../hub/control-client.ts";
+import { createHash } from "node:crypto";
+import { ControlClient, PROTOCOL, PROTOCOL_MIN, controlProtocolWindow, RECOVERY_SOURCE_PROTOCOLS, readControl } from "../hub/control-client.ts";
+import { negotiateProtocol, protocolWindow } from "../hub/protocol-window.ts";
 import { awaitStopped, inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
-import { hubHome } from "../hub/project.ts";
-import { packageDigest, preserveRuntimeDependencies, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
+import { canonicalPath, hubHome, realPath } from "../hub/project.ts";
+import { packageDigest, preserveRuntimePackage, preserveRuntimeSource, stageCurrentRuntime, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectSavedTerminal, inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
-import { ReattachmentRequired, MissingRecordedSession, FinalRefusal, planFingerprint, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
+import { ReattachmentRequired, MissingRecordedSession, FinalRefusal, planFingerprint, recoveryScope, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
 import { SHARED_CHANNEL_VERSION_ARGV, nativeRecordedSessionState } from "../adapters/definitions/native-recovery.ts";
 import { refreshManager } from "../hub/manager.ts";
 import { abandonRestartSnapshot, readRestartSnapshot, waiveRecoveryPeers } from "../hub/restart.ts";
@@ -80,8 +81,19 @@ export function restoredTerminalArgv(entrypoint: string, projectRoot: string, bi
   return [process.execPath, entrypoint, "--project", projectRoot, ...tail];
 }
 
+/** Recovery alone retains explicit old source wires; ordinary clients use the current supported window. */
+function recoveryProtocol(descriptor: { protocol?: unknown; protocolMin?: unknown; protocolMax?: unknown } | undefined): number | undefined {
+  if (!descriptor) return undefined;
+  if (descriptor.protocol === undefined && descriptor.protocolMin === undefined && descriptor.protocolMax === undefined) return PROTOCOL_MIN;
+  const advertised = controlProtocolWindow(descriptor);
+  if (!advertised) return undefined;
+  const current = negotiateProtocol(protocolWindow(PROTOCOL, PROTOCOL_MIN)!, advertised);
+  if (current !== undefined) return current;
+  return [...RECOVERY_SOURCE_PROTOCOLS].reverse().find(version => version < PROTOCOL_MIN && version >= advertised.vMin && version <= advertised.v);
+}
 
-async function rpc(project: Project, message: Record<string, unknown>, protocol = PROTOCOL, conductorPeer?: string): Promise<any> {
+
+async function rpc(project: Project, message: Record<string, unknown>, protocol?: number, conductorPeer?: string): Promise<any> {
   const controlTimeoutMs = readRecoveryWaits(project.root).controlTimeoutMs;
   const client = await ControlClient.connect(project.stateDir, { ...(conductorPeer ? { role: "tools" as const, peer: conductorPeer } : { role: "console" as const }), projectRoot: project.root, projectId: project.id }, controlTimeoutMs, protocol);
   try {
@@ -136,7 +148,7 @@ export async function endPlannedPeer(planned: PlannedProject, peer: RecoveryPeer
     return result.closed ? `${name}: terminal ${current.handle} closed${cut}` : `${name}: its terminal was not closed (${result.blockers[0]?.message ?? "unknown reason"}); end it in that terminal`;
   }
   try {
-    await rpc(planned.project, { t: "peer_stop", peer: peer.id }, planned.source.protocol ?? PROTOCOL);
+    await rpc(planned.project, { t: "peer_stop", peer: peer.id }, planned.source.protocol);
     return `${name}: stopped${cut}`;
   } catch (error) {
     const message = (error as Error).message;
@@ -218,7 +230,10 @@ export async function inspectRecovery(project: Project, targetFeatures?: readonl
   const base = await inspectProject({ ...project, instanceId: claim?.instanceId ?? null, pid: claim?.pid ?? null, pidSignature: claim?.pidSignature ?? null }, readRecoveryWaits(project.root).controlTimeoutMs, conductorPeer);
   if (base.failure?.code === "database_busy") throw new RecoveryDatabaseBusy();
   const control = readControl(project.stateDir);
-  const sourceProtocol = control?.protocol;
+  const sourceProtocol = recoveryProtocol(control);
+  const sourceWindow = control && controlProtocolWindow(control);
+  const wire = { ...(sourceProtocol === undefined ? {} : { protocol: sourceProtocol }),
+    ...(sourceWindow ? { protocolMin: sourceWindow.vMin, protocolMax: sourceWindow.v } : {}) };
   const legacySupported = sourceProtocol !== undefined && RECOVERY_SOURCE_PROTOCOLS.includes(sourceProtocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]);
   // A stopped runtime reports whose unreleased restart snapshot it holds: only that one can start it again (#215).
   let snapshot: string | undefined, snapshotError: Inspection["snapshotError"];
@@ -240,15 +255,19 @@ export async function inspectRecovery(project: Project, targetFeatures?: readonl
     else blockers = [base.error ?? base.state];
     return {
     state: base.state, peers: [], blockers,
-    ...(control?.instanceId ? { instanceId: control.instanceId } : {}), ...(control?.protocol ? { protocol: control.protocol } : {}), ...(snapshot ? { snapshot } : {}), ...(snapshotError ? { snapshotError } : {}),
+    ...(control?.instanceId ? { instanceId: control.instanceId } : {}),
+    ...(control?.protocol === undefined ? {} : { protocol: control.protocol }),
+    ...(control?.protocolMin === undefined ? {} : { protocolMin: control.protocolMin }),
+    ...(control?.protocolMax === undefined ? {} : { protocolMax: control.protocolMax }),
+    ...(snapshot ? { snapshot } : {}), ...(snapshotError ? { snapshotError } : {}),
     };
   }
   let status = base.status;
-  if (!status && control && sourceProtocol === PROTOCOL) return {
+  if (!status && control && sourceProtocol !== undefined && sourceProtocol >= PROTOCOL_MIN) return {
     state: "unavailable", peers: [], blockers: ["runtime changed during recovery inspection"],
-    ...(control.instanceId ? { instanceId: control.instanceId } : {}), protocol: control.protocol,
+    ...(control.instanceId ? { instanceId: control.instanceId } : {}), ...wire,
   };
-  if (!status && legacySupported && sourceProtocol !== PROTOCOL) {
+  if (!status && legacySupported && sourceProtocol < PROTOCOL_MIN) {
     try {
       const readback = await rpc(project, { t: "status" }, sourceProtocol, conductorPeer);
       status = readback.status;
@@ -258,29 +277,39 @@ export async function inspectRecovery(project: Project, targetFeatures?: readonl
       // connections with its manifest still on disk. Never infer stopped from a connect
       // failure: callers poll again and see "stopped" once the manifest is gone.
       return { state: "unavailable", peers: [], blockers: ["runtime changed during recovery inspection"],
-        ...(control?.instanceId ? { instanceId: control.instanceId } : {}), ...(control?.protocol ? { protocol: control.protocol } : {}) };
+        ...(control?.instanceId ? { instanceId: control.instanceId } : {}), ...wire };
     }
   }
   if (!status || !control) return { state: "unavailable", peers: [], blockers: ["authenticated source status unavailable"] };
   const instanceRefusal = purpose === "cleanup" ? undefined : instanceRecoverySourceRefusal(project.root, status.features, status.peers);
-  if (instanceRefusal) return { state: "incompatible", instanceId: status.instanceId, version: status.version, protocol: status.protocol, peers: [], blockers: [instanceRefusal] };
+  if (instanceRefusal) return { state: "incompatible", instanceId: status.instanceId, version: status.version, ...wire, peers: [], blockers: [instanceRefusal] };
   let response: any;
-  try { response = await rpc(project, { t: "recovery", op: "inspect", expectedInstanceId: status.instanceId, ...(targetFeatures === undefined ? {} : { targetFeatures }) }, sourceProtocol ?? PROTOCOL, conductorPeer); }
+  try { response = await rpc(project, { t: "recovery", op: "inspect", expectedInstanceId: status.instanceId, ...(targetFeatures === undefined ? {} : { targetFeatures }) }, sourceProtocol, conductorPeer); }
   catch (error) {
     if (isDatabaseBusy(error) || targetFeatures !== undefined) throw error;
     // A stop can complete between authenticated status and the second read. Never infer stopped
     // from a connection failure: the coordinator will inspect the ownership manifest again.
-    return { state: "unavailable", instanceId: status.instanceId, version: status.version, protocol: status.protocol,
+    return { state: "unavailable", instanceId: status.instanceId, version: status.version, ...wire,
       peers: [], blockers: ["runtime changed during recovery inspection"] };
   }
-  const peers = Object.values(response.recovery?.peers ?? {}) as any[];
+  const recovery = response?.recovery;
+  const unavailable = () => {
+    const message = "source recovery metadata is unavailable";
+    if (targetFeatures !== undefined) throw new Error(message);
+    return { state: "unavailable", instanceId: status.instanceId, version: status.version, ...wire, peers: [], blockers: [message] };
+  };
+  if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)
+    || !recovery.peers || typeof recovery.peers !== "object" || Array.isArray(recovery.peers)) return unavailable();
+  const peers = Object.values(recovery.peers) as any[];
+  if (peers.some(peer => !peer || typeof peer !== "object" || Array.isArray(peer) || typeof peer.id !== "string" || typeof peer.state !== "string")) return unavailable();
   if (peers.some(peer => peer && Object.hasOwn(peer, "externalInstance") && !validExternalInstanceBinding(peer.externalInstance, project.root, peer.id))) {
-    return { state: "incompatible", instanceId: status.instanceId, version: status.version, protocol: status.protocol, peers: [], blockers: ["source external module instance binding is invalid"] };
+    return { state: "incompatible", instanceId: status.instanceId, version: status.version, ...wire, peers: [], blockers: ["source external module instance binding is invalid"] };
   }
   // #272: the hub's own words for what it waits on; shown to the person, never decided on.
   const waiting = (Array.isArray(response.recovery?.blockers) ? response.recovery.blockers : []).filter((b: unknown): b is string => typeof b === "string").slice(0, 20).map((b: string) => b.slice(0, 200));
-  return { state: "running", instanceId: status.instanceId, version: status.version, protocol: status.protocol,
+  return { state: "running", instanceId: status.instanceId, version: status.version, ...wire,
     recovery: { operationId: response.recovery?.operationId, phase: response.recovery?.phase, ready: response.recovery?.ready, ...(waiting.length ? { waiting } : {}) }, peers: peers.map((peer) => ({ id: peer.id, state: peer.state,
+      ...(protocolWindow(peer.controlProtocol) ? { controlProtocol: peer.controlProtocol } : {}),
       ...(peer.observation === undefined ? {} : { observation: peer.observation }),
       ...(peer.externalInstance === undefined ? {} : { externalInstance: peer.externalInstance }),
       ...(peer.threadId ? { threadId: peer.threadId } : {}), ...(peer.sessionId ? { sessionId: peer.sessionId } : {}),
@@ -290,12 +319,13 @@ export async function inspectRecovery(project: Project, targetFeatures?: readonl
 
 export async function makeUpgradePlan(kind: "restart" | "upgrade", version: string, selectedRoot?: string, run: RunCommand = runCommand, conductorPeer?: string): Promise<UpgradePlan> {
   const projects = registeredProjects();
+  const selected = selectedRoot === undefined ? undefined : canonicalPath(selectedRoot);
   const sourceDigest = packageDigest(PACKAGE_ROOT);
   const currentVersion = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version;
   const release = kind === "upgrade" ? await registryRelease(version, run) : undefined;
   const body: Omit<UpgradePlan, "fingerprint"> = { schema: 1, kind, version: kind === "restart" ? currentVersion : version,
-    sourceRoot: PACKAGE_ROOT, sourceDigest, ...(release ? { integrity: release.integrity } : {}), projects: [], blockers: [] };
-  if (kind === "upgrade") {
+    sourceRoot: PACKAGE_ROOT, sourceDigest, ...(release ? { integrity: release.integrity } : {}), ...(selected === undefined ? {} : { scope: { projectRoot: selected } }), projects: [], blockers: [] };
+  if (kind === "upgrade" && selected === undefined) {
     try {
       if ((await run([...SHARED_CHANNEL_VERSION_ARGV], { timeoutMs: 10_000 })).code !== 0) body.blockers.push("shared Claude plugin installer is unavailable");
     } catch { body.blockers.push("shared Claude plugin installer is unavailable"); }
@@ -304,17 +334,17 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
   if (existsSync(managerFile)) {
     try {
       const manager = JSON.parse(readFileSync(managerFile, "utf8"));
-      if (!RECOVERY_SOURCE_PROTOCOLS.includes(manager.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number])) body.blockers.push("manager requires manual bootstrap with its matching CLI before current-protocol recovery");
+      if (recoveryProtocol(manager) === undefined) body.blockers.push("manager requires manual bootstrap with its matching CLI before current-protocol recovery");
     } catch { body.blockers.push("manager ownership manifest is unreadable"); }
   }
   for (const project of projects) {
-    if (kind === "restart" && project.root !== selectedRoot) continue;
+    if (kind === "restart" && selected === undefined || selected !== undefined && project.root !== selected) continue;
     let source: Inspection;
     try { source = await inspectRecovery(project, undefined, undefined, conductorPeer); }
     catch { source = { state: "unavailable", peers: [], blockers: ["source recovery metadata could not be authenticated"] }; }
     if (source.state === "stopped" || source.state === "missing") continue;
     const blockers = [...source.blockers];
-    if (!RECOVERY_SOURCE_PROTOCOLS.includes(source.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]) || source.state !== "running") blockers.push("manual-bootstrap-required: an authenticated protocol-9, protocol-10, protocol-11, protocol-12, protocol-13, protocol-14, protocol-15 or protocol-16 source is required");
+    if (!RECOVERY_SOURCE_PROTOCOLS.includes(source.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]) || source.state !== "running") blockers.push(`manual-bootstrap-required: an authenticated source overlapping protocols ${PROTOCOL_MIN}..${PROTOCOL}, or an explicit recovery protocol 9..15, is required`);
     if (source.recovery?.operationId && source.recovery.phase !== "released") blockers.push(`existing recovery operation ${source.recovery.operationId} must be resolved first`);
     const sessions: Partial<Record<TerminalBinding["peer"], string | SessionRef>> = {};
     const reconnectOnly: string[] = [];
@@ -341,8 +371,10 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
           unrecordedTerminals.push(peer.id);
           delete peer.sessionId;
           delete peer.args; // An unmanaged channel reconnects itself; its observed identity is not restoration data.
-          if (source.protocol === PROTOCOL) reconnectOnly.push(peer.id);
-          else blockers.push(`${peer.id}: unmanaged session (no live ahub claude launcher recorded) runs a protocol-${source.protocol} plugin and cannot reconnect to a protocol-${PROTOCOL} hub; next action: end that Claude session, or relaunch it with ahub claude in an Orca terminal, then make a new plan`);
+          const sourceWindow = source.protocolMin === undefined || source.protocolMax === undefined ? undefined : controlProtocolWindow(source);
+          const pluginProtocol = peer.controlProtocol ?? (sourceWindow?.v === sourceWindow?.vMin ? sourceWindow?.v : undefined);
+          if (pluginProtocol !== undefined && negotiateProtocol(protocolWindow(PROTOCOL, PROTOCOL_MIN)!, protocolWindow(pluginProtocol)!) !== undefined) reconnectOnly.push(peer.id);
+          else blockers.push(`${peer.id}: unmanaged session (no live ahub claude launcher recorded) has ${pluginProtocol === undefined ? "an unknown attached plugin protocol" : `a protocol-${pluginProtocol} plugin`} and cannot be verified to reconnect to a protocol-${PROTOCOL_MIN}..${PROTOCOL} hub; next action: end that Claude session, or relaunch it with ahub claude in an Orca terminal, then make a new plan`);
           continue;
         }
         let record: { instanceId?: unknown; launchId?: unknown; sessionId?: unknown } | undefined;
@@ -398,23 +430,10 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
 export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
   if (packageDigest(plan.sourceRoot) !== plan.sourceDigest) throw new Error("source package changed since planning");
   const base = join(home, "releases");
-  const dest = join(base, `source-${plan.sourceDigest}`);
-  if (existsSync(dest)) {
-    if (packageDigest(dest, { ownDependencies: true }) !== plan.sourceDigest) throw new Error("preserved source package changed");
-    return dest;
-  }
   mkdirSync(base, { recursive: true, mode: 0o700 });
-  const temporary = join(base, `.source-${randomUUID()}`);
-  mkdirSync(temporary, { mode: 0o700 });
-  try {
-    for (const name of ["src", "plugins", "templates", ".claude-plugin", "package.json", "README.md", "LICENSE", "CHANGELOG.md"]) {
-      cpSync(join(plan.sourceRoot, name), join(temporary, name), { recursive: true, dereference: false });
-    }
-    preserveRuntimeDependencies(plan.sourceRoot, temporary);
-    if (packageDigest(temporary, { ownDependencies: true }) !== plan.sourceDigest) throw new Error("source changed while being preserved");
-    renameSync(temporary, dest);
-  } finally { rmSync(temporary, { recursive: true, force: true }); }
-  return dest;
+  const destination = join(base, `source-${plan.sourceDigest}`);
+  return recoveryScope(plan) === undefined ? preserveRuntimeSource(plan.sourceRoot, destination, plan.sourceDigest)
+    : preserveRuntimePackage(plan.sourceRoot, destination, plan.sourceDigest).root;
 }
 
 const unboundRecoveryInspection = inspectRecovery;
@@ -455,8 +474,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
   };
   const control = async (project: Project, op: string, id: string, instance: string, targetFeatures?: readonly string[]) => {
     await recoveryCurrent();
-    const sourceProtocol = readControl(project.stateDir)?.protocol;
-    const protocol = sourceProtocol !== undefined && RECOVERY_SOURCE_PROTOCOLS.includes(sourceProtocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]) ? sourceProtocol : PROTOCOL;
+    const protocol = recoveryProtocol(readControl(project.stateDir));
     return rpc(project, { t: "recovery", op, operationId: id, expectedInstanceId: instance, ...(targetFeatures === undefined ? {} : { targetFeatures }), ...(conductorPeer && authorizedOperation ? { authority: conductorRecoveryBinding(authorizedOperation, project, conductorPeer) } : {}) }, protocol, conductorPeer).then(() => {});
   };
   const nativeFailure = (planned: PlannedProject, peer: string, reason: RecoveryNativeCause["reason"], message: string,
@@ -677,8 +695,20 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     recordedSessionState: async (binding, kind) => nativeRecordedSessionState(binding, kind),
     stage: async (op) => {
       if (packageDigest(op.sourceRoot, { ownDependencies: true }) !== op.plan.sourceDigest) throw new FinalRefusal("preserved source changed");
-      const target = op.plan.kind === "restart" ? { root: op.sourceRoot, digest: verifyPackage(op.sourceRoot, op.plan.version, { ownDependencies: true }) }
-        : await stageRelease(op.plan.version, op.plan.integrity!, run);
+      const scoped = recoveryScope(op.plan) !== undefined;
+      let target: { root: string; digest: string };
+      if (scoped && op.plan.kind === "upgrade" && (op.targetRoot !== undefined || op.targetDigest !== undefined)) {
+        if (!op.targetRoot || !op.targetDigest || !/^[a-f0-9]{64}$/.test(op.targetDigest)
+          || realPath(op.targetRoot) !== realPath(join(hubHome(), "releases", op.plan.version, `source-${op.targetDigest}`)))
+          throw new FinalRefusal("retained project target path changed; runtimes unchanged");
+        const digest = verifyPackage(op.targetRoot, op.plan.version, { ownDependencies: true });
+        if (digest !== op.targetDigest) throw new FinalRefusal("retained project target changed; runtimes unchanged");
+        target = { root: op.targetRoot, digest };
+      } else {
+        const staged = op.plan.kind === "restart" ? { root: op.sourceRoot, digest: verifyPackage(op.sourceRoot, op.plan.version, { ownDependencies: true }) }
+          : await stageRelease(op.plan.version, op.plan.integrity!, run, hubHome(), scoped);
+        target = scoped && op.plan.kind === "upgrade" ? stageCurrentRuntime(staged.root, op.plan.version) : staged;
+      }
       const identityPath = join(target.root, "src/cli/identity.ts");
       if (liveTestPeer && (!existsSync(identityPath) || !readFileSync(identityPath, "utf8").includes("export const LIVE_TEST_SUPPORTED = true;"))) {
         throw new FinalRefusal("target does not support live-test delegation; choose a supporting target before retrying; runtimes unchanged");
@@ -687,8 +717,12 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       const cached = op.targetDigest === target.digest && op.targetRoot === target.root;
       // Once every source committed, compatibility cannot be re-applied using mutable project declarations.
       // Package identity/hash and live-test authority above still bind these retained bytes.
-      if (cached && op.projects?.every(project => ["stopped", "started", "peers-restored", "verified"].includes(project.phase))) {
-        return { ...target, ...(op.targetFeatures === undefined ? {} : { targetFeatures: [...op.targetFeatures] }) };
+      const committed = op.projects?.every(project => ["stopped", "started", "peers-restored", "verified"].includes(project.phase));
+      // A legacy coordinator already chose and started this target. Resume its retained evidence without retroactive staging gates.
+      if (cached && committed && op.schema !== 3) return { ...target, ...(op.targetFeatures === undefined ? {} : { targetFeatures: [...op.targetFeatures] }) };
+      if (cached && committed && op.targetFeatures !== undefined) {
+        if (!op.targetFeatures.includes("schema_guard")) throw new FinalRefusal("target lacks schema_guard; choose a supporting target before recovery effects");
+        return { ...target, targetFeatures: [...op.targetFeatures] };
       }
       if (cached && op.targetFeatures !== undefined) {
         for (const planned of op.plan.projects) {
@@ -698,25 +732,32 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         if (!op.targetFeatures.includes("external_adapter_modules") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && (readInstanceConfig(planned.project.root).adapter_modules?.length ?? 0) > 0)) throw new FinalRefusal("target lacks external_adapter_modules; module peers require a supporting target before recovery effects");
         if (!op.targetFeatures.includes("configured_acp") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).adapters ?? {}).length > 0)) throw new FinalRefusal("target lacks configured_acp; configured adapters require a supporting target before recovery effects");
         if (!op.targetFeatures.includes("peer_instances") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).instances ?? {}).length > 0)) throw new FinalRefusal("target lacks peer_instances; declared project instances require a supporting target before recovery effects");
+        if (!op.targetFeatures.includes("schema_guard")) throw new FinalRefusal("target lacks schema_guard; choose a supporting target before recovery effects");
         return { ...target, targetFeatures: [...op.targetFeatures] };
       }
       // A prepared commitSent receipt remains uncertain and must still obtain proof before a possible commit.
       // Legacy uncommitted receipts acquire verified feature evidence before source compatibility checks.
-      const probe = await run([process.execPath, "-e", `import * as target from ${JSON.stringify(join(target.root, "src/hub/control-client.ts"))}; console.log(JSON.stringify({protocol: target.PROTOCOL, features: target.DAEMON_FEATURES ?? []}))`]);
-      let metadata: { protocol?: unknown; features?: unknown } | undefined;
+      const probe = await run([process.execPath, "-e", `import * as target from ${JSON.stringify(join(target.root, "src/hub/control-client.ts"))}; console.log(JSON.stringify({protocol: target.PROTOCOL, protocolMin: target.PROTOCOL_MIN, features: target.DAEMON_FEATURES ?? []}))`]);
+      let metadata: { protocol?: unknown; protocolMin?: unknown; features?: unknown } | undefined;
       try { if (probe.code === 0) metadata = JSON.parse(probe.stdout); } catch { /* Unknown metadata refuses before effects. */ }
       if (!metadata || typeof metadata !== "object" || !Number.isInteger(metadata.protocol)) throw new Error(`the staged target's control protocol could not be read (probe exit ${probe.code}); staged package retained, runtimes unchanged; resume again once it can run`);
       if (!Array.isArray(metadata.features) || !metadata.features.every((feature: unknown) => typeof feature === "string" && feature.length > 0)) throw new Error("the staged target features could not be read; staged package retained, runtimes unchanged");
       const targetFeatures: readonly string[] = [...metadata.features];
+      const targetWindow = protocolWindow(metadata.protocol, metadata.protocolMin);
+      if (!targetWindow || negotiateProtocol(protocolWindow(PROTOCOL, PROTOCOL_MIN)!, targetWindow) === undefined) throw new FinalRefusal("target protocol requires a compatible coordinator; staged package retained, runtimes unchanged");
+      const verified = { ...target, targetFeatures };
+      if (cached && committed) {
+        if (!targetFeatures.includes("schema_guard")) throw new FinalRefusal("target lacks schema_guard; choose a supporting target before recovery effects");
+        return verified;
+      }
       for (const planned of op.plan.projects) {
         const refusal = typeof planned.project?.root === "string" ? instanceRecoveryTargetRefusal(planned.project.root, targetFeatures, planned.source.peers) : undefined;
         if (refusal) throw new FinalRefusal(refusal);
       }
       if (!targetFeatures.includes("external_adapter_modules") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && (readInstanceConfig(planned.project.root).adapter_modules?.length ?? 0) > 0)) throw new FinalRefusal("target lacks external_adapter_modules; module peers require a supporting target before recovery effects");
       if (!targetFeatures.includes("configured_acp") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).adapters ?? {}).length > 0)) throw new FinalRefusal("target lacks configured_acp; configured adapters require a supporting target before recovery effects");
-      if (metadata.protocol !== PROTOCOL) throw new FinalRefusal("target protocol requires a newer coordinator; staged package retained, runtimes unchanged");
       if (!targetFeatures.includes("peer_instances") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).instances ?? {}).length > 0)) throw new FinalRefusal("target lacks peer_instances; declared project instances require a supporting target before recovery effects");
-      const verified = { ...target, targetFeatures };
+      if (!targetFeatures.includes("schema_guard")) throw new FinalRefusal("target lacks schema_guard; choose a supporting target before recovery effects");
       // Existing peer/waiver compatibility checks remain properties of the already verified bytes.
       if (op.targetDigest && op.targetDigest === target.digest && op.targetRoot === target.root) return verified;
       for (const adapter of ADAPTERS) {
@@ -727,6 +768,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       // Reconnect-only (#206) and fresh sessions (#215) need a target hub that reads recovery-waivers.json.
       if (op.plan.projects.some((p) => p.reconnectOnly?.length || p.freshStart?.length) && !targetReadsWaivers({ targetRoot: target.root })) {
         throw new FinalRefusal(`target ${op.plan.version} predates recovery waivers, so its hub could never accept a reconnect-only Claude or a fresh Codex start; staged package retained, runtimes unchanged; choose a newer target once this operation is cancelled or ended`);
+      }
+      for (const planned of op.plan.projects) for (const id of planned.reconnectOnly ?? []) {
+        const peer = planned.source.peers.find(peer => peer.id === id);
+        const sourceWindow = planned.source.protocolMin === undefined || planned.source.protocolMax === undefined ? undefined : controlProtocolWindow(planned.source);
+        const pluginProtocol = peer?.controlProtocol ?? (sourceWindow?.v === sourceWindow?.vMin ? sourceWindow?.v : undefined);
+        const pluginWindow = protocolWindow(pluginProtocol);
+        if (!pluginWindow || negotiateProtocol(targetWindow, pluginWindow) === undefined) throw new FinalRefusal(`${id}: unmanaged plugin protocol cannot reconnect to the staged target; runtimes unchanged`);
       }
       return verified;
     },
@@ -802,7 +850,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           if (current && current.state !== "offline") continue;
           const adapter = projectDefinition(peer.id, planned.project.root)!;
           if (conductorPeer) {
-            await rpc(planned.project, { t: "recovery_restore", peer: peer.id, authority: conductorRecoveryBinding(op, planned.project, conductorPeer) }, PROTOCOL, conductorPeer);
+            await rpc(planned.project, { t: "recovery_restore", peer: peer.id, authority: conductorRecoveryBinding(op, planned.project, conductorPeer) }, live.protocol, conductorPeer);
             continue;
           }
           const args = [adapter.cli.command, ...(peer.id !== adapter.kind ? ["--as", peer.id] : [])];
@@ -1064,8 +1112,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         // #215: a target an older coordinator started speaks its own protocol, which the lifecycle stop's inspection
         // refuses. Ask it to stop at that protocol, fenced by its instance (the daemon refuses another), then wait as
         // the lifecycle stop does until its manifest and registry claim are gone.
-        const sourceProtocol = readControl(project.stateDir)?.protocol;
-        const protocol = sourceProtocol !== undefined && RECOVERY_SOURCE_PROTOCOLS.includes(sourceProtocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]) ? sourceProtocol : PROTOCOL;
+        const protocol = recoveryProtocol(readControl(project.stateDir));
         await rpc(project, { t: "kill", instanceId: instance }, protocol);
         await awaitStopped(project, instance);
       }

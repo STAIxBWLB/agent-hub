@@ -54,6 +54,29 @@ test("queue stale heads incomplete files private and unlinked work remain blocke
   const f = fake({ids:[1]}); const privateView = await readMergeQueue("owner/repo",config,[task(1,1,[],true)],f.run); expect(privateView.rows[0]?.private).toBe(true); expect(f.calls).toHaveLength(1); expect(privateView.rows[0]?.head).toBeUndefined();
   const unlinked = await readMergeQueue("owner/repo",config,[],fake({ids:[1]}).run); expect(unlinked.rows[0]?.ready).toBe(false); expect(unlinked.rows[0]?.blockers).toContain("issue identity missing");
 });
+test("#1047 queue readiness rejects newer owner heads and withdrawn approval bindings even when the receipt and PR still match", async () => {
+  const approved = { head: A, latestHead: A, mismatch: false, current: true };
+  const cases: [Partial<DeliveryTask>, string][] = [
+    [{ latestHead: B }, "latest reported head differs from approved head"],
+    [{ latestHead: A, approval: { ...approved, current: false } }, "approval is not current at the latest reported head"],
+    [{ latestHead: A, approval: { ...approved, mismatch: true } }, "approval is not current at the latest reported head"],
+    [{ latestHead: A, approval: { ...approved, head: B } }, "approval is not current at the latest reported head"],
+    [{ approval: { ...approved, latestHead: B } }, "approval is not current at the latest reported head"],
+  ];
+  for (const mode of ["off", "advise", "enforce"] as const) {
+    const cfg = sdlcConfig({ mode, required_checks: ["gate"] });
+    for (const [metadata, gate] of cases) {
+      const report = await readMergeQueue("owner/repo", cfg, [{ ...task(1, 1), ...metadata }], fake({ ids: [1] }).run);
+      expect(report.rows[0]?.head).toBe(A);
+      expect(report.rows[0]?.ready).toBe(false);
+      expect(report.rows[0]?.blockers).toContain(gate);
+    }
+    for (const metadata of [{}, { latestHead: A, approval: approved }]) {
+      const report = await readMergeQueue("owner/repo", cfg, [{ ...task(1, 1), ...metadata }], fake({ ids: [1] }).run);
+      expect(report.rows[0]?.ready).toBe(true);
+    }
+  }
+});
 test("dependency merge proof cycles and truncation retain their uncertainty (#257)", async () => {
   const merged = await readMergeQueue("owner/repo",config,[task(1,1),task(2,2,[1])],fake({ids:[2],merged:[1]}).run); expect(merged.rows[0]?.ready).toBe(true);
   const missing = await readMergeQueue("owner/repo",config,[task(2,2,[99])],fake({ids:[2]}).run); expect(missing.rows[0]?.ready).toBe(false);

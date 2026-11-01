@@ -1,4 +1,5 @@
-import { Database } from "bun:sqlite";
+import type { Database } from "./db-schema.ts";
+import { openHubDatabase } from "./db-schema.ts";
 import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -7,7 +8,6 @@ import { childEnv } from "./child-process.ts";
 import type { Touch } from "./conflicts.ts";
 import { hubGitSync } from "./git.ts";
 import { realPath } from "./project.ts";
-import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 
 /**
  * Per-turn workspace snapshots (issue #33): git tree objects written through a copy of the index, so the user's index
@@ -657,8 +657,7 @@ export function submodulePaths(repo: Repo): string[] {
 export class Turns {
   private readonly db: Database;
   constructor(path: string, readonly?: boolean) {
-    this.db = new Database(path, readonly ? { readonly: true } : { create: true });
-    this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
+    this.db = openHubDatabase(path, readonly ? { readonly: true } : { create: true });
     if (readonly) return;
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run(`CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, peer TEXT NOT NULL, started INTEGER NOT NULL, ended INTEGER,

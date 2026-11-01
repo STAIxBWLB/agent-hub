@@ -5,7 +5,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { ControlClient, PROTOCOL, RECOVERY_SOURCE_PROTOCOLS } from "./control-client.ts";
+import { ControlClient, PROTOCOL, PROTOCOL_MIN, RECOVERY_SOURCE_PROTOCOLS, controlProtocolWindow } from "./control-client.ts";
 import { Registry, type Project } from "./registry.ts";
 import { hubHome } from "./project.ts";
 import { startDashboard, dashboardView } from "./ui.ts";
@@ -27,7 +27,7 @@ export type ManagerOptions = { registry?: Registry; lifecycle?: Lifecycle; home?
   /** Test clock seam: maps nominal forwarding deadlines, never comes from dashboard input. */
   forwardTimeoutMs?: (action: string, nominalMs: number) => number };
 type ManagerHandle = { stop(): Promise<void>; stopped: Promise<void> };
-type Manifest = { port: number; protocol: number; instanceId: string; pid: number; pidSignature?: string };
+type Manifest = { port: number; protocol: number; protocolMin?: number; protocolMax?: number; instanceId: string; pid: number; pidSignature?: string };
 const active = new Map<string, { handle: ManagerHandle; issue(liveTest?: boolean): string }>();
 const CONTROL_TIMEOUT = 3000;
 // A current CLI may authenticate the previous protocol-9 manager while
@@ -205,7 +205,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
         const path = new URL(req.url).pathname;
         if (path === "/open") {
           const input = await req.json().catch(() => ({})) as { liveTest?: boolean };
-          return Response.json({ ok: true, instanceId, protocol: PROTOCOL, url: dashboard!.issue(false, input.liveTest === true), ...(input.liveTest === true ? { liveTest: true } : {}) });
+          return Response.json({ ok: true, instanceId, protocol: PROTOCOL_MIN, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, url: dashboard!.issue(false, input.liveTest === true), ...(input.liveTest === true ? { liveTest: true } : {}) });
         }
         if (path === "/stop") { setTimeout(() => void stop(), 0); return Response.json({ ok: true, instanceId }); }
         return new Response("not found", { status: 404 });
@@ -214,7 +214,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
     writeFileSync(f.token, token, { mode: 0o600 });
     chmodSync(f.token, 0o600);
     const temp = `${f.status}.${instanceId}.tmp`;
-    writeFileSync(temp, JSON.stringify({ port: server.port, protocol: PROTOCOL, instanceId, pid: process.pid, ...(pidSignature ? { pidSignature } : {}) }));
+    writeFileSync(temp, JSON.stringify({ port: server.port, protocol: PROTOCOL_MIN, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, instanceId, pid: process.pid, ...(pidSignature ? { pidSignature } : {}) }));
     renameSync(temp, f.status);
     // The manager outlives whoever opened it; a deleted AGENTHUB_HOME (a test suite's temp
     // home, issue #56) must not leave it serving a registry that no longer exists.
@@ -232,7 +232,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
 async function managerRequest(home: string, path: "/open" | "/stop", liveTest = false): Promise<{ status: Manifest; body: any }> {
   const status = readManifest(home);
   if (!status) throw new Error("manager manifest is unavailable");
-  if (!SUPPORTED_MANAGER_PROTOCOLS.has(status.protocol)) throw new Error("manager protocol is incompatible; use its matching CLI to stop it");
+  if (!SUPPORTED_MANAGER_PROTOCOLS.has(status.protocol) || !controlProtocolWindow(status)) throw new Error("manager protocol is incompatible; use its matching CLI to stop it");
   const token = readFileSync(files(home).token, "utf8").trim();
   if (!token) throw new Error("manager token is unavailable");
   const response = await fetch(`http://127.0.0.1:${status.port}${path}`, {
@@ -285,7 +285,7 @@ export async function openManager(options: ManagerOptions = {}): Promise<string>
 export async function refreshManager(options: ManagerOptions = {}): Promise<string> {
   const home = options.home ?? hubHome();
   const manifest = readManifest(home);
-  if (manifest && manifest.protocol !== PROTOCOL && RECOVERY_SOURCE_PROTOCOLS.includes(manifest.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number])) {
+  if (manifest && (controlProtocolWindow(manifest)?.v ?? Infinity) < PROTOCOL && RECOVERY_SOURCE_PROTOCOLS.includes(manifest.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number])) {
     await managerRequest(home, "/stop");
     const deadline = Date.now() + CONTROL_TIMEOUT;
     while (Date.now() < deadline && readManifest(home)) await Bun.sleep(25);

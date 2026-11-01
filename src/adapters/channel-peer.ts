@@ -6,7 +6,7 @@ import type { StartForm } from "./registry-types.ts";
 /** Only the control socket operations the peer owns; authentication remains in the daemon. */
 export interface ChannelSocket {
   readyState: number;
-  data: { launchId?: string };
+  data: { launchId?: string; protocol?: number };
   send(data: string): unknown;
   close(code?: number, reason?: string): void;
 }
@@ -142,7 +142,9 @@ export class WsPeer extends BasePeer {
   }
 
   recoveryMetadata(): Record<string, unknown> {
-    return { launch: definitionOf(this.id)?.attach?.recoveryLaunch?.(this.id) ?? { kind: "claude-channel", peer: this.id } };
+    const protocol = this.attached ? this.sock?.data.protocol : undefined;
+    return { launch: definitionOf(this.id)?.attach?.recoveryLaunch?.(this.id) ?? { kind: "claude-channel", peer: this.id },
+      ...(typeof protocol === "number" && Number.isSafeInteger(protocol) && protocol > 0 ? { controlProtocol: protocol } : {}) };
   }
 }
 

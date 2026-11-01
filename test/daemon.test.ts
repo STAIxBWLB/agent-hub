@@ -7,7 +7,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
+import { ControlClient, PROTOCOL, PROTOCOL_MIN } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
@@ -35,7 +35,9 @@ test("global attention summary persists while full items stay console-role only 
   const person = (await console_.request({ t: "status" })).status;
   expect(person.needs).toEqual({ act: 0, watch: 0, state: "sleeping" });
   expect(person.attentionItems).toEqual([]);
-  expect(person.protocol).toBe(PROTOCOL);
+  expect(person.protocol).toBe(PROTOCOL_MIN);
+  expect(person.protocolMin).toBe(PROTOCOL_MIN);
+  expect(person.protocolMax).toBe(PROTOCOL);
   const persisted = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8"));
   expect(persisted.needs).toEqual(person.needs);
   expect(persisted.attentionItems).toBeUndefined();
@@ -2140,9 +2142,10 @@ test("ui_snapshot preserves public dependencies of PII task stubs (#246)", async
 });
 
 // issue #264 (phase 3): turn, checking and links are additive optional ui_snapshot fields with ids and enums
-// only, so PROTOCOL and EVENTS_SCHEMA stay unchanged and a PII turn exposes no task id.
+// only, so the compatible protocol floor and EVENTS_SCHEMA stay unchanged and a PII turn exposes no task id.
 test("ui_snapshot carries turn, checking and overlap/cohort links, ids only and PII-safe (#264)", async () => {
-  expect(PROTOCOL).toBe(16);
+  expect(PROTOCOL).toBe(17);
+  expect(PROTOCOL_MIN).toBe(16);
   expect(EVENTS_SCHEMA).toBe(1);
   const dir = mkdtempSync(join(tmpdir(), "agenthub-ui264-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));

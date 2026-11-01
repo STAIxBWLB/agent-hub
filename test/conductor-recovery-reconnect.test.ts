@@ -104,19 +104,23 @@ test("a real unmanaged reconnect-only plan retains source observation and issues
   const f = await reconnectFixture();
   try {
     const row = f.plan.projects[0]!.source.peers.find(peer => peer.id === "claude")!;
-    expect(Object.keys(row).sort()).toEqual(["id", "observation", "state"]);
+    expect(Object.keys(row).sort()).toEqual(["controlProtocol", "id", "observation", "state"]);
+    expect(row.controlProtocol).toBe(f.claude.protocol);
     expect(row.observation).toEqual({ kind: "claude", attached: true, sessionDigest: createHash("sha256").update(f.sessionId).digest("hex") });
     expect(row.sessionId).toBeUndefined(); expect(row.threadId).toBeUndefined(); expect(row.args).toBeUndefined();
     expect((await f.issue(f.plan)).ok).toBe(true); f.noEffects();
   } finally { await f.close(); }
 }, 20_000);
 
-for (const mutation of ["id", "kind", "attachment", "observed-session", "restore-session", "restore-args", "restore-thread", "terminal"] as const)
+for (const mutation of ["id", "kind", "attachment", "observed-session", "restore-session", "restore-args", "restore-thread", "terminal", "missing-protocol", "invalid-protocol", "mismatched-protocol"] as const)
   test(`reconnect-only source authority refuses changed ${mutation} after a fresh plan fingerprint`, async () => {
     const f = await reconnectFixture();
     try {
       const plan = structuredClone(f.plan), row = plan.projects[0]!.source.peers.find(peer => peer.id === "claude")!;
       if (mutation === "id") row.id = "foreign-peer";
+      if (mutation === "missing-protocol") delete row.controlProtocol;
+      if (mutation === "invalid-protocol") row.controlProtocol = 0;
+      if (mutation === "mismatched-protocol") row.controlProtocol = row.controlProtocol === 16 ? 17 : 16;
       if (mutation === "kind") row.observation = { ...row.observation!, kind: "codex" };
       if (mutation === "attachment") row.observation = { ...row.observation!, attached: false };
       if (mutation === "observed-session") row.observation = { ...row.observation!, sessionDigest: "foreign-session" };
@@ -193,6 +197,27 @@ test("reconnect-only authority rechecks an observation that disappears across th
     f.noEffects();
   } finally {
     if (previous) Object.defineProperty(owner, "sessionGeneration", previous); else Reflect.deleteProperty(owner, "sessionGeneration");
+    await f.close();
+  }
+}, 20_000);
+
+test("reconnect-only authority rechecks the attached control protocol across the launcher await", async () => {
+  const f = await reconnectFixture(), owner = f.daemon.bus.peers.get("claude")!;
+  const previousGeneration = Object.getOwnPropertyDescriptor(owner, "sessionGeneration"), generation = owner.sessionGeneration;
+  const previousMetadata = Object.getOwnPropertyDescriptor(owner, "recoveryMetadata"), metadata = owner.recoveryMetadata;
+  if (!metadata) { await f.close(); throw new Error("the channel fixture has no protocol metadata"); }
+  let reads = 0, changed = false;
+  try {
+    Object.defineProperty(owner, "sessionGeneration", { configurable: true, get() { if (++reads === 2) changed = true; return generation; } });
+    Object.defineProperty(owner, "recoveryMetadata", { configurable: true, value() {
+      const current = metadata.call(owner);
+      return changed ? { ...current, controlProtocol: current.controlProtocol === 16 ? 17 : 16 } : current;
+    } });
+    expect((await f.issue(f.plan)).ok).toBe(false);
+    expect(changed).toBe(true); expect(reads).toBeGreaterThanOrEqual(2); f.noEffects();
+  } finally {
+    if (previousGeneration) Object.defineProperty(owner, "sessionGeneration", previousGeneration); else Reflect.deleteProperty(owner, "sessionGeneration");
+    if (previousMetadata) Object.defineProperty(owner, "recoveryMetadata", previousMetadata); else Reflect.deleteProperty(owner, "recoveryMetadata");
     await f.close();
   }
 }, 20_000);

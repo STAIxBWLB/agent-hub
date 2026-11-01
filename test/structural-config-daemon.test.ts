@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { realPath } from "../src/hub/project.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -194,7 +194,7 @@ test("#689 a held recovery refuses preview and apply, and the edit works again o
   const body = await f.edit([{ path: ["approvals", "timeout_s"], value: 90 }]);
   const before = f.read("config.local.json");
   const instance = (await f.client.request({ t: "status" })).status.instanceId;
-  expect((await f.client.request({ t: "recovery", op: "prepare", operationId: "structural-hold", expectedInstanceId: instance })).ok).toBe(true);
+  expect((await f.client.request({ t: "recovery", op: "prepare", operationId: "structural-hold", expectedInstanceId: instance, targetFeatures: DAEMON_FEATURES })).ok).toBe(true);
   for (const message of [{ t: "config_edit_preview", edit: body }, { t: "config_edit_apply", edit: body, reason: "held" }]) {
     const reply = await f.client.request(message);
     expect(reply.ok, message.t).toBe(false);
