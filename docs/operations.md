@@ -1484,6 +1484,7 @@ ahub study approve rc-0123456789ab 2         # person only: create the unit task
 ahub study show [rc-0123456789ab]            # list campaigns (50 per page, --after continues) or one projection
 ahub study close rc-0123456789ab 2 --reason "answered"
 ahub study approve-protocol <64-hex hash>    # person only: approve one exact experiment protocol
+ahub study experiments --campaign rc-0123456789ab [--after 50]   # read the recorded attempts (also --attempt ra-... or --plan <hash> --baseline ra-... --variant ra-...)
 ```
 
 - **Contract.** The JSON names the question, scope, exclusions, registered source ids, 1 to 32 units
@@ -1514,8 +1515,26 @@ ahub study approve-protocol <64-hex hash>    # person only: approve one exact ex
 - **Experiments.** Protocols, comparison plans and attempts are stored with their provenance (`declared`,
   `host-observed` from a check receipt or a hub-hashed deliverable), and `ahub study approve-protocol` binds an
   approval to one exact protocol hash and its evaluator; a changed protocol needs its own approval. The hub
-  never ranks results. This release has no hub tool or CLI that records experiments; they are host storage
-  for the slices that follow.
+  never ranks results. There is still no hub tool or CLI that records experiments; they are host storage. They
+  are read with `ahub study experiments` or `hub_experiment_show` (see Experiment readback below).
+- **Experiment readback (#602, #932 T3).** `ahub study experiments --campaign <id>` lists a campaign's attempts
+  (50 rows a page, `--after <cursor>` continues), `--attempt <ra-id>` shows one, and `--plan <hash> --baseline
+  <ra-id> --variant <ra-id>` shows one comparison under a recorded plan. `hub_experiment_show` takes the same three
+  forms and is a read for every local peer. It runs no command and reads no file; it renders what
+  `Tasks.experimentShow` already returns. Every value says where it came from: `declared` (the agent's own word),
+  `host-observed` (a check receipt or a hub-hashed deliverable), `runner-attested` (a signature-verified runner
+  receipt) or `person-attested`. A declared value is never shown as observed, a metric or output the hub could not
+  read is `unknown`, sealing is `declared` and `isolation unverified` unless a runner receipt supplies the
+  evidence, and failed, cancelled and unknown attempts stay in the counts at the top. A repeat is never an
+  independent reproduction, and a comparison whose fixed inputs, evaluator, split or metric units differ, or that
+  changes an undeclared factor, reads `no: <field> differs` and is shown, never ranked. A private campaign, task or
+  source shows ids, counts and states only. **Optional rerun checklist** (written for a person, never run by the
+  hub): a person who wants stronger evidence reruns the protocol themselves, then attaches it through the existing
+  paths and no new one: a check on the task (`hub_check_start`, #513 and the remote runner #793) makes the end
+  event's exit status `host-observed`; an output file named in an `output` event is hashed by the hub (#509) and
+  stays `unknown` when it is missing or denied; a registered runner's signed receipt (#1050) is the only source of
+  `runner-attested` sealing and isolation. Without one of these the experiment is reported as declared and
+  unverified, which is not the same as wrong.
 - **Privacy.** A campaign whose parent task is PII, or that names a private source, is private: every view keeps
   ids, counts, states and provenance and stubs its text as `[pii]`. Study tool arguments and results are kept out
   of hub-managed memory capture.
