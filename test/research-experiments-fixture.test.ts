@@ -82,7 +82,8 @@ test("AC5: a baseline, a variant and a failure are read back with every value's 
   // an agent's number is shown as declared, with sealing and isolation unverified, never as observed
   expect(text).toMatch(/score \(fraction\)\s+0\.8\s+declared/); expect(text).toMatch(/score \(fraction\)\s+0\.9\s+declared/);
   expect(text).toContain("isolation unverified");
-  expect(text).not.toMatch(/host-observed|runner-attested|person-attested/);
+  const rows = text.split("\n").filter(line => !line.startsWith("declared values are")), body = rows.join("\n");
+  expect(body).not.toMatch(/host-observed|runner-attested|person-attested/);                          // no table row claims a stronger source than declared
   expect(text).toContain("A repeat is never an independent reproduction");
   expect(text).toMatch(/unapproved/);
   expect(JSON.stringify(view)).not.toContain("independentlyReproduced\":true");
@@ -126,7 +127,7 @@ test("AC5: an inaccessible output stays unknown and a supplied hash stays declar
   await f.add(id, "claimed", { kind: "output", body: { id: "d-0123456789ab", sha256: HASH } });
   const row = (await f.tasks.experimentShow(USER, { attemptId: id })).attempts[0]!;
   expect(row.evidence).toMatchObject({ measured: [], declared: { outputs: [{ sha256: { value: null, provenance: "unknown" } }, { sha256: { value: HASH, provenance: "declared" } }] } });
-  expect(plain(await f.tasks.experimentShow(USER, { attemptId: id }))).not.toMatch(/host-observed/);
+  expect(plain(await f.tasks.experimentShow(USER, { attemptId: id })).split("\n").filter(line => !line.startsWith("declared values are")).join("\n")).not.toMatch(/host-observed/);
   const denied = await f.attempt(hash, "denied");
   await f.add(denied, "denied-file", { kind: "output", body: { path: ".env", format: "txt" } });
   const shown = await f.tasks.experimentShow(USER, { attemptId: denied });
