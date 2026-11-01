@@ -18,14 +18,14 @@ afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 const head = "a".repeat(40);
 class Peer extends BasePeer { received: Envelope[] = []; async start() { this.setState("idle"); } async stop() { this.setState("offline"); } async deliver(envs: Envelope[]) { this.received.push(...envs); } }
 
-function rig(scope: ReviewScope | undefined, opts: { checkPassed?: boolean; conductor?: boolean; escalateAfter?: number } = {}) {
+function rig(scope: ReviewScope | undefined, opts: { checkPassed?: boolean; conductor?: boolean; escalateAfter?: number; detail?: string; plan?: { paths: string[]; risks: string[] } } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-review-scope-")), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 }), notices: string[] = [];
   const roles: Record<string, string[]> = { codex: ["implementer"], "codex-review": ["reviewer"], ...(opts.conductor === false ? {} : { director: ["conductor"] }) };
   const tasks = new Tasks({ cwd: dir, board, bus, roles, project: "review-scope", routing: () => loadRouting(dir), reviewOnly: peer => peer === "codex-review", ...(scope ? { reviewScope: () => scope } : {}),
     ...(opts.escalateAfter ? { escalateAfter: () => opts.escalateAfter! } : {}), splitProfile: () => "review-scope-fixture", notify: text => notices.push(text) });
-  const task = board.propose("user", { title: "finished implementation", class: "implement" });
+  const task = board.propose("user", { title: "finished implementation", class: "implement", ...(opts.detail ? { detail: opts.detail } : {}) });
   board.update(task.id, "user", "assigned", { owner: "codex", reviewer: "codex-review", refs: { commit: head } }, undefined, { profile: "review-scope-fixture" });
-  board.update(task.id, "codex", "accepted", { state: "in_progress" });
+  board.update(task.id, "codex", "accepted", { state: "in_progress", ...(opts.plan ? { plan: opts.plan } : {}) });
   if (opts.checkPassed) board.update(task.id, "hub", "check passed", {}, "scripts/check.sh -> exit 0\ncheck: OK");
   const reviewer = new Peer("codex-review"), owner = new Peer("codex"), director = new Peer("director"); bus.add(reviewer); bus.add(owner); bus.add(director);
   cleanups.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -58,6 +58,15 @@ test("AC2: a code reviewer's request replaces every check and CI line with one f
   expect(await rig("full", { checkPassed: true }).body()).toContain("Check result: scripts/check.sh -> exit 0");
   const codeWithCheck = await rig("code", { checkPassed: true }).body();
   expect(codeWithCheck).toContain(CODE_SCOPE_LINE); expect(codeWithCheck).not.toContain("Check result:");
+});
+
+test("a review-only request includes the accepted plan while withholding task detail and the done summary", async () => {
+  const f = rig("code", { detail: "DETAIL-CANARY: private builder context", plan: { paths: ["src/example.ts"], risks: ["ACCEPTED-PLAN-RISK-CANARY"] } });
+  const body = await f.body();
+  expect(body).toContain("ACCEPTED-PLAN-RISK-CANARY");
+  expect(body).toContain("(summary withheld from a review-only reviewer; judge the change itself)");
+  expect(body).not.toContain("DETAIL-CANARY");
+  expect(body).not.toContain("Done by codex: done");
 });
 
 test("AC3: a code reviewer's approval records scope code in the history, and a full reviewer's verdict records none", async () => {
