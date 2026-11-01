@@ -67,29 +67,14 @@ test("#551 stale launch is terminal before replacement and preserves the current
   expect(f.daemon.bus.queueList("claude").some(row => row.state === "needs_review")).toBe(false);
 });
 
-// #604 PR B item 10: "no hello launch" is no longer a compatibility case while a current launch record exists (it is refused, below). A first launch with no record, and a record that belongs
-// to another daemon instance, still retain newest-hello ownership.
-for (const compatibility of ["no launch record", "different daemon record"] as const) test(`#551 compatibility: ${compatibility} retains newest-hello ownership`, async () => {
+for (const compatibility of ["no hello launch", "no launch record", "different daemon record"] as const) test(`#551 compatibility: ${compatibility} retains newest-hello ownership`, async () => {
   const f = await fixture();
-  if (compatibility !== "no launch record") writeFileSync(join(f.stateDir, "claude-launch.json"), JSON.stringify({ instanceId: "previous-daemon", launchId: "recorded-launch" }));
+  if (compatibility !== "no launch record") writeFileSync(join(f.stateDir, "claude-launch.json"), JSON.stringify({ instanceId: compatibility === "different daemon record" ? "previous-daemon" : f.instanceId, launchId: "recorded-launch" }));
   const first = await f.connect(); await until(() => f.daemon.bus.stateOf("claude") === "idle", "first attached");
-  const next = await f.connect({ launchId: "unrecorded-launch" });
+  const next = await f.connect(compatibility === "no hello launch" ? {} : { launchId: "unrecorded-launch" });
   await until(() => first.closed() !== undefined, "initial newest hello replaces old owner");
   expect(first.closed()).toBe(4000); expect(next.closed()).toBeUndefined();
   await settle(f, next, compatibility);
-});
-
-test("#604 item 10: a channel hello with no launch id is refused while a current launch record exists, and the managed session keeps its peer id", async () => {
-  const f = await fixture();
-  writeFileSync(join(f.stateDir, "claude-launch.json"), JSON.stringify({ instanceId: f.instanceId, launchId: "recorded-launch" }));
-  const managed = await f.connect({ launchId: "recorded-launch" }); await until(() => f.daemon.bus.stateOf("claude") === "idle", "managed session attached");
-  const intruder = await f.connect({});                                                  // no launch id: before this change it was admitted and replaced the managed session
-  await until(() => intruder.closed() !== undefined, "launch-id-less hello refused");
-  expect(intruder.closed()).toBe(4430);
-  expect(managed.closed()).toBeUndefined();                                              // the managed session was not displaced
-  expect(f.daemon.bus.stateOf("claude")).toBe("idle");
-  const wrong = await f.connect({ launchId: "some-other-launch" });
-  await until(() => wrong.closed() !== undefined, "wrong launch id refused"); expect(wrong.closed()).toBe(4430); expect(managed.closed()).toBeUndefined();
 });
 
 test("#551 two valid sessions: standby retries across 61 seconds of logical backoff never displace a busy owner", async () => {

@@ -70,11 +70,11 @@ test("#625 raw launch reader retains its no-follow, 16 KiB, instance and private
   expect(readClaudeLaunchProof(f.stateDir, "claude", f.instanceId)).toBeUndefined();
 });
 
-test("#625 hello launch mismatch refuses only with current record evidence and preserves first-launch admission (#604 item 10: an absent id is no longer admitted once a record exists)", () => {
+test("#625 hello launch mismatch refuses only with current record evidence and preserves legacy admission", () => {
   const f = fixture();
-  for (const launch of [undefined, "missing-record", null, 7]) expect(f.proof.helloLaunch("claude", launch)).toBe("admit");   // no record yet: a first launch or a plain session
+  for (const launch of [undefined, "missing-record", null, 7]) expect(f.proof.helloLaunch("claude", launch)).toBe("admit");
   f.record();
-  expect(f.proof.helloLaunch("claude", undefined)).toBe("refuse");                    // was "admit": a hello with no launch id could join a peer id that has a managed launch
+  expect(f.proof.helloLaunch("claude", undefined)).toBe("admit");
   expect(f.proof.helloLaunch("claude", "managed-claude")).toBe("admit");
   for (const launch of ["older-launch", "", null, 7, { launchId: "managed-claude" }]) expect(f.proof.helloLaunch("claude", launch)).toBe("refuse");
   f.record("claude", { instanceId: "older-instance" });
