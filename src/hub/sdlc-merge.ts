@@ -144,6 +144,12 @@ export function localGates(input: { subject: DeliveryTask; state: string; taskSt
   const { subject, config } = input, gates: string[] = [];
   if (subject.private) return ["private task: a person merges"];
   if (input.state !== "approved") gates.push(`task not approved (state ${input.state})`);
+  const approved = subject.receipt?.reviewedHead;
+  if (subject.latestHead !== undefined && subject.latestHead !== approved) gates.push("latest reported head differs from approved head");
+  const binding = subject.approval;
+  if (binding && (!binding.current || binding.mismatch || !binding.head || binding.head !== approved
+    || subject.latestHead !== undefined && binding.head !== subject.latestHead
+    || binding.latestHead !== undefined && binding.head !== binding.latestHead)) gates.push("approval is not current at the latest reported head");
   for (const id of subject.after) {
     const state = input.taskState(id);
     if (state !== "approved") gates.push(`dependency task #${id} is not approved (${state ?? "unknown"})`);
@@ -206,6 +212,7 @@ export function dispatchGates(input: Pick<MergeInput, "subject" | "taskState"> &
   if (!now) return moved;
   const receipt = now.subject.receipt;
   if (receipt?.repo !== decision.repo || receipt?.pr !== decision.pr || receipt?.reviewedHead !== decision.head) return moved;
+  if (now.subject.latestHead !== input.subject.latestHead || JSON.stringify(now.subject.approval) !== JSON.stringify(input.subject.approval)) return moved;
   if (now.mode !== input.mode) return ["merge mode changed during the merge check: nothing was run"];
   if (JSON.stringify(requiredChecksFor(now.config, decision.repo)) !== JSON.stringify(requiredChecksFor(input.config, decision.repo))) return ["required checks changed during the merge check: nothing was run"];
   if (!now.allowed) return ["authority or hub availability changed during the merge check: nothing was run"];

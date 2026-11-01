@@ -4,7 +4,14 @@ import { evalGapBlockers, evalGateView, readEvalFor, type EvalGate } from "./eva
 import { findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CriteriaView } from "./workflow.ts";
 import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
-export interface DeliveryTask { plan?: { paths?: string[]; revision: number; fingerprint: string; accepted: { repo: string; pr: number; head: string; revision: number; fingerprint: string; paths: string[] }[] }; findings?: readonly ReviewFindingSet[]; id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView; }
+export interface DeliveryTask {
+  /** Latest owner-reported artifact head; omitted by older library callers. */
+  latestHead?: string;
+  /** Host-derived verdict binding, never inferred from a mutable lifecycle receipt. */
+  approval?: { head?: string; latestHead?: string; mismatch: boolean; current: boolean };
+  plan?: { paths?: string[]; revision: number; fingerprint: string; accepted: { repo: string; pr: number; head: string; revision: number; fingerprint: string; paths: string[] }[] };
+  findings?: readonly ReviewFindingSet[]; id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView;
+}
 export interface MergeQueueRow { evalGate?: EvalGate; testIntegrity?: (TestIntegrity & { task?: number })[]; planConformance?: { task?: number; state: string; outside: number; untouched: number; accepted: boolean }[]; findings?: ReviewFindingTally; pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
 export interface MergeConflict { left: number; right: number; files: number; order: "dependency" | "person_required"; }
 export interface MergeQueue { repo: string; rows: MergeQueueRow[]; order: number[]; unordered?: number[]; conflicts: MergeConflict[]; complete: boolean; truncated: boolean; }

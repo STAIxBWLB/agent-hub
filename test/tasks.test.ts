@@ -3920,7 +3920,7 @@ test("#1000 owner re-file refreshes a review at a new full head without a reject
   expect(f.tasks.reviewBindingCurrent("claude", t.id, { head: REFILE_NEW, flowRevision: Number(request.refs!.reviewRevision) })).toBe(true);
   await expect(f.tasks.review("claude", t.id, "approved", "old verdict", undefined, REFILE_OLD)).rejects.toThrow(/head/);
   expect((await f.tasks.review("claude", t.id, "approved", "current verdict", undefined, REFILE_NEW)).state).toBe("approved");
-  await expect(f.tasks.done("codex", t.id, "after approval", { commit: "c".repeat(40) })).rejects.toThrow(/already approved/);
+  await expect(f.tasks.done("codex", t.id, "same head after approval", { commit: REFILE_NEW })).rejects.toThrow(/already approved/);
 });
 
 test("#1000 same-head, missing or malformed head and foreign-owner re-files are effect-free refusals", async () => {
