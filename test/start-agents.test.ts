@@ -60,7 +60,7 @@ test("start.agents is a Start-group settings row that raising needs a settings s
   expect(settingRefusal(def, ["claude", "codex"], "ordinary")).toContain("settings session");
   expect(settingRefusal(def, ["claude", "codex"], "settings")).toBeUndefined();
   expect(settingRefusal(def, ["claude", "codex"], "terminal")).toBeUndefined();
-  expect(configApply("start.agents")).toMatchObject({ applies: "restart" });        // the running hub never reads it; a reload changes nothing live
+  expect(configApply("start.agents")).toEqual({ applies: "next use" });             // the running hub never reads it: nothing to restart or apply live, the next ahub up reads the file
 });
 
 test("AC3: a committed config.json cannot set the set; config.local.json can, and an empty list is kept as a value", () => {
