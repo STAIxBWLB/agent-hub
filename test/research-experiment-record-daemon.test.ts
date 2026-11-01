@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { projectChain } from "@staix/agent-mem";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +11,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
 import { USER, type Envelope } from "../src/hub/envelope.ts";
 import { ExecutionBudget } from "../src/hub/execution-budget.ts";
+import { hubGitSync } from "../src/hub/git.ts";
 import { canonicalJson } from "../src/hub/packs.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { realPath } from "../src/hub/project.ts";
@@ -48,7 +48,8 @@ async function rig(options: { owner?: "codex" | "local"; privateTurn?: boolean; 
   const previous = Object.fromEntries(homes.map(key => [key, process.env[key]]));
   for (const key of homes) { const home = join(root, key.toLowerCase()); mkdirSync(home); process.env[key] = home; }
   cleanup.push(() => { for (const key of homes) { const value = previous[key]; if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
-  execFileSync("git", ["-C", root, "init", "-q"], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdio: "pipe" });
+  const git = hubGitSync(["-C", root, "init", "-q"], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, encoding: "utf8" });
+  if (git.status !== 0) throw new Error(`fixture git init failed: ${git.stderr}`);
   const project = projectChain(root).at(-1)!, sourceRegistry = new SourceRegistry(stateDir);
   const added = sourceRegistry.add({ bytes: Buffer.from("Synthetic experiment input"), kind: "file", origin: "fixture-input.txt", private: false, text: "Synthetic experiment input" });
   const source = sourceRegistry.get(added.id); if (!source) throw new Error("fixture source registration missing");
@@ -63,7 +64,7 @@ async function rig(options: { owner?: "codex" | "local"; privateTurn?: boolean; 
     notify: () => {}, piiScreen: async () => ({ label: "clear", ms: 0 }), studySource: id => sourceRegistry.get(id) });
   let campaign: Awaited<ReturnType<Tasks["studyApprove"]>>, taskId: number, privateTaskId: number | undefined;
   try {
-    const parent = await bootstrap.propose(USER, { title: "Public experiment parent", class: "plan", backlog: true });
+    const parent = await bootstrap.propose(USER, { title: "Public experiment parent", class: owner === "local" ? "implement" : "plan", backlog: true });
     const contract: ResearchCampaignContract = { question: "Which synthetic observations support this claim?", scope: "No command or runner execution", exclusions: [], sourceIds: [source.id],
       units: [{ id: "measure", round: 0, question: "Record synthetic measurements", perspective: "measurement", requiredOutput: "Bounded evidence", sourceIds: [source.id], dependsOn: [], purpose: "analysis" }],
       deliverableSections: [], stopPolicy: { maxUnits: 1, maxFollowUpRounds: 0, deadline: new Date(Date.now() + 86_400_000).toISOString() } };
@@ -172,6 +173,8 @@ test("#615 unknown fields and command-shaped payloads neither start configured c
 test("#615 actual latched private host turn refuses every record kind before its ordinary target is admitted", async () => {
   const r = await rig({ owner: "local", privateTurn: true }), peer = r.peers.get("local")!;
   if (r.privateTaskId === undefined) throw new Error("fixture omitted its private task");
+  expect(r.board.get(r.privateTaskId)?.owner).toBe("local");
+  expect(r.board.get(r.privateTaskId)?.signals).toContain("pii");
   peer.begin();
   const events = readFileSync(join(r.stateDir, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
   expect(events.some(event => event.type === "turn_start" && event.peer === "local")).toBe(true);

@@ -257,7 +257,7 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
       const selectedPlan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) } };
       properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: selectedPlan } } };
     }
-    if (criteria && properties.plan) {
+    if (criteria && properties.plan && tool.name !== "hub_experiment_record") {
       const current = properties.plan as { properties: Record<string, unknown> };
       properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties, ...evidencePlanProperties } };
     }
