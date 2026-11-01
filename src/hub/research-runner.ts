@@ -118,7 +118,7 @@ export function parseAttemptReceipt(input: unknown): AttemptReceiptV1 {
     return { container: pattern(row.container, ID, `${field}.container`), path: text(row.path, `${field}.path`), readOnly: row.readOnly,
       purpose: choice(row.purpose, ["evaluator-code", "evaluator-data", "candidate-output", "other"], `${field}.purpose`) };
   });
-  if (raw.network !== undefined) receipt.network = choice(raw.network, ["none", "restricted", "open"], "receipt.network");
+  if (raw.network !== undefined) receipt.network = choice<NonNullable<AttemptReceiptV1["network"]>>(raw.network, ["none", "restricted", "open"], "receipt.network");
   if (raw.resourceLimits !== undefined) receipt.resourceLimits = array(raw.resourceLimits, 16, "receipt.resourceLimits").map((value, index) => {
     const field = `receipt.resourceLimits[${index}]`, row = object(value, ["name", "value", "unit"], field);
     if (typeof row.value !== "number" || !Number.isFinite(row.value) || row.value < 0) fail(`${field}.value`, "expected a nonnegative finite number");
