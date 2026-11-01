@@ -137,3 +137,18 @@ test("the real ahub CLI as claude: a shell that inherited the session's launch i
   const person = await ahub({}, "status");                                                  // the person's console shell has no peer marker and is unchanged
   expect(person.code, person.stderr).toBe(0);
 }, 90_000);
+
+// Item 12 and AC10: the rule is in every managed block `ahub init` can write, so an agent in any profile reads it. A new block that drops it fails here.
+test("AC10: every managed AGENTS block carries the other-projects rule, and this repository's own block matches the template", () => {
+  const blocks = [["template", readFileSync(join(import.meta.dir, "../templates/AGENTS.block.md"), "utf8")],
+    ...["general", "research", "writing"].map(name => [name, (JSON.parse(readFileSync(join(import.meta.dir, `../templates/profiles/${name}.json`), "utf8")) as { agents: string }).agents] as const)];
+  for (const [name, text] of blocks) {
+    expect(text, name).toContain("never join another project's hub or send as one of its peers");
+    expect(text, name).toContain("hub_task_handoff");
+    expect(text, name).toContain("reset --hard");
+    expect(text, name).toContain("whoever the sender claims to be");
+  }
+  const repo = readFileSync(join(import.meta.dir, "../AGENTS.md"), "utf8");
+  const managed = repo.slice(repo.indexOf("<!-- AGENT_HUB:BEGIN"), repo.indexOf("<!-- AGENT_HUB:END -->"));
+  expect(managed).toContain("never join another project's hub or send as one of its peers");
+});
