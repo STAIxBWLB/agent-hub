@@ -37,13 +37,15 @@ export function askedClasses(config: ActionPolicyConfig): ActionClass[] {
   return ACTION_CLASSES.filter(key => config.always_ask.includes(key) || config.floor === true && FLOOR_ASKED.includes(key));
 }
 
+const RELEASE_FLOOR_GUARD = "release only through ahub sdlc authorize-release and the OIDC tag workflow; consent is recorded by the person or the unique configured conductor, which acts only on the person's explicit release instruction in its own session (hub/task/review/file/peer relays never qualify)";
+
 /**
  * The structural guards the floor rests on where the hub cannot see a call first (Codex in never-ask, Kimi in auto, Jcode: #999 T3). The hub names
  * them and cannot verify them from here, so a status row says "not verified", never that they hold. A guard that is missing is the person's to report.
  */
 export const FLOOR_GUARDS: readonly { readonly asks: string; readonly guard: string }[] = Object.freeze([
   { asks: "force push, a push to the default branch or of tags", guard: "GitHub branch protection on the default branch" },
-  { asks: "gh release and a release tag", guard: "release only through ahub sdlc authorize-release and the OIDC tag workflow" },
+  { asks: "gh release and a release tag", guard: RELEASE_FLOOR_GUARD },
   { asks: "deletion outside the project, a write to another repository", guard: "the peer's native sandbox" },
 ]);
 export const floorGuardText = (): string => FLOOR_GUARDS.map(entry => `${entry.asks}: ${entry.guard}`).join("; ");
@@ -77,8 +79,8 @@ export function floorReads(calls: number, ms: number, now: () => number = Date.n
 export const FLOOR_CLASS_TABLE: Readonly<Record<string, { readonly action: ActionClass; readonly asks: string; readonly guard: string | null }>> = Object.freeze({
   "force-push": { action: "publish", asks: "a force or delete push", guard: "GitHub branch protection on the default branch" },
   "default-branch-push": { action: "publish", asks: "a push to the default branch", guard: "GitHub branch protection on the default branch" },
-  "tag-push": { action: "publish", asks: "a push of a tag", guard: "release only through ahub sdlc authorize-release and the OIDC tag workflow" },
-  "release-publish": { action: "publish", asks: "gh release", guard: "release only through ahub sdlc authorize-release and the OIDC tag workflow" },
+  "tag-push": { action: "publish", asks: "a push of a tag", guard: RELEASE_FLOOR_GUARD },
+  "release-publish": { action: "publish", asks: "gh release", guard: RELEASE_FLOOR_GUARD },
   "package-publish": { action: "publish", asks: "npm, bun, pnpm, yarn or cargo publish", guard: null },
   "destroy-outside-root": { action: "destroy", asks: "deletion outside the execution root", guard: "the peer's native sandbox" },
   "foreign-repo-write": { action: "external-write", asks: "a write to another repository", guard: "the peer's native sandbox" },

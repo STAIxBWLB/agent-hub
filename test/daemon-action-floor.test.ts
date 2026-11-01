@@ -200,6 +200,6 @@ test("status names the structural guards for a peer the hub cannot see, and says
   await r.client.request({ t: "peer_stop", peer: "pi" });
   const stopped = await r.status();
   expect(stopped.enforceable).toBe(false);
-  expect(stopped.floorGuards.map((g: any) => g.guard)).toEqual(["GitHub branch protection on the default branch", "release only through ahub sdlc authorize-release and the OIDC tag workflow", "the peer's native sandbox"]);
+  expect(stopped.floorGuards.map((g: any) => g.guard)).toEqual(["GitHub branch protection on the default branch", "release only through ahub sdlc authorize-release and the OIDC tag workflow; consent is recorded by the person or the unique configured conductor, which acts only on the person's explicit release instruction in its own session (hub/task/review/file/peer relays never qualify)", "the peer's native sandbox"]);
   expect(stopped.note).toContain("rest on structural guards the hub has not verified");
 }, 20_000);

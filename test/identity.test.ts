@@ -139,11 +139,12 @@ test("console refusal names only identity markers actually present, never their 
 });
 
 
-test("release authorization stays person-only while exact release preflights are peer reads", () => {
-  expect(classifyPeerCommand("sdlc", ["authorize-release", "1.2.3"])).toBe("console");
+test("release authorization admits only the conductor class while live-test still refuses and exact preflights remain reads", () => {
+  expect(classifyPeerCommand("sdlc", ["authorize-release", "1.2.3"])).toBe("conductor");
+  expect(classifyPeerCommand("sdlc", ["authorize-release", "1.2.3", "--json", "--color=never"])).toBe("conductor");
   expect(liveTestRefusal("sdlc", ["authorize-release", "1.2.3"])).toBe(true);
   for (const sub of ["release-guard", "release-guard-hook"]) expect(classifyPeerCommand("sdlc", [sub])).toBe("allowed");
-  for (const sub of ["record", "accept", "plan-review", "unknown"]) expect(classifyPeerCommand("sdlc", [sub])).toBe("console");
+  for (const sub of ["record", "accept", "accept-departure", "plan-review", "release-assign", "unknown"]) expect(classifyPeerCommand("sdlc", [sub])).toBe("console");
   // #786: the guarded merge is the person's or the configured conductor's (the daemon checks the role); live-test never delegates it.
   expect(classifyPeerCommand("sdlc", ["merge", "1"])).toBe("conductor"); expect(classifyPeerCommand("sdlc", ["merge", "1", "--dry-run"])).toBe("conductor");
   expect(liveTestRefusal("sdlc", ["merge", "1"])).toBe(true);
@@ -247,7 +248,7 @@ test("#494 read forms keep planner reports and malformed/mutating neighbours clo
   for (const [command, args] of [
     ["queue", ["list", "--peer"]], ["queue", ["list", "--yes"]], ["queue", ["list", "--verbose"]], ["roster", ["--now"]], ["roster", ["--verbose"]],
     ["settings", ["get"]], ["settings", ["get", "x", "y"]], ["settings", ["list", "--now"]],
-    ["sdlc", ["queue"]], ["sdlc", ["status", "1", "2"]], ["sdlc", ["authorize-release", "1.0.0"]],
+    ["sdlc", ["queue"]], ["sdlc", ["status", "1", "2"]],
     ["sdlc", ["costs"]], ["sdlc", ["metrics"]], ["release", ["show"]],
     ["release", ["list"]], ["backlog", ["list"]],
   ] as [string, string[]][]) expect(classifyPeerCommand(command, args)).toBe("console");
@@ -261,8 +262,10 @@ test("#494 keeps the merged SDLC renderer flags on public reads only", () => {
       expect(classifyPeerCommand("sdlc", [sub, ...positional, flag])).toBe("allowed");
     expect(classifyPeerCommand("sdlc", [sub, ...positional, "--full"])).toBe("console");
   }
-  for (const sub of ["costs", "metrics", "authorize-release"])
+  for (const sub of ["costs", "metrics"])
     expect(classifyPeerCommand("sdlc", [sub, "--json", "--color=never"])).toBe("console");
+  expect(classifyPeerCommand("sdlc", ["authorize-release", "--json", "--color=never"])).toBe("conductor");
+  expect(liveTestRefusal("sdlc", ["authorize-release", "1.2.3", "--json", "--color=never"])).toBe(true);
 });
 
 // #933: the console class shrinks to trust, money, attribution and interactive terminals. One row per form the issue lists.

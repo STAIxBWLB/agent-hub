@@ -4260,7 +4260,11 @@ export async function startDaemon(opts: DaemonOptions) {
     docs: opts.releaseDocEvidence,
     gh: (args, timeout) => sdlcGh(args, timeout, opts.cwd),
     current: () => !stopping && !recoveryActive() && !bus.isRecoveryHeld,
-    record: receipt => event({ type: "release_authorization", by: "user", authorization: receipt.id, commit: receipt.commit, version: receipt.version, docsDigest: receipt.docs.digest, documents: receipt.docs.documents }),
+    conductor: () => {
+      const peer = conductorPeer(config.roles);
+      return peer && !turns.get(peer)?.private && !contextPii(peer) ? peer : undefined;
+    },
+    record: receipt => event({ type: "release_authorization", by: receipt.by, authorization: receipt.id, commit: receipt.commit, version: receipt.version, docsDigest: receipt.docs.digest, documents: receipt.docs.documents }),
   });
   const terminalReads = terminalOwnerReads();
   const terminalLaunches = new TerminalLaunches({
@@ -8797,6 +8801,15 @@ export async function startDaemon(opts: DaemonOptions) {
           );
           return;
         }
+        if (msg.op === "authorize-release") {
+          const asker = c.role === "console" ? USER : c.role === "tools" && c.peer && conductorPeer(config.roles) === c.peer && !c.toolsOwner && !turns.get(c.peer)?.private && !contextPii(c.peer) ? c.peer : undefined;
+          if (!asker) return void reply({ ok: false, error: "only the console user or the configured conductor may authorize a release" });
+          void releaseAuthorizations.authorize(asker, msg.version, msg.commit).then(
+            authorization => reply({ ok: true, authorization }),
+            error => reply({ ok: false, error: releaseAuthorizationError(error) }),
+          );
+          return;
+        }
         if (c.role !== "console" && ["status", "explain", "queue", "release"].includes(msg.op)) {
           let current: () => void;
           try { current = publicReadCurrent(sock); current(); } catch { return void reply({ ok: false, error: "public lifecycle read unavailable for this caller" }); }
@@ -8837,13 +8850,6 @@ export async function startDaemon(opts: DaemonOptions) {
           return;
         }
         if (c.role !== "console") return void reply({ ok: false, error: "SDLC readback is console only; task owners record ids through hub_sdlc_record" });
-        if (msg.op === "authorize-release") {
-          void releaseAuthorizations.authorize(USER, msg.version, msg.commit).then(
-            authorization => reply({ ok: true, authorization }),
-            error => reply({ ok: false, error: releaseAuthorizationError(error) }),
-          );
-          return;
-        }
         if (msg.op === "queue" || msg.op === "release") {
           if (typeof msg.repo !== "string" || !Array.isArray(msg.liveIssues ?? []) || (msg.liveIssues ?? []).length > 32) return void reply({ ok: false, error: "invalid delivery readback arguments" });
           const read = msg.op === "queue" ? tasks.deliveryQueue(msg.repo) : tasks.releaseReadiness(msg.repo, msg.liveIssues ?? []);

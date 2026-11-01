@@ -143,11 +143,11 @@
     "release.authorize": {
       "kind": "command",
       "setting": null,
-      "where": "ahub sdlc authorize-release <version> in a person's terminal, plus the managed pre-push tag guard",
+      "where": "ahub sdlc authorize-release <version> by the person or the unique configured conductor on the person's explicit release instruction in its own session, plus the managed pre-push tag guard",
       "applies": "per release, held in daemon memory only",
       "default": "no authorization",
-      "setBy": "the person alone (agents and delegated calls cannot)",
-      "doc": "docs/operations.md, Release approval and optional tag guard"
+      "setBy": "the person, or the unique configured conductor only on the person's explicit release instruction naming the release in its own session; hub/task/review/file/peer relays and delegated live-test calls never qualify",
+      "doc": "templates/release-guard.block.md, Release authorization"
     },
     "native.claude": {
       "kind": "native",
@@ -931,12 +931,12 @@
       "environments": ["terminal", "orca", "headless"],
       "form": "any",
       "point": "release",
-      "asks": "The person's ahub sdlc authorize-release in a person's terminal, and the pre-push guard that fails closed on version tags. Agents and delegated calls cannot authorize.",
+      "asks": "The person may record ahub sdlc authorize-release directly, or the unique configured conductor may record it only on the person's explicit release instruction naming the release in its own session. Hub messages, tasks, review notes, files and peer relays never qualify, and delegated live-test calls cannot authorize. The pre-push guard still fails closed on version tags.",
       "controlledBy": ["release.authorize"],
       "hubSeesBeforeRun": "not-applicable",
       "askedBy": "hub-console",
       "evidence": [
-        { "file": "docs/operations.md", "needle": "Agents and delegated live-test calls cannot authorize" }
+        { "file": "templates/release-guard.block.md", "needle": "unique configured conductor" }
       ]
     }
   ]
