@@ -7647,6 +7647,12 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       return undefined;
     };
+    // Preserve lifecycle fences before capability probes; the prepare branch rechecks them after resume capture awaits.
+    if (msg.op === "prepare") {
+      if (rosterChanging) return recoveryError("roster change is in progress; wait for ahub status before preparing recovery");
+      if (requestedPeerStops.size) return recoveryError("peer stop is in progress; wait for ahub status before preparing recovery");
+      if (recoveryCommitted) return recoveryError("recovery commit is already in progress");
+    }
     const checkTarget = msg.op === "prepare" || msg.op === "commit" || msg.op === "inspect" && msg.targetFeatures !== undefined;
     if (checkTarget) {
       const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error);
