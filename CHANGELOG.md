@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Concurrent `ahub up` cold starts tolerate an atomically replaced runtime record, while malformed, linked and oversized records still refuse (task 616; 0.26.1 patch).
+- Concurrent `ahub up` cold starts tolerate an atomically replaced runtime record, while malformed, linked and oversized records still refuse (task 616).
 - Read recorded research experiments (task 602, #932 T3): `ahub study experiments --campaign <id>` (or `--attempt`, or `--plan` with `--baseline` and `--variant`) and the read-only `hub_experiment_show` render a campaign's attempts and one comparison. Every value shows whether it is declared, host-observed, runner-attested or person-attested, failed and cancelled attempts stay in the counts, a repeat is never an independent reproduction, and an incompatible comparison is shown, not ranked. A synthetic CPU-only fixture (`test/research-experiments-fixture.test.ts`) covers baseline, variant, failure, changed-protocol, private-input and inaccessible-output cases, and `docs/operations.md` has a person-authored optional rerun checklist. Nothing here runs a command or records an experiment.
 
 ## 0.26.0
