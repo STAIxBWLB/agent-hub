@@ -815,6 +815,18 @@ export async function startDaemon(opts: DaemonOptions) {
   const sessionIds = new Set<string>();
   const rememberOrigin = (id: string, origin: Origin): void => { envelopeOrigins.set(id, origin); if (envelopeOrigins.size > 1024) envelopeOrigins.delete(envelopeOrigins.keys().next().value as string); };
   const takeOrigin = (id: string): Origin | undefined => { const origin = envelopeOrigins.get(id); envelopeOrigins.delete(id); return origin; };
+  /**
+   * agent-hub#1036: the origin of an envelope that no control connection sent, one an adapter published itself (a native peer's final answer goes through `peer.onMessage`, not the `send` case).
+   * It names the sending peer and, where the adapter knows one, the launch it runs under: a channel session's `managedLaunchId`, an owned Jcode's launch id. The hub's own writers (`hub`, `user`,
+   * `digest`) and remote room ids have none, as before. Evidence for the log, never a path or text.
+   */
+  const adapterOrigin = (env: Envelope): Origin | undefined => {
+    if (env.from === "hub" || env.from === USER || env.from === "digest" || env.from.includes("@")) return undefined;
+    const peer = bus.peers.get(env.from);
+    if (!peer) return undefined;
+    const launchId = isWsPeer(peer) ? peer.managedLaunchId : (peer as { ownedLaunchId?: string }).ownedLaunchId;
+    return originOf({ role: "peer", peer: env.from, ...(launchId ? { launchId } : {}) });
+  };
   const externalLaunches = new Map<string, { owner: PeerAdapter; options: AcpOptions; launchId: string; binding: ExternalInstanceBinding; workspace: string; generation?: string }>();
   const externalBindings = new Map<string, ExternalInstanceBinding>();
   const externalSessions = new Map<string, string>();
@@ -4998,7 +5010,7 @@ export async function startDaemon(opts: DaemonOptions) {
     } else {
       log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} ${e.env.priority} hop=${e.env.hop}${e.dropped ? ` NOT DELIVERED(${e.dropped})` : ""}: ${e.env.body.slice(0, 200)}`);
       const env = e.env;
-      const origin = takeOrigin(env.id);
+      const origin = takeOrigin(env.id) ?? adapterOrigin(env);
       event({ type: "envelope", id: env.id, from: env.from, ...(origin ? { origin } : {}), ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, ...(env.kind ? { kind: env.kind } : {}), ...(env.refs?.task ? { task: env.refs.task } : {}), ...(env.private ? {} : { bytes: Buffer.byteLength(env.body) }), ...(env.private ? { private: true } : {}), ...(e.dropped ? { dropped: e.dropped } : {}) });
     }
     if (!stopping) writeStatus();

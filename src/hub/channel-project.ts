@@ -30,6 +30,10 @@ export interface ChannelProject {
  */
 export function channelProject(cwd: string, env: NodeJS.ProcessEnv, policyRoles: (root: string) => Record<string, string[]>): ChannelProject | undefined {
   const override = env.AGENTHUB_STATE_DIR?.trim(), declared = env.AGENTHUB_PROJECT_DIR?.trim();
+  // A tools-mode helper (`AGENTHUB_MODE=tools`) is started by the hub or by an agent the hub started, with the state dir and project dir set for exactly that purpose: the Claude implementer child and
+  // an external-module instance run in their own managed worktree and must reach the owning hub, as they always did. The daemon checks their launch id itself at the hello. The root check below is
+  // for a channel session, a person's `claude` that may merely have inherited a pair (review thread on #1037; agent-hub#1036 AC4).
+  if (env.AGENTHUB_MODE === "tools" && override && declared) return { root: canonicalPath(declared), stateDir: canonicalPath(override), inherited: true };
   // The origin label is left empty on purpose: the hub mints a short id, so no directory name reaches a header another agent reads.
   const asSession = (): ChannelProject | undefined => override
     ? { root: declared ? canonicalPath(declared) : "", stateDir: canonicalPath(override), inherited: false, session: { label: "" } } : undefined;

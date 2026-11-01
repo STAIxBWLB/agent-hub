@@ -117,3 +117,27 @@ test("against a hub that predates session_identity the same plugin connects to n
   expect(diagnostics).not.toContain("connected to hub");
 });
 
+// Review thread on #1037: a helper of an external-module instance (not in `readInstanceConfig` without the captured runtime definitions) runs in its managed worktree with the hub's state dir and
+// project dir set by the daemon, and the launch id of its owned launch. It must keep reaching the owning hub's tools, as a tools-mode peer, not take the worktree's own hub.
+test("a tools-mode helper of an extra instance started in its managed worktree keeps the owning hub, with the daemon's launch id (real plugin)", async () => {
+  const r = repos(), hellos: any[] = [];
+  const hub = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { return server.upgrade(req) ? undefined : new Response("ws only", { status: 400 }); },
+    websocket: { message(ws, raw) { const message = JSON.parse(String(raw)); if (message.t === "hello") { hellos.push(message); ws.send(JSON.stringify({ t: "welcome", rid: message.rid, ok: true, projectId: "main", instanceId: "main-instance", cwd: r.main, protocol: PROTOCOL, features: ["session_identity"] })); } else ws.send(JSON.stringify({ rid: message.rid, ok: true })); } } });
+  cleanup.push(() => hub.stop(true));
+  writeFileSync(join(r.stateDir, "status.json"), JSON.stringify({ protocol: PROTOCOL, controlPort: hub.port, projectId: "main", instanceId: "main-instance", cwd: r.main, features: ["session_identity"] }));
+  writeFileSync(join(r.stateDir, "control-token"), "fixture-token");
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: r.main, AGENTHUB_HOME: join(r.main, "hub-home"), AMEM_HOME: join(r.main, "memory-home"), CLAUDE_CONFIG_DIR: join(r.main, "claude-home"),
+    AGENTHUB_STATE_DIR: r.stateDir, AGENTHUB_PROJECT_DIR: r.main, AGENTHUB_PEER_ID: "fixture-1", AGENTHUB_MODE: "tools", AGENTHUB_LAUNCH_ID: "external-launch-0001", AGENTHUB_INSTANCE_ID: "main-instance" };
+  delete env.AGENTHUB_CHANNEL;
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/adapters/claude-channel.ts")], { cwd: r.worktree, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  let diagnostics = ""; const err = (async () => { for await (const data of child.stderr) diagnostics += Buffer.from(data).toString(); })();
+  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "t", version: "1" } } }) + "\n");
+  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+  for (let n = 0; n < 300 && !diagnostics.includes("connected to hub") && !diagnostics.includes("no hub running"); n++) await Bun.sleep(10);
+  child.stdin.end(); const timer = setTimeout(() => child.kill("SIGKILL"), 1500); await child.exited; clearTimeout(timer); await err;
+  expect(hellos, diagnostics).toHaveLength(1);                                                       // it reached the OWNING hub, not the worktree's own
+  expect(hellos[0]).toMatchObject({ role: "tools", peer: "fixture-1", launchId: "external-launch-0001" });
+  expect(hellos[0].session).toBeUndefined();                                                         // as the instance it is, not as a session
+  expect(diagnostics).toContain('connected to hub as "fixture-1"');
+});
+

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { realPath } from "../src/hub/project.ts";
+import { BasePeer } from "../src/hub/peers.ts";
 import { attachEvent, originOf, sameOrigin } from "../src/hub/provenance.ts";
 
 // #604 PR B item 11 and AC9: every envelope traces back to one connection, and an attach event is written per admitted hello. Real daemon, real sockets, real events.jsonl.
@@ -189,6 +190,31 @@ test("session_identity is its own recovery label", async () => {
   const refused = await request(person, "inspect", without);
   expect(refused.error, JSON.stringify(refused)).toContain("target lacks session_identity");
   expect((await request(person, "inspect", DAEMON_FEATURES)).error ?? "").not.toContain("session_identity");
+}, 30_000);
+
+// Review threads on #1037: a native peer's final answer is published by the adapter (`peer.onMessage` in `Bus.add`), not by the control `send` case, so it used to leave no provenance at all.
+class Answering extends BasePeer {
+  constructor(id: string, readonly ownedLaunchId?: string) { super(id); }
+  async start() { this.setState("idle"); }
+  async stop() { this.setState("offline"); }
+  async deliver() {}
+}
+test("an envelope an adapter publishes itself carries the origin of the sending peer and its owned launch id, and the hub's own writers carry none", async () => {
+  const r = await rig({ roster: { jcode: true }, roles: { claude: ["planner"], codex: ["implementer"] } });
+  const owned = new Answering("codex", "owned-launch-0001"), plain = new Answering("kimi");
+  r.daemon.bus.add(owned); r.daemon.bus.add(plain); await owned.start(); await plain.start();
+  owned.onMessage?.("ADAPTER_BODY_CANARY answer from the owned peer");
+  plain.onMessage?.("answer from a peer with no launch evidence");
+  await Bun.sleep(80);
+  const events = r.events().filter(event => event.type === "envelope");
+  expect(events.find(event => event.from === "codex")?.origin).toEqual({ role: "peer", peer: "codex", launch: "owned-launch-0001" });
+  expect(events.find(event => event.from === "kimi")?.origin).toEqual({ role: "peer", peer: "kimi" });         // no launch evidence: the peer, and nothing invented
+  const text = readFileSync(join(r.stateDir, "events.jsonl"), "utf8");
+  expect(text).not.toContain("ADAPTER_BODY_CANARY"); expect(text).not.toContain(r.root);
+  const person = await r.connect({ role: "console" });
+  await person.request({ t: "send", body: "from the person" });
+  await Bun.sleep(50);
+  expect(r.events().find(event => event.type === "envelope" && event.from === "user")?.origin).toEqual({ role: "console" });   // a control connection keeps its own origin, not the adapter rule
 }, 30_000);
 
 // Item 12 and AC10: the rule is in every managed block `ahub init` can write, so an agent in any profile reads it. A new block that drops it fails here.
