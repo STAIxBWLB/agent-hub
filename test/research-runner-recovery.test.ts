@@ -74,13 +74,17 @@ async function fixture(options: { receipt?: boolean; runners?: Record<string, Re
       await daemon!.stopped;
       client!.close();
       const targetConfig = loadConfig(root);
+      const snapshot = readRestartSnapshot(stateDir, { projectRoot: root, projectId: status.projectId, operationId });
+      expect(snapshot?.sourceInstanceId).toBe(status.instanceId);
       const prior = process.env.AGENTHUB_RECOVERY_OPERATION;
       process.env.AGENTHUB_RECOVERY_OPERATION = operationId;
       try {
-        daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, config: targetConfig });
+        daemon = await startDaemon({ cwd: root, stateDir, projectId: status.projectId, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, config: targetConfig });
       } finally { if (prior === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = prior; }
       client = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
       const targetStatus = (await client.request({ t: "status" })).status;
+      expect(targetStatus.projectId).toBe(status.projectId);
+      expect(targetStatus.instanceId).not.toBe(status.instanceId);
       return { daemon, client, status: targetStatus, acceptedResearch: targetConfig.research };
     };
     return { root, stateDir, configDir, client, status, close, restartTarget, acceptedResearch, withoutRunners: status.features.filter((feature: string) => feature !== "research_runners") };
