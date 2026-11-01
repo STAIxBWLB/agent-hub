@@ -3520,6 +3520,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // shared memory and a new task could be routed to a cloud peer without matching any pattern.
+    if (op === "hub_experiment_record" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_sdlc_metrics" || op.startsWith("hub_release_") || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new" || op === "hub_study_draft" || op === "hub_study_revise")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and shared memory. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
@@ -3737,6 +3738,8 @@ export async function startDaemon(opts: DaemonOptions) {
       // #602 (issue 932 T3): the read of the experiment records Tasks already keeps; it runs nothing and reads no file, and a private record is blanked inside the view.
       case "hub_experiment_show":
         return JSON.stringify(await tasks.experimentShow(by, a));
+      case "hub_experiment_record":
+        return JSON.stringify(await tasks.experimentRecord(by, a));
       case "hub_study_handoff":
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "handoff")) throw new PreEffectToolRefusal("study handoff takes only a handoff object");
         return JSON.stringify(await tasks.studyHandoff(by, a.handoff));

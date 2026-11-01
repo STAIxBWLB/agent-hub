@@ -301,6 +301,15 @@ Each slice amends this spec in its own PR if it must differ, and updates `docs/d
 
 **As built in the #602 PR (amended here, because the build differs from this row).** Built: `ahub study experiments` in its three closed forms, the read-only `hub_experiment_show` (a read for every local peer, in `STUDY_TOOLS`, the read-only tool lists and `SESSION_READ_OPS`), the synthetic CPU-only fixture `test/research-experiments-fixture.test.ts`, and the person-authored rerun checklist, which lives in `docs/operations.md` ("Experiment readback") with a pointer from `docs/profiles.md`. Not built, and not needed for AC5 or AC6: `ahub study attest`, `ahub study receipt` and the `hub_experiment_record` tool. `Tasks.experimentRecord` and its receipt kind exist and are tested, but no tool, daemon case or CLI calls them yet, so until that slice lands the readback shows only what a test or a later slice recorded. Each of those writers needs its own authority review (person-only attest and receipt, task-owner record) and is a separate change.
 
+**Task 615 record relay.** `hub_experiment_record` passes the whole inert envelope to
+`Tasks.experimentRecord` with the authenticated caller identity. Its five existing kinds are `protocol`,
+`plan`, `attempt`, `event` and `receipt`. Ordinary records require the current in-progress owner of a bound
+unit in the current approved campaign; the person may relay a signed runner receipt through the existing
+`USER` branch. This is not a new attestation or approval authority. All PII turns refuse before dispatch,
+read-only callers cannot mutate, and arguments/results are excluded from hub-managed memory capture.
+The relay returns the method's bounded record metadata only and performs no execution, signing or
+verification itself. `ahub study attest` and `ahub study receipt` remain separate, unimplemented forms.
+
 ## Departures from the issues
 
 - Runner registration is person only in V1. #1018 proposed "the person or conductor". A public key is a trust root, so the conductor path is deferred until a reviewed change gives it the same confirmation as other trust settings.

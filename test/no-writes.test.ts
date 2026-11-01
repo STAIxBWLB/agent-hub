@@ -197,3 +197,18 @@ test("#498 a valid project-bound shadow repository has known sole-worktree scope
     expect(() => soleWorktree(repo)).toThrow();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("#615 every experiment metadata kind is an owner-turn effect while experiment show remains a read", async () => {
+  const { ownerToolEffect } = await import("../src/hub/no-writes.ts");
+  for (const kind of ["protocol", "plan", "attempt", "event", "receipt"]) expect(ownerToolEffect("hub_experiment_record", { kind }), kind).toBe(true);
+  expect(ownerToolEffect("hub_experiment_record", undefined)).toBe(true); // Pending/refused writes remain conservative host effects.
+  expect(ownerToolEffect("hub_experiment_show", { attemptId: "ra-0123456789ab" })).toBe(false);
+});
+
+test("#615 a metadata receipt write resets a proven no-file-write streak", async () => {
+  const { ownerToolEffect } = await import("../src/hub/no-writes.ts"), turns = await counter();
+  expect(observe(turns)).toBeUndefined();
+  expect(observe(turns, { effect: ownerToolEffect("hub_experiment_record", { kind: "receipt" }) })).toBeUndefined();
+  expect(observe(turns)).toBeUndefined(); expect(observe(turns)).toBe(2);
+});
