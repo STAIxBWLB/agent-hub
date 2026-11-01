@@ -4995,6 +4995,9 @@ var init_jcode = __esm(() => {
       this.socket = socket;
       this.launchId = launchId;
     }
+    get ownedLaunchId() {
+      return this.ending ? undefined : this.launchId;
+    }
     ownsLaunch(launchId) {
       return !this.ending && typeof launchId === "string" && launchId === this.launchId;
     }
@@ -32174,6 +32177,8 @@ import { existsSync as existsSync9 } from "fs";
 import { join as join32 } from "path";
 function channelProject(cwd, env, policyRoles) {
   const override = env.AGENTHUB_STATE_DIR?.trim(), declared = env.AGENTHUB_PROJECT_DIR?.trim();
+  if (env.AGENTHUB_MODE === "tools" && override && declared)
+    return { root: canonicalPath(declared), stateDir: canonicalPath(override), inherited: true };
   const asSession = () => override ? { root: declared ? canonicalPath(declared) : "", stateDir: canonicalPath(override), inherited: false, session: { label: "" } } : undefined;
   let own;
   try {
