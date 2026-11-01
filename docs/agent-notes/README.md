@@ -65,3 +65,5 @@ Background moved out of the area notes for 0.21.0:
 - Web fetch transport (#553, tests.md): the daemon test's answer waited on iana.org for 99 percent of its time and failed about 3 of 100 runs at 30 parallel on a 4 s bound; a longer wait would only have measured the network.
 - Jcode usage (#801, budget.md): Jcode's `totalTokens` adds the cached read on top of an input that already holds it for OpenAI-style providers, and `jcode usage --json` names its limit with free text and no window length.
 - Claim verdicts (#901, tasks.md): review of #937 found `factCheck.agreement` counting person-verdict frequencies, which is why a person verdict alone is never an agreement.
+
+Issue #1047 records approved tasks that could not accept a new head or a withdrawn verdict on hub 0.23.1. The prior in-review-only rule left the board bound to an older commit while reviewers handled later PR heads in comments. The approval reopening rules in tasks.md replace that restriction; fixture coverage includes a legacy receipt-only approval, a configured check without a prior reviewer, and a PR merged while a screen is pending.
