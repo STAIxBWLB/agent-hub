@@ -4456,6 +4456,22 @@
       "replacement": "false",
       "testFile": "test/conductor-recovery-reconnect.test.ts",
       "testName": "reconnect-only source authority refuses changed restore-session after a fresh plan fingerprint"
+    },
+    {
+      "id": "runner-release-stored-integrity",
+      "file": "src/hub/daemon.ts",
+      "search": "const researchRunners = board.runnerReceiptIntegrity();",
+      "replacement": "const storedRunners = board.runnerReceiptIntegrity(); const researchRunners = { count: storedRunners.count, digest: digest({ receipts: storedRunners.digest, runners: config.research.runners ?? null }) };",
+      "testFile": "test/research-runner-recovery.test.ts",
+      "testName": "stored receipt runner integrity survives a two-daemon recovery with a pending raw revocation"
+    },
+    {
+      "id": "runner-release-config-only-absence",
+      "file": "src/hub/daemon.ts",
+      "search": "...(researchRunners.count ? { researchRunners } : {})",
+      "replacement": "...(researchRunners.count || config.research.runners !== undefined ? { researchRunners } : {})",
+      "testFile": "test/research-runner-recovery.test.ts",
+      "testName": "a two-daemon recovery releases a legacy runner-free integrity snapshot despite a raw runner key"
     }
   ]
 }

@@ -906,8 +906,10 @@ the signed fields, mount/output names, signer identity and key details.
 The first stored attestation, its event and the `hub.db` format-2 marker commit in
 one transaction; unused databases keep the format-1 baseline. Recovery requires
 `research_runners` for stored receipts or raw/accepted registration presence,
-including empty blocks. Its integrity digest covers stored proofs and accepted
-registrations without replacing the earlier research recovery guards. Fixtures
+including empty blocks. Its release-equality integrity digest covers stored proofs only and is present
+only when receipts exist. Accepted registrations remain configuration, governed by
+the feature floor and the config-reload path; pending edits do not change the
+board-state equality required for release. Earlier research guards remain intact. Fixtures
 use test key pairs with no GPU, runner network request or live account.
 
 ## Cross-project task handoff (#604, #1030)

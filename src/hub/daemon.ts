@@ -4453,11 +4453,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const researchDispatch = board.researchDispatchIntegrity();
     const researchExperiments = board.researchExperimentsIntegrity();
     const researchComparisons = board.researchComparisonIntegrity();
-    const runnerReceipts = board.runnerReceiptIntegrity();
-    let runnersConfigured = config.research.runners !== undefined;
-    try { runnersConfigured ||= rawResearchRunnersPresent(opts.cwd); } catch { /* Unknown raw compatibility is refused by the target-feature gate. */ }
-    const researchRunners = { count: runnerReceipts.count, digest: digest({ receipts: runnerReceipts.digest, runners: config.research.runners ?? null, configured: runnersConfigured }) };
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(runnerReceipts.count || runnersConfigured ? { researchRunners } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    const researchRunners = board.runnerReceiptIntegrity();
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
