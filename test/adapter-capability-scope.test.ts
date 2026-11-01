@@ -5,7 +5,7 @@ function external(): AdapterDefinition {
   // A generic ACP fixture does not inherit the builtin-only catalog or native CLI projections.
   const { projection: _projection, cli, ...base } = definitionOf("qwen")!;
   const { entry: _entry, preview: _preview, usage: _usage, ...genericCli } = cli ?? {};
-  const { createTui: _createTui, ...start } = base.start; // the Qwen TUI driver (#286 Part 3) is a fixed-builtin capability too
+  const { createTui: _createTui, upStart: _upStart, ...start } = base.start; // the Qwen TUI driver (#286 Part 3) and which kinds `ahub up` may start (#608) are fixed-builtin capabilities too
   return { ...base, cli: genericCli, kind: "fixture", family: "fixture", start: { ...start }, session: { idField: base.session.idField, currentId: base.session.currentId } };
 }
 
@@ -18,6 +18,7 @@ for (const [field, set] of [
   ["start.daemonPort pi-rpc", (definition: AdapterDefinition) => { definition.start.daemonPort = "pi-rpc"; }],
   ["start.daemonPort qwen-dual", (definition: AdapterDefinition) => { definition.start.daemonPort = "qwen-dual"; }],
   ["start.createTui", (definition: AdapterDefinition) => { definition.start.createTui = () => { throw new Error("fixture"); }; }],
+  ["start.upStart", (definition: AdapterDefinition) => { definition.start.upStart = { allowed: true, default: true }; }], // #608: a declared kind cannot put itself in the default start set
   ["routing", (definition: AdapterDefinition) => { definition.routing = { preferredTier: true }; }],
   ["reviewerVariant", (definition: AdapterDefinition) => { definition.reviewerVariant = { ...definition }; }],
   ["instances.nativeHome", (definition: AdapterDefinition) => { definition.instances = { mode: "headless", nativeHome: true }; }],

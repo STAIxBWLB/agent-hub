@@ -76,7 +76,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     projection: { roleRank: 0, helpRank: 0, plannerEligible: true },
     api: 1, kind: "claude", displayName: "Claude Code", family: "claude", transport: "claude-channel",
     roles: Object.freeze(["planner", "reviewer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
-    start: { forms: Object.freeze(["tui"] as const), defaultForm: "tui", launch: claudeNativeLaunch, version: claudeObservedVersion, ...CLAUDE_LAUNCH_POLICY, conductorStartable: true,
+    start: { forms: Object.freeze(["tui"] as const), defaultForm: "tui", launch: claudeNativeLaunch, version: claudeObservedVersion, ...CLAUDE_LAUNCH_POLICY, conductorStartable: true, upStart: { allowed: true, default: true },
       unattended: true, hubSwitches: switches, ownedFlags: Object.freeze(["--dangerously-load-development-channels", "--dangerously-skip-permissions"]) },
     identity: { mcp: "channel-plugin" }, instances: { mode: "external", roles: ["planner", "implementer", "verifier", "reviewer"] }, attach: { externalHello: true, recoveryLaunch: claudeRecoveryLaunch },
     // Approval enforcement belongs to the verified native transport and host permission gate.
@@ -93,7 +93,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     projection: { roleRank: 1, startRank: 1, helpRank: 1, plannerEligible: true },
     api: 1, kind: "codex", displayName: "Codex", family: "codex", transport: "codex-appserver",
     roles: Object.freeze(["implementer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
-    start: { create: createCodex, daemonPort: "codex-appserver", forms: dualForms, defaultForm: "tui", launch: codexNativeLaunch, version: codexObservedVersion, ...CODEX_LAUNCH_POLICY, conductorStartable: true,
+    start: { create: createCodex, daemonPort: "codex-appserver", forms: dualForms, defaultForm: "tui", launch: codexNativeLaunch, version: codexObservedVersion, ...CODEX_LAUNCH_POLICY, conductorStartable: true, upStart: { allowed: true, default: true },
       unattended: true, hubSwitches: switches, ownedFlags: Object.freeze(["--remote", "--remote-auth-token-env", "--yolo", "--dangerously-bypass-approvals-and-sandbox"]) },
     identity: { mcp: "env" }, instances: { mode: "headless" },
     permission: { trackUnattended: true, grants: { ask: "the session's own approval policy applies again", "ask-when-needed": "approval policy on-request on every turn", "never-ask": "approval policy never on every turn: nothing asks" } },
@@ -106,7 +106,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     projection: { roleRank: 2, startRank: 2, helpRank: 2, plannerEligible: true },
     api: 1, kind: "kimi", displayName: "Kimi Code", family: "kimi", transport: "acp",
     roles: implementerRoles, defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
-    start: { create: createKimi, acpCommand: kimiAcpCommand, explicitHeadlessMode: true, planCommand: () => "ahub kimi", daemonPort: "acp", forms: dualForms, defaultForm: "tui", conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+    start: { create: createKimi, acpCommand: kimiAcpCommand, explicitHeadlessMode: true, planCommand: () => "ahub kimi", daemonPort: "acp", forms: dualForms, defaultForm: "tui", conductorStartable: true, upStart: { allowed: true }, hubSwitches: [], ownedFlags: [] },
     // ACP sessions carry headless identity; the existing CLI alone owns the TUI's project MCP entry.
     identity: { mcp: "acp-session" }, instances: { mode: "headless" }, attach: { pullOnlyForms: Object.freeze(["tui"] as const), recoveryLaunch: kimiRecoveryLaunch,
       pullOnlyNotice: "pull-only: messages wait for hub_inbox; no push, steer, watchdog or automatic quota handoff",
@@ -121,7 +121,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     projection: { roleRank: 4, startRank: 0, helpRank: 6, plannerEligible: false },
     api: 1, kind: "pi", enabledSwitchStartOnly: true, displayName: "Pi", family: "pi", transport: "hub-native",
     roles: implementerRoles, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: true },
-    start: { create: createPi, exclusiveStartRefusal: "Pi start is in progress; inspect status before retrying", refreshTools: true, explicitHeadlessMode: true, daemonPort: "pi-rpc", forms: dualForms, defaultForm: "tui", conductorStartable: true, autoStart: "pi.auto_start", conductorStartArgs: piConductorStartArgs, hubSwitches: [], ownedFlags: [] },
+    start: { create: createPi, exclusiveStartRefusal: "Pi start is in progress; inspect status before retrying", refreshTools: true, explicitHeadlessMode: true, daemonPort: "pi-rpc", forms: dualForms, defaultForm: "tui", conductorStartable: true, upStart: { allowed: true }, autoStart: "pi.auto_start", conductorStartArgs: piConductorStartArgs, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env" }, instances: { mode: "headless" },
     // Approval enforcement belongs to the verified native transport and host permission gate.
     permission: { grants: { ...hubGrants } },
@@ -134,7 +134,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     projection: { roleRank: 3, helpRank: 7, plannerEligible: false },
     api: 1, kind: "local", displayName: "Local worker", family: "local", transport: "hub-native",
     roles: implementerRoles, defaultOnRoster: true, trust: { onPrem: true, hubSandboxed: true },
-    start: { create: createLocal, reconfigureWhileAttached: true, refreshTools: true, daemonPort: "local-worker", forms: headlessForms, defaultForm: "headless", conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+    start: { create: createLocal, reconfigureWhileAttached: true, refreshTools: true, daemonPort: "local-worker", forms: headlessForms, defaultForm: "headless", conductorStartable: true, upStart: { allowed: true }, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env" }, instances: { mode: "headless" },
     // Approval enforcement belongs to the verified native transport and host permission gate.
     permission: { grants: { ...hubGrants } },
@@ -147,7 +147,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     projection: { roleRank: 6, startRank: 3, helpRank: 3, plannerEligible: true },
     api: 1, kind: "jcode", displayName: "Jcode", family: "jcode", transport: "acp",
     roles: implementerRoles, optional: true, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: false },
-    start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: dualForms, defaultForm: "tui", explicitHeadlessMode: true, conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+    start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: dualForms, defaultForm: "tui", explicitHeadlessMode: true, conductorStartable: true, upStart: { allowed: true }, hubSwitches: [], ownedFlags: [] },
     // #685: an extra Jcode is a headless instance with its own native home, socket and state (instances.<id>.jcode_home).
     identity: { mcp: "project-file" }, instances: { mode: "headless", nativeHome: true },
     permission: { unmanaged: "Jcode native policy is unmanaged; no hub mode mapping", grants: {

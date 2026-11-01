@@ -201,6 +201,7 @@ import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContin
 import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate, launcherOf } from "../cli/terminal-recovery.ts";
 import { TerminalLaunches, terminalOwnerReads } from "./terminal-launch.ts";
 
+import { START_AGENTS_DEFAULT, checkStartAgents } from "./start-agents.ts";
 import { peerStartConfig, PEER_START_RETRY_MS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
 import { hasKimiHubMcp } from "../cli/kimi-mcp.ts";
 import type { TerminalOpener } from "./terminal-open.ts";
@@ -290,6 +291,8 @@ export interface HubConfig {
   peers: PeerStartConfig;
   /** #269: a machine-local argv that opens a terminal for a hub-made TUI start; `{command}` in one element is the command to run. */
   terminal: { open: string[] };
+  /** #608: the peers `ahub up` asks the hub to start, machine-local. Read by the CLI at a person's `ahub up` and by the dashboard manager's start; the daemon itself never starts one from it. */
+  start: { agents: string[] };
   /** Per-sender rate limits and repeat suppression for what agents send (issue #38). */
   limits: LimitsConfig;
   /** Reviewer choice from recorded review outcomes, once a reviewer has `min_reviews` of an implementer (issue #35). */
@@ -355,6 +358,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   bench: { enabled: false },
   peers: {},
   terminal: { open: [] },
+  start: { agents: [...START_AGENTS_DEFAULT] },
   limits: DEFAULT_LIMITS,
   review: { adaptive: false, min_reviews: 5 },
   recovery: { auto_resume_after_crash: false, reconnect_wait_s: RECOVERY_RECONNECT_WAIT_SETTING.defaultValue, unmanaged_reconnect_wait_s: RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING.defaultValue, control_timeout_s: RECOVERY_CONTROL_TIMEOUT_SETTING.defaultValue, shutdown_wait_s: RECOVERY_SHUTDOWN_WAIT_SETTING.defaultValue, terminal_idle_wait_s: RECOVERY_TERMINAL_IDLE_WAIT_SETTING.defaultValue },
@@ -372,7 +376,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
+const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
 export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[], scope: Pick<ReturnType<typeof readInstanceConfig>, "instances" | "catalog"> = readInstanceConfig(cwd, layers)): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string | string[]; notices?: string[] } {
@@ -480,6 +484,8 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     peerStartConfig(file.peers, instances, adapterCatalog);
     if (file.terminal != null && (typeof file.terminal !== "object" || Array.isArray(file.terminal))) throw new Error("terminal must be an object");
     terminalTemplate(file.terminal?.open);
+    if (file.start != null && (typeof file.start !== "object" || Array.isArray(file.start) || Object.keys(file.start).some((key: string) => key !== "agents"))) throw new Error("start must be an object with an agents list");
+    if (file.start?.agents !== undefined) checkStartAgents(file.start.agents);
     if (file.pet !== undefined) validatePetConfig(file.pet, "config.pet");
     if (file.pet && typeof file.pet === "object" && !Object.keys(file.pet).length) delete file.pet;
     delete file.declaredExternalInstances; // host-derived refusal rows, never a file claim
@@ -581,6 +587,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     bench: { enabled: file.bench?.enabled === true }, // opt-in: a run resets this project's work tree
     peers: { ...instanceModes, ...peerStartConfig(file.peers, instances, adapterCatalog) },
     terminal: { open: terminalTemplate(file.terminal?.open) },
+    start: { agents: file.start?.agents === undefined ? [...START_AGENTS_DEFAULT] : checkStartAgents(file.start.agents) },
     limits: { ...PROJECT_LIMITS, ...file.limits }, // on with any project config (issue #38)
     review: { ...DEFAULT_CONFIG.review, ...file.review },
     recovery: { ...DEFAULT_CONFIG.recovery, ...file.recovery },
