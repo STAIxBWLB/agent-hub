@@ -122,6 +122,61 @@ export function verifyRecoveryTarget(kind: "restart" | "upgrade", root: string, 
   return verifyPackage(root, version, recoveryPackageOptions(kind, root));
 }
 
+const RUNTIME_ASSETS = ["src", "plugins", "templates", ".claude-plugin", "package.json", "README.md", "LICENSE", "CHANGELOG.md"] as const;
+function runtimeDirectory(directory: string): void {
+  let info;
+  try { info = lstatSync(directory); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    mkdirSync(directory, { mode: 0o700 }); info = lstatSync(directory);
+  }
+  if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("runtime cache must contain real directories");
+}
+
+/** Capture only executable package assets and the exact first-party dependency, never a node_modules tree. */
+export function preserveRuntimePackage(sourceRoot: string, destination: string, expectedDigest: string): { root: string; digest: string; version: string } {
+  const version = exactVersion(JSON.parse(readFileSync(join(sourceRoot, "package.json"), "utf8")).version);
+  if (verifyPackage(sourceRoot, version) !== expectedDigest) throw new Error("source package changed before preservation");
+  runtimeDirectory(dirname(destination));
+  const cached = () => {
+    let info;
+    try { info = lstatSync(destination); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+    if (info.isSymbolicLink() || !info.isDirectory() || verifyPackage(destination, version, { ownDependencies: true }) !== expectedDigest)
+      throw new Error("preserved runtime changed; refusing it");
+    return { root: realPath(destination), digest: expectedDigest, version };
+  };
+  const previous = cached(); if (previous) return previous;
+  const temporary = join(dirname(destination), `.source-${randomUUID()}`);
+  mkdirSync(temporary, { mode: 0o700 });
+  try {
+    for (const name of RUNTIME_ASSETS) cpSync(join(sourceRoot, name), join(temporary, name), { recursive: true, dereference: false });
+    preserveRuntimeDependencies(sourceRoot, temporary);
+    if (verifyPackage(temporary, version, { ownDependencies: true }) !== expectedDigest || verifyPackage(sourceRoot, version) !== expectedDigest)
+      throw new Error("source package changed while being preserved");
+    try { renameSync(temporary, destination); }
+    catch (error) {
+      if (!["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      // A concurrent publisher may have won. Validate its complete bytes; never remove its directory.
+      const winner = cached(); if (winner) return winner;
+      throw error;
+    }
+    const published = cached();
+    if (!published) throw new Error("preserved runtime vanished after publication");
+    return published;
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+}
+
+/** Ordinary startup preserves the invoking package, including unpublished builds, below its version namespace. */
+export function stageCurrentRuntime(sourceRoot: string, version: string, home = hubHome()): { root: string; digest: string; version: string } {
+  exactVersion(version);
+  const digest = verifyPackage(sourceRoot, version);
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const releases = join(realPath(home), "releases"); runtimeDirectory(releases);
+  const versionRoot = join(releases, version); runtimeDirectory(versionRoot);
+  return preserveRuntimePackage(sourceRoot, join(versionRoot, `source-${digest}`), digest);
+}
+
 export async function registryRelease(version: string, run: RunCommand = runCommand): Promise<{ version: string; integrity: string }> {
   exactVersion(version);
   const result = await run(["npm", "view", `@staix/agent-hub@${version}`, "version", "dist.integrity", "--json"], { timeoutMs: 30_000 });

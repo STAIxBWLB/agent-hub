@@ -1,5 +1,6 @@
 import { chmodSync } from "node:fs";
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
+import { openHubDatabase } from "../hub/db-schema.ts";
 import { createHash } from "node:crypto";
 import { PreEffectToolRefusal } from "../hub/tool-refusal.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "../hub/db-timeout.ts";
@@ -27,7 +28,7 @@ export class PiToolReceipts {
   private closed = false;
   private readonly pending = new Map<string, Promise<string>>();
   constructor(file: string) {
-    this.db = new Database(file, { create: true });
+    this.db = openHubDatabase(file, { create: true });
     this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     chmodSync(file, 0o600);
     this.db.run(`CREATE TABLE IF NOT EXISTS pi_tool_receipts (

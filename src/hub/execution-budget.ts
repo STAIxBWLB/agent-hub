@@ -1,5 +1,6 @@
 import { definitionOf, type KindMap } from "../adapters/registry.ts";
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
+import { openHubDatabase } from "./db-schema.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 
 export type ExecutionUnit = "model_calls" | "tool_calls" | "elapsed_ms" | "tokens";
@@ -43,7 +44,7 @@ const validLimits = (raw: ExecutionBudgetLimits): ExecutionBudgetLimits => {
 export class ExecutionBudget {
   private readonly db: Database;
   constructor(path: string, private readonly instances?: KindMap) {
-    this.db = new Database(path, { create: true });
+    this.db = openHubDatabase(path, { create: true });
     this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run(`CREATE TABLE IF NOT EXISTS execution_budgets (

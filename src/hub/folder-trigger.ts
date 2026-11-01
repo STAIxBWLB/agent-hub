@@ -1,4 +1,5 @@
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
+import { openHubDatabase } from "./db-schema.ts";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
@@ -169,7 +170,7 @@ export interface FolderSeenRow { trigger: string; real_path: string; size: numbe
 export class FolderStore {
   private readonly db: Database;
   constructor(dbPath: string) {
-    this.db = new Database(dbPath, { create: true });
+    this.db = openHubDatabase(dbPath, { create: true });
     this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run("CREATE TABLE IF NOT EXISTS folder_seen (trigger TEXT NOT NULL, real_path TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL, sha256 TEXT NOT NULL, task INTEGER, at INTEGER NOT NULL, PRIMARY KEY (trigger, real_path, sha256))");
     this.db.run("CREATE INDEX IF NOT EXISTS folder_seen_hash ON folder_seen (trigger, sha256)");

@@ -1,4 +1,5 @@
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
+import { openHubDatabase } from "./db-schema.ts";
 import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -657,7 +658,7 @@ export function submodulePaths(repo: Repo): string[] {
 export class Turns {
   private readonly db: Database;
   constructor(path: string, readonly?: boolean) {
-    this.db = new Database(path, readonly ? { readonly: true } : { create: true });
+    this.db = openHubDatabase(path, readonly ? { readonly: true } : { create: true });
     this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     if (readonly) return;
     this.db.run("PRAGMA journal_mode = WAL");

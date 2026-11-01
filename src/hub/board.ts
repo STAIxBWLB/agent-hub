@@ -8,7 +8,8 @@ import { planFingerprint } from "./plan-conformance.ts";
 import type { PlannerReason } from "./routing.ts";
 import type { ReviewerPoolReason } from "./reviewer-pool.ts";
 import type { GitHubSource } from "./github-import.ts";
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
+import { openHubDatabase } from "./db-schema.ts";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { HUB, USER, type PeerId } from "./envelope.ts";
 import type { SweepRecord } from "./task-sweep.ts";
@@ -403,7 +404,7 @@ export class Board {
   }
 
   constructor(path: string) {
-    this.db = new Database(path, { create: true });
+    this.db = openHubDatabase(path, { create: true });
     this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run(`CREATE TABLE IF NOT EXISTS tasks (

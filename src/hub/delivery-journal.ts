@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
+import { openHubDatabase } from "./db-schema.ts";
 import type { BusSnapshot } from "./bus.ts";
 import type { QueuePressure } from "./queue-backpressure.ts";
 import { HUB, KINDS, USER, type Envelope, type Kind } from "./envelope.ts";
@@ -282,7 +283,7 @@ export class DeliveryJournal {
     this.operationId = options.operationId;
     this.terminalHistoryLimit = options.terminalHistoryLimit;
     mkdirSync(dirname(options.file), { recursive: true, mode: 0o700 });
-    this.db = new Database(options.file, { create: true });
+    this.db = openHubDatabase(options.file, { create: true });
     this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.harden();
     this.db.run("PRAGMA journal_mode = WAL");

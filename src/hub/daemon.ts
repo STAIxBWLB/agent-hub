@@ -176,7 +176,8 @@ import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts"
 import { DeliveryJournal } from "./delivery-journal.ts";
 import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { codeGroup } from "./task-code-group.ts";
-import { ControlClient, DAEMON_FEATURES, PROTOCOL, readControl, stateDirFor } from "./control-client.ts";
+import { ControlClient, DAEMON_FEATURES, PROTOCOL, PROTOCOL_MIN, readControl, stateDirFor } from "./control-client.ts";
+import { negotiateProtocol, protocolWindow } from "./protocol-window.ts";
 import { attachEvent, originOf, type Origin } from "./provenance.ts";
 import { mintSessionId, sessionGate } from "./session-identity.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
@@ -698,6 +699,7 @@ export interface DaemonOptions {
 
 interface Client {
   authed: boolean;
+  protocol?: number;
   role?: "peer" | "console" | "tools";
   peer?: PeerId;
   /** agent-hub#1036: this connection is a distinct session; `peer` is the id the daemon minted for it (`<peer>~<origin>`), never a bus peer. */
@@ -4512,7 +4514,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(lifecycleConfig.mode !== "off" ? { lifecycleCriteria: true } : {}),
     // Every supported peer's membership, for launchers that run outside the console role (#484).
     roster: [...KNOWN_PEERS, ...OPTIONAL_PEERS].map(peer => ({ peer, on: onRoster(peer) })),
-    protocol: PROTOCOL,
+    protocol: PROTOCOL_MIN, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL,
     features: DAEMON_FEATURES,
     configuredAdapters: configuredIds,
     ...(externalAdapters.length ? { externalAdapters } : {}),
@@ -7906,7 +7908,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!c.authed) {
       if (msg.t !== "hello" || msg.token !== token) return sock.close(4401, "bad token");
       if (typeof msg.peer === "string" && msg.peer.includes("@")) return sock.close(4403, "remote identities have no control connection");
-      if (msg.v !== PROTOCOL) {
+      const offered = protocolWindow(msg.v, msg.vMin), selectedProtocol = offered && negotiateProtocol({ v: PROTOCOL, vMin: PROTOCOL_MIN }, offered);
+      if (selectedProtocol === undefined) {
         // An outdated plugin would drop every digest without a trace. Refuse it loudly instead.
         log(`refused ${msg.role} ${msg.peer ?? ""}: wire version ${msg.v ?? 1}, hub speaks ${PROTOCOL} (claude plugin update agent-hub@agent-hub)`);
         return sock.close(4426, `wire version mismatch: hub speaks ${PROTOCOL}; update the agent-hub plugin`);
@@ -7917,6 +7920,7 @@ export async function startDaemon(opts: DaemonOptions) {
       try { refreshConductorPolicy(); } catch { return sock.close(4403, "invalid conductor role/feed configuration"); }
       if (stopping && msg.role !== "console") return sock.close(1013, "hub is stopping");
       c.authed = true;
+      c.protocol = selectedProtocol;
       c.role = msg.role;
       if (c.role === "console") consoles.add(sock);
       else if (c.role === "tools" && sessionHello(msg)) {
@@ -8003,7 +8007,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       // #604 PR B: one attach event per admitted peer or tools hello, with the same fields an envelope's `origin` carries. A refused hello returned above and writes none.
       if (c.role === "peer" || c.role === "tools") event(attachEvent({ role: c.role, peer: c.peer, launchId: c.launchId, ...(c.session ? { session: true } : {}) }));
-      return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL, features: DAEMON_FEATURES, ...(c.session ? { session: c.peer } : {}) });
+      return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: c.protocol, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, features: DAEMON_FEATURES, ...(c.session ? { session: c.peer } : {}) });
     }
     const committedSourceProof = c.role === "tools" && msg.t === "recovery_authority" && msg.op === "verify" && recoveryCommitted
       && msg.binding?.operationId === recoveryOperationId && msg.binding?.sourceInstanceId === instanceId;

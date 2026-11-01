@@ -1,5 +1,6 @@
 import { definitionOf, type KindMap, type ProjectAdapterCatalog } from "../adapters/registry.ts";
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
+import { openHubDatabase } from "./db-schema.ts";
 import type { Task } from "./board.ts";
 import { CONDUCTOR_TOOL_NAMES } from "./hub-tools.ts";
 import { HUB, sanitize, USER } from "./envelope.ts";
@@ -72,7 +73,7 @@ export interface ConductorHold { peer: string; actor: string; since: number }
 export class ConductorHolds {
   private readonly db: Database;
   constructor(dbPath: string, private readonly now: () => number = Date.now) {
-    this.db = new Database(dbPath, { create: true });
+    this.db = openHubDatabase(dbPath, { create: true });
     this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run("CREATE TABLE IF NOT EXISTS conductor_holds (peer TEXT PRIMARY KEY, actor TEXT NOT NULL, since INTEGER NOT NULL)");
     this.db.run("CREATE TABLE IF NOT EXISTS supervision_rounds (peer TEXT PRIMARY KEY, signature TEXT NOT NULL)");

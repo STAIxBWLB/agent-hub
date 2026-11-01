@@ -8,14 +8,14 @@ import { readAdapterModuleDeclarations } from "../adapters/external-modules.ts";
 import { configRefusal } from "../hub/config-trust.ts";
 import { validExternalInstanceBinding } from "../hub/external-instance.ts";
 import { isDatabaseBusy, isDatabaseBusyReply, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { ControlClient, PROTOCOL, RECOVERY_SOURCE_PROTOCOLS, readControl } from "../hub/control-client.ts";
 import { awaitStopped, inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
-import { packageDigest, preserveRuntimeDependencies, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
+import { packageDigest, preserveRuntimePackage, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectSavedTerminal, inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
 import { ReattachmentRequired, MissingRecordedSession, FinalRefusal, planFingerprint, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
 import { SHARED_CHANNEL_VERSION_ARGV, nativeRecordedSessionState } from "../adapters/definitions/native-recovery.ts";
@@ -398,23 +398,8 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
 export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
   if (packageDigest(plan.sourceRoot) !== plan.sourceDigest) throw new Error("source package changed since planning");
   const base = join(home, "releases");
-  const dest = join(base, `source-${plan.sourceDigest}`);
-  if (existsSync(dest)) {
-    if (packageDigest(dest, { ownDependencies: true }) !== plan.sourceDigest) throw new Error("preserved source package changed");
-    return dest;
-  }
   mkdirSync(base, { recursive: true, mode: 0o700 });
-  const temporary = join(base, `.source-${randomUUID()}`);
-  mkdirSync(temporary, { mode: 0o700 });
-  try {
-    for (const name of ["src", "plugins", "templates", ".claude-plugin", "package.json", "README.md", "LICENSE", "CHANGELOG.md"]) {
-      cpSync(join(plan.sourceRoot, name), join(temporary, name), { recursive: true, dereference: false });
-    }
-    preserveRuntimeDependencies(plan.sourceRoot, temporary);
-    if (packageDigest(temporary, { ownDependencies: true }) !== plan.sourceDigest) throw new Error("source changed while being preserved");
-    renameSync(temporary, dest);
-  } finally { rmSync(temporary, { recursive: true, force: true }); }
-  return dest;
+  return preserveRuntimePackage(plan.sourceRoot, join(base, `source-${plan.sourceDigest}`), plan.sourceDigest).root;
 }
 
 const unboundRecoveryInspection = inspectRecovery;
