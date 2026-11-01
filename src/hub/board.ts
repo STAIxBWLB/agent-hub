@@ -1,6 +1,6 @@
 import { canonicalJson } from "./packs.ts";
-import { parseExperimentProtocol, protocolHash, parseExperimentAttempt, parseExperimentEvent, parseExperimentHostEvidence, experimentStatus, projectExperimentWithObservations,
-  type ExperimentProtocolRecord, type ExperimentAttemptRecord, type ExperimentEventRecord, type ExperimentWriteFence, type DeclaredExperimentEventInput, type ExperimentHostEvidence, type ExperimentStatus } from "./research-experiments.ts";
+import { parseComparisonPlan, comparisonPlanHash, evaluatorIdentityHash, parseExperimentProtocol, protocolHash, parseExperimentAttempt, parseExperimentEvent, parseExperimentHostEvidence, experimentStatus, projectExperimentWithObservations,
+  type ComparisonPlanV1, type ExperimentProtocolRecord, type ExperimentAttemptRecord, type ExperimentEventRecord, type ExperimentWriteFence, type DeclaredExperimentEventInput, type ExperimentHostEvidence, type ExperimentStatus } from "./research-experiments.ts";
 import type { InvocationRow } from "./invocations.ts";
 import { HOST_CODE_SYMBOLS, parseTaskCodeSymbols, type TaskCodeSymbols } from "./task-code-symbols.ts";
 import { createHash } from "node:crypto";
@@ -10,7 +10,7 @@ import type { ReviewerPoolReason } from "./reviewer-pool.ts";
 import type { GitHubSource } from "./github-import.ts";
 import { Database } from "bun:sqlite";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
-import { HUB, type PeerId } from "./envelope.ts";
+import { HUB, USER, type PeerId } from "./envelope.ts";
 import type { SweepRecord } from "./task-sweep.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import type { SdlcReceipt } from "./sdlc.ts";
@@ -87,6 +87,22 @@ function researchCampaignFromRow(row: ResearchCampaignRow): ResearchCampaignReco
       ...(row.closed_by !== null ? { closedBy: row.closed_by } : {}), ...(row.closed_at !== null ? { closedAt: row.closed_at } : {}), ...(row.closed_reason !== null ? { closedReason: row.closed_reason } : {}) });
   } catch { throw researchFailure(); }
 }
+
+export interface ExperimentComparisonPlanRecord {
+  hash: string;
+  project: string;
+  recordedForTaskId: number;
+  plan: ComparisonPlanV1;
+  by: PeerId;
+  at: number;
+  private: boolean;
+}
+export interface ExperimentProtocolApproval { protocolHash: string; evaluatorHash: string; approvedBy: PeerId; at: number }
+export type ExperimentProtocolContext = { state: "unknown" } | { state: "predeclared" } | { state: "post-hoc"; priorFinal: { attemptId: string; endSeq: number } };
+interface ExperimentComparisonPlanRow { row_id?: number; hash: string; project: string; campaign_id: string; campaign_revision: number; task_id: number; body: string | null; by_peer: string; at: number; private: number }
+interface ExperimentProtocolApprovalRow { protocol_hash: string; evaluator_hash: string; approved_by: string; at: number }
+interface ExperimentProtocolContextRow { protocol_hash: string; prior_attempt_id: string | null; prior_end_seq: number | null; context_sha256: string }
+const EXPERIMENT_PLAN_SELECT = "SELECT rowid AS row_id,hash,project,campaign_id,campaign_revision,task_id,CASE WHEN length(CAST(body AS BLOB))<=65536 THEN body END AS body,by_peer,at,private FROM research_plans";
 
 interface ExperimentProtocolRow { hash: string; project: string; campaign_id: string; campaign_revision: number; task_id: number; body: string | null; by_peer: string; at: number; private: number }
 interface ExperimentAttemptRow { row_id?: number; attempt_id: string; project: string; campaign_id: string; campaign_revision: number; protocol_hash: string; task_id: number; idempotency_key: string; body: string | null; body_sha256: string; by_peer: string; at: number; private: number }
@@ -478,6 +494,14 @@ export class Board {
     this.db.run(`CREATE TABLE IF NOT EXISTS research_attempt_observations (
       attempt_id TEXT NOT NULL, event_seq INTEGER NOT NULL, body TEXT NOT NULL, body_sha256 TEXT NOT NULL,
       PRIMARY KEY(attempt_id,event_seq))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS research_plans (
+      hash TEXT PRIMARY KEY, project TEXT NOT NULL, campaign_id TEXT NOT NULL, campaign_revision INTEGER NOT NULL,
+      task_id INTEGER NOT NULL, body TEXT NOT NULL, by_peer TEXT NOT NULL, at INTEGER NOT NULL, private INTEGER NOT NULL)`);
+    this.db.run("CREATE INDEX IF NOT EXISTS research_plans_campaign ON research_plans(project,campaign_id)");
+    this.db.run(`CREATE TABLE IF NOT EXISTS research_protocol_approvals (
+      protocol_hash TEXT PRIMARY KEY, evaluator_hash TEXT NOT NULL, approved_by TEXT NOT NULL, at INTEGER NOT NULL)`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS research_protocol_context (
+      protocol_hash TEXT PRIMARY KEY, prior_attempt_id TEXT, prior_end_seq INTEGER, context_sha256 TEXT NOT NULL)`);
 
   }
 
@@ -859,10 +883,128 @@ export class Board {
         if (priv) this.taskWrite(() => this.db.query("UPDATE research_protocols SET private=1 WHERE hash=? AND private=0").run(hash));
         return this.experimentProtocol(hash)!;
       }
+      // Capture recording order in this transaction, never from caller or wall-clock timestamps. Legacy rows are not backfilled.
+      const priorFinal = this.experimentPriorFinal(record.project, campaign.id, protocol.lineage);
       this.taskWrite(() => this.db.query("INSERT INTO research_protocols(hash,project,campaign_id,campaign_revision,task_id,body,by_peer,at,private) VALUES(?,?,?,?,?,?,?,?,?)")
         .run(hash, record.project, campaign.id, campaign.revision, task.id, canonicalJson(protocol), record.by, record.at, priv ? 1 : 0));
+      this.taskWrite(() => this.db.query("INSERT INTO research_protocol_context(protocol_hash,prior_attempt_id,prior_end_seq,context_sha256) VALUES(?,?,?,?)")
+        .run(hash, priorFinal?.attemptId ?? null, priorFinal?.endSeq ?? null, experimentHash({ protocolHash: hash, priorFinal: priorFinal ?? null })));
       return this.experimentProtocol(hash)!;
     });
+  }
+
+  experimentComparisonPlan(hash: string): ExperimentComparisonPlanRecord | undefined {
+    if (!experimentHashValid(hash)) throw experimentFailure();
+    const row = this.db.query(`${EXPERIMENT_PLAN_SELECT} WHERE hash=?`).get(hash) as ExperimentComparisonPlanRow | null;
+    return row ? this.experimentComparisonPlanFromRow(row) : undefined;
+  }
+
+  private experimentComparisonPlanFromRow(row: ExperimentComparisonPlanRow): ExperimentComparisonPlanRecord {
+    try {
+      if (typeof row.body !== "string" || !researchText(row.project) || !researchInteger(row.task_id) || !researchText(row.by_peer) || !researchInteger(row.at, 0) || ![0, 1].includes(row.private)) throw experimentFailure();
+      const plan = parseComparisonPlan(JSON.parse(row.body)), campaign = this.researchCampaign(row.campaign_id, row.campaign_revision), task = this.get(row.task_id);
+      if (comparisonPlanHash(plan) !== row.hash || plan.campaignId !== row.campaign_id || !campaign || campaign.project !== row.project || !task ||
+        !this.researchCampaignBindings(campaign.id, campaign.revision).some(binding => binding.taskId === task.id) || plan.fixed.inputs.some(input => !campaign.contract.sourceIds.includes(input.sourceId))) throw experimentFailure();
+      return { hash: row.hash, project: row.project, recordedForTaskId: row.task_id, plan, by: row.by_peer, at: row.at,
+        private: row.private === 1 || campaign.private || task.signals.some(signal => signal === "pii" || signal === "pii_path") };
+    } catch { throw experimentFailure(); }
+  }
+
+  saveExperimentComparisonPlan(record: ExperimentComparisonPlanRecord, fence: ExperimentWriteFence): ExperimentComparisonPlanRecord {
+    const plan = parseComparisonPlan(record.plan), hash = comparisonPlanHash(plan);
+    if (hash !== record.hash || record.project !== fence.project || record.recordedForTaskId !== fence.taskId || record.by !== fence.owner || !researchInteger(record.at, 0) || typeof record.private !== "boolean") throw experimentFailure();
+    return this.atomic(() => {
+      const { task, campaign } = this.experimentFence(fence);
+      if (plan.campaignId !== campaign.id || plan.fixed.inputs.some(input => !campaign.contract.sourceIds.includes(input.sourceId))) throw experimentFailure();
+      const priv = record.private || campaign.private || task.signals.some(signal => signal === "pii" || signal === "pii_path"), previous = this.experimentComparisonPlan(hash);
+      if (previous) {
+        if (previous.project !== record.project || previous.recordedForTaskId !== record.recordedForTaskId || canonicalJson(previous.plan) !== canonicalJson(plan)) throw experimentFailure();
+        if (priv) this.taskWrite(() => this.db.query("UPDATE research_plans SET private=1 WHERE hash=? AND private=0").run(hash));
+        return this.experimentComparisonPlan(hash)!;
+      }
+      this.taskWrite(() => this.db.query("INSERT INTO research_plans(hash,project,campaign_id,campaign_revision,task_id,body,by_peer,at,private) VALUES(?,?,?,?,?,?,?,?,?)")
+        .run(hash, record.project, campaign.id, campaign.revision, task.id, canonicalJson(plan), record.by, record.at, priv ? 1 : 0));
+      return this.experimentComparisonPlan(hash)!;
+    });
+  }
+
+  experimentComparisonPlans(project: string, campaignId: string, afterRow = 0, limit = 50): { rows: ExperimentComparisonPlanRecord[]; afterRow: number; done: boolean } {
+    if (!researchText(project) || !researchId(campaignId)) throw experimentFailure(); experimentPage(afterRow, limit);
+    const campaign = this.researchCampaign(campaignId); if (!campaign || campaign.project !== project) throw experimentFailure();
+    const page = this.db.query(`${EXPERIMENT_PLAN_SELECT} WHERE project=? AND campaign_id=? AND rowid>? ORDER BY rowid LIMIT ?`).all(project, campaignId, afterRow, limit + 1) as ExperimentComparisonPlanRow[];
+    return { rows: page.slice(0, limit).map(row => this.experimentComparisonPlanFromRow(row)), afterRow: page.slice(0, limit).at(-1)?.row_id ?? afterRow, done: page.length <= limit };
+  }
+
+  experimentProtocolApproval(hash: string): ExperimentProtocolApproval | undefined {
+    const protocol = this.experimentProtocol(hash); if (!protocol) throw experimentFailure();
+    const row = this.db.query("SELECT protocol_hash,evaluator_hash,approved_by,at FROM research_protocol_approvals WHERE protocol_hash=?").get(hash) as ExperimentProtocolApprovalRow | null;
+    if (!row) return undefined;
+    if (row.protocol_hash !== hash || row.evaluator_hash !== evaluatorIdentityHash(protocol.protocol) || row.approved_by !== USER || !researchInteger(row.at, 0)) throw experimentFailure();
+    return { protocolHash: hash, evaluatorHash: row.evaluator_hash, approvedBy: row.approved_by, at: row.at };
+  }
+
+  /** Explicit approval names one immutable historical or current protocol; nothing copies to a changed protocol. */
+  approveExperimentProtocol(project: string, hash: string, evaluatorHash: string, by: PeerId, at: number): ExperimentProtocolApproval {
+    if (by !== USER || !researchText(project) || !experimentHashValid(hash) || !experimentHashValid(evaluatorHash) || !researchInteger(at, 0)) throw experimentFailure();
+    return this.atomic(() => {
+      const protocol = this.experimentProtocol(hash);
+      if (!protocol || protocol.project !== project || evaluatorIdentityHash(protocol.protocol) !== evaluatorHash) throw experimentFailure();
+      const previous = this.experimentProtocolApproval(hash); if (previous) return previous;
+      this.taskWrite(() => this.db.query("INSERT INTO research_protocol_approvals(protocol_hash,evaluator_hash,approved_by,at) VALUES(?,?,?,?)").run(hash, evaluatorHash, by, at));
+      return this.experimentProtocolApproval(hash)!;
+    });
+  }
+
+  // ponytail: first insertion streams ended attempts until a matching lineage is found; index lineage/phase if campaign histories become large.
+  private experimentPriorFinal(project: string, campaignId: string, lineage: string): { attemptId: string; endSeq: number } | undefined {
+    const ends = this.db.query("SELECT e.attempt_id,e.seq FROM research_attempt_events AS e JOIN research_attempts AS a ON a.attempt_id=e.attempt_id WHERE a.project=? AND a.campaign_id=? AND e.kind='end' ORDER BY e.rowid DESC").iterate(project, campaignId) as Iterable<{ attempt_id: string; seq: number }>;
+    for (const end of ends) {
+      const attempt = this.experimentAttempt(end.attempt_id), protocol = attempt && this.experimentProtocol(attempt.attempt.protocolHash);
+      if (!attempt || !protocol || attempt.project !== project || protocol.protocol.campaignId !== campaignId) throw experimentFailure();
+      const event = this.db.query(`${EXPERIMENT_EVENT_SELECT} WHERE attempt_id=? AND seq=?`).get(end.attempt_id, end.seq) as ExperimentEventRow | null;
+      if (!event || this.experimentEventFromRow(event).event.kind !== "end") throw experimentFailure();
+      if (attempt.attempt.phase === "final" && protocol.protocol.lineage === lineage) return { attemptId: attempt.attemptId, endSeq: end.seq };
+    }
+    return undefined;
+  }
+
+  experimentProtocolContext(hash: string): ExperimentProtocolContext {
+    const protocol = this.experimentProtocol(hash); if (!protocol) throw experimentFailure();
+    const row = this.db.query("SELECT protocol_hash,prior_attempt_id,prior_end_seq,context_sha256 FROM research_protocol_context WHERE protocol_hash=?").get(hash) as ExperimentProtocolContextRow | null;
+    if (!row) return { state: "unknown" };
+    if (row.protocol_hash !== hash || (row.prior_attempt_id === null) !== (row.prior_end_seq === null)) throw experimentFailure();
+    if (row.prior_attempt_id === null) {
+      if (row.context_sha256 !== experimentHash({ protocolHash: hash, priorFinal: null })) throw experimentFailure();
+      return { state: "predeclared" };
+    }
+    if (!experimentIdValid(row.prior_attempt_id) || !researchInteger(row.prior_end_seq)) throw experimentFailure();
+    const attempt = this.experimentAttempt(row.prior_attempt_id), previous = attempt && this.experimentProtocol(attempt.attempt.protocolHash);
+    const event = this.db.query(`${EXPERIMENT_EVENT_SELECT} WHERE attempt_id=? AND seq=?`).get(row.prior_attempt_id, row.prior_end_seq) as ExperimentEventRow | null;
+    const priorFinal = { attemptId: row.prior_attempt_id, endSeq: row.prior_end_seq };
+    if (!attempt || !previous || !event || attempt.project !== protocol.project || attempt.attempt.phase !== "final" || previous.protocol.campaignId !== protocol.protocol.campaignId ||
+      previous.protocol.lineage !== protocol.protocol.lineage || this.experimentEventFromRow(event).event.kind !== "end" || row.context_sha256 !== experimentHash({ protocolHash: hash, priorFinal })) throw experimentFailure();
+    return { state: "post-hoc", priorFinal };
+  }
+
+  hasResearchComparisonState(): boolean {
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_plans) OR EXISTS(SELECT 1 FROM research_protocol_approvals) OR EXISTS(SELECT 1 FROM research_protocol_context) AS present").get() as { present: number }).present === 1;
+  }
+
+  researchComparisonIntegrity(): { plans: number; approvals: number; contexts: number; digest: string } {
+    return this.db.transaction(() => {
+      const digest = createHash("sha256").update("agent-hub.research-comparison-integrity/v1\n");
+      let plans = 0, approvals = 0, contexts = 0;
+      for (const row of this.db.query(`${EXPERIMENT_PLAN_SELECT} ORDER BY hash`).iterate() as Iterable<ExperimentComparisonPlanRow>) {
+        digest.update(canonicalJson({ record: this.experimentComparisonPlanFromRow(row), campaignRevision: row.campaign_revision })).update("\n"); plans++;
+      }
+      for (const row of this.db.query("SELECT protocol_hash,evaluator_hash,approved_by,at FROM research_protocol_approvals ORDER BY protocol_hash").iterate() as Iterable<ExperimentProtocolApprovalRow>) {
+        digest.update(canonicalJson(this.experimentProtocolApproval(row.protocol_hash))).update("\n"); approvals++;
+      }
+      for (const row of this.db.query("SELECT protocol_hash FROM research_protocol_context ORDER BY protocol_hash").iterate() as Iterable<{ protocol_hash: string }>) {
+        digest.update(canonicalJson({ protocolHash: row.protocol_hash, context: this.experimentProtocolContext(row.protocol_hash) })).update("\n"); contexts++;
+      }
+      return { plans, approvals, contexts, digest: digest.digest("hex") };
+    })();
   }
 
   experimentAttempt(id: string): ExperimentAttemptRecord | undefined {

@@ -50,6 +50,7 @@ export interface RestartSnapshot {
     research?: { campaigns: number; units: number; revision: number; digest: string };
     researchDispatch?: { activations: number; handoffs: number; digest: string };
     researchExperiments?: { protocols: number; attempts: number; events: number; observations: number; digest: string };
+    researchComparisons?: { plans: number; approvals: number; contexts: number; digest: string };
   };
 }
 
@@ -113,6 +114,11 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
   if (s.integrity && Object.hasOwn(s.integrity, "researchExperiments")) {
     const value = s.integrity.researchExperiments;
     if (!value || typeof value !== "object" || Array.isArray(value) || ![value.protocols, value.attempts, value.events, value.observations].every(count => Number.isSafeInteger(count) && count >= 0)
+      || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "researchComparisons")) {
+    const value = s.integrity.researchComparisons;
+    if (!value || typeof value !== "object" || Array.isArray(value) || ![value.plans, value.approvals, value.contexts].every(count => Number.isSafeInteger(count) && count >= 0)
       || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }
   if (bus.journal !== undefined) { try { validateJournalSnapshot(bus.journal); } catch { return undefined; } }

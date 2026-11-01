@@ -7,6 +7,7 @@ import { types } from "node:util";
 import { canonicalJson } from "./packs.ts";
 import { parseExperimentProtocol, parseExperimentAttempt, parseExperimentEvent, protocolHash, checkRunObservation, deliverableObservation, projectExperimentWithObservations,
   type ExperimentProtocolContract, type ExperimentProtocolRecord, type ExperimentAttemptRecord, type ExperimentWriteFence, type ExperimentHostEvidence, type ExperimentStatus } from "./research-experiments.ts";
+import { parseComparisonPlan, comparisonPlanHash, comparisonProjection, evaluatorIdentityHash, protocolApprovalBindingMatches, type ComparisonPlanV1 } from "./research-experiments.ts";
 import { parseResearchHandoff, studyProjection, campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus } from "./research-campaign.ts";
 import type { ResearchCampaignRecord, ResearchUnitBinding, PreparedResearchUnit } from "./board.ts";
 import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-command.ts";
@@ -392,11 +393,16 @@ export const GROOM_FYI_WINDOW_MS = 10 * 60_000;
 export interface ResearchCampaignReceipt { id: string; parentTaskId: number; revision: number; status: ResearchCampaignStatus; unitCount: number; units: ResearchUnitBinding[] }
 interface StudyReferences { parent: Task; adopted: Map<string, Task>; reused: Map<string, Task>; private: boolean; key: string }
 export interface ExperimentReceipt { kind: "protocol" | "attempt" | "event"; protocolHash: string; attemptId?: string; seq?: number }
+export interface ComparisonPlanReceipt { kind: "plan"; planHash: string }
+export interface ProtocolApprovalReceipt { protocolHash: string; evaluatorHash: string; approvedBy: string; approvedAt: number }
 export interface ExperimentAttemptView {
   id: string; protocolHash: string; taskId: number; phase: "development" | "final"; status: ExperimentStatus; private: boolean;
   protocol: unknown; events: unknown[]; evidence: Record<string, unknown>; eventsComplete: boolean; nextEventCursor?: number;
+  campaignRevision: number; approval: "approved" | "unapproved"; postHoc: "unknown" | "predeclared" | "post-hoc";
+  retryOf?: string; reproducesAttemptId?: string; independentlyReproduced: false;
 }
-export interface ExperimentView { attempts: ExperimentAttemptView[]; counts: { all: number; statuses: Record<ExperimentStatus, number> }; nextCursor?: number }
+export interface ExperimentView { attempts: ExperimentAttemptView[]; counts: { all: number; statuses: Record<ExperimentStatus, number> }; nextCursor?: number;
+  comparison?: { planHash: string; baselineAttemptId: string; variantAttemptId: string; approved: boolean; private: boolean; projection: ReturnType<typeof comparisonProjection> | "[pii]" } }
 interface ExperimentContext { task: Task; campaign: ResearchCampaignRecord; private: boolean; key: string; fence: ExperimentWriteFence }
 interface CompletionRefresh { revision: number; commit: string }
 interface IdentityLink { repo: string; pr: number; basis: { commit?: string; branch?: string } }
@@ -1729,12 +1735,67 @@ export class Tasks {
       throw new PreEffectToolRefusal("experiment text was not cleared; nothing was recorded");
   }
 
-  /** Record evidence only: this path never runs a check, a shell command or a runner. */
-  async experimentRecord(by: PeerId, input: unknown): Promise<ExperimentReceipt> {
+  private experimentPlanContext(by: PeerId, taskId: number, plan: ComparisonPlanV1): ExperimentContext {
+    const task = this.studyParent(taskId), bound = this.d.board.researchDispatchBinding(taskId), campaign = bound?.campaign;
+    if (task.owner !== by || task.state !== "in_progress" || !bound?.binding || !campaign || campaign.project !== this.d.project
+      || campaign.id !== plan.campaignId || campaign.status !== "approved")
+      throw new PreEffectToolRefusal("comparison plans require the current in-progress campaign unit owner");
+    if (this.d.privateTurn?.(by) && !this.isPii(task)) throw new PreEffectToolRefusal("a private turn cannot write comparison plans on a public task");
+    const sources = plan.fixed.inputs.map(input => {
+      const source = this.studySource(input.sourceId);
+      if (!campaign.contract.sourceIds.includes(input.sourceId) || !source || source.sha256 !== input.sha256)
+        throw new PreEffectToolRefusal("comparison input source identity or hash is unavailable in this campaign");
+      return source;
+    });
+    const privateRecord = this.studyReplayPrivacy(campaign, this.studyParent(campaign.parentTaskId)) || this.isPii(task) || sources.some(source => source.private);
+    const fence: ExperimentWriteFence = { project: this.d.project, taskId, taskFlowRevision: task.history.length, owner: by,
+      campaignId: campaign.id, campaignRevision: campaign.revision, campaignHash: campaign.hash };
+    return { task, campaign, private: privateRecord, fence, key: canonicalJson([fence, privateRecord, sources, bound.binding]) };
+  }
+
+  private experimentApproved(record: ExperimentProtocolRecord): boolean {
+    const approval = this.d.board.experimentProtocolApproval(record.hash);
+    return protocolApprovalBindingMatches(record.protocol, approval && { protocolHash: approval.protocolHash, evaluatorHash: approval.evaluatorHash });
+  }
+
+  /** Approval is an explicit person's decision about immutable bytes, including historical protocols. */
+  async experimentApproveProtocol(by: PeerId, input: unknown): Promise<ProtocolApprovalReceipt> {
     const requestCheck = this.requestCheck(by, () => this.studyHold());
-    const envelope = this.studyFields(input, ["kind", "taskId", "protocol", "attempt", "attemptId", "idempotencyKey", "event"]);
+    if (by !== USER) throw new PreEffectToolRefusal("protocol approval is person only");
+    const fields = this.studyFields(input, ["hash"]);
+    if (typeof fields.hash !== "string" || !/^[a-f0-9]{64}$/.test(fields.hash)) throw new PreEffectToolRefusal("protocol approval needs an exact protocol hash");
+    const hash = fields.hash;
+    return this.studyWrite(async () => {
+      requestCheck();
+      const record = this.experimentProtocol(hash), evaluatorHash = evaluatorIdentityHash(record.protocol);
+      requestCheck();
+      let saved;
+      try { saved = this.d.board.approveExperimentProtocol(this.d.project, hash, evaluatorHash, by, this.studyTime()); }
+      catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "protocol approval was not saved"); }
+      return { protocolHash: saved.protocolHash, evaluatorHash: saved.evaluatorHash, approvedBy: saved.approvedBy, approvedAt: saved.at };
+    });
+  }
+
+  /** Record evidence only: this path never runs a check, a shell command or a runner. */
+  async experimentRecord(by: PeerId, input: { kind: "plan"; [key: string]: unknown }): Promise<ComparisonPlanReceipt>;
+  async experimentRecord(by: PeerId, input: { kind: "protocol" | "attempt" | "event"; [key: string]: unknown }): Promise<ExperimentReceipt>;
+  async experimentRecord(by: PeerId, input: unknown): Promise<ExperimentReceipt | ComparisonPlanReceipt>;
+  async experimentRecord(by: PeerId, input: unknown): Promise<ExperimentReceipt | ComparisonPlanReceipt> {
+    const requestCheck = this.requestCheck(by, () => this.studyHold());
+    const envelope = this.studyFields(input, ["kind", "taskId", "protocol", "attempt", "attemptId", "idempotencyKey", "event", "plan"]);
     return this.studyWrite(async () => {
       try {
+        if (envelope.kind === "plan") {
+          const fields = this.studyFields(input, ["kind", "taskId", "plan"]), taskId = this.studyNumber(fields.taskId, "taskId"), plan = parseComparisonPlan(fields.plan);
+          const before = this.experimentPlanContext(by, taskId, plan);
+          await this.experimentScreen(canonicalJson(plan), before.task); requestCheck();
+          const current = this.experimentPlanContext(by, taskId, plan);
+          if (current.key !== before.key) throw new PreEffectToolRefusal("comparison authority, source or campaign changed during admission");
+          requestCheck();
+          const saved = this.d.board.saveExperimentComparisonPlan({ hash: comparisonPlanHash(plan), project: this.d.project, recordedForTaskId: taskId,
+            plan, by, at: this.studyTime(), private: current.private }, current.fence);
+          return { kind: "plan", planHash: saved.hash };
+        }
         if (envelope.kind === "protocol") {
           const fields = this.studyFields(input, ["kind", "taskId", "protocol"]), taskId = this.studyNumber(fields.taskId, "taskId"), protocol = parseExperimentProtocol(fields.protocol);
           const before = this.experimentContext(by, taskId, protocol);
@@ -1805,11 +1866,39 @@ export class Tasks {
   }
 
   async experimentShow(by: PeerId, input: unknown): Promise<ExperimentView> {
+    return this.experimentRead(by, input);
+  }
+
+  private experimentRead(by: PeerId, input: unknown): ExperimentView {
     requireLocalTaskPeer(by);
-    const fields = this.studyFields(input, ["attemptId", "campaignId", "after", "eventAfter", "limit"]);
+    const fields = this.studyFields(input, ["attemptId", "campaignId", "after", "eventAfter", "limit", "planHash", "baselineAttemptId", "variantAttemptId"]);
     const cursor = (value: unknown, name: string) => value === undefined ? 0 : typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : (() => { throw new PreEffectToolRefusal(`${name} must be a nonnegative integer`); })();
     const after = cursor(fields.after, "after"), eventAfter = cursor(fields.eventAfter, "eventAfter"), limit = fields.limit === undefined ? 50 : this.studyNumber(fields.limit, "limit");
     if (limit > 50) throw new PreEffectToolRefusal("experiment readback is limited to 50 rows");
+    if (fields.planHash !== undefined || fields.baselineAttemptId !== undefined || fields.variantAttemptId !== undefined) {
+      if (fields.attemptId !== undefined || fields.campaignId !== undefined || fields.after !== undefined
+        || typeof fields.planHash !== "string" || !/^[a-f0-9]{64}$/.test(fields.planHash))
+        throw new PreEffectToolRefusal("comparison readback needs one plan hash and two attempt ids");
+      const plan = this.d.board.experimentComparisonPlan(fields.planHash);
+      if (!plan || plan.project !== this.d.project) throw new PreEffectToolRefusal("comparison plan is unavailable in this project");
+      const baseline = this.experimentAttempt(this.experimentId(fields.baselineAttemptId)), variant = this.experimentAttempt(this.experimentId(fields.variantAttemptId));
+      const first = this.experimentProtocol(baseline.attempt.protocolHash), second = this.experimentProtocol(variant.attempt.protocolHash);
+      if (first.protocol.campaignId !== plan.plan.campaignId || second.protocol.campaignId !== plan.plan.campaignId)
+        throw new PreEffectToolRefusal("comparison attempts must belong to the plan's campaign");
+      const left = this.experimentRead(by, { attemptId: baseline.attemptId, eventAfter, limit });
+      const right = this.experimentRead(by, { attemptId: variant.attemptId, eventAfter, limit });
+      let planPrivate = true;
+      try {
+        const campaign = this.studyRecord(plan.plan.campaignId);
+        planPrivate = plan.private || this.studyReplayPrivacy(campaign, this.studyParent(campaign.parentTaskId))
+          || plan.plan.fixed.inputs.some(input => { const source = this.studySource(input.sourceId); return !source || source.private; });
+      } catch { /* an unavailable privacy classification withholds the comparison */ }
+      const privateRecord = planPrivate || left.attempts.some(row => row.private) || right.attempts.some(row => row.private);
+      return { attempts: [...left.attempts, ...right.attempts], counts: left.counts,
+        comparison: { planHash: plan.hash, baselineAttemptId: baseline.attemptId, variantAttemptId: variant.attemptId,
+          approved: this.experimentApproved(first) && this.experimentApproved(second), private: privateRecord,
+          projection: privateRecord ? "[pii]" : comparisonProjection(plan.plan, first.protocol, second.protocol) } };
+    }
     let campaignId: string, attempts: ExperimentAttemptRecord[], nextCursor: number | undefined;
     if (fields.attemptId !== undefined) {
       if (fields.campaignId !== undefined || fields.after !== undefined) throw new PreEffectToolRefusal("choose one attempt or campaign page");
@@ -1828,6 +1917,9 @@ export class Tasks {
       const observations = page.rows.flatMap(row => row.observations), events = page.rows.map(row => row.event);
       const evidence = projectExperimentWithObservations(record.protocol, events, observations);
       views.push({ id: attempt.attemptId, protocolHash: record.hash, taskId: attempt.attempt.taskId, phase: attempt.attempt.phase, status, private: privateRecord,
+        campaignRevision: record.protocol.campaignRevision, approval: this.experimentApproved(record) ? "approved" : "unapproved",
+        postHoc: this.d.board.experimentProtocolContext(record.hash).state,
+        ...(attempt.attempt.retryOf ? { retryOf: attempt.attempt.retryOf } : {}), ...(attempt.attempt.reproducesAttemptId ? { reproducesAttemptId: attempt.attempt.reproducesAttemptId } : {}), independentlyReproduced: false,
         protocol: { value: privateRecord ? "[pii]" : record.protocol, provenance: "declared" },
         events: page.rows.map(row => privateRecord ? { seq: row.event.seq, kind: row.event.kind, at: row.event.at, provenance: row.event.provenance, body: "[pii]" } : row.event),
         evidence: privateRecord ? { declared: "[pii]", measured: evidence.measured.map(row => ({ eventSeq: row.eventSeq, source: row.source, provenance: "host-observed", values: "[pii]" })) } : evidence,
