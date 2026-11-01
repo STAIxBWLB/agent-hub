@@ -1037,23 +1037,28 @@ const commands: Record<string, () => Promise<void> | void> = {
     const setupFlags = takeFlags(args.filter(arg => arg !== "--yes"), ["--agents"], []);
     if (setupFlags.rest.length) fail("usage: ahub setup [--yes] [--agents <a,b>]");
     const registry = new Registry(), rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+    let homesFailed = false, homesFailure: unknown;
     try {
       const found = recoveryLauncherCurrent || delegatedPeer ? await discoverClaudeHomes({ home: homedir(), env: process.env }) : await usedClaudeHomes(registry, homedir(), process.env);
       for (const notice of found.notices) console.log(terminalText(notice));
-      await setupClaudeHomes({ homes: found.homes, env: process.env, packageRoot: root, yes: args.includes("--yes"),
-        interactive: !!rl,
-        current: () => { recoveryLauncherCurrent?.(); assertLifecycleAvailable(cwd); },
-        print: line => console.log(terminalText(line)), ask: async prompt => rl ? rl.question(prompt) : null,
-        probe: (argv, options) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8", env: options.env, timeout: options.timeoutMs, maxBuffer: 1024 * 1024 }); recoveryLauncherCurrent?.(); return { status: result.status ?? -1, stdout: result.stdout ?? "" }; },
-        run: async (argv, env) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { stdio: "inherit", env, timeout: 30_000 }); recoveryLauncherCurrent?.(); return result.status ?? -1; },
-      });
+      try {
+        await setupClaudeHomes({ homes: found.homes, env: process.env, packageRoot: root, yes: args.includes("--yes"),
+          interactive: !!rl,
+          current: () => { recoveryLauncherCurrent?.(); assertLifecycleAvailable(cwd); },
+          print: line => console.log(terminalText(line)), ask: async prompt => rl ? rl.question(prompt) : null,
+          probe: (argv, options) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8", env: options.env, timeout: options.timeoutMs, maxBuffer: 1024 * 1024 }); recoveryLauncherCurrent?.(); return { status: result.status ?? -1, stdout: result.stdout ?? "" }; },
+          run: async (argv, env) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { stdio: "inherit", env, timeout: 30_000 }); recoveryLauncherCurrent?.(); return result.status ?? -1; },
+        });
+      } catch (error) { homesFailed = true; homesFailure = error; }
       // #608: the one question about the default agent set, after the Claude homes and before doctor.
       if (!recoveryLauncherCurrent && !delegatedPeer) {
+        assertLifecycleAvailable(cwd);
         const refused = await setupStartAgents({ home: hubHome(), roots: [...registry.list().map(row => row.root), cwd], ...(setupFlags.one["--agents"] !== undefined ? { flag: setupFlags.one["--agents"] } : {}), yes: args.includes("--yes"),
           ...(rl ? { ask: async (prompt: string) => { try { return await rl.question(prompt); } catch { return null; } } } : {}), print: line => console.log(terminalText(line)) });
         if (refused) fail(refused);
       }
     } finally { registry.close(); rl?.close(); }
+    if (homesFailed) fail(startupDiagnostic(homesFailure));
     // #935: register the acon console plugin (acon reads it at its next start; no acon install is needed for this).
     const acon = registerAconPlugin(hubHome(), join(root, "src", "ui", "plugin.ts"));
     console.log("error" in acon ? `acon plugin not registered: ${acon.error}` : acon.changed ? `acon plugin registered: ${acon.path}` : `acon plugin up to date: ${acon.path}`);

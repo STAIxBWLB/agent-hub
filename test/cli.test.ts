@@ -248,15 +248,15 @@ test("ahub setup: one step at a time from the JSON listings; paths compared exac
   Bun.spawnSync(["mkdir", "-p", join(root, "plugins/agent-hub"), join(root, "cache")]);
   writeFileSync(join(root, "plugins/agent-hub/server.js"), "bundle v2");
   writeFileSync(join(root, "cache/server.js"), "bundle v2");
-  const plugin = (version: string) => [{ id: "agent-hub@agent-hub", version, installPath: join(root, "cache") }];
+  const plugin = (version: string) => [{ id: "agent-hub@agent-hub", scope: "user", version, installPath: join(root, "cache") }];
   const here = [{ name: "agent-hub", path: root }];
   const step = (p: any, m: any) => nextStep(p, m, root)?.argv.slice(2).join(" ");
 
   expect(parseList("not json")).toEqual([]);
   expect(step([], [])).toBe(`marketplace add ${realpathSync(root)}`);
-  expect(step([], here)).toBe("install agent-hub@agent-hub");
+  expect(step([], here)).toBe("install agent-hub@agent-hub --scope user");
   expect(step(plugin(VERSION), here)).toBeUndefined();
-  expect(step(plugin("0.0.9"), here)).toBe("uninstall agent-hub@agent-hub");
+  expect(step(plugin("0.0.9"), here)).toBe("uninstall agent-hub@agent-hub --scope user");
   // a prefix of the path, or another checkout, is not this package
   expect(step(plugin(VERSION), [{ name: "agent-hub", path: `${root}-old` }])).toBe("marketplace remove agent-hub");
   // a marketplace with another name whose path merely contains "agent-hub" is none of our business
@@ -264,8 +264,8 @@ test("ahub setup: one step at a time from the JSON listings; paths compared exac
   // same version, different bundle: Claude Code would run an older wire protocol
   writeFileSync(join(root, "cache/server.js"), "bundle v1");
   expect(pluginState(plugin(VERSION), root)).toMatchObject({ state: "stale" });
-  expect(step(plugin(VERSION), here)).toBe("uninstall agent-hub@agent-hub");
-  expect(step([{ id: "agent-hub@agent-hub", version: "9.9.9" }], here)).toBe("uninstall agent-hub@agent-hub");
+  expect(step(plugin(VERSION), here)).toBe("uninstall agent-hub@agent-hub --scope user");
+  expect(step([{ id: "agent-hub@agent-hub", scope: "user", version: "9.9.9" }], here)).toBe("uninstall agent-hub@agent-hub --scope user");
 });
 
 // issue #73: without a terminal the confirmation prompt waited forever; `restart` and `upgrade` already refused.

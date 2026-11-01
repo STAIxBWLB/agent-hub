@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setupClaudeHomes, type SetupHomesPorts } from "../src/cli/setup-homes.ts";
+import { PLUGIN, type InstalledPlugin } from "../src/cli/setup.ts";
 import { discoverClaudeHomes } from "../src/cli/claude-homes.ts";
 import { checkClaudeProfileHook } from "../src/cli/claude-profile-hook.ts";
 import type { ClaudeHome, ClaudeHomeProbe } from "../src/cli/claude-homes.ts";
@@ -21,7 +22,7 @@ function fixture(missingSecond = false) {
   const unusedSettings = join(unused, "settings.json");
   writeFileSync(unusedSettings, '{"statusLine":{"command":"unused-status"}}\n', { mode: 0o600 });
   const env = { HOME: user, CLAUDE_CONFIG_DIR: unused, TEST_CONTEXT: "preserved" };
-  const states = new Map(homes.map(home => [home.path, { marketplace: false, plugin: false }]));
+  const states = new Map(homes.map(home => [home.path, { marketplace: false, marketplacePath: undefined as string | undefined, plugins: [] as InstalledPlugin[] }]));
   const probes: { argv: readonly string[]; home: string; timeoutMs: number }[] = [], runs: { argv: readonly string[]; env: NodeJS.ProcessEnv }[] = [], printed: string[] = [];
   const probe: ClaudeHomeProbe = (argv, options) => {
     const home = options.env.CLAUDE_CONFIG_DIR!;
@@ -29,8 +30,8 @@ function fixture(missingSecond = false) {
     probes.push({ argv, home, timeoutMs: options.timeoutMs });
     expect(options.env.HOME).toBe(user);
     const value = argv.includes("marketplace")
-      ? state.marketplace ? [{ name: "agent-hub", path: packageRoot }] : []
-      : state.plugin ? [{ id: "agent-hub@agent-hub", version: VERSION, installPath: join(home, "plugin-cache") }] : [];
+      ? state.marketplace ? [{ name: "agent-hub", path: state.marketplacePath ?? packageRoot }] : []
+      : state.plugins;
     return { status: 0, stdout: JSON.stringify(value) };
   };
   const run: SetupHomesPorts["run"] = async (argv, scoped) => {
@@ -39,9 +40,16 @@ function fixture(missingSecond = false) {
     runs.push({ argv, env: scoped });
     if (!existsSync(home)) mkdirSync(home, { mode: 0o700 });
     if (argv[2] === "marketplace" && argv[3] === "add") state.marketplace = true;
+    else if (argv[2] === "uninstall") {
+      expect(argv.slice(-2)).toEqual(["--scope", "user"]);
+      state.plugins = state.plugins.filter(plugin => plugin.id !== PLUGIN || plugin.scope !== "user");
+    }
     else if (argv[2] === "install") {
-      state.plugin = true; mkdirSync(join(home, "plugin-cache"));
-      writeFileSync(join(home, "plugin-cache", "server.js"), "fixture bundle");
+      expect(argv.slice(-2)).toEqual(["--scope", "user"]);
+      const installPath = join(home, "plugin-cache");
+      mkdirSync(installPath);
+      writeFileSync(join(installPath, "server.js"), "fixture bundle");
+      state.plugins = [...state.plugins, { id: PLUGIN, version: VERSION, scope: "user", installPath }];
     } else throw new Error("unexpected fake native step");
     return 0;
   };
@@ -65,9 +73,9 @@ test("one confirmation configures plugin and hook in both selected homes under t
   expect(confirmations).toBe(1);
   expect(f.runs.map(call => [call.env.CLAUDE_CONFIG_DIR, ...call.argv.slice(1)])).toEqual([
     [f.homes[0]!.path, "plugin", "marketplace", "add", f.packageRoot],
-    [f.homes[0]!.path, "plugin", "install", "agent-hub@agent-hub"],
+    [f.homes[0]!.path, "plugin", "install", "agent-hub@agent-hub", "--scope", "user"],
     [f.homes[1]!.path, "plugin", "marketplace", "add", f.packageRoot],
-    [f.homes[1]!.path, "plugin", "install", "agent-hub@agent-hub"],
+    [f.homes[1]!.path, "plugin", "install", "agent-hub@agent-hub", "--scope", "user"],
   ]);
   for (const call of f.runs) expect(call.env).toMatchObject({ HOME: f.user, TEST_CONTEXT: "preserved" });
   for (const home of f.homes) expect(checkClaudeProfileHook({ ...home, exists: true }).state).toBe("installed");
@@ -80,10 +88,99 @@ test("one confirmation configures plugin and hook in both selected homes under t
   expect(f.env.CLAUDE_CONFIG_DIR).toBe(f.unused);
 });
 
+test("a stale project-scope row is preserved while setup installs the user-scope plugin", async () => {
+  const f = fixture(), home = f.homes[0]!;
+  f.ports.homes = [home]; f.ports.yes = true;
+  const projectPath = join(f.root, "project-home");
+  f.states.get(home.path)!.marketplace = true;
+  f.states.get(home.path)!.plugins = [{ id: PLUGIN, scope: "project", projectPath, version: "0.23.1" }];
+
+  await setupClaudeHomes(f.ports);
+
+  expect(f.runs.map(call => call.argv)).toEqual([["claude", "plugin", "install", PLUGIN, "--scope", "user"]]);
+  expect(f.states.get(home.path)!.plugins).toEqual([
+    { id: PLUGIN, scope: "project", projectPath, version: "0.23.1" },
+    expect.objectContaining({ id: PLUGIN, scope: "user", version: VERSION }),
+  ]);
+  expect(f.printed.join("\n")).toContain(`project plugin row preserved at ${projectPath} (version 0.23.1)`);
+});
+
+test("a current user-scope row needs no plugin step when a stale project row is also present", async () => {
+  const f = fixture(), home = f.homes[0]!;
+  f.ports.homes = [home]; f.ports.yes = true;
+  const projectPath = join(f.root, "project-home");
+  f.states.get(home.path)!.marketplace = true;
+  f.states.get(home.path)!.plugins = [
+    { id: PLUGIN, scope: "project", projectPath, version: "0.23.1" },
+    { id: PLUGIN, scope: "user", version: VERSION },
+  ];
+
+  await setupClaudeHomes(f.ports);
+
+  expect(f.runs).toEqual([]);
+  expect(f.printed.join("\n")).toContain(`project plugin row preserved at ${projectPath} (version 0.23.1)`);
+});
+
+test("replacing a stale user-scope plugin uses explicit user scope for both plugin commands", async () => {
+  const f = fixture(), home = f.homes[0]!;
+  f.ports.homes = [home]; f.ports.yes = true;
+  f.states.get(home.path)!.marketplace = true;
+  f.states.get(home.path)!.plugins = [{ id: PLUGIN, scope: "user", version: "0.23.1" }];
+
+  await setupClaudeHomes(f.ports);
+
+  expect(f.runs.map(call => call.argv)).toEqual([
+    ["claude", "plugin", "uninstall", PLUGIN, "--scope", "user"],
+    ["claude", "plugin", "install", PLUGIN, "--scope", "user"],
+  ]);
+});
+
+test("a stale marketplace is not removed when that could remove project-scope plugin rows", async () => {
+  const f = fixture(), home = f.homes[0]!;
+  f.ports.homes = [home]; f.ports.yes = true;
+  const projectPath = join(f.root, "project-home"), state = f.states.get(home.path)!;
+  state.marketplace = true; state.marketplacePath = join(f.root, "old-package");
+  state.plugins = [{ id: PLUGIN, scope: "project", projectPath, version: "0.23.1" }];
+
+  await expect(setupClaudeHomes(f.ports)).rejects.toThrow("marketplace removal in");
+
+  expect(f.runs).toEqual([]);
+  expect(state.plugins).toEqual([{ id: PLUGIN, scope: "project", projectPath, version: "0.23.1" }]);
+  expect(f.printed.join("\n")).toContain(`project plugin row preserved at ${projectPath} (version 0.23.1)`);
+});
+
+test("ahub setup records --agents after a Claude plugin step fails and still exits non-zero", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-setup-home-failure-")); roots.push(root);
+  const bin = join(root, "bin"), userHome = join(root, "user"), claudeHome = join(root, "claude"), hubHome = join(root, "hub");
+  const calls = join(root, "calls.log"), claude = join(bin, "claude"), packageRoot = realpathSync(process.cwd());
+  mkdirSync(bin); mkdirSync(userHome); mkdirSync(claudeHome);
+  writeFileSync(claude, `#!/bin/sh
+printf '%s\\n' "$*" >> '${calls}'
+case "$*" in
+  "plugin list --json") printf '%s\\n' '[]' ;;
+  "plugin marketplace list --json") printf '%s\\n' '[{"name":"agent-hub","path":"${packageRoot}"}]' ;;
+  *) exit 7 ;;
+esac
+`, { mode: 0o755 });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(AGENTHUB_(?!HOME$)|CLAUDECODE|CLAUDE_CODE_SESSION_ID|CODEX_THREAD_ID)/.test(key))) as NodeJS.ProcessEnv;
+  Object.assign(env, { HOME: userHome, CLAUDE_CONFIG_DIR: claudeHome, AGENTHUB_HOME: hubHome,
+    AMEM_HOME: join(root, "amem"), PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}` });
+  const result = Bun.spawnSync(["bun", join(process.cwd(), "src/cli/main.ts"), "setup", "--agents", "pi,codex", "--yes"], { env, stdin: "ignore" });
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("Claude plugin setup failed");
+  expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
+    "plugin list --json",
+    "plugin marketplace list --json",
+    "plugin install agent-hub@agent-hub --scope user",
+  ]);
+  expect(JSON.parse(readFileSync(join(hubHome, "defaults.json"), "utf8"))).toEqual({ schema: 1, start: { agents: ["pi", "codex"] } });
+});
+
 test("revoked recovery authority cannot write a profile hook after confirmation or a final probe", async () => {
   for (const phase of ["confirmation", "probe"]) {
     const f = fixture(); let allowed = true;
-    for (const state of f.states.values()) { state.marketplace = true; state.plugin = true; }
+    for (const state of f.states.values()) { state.marketplace = true; state.plugins = [{ id: PLUGIN, scope: "user", version: VERSION }]; }
     f.ports.current = () => { if (!allowed) throw new Error("recovery authority changed"); };
     if (phase === "confirmation") f.ports.ask = async () => { allowed = false; return "y"; };
     else {
@@ -163,7 +260,7 @@ test("fresh default home is previewed without creating it, then configured after
   const found = await discoverClaudeHomes({ home: f.user, env: { HOME: f.user } });
   expect(found.homes).toEqual([{ path: defaultHome, exists: false, sources: ["default"] }]);
   f.ports.homes = found.homes;
-  f.states.set(defaultHome, { marketplace: false, plugin: false });
+  f.states.set(defaultHome, { marketplace: false, marketplacePath: undefined, plugins: [] });
   f.ports.ask = async () => {
     expect(existsSync(defaultHome)).toBe(false);
     expect(f.runs).toEqual([]);
