@@ -209,9 +209,9 @@ export function createProvider(options: { home: string; registry?: Registry; lif
   };
   let lastRunning: ProjectRow[] = [];
   async function space() {
-    const listed = await within(running(), Math.round(SPACE_BUDGET_MS / 2));
-    if (listed) lastRunning = listed;
-    const projects = listed ?? lastRunning;
+    // A listing that finishes after its budget still becomes the fallback for the next poll.
+    const listing = running().then((rows) => { lastRunning = rows; return rows; }, () => lastRunning);
+    const projects = await within(listing, Math.round(SPACE_BUDGET_MS / 2)) ?? lastRunning;
     for (const id of offices.keys()) if (!projects.some((p) => p.id === id)) offices.delete(id);
     const scenes = [];
     const snaps = await Promise.all(projects.map((project) =>
