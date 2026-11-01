@@ -23237,6 +23237,7 @@ init_src();
 // src/hub/tasks.ts
 init_packs();
 init_research_experiments();
+init_research_experiments();
 init_research_campaign();
 init_task_code_symbols();
 init_test_integrity();

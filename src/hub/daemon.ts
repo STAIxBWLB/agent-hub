@@ -3603,6 +3603,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify(await tasks.studyRevise(by, a));
       case "study_approve":
         return JSON.stringify(await tasks.studyApprove(by, a));
+      case "study_approve_protocol":
+        return JSON.stringify(await tasks.experimentApproveProtocol(by, a));
       case "study_close":
         return JSON.stringify(await tasks.studyClose(by, a));
 
@@ -4310,7 +4312,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const research = board.researchIntegrity();
     const researchDispatch = board.researchDispatchIntegrity();
     const researchExperiments = board.researchExperimentsIntegrity();
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    const researchComparisons = board.researchComparisonIntegrity();
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -7478,6 +7481,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return "target lacks research_dropped_offers; persisted study re-offers require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_experiments")) && board.hasResearchExperimentState())
         return "target lacks research_experiments; persisted experiment records require a supporting daemon";
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_comparisons")) && board.hasResearchComparisonState())
+        return "target lacks research_comparisons; persisted comparison plans, approvals or protocol context require a supporting daemon";
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("project_autonomy")) {
         let needsAutonomy = autonomyConfirmed.size > 0;
         try {

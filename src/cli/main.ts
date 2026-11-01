@@ -1492,6 +1492,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (parsed.op === "show") return showToolText(data => parsed.id ? renderStudyShow(data, present.columns) : renderStudyList(data, present.columns), await taskOp("hub_study_show", parsed.id ? { id: parsed.id } : parsed.after ? { after: parsed.after } : {}), present);
     const request = parsed.op === "draft" ? { parentTaskId: parsed.parentTaskId, contract: contract(parsed.file) }
       : parsed.op === "revise" ? { id: parsed.id, revision: parsed.revision, contract: contract(parsed.file) }
+      : parsed.op === "approve_protocol" ? { hash: parsed.hash }
       : parsed.op === "approve" ? { id: parsed.id, revision: parsed.revision } : { id: parsed.id, revision: parsed.revision, reason: parsed.reason };
     return showToolText(data => renderStudyReceipt(parsed.op, data, present.columns), await taskOp(`study_${parsed.op}`, request, false, undefined, parsed.op === "approve" ? 90_000 : undefined), present);
   },

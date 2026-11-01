@@ -352,3 +352,94 @@ export interface ExperimentWriteFence {
   campaignRevision: number;
   campaignHash: string;
 }
+
+export type ComparisonVaryingField = "code" | "parameters" | "seeds" | "role";
+export interface ComparisonPlanV1 {
+  campaignId: string;
+  fixed: Pick<ExperimentProtocolContract, "inputs" | "splits" | "evaluator" | "metrics">;
+  varying: ComparisonVaryingField[];
+  rule: { kind: "tolerance"; value: number } | { kind: "test"; name: string; alpha: number };
+}
+export type ComparisonCompatibility = { compatible: true }
+  | { compatible: false; field: string; side: "baseline" | "variant" | "pair" };
+
+/** A plan declares comparison invariants and a rule; parsing never runs the statistical rule. */
+export function parseComparisonPlan(input: unknown): ComparisonPlanV1 {
+  const raw = object(input, ["campaignId", "fixed", "varying", "rule"], "comparison");
+  const fixed = object(raw.fixed, ["inputs", "splits", "evaluator", "metrics"], "comparison.fixed");
+  const inputs = unique(array(fixed.inputs, 64, "comparison.fixed.inputs").map((value, index) => {
+    const field = `comparison.fixed.inputs[${index}]`, row = object(value, ["sourceId", "sha256"], field);
+    return { sourceId: pattern(row.sourceId, SOURCE, `${field}.sourceId`), sha256: pattern(row.sha256, HASH, `${field}.sha256`) };
+  }), value => value.sourceId, "comparison.fixed.inputs");
+  const evaluator = object(fixed.evaluator, ["id", "version", "hash"], "comparison.fixed.evaluator");
+  const metrics = unique(array(fixed.metrics, 32, "comparison.fixed.metrics").map((value, index) => {
+    const field = `comparison.fixed.metrics[${index}]`, row = object(value, ["name", "unit", "direction"], field);
+    return { name: text(row.name, SHORT, `${field}.name`), unit: text(row.unit, SHORT, `${field}.unit`), direction: choice(row.direction, ["higher", "lower"], `${field}.direction`) };
+  }), value => value.name, "comparison.fixed.metrics");
+  const varying = unique(array(raw.varying, 4, "comparison.varying").map(value => choice<ComparisonVaryingField>(value, ["code", "parameters", "seeds", "role"], "comparison.varying")), value => value, "comparison.varying");
+  const rawRule = object(raw.rule, ["kind", "value", "name", "alpha"], "comparison.rule");
+  let rule: ComparisonPlanV1["rule"];
+  if (rawRule.kind === "tolerance") {
+    object(raw.rule, ["kind", "value"], "comparison.rule");
+    rule = { kind: "tolerance", value: number(rawRule.value, "comparison.rule.value", true) };
+  } else if (rawRule.kind === "test") {
+    object(raw.rule, ["kind", "name", "alpha"], "comparison.rule");
+    const alpha = number(rawRule.alpha, "comparison.rule.alpha");
+    if (alpha <= 0 || alpha >= 1) fail("comparison.rule.alpha", "expected a probability strictly between zero and one");
+    rule = { kind: "test", name: text(rawRule.name, SHORT, "comparison.rule.name"), alpha };
+  } else fail("comparison.rule.kind", "expected tolerance or test");
+  return bounded({ campaignId: pattern(raw.campaignId, CAMPAIGN, "comparison.campaignId"), fixed: { inputs, splits: strings(fixed.splits, 16, "comparison.fixed.splits"),
+    evaluator: { id: pattern(evaluator.id, ID, "comparison.fixed.evaluator.id"), version: text(evaluator.version, SHORT, "comparison.fixed.evaluator.version"),
+      ...(evaluator.hash !== undefined ? { hash: pattern(evaluator.hash, HASH, "comparison.fixed.evaluator.hash") } : {}) }, metrics }, varying, rule }, "comparison");
+}
+
+export function comparisonPlanHash(plan: ComparisonPlanV1): string {
+  return createHash("sha256").update(canonicalJson(parseComparisonPlan(plan))).digest("hex");
+}
+
+/** Structural compatibility only. Identity metadata remains in each protocol hash and approval binding. */
+export function compareExperimentProtocols(plan: ComparisonPlanV1, baseline: ExperimentProtocolContract, variant: ExperimentProtocolContract): ComparisonCompatibility {
+  const declared = parseComparisonPlan(plan), a = parseExperimentProtocol(baseline), b = parseExperimentProtocol(variant);
+  if (a.campaignId !== declared.campaignId) return { compatible: false, field: "campaignId", side: "baseline" };
+  if (b.campaignId !== declared.campaignId) return { compatible: false, field: "campaignId", side: "variant" };
+  for (const field of ["inputs", "splits", "evaluator", "metrics"] as const) {
+    const expected = canonicalJson(declared.fixed[field]);
+    if (canonicalJson(a[field]) !== expected) return { compatible: false, field, side: "baseline" };
+    if (canonicalJson(b[field]) !== expected) return { compatible: false, field, side: "variant" };
+  }
+  // Only campaignRevision, lineage and supersedes are omitted. Every experimental field outside varying stays exact.
+  for (const field of ["claimIds", "code", "environment", "method", "parameters", "seeds", "role", "resourceLimits", "sealed"] as const) {
+    if ((field === "code" || field === "parameters" || field === "seeds" || field === "role") && declared.varying.includes(field)) continue;
+    const left = field === "role" ? { role: a.role, variantOf: a.variantOf } : a[field];
+    const right = field === "role" ? { role: b.role, variantOf: b.variantOf } : b[field];
+    if (canonicalJson(left) !== canonicalJson(right)) return { compatible: false, field, side: "pair" };
+  }
+  return { compatible: true };
+}
+
+/** Keep the pair's own identities visible even when compatibility ignores identity metadata; never rank either member. */
+export function comparisonProjection(plan: ComparisonPlanV1, baseline: ExperimentProtocolContract, variant: ExperimentProtocolContract) {
+  const declared = parseComparisonPlan(plan), a = parseExperimentProtocol(baseline), b = parseExperimentProtocol(variant);
+  return {
+    planHash: comparisonPlanHash(declared), compatibility: compareExperimentProtocols(declared, a, b),
+    baseline: { protocolHash: protocolHash(a), campaignRevision: a.campaignRevision },
+    variant: { protocolHash: protocolHash(b), campaignRevision: b.campaignRevision },
+    identityNote: "campaignRevision, lineage and supersedes are excluded from compatibility only; each displayed protocol identity and approval binding remains separate.",
+  };
+}
+
+
+/** Identity of the declared evaluator object, not a measurement of evaluator execution. */
+export function evaluatorIdentityHash(protocol: ExperimentProtocolContract): string {
+  return createHash("sha256").update(canonicalJson(parseExperimentProtocol(protocol).evaluator)).digest("hex");
+}
+
+/** Matches host-read approval identity only; Tasks remains responsible for person authority and persistence. */
+export function protocolApprovalBindingMatches(protocol: ExperimentProtocolContract, binding: { protocolHash: string; evaluatorHash: string } | undefined): boolean {
+  const hash = protocolHash(protocol), evaluator = evaluatorIdentityHash(protocol);
+  if (!binding) return false;
+  try {
+    const record = object(binding, undefined, "approval");
+    return record.protocolHash === hash && record.evaluatorHash === evaluator;
+  } catch { return false; }
+}

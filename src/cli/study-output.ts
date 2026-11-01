@@ -1,4 +1,4 @@
-// Human output for `ahub study draft|revise|approve|close|show` (#601). Pure: the hub's parsed JSON in, spans out, no I/O. `--json` is the caller's branch and prints the same text.
+// Human output for `ahub study draft|revise|approve|approve-protocol|close|show`. Pure: the hub's parsed JSON in, spans out, no I/O. `--json` is the caller's branch and prints the same text.
 // A campaign is named by ids, revisions, states and counts. The hub already stubs private campaigns, tasks and sources; this file never asks for a question, scope, path or excerpt.
 import { blank, grid, heading, pair, s } from "./sdlc-output.ts";
 import type { Span, Tone } from "./console-state.ts";
@@ -55,6 +55,14 @@ const VERB: Record<string, string> = { draft: "drafted", revise: "drafted as the
 /** The receipt of a draft, revision, approval or close. */
 export function renderStudyReceipt(op: string, receipt: unknown, columns?: number): Span[][] {
   const r = receipt as any, units = list(r?.units);
+  if (op === "approve_protocol") {
+    const hash = (value: unknown) => typeof value === "string" && value.length === 64 && /^[a-f0-9]{64}$/.test(value) ? value : "unknown";
+    const by = typeof r?.approvedBy === "string" && /^[a-z][a-z0-9_-]{0,63}$/.test(r.approvedBy) ? r.approvedBy : "unknown";
+    const at = typeof r?.approvedAt === "number" && Number.isFinite(r.approvedAt) && r.approvedAt >= 0 && r.approvedAt <= 8_640_000_000_000_000
+      ? new Date(r.approvedAt).toISOString().slice(0, 19).replace("T", " ") + " UTC" : "unknown";
+    return [...heading("Research protocol approval", columns), ...pair("protocol hash", hash(r?.protocolHash), columns, 16),
+      ...pair("evaluator hash", hash(r?.evaluatorHash), columns, 16), ...pair("approved by", by, columns, 16), ...pair("approved at", at, columns, 16)];
+  }
   const out: Span[][] = [...heading(`Research campaign ${r?.id ?? "?"} revision ${count(r?.revision)} ${VERB[op] ?? op}`, columns)];
   out.push(...pair("status", r?.status, columns, 8, STATUS_TONE[r?.status]), ...pair("parent", `#${count(r?.parentTaskId)}`, columns, 8, "taskRef"), ...pair("units", count(r?.unitCount), columns, 8));
   if (units.length) out.push(blank, ...grid(["UNIT", "TASK", "ROUND"], units.map((unit: any) => [s(unit.unitId, "issueRef"), s(`#${count(unit.taskId)}`, "taskRef"), s(count(unit.round))]), columns));

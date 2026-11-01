@@ -1,0 +1,140 @@
+import { createHash } from "node:crypto";
+import { protocolHash, type ExperimentProtocolContract } from "../src/hub/research-experiments.ts";
+import { canonicalJson } from "../src/hub/packs.ts";
+import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Database } from "bun:sqlite";
+import { realPath } from "../src/hub/project.ts";
+import { Board } from "../src/hub/board.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
+import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { readRestartSnapshot, writeRestartSnapshot, type RestartSnapshot } from "../src/hub/restart.ts";
+import { projectChain } from "@staix/agent-mem";
+import { USER } from "../src/hub/envelope.ts";
+import { campaignHash, parseResearchCampaign } from "../src/hub/research-campaign.ts";
+
+async function fixture(options: { draft?: boolean; experiment?: boolean; legacy?: boolean; files?: Record<string, unknown> } = {}) {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-comparison-recovery-"))), stateDir = join(root, "state");
+  mkdirSync(stateDir);
+  const envKeys = ["HOME", "CLAUDE_CONFIG_DIR", "AGENTHUB_HOME", "AMEM_HOME", "KIMI_CODE_HOME"] as const;
+  const savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+  for (const key of envKeys) {
+    const dir = join(root, key.toLowerCase());
+    mkdirSync(dir);
+    process.env[key] = dir;
+  }
+  const configDir = join(root, ".agenthub");
+  mkdirSync(configDir);
+  for (const [name, body] of Object.entries(options.files ?? {})) writeFileSync(join(configDir, name), JSON.stringify(body), { mode: 0o600 });
+  let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined, client: ControlClient | undefined;
+  const close = async () => {
+    try { client?.close(); await daemon?.stop(); }
+    finally {
+      for (const key of envKeys) { const previous = savedEnv[key]; if (previous === undefined) delete process.env[key]; else process.env[key] = previous; }
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+  const project = projectChain(root).at(-1)!;
+  let expectedResearch: ReturnType<Board["researchIntegrity"]> | undefined;
+  try {
+    if (options.draft || options.experiment) {
+      const board = new Board(join(stateDir, "hub.db"));
+      try {
+        const parent = board.propose(USER, { title: "Research recovery fixture", class: "plan", backlog: true });
+        const contract = parseResearchCampaign({ question: "Which observations distinguish the alternatives?", scope: "Isolated recovery fixture", exclusions: [], sourceIds: [],
+          units: [{ id: "discovery", round: 0, question: "Collect observations", perspective: "Independent", requiredOutput: "Evidence list", sourceIds: [], dependsOn: [], purpose: "discovery" }],
+          deliverableSections: [], stopPolicy: { maxUnits: 1, maxFollowUpRounds: 0, deadline: "2030-01-01T00:00:00Z" } });
+        board.saveResearchCampaignDraft({ id: "rc-000000000001", project, parentTaskId: parent.id, revision: 1, status: "draft", contract,
+          hash: campaignHash(contract), private: false, createdBy: USER, createdAt: 1 }, undefined, parent.history.length);
+        if (options.experiment) {
+          const activated = board.activateCampaign("rc-000000000001", 1, project, USER, 2, [{ unitId: "discovery", create: { title: "Experiment fixture", class: "implement", signals: [] } }], board.get(parent.id)!.history.length, false, {});
+          const task = board.update(activated.bindings[0]!.taskId, USER, "backlog pulled", {state:"proposed",owner:"local"});
+          board.update(task.id, "local", "accepted", {state:"in_progress"});
+          const protocol: ExperimentProtocolContract = {campaignId:activated.campaign.id,campaignRevision:1,lineage:"fixture",claimIds:[],inputs:[],code:{commit:"b".repeat(40)},environment:{descriptor:"Synthetic Linux CPU"},method:"Record synthetic evidence",parameters:{},seeds:[1],evaluator:{id:"count",version:"1"},metrics:[],role:"baseline",splits:[],resourceLimits:[],sealed:false};
+          const fence = () => ({project,taskId:task.id,taskFlowRevision:board.get(task.id)!.history.length,owner:"local",campaignId:activated.campaign.id,campaignRevision:1,campaignHash:activated.campaign.hash});
+          const hash = protocolHash(protocol);
+          board.saveExperimentProtocol({hash,project,recordedForTaskId:task.id,protocol,by:"local",at:3,private:false},fence());
+          if (options.legacy) (board as unknown as {db:Database}).db.query("DELETE FROM research_protocol_context").run();
+          const attempt={protocolHash:hash,taskId:task.id,phase:"final" as const,idempotencyKey:"recovery-fixture"};
+          board.createExperimentAttempt({attemptId:"ra-000000000001",project,attempt,bodyHash:createHash("sha256").update(canonicalJson(attempt)).digest("hex"),by:"local",at:4,private:false},fence());
+          board.appendExperimentEvent("ra-000000000001","end",{kind:"end",body:{status:"failed"}},[],"local",5,false,0,fence());
+        }
+        expectedResearch = board.researchIntegrity();
+      } finally { board.close(); }
+    }
+    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
+      config: { ...DEFAULT_CONFIG, roster: {claude:true}, batch_ms: 0,
+        memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
+        mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, research: { ...DEFAULT_CONFIG.research, enabled: false },
+        task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } });
+    client = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
+    const status = (await client.request({ t: "status" })).status;
+    return { root, configDir, client, status, expectedResearch, withoutResearch: status.features.filter((feature: string) => feature !== "research_comparisons"), close };
+  } catch (error) { await close(); throw error; }
+}
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+const request = (f: Fixture, op: string, targetFeatures?: readonly string[]) => f.client.request({ t: "recovery", op, operationId: "research-capability",
+  expectedInstanceId: f.status.instanceId, ...(targetFeatures === undefined ? {} : { targetFeatures }) });
+const inspect = async (f: Fixture) => (await f.client.request({ t: "recovery", op: "inspect", expectedInstanceId: f.status.instanceId })).recovery;
+
+
+test("empty and legacy experiment state do not require the comparison floor", async () => {
+  expect(DAEMON_FEATURES).toContain("research_comparisons");
+  for (const options of [{}, {experiment:true,legacy:true}]) {
+    const f=await fixture(options);
+    try { expect(await request(f,"prepare",f.withoutResearch)).toMatchObject({ok:true}); }
+    finally { await f.close(); }
+  }
+},20_000);
+
+test("comparison context refuses unsupported recovery before any phase opens and joins integrity", async () => {
+  const f=await fixture({experiment:true});
+  try {
+    for (const op of ["prepare","commit","inspect"]) {
+      expect(await request(f,op,f.withoutResearch)).toMatchObject({ok:false,error:expect.stringContaining("research_comparisons")});
+      expect((await inspect(f)).phase).toBeUndefined();
+    }
+    expect(await request(f,"prepare",f.status.features)).toMatchObject({ok:true,recovery:{integrity:{current:{researchComparisons:{plans:0,approvals:0,contexts:1,digest:expect.stringMatching(/^[a-f0-9]{64}$/)}}}}});
+  } finally { await f.close(); }
+},20_000);
+
+test("protocol approval is reachable through the console study operation", async () => {
+  const f=await fixture({experiment:true});
+  try {
+    const board=new Board(join(f.root,"state/hub.db"));
+    let hash:string;
+    try { hash=board.experimentAttempt("ra-000000000001")!.attempt.protocolHash; }
+    finally { board.close(); }
+    const reply=await f.client.request({t:"task",op:"study_approve_protocol",args:{hash}});
+    expect(reply.ok,JSON.stringify(reply)).toBe(true);
+    expect(JSON.parse(reply.text)).toMatchObject({protocolHash:hash,approvedBy:USER,evaluatorHash:expect.stringMatching(/^[a-f0-9]{64}$/)});
+    const replay=await f.client.request({t:"task",op:"study_approve_protocol",args:{hash}});
+    expect(replay.text).toBe(reply.text);
+    const agent=await ControlClient.connect(join(f.root,"state"),{role:"tools",peer:"claude"});
+    try {
+      const refused=await agent.request({t:"task",op:"study_approve_protocol",args:{hash}});
+      expect(refused).toMatchObject({ok:false,error:expect.stringContaining("console commands")});
+    } finally { agent.close(); }
+
+  } finally { await f.close(); }
+},20_000);
+
+
+test("restart snapshots retain comparison integrity and refuse incomplete or malformed evidence", () => {
+  const stateDir=realPath(mkdtempSync(join(tmpdir(),"ahub-comparison-snapshot-")));
+  try {
+    const researchComparisons={plans:1,approvals:2,contexts:3,digest:"a".repeat(64)};
+    const snapshot:RestartSnapshot={schemaVersion:1,projectRoot:stateDir,projectId:"fixture",sourceInstanceId:"source",operationId:"comparison",committedAt:1,
+      bus:new Bus({batchMs:0}).snapshot(),manualPaused:[],peers:[],integrity:{queues:{},manualPaused:[],boardDigest:"board",budgetDigest:"budget",researchComparisons}};
+    const expected={projectRoot:stateDir,projectId:"fixture",operationId:"comparison"};
+    writeRestartSnapshot(stateDir,snapshot);
+    expect(readRestartSnapshot(stateDir,expected)?.integrity?.researchComparisons).toEqual(researchComparisons);
+    for (const invalid of [{...researchComparisons,plans:-1},{...researchComparisons,approvals:0.5},{plans:1,approvals:2,digest:"a".repeat(64)},{...researchComparisons,digest:"invalid"},null]) {
+      writeRestartSnapshot(stateDir,{...snapshot,integrity:{...snapshot.integrity!,researchComparisons:invalid}} as RestartSnapshot);
+      expect(readRestartSnapshot(stateDir,expected)).toBeUndefined();
+    }
+  } finally { rmSync(stateDir,{recursive:true,force:true}); }
+});
