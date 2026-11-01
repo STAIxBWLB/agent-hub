@@ -3,11 +3,11 @@ import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { Database } from "bun:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { ControlClient, PROTOCOL, PROTOCOL_MIN, RECOVERY_SOURCE_PROTOCOLS, controlProtocolWindow } from "./control-client.ts";
 import { Registry, type Project } from "./registry.ts";
-import { hubHome } from "./project.ts";
+import { hubHome, realPath } from "./project.ts";
 import { startDashboard, dashboardView } from "./ui.ts";
 import { projectChain } from "@staix/agent-mem";
 import type { ProjectInspection } from "./lifecycle.ts";
@@ -25,7 +25,7 @@ export type ManagerOptions = { registry?: Registry; lifecycle?: Lifecycle; home?
   /** Test clock seam: maps nominal forwarding deadlines, never comes from dashboard input. */
   forwardTimeoutMs?: (action: string, nominalMs: number) => number };
 type ManagerHandle = { stop(): Promise<void>; stopped: Promise<void> };
-type Manifest = { port: number; protocol: number; protocolMin?: number; protocolMax?: number; instanceId: string; pid: number; pidSignature?: string };
+type Manifest = { port: number; protocol: number; protocolMin?: number; protocolMax?: number; instanceId: string; pid: number; pidSignature?: string; runtimeRoot?: string };
 const active = new Map<string, { handle: ManagerHandle; issue(liveTest?: boolean): string }>();
 const CONTROL_TIMEOUT = 3000;
 // A current CLI may authenticate the previous protocol-9 manager while
@@ -181,31 +181,35 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
     cleanup(); resolveStopped();
   };
   try {
-    owner = claimOwner(f.owner, instanceId, pidSignature);
-    const { list, act } = projectConsole({ registry, lifecycle, home, stopping: () => stopping, forwardTimeoutMs: options.forwardTimeoutMs });
-    dashboard = startDashboard({ projects: list, snapshot: (after, input = {}) => act({ ...input, action: "snapshot", after }), action: act });
-    server = Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: 1024,
-      async fetch(req) {
-        if (req.headers.has("origin")) return new Response("forbidden", { status: 403 });
-        if (req.headers.get("authorization") !== `Bearer ${token}`) return new Response("unauthorized", { status: 401 });
-        if (req.method !== "POST") return new Response("POST required", { status: 405 });
-        const expected = req.headers.get("x-agenthub-instance");
-        if (expected && expected !== instanceId) return Response.json({ ok: false, error: "manager instance changed" }, { status: 409 });
-        if (stopping) return Response.json({ ok: false, error: "manager is stopping" }, { status: 409 });
-        const path = new URL(req.url).pathname;
-        if (path === "/open") {
-          const input = await req.json().catch(() => ({})) as { liveTest?: boolean };
-          return Response.json({ ok: true, instanceId, protocol: PROTOCOL_MIN, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, url: dashboard!.issue(false, input.liveTest === true), ...(input.liveTest === true ? { liveTest: true } : {}) });
-        }
-        if (path === "/stop") { setTimeout(() => void stop(), 0); return Response.json({ ok: true, instanceId }); }
-        return new Response("not found", { status: 404 });
-      },
-    });
-    writeFileSync(f.token, token, { mode: 0o600 });
-    chmodSync(f.token, 0o600);
-    const temp = `${f.status}.${instanceId}.tmp`;
-    writeFileSync(temp, JSON.stringify({ port: server.port, protocol: PROTOCOL_MIN, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, instanceId, pid: process.pid, ...(pidSignature ? { pidSignature } : {}) }));
-    renameSync(temp, f.status);
+    const publicationRegistry = typeof registry.runtimeCaptureLocked === "function" && typeof registry.path === "string"
+      && resolve(registry.path) === resolve(join(home, "registry.db")) ? registry : new Registry(join(home, "registry.db"));
+    try { publicationRegistry.runtimeCaptureLocked(() => {
+      owner = claimOwner(f.owner, instanceId, pidSignature);
+      const { list, act } = projectConsole({ registry, lifecycle, home, stopping: () => stopping, forwardTimeoutMs: options.forwardTimeoutMs });
+      dashboard = startDashboard({ projects: list, snapshot: (after, input = {}) => act({ ...input, action: "snapshot", after }), action: act });
+      server = Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: 1024,
+        async fetch(req) {
+          if (req.headers.has("origin")) return new Response("forbidden", { status: 403 });
+          if (req.headers.get("authorization") !== `Bearer ${token}`) return new Response("unauthorized", { status: 401 });
+          if (req.method !== "POST") return new Response("POST required", { status: 405 });
+          const expected = req.headers.get("x-agenthub-instance");
+          if (expected && expected !== instanceId) return Response.json({ ok: false, error: "manager instance changed" }, { status: 409 });
+          if (stopping) return Response.json({ ok: false, error: "manager is stopping" }, { status: 409 });
+          const path = new URL(req.url).pathname;
+          if (path === "/open") {
+            const input = await req.json().catch(() => ({})) as { liveTest?: boolean };
+            return Response.json({ ok: true, instanceId, protocol: PROTOCOL_MIN, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, url: dashboard!.issue(false, input.liveTest === true), ...(input.liveTest === true ? { liveTest: true } : {}) });
+          }
+          if (path === "/stop") { setTimeout(() => void stop(), 0); return Response.json({ ok: true, instanceId }); }
+          return new Response("not found", { status: 404 });
+        },
+      });
+      writeFileSync(f.token, token, { mode: 0o600 });
+      chmodSync(f.token, 0o600);
+      const temp = `${f.status}.${instanceId}.tmp`;
+      writeFileSync(temp, JSON.stringify({ port: server.port, protocol: PROTOCOL_MIN, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, instanceId, pid: process.pid, ...(pidSignature ? { pidSignature } : {}), runtimeRoot: realPath(resolve(import.meta.dir, "../..")) }), { mode: 0o600 });
+      renameSync(temp, f.status);
+    }); } finally { if (publicationRegistry !== registry) publicationRegistry.close(); }
     // The manager outlives whoever opened it; a deleted AGENTHUB_HOME (a test suite's temp
     // home, issue #56) must not leave it serving a registry that no longer exists.
     orphanWatch = setInterval(() => {

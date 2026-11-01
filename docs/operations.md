@@ -3034,12 +3034,39 @@ upgrade. The registry and manager still serialize their short ownership writes.
 Legacy unscoped recovery receipts retain their machine-wide hold and original
 shared installation steps; finish or dispose those before a new project upgrade.
 
-Ordinary `ahub up` captures the invoking package and its exact first-party memory
-core under `~/.agenthub/releases/<VERSION>/source-<digest>/`, then starts the
-daemon there. Captures are verified on reuse and do not depend on a mutable global
-installation. Scoped upgrade targets use the same version directory, with their
-verified registry install kept separately in `registry/`. Recovery reuses the
-exact retained target path bound to its authority receipt.
+From 0.26.0, `ahub up`, manager Start and dashboard Start honor the selected
+project's `<state dir>/runtime.json`. It binds the project identity to a verified
+runtime version, root and capture digest. A caller at that version or later uses
+the retained runtime; an older caller refuses with `this project runs X; use X or
+later / ahub upgrade`. A scoped upgrade changes only that project's selection and
+does not refresh the shared manager. The daemon records its claimed instance,
+and readiness confirms the same selection before returning.
+
+With no runtime record, the first managed startup captures the invoking package
+and its exact first-party memory core under
+`~/.agenthub/releases/<VERSION>/source-<digest>/`. Existing records with invalid
+bindings or missing/changed captures refuse rather than selecting another
+package. Capture reuse does not depend on a mutable global installation. Scoped
+upgrade targets use the same version directory, with the verified registry
+install kept separately in `registry/`. Recovery uses its authority receipt's
+exact target path and records that selection through the updated startup path.
+
+This selector/refusal guarantee starts with 0.26.0. Published CLIs older than
+0.26.0 ignore the runtime record. After a scoped upgrade, invoke `ahub up` with a
+0.26.0-or-later CLI that is at least the selected project's version; keeping an
+older global CLI does not retrofit this protection. No database schema or
+bootstrap floor is raised for runtime selection. Tests of the updated resolver
+are not receipts from those older published binaries.
+
+After a confirmed new startup, cache maintenance keeps the newest three verified
+source captures per version plus every registered runtime and retained recovery
+reference. Publication, selection and pruning share the registry writer lock.
+Active recovery, uncertain owners or an unreadable/incomplete inventory defer
+all deletion. Only verified versioned `source-<digest>` directories are eligible;
+registry installs, unversioned coordinator sources, unknown layouts and symlinks
+remain. A damaged runtime record/capture requires inspection or restoration.
+Archiving the record deliberately resets first-use selection; archived copies
+are not active pruning references.
 
 A scoped upgrade leaves the global CLI and shared Claude plugin unchanged.
 Update the CLI separately with `bun add --global @staix/agent-hub@<version>`, then

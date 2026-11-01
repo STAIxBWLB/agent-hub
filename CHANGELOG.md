@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Retain each project's verified runtime across stop/start, preserve other projects when upgrading one, prune unreferenced source captures with reference checks, and report stopped projects before source preservation (#1039 follow-up). Runtime selection protection begins with the 0.26.0 resolver.
+
 - Re-review approved, unmerged tasks at a new owner-reported head, or let the reviewer withdraw approval (#1047). Keep each verdict bound to its head, show stale approvals, and block stale-head merges.
 
 - Upgrade one project while other projects keep working (#1039, #1045): negotiate protocol 17/16, use per-project recovery holds and verified versioned daemon captures, and update the global CLI and shared plugin separately. Doctor reports older shared tools.
