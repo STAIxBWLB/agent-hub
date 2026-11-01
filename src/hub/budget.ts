@@ -1,7 +1,7 @@
 import { definitionOf, type AdapterDefinition } from "../adapters/registry.ts";
-import { Database } from "bun:sqlite";
+import type { Database } from "./db-schema.ts";
+import { openHubDatabase } from "./db-schema.ts";
 import type { PeerId } from "./envelope.ts";
-import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { windowKind, type WindowKind } from "./window-kind.ts";
 export { windowKind, type WindowKind };
 
@@ -136,8 +136,7 @@ export class Budget {
     private readonly hooks: BudgetHooks,
     private readonly now: () => number = Date.now,
   ) {
-    this.db = new Database(dbPath, { create: true });
-    this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
+    this.db = openHubDatabase(dbPath, { create: true });
     this.db.run(`CREATE TABLE IF NOT EXISTS budget_pauses (peer TEXT PRIMARY KEY, since INTEGER NOT NULL, resets_at INTEGER NOT NULL,
       reason TEXT NOT NULL, summary TEXT, handed_off INTEGER NOT NULL DEFAULT 0, moved TEXT NOT NULL DEFAULT '[]')`);
     try { this.normalizeStoredPauses(); } catch (error) { this.db.close(); throw error; }

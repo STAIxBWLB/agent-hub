@@ -5896,8 +5896,13 @@ var init_launch = __esm(() => {
   init_child_process();
 });
 
+// src/hub/recovery-error.ts
+var init_recovery_error = __esm(() => {
+  init_envelope();
+});
+
 // src/hub/recovery-store.ts
-import { chmodSync, existsSync as existsSync5, mkdirSync as mkdirSync6, readFileSync as readFileSync5, renameSync as renameSync4, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "fs";
+import { chmodSync, existsSync as existsSync5, linkSync, lstatSync as lstatSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync5, renameSync as renameSync4, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "fs";
 import { randomUUID as randomUUID4 } from "crypto";
 function atomicPrivateJSON(file, value) {
   const temporary = `${file}.${randomUUID4()}.tmp`;
@@ -5912,6 +5917,7 @@ function atomicPrivateJSON(file, value) {
 }
 var init_recovery_store = __esm(() => {
   init_project();
+  init_recovery_error();
   init_process_signature();
 });
 
@@ -5985,11 +5991,11 @@ var init_permission_mode = __esm(() => {
 });
 
 // src/hub/path-policy.ts
-import { accessSync, constants as constants4, lstatSync as lstatSync8, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
+import { accessSync, constants as constants4, lstatSync as lstatSync9, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
 import { dirname as dirname7, isAbsolute as isAbsolute5, join as join11, relative as relative3, resolve as resolve8, sep as sep2 } from "path";
 function existing(path) {
   try {
-    lstatSync8(path);
+    lstatSync9(path);
     return true;
   } catch (error) {
     if (error.code === "ENOENT")
@@ -6038,7 +6044,7 @@ function directAliasTarget(path) {
         return;
       ancestor = parent;
     }
-    if (!lstatSync8(ancestor).isSymbolicLink())
+    if (!lstatSync9(ancestor).isSymbolicLink())
       return;
     target = resolve8(dirname7(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
   }
@@ -6515,7 +6521,7 @@ var init_text_projection = __esm(() => {
 });
 
 // src/local/doc-read.ts
-import { lstatSync as lstatSync9 } from "fs";
+import { lstatSync as lstatSync10 } from "fs";
 import { extname } from "path";
 function docRead(file, shown, args, port, cwd) {
   const projections = port.projections();
@@ -6525,7 +6531,7 @@ function docRead(file, shown, args, port, cwd) {
   }
   let st;
   try {
-    st = lstatSync9(file);
+    st = lstatSync10(file);
   } catch {
     return `error: ${shown} cannot be read`;
   }
@@ -6848,7 +6854,7 @@ var init_web_fetch = __esm(() => {
 });
 
 // src/local/tools.ts
-import { lstatSync as lstatSync10, mkdirSync as mkdirSync8, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync7 } from "fs";
+import { lstatSync as lstatSync11, mkdirSync as mkdirSync8, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname10, join as join13, relative as relative4, resolve as resolve10 } from "path";
 function guardPath(ctx, path, mode) {
   const root = realPath(ctx.cwd);
@@ -6871,7 +6877,7 @@ function guardPath(ctx, path, mode) {
     throw new Error(`${path} is on the secrets denylist`);
   if (mode === "write" && (isHubWritePath(rel) || inside && isHubWritePath(typed)))
     throw new Error(`${path} is not writable by the local worker`);
-  if (mode === "write" && ctx.readOnly?.length && (lstatSync10(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
+  if (mode === "write" && ctx.readOnly?.length && (lstatSync11(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
     throw new Error("hardlinked write target cannot be verified with data.readonly");
   if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? []))
     throw new Error("target is protected by data.readonly");
@@ -7045,7 +7051,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
 }
 var APPROVAL_EXPIRED_TEXT = "error: approval expired: no person answered; do not retry this call; hand the task off or stop", ApprovalWaitStop, approvalError = (picked, denied) => picked === true ? undefined : picked === "expired" ? APPROVAL_EXPIRED_TEXT : picked === "aborted" ? "error: approval withdrawn because the turn ended; no operation was executed" : denied, lexists = (p) => {
   try {
-    lstatSync10(p);
+    lstatSync11(p);
     return true;
   } catch {
     return false;
@@ -10695,7 +10701,7 @@ var init_shipped_roles = __esm(() => {
 
 // src/hub/roles.ts
 import { createHash as createHash6 } from "crypto";
-import { constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync11, openSync as openSync6, readSync as readSync4, readdirSync as readdirSync2 } from "fs";
+import { constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync12, openSync as openSync6, readSync as readSync4, readdirSync as readdirSync2 } from "fs";
 import { join as join15 } from "path";
 function parseRole(text, stem, layer) {
   if (Buffer.byteLength(text) > 8192 || text.includes("\r") || !ID.test(stem))
@@ -10777,7 +10783,7 @@ function loadRoleCatalog(cwd) {
   try {
     const config = join15(cwd, ".agenthub"), dir = join15(config, "roles");
     for (const path of [config, dir]) {
-      const stat = lstatSync11(path);
+      const stat = lstatSync12(path);
       if (!stat.isDirectory() || stat.isSymbolicLink())
         throw new Error("unsafe role directory");
     }
@@ -11904,10 +11910,82 @@ var init_task_code_symbols = __esm(() => {
   HOST_CODE_SYMBOLS = Symbol("host task code symbols");
 });
 
+// package.json
+var package_default;
+var init_package = __esm(() => {
+  package_default = {
+    name: "@staix/agent-hub",
+    version: "0.25.0",
+    description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
+    license: "MIT",
+    type: "module",
+    bin: {
+      ahub: "src/cli/main.js",
+      "agent-hub": "src/cli/main.js"
+    },
+    scripts: {
+      check: "scripts/check.sh",
+      build: "bun scripts/build.mjs",
+      test: "bun test"
+    },
+    engines: {
+      bun: ">=1.4.2"
+    },
+    dependencies: {
+      "@staix/agent-mem": "0.18.0"
+    },
+    devDependencies: {
+      "@modelcontextprotocol/sdk": "^1.27.1",
+      "@types/bun": "^1.3.0",
+      typescript: "^5.8.0"
+    },
+    files: [
+      ".claude-plugin",
+      "src",
+      "src/pet/window.jxa.js",
+      "src/pet/window.html",
+      "plugins",
+      "templates",
+      "scripts/check-docs.mjs",
+      "docs",
+      "README.md",
+      "LICENSE",
+      "CHANGELOG.md",
+      "THIRD_PARTY_NOTICES.md",
+      "LICENSES"
+    ],
+    repository: {
+      type: "git",
+      url: "git+https://github.com/STAIxBWLB/agent-hub.git"
+    },
+    homepage: "https://github.com/STAIxBWLB/agent-hub",
+    publishConfig: {
+      access: "public"
+    },
+    exports: {
+      "./adapter": "./src/adapters/public.ts",
+      "./conformance": "./src/adapters/conformance/index.ts",
+      "./ui-plugin": "./src/ui/plugin.ts"
+    }
+  };
+});
+
+// src/version.ts
+var VERSION;
+var init_version = __esm(() => {
+  init_package();
+  VERSION = package_default.version;
+});
+// src/hub/db-schema.ts
+var init_db_schema = __esm(() => {
+  init_version();
+});
+
 // src/hub/planning.ts
 var init_planning = __esm(() => {
   init_sdlc();
 });
+
 // src/hub/research-campaign.ts
 var BODY2;
 var init_research_campaign = __esm(() => {
@@ -11922,6 +12000,7 @@ var init_board = __esm(() => {
   init_research_experiments();
   init_task_code_symbols();
   init_plan_conformance();
+  init_db_schema();
   init_planning();
   init_envelope();
   init_review_findings();
@@ -13012,7 +13091,7 @@ var WITHHELD = "Claude implementer turn failed (details withheld)";
 
 // src/adapters/claude-implementer.ts
 import { randomUUID as randomUUID9 } from "crypto";
-import { lstatSync as lstatSync12, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "fs";
+import { lstatSync as lstatSync13, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
 import { join as join17 } from "path";
 function provenVersion(binding) {
@@ -13070,7 +13149,7 @@ function claudeImplementerArgs(turn, mcp, settings, prompt, model) {
 async function proveClaudeImplementer(peer, command) {
   const binary = Bun.which(command[0], { PATH: process.env.PATH }) ?? command[0];
   const fingerprint = () => {
-    const file = realPath(binary), stat = lstatSync12(file);
+    const file = realPath(binary), stat = lstatSync13(file);
     return [file, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
   };
   const binding = fingerprint(), home = mkdtempSync5(join17(tmpdir5(), "ahub-claude-proof-"));
@@ -13625,7 +13704,7 @@ var init_reviewer_variants = __esm(() => {
 });
 
 // src/adapters/agy/hooks.ts
-import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, lstatSync as lstatSync13, openSync as openSync7, readSync as readSync5 } from "fs";
+import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, lstatSync as lstatSync14, openSync as openSync7, readSync as readSync5 } from "fs";
 import { homedir as homedir5 } from "os";
 import { isAbsolute as isAbsolute6, join as join18, relative as relative5 } from "path";
 import { createHash as createHash7 } from "crypto";
@@ -13673,7 +13752,7 @@ function readAgyTranscript(session, transcript) {
     let cursor = home;
     for (const name of relative5(home, transcript).split("/")) {
       cursor = join18(cursor, name);
-      if (lstatSync13(cursor).isSymbolicLink())
+      if (lstatSync14(cursor).isSymbolicLink())
         return empty;
     }
     fd = openSync7(transcript, constants6.O_RDONLY | constants6.O_NOFOLLOW);
@@ -22924,7 +23003,7 @@ init_registry();
 // src/hub/config-trust.ts
 init_child_process();
 init_git();
-import { lstatSync as lstatSync14, statSync as statSync5 } from "fs";
+import { lstatSync as lstatSync15, statSync as statSync5 } from "fs";
 import { dirname as dirname12, join as join28 } from "path";
 var MACHINE_LOCAL = [
   "kimi_cmd",
@@ -23032,11 +23111,40 @@ function readAdapterModuleDeclarations(cwd, layers) {
 init_project();
 import { readFileSync as readFileSync14 } from "fs";
 import { join as join29, resolve as resolve17 } from "path";
+
+// src/hub/protocol-window.ts
+function protocolWindow(v, vMin) {
+  if (typeof v !== "number" || !Number.isSafeInteger(v) || v <= 0)
+    return;
+  const minimum = vMin === undefined ? v : vMin;
+  if (typeof minimum !== "number" || !Number.isSafeInteger(minimum) || minimum <= 0 || minimum > v)
+    return;
+  return { v, vMin: minimum };
+}
+function negotiateProtocol(local, remote) {
+  if (!local || typeof local !== "object" || Array.isArray(local) || !remote || typeof remote !== "object" || Array.isArray(remote))
+    return;
+  const a = protocolWindow(local.v, local.vMin), b = protocolWindow(remote.v, remote.vMin);
+  if (!a || !b)
+    return;
+  const highest = Math.min(a.v, b.v);
+  return highest >= Math.max(a.vMin, b.vMin) ? highest : undefined;
+}
+
+// src/hub/control-client.ts
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
-var PROTOCOL = 16;
-var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL];
+var PROTOCOL = 17;
+var PROTOCOL_MIN = 16;
+var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, 16, PROTOCOL];
+function controlProtocolWindow(descriptor) {
+  const legacy = protocolWindow(descriptor.protocol);
+  const window = protocolWindow(descriptor.protocolMax ?? descriptor.protocol, descriptor.protocolMin ?? descriptor.protocol);
+  if (!legacy || !window || legacy.v < window.vMin || legacy.v > window.v)
+    return;
+  return window;
+}
 function readControl(stateDir) {
   try {
     const status = JSON.parse(readFileSync14(join29(stateDir, "status.json"), "utf8"));
@@ -23051,6 +23159,8 @@ function readControl(stateDir) {
       instanceId: status.instanceId,
       cwd: status.cwd,
       protocol: status.protocol,
+      protocolMin: status.protocolMin,
+      protocolMax: status.protocolMax,
       pid: status.pid,
       features: Array.isArray(status.features) ? status.features.filter((feature) => typeof feature === "string") : [],
       ...startModes ? { startModes } : {},
@@ -23071,6 +23181,7 @@ class ControlClient {
   ws;
   features = [];
   sessionId;
+  protocol;
   welcomeInstanceId;
   get instanceId() {
     return this.welcomeInstanceId;
@@ -23097,8 +23208,8 @@ class ControlClient {
         instancePins.delete(key);
     };
   }
-  static connect(stateDir, hello, timeoutMs = 3000, protocol = PROTOCOL) {
-    if (!RECOVERY_SOURCE_PROTOCOLS.includes(protocol))
+  static connect(stateDir, hello, timeoutMs = 3000, protocol) {
+    if (protocol !== undefined && !RECOVERY_SOURCE_PROTOCOLS.includes(protocol))
       return Promise.reject(new Error(`unsupported recovery source protocol ${protocol}`));
     const control = readControl(stateDir);
     if (!control)
@@ -23107,9 +23218,13 @@ class ControlClient {
     if (pin && (control.instanceId !== pin.instanceId || hello.instanceId !== undefined && hello.instanceId !== pin.instanceId)) {
       return Promise.reject(new Error("delegated audit consumer changed; refusing a connection to its replacement"));
     }
-    if (control.protocol !== undefined && control.protocol !== protocol) {
-      return Promise.reject(Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocol}, CLI speaks ${protocol}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 }));
-    }
+    const local = protocolWindow(protocol ?? PROTOCOL, protocol ?? PROTOCOL_MIN);
+    const versioned = control.protocol !== undefined || control.protocolMin !== undefined || control.protocolMax !== undefined;
+    const remote = versioned ? controlProtocolWindow(control) : undefined;
+    const selected = versioned ? remote && negotiateProtocol(local, remote) : protocol ?? PROTOCOL_MIN;
+    const mismatch = () => Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocolMax ?? control.protocol}, CLI speaks ${protocol ?? PROTOCOL}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 });
+    if (selected === undefined)
+      return Promise.reject(mismatch());
     if (hello.projectId && hello.projectId !== control.projectId || hello.instanceId && hello.instanceId !== control.instanceId || hello.projectRoot && hello.projectRoot !== control.cwd) {
       return Promise.reject(Object.assign(new Error("hub project or instance does not match the selected project"), { code: 4404 }));
     }
@@ -23151,12 +23266,15 @@ class ControlClient {
         client.pending.delete(msg.rid);
         done(msg);
       };
-      ws.onopen = () => void client.request({ t: "hello", v: protocol, token: control.token, ...hello, ...expected }, timeoutMs).then((reply) => {
+      ws.onopen = () => void client.request({ t: "hello", token: control.token, ...hello, ...expected, v: selected, vMin: remote?.vMin === undefined ? selected : Math.max(local.vMin, remote.vMin) }, timeoutMs).then((reply) => {
         if (reply.t !== "welcome" || reply.ok === false)
           return refuse(new Error(reply.error ?? "hub refused handshake"));
         if (expected.projectId && reply.projectId !== expected.projectId || expected.instanceId && reply.instanceId !== expected.instanceId || expected.projectRoot && reply.cwd !== expected.projectRoot) {
           return refuse(Object.assign(new Error("connected hub has a different project or instance"), { code: 4404 }));
         }
+        if (reply.protocol !== undefined && reply.protocol !== selected)
+          return refuse(mismatch());
+        client.protocol = selected;
         client.features = Object.freeze(Array.isArray(reply.features) ? reply.features.filter((feature) => typeof feature === "string") : []);
         client.welcomeInstanceId = typeof reply.instanceId === "string" && reply.instanceId ? reply.instanceId : undefined;
         client.sessionId = typeof reply.session === "string" && reply.session.length <= 64 ? reply.session : undefined;
@@ -23239,6 +23357,7 @@ class ControlClient {
 
 // src/hub/conductor.ts
 init_registry();
+init_db_schema();
 init_hub_tools();
 init_envelope();
 
@@ -23275,7 +23394,9 @@ init_git();
 
 // src/hub/tasks.ts
 init_spec_read();
+
 // src/hub/schedules.ts
+init_db_schema();
 var MIN_EVERY_MS = 15 * 60000;
 var MAX_EVERY_MS = 365 * 86400000;
 var KEYS = new Set(["id", "every", "cron", "tz", "class", "title", "detail", "sources", "owner", "queue"]);
@@ -23289,65 +23410,7 @@ var INTAKE_MAX_ANSWER = 64 * 1024;
 // src/hub/tasks.ts
 init_sdlc_metrics();
 init_security_baseline();
-// package.json
-var package_default = {
-  name: "@staix/agent-hub",
-  version: "0.25.0",
-  description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
-  license: "MIT",
-  type: "module",
-  bin: {
-    ahub: "src/cli/main.js",
-    "agent-hub": "src/cli/main.js"
-  },
-  scripts: {
-    check: "scripts/check.sh",
-    build: "bun scripts/build.mjs",
-    test: "bun test"
-  },
-  engines: {
-    bun: ">=1.4.2"
-  },
-  dependencies: {
-    "@staix/agent-mem": "0.18.0"
-  },
-  devDependencies: {
-    "@modelcontextprotocol/sdk": "^1.27.1",
-    "@types/bun": "^1.3.0",
-    typescript: "^5.8.0"
-  },
-  files: [
-    ".claude-plugin",
-    "src",
-    "src/pet/window.jxa.js",
-    "src/pet/window.html",
-    "plugins",
-    "templates",
-    "scripts/check-docs.mjs",
-    "docs",
-    "README.md",
-    "LICENSE",
-    "CHANGELOG.md",
-    "THIRD_PARTY_NOTICES.md",
-    "LICENSES"
-  ],
-  repository: {
-    type: "git",
-    url: "git+https://github.com/STAIxBWLB/agent-hub.git"
-  },
-  homepage: "https://github.com/STAIxBWLB/agent-hub",
-  publishConfig: {
-    access: "public"
-  },
-  exports: {
-    "./adapter": "./src/adapters/public.ts",
-    "./conformance": "./src/adapters/conformance/index.ts",
-    "./ui-plugin": "./src/ui/plugin.ts"
-  }
-};
-
-// src/version.ts
-var VERSION = package_default.version;
+init_version();
 
 // src/hub/no-writes.ts
 var OWNER_TOOL_EFFECTS = new Set(["hub_task_propose", "hub_task_decline", "hub_task_done", "hub_task_cancel", "hub_task_assign", "hub_task_escalate", "hub_review", "hub_checkpoint", "hub_remember", "hub_memory_correct", "hub_check_start", "hub_check_cancel", "hub_sdlc_record", "hub_plan_review", "hub_backlog_plan", "hub_backlog_pull", "hub_backlog_undo", "hub_backlog_split", "hub_backlog_return_untouched", "hub_release_new", "hub_release_configure", "hub_release_assign", "hub_release_cut", "hub_study_handoff"]);
@@ -23405,7 +23468,7 @@ var LEARNING_DEFAULTS = { windowMs: 30 * 24 * 3600000, threshold: 3, maxGroups: 
 init_deliverables();
 
 // src/hub/deliverable-files.ts
-import { constants as constants8, lstatSync as lstatSync15 } from "fs";
+import { constants as constants8, lstatSync as lstatSync16 } from "fs";
 init_tools();
 init_deny();
 init_permission_mode();
@@ -23466,6 +23529,7 @@ init_tool_refusal();
 // src/hub/peer-doing.ts
 var TITLE_READ_MAX = 1024 * 1024;
 var TITLE_LINE_MAX = 64 * 1024;
+
 // src/hub/instances.ts
 import { types as types4 } from "util";
 init_project();
@@ -32106,7 +32170,7 @@ init_registry();
 // src/hub/instance-execution.ts
 init_git();
 init_project();
-import { lstatSync as lstatSync16 } from "fs";
+import { lstatSync as lstatSync17 } from "fs";
 import { join as join31, resolve as resolve19 } from "path";
 var refuse = (reason) => {
   throw new Error(`instance execution workspace refused: ${reason}`);
@@ -32149,7 +32213,7 @@ function resolveInstanceExecutionCwd(projectRoot, id, declarations, roles, adapt
   try {
     root = realPath(projectRoot);
     cwd = realPath(resolve19(root, declaration.worktree));
-    if (!lstatSync16(root).isDirectory() || !lstatSync16(cwd).isDirectory())
+    if (!lstatSync17(root).isDirectory() || !lstatSync17(cwd).isDirectory())
       return refuse("workspace is not a directory");
   } catch {
     return refuse("workspace paths are unavailable");
@@ -32220,6 +32284,7 @@ function channelProject(cwd, env, policyRoles) {
 }
 
 // src/adapters/claude-channel.ts
+init_version();
 init_hub_tools();
 init_envelope();
 

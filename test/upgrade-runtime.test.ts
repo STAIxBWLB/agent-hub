@@ -4,7 +4,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
-import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
+import { ControlClient, DAEMON_FEATURES, PROTOCOL, PROTOCOL_MIN } from "../src/hub/control-client.ts";
 import { inspectProject } from "../src/hub/lifecycle.ts";
 import { endPlannedPeer, inspectRecovery, makeRecoveryDriver, makeUpgradePlan, PACKAGE_ROOT, restoredTerminalArgv } from "../src/cli/upgrade-runtime.ts";
 
@@ -26,7 +26,7 @@ test("delegated staging refuses an older target before protocol probes or runtim
   writeFileSync(join(root, "src/cli/main.js"), "throw new Error('old target must not execute');");
   writeFileSync(join(root, "src/cli/identity.ts"), "export const oldIdentity = true;");
   const calls: string[][] = [];
-  const run = async (argv: string[]) => { calls.push(argv); return { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [] }), stderr: "" }; };
+  const run = async (argv: string[]) => { calls.push(argv); return { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, protocolMin: PROTOCOL_MIN, features: ["schema_guard"] }), stderr: "" }; };
   const op = { sourceRoot: root, plan: { kind: "restart", version: "0.0.0", sourceDigest: packageDigest(root), projects: [] } } as unknown as RecoveryOperation;
   try {
     const delegated = makeRecoveryDriver(run, "codex");
@@ -422,7 +422,7 @@ for (const change of ["incarnation", "session"] as const) {
     const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
     try {
       writeFileSync(join(stateDir, "claude-session.json"), JSON.stringify({ instanceId: "i-review", sessionId: "session-original" }));
-      expect((await consoleClient.request({ t: "recovery", op: "prepare", expectedInstanceId: "i-review", operationId: "op-review" })).ok).toBe(true);
+      expect((await consoleClient.request({ t: "recovery", op: "prepare", expectedInstanceId: "i-review", operationId: "op-review", targetFeatures: DAEMON_FEATURES })).ok).toBe(true);
       const terminal = { handle: "term-review", incarnationId: "inc-original", worktreeId: `repo::${root}`, worktreePath: root,
         agentIdentity: "claude", sessionId: "session-original", connected: true };
       const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
@@ -474,7 +474,7 @@ test("production recovery verification tolerates a fresh zero-turn Claude sessio
     try {
       // The restored session reports its fresh id from the start, exactly like the post-restore state.
       writeFileSync(join(stateDir, "claude-session.json"), JSON.stringify({ instanceId: "i-review", sessionId: "session-replaced" }));
-      expect((await consoleClient.request({ t: "recovery", op: "prepare", expectedInstanceId: "i-review", operationId: "op-review" })).ok).toBe(true);
+      expect((await consoleClient.request({ t: "recovery", op: "prepare", expectedInstanceId: "i-review", operationId: "op-review", targetFeatures: DAEMON_FEATURES })).ok).toBe(true);
       const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CLAUDE_CONFIG_DIR: claudeConfig } };
       const terminal = { handle: "term-review", incarnationId: "inc-original", worktreeId: `repo::${root}`, worktreePath: root,
         agentIdentity: "claude", sessionId: "session-replaced", connected: true };
@@ -1969,19 +1969,28 @@ function featureStageFixture(controlSource: string) {
     plan: { kind: "restart", version: "0.0.0", sourceDigest: packageDigest(root), projects: [{ project, source: { state: "running", peers: [], blockers: [] }, terminals: [], blockers: [] }] } } as unknown as RecoveryOperation;
   return { root, op, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
-for (const supported of [false, true]) test(`#438 direct restart probes verified target features with ${supported ? "task_cancel" : "a legacy missing export"}`, async () => {
-  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL}; ${supported ? 'export const DAEMON_FEATURES = ["task_cancel"];' : ""}`);
+for (const supported of [false, true]) test(`#438 direct restart probes verified target features with ${supported ? "task_cancel" : "the schema-guard baseline only"}`, async () => {
+  const features = ["schema_guard", ...(supported ? ["task_cancel"] : [])];
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL}; export const PROTOCOL_MIN = ${PROTOCOL_MIN}; export const DAEMON_FEATURES = ${JSON.stringify(features)};`);
   try {
-    expect(await makeRecoveryDriver().stage(f.op)).toMatchObject({ root: f.root, targetFeatures: supported ? ["task_cancel"] : [] });
+    expect(await makeRecoveryDriver().stage(f.op)).toMatchObject({ root: f.root, targetFeatures: features });
+  } finally { f.cleanup(); }
+});
+test("#607 a legacy target missing the feature export refuses schema_guard before recovery effects", async () => {
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL};`);
+  try {
+    await expect(makeRecoveryDriver().stage(f.op)).rejects.toThrow("target lacks schema_guard");
+    expect(f.op.projects[0]!.phase).toBe("pending");
+    expect(f.op.targetRoot).toBeUndefined(); expect(f.op.targetDigest).toBeUndefined();
   } finally { f.cleanup(); }
 });
 test("#438 cached staged targets still probe features and malformed capability metadata fails closed", async () => {
-  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL}; export const DAEMON_FEATURES = ["task_cancel"];`);
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL}; export const PROTOCOL_MIN = ${PROTOCOL_MIN}; export const DAEMON_FEATURES = ["schema_guard","task_cancel"];`);
   let probes = 0;
-  const driver = makeRecoveryDriver(async () => { probes++; return { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: ["task_cancel"] }), stderr: "" }; });
+  const driver = makeRecoveryDriver(async () => { probes++; return { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, protocolMin: PROTOCOL_MIN, features: ["schema_guard", "task_cancel"] }), stderr: "" }; });
   try {
     f.op.targetRoot = f.root; f.op.targetDigest = packageDigest(f.root);
-    expect(await driver.stage(f.op)).toMatchObject({ targetFeatures: ["task_cancel"] }); expect(probes).toBe(1);
+    expect(await driver.stage(f.op)).toMatchObject({ targetFeatures: ["schema_guard", "task_cancel"] }); expect(probes).toBe(1);
     const malformed = makeRecoveryDriver(async () => ({ code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [123] }), stderr: "" }));
     await expect(malformed.stage(f.op)).rejects.toThrow("staged target features");
   } finally { f.cleanup(); }
@@ -2001,13 +2010,21 @@ test("#438 production recovery driver transmits verified features on readonly in
     expect(recovery.every(message => JSON.stringify(message.targetFeatures) === '["task_cancel"]')).toBe(true);
   } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
 });
-for (const features of [[], ["task_cancel"]]) test(`#117 P3-5 cached verified ${features.length ? "task_cancel" : "empty"} features avoid target probing before commit`, async () => {
-  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL};`); let probes = 0;
+for (const features of [["schema_guard"], ["schema_guard", "task_cancel"]]) test(`#117 P3-5 cached verified ${features.includes("task_cancel") ? "task_cancel" : "baseline-only"} features avoid target probing before commit`, async () => {
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL}; export const PROTOCOL_MIN = ${PROTOCOL_MIN}; export const DAEMON_FEATURES = ${JSON.stringify(features)};`); let probes = 0;
   Object.assign(f.op, { targetRoot: f.root, targetDigest: packageDigest(f.root), targetFeatures: features });
   const driver = makeRecoveryDriver(async () => { probes++; throw new Error("transient target probe must not run"); });
   try {
     expect(await driver.stage(f.op)).toMatchObject({ root: f.root, digest: f.op.targetDigest, targetFeatures: features });
     expect(probes).toBe(0);
+  } finally { f.cleanup(); }
+});
+for (const features of [[], ["task_cancel"]]) test(`#607 cached target without schema_guard refuses before probing (${features.length ? "other capability" : "empty capabilities"})`, async () => {
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL};`); let probes = 0;
+  Object.assign(f.op, { targetRoot: f.root, targetDigest: packageDigest(f.root), targetFeatures: features });
+  try {
+    await expect(makeRecoveryDriver(async () => { probes++; throw new Error("an unsupported target must not be probed again"); }).stage(f.op)).rejects.toThrow("target lacks schema_guard");
+    expect(probes).toBe(0); expect(f.op.projects[0]!.phase).toBe("pending");
   } finally { f.cleanup(); }
 });
 test("#117 P3-5 a fully committed legacy cached receipt needs no target feature probe", async () => {
@@ -2028,11 +2045,11 @@ test("#117 P3-5 legacy prepared commitSent still requires feature evidence befor
   } finally { f.cleanup(); }
 });
 test("#117 P3-5 cached feature evidence cannot authorize changed target bytes", async () => {
-  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL};`); let probes = 0;
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL}; export const PROTOCOL_MIN = ${PROTOCOL_MIN}; export const DAEMON_FEATURES = ["schema_guard"];`); let probes = 0;
   Object.assign(f.op, { targetRoot: f.root, targetDigest: "different-digest", targetFeatures: ["task_cancel"] });
   try {
-    const target = await makeRecoveryDriver(async () => { probes++; return { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [] }), stderr: "" }; }).stage(f.op);
-    expect(target.targetFeatures).toEqual([]); expect(probes).toBe(1);
+    const target = await makeRecoveryDriver(async () => { probes++; return { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, protocolMin: PROTOCOL_MIN, features: ["schema_guard"] }), stderr: "" }; }).stage(f.op);
+    expect(target.targetFeatures).toEqual(["schema_guard"]); expect(probes).toBe(1);
   } finally { f.cleanup(); }
 });
 

@@ -174,9 +174,11 @@ import { githubOriginRepository, githubRemoteRepository } from "./task-repositor
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
+import { assertHubDbCompatible } from "./db-schema.ts";
 import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { codeGroup } from "./task-code-group.ts";
-import { ControlClient, DAEMON_FEATURES, PROTOCOL, readControl, stateDirFor } from "./control-client.ts";
+import { ControlClient, DAEMON_FEATURES, PROTOCOL, PROTOCOL_MIN, readControl, stateDirFor } from "./control-client.ts";
+import { negotiateProtocol, protocolWindow } from "./protocol-window.ts";
 import { attachEvent, originOf, type Origin } from "./provenance.ts";
 import { mintSessionId, sessionGate } from "./session-identity.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
@@ -698,6 +700,7 @@ export interface DaemonOptions {
 
 interface Client {
   authed: boolean;
+  protocol?: number;
   role?: "peer" | "console" | "tools";
   peer?: PeerId;
   /** agent-hub#1036: this connection is a distinct session; `peer` is the id the daemon minted for it (`<peer>~<origin>`), never a bus peer. */
@@ -747,6 +750,8 @@ function capturedRecoverySourceDigest(): string | undefined {
 }
 
 export async function startDaemon(opts: DaemonOptions) {
+  // Refuse unknown formats before logs, session cleanup, module factories or any writable store is opened.
+  assertHubDbCompatible(join(opts.stateDir, "hub.db"));
   const resolveExecutionCwd = (peer: string, currentDeclarations: InstancesConfig | undefined, currentRoles: readonly string[], catalog: ReturnType<typeof createProjectAdapterCatalog>): string =>
     resolveInstanceExecutionCwd(opts.cwd, peer, currentDeclarations, currentRoles, catalog, undefined, undefined, opts.instanceExecutionGit);
   const projectId = opts.projectId ?? randomUUID();
@@ -4400,6 +4405,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const metadata = peer.recoveryMetadata?.() ?? {};
     const row: RestartPeerSnapshot = { id, state: peer.state, queueIds: bus.queueIds(id), ...(metadata.launch ? { launch: metadata.launch as Record<string, unknown> } : {}) };
     if (typeof metadata.threadId === "string") row.threadId = metadata.threadId;
+    if (typeof metadata.controlProtocol === "number" && Number.isSafeInteger(metadata.controlProtocol) && metadata.controlProtocol > 0) row.controlProtocol = metadata.controlProtocol;
     const sessionId = definitionOf(id)?.transport === "claude-channel" ? claudeSession(id).sessionId : metadata.sessionId;
     if (typeof sessionId === "string" && sessionId) row.sessionId = sessionId;
     return [id, row];
@@ -4512,7 +4518,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(lifecycleConfig.mode !== "off" ? { lifecycleCriteria: true } : {}),
     // Every supported peer's membership, for launchers that run outside the console role (#484).
     roster: [...KNOWN_PEERS, ...OPTIONAL_PEERS].map(peer => ({ peer, on: onRoster(peer) })),
-    protocol: PROTOCOL,
+    protocol: PROTOCOL_MIN, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL,
     features: DAEMON_FEATURES,
     configuredAdapters: configuredIds,
     ...(externalAdapters.length ? { externalAdapters } : {}),
@@ -7637,8 +7643,16 @@ export async function startDaemon(opts: DaemonOptions) {
         } catch { return "calendar_schedules compatibility is unknown; configuration could not be read"; }
         if (namesCalendar) return "target lacks calendar_schedules; the project's schedules use cron or tz, which that daemon cannot load";
       }
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("schema_guard"))
+        return "target lacks schema_guard; controlled recovery requires a guard-aware runtime";
       return undefined;
     };
+    // Preserve lifecycle fences before capability probes; the prepare branch rechecks them after resume capture awaits.
+    if (msg.op === "prepare") {
+      if (rosterChanging) return recoveryError("roster change is in progress; wait for ahub status before preparing recovery");
+      if (requestedPeerStops.size) return recoveryError("peer stop is in progress; wait for ahub status before preparing recovery");
+      if (recoveryCommitted) return recoveryError("recovery commit is already in progress");
+    }
     const checkTarget = msg.op === "prepare" || msg.op === "commit" || msg.op === "inspect" && msg.targetFeatures !== undefined;
     if (checkTarget) {
       const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error);
@@ -7906,7 +7920,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!c.authed) {
       if (msg.t !== "hello" || msg.token !== token) return sock.close(4401, "bad token");
       if (typeof msg.peer === "string" && msg.peer.includes("@")) return sock.close(4403, "remote identities have no control connection");
-      if (msg.v !== PROTOCOL) {
+      const offered = protocolWindow(msg.v, msg.vMin), selectedProtocol = offered && negotiateProtocol({ v: PROTOCOL, vMin: PROTOCOL_MIN }, offered);
+      if (selectedProtocol === undefined) {
         // An outdated plugin would drop every digest without a trace. Refuse it loudly instead.
         log(`refused ${msg.role} ${msg.peer ?? ""}: wire version ${msg.v ?? 1}, hub speaks ${PROTOCOL} (claude plugin update agent-hub@agent-hub)`);
         return sock.close(4426, `wire version mismatch: hub speaks ${PROTOCOL}; update the agent-hub plugin`);
@@ -7917,6 +7932,7 @@ export async function startDaemon(opts: DaemonOptions) {
       try { refreshConductorPolicy(); } catch { return sock.close(4403, "invalid conductor role/feed configuration"); }
       if (stopping && msg.role !== "console") return sock.close(1013, "hub is stopping");
       c.authed = true;
+      c.protocol = selectedProtocol;
       c.role = msg.role;
       if (c.role === "console") consoles.add(sock);
       else if (c.role === "tools" && sessionHello(msg)) {
@@ -8003,7 +8019,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       // #604 PR B: one attach event per admitted peer or tools hello, with the same fields an envelope's `origin` carries. A refused hello returned above and writes none.
       if (c.role === "peer" || c.role === "tools") event(attachEvent({ role: c.role, peer: c.peer, launchId: c.launchId, ...(c.session ? { session: true } : {}) }));
-      return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL, features: DAEMON_FEATURES, ...(c.session ? { session: c.peer } : {}) });
+      return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: c.protocol, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, features: DAEMON_FEATURES, ...(c.session ? { session: c.peer } : {}) });
     }
     const committedSourceProof = c.role === "tools" && msg.t === "recovery_authority" && msg.op === "verify" && recoveryCommitted
       && msg.binding?.operationId === recoveryOperationId && msg.binding?.sourceInstanceId === instanceId;
@@ -8272,11 +8288,15 @@ export async function startDaemon(opts: DaemonOptions) {
             const plan = msg.plan as UpgradePlan;
             const { fingerprint, ...body } = plan ?? {} as UpgradePlan;
             if (!plan || !["restart", "upgrade"].includes(plan.kind) || plan.projects.some(row => row.terminals.length > 0) || planFingerprint(body) !== fingerprint || fingerprint !== raw.planFingerprint || plan.kind !== raw.kind || existsSync(operationPath(raw.operationId))
-              || raw.sourceInstanceId !== instanceId || recoveryActive() || recoveryLock() || !plan.projects.some(row => row.project.id === projectId && row.project.root === opts.cwd && row.project.stateDir === opts.stateDir && row.source.instanceId === instanceId)) throw new RecoveryAuthorityError();
+              || raw.sourceInstanceId !== instanceId || recoveryActive() || recoveryLock(undefined, opts.cwd) || !plan.projects.some(row => row.project.id === projectId && row.project.root === opts.cwd && row.project.stateDir === opts.stateDir && row.source.instanceId === instanceId)) throw new RecoveryAuthorityError();
+            const { recoveryScope } = await import("../cli/upgrade.ts"); current();
+            const scope = recoveryScope(plan);
+            if (scope !== undefined && scope !== opts.cwd) throw new RecoveryAuthorityError();
             if (plan.kind === "restart" && plan.projects.length !== 1) throw new RecoveryAuthorityError();
             if (plan.kind === "upgrade") {
-              // Shared package/plugin effects cover every running or uncertain registered project, not a caller-selected subset.
+              // Scoped upgrades bind the source's one registered project; retained shared upgrades still cover every affected project.
               const affected = registeredProjects().filter(project => {
+                if (scope !== undefined) return project.root === scope;
                 const control = readControl(project.stateDir);
                 return control ? processLiveness(control.pid, control.pidSignature) !== "gone" : project.pid !== null && processLiveness(project.pid, project.pidSignature) !== "gone";
               });
@@ -8289,23 +8309,26 @@ export async function startDaemon(opts: DaemonOptions) {
               if (!Array.isArray(selected.reconnectOnly) || new Set(selected.reconnectOnly).size !== selected.reconnectOnly.length) throw new RecoveryAuthorityError();
               for (const id of selected.reconnectOnly) {
                 const row = selected.source.peers.find(peer => peer.id === id), owner = bus.peers.get(id), definition = definitionOf(id);
-                if (!row || selected.freshStart?.includes(id) || Object.keys(row).some(key => !["id", "state", "observation"].includes(key)) || !row.observation
+                if (!row || selected.freshStart?.includes(id) || Object.keys(row).some(key => !["id", "state", "observation", "controlProtocol"].includes(key)) || !row.observation
                   || Object.keys(row.observation).some(key => !["kind", "attached", "sessionDigest"].includes(key))
                   || !isWsPeer(owner) || definition?.transport !== "claude-channel" || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)
+                  || !protocolWindow(row.controlProtocol) || owner.recoveryMetadata().controlProtocol !== row.controlProtocol
                   || row.observation.kind !== definition.kind || row.observation.attached !== owner.attached || row.observation.sessionDigest !== recoverySessionDigest(claudeSession(id).sessionId)) throw new RecoveryAuthorityError();
                 const generation = owner.sessionGeneration;
                 const launcher = await launcherOf(id, opts.cwd, { stateDir: opts.stateDir, instanceId }); current();
-                if (launcher && launcher.state !== "gone" || bus.peers.get(id) !== owner || owner.sessionGeneration !== generation || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)) throw new RecoveryAuthorityError();
+                if (launcher && launcher.state !== "gone" || bus.peers.get(id) !== owner || owner.sessionGeneration !== generation || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)
+                  || owner.recoveryMetadata().controlProtocol !== row.controlProtocol) throw new RecoveryAuthorityError();
                 reconnectCurrent.push(() => bus.peers.get(id) === owner && owner.sessionGeneration === generation && owner.attached && !owner.managedLaunchId && !claudeLaunchProof.verified(id)
+                  && owner.recoveryMetadata().controlProtocol === row.controlProtocol
                   && definitionOf(id)?.kind === row.observation!.kind && owner.attached === row.observation!.attached && recoverySessionDigest(claudeSession(id).sessionId) === row.observation!.sessionDigest);
                 reconnect.set(id, row.observation);
               }
             }
             if (reconnectCurrent.some(check => !check())) throw new RecoveryAuthorityError();
-            const normalize = (row: { id: string; state: string; observation?: { kind: string; attached: boolean; sessionDigest?: string }; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
+            const normalize = (row: { id: string; state: string; controlProtocol?: number; observation?: { kind: string; attached: boolean; sessionDigest?: string }; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
               const launch = row.args ?? row.launch ?? {};
               const observed = reconnect.get(row.id);
-              return { id: row.id, active: row.state !== "offline", threadId: row.threadId, sessionId: observed ? undefined : row.sessionId,
+              return { id: row.id, active: row.state !== "offline", controlProtocol: row.controlProtocol, threadId: row.threadId, sessionId: observed ? undefined : row.sessionId,
                 ...(observed ? { sessionDigest: row.observation?.sessionDigest ?? recoverySessionDigest(row.sessionId) } : {}),
                 ...(observed ? { kind: row.observation?.kind ?? definitionOf(row.id)?.kind, attached: row.observation?.attached ?? (isWsPeer(bus.peers.get(row.id)) && (bus.peers.get(row.id) as import("../adapters/channel-peer.ts").WsPeer).attached) } : {}),
                 sessionFile: row.sessionFile ?? (typeof launch.sessionFile === "string" ? launch.sessionFile : undefined),
@@ -8319,9 +8342,11 @@ export async function startDaemon(opts: DaemonOptions) {
             if (raw.kind === "restart") {
               if (!sourcePackageDigest || raw.targetDigest !== sourcePackageDigest) throw new RecoveryAuthorityError();
             } else {
-              const staged = join(hubHome(), "releases", plan.version);
-              if (raw.targetRoot !== join(staged, "node_modules/@staix/agent-hub")) throw new RecoveryAuthorityError();
-              const verified = JSON.parse(readFileSync(join(staged, "verified.json"), "utf8"));
+              const staged = join(scope === undefined ? hubHome() : realPath(hubHome()), "releases", plan.version);
+              const expectedTarget = scope === undefined ? join(staged, "node_modules/@staix/agent-hub") : join(staged, `source-${raw.targetDigest}`);
+              if (raw.targetRoot !== expectedTarget) throw new RecoveryAuthorityError();
+              // A new/expired grant still needs registry proof; verification of an already issued grant below uses only retained target bytes.
+              const verified = JSON.parse(readFileSync(join(scope === undefined ? staged : join(staged, "registry"), "verified.json"), "utf8"));
               if (verified.digest !== raw.targetDigest || verified.integrity !== plan.integrity) throw new RecoveryAuthorityError();
             }
             if (!sourcePackageDigest || plan.sourceDigest !== sourcePackageDigest && (plan.kind !== "upgrade" || plan.sourceDigest !== raw.targetDigest)) throw new RecoveryAuthorityError();

@@ -1,0 +1,16 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "dependencies": {
+        "@staix/agent-hub": "0.25.0",
+      },
+    },
+  },
+  "packages": {
+    "@staix/agent-hub": ["@staix/agent-hub@0.25.0", "", { "dependencies": { "@staix/agent-mem": "0.18.0" }, "bin": { "ahub": "src/cli/main.js", "agent-hub": "src/cli/main.js" } }, "sha512-e3TFctTu0BIYJLW464axm9EeXJAG+9FuXotCjBmYQcvt56BOqeP+rsANz19Lr5m50Iv+9C8qXspoKnkC5TLgDA=="],
+
+    "@staix/agent-mem": ["@staix/agent-mem@0.18.0", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-lmA4urCYnWv0tLJA4I5ZgbC2ayC7Fqx8SlyQtD73fJe26bJX4rMZ6PJM4NDvR5Q+qDo4S+FeVDCnawbdaeaAMQ=="],
+  }
+}

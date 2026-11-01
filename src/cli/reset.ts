@@ -1,4 +1,5 @@
 import { constants, Database } from "bun:sqlite";
+import { assertHubDbCompatible, openHubDatabase } from "../hub/db-schema.ts";
 import { randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -50,21 +51,30 @@ const isEnvelope = (v: unknown) => isObject(v) && typeof v.id === "string";
 /** Valid JSON of the wrong shape is damage as well: the journal refuses it on every open, so the message says so. */
 const shaped = (ok: boolean, what: string) => { if (!ok) throw new Error(`invalid delivery journal: ${what} has the wrong shape`); };
 
+/** The existing quiet archive preview owns its raw URI handle and sets its one bounded timeout at open. */
+function quietResetDatabase(file: string): Database {
+  const db = new Database(`file:${file.replace(/[%?#]/g, (c) => `%${c.charCodeAt(0).toString(16)}`)}?immutable=1`, constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI);
+  try {
+    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
+    return db;
+  } catch (error) { db.close(); throw error; }
+}
+
 /** What a reset would act on, read from the state directory without changing it (hub.db opened read-only). */
 export function planReset(stateDir: string, projectId: string): ResetPlan {
   const plan: ResetPlan = { queued: [], needsReview: [], inFlight: [], manualHolds: [], budgetPauses: [], conductorHolds: [],
     sessionPointers: sessionPointers(stateDir).filter((name) => existsSync(join(stateDir, name))), entries: existsSync(stateDir) ? readdirSync(stateDir).length : 0 };
   const file = join(stateDir, "hub.db");
   if (!existsSync(file)) return plan;
+  assertHubDbCompatible(file); // A normal readonly guard sees WAL metadata before the quiet preview may use immutable.
   // A read-only open of a WAL database creates hub.db-wal and -shm when the last writer's close removed them (Linux),
   // and fails without them on macOS. Without them no writer is mid-transaction, so `immutable` reads hub.db alone and
   // writes nothing. ponytail: a -wal left without its -shm (deleted by hand) is ignored then, and commits still in
   // it go unlisted; open plainly in that corner if it ever matters. SQLITE_OPEN_URI is passed because Linux builds do
   // not parse `file:` names by default (the name then fails as a plain path).
   const quiet = !existsSync(`${file}-wal`) || !existsSync(`${file}-shm`);
-  const db = quiet ? new Database(`file:${file.replace(/[%?#]/g, (c) => `%${c.charCodeAt(0).toString(16)}`)}?immutable=1`, constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI) : new Database(file, { readonly: true });
+  const db = quiet ? quietResetDatabase(file) : openHubDatabase(file, { readonly: true });
   try {
-    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     const has = (table: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
     const peers = (table: string) => has(table) ? (db.query(`SELECT peer FROM ${table} ORDER BY peer`).all() as { peer: string }[]).map((row) => row.peer) : [];
     plan.budgetPauses = peers("budget_pauses");
@@ -120,6 +130,7 @@ export function resetLines(plan: ResetPlan): string[] {
  */
 export function resetRuntime(stateDir: string, project: Project): { settled: string[]; plan: ResetPlan; stale: string[] } {
   const file = join(stateDir, "hub.db");
+  assertHubDbCompatible(file); // Refuse before journal settlement or any direct runtime-state mutation.
   const plan = planReset(stateDir, project.id);
   const settled: string[] = [];
   if (existsSync(file)) {
@@ -135,9 +146,8 @@ export function resetRuntime(stateDir: string, project: Project): { settled: str
       }
       bus.setManualPaused([]);
     } finally { bus.closeJournal(); }
-    const db = new Database(file);
+    const db = openHubDatabase(file);
     try {
-      db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
       db.transaction(() => {
         for (const table of ["budget_pauses", "conductor_holds"]) {
           if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) db.run(`DELETE FROM ${table}`);

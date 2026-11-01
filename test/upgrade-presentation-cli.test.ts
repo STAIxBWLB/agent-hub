@@ -85,9 +85,10 @@ test("#466 #814 restart dry-run: --json keeps the old plan document and the pipe
   const plain = await f.cli(["restart", "--dry-run", "--json"]);
   expect(plain.code, plain.err).toBe(0);
   const parsed = JSON.parse(plain.out);
-  expect(Object.keys(parsed)).toEqual(["schema", "kind", "version", "sourceRoot", "sourceDigest", "projects", "blockers", "fingerprint"]);
+  expect(Object.keys(parsed)).toEqual(["schema", "kind", "version", "sourceRoot", "sourceDigest", "scope", "projects", "blockers", "fingerprint"]);
+  expect(parsed.scope.projectRoot).toBe(f.root);
   expect(parsed.sourceDigest).toMatch(/^[a-f0-9]{64}$/); expect(parsed.fingerprint).toMatch(/^[a-f0-9]{64}$/);
-  const knownPlan = { schema: 1, kind: "restart", version: VERSION, sourceRoot: PACKAGE_ROOT, sourceDigest: parsed.sourceDigest,
+  const knownPlan = { schema: 1, kind: "restart", version: VERSION, sourceRoot: PACKAGE_ROOT, sourceDigest: parsed.sourceDigest, scope: { projectRoot: f.root },
     projects: [], blockers: ["no running registered projects in scope"], fingerprint: parsed.fingerprint };
   expect(plain.out).toBe(JSON.stringify(knownPlan, null, 2) + "\n");
   const never = await f.cli(["restart", "--color=never", "--dry-run", "--json"]);
@@ -115,10 +116,11 @@ test("#466 #814 explicit-version upgrade plan: --json is identical in default an
   const never = await f.cli(["upgrade", "--to", VERSION, "--dry-run", "--color=never", "--json"]);
   expect(never.code, never.err).toBe(0); expect(never.out).toBe(plain.out); expect(never.err).toBe(plain.err);
   const plan = JSON.parse(plain.out);
-  expect(Object.keys(plan)).toEqual(["schema", "kind", "version", "sourceRoot", "sourceDigest", "integrity", "projects", "blockers", "fingerprint"]);
+  expect(Object.keys(plan)).toEqual(["schema", "kind", "version", "sourceRoot", "sourceDigest", "integrity", "scope", "projects", "blockers", "fingerprint"]);
+  expect(plan.scope.projectRoot).toBe(f.root);
   expect(plan.kind).toBe("upgrade"); expect(plan.version).toBe(VERSION); expect(plan.integrity).toBe("sha512-fixture-only");
   const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line));
-  const lookup = [{ name: "npm", args: ["view", `@staix/agent-hub@${VERSION}`, "version", "dist.integrity", "--json"] }, { name: "claude", args: ["--version"] }];
+  const lookup = [{ name: "npm", args: ["view", `@staix/agent-hub@${VERSION}`, "version", "dist.integrity", "--json"] }];
   expect(calls).toEqual([...lookup, ...lookup, ...lookup]);
 }, 15_000);
 

@@ -63,7 +63,7 @@ test("manifest identity mismatch refuses before opening a socket", async () => {
 });
 
 test.each([9, 10, 11, 12, 13, 14, 15])("a matching source protocol (%i) can be selected explicitly for upgrade preflight", async (source) => {
-  expect(PROTOCOL).toBe(16);
+  expect(PROTOCOL).toBe(17);
   expect(RECOVERY_SOURCE_PROTOCOLS).toContain(source); // Target 16 retains authenticated recovery from every supported source, including released 0.12.19 (15).
   const stateDir = mkdtempSync(join(tmpdir(), "agent-hub-control-legacy-"));
   const srv = Bun.serve<{ }>( {

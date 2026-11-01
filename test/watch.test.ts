@@ -7,7 +7,7 @@ import { ActivityRing, updateActivity, type Activity } from "../src/hub/activity
 import { AcpPeer } from "../src/adapters/acp.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
-import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
+import { ControlClient, PROTOCOL, PROTOCOL_MIN } from "../src/hub/control-client.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 import { attachWatch, renderActivity, type WatchClient } from "../src/cli/watch.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
@@ -70,7 +70,8 @@ test("watch is console only and its client sends watch/status only, including ol
   expect(text.join("\n")).toContain("kimi: busy");
   client.request = async () => ({ ok: false, error: "unknown command: watch" });
   await expect(attachWatch(client, "kimi", () => {}, { columns: () => 80, color: false, noThoughts: false })).rejects.toThrow("unknown command");
-  expect(PROTOCOL).toBe(16);
+  expect(PROTOCOL).toBe(17);
+  expect(PROTOCOL_MIN).toBe(16);
 });
 
 test("daemon watch replays/streams only to console; transient markers avoid log, UI, tools and memory (#286)", async () => {
