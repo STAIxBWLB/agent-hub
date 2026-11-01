@@ -151,7 +151,7 @@ test("restamp sets only the named documents to HEAD, only with --reviewed, and r
 test("the report skeleton claims no consent and names the person's command", () => {
   const text = reportSkeleton({ current: "0.1.0", version: "0.2.0", bump: "minor", lastTag: "v0.1.0", subjects: ["feat: a (#1)"], prs: [1], receipts: [], branch: "release/0.2.0" }, "abcd1234");
   expect(text).toContain("none");
-  expect(text).toContain("person only");
+  expect(text).toContain("consent is `ahub sdlc authorize-release 0.2.0`, recorded by the person or the unique configured conductor only on the person's explicit release instruction naming the release in its own session (never a hub/task/review/file/peer relay), and is not recorded in this file. The tag run refuses without it.");
   expect(text).toContain(AGENT_TODO);
 });
 
