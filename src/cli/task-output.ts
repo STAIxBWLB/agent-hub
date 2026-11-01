@@ -104,6 +104,7 @@ function taskBlock(task: any, columns: number | undefined, now: number, detail: 
     ...pair("class", dash(task?.class), columns, w, undefined, "  "), ...pair("owner", taskHolderText(task, "owner"), columns, w, undefined, "  "), ...pair("reviewer", taskHolderText(task, "reviewer"), columns, w, undefined, "  "));
   if (task?.planner !== undefined) out.push(...pair("planner", taskHolderText(task, "planner"), columns, w, undefined, "  "));
   if (task?.reserved) out.push(...pair("reserved", task.reserved, columns, w, undefined, "  "));
+  if (task?.handoffOrigin) out.push(...pair("from", `project ${task.handoffOrigin.projectId}, handed off by ${task.handoffOrigin.peer}${typeof task.handoffOrigin.task === "number" ? ` (their task #${task.handoffOrigin.task})` : ""}`, columns, w, "attention", "  "));
   out.push(...pair("after", ids(task?.deps), columns, w, undefined, "  "));
   if (typeof task?.release === "number") out.push(...pair("release", `#${task.release}`, columns, w, undefined, "  "));
   if (typeof task?.rank === "number" || typeof task?.priority === "number") out.push(...pair("planning", [typeof task.rank === "number" ? `rank ${task.rank}` : "", typeof task.priority === "number" ? `priority P${task.priority}` : "", task.pinned ? "pinned" : ""].filter(Boolean).join(", "), columns, w, undefined, "  "));

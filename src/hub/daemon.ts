@@ -150,6 +150,7 @@ import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, sta
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalPath, realPath, hubHome } from "./project.ts";
+import { HandoffRefusal, checkTarget, parseHandoff, resolveTarget, handoffEventFor, type HandoffEvent } from "./handoff.ts";
 import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, profileTaskTools } from "./hub-tools.ts";
@@ -175,7 +176,7 @@ import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts"
 import { DeliveryJournal } from "./delivery-journal.ts";
 import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { codeGroup } from "./task-code-group.ts";
-import { DAEMON_FEATURES, PROTOCOL, readControl, stateDirFor } from "./control-client.ts";
+import { ControlClient, DAEMON_FEATURES, PROTOCOL, readControl, stateDirFor } from "./control-client.ts";
 import { attachEvent, originOf, type Origin } from "./provenance.ts";
 import { mintSessionId, sessionGate } from "./session-identity.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
@@ -3206,6 +3207,71 @@ export async function startDaemon(opts: DaemonOptions) {
   // commit waits for those in flight, or its integrity digest misses their later writes. Completion checks outlive
   // their op, so recoveryReady() also waits for `tasks.checksPending()`: a check the commit's stop kills would write.
   let taskOpsInFlight = 0;
+  /**
+   * #604 ORIGIN side. Order matters: the caller's authority and the PII gates run first (nothing has left this project), then the target is resolved from the machine registry and its own
+   * status descriptor is read, and only then is the request sent. The target answers with the task id it created, which is recorded here. A refusal at any step leaves no row in either board.
+   */
+  async function handoffOut(by: PeerId, input: unknown): Promise<{ project: string; task: number; state: string; note?: string }> {
+    const request = parseHandoff(input);
+    const own = request.task === undefined ? undefined : board.get(request.task);
+    if (request.task !== undefined && !own) throw new HandoffRefusal("invalid", `no task #${request.task} in this project to hand off from`);
+    tasks.handoffOutAuthority(by, own);
+    const self = { id: projectId, root: opts.cwd };
+    const target = resolveTarget(request.project, registeredProjects(hubHome()).map(project => ({ id: project.id, root: project.root, stateDir: project.stateDir })), self, canonicalPath);
+    const descriptor = readControl(target.stateDir);
+    checkTarget(target, descriptor && { ...(descriptor.features ? { features: descriptor.features } : {}), ...(descriptor.projectId ? { projectId: descriptor.projectId } : {}) });
+    let client: ControlClient;
+    try { client = await ControlClient.connect(target.stateDir, { role: "console", projectRoot: descriptor!.cwd ?? target.root }, 5000); }
+    catch { throw new HandoffRefusal("not_running", `the hub of ${target.id} did not answer; run \`ahub up\` in ${target.root}, then hand the task off again (handoffs are not queued)`); }
+    try {
+      const { project: _project, task: originTask, ...body } = request;
+      const reply = await client.request({ t: "task_handoff", origin: { projectId, peer: by, ...(originTask === undefined ? {} : { taskId: originTask }) }, request: body }, 30_000);
+      if (!reply.ok) throw new HandoffRefusal("invalid", sanitize(String(reply.error ?? "the target refused the handoff")).slice(0, 300));
+      const remote = Number(reply.task);
+      if (!Number.isSafeInteger(remote) || remote < 1) throw new HandoffRefusal("invalid", "the target answered without a task id");
+      tasks.handoffSent(by, { projectId: target.id }, remote, request.title, request.task);
+      return { project: target.id, task: remote, state: String(reply.state ?? "proposed"), ...(typeof reply.note === "string" && reply.note ? { note: sanitize(reply.note).slice(0, 300) } : {}) };
+    } finally { client.close(); }
+  }
+  /** The head a handoff reports: the owner's `refs.commit`, else the receipt's verified head. Only a full 40-hex SHA crosses; anything else is dropped. */
+  const handoffHead = (task: Task): string | undefined => { const head = task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead; return typeof head === "string" && /^[0-9a-f]{40}$/.test(head) ? head : undefined; };
+  /** #604 TARGET side: tell the origin project's daemon about a state change of a task it handed us. Best effort and never blocking a board write: an origin that is down reads the state later. */
+  const handoffNotifyOrigin = (task: Task, entry: { event: string }): void => {
+    const event: HandoffEvent | undefined = handoffEventFor(entry.event, task.state);
+    const origin = event ? board.handoffOrigin(task.id) : undefined;
+    if (!event || !origin) return;
+    void (async () => {
+      try {
+        const project = registeredProjects(hubHome()).find(candidate => candidate.id === origin.projectId);
+        const descriptor = project && readControl(project.stateDir);
+        if (!project || !descriptor || !descriptor.features?.includes("task_handoff")) return;
+        const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: descriptor.cwd ?? project.root }, 3000);
+        try { await client.request({ t: "task_handoff_event", event: { projectId, remoteTask: task.id, state: event, ...(typeof task.sdlc?.pr === "number" ? { pr: task.sdlc.pr } : {}), ...(handoffHead(task) ? { head: handoffHead(task) } : {}) } }, 5000); }
+        finally { client.close(); }
+      } catch { /* the origin is down or refused: it reads the target's state on its next start */ }
+    })();
+  };
+  /**
+   * #604 ORIGIN side, on start: for every handoff this project made that has not reached a final state, ask the target (if it is running) where the task stands now, and record the answer.
+   * A target that is down is skipped: it is asked again on the next start. Best effort, in the background, never delaying readiness.
+   */
+  const handoffCatchUp = (): void => {
+    void (async () => {
+      const open = board.handoffOutbound().filter(row => !["approved", "cancelled"].includes(row.state));
+      const byProject = new Map<string, number[]>();
+      for (const row of open) byProject.set(row.remoteProject, [...(byProject.get(row.remoteProject) ?? []), row.remoteTask]);
+      for (const [remote, ids] of byProject) {
+        try {
+          const project = registeredProjects(hubHome()).find(candidate => candidate.id === remote);
+          const descriptor = project && readControl(project.stateDir);
+          if (!project || !descriptor?.features?.includes("task_handoff")) continue;
+          const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: descriptor.cwd ?? project.root }, 3000);
+          try { const reply = await client.request({ t: "task_handoff_states", projectId, tasks: ids.slice(0, 200) }, 5000); if (reply.ok && Array.isArray(reply.states)) tasks.handoffCaughtUp(remote, reply.states); }
+          finally { client.close(); }
+        } catch { /* that target is down or refused: it is asked again on the next start */ }
+      }
+    })();
+  };
   const conductedMutations = new Set(["hub_task_propose", "hub_task_accept", "hub_task_decline", "hub_task_done", "hub_review", "hub_checkpoint", "hub_remember"]);
   const taskOp = async (...args: Parameters<typeof taskOpBody>): Promise<string> => {
     const [by, op, input] = args;
@@ -3634,6 +3700,11 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_study_handoff":
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "handoff")) throw new PreEffectToolRefusal("study handoff takes only a handoff object");
         return JSON.stringify(await tasks.studyHandoff(by, a.handoff));
+      // #604 (agent-hub#1030): a handoff to another project. Tasks checks who may send it and the PII gates; `handoffOut` resolves the target, asks its daemon and records the answer.
+      case "hub_task_handoff":
+        return JSON.stringify(await handoffOut(by, a));
+      case "hub_task_handoffs":
+        return JSON.stringify({ handoffs: tasks.handoffList() });
       // #601: the person's own forms (a read is hub_study_show, which every connection may use). `by` is USER only on the console path; approval and close are never a tool.
       case "study_draft":
         return JSON.stringify(await tasks.studyDraft(by, a));
@@ -3853,7 +3924,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const related = tasks.isPii(task) ? undefined : await taskMemoryResult(task, true).catch(() => ({ items: [], state: "unknown" as const }));
         const fresh = board.get(task.id);
         const relatedMemory = related && fresh?.updated === task.updated && !tasks.isPii(fresh) ? { state: related.state, count: related.items.length, ...("head" in related ? { head: related.head } : {}) } : { state: "unknown" };
-        return JSON.stringify({ ...detail, ...holderReasons(publicTask), relatedMemory, ...(codeSymbols ? { codeSymbols } : {}), ...(consoleDeliverables ? { deliverables: consoleDeliverables } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
+        return JSON.stringify({ ...detail, ...holderReasons(publicTask), relatedMemory, ...(publicTask.handoffOrigin ? { handoffOrigin: publicTask.handoffOrigin } : {}), ...(codeSymbols ? { codeSymbols } : {}), ...(consoleDeliverables ? { deliverables: consoleDeliverables } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
       }
       case "deliverables": {
         // #317 (`ahub deliverables`): the board's deliverable records, person only. `check` measures the files now; without it nothing is opened.
@@ -4519,6 +4590,7 @@ export async function startDaemon(opts: DaemonOptions) {
   board.onChange = (task, entry) => {
     try { taskChanged?.(task, entry); }
     finally {
+      try { handoffNotifyOrigin(task, entry); } catch { /* never throw after a board write */ }
       try { settleSupersededDeliveries(); }
       finally { writeStatus(); } // committed task transitions refresh token-free attention even without bus activity
     }
@@ -7522,6 +7594,9 @@ export async function startDaemon(opts: DaemonOptions) {
       // would read that sender as a peer it does not know and queue a reply to it; this is its own label, so a daemon that has the older floors but not this one is still refused.
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("session_identity")) && bus.queueList(undefined, true).some(row => (row.originals as Envelope[]).some(env => env.session === true)))
         return "target lacks session_identity; unsettled deliveries hold messages from distinct sessions that require a supporting daemon";
+      // #604: a handoff row in either direction (a task another project handed us, or one we handed over) needs a target that knows `task_handoff`; without it the origin is silently lost.
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("task_handoff")) && board.hasHandoffState())
+        return "target lacks task_handoff; stored handoffs require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_experiments")) && board.hasResearchExperimentState())
         return "target lacks research_experiments; persisted experiment records require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_comparisons")) && board.hasResearchComparisonState())
@@ -9106,6 +9181,32 @@ export async function startDaemon(opts: DaemonOptions) {
         // Let the acknowledgement flush before closing the control listener.
         setTimeout(() => void stop().catch((error) => log(`shutdown incomplete: ${(error as Error).message}`)), 0);
         return;
+      // #604 (agent-hub#1030): another project's daemon hands us a task, or reports a state change of one we handed it. Console role only (the same token and the same machine user as every
+      // control message): an agent connection never reaches these. The origin peer named in the request is a record, never an identity here, and nothing in it grants a role.
+      case "task_handoff": {
+        if (c.role !== "console") return void reply({ t: "task_handoff", ok: false, error: "a handoff comes from another project's hub, not from an agent connection" });
+        if (recoveryActive()) return void reply({ t: "task_handoff", ok: false, error: "recovery is holding mutations; hand the task off again after it ends" });
+        // Counted like a task op: a recovery commit waits for it (`recoveryReady` reads `taskOpsInFlight`), and the fence is asked again right before the board write, after the PII screen.
+        taskOpsInFlight++;
+        const recoveryFence = (): string | undefined => recoveryActive() || stopping ? "recovery or shutdown is holding mutations; hand the task off again after it ends" : undefined;
+        void tasks.handoffIn(msg.origin ?? {}, msg.request, recoveryFence).then(
+          result => reply({ t: "task_handoff", ok: true, ...result }),
+          error => reply({ t: "task_handoff", ok: false, error: error instanceof HandoffRefusal ? error.message : "the handoff was refused" })).finally(() => { taskOpsInFlight--; });
+        return;
+      }
+      case "task_handoff_event": {
+        if (c.role !== "console") return void reply({ t: "task_handoff_event", ok: false, error: "a handoff event comes from another project's hub, not from an agent connection" });
+        try { reply({ t: "task_handoff_event", ok: true, ...tasks.handoffEvent(msg.event) }); }
+        catch (error) { reply({ t: "task_handoff_event", ok: false, error: error instanceof HandoffRefusal ? error.message : "the handoff event was refused" }); }
+        return;
+      }
+      case "task_handoff_states": {
+        // #604: the origin asks, after a restart, where the tasks it handed us stand now. Console role only, and only for tasks whose recorded origin is the asking project.
+        if (c.role !== "console") return void reply({ t: "task_handoff_states", ok: false, error: "a handoff state request comes from another project's hub, not from an agent connection" });
+        try { reply({ t: "task_handoff_states", ok: true, states: tasks.handoffStatesFor(msg.projectId, msg.tasks) }); }
+        catch (error) { reply({ t: "task_handoff_states", ok: false, error: error instanceof HandoffRefusal ? error.message : "the handoff state request was refused" }); }
+        return;
+      }
       default:
         // A newer CLI talking to an older hub must get an answer, not wait forever.
         if (msg.rid !== undefined) reply({ t: String(msg.t), ok: false, error: `this hub does not know "${msg.t}" (restart it: ahub kill && ahub up)` });
@@ -9221,6 +9322,7 @@ export async function startDaemon(opts: DaemonOptions) {
   bus.onQueues(); // initial restored holds are reported only after the listener is bound; writes status.json too
   log(`${RUN_START}${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
   ready = true;
+  handoffCatchUp();
   tasks.scheduleQueuePressureRecheck();
   for (const name of opts.configWatch === false ? [] : CONFIG_SOURCE_FILES) {
     const path = join(opts.cwd, ".agenthub", name);

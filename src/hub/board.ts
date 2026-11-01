@@ -278,6 +278,11 @@ function plannerMetadata(planner: unknown, reason?: PlannerReason): Pick<History
   if (reason !== undefined && !["rotation", "named", "kept", "none"].includes(reason)) throw new Error("invalid planner reason");
   return { planner: plannerValue(planner), ...(reason === undefined ? {} : { plannerReason: reason }) };
 }
+/** #604: what this project handed to another project, and the last state that project reported (agent-hub#1030 design 4). */
+export interface HandoffOutboundRow { remoteProject: string; remoteTask: number; originPeer: string; localTask: number | null; title: string; state: string; pr: number | null; head: string | null; updatedAt: number }
+const handoffOutboundFromRow = (row: Record<string, unknown>): HandoffOutboundRow => ({ remoteProject: String(row.remote_project), remoteTask: Number(row.remote_task), originPeer: String(row.origin_peer),
+  localTask: row.local_task === null ? null : Number(row.local_task), title: String(row.title), state: String(row.last_state), pr: row.pr === null ? null : Number(row.pr), head: row.head === null ? null : String(row.head), updatedAt: Number(row.updated_at) });
+
 export interface Task extends PlanningFields {
   offer?: TaskOffer;
   cancelled?: TaskCancellation;
@@ -473,6 +478,12 @@ export class Board {
       PRIMARY KEY(campaign_id,revision))`);
     // #603: the owner whose queued offer a study hold made the bus discard, kept so approving the study offers the retained task again after a restart.
     this.db.run("CREATE TABLE IF NOT EXISTS research_dropped_offers (task_id INTEGER PRIMARY KEY, owner TEXT NOT NULL)");
+    // #604 (agent-hub#1030): cross-project handoff. `task_handoff_origin` is the TARGET's record of where a task came from (one row per task it created for another project); `task_handoff_outbound`
+    // is the ORIGIN's record of what it handed to another project and the last state that project reported. Both are additive: a daemon without `task_handoff` never reads them, so a target
+    // lacking the feature is refused at recovery while either holds a row.
+    this.db.run("CREATE TABLE IF NOT EXISTS task_handoff_origin (task_id INTEGER PRIMARY KEY, project_id TEXT NOT NULL, peer TEXT NOT NULL, origin_task INTEGER, at INTEGER NOT NULL)");
+    this.db.run(`CREATE TABLE IF NOT EXISTS task_handoff_outbound (remote_project TEXT NOT NULL, remote_task INTEGER NOT NULL, origin_peer TEXT NOT NULL, local_task INTEGER,
+      title TEXT NOT NULL, last_state TEXT NOT NULL, pr INTEGER, head TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY(remote_project, remote_task))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS research_handoffs (
       campaign_id TEXT NOT NULL, unit_id TEXT NOT NULL, seq INTEGER NOT NULL, revision INTEGER NOT NULL,
       task_id INTEGER NOT NULL, body TEXT NOT NULL, by_peer TEXT NOT NULL, at INTEGER NOT NULL, private INTEGER NOT NULL,
@@ -503,6 +514,44 @@ export class Board {
     this.db.run(`CREATE TABLE IF NOT EXISTS research_protocol_context (
       protocol_hash TEXT PRIMARY KEY, prior_attempt_id TEXT, prior_end_seq INTEGER, context_sha256 TEXT NOT NULL)`);
 
+  }
+
+  /** #604: a handoff row exists in either direction, so a recovery target must know `task_handoff`. */
+  hasHandoffState(): boolean {
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM task_handoff_origin) OR EXISTS(SELECT 1 FROM task_handoff_outbound) AS present").get() as { present: number }).present === 1;
+  }
+
+  /** TARGET side: where one of this project's tasks came from. The origin peer is a record, never a roster peer or an actor. */
+  handoffOrigin(taskId: number): { projectId: string; peer: string; originTask: number | null; at: number } | undefined {
+    const row = this.db.query("SELECT project_id, peer, origin_task, at FROM task_handoff_origin WHERE task_id=?").get(taskId) as { project_id: string; peer: string; origin_task: number | null; at: number } | null;
+    return row ? { projectId: row.project_id, peer: row.peer, originTask: row.origin_task, at: row.at } : undefined;
+  }
+  setHandoffOrigin(taskId: number, origin: { projectId: string; peer: string; originTask?: number }): void {
+    this.db.query("INSERT INTO task_handoff_origin(task_id, project_id, peer, origin_task, at) VALUES(?,?,?,?,?) ON CONFLICT(task_id) DO NOTHING").run(taskId, origin.projectId, origin.peer, origin.originTask ?? null, Date.now());
+  }
+
+  /** ORIGIN side: what this project handed to another one. Keyed by the target project and its task id, so a repeated event updates one row. */
+  handoffOutbound(): HandoffOutboundRow[] {
+    return (this.db.query("SELECT remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at FROM task_handoff_outbound ORDER BY updated_at DESC, remote_project, remote_task LIMIT 200").all() as Record<string, unknown>[]).map(handoffOutboundFromRow);
+  }
+  handoffOutboundFor(remoteProject: string, remoteTask: number): HandoffOutboundRow | undefined {
+    const row = this.db.query("SELECT remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at FROM task_handoff_outbound WHERE remote_project=? AND remote_task=?").get(remoteProject, remoteTask) as Record<string, unknown> | null;
+    return row ? handoffOutboundFromRow(row) : undefined;
+  }
+  recordHandoffOutbound(row: { remoteProject: string; remoteTask: number; originPeer: string; localTask?: number; title: string; state: string; pr?: number; head?: string }): void {
+    this.db.query(`INSERT INTO task_handoff_outbound(remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at) VALUES(?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(remote_project, remote_task) DO UPDATE SET last_state=excluded.last_state, pr=COALESCE(excluded.pr, pr), head=COALESCE(excluded.head, head), updated_at=excluded.updated_at`)
+      .run(row.remoteProject, row.remoteTask, row.originPeer, row.localTask ?? null, row.title, row.state, row.pr ?? null, row.head ?? null, Date.now());
+  }
+  /** A digest over both tables, so a recovery that restores or loses a row is seen. */
+  handoffIntegrity(): { origins: number; outbound: number; digest: string } {
+    return this.db.transaction(() => {
+      const digest = createHash("sha256").update("agent-hub.handoff-integrity/v1\n");
+      let origins = 0, outbound = 0;
+      for (const row of this.db.query("SELECT task_id, project_id, peer, origin_task, at FROM task_handoff_origin ORDER BY task_id").iterate()) { digest.update(JSON.stringify(row)).update("\n"); origins++; }
+      for (const row of this.db.query("SELECT remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at FROM task_handoff_outbound ORDER BY remote_project, remote_task").iterate()) { digest.update(JSON.stringify(row)).update("\n"); outbound++; }
+      return { origins, outbound, digest: digest.digest("hex") };
+    })();
   }
 
   /** #601: the ids of a project's campaigns, oldest first, for `ahub study show` with no id. A read: no row is written. */

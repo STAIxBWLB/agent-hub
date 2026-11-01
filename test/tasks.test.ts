@@ -4023,3 +4023,16 @@ test("#1000 a replacement cannot bypass configured lifecycle review admission", 
   await expect(tasks.done("codex", t.id, "replacement", { commit: REFILE_NEW })).rejects.toThrow(/blocked|unavailable|unknown/);
   expect(f.board.get(t.id)).toEqual(before);
 });
+
+test("review P2 (#604): a handoff whose assignment is saved but not confirmed delivered is a success with the task id and a note, never a throw after the board write", async () => {
+  const { tasks, bus, board } = await setup(["codex"]);
+  const publish = bus.publish.bind(bus);
+  bus.publish = (env) => { if (env.kind === "task") throw new Error("delivery journal unavailable"); return publish(env); };
+  let result: Awaited<ReturnType<typeof tasks.handoffIn>>;
+  try { result = await tasks.handoffIn({ projectId: "p_other", peer: "claude", taskId: 4 }, { title: "Chore with an unconfirmed delivery", class: "implement" }); }
+  finally { bus.publish = publish; }
+  expect(result).toMatchObject({ task: 1 });
+  expect(result.note).toContain("not confirmed");
+  expect(board.get(1)).toMatchObject({ title: "Chore with an unconfirmed delivery", owner: "codex" });   // the assignment is saved, and the hub's own retry delivers it
+  expect(board.handoffOrigin(1)).toMatchObject({ projectId: "p_other", peer: "claude", originTask: 4 });
+});

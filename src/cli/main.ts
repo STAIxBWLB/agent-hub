@@ -30,6 +30,8 @@ import { renderLearnChange, renderLearnList } from "./learn-output.ts";
 import { renderCapabilities } from "./capabilities-output.ts";
 import { parseStudyArgs } from "./study.ts";
 import { renderStudyList, renderStudyReceipt, renderStudyShow } from "./study-output.ts";
+import { renderHandoffReceipt, renderHandoffs } from "./handoff-output.ts";
+import { parseHandoffArgs } from "./handoff-args.ts";
 import { terminalText } from "./console-state.ts";
 import { parseSettingsEditArgs, runSettingsEdit, SETTINGS_EDIT_USAGE } from "./settings-edit.ts";
 import { autonomyEnvironment, runAutonomy } from "./autonomy.ts";
@@ -1570,6 +1572,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (!selection.label) fail("GitHub import requires --label");
       return console.log(await taskOp("github_import", selection));
     }
+    if (args[0] === "--handoffs" || args.includes("--handoffs")) {
+      // #604: what this project handed to other projects and the last state each reported (read-only).
+      const options = outputOptions();
+      return showToolText(data => renderHandoffs(data, options.columns), await taskOp("hub_task_handoffs", {}), options);
+    }
     const options = outputOptions();
     const { one, rest } = takeFlags(args, ["--release", "--release-id"], []);
     if (one["--release"] !== undefined && !one["--release"].trim() || one["--release"] !== undefined && one["--release-id"] !== undefined || one["--release-id"] !== undefined && !/^[1-9]\d*$/.test(one["--release-id"])) fail("choose --release <nonempty name> or --release-id <positive id>");
@@ -1813,7 +1820,16 @@ const commands: Record<string, () => Promise<void> | void> = {
       appendRecords(project.id, [{ schema: RESEARCH_SCHEMA, kind: "label", project: projectKey(project.id), task: id, createdAt: record!.createdAt!, label, at: new Date().toISOString(), ...(identity.role === "tools" ? { by: identity.peer } : {}) }]);
       return console.log(`task #${id} (approved ${record!.approvedAt}) labelled ${label} in the research records`);
     }
-    if (sub !== "propose" || rest.length < 1) fail("usage: ahub task propose [<class>] <title...> | show <id> | assign <id> <peer> | unassign <id> | cancel <id> --reason <text> | escalate <id>");
+    if (sub === "handoff") {
+      // #604: work that belongs to ANOTHER project that runs agent-hub goes onto that project's board. The person's form (a console command: the classifier gives an agent `console` for it, and an
+      // agent uses hub_task_handoff); the hub resolves the target, asks its daemon and records the answer. Nothing is queued: a target that is not running is named with the action.
+      const present = outputOptions(splitPresentation(rest, { valueFlags: ["--project", "--path", "--issue", "--task", "--detail"], edges: true }).flags);
+      const parsed = parseHandoffArgs(splitPresentation(rest, { valueFlags: ["--project", "--path", "--issue", "--task", "--detail"], edges: true }).operands);
+      if ("usage" in parsed) return fail(parsed.usage);
+      const text = await taskOp("hub_task_handoff", { ...parsed });
+      return showToolText(data => renderHandoffReceipt(data, present.columns), text, present);
+    }
+    if (sub !== "propose" || rest.length < 1) fail("usage: ahub task propose [<class>] <title...> | show <id> | assign <id> <peer> | unassign <id> | cancel <id> --reason <text> | escalate <id> | handoff --project <root|id> <title...>");
     // `--class` is the explicit form. A first word that is a class name is still taken as the class (the documented
     // short form), but said out loud: "review the auth module" would otherwise be filed as class review, silently.
     const urgent = rest.includes("--urgent"), backlog = rest.includes("--backlog");
