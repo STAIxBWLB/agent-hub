@@ -10,7 +10,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub --project <path|id> <command>", "select a repository or worktree explicitly"],
     ["ahub projects [--json] [--full] [--color=auto|always|never]", "list registered projects and live status"],
     ["ahub projects remove <id>", "forget a stopped registration (keeps project files)"],
-    ["ahub setup [--yes]", "install or update the channel plugin and project-neutral hook in Claude configuration homes in use, preserving unrelated profile settings, then run doctor"],
+    ["ahub setup [--yes] [--agents <a,b>]", "install or update the channel plugin and project-neutral hook in Claude configuration homes in use, preserving unrelated profile settings, ask once which agents ahub up starts (--agents answers it, --yes keeps the current choice or claude,codex, no terminal keeps the default), then run doctor"],
     ["ahub init [--profile dev|research|writing|general|<pack>] [--shadow] [--release-guard] [--dry-run --json]", "preview or write .agenthub/config.json and the AGENTS.md marker block (drops a legacy CLAUDE.md block); a pack is a shipped one (writing-pack, analysis, ops) or a project file .agenthub/roles/<name>.pack.json; a new project inherits a trusted machine autonomy default into config.local.json"],
     ["ahub --live-test [--project <path|id>] <command> [args...]", "user-authorized operational console delegation; ordinary calls retain peer identity; person-authored content refuses"],
     ["ahub help [command]", "this help, or one command's entries; also --help and -h"],
@@ -18,7 +18,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub completion zsh|bash|fish", "print a shell completion script; its candidates come from these help entries"],
   ]],
   ["Daemon and runtime", [
-    ["ahub up [--unattended] [--no-console]", "start the daemon; interactive terminals enter console"],
+    ["ahub up [--unattended] [--no-console] [--no-agents]", "start the daemon, then ask it to start this project's default agents (start.agents, claude and codex unless chosen at setup; one line each, a refusal names the manual command; --no-agents skips them), then enter console in an interactive terminal"],
     ["ahub console [--panels] [--color=auto|always|never]", "enter the human console; P cycles built-in pet characters/off; exiting leaves the daemon running"],
     ["ahub console --no-pet", "turn off attention for this session; combines with --panels and --color"],
     ["ahub pet --window [--close]", "start or close the macOS floating window, from a person's terminal"],

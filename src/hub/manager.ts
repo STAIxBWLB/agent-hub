@@ -22,6 +22,8 @@ export type Lifecycle = {
   stopProject(project: Project, expectedInstance?: string): Promise<void>;
 };
 export type ManagerOptions = { registry?: Registry; lifecycle?: Lifecycle; home?: string; cli?: string; orphanWatchMs?: number; liveTest?: boolean;
+  /** #608: runs after the dashboard's "start" has the hub ready, as the person's `ahub up` would; its lines go to the hub log of the manager only. Never part of a dashboard request. */
+  afterStart?: (project: Project) => Promise<string[]>;
   /** Test clock seam: maps nominal forwarding deadlines, never comes from dashboard input. */
   forwardTimeoutMs?: (action: string, nominalMs: number) => number };
 type ManagerHandle = { stop(): Promise<void>; stopped: Promise<void> };
@@ -80,7 +82,7 @@ function removeManifest(home: string, instanceId: string) {
 }
 
 /** The manager's project listing and forwarding (#935): shared by `ahub ui --all` and the acon plugin, never widened for either. */
-export function projectConsole(options: { registry: Registry; lifecycle: Lifecycle; home: string; stopping?: () => boolean; forwardTimeoutMs?: ManagerOptions["forwardTimeoutMs"] }) {
+export function projectConsole(options: { registry: Registry; lifecycle: Lifecycle; home: string; stopping?: () => boolean; forwardTimeoutMs?: ManagerOptions["forwardTimeoutMs"]; afterStart?: ManagerOptions["afterStart"] }) {
   const { registry, lifecycle, home } = options;
   const aliases = new Map<string, { at: number; names: string[] }>();
   const list = async () => {
@@ -110,6 +112,8 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
     try {
       if (input.action === "start") {
         const status = await bounded(lifecycle.startProject(project, { unattended: false, env: { ...scrubEnv(process.env), AGENTHUB_HOME: home } }), 20_000);
+        // The agents start in the background: the dashboard's answer is the hub's readiness, and a terminal that is slow to open must not hold it.
+        if (options.afterStart) void options.afterStart(project).catch(() => { /* the hub is up; the agents are started by hand */ });
         return { ok: true, projectId: project.id, instanceId: status.instanceId };
       }
       if (typeof input.instanceId !== "string" || !input.instanceId) return { ok: false, error: "expected daemon instance is required" };
@@ -182,7 +186,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
   };
   try {
     owner = claimOwner(f.owner, instanceId, pidSignature);
-    const { list, act } = projectConsole({ registry, lifecycle, home, stopping: () => stopping, forwardTimeoutMs: options.forwardTimeoutMs });
+    const { list, act } = projectConsole({ registry, lifecycle, home, stopping: () => stopping, forwardTimeoutMs: options.forwardTimeoutMs, ...(options.afterStart && !options.liveTest ? { afterStart: options.afterStart } : {}) });
     dashboard = startDashboard({ projects: list, snapshot: (after, input = {}) => act({ ...input, action: "snapshot", after }), action: act });
     server = Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: 1024,
       async fetch(req) {

@@ -14,6 +14,7 @@ import { createProjectAdapterCatalog, type ProjectAdapterCatalog, ADAPTERS, DEFA
 import { CLASSES } from "./board.ts";
 import { permissionDefaults } from "./permission-mode.ts";
 import { peerStartConfig, terminalTemplate } from "./start-mode.ts";
+import { checkStartAgents } from "./start-agents.ts";
 import { catalogAssignments } from "./roles.ts";
 import { resolveProfile } from "./profiles.ts";
 import { foldersConfig, schedulesConfig } from "./schedules.ts";
@@ -217,6 +218,7 @@ const schema: Record<string, Check> = {
   snapshots: block({ enabled: bool, keep: number(1, 1_000_000, true) }), research: block({ enabled: bool }), bench: block({ enabled: bool }),
   peers: (v, k) => { map(block({ start_mode: words(["tui", "headless"]) }), START_MODE_PEERS)(v, k); peerStartConfig(v); },
   terminal: (v, k) => { block({ open: strings })(v, k); terminalTemplate(object(v, k).open); },
+  start: (v, k) => { block({ agents: strings })(v, k); if (object(v, k).agents !== undefined) checkStartAgents(object(v, k).agents, `${k}.agents`); },
   limits: block({ sender_per_min: number(0), pair_per_min: number(0), important_per_hour: number(0), repeat_window_s: number(0) }),
   review: block({ adaptive: bool, min_reviews: number(1, Number.MAX_SAFE_INTEGER, true), pool: v => { reviewerPoolConfig({ pool: v }, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS); }, rerotate: bool, same_family: words(["fallback", "never"]) }), recovery: block({ auto_resume_after_crash: bool, reconnect_wait_s: operationalNumberCheck("recovery.reconnect_wait_s"), unmanaged_reconnect_wait_s: operationalNumberCheck("recovery.unmanaged_reconnect_wait_s"), control_timeout_s: operationalNumberCheck("recovery.control_timeout_s"), shutdown_wait_s: operationalNumberCheck("recovery.shutdown_wait_s"), terminal_idle_wait_s: operationalNumberCheck("recovery.terminal_idle_wait_s") }),
   capabilities: map(strings), invocation: block({ share: map(map(() => {})), timeout_s: number(10, 86_400, true) }), coordination: words(["advisory", "turn-free"]), experiments: block({ stale_notices: words(["drop", "deliver"]) }),
@@ -258,7 +260,7 @@ const restart: Record<string, string> = {
   checks: "Bounded runner and completion-check contracts are constructed together",
   pii: "Existing native sessions retain their startup privacy boundary", data: "Existing native sessions retain their startup read-only policy",
   profile: "Session tool schemas and profile contracts are bound at startup", profile_overrides: "Session tool schemas and profile contracts are bound at startup",
-  text_projection: "Converter and cache ownership are bound at startup", corpus: "The corpus index is bound to its roots at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
+  text_projection: "Converter and cache ownership are bound at startup", corpus: "The corpus index is bound to its roots at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", start: "The start set is read by the CLI at a person's ahub up and by the dashboard manager, never by a running hub", bench: "Benchmark execution environment is selected before work starts",
 };
 const live = new Set(["action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "pet"]);
 const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges"]);
@@ -269,7 +271,7 @@ export function configApply(key: string, scopes: readonly ConfigIdentityScope[] 
   if (top !== "routing" && top !== "permission" && key.includes(".")) {
     const special: Record<string, readonly string[]> = {
       task_sweep: ["enabled", "auto_reassign", "no_writes_turns", "interval_s", "unaccepted_min", "idle_min", "review_min", "ready_min", "ladder_min"],
-      checks: ["timeout_s", "runner", "remote", ...CLASSES], terminal: ["open"],
+      checks: ["timeout_s", "runner", "remote", ...CLASSES], terminal: ["open"], start: ["agents"],
     };
     let check = schema[top];
     for (const [index, part] of key.split(".").slice(1).entries()) {

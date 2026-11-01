@@ -163,9 +163,14 @@ In your project directory, one terminal each:
 
 ```bash
 ahub init          # .agenthub/config.json, .agenthub/routing.toml, the marker block in AGENTS.md
-ahub up            # starts the daemon and opens the operator console in a terminal
+ahub up            # starts the daemon, opens claude and codex in terminals (see below), then the operator console
 ahub console       # use in another terminal if up used --no-console; Tab opens panels
 ahub kimi          # Kimi in its own pull-only TUI; --mode headless for the hub-driven peer
+```
+
+`ahub up` also starts a default set of agents, `claude` and `codex` unless you choose others, each in a terminal the hub opens (`terminal.open`, or Orca). It prints one line per agent, and an agent it cannot open is named with the command to run yourself (`ahub claude`, `ahub codex`). Choose the set once with `ahub setup --agents kimi,codex` (or answer the question in `ahub setup`), change one project with `ahub settings set start.agents <a,b>`, and skip it for a run with `ahub up --no-agents`. Without a terminal provider nothing is opened and the hub keeps running; start them by hand:
+
+```bash
 ahub codex         # Codex TUI, attached through the hub
 ahub claude        # Claude Code with the hub channel
 ```

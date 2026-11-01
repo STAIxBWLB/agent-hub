@@ -89,6 +89,7 @@ import { readRecoveryPresentationFlags } from "./upgrade-presentation-flags.ts";
 import { renderOperation, renderBlocked, renderSummary, type RecoveryPresentationOptions } from "./upgrade-presentation.ts";
 import { renderBudgetResult, renderRecoveryStatus, renderUpgradePlan } from "./upgrade-output.ts";
 import { recordTerminalLaunch, prepareTerminalLaunch, registerTerminalLaunch, type TerminalPeer } from "./terminal-recovery.ts";
+import { effectiveStartAgents, inheritMachineStart, setupStartAgents, startProjectAgents } from "./start-agents-run.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
 import { setupOllamaModel } from "./models-setup.ts";
 
@@ -1009,7 +1010,11 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   manager: async () => {
-    const manager = await startManager({ lifecycle });
+    // #608: the dashboard's "start" counts as the person's `ahub up`: the manager starts the project's default agent set after the hub is ready.
+    const manager = await startManager({ lifecycle, afterStart: async (project) => {
+      const chosen = effectiveStartAgents(project.root, loadConfig(project.root).start.agents, hubHome(), [project.root]);
+      return startProjectAgents(project, chosen.agents);
+    } });
     for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => void manager.stop());
     await manager.stopped;
   },
@@ -1018,6 +1023,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     recoveryLauncherCurrent?.();
     assertLifecycleAvailable();
     const root = join(import.meta.dir, "..", "..");
+    const setupFlags = takeFlags(args.filter(arg => arg !== "--yes"), ["--agents"], []);
+    if (setupFlags.rest.length) fail("usage: ahub setup [--yes] [--agents <a,b>]");
     const registry = new Registry(), rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
     try {
       const found = recoveryLauncherCurrent || delegatedPeer ? await discoverClaudeHomes({ home: homedir(), env: process.env }) : await usedClaudeHomes(registry, homedir(), process.env);
@@ -1029,6 +1036,12 @@ const commands: Record<string, () => Promise<void> | void> = {
         probe: (argv, options) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8", env: options.env, timeout: options.timeoutMs, maxBuffer: 1024 * 1024 }); recoveryLauncherCurrent?.(); return { status: result.status ?? -1, stdout: result.stdout ?? "" }; },
         run: async (argv, env) => { recoveryLauncherCurrent?.(); const result = spawnSync(argv[0]!, argv.slice(1), { stdio: "inherit", env, timeout: 30_000 }); recoveryLauncherCurrent?.(); return result.status ?? -1; },
       });
+      // #608: the one question about the default agent set, after the Claude homes and before doctor.
+      if (!recoveryLauncherCurrent && !delegatedPeer) {
+        const refused = await setupStartAgents({ home: hubHome(), roots: [...registry.list().map(row => row.root), cwd], ...(setupFlags.one["--agents"] !== undefined ? { flag: setupFlags.one["--agents"] } : {}), yes: args.includes("--yes"),
+          ...(rl ? { ask: async (prompt: string) => { try { return await rl.question(prompt); } catch { return null; } } } : {}), print: line => console.log(terminalText(line)) });
+        if (refused) fail(refused);
+      }
     } finally { registry.close(); rl?.close(); }
     // #935: register the acon console plugin (acon reads it at its next start; no acon install is needed for this).
     const acon = registerAconPlugin(hubHome(), join(root, "src", "ui", "plugin.ts"));
@@ -1059,6 +1072,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       const registry = new Registry();
       try { for (const line of await inheritMachineAutonomy(project, hubHome(), autonomyEnvironment(process.env, !!process.stdin.isTTY), registry)) console.log(terminalText(line)); }
       finally { registry.close(); }
+      // #608: the machine's default agent set, copied the same way (person-only: a delegated live test never inherits it).
+      if (!delegatedPeer) { const roots = (() => { const r = new Registry(); try { return r.list().map(row => row.root); } finally { r.close(); } })(); for (const line of inheritMachineStart(cwd, hubHome(), [...roots, cwd])) console.log(terminalText(line)); }
     }
     const config = projectConfig(), examples = resolveProfile(config.profile, config.profile_overrides).example_checks;
     if (examples.length) console.log(terminalText("Example checks (advisory):\n" + examples.map(example => "- " + example).join("\n")));
@@ -1086,6 +1101,14 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (recoveryLauncherCurrent) { recoveryLauncherCurrent(); return; }
     try { if (loadPetConfig(cwd).window) console.log(await startPetWindow(stateDir, cwd)); }
     catch { console.error("Pet window was not started; run ahub pet --window to inspect it."); }
+    // #608: the default agent set, only for a person's own `ahub up` (never an agent's, a live test's, or an upgrade or recovery relaunch, which set AGENTHUB_RECOVERY_OPERATION).
+    if (!args.includes("--no-agents") && !liveTest && caller.role === "console" && identity.role === "console" && !process.env.AGENTHUB_RECOVERY_OPERATION) {
+      try {
+        const chosen = effectiveStartAgents(cwd, loadConfig(cwd).start.agents, hubHome(), [cwd]);
+        if (chosen.notice) console.error(chosen.notice);
+        for (const line of await startProjectAgents({ root: cwd, stateDir }, chosen.agents)) console.log(terminalText(line));
+      } catch (error) { console.error(`default agents were not started: ${terminalText((error as Error).message)}`); }
+    }
     if (process.stdin.isTTY && process.stdout.isTTY && !args.includes("--no-console")) await runConsole({ client: await connect(), cwd, stateDir, liveTest });
   },
 

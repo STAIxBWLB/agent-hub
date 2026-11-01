@@ -36,7 +36,9 @@ export const MACHINE_LOCAL = [
   "invocation", // #445 C1: what another agent may be offered from this machine's agents (a digest-pinned allowlist); a committed config may not share a person's agents' commands with someone else's peers
 ] as const;
 /** Legacy exported field list stays compatible; new policies use the complete list below. */
-export const ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"] as const;
+export const ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances", "start.agents"] as const;
+/** An empty list of these is a value (`start.agents` empty starts no agent), not "the default", so the empty-value drop below skips them. */
+const EMPTY_IS_VALUE: readonly string[] = ["start.agents"];
 
 /** A known repository, including an unreadable marker, must never be mistaken for a plain directory. */
 export function configRepositoryPresent(cwd: string): boolean {
@@ -106,7 +108,7 @@ export function stripUntrusted(file: Record<string, unknown>, defaults: object, 
   const localOnly = name !== "config.local.json" && file.action_policy !== undefined;
   if (localOnly) delete file.action_policy;
   const originNotice = localOnly ? "action_policy ignored: only .agenthub/config.local.json may set it" : undefined;
-  for (const p of ALL_MACHINE_LOCAL) if (valueAt(file, p) !== undefined && !chooses(valueAt(file, p))) drop(file, p);
+  for (const p of ALL_MACHINE_LOCAL) if (!EMPTY_IS_VALUE.includes(p) && valueAt(file, p) !== undefined && !chooses(valueAt(file, p))) drop(file, p);
   const set = ALL_MACHINE_LOCAL.filter((p) => {
     const v = valueAt(file, p);
     return v !== undefined && JSON.stringify(v) !== JSON.stringify(valueAt(defaults, p));

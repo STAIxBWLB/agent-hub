@@ -12,6 +12,7 @@ import { CLASSES, type TaskClass } from "./board.ts";
 import { configTracked, configRepositoryPresent } from "./config-trust.ts";
 import { PERMISSION_MODES, permissionBoundary } from "./permission-mode.ts";
 import { START_MODES } from "./start-mode.ts";
+import { checkStartAgents } from "./start-agents.ts";
 import { OVERLAY_FILE, overlayToml, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "./routing.ts";
 
 /**
@@ -74,6 +75,7 @@ export const SETTINGS: readonly SettingDef[] = [
   ...ACTION_CLASSES.map((kind): SettingDef => ({ key: `action_policy.budgets.${kind}`, group: "Permissions", label: `${kind}: approved session budget`, type: "integer", min: 0, max: 1000, store: "config", applies: "live", risk: "raises", floor: 0, path: ["action_policy", "budgets", kind] })),
   ...SETTING_PEERS.filter(peer => !definitionOf(peer)?.permission.unmanaged).map((peer): SettingDef => ({ key: `permission.${peer}`, group: "Permissions", label: `${peer}: mode now`, type: "enum", values: PERMISSION_MODES, store: "runtime", applies: "live", risk: "raises", floor: "ask", path: [peer] })),
   ...SETTING_PEERS.filter(peer => !definitionOf(peer)?.permission.unmanaged).map((peer): SettingDef => ({ key: `permission_modes.${peer}`, group: "Permissions", label: `${peer}: mode at next peer start`, type: "enum", values: PERMISSION_MODES, store: "config", applies: "next use", risk: "raises", floor: "ask", path: ["permission_modes", peer] })),
+  { key: "start.agents", group: "Start", label: "Agents ahub up starts (none for an empty list)", type: "peers", store: "config", applies: "next use", risk: "raises", path: ["start", "agents"] },
   ...START_MODE_PEERS.map((peer): SettingDef => ({ key: `peers.${peer}.start_mode`, group: "Start", label: `${peer}: start mode (tui unless set)`, type: "enum", values: START_MODES, store: "config", applies: "next use", risk: "raises", floor: "tui", path: ["peers", peer, "start_mode"] })),
   ...ADAPTERS.flatMap(adapter => adapter.configuration?.settings ?? []),
   { key: "routing.stay_switch", group: "Routing", label: "Stay or switch (hub/auto and stage routes)", type: "enum", values: ["off", "shadow", "enforce"], store: "routing", applies: "live", risk: "raises", path: ["stay_switch"] },
@@ -203,6 +205,7 @@ export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonl
       }
       return peers.length === 1 ? peers[0] as string : [...peers] as string[];
     }
+    if (def.key === "start.agents") return checkStartAgents(raw, def.key);
     if (!Array.isArray(raw) || raw.length > PEERS_MAX || raw.some((p) => typeof p !== "string" || !PEER.test(p)) || new Set(raw).size !== raw.length) throw new Error(`${def.key} takes up to ${PEERS_MAX} distinct peer ids`);
     return [...(raw as string[])];
   }
@@ -217,6 +220,7 @@ export function parseSettingText(def: SettingDef, text: string): unknown {
   if (def.type === "number") return text.trim() && Number.isFinite(Number(text)) ? Number(text) : text;
   if (def.type === "integer") return /^(0|[1-9]\d*)$/.test(text) ? Number(text) : text;
   if (def.type === "boolean") return text === "true" ? true : text === "false" ? false : text;
+  if (def.key === "start.agents" && text.trim() === "none") return [];
   if (def.type === "peers" || def.type === "roles") return text.split(",").map((p) => p.trim()).filter(Boolean);
   return text;
 }
