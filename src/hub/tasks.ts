@@ -9,7 +9,8 @@ import { parseExperimentProtocol, parseExperimentAttempt, parseExperimentEvent, 
   type ExperimentProtocolContract, type ExperimentProtocolRecord, type ExperimentAttemptRecord, type ExperimentWriteFence, type ExperimentHostEvidence, type ExperimentStatus } from "./research-experiments.ts";
 import { parseComparisonPlan, comparisonPlanHash, comparisonProjection, evaluatorIdentityHash, protocolApprovalBindingMatches, type ComparisonPlanV1 } from "./research-experiments.ts";
 import { parseResearchHandoff, studyProjection, campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus } from "./research-campaign.ts";
-import type { ResearchCampaignRecord, ResearchUnitBinding, PreparedResearchUnit } from "./board.ts";
+import type { ResearchCampaignRecord, ResearchUnitBinding, PreparedResearchUnit, HandoffOutboundRow } from "./board.ts";
+import { HANDOFF_EVENTS, HandoffRefusal, followBackLine, handoffEventFor, parseHandoff, type HandoffEvent } from "./handoff.ts";
 import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-command.ts";
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
@@ -931,7 +932,8 @@ export class Tasks {
     const sets = this.reviewFindingSets(task), current = findingsForHead(sets, this.findingHead(task));
     const symbolRepository = codeSymbols && this.codeSymbolsRepository(task);
     const publicSymbols = codeSymbols && symbolRepository ? publicTaskCodeSymbols(codeSymbols, this.reviewHead(task), symbolRepository.key, this.publicMetadataText) : undefined;
-    return { ...rest, ...(publicSymbols ? { codeSymbols: publicSymbols } : {}), ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
+    const handedOff = this.d.board.handoffOrigin(task.id);   // #604: where another project's handoff came from; two ids, never text
+    return { ...rest, ...(handedOff ? { handoffOrigin: { projectId: handedOff.projectId, peer: handedOff.peer, ...(handedOff.originTask === null ? {} : { task: handedOff.originTask }) } } : {}), ...(publicSymbols ? { codeSymbols: publicSymbols } : {}), ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
@@ -1521,6 +1523,104 @@ export class Tasks {
       const task = this.d.board.get(unit.taskId); return !task || this.isPii(task);
     });
   }
+
+  /**
+   * #604 (agent-hub#1030), ORIGIN side. Who may hand work to another project: the person, or a configured planner, or the conductor. The host (the daemon) has already resolved and
+   * checked the target; this is the authority and privacy gate before anything leaves this project, so a refusal here leaves no row in either board.
+   */
+  handoffOutAuthority(by: PeerId, piiTask?: Task): void {
+    requireLocalTaskPeer(by);
+    if (by !== USER && this.d.privateTurn?.(by)) throw new HandoffRefusal("pii_turn", "a handoff is unavailable during a private turn: nothing from it may leave this project");
+    if (piiTask && this.isPii(piiTask)) throw new HandoffRefusal("pii_task", "a [pii] task is not handed off: nothing about it leaves this project");
+    if (by !== USER && !this.d.roles?.[by]?.includes("planner") && this.d.operational?.(by) !== true) throw new HandoffRefusal("no_authority", "a handoff needs the person, a configured planner or the conductor");
+  }
+
+  /** ORIGIN side: remember what was handed over, once the target answered with its task id. */
+  handoffSent(by: PeerId, target: { projectId: string }, remoteTask: number, title: string, localTask?: number): void {
+    this.d.board.recordHandoffOutbound({ remoteProject: target.projectId, remoteTask, originPeer: by, ...(localTask === undefined ? {} : { localTask }), title: title.slice(0, 300), state: "proposed" });
+  }
+
+  /**
+   * TARGET side. The origin peer gets no identity or authority here: the task is an ownerless proposal made by the hub on the origin's behalf, with the origin recorded in its own table.
+   * The request was parsed closed by the origin and is parsed again here, because a control message is data from another process: the body is bounded, control characters are refused and the
+   * text is sanitized before it is stored. A `[pii]` result is refused whole, and nothing is left behind.
+   */
+  async handoffIn(origin: { projectId: unknown; peer: unknown; taskId?: unknown }, input: unknown): Promise<{ task: number; state: string }> {
+    const request = parseHandoff({ ...(input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : { invalid: true }), project: "local" });
+    if (typeof origin.projectId !== "string" || !origin.projectId || origin.projectId.length > 200 || typeof origin.peer !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(origin.peer)
+      || origin.taskId !== undefined && (!Number.isSafeInteger(origin.taskId) || (origin.taskId as number) < 1)) throw new HandoffRefusal("invalid", "handoff origin is malformed");
+    if (origin.projectId === this.d.project) throw new HandoffRefusal("same_project", "that is this project: a task for this project goes through hub_task_propose");
+    const detail = sanitize([request.detail, `[handed off from project ${origin.projectId} by ${origin.peer}${origin.taskId === undefined ? "" : ` (their task #${origin.taskId})`}]`].filter(Boolean).join("\n\n"));
+    const refs: TaskRefs = { ...(request.paths.length ? { paths: request.paths } : {}) };
+    const signals = this.signalsFor({ title: request.title, detail, refs, plan: {} });
+    if (signals.includes("pii")) throw new HandoffRefusal("pii_task", "the handed-off text matches a PII pattern; it is not stored here");
+    const screening = this.screenOn();
+    const screened = screening ? await this.screenCall(screenText({ title: request.title, detail: [detail, ...request.paths].join("\n"), plan: {} })) : undefined;
+    if (screening && (!screened || screened.label !== "clear")) throw new HandoffRefusal("pii_task", "the handed-off text could not be cleared by the PII screen; it is not stored here");
+    let task = this.d.board.propose(HUB, { title: request.title, detail, class: request.class, refs, plan: {}, signals });
+    this.d.board.setHandoffOrigin(task.id, { projectId: origin.projectId, peer: origin.peer, ...(origin.taskId === undefined ? {} : { originTask: origin.taskId as number }) });
+    this.d.notify(`task ${this.publicTitle(task)} handed off from project ${origin.projectId} by ${origin.peer}`);
+    task = await this.assignOwner(task, HUB, {});
+    return { task: task.id, state: task.state };
+  }
+
+  /** TARGET side: the origin recorded for a task, for `ahub task show` and the board. */
+  handoffOriginOf(taskId: number): { projectId: string; peer: string; originTask: number | null } | undefined {
+    const origin = this.d.board.handoffOrigin(taskId);
+    return origin ? { projectId: origin.projectId, peer: origin.peer, originTask: origin.originTask } : undefined;
+  }
+
+  /** ORIGIN side: the target reported a state change. Records it and tells the origin peer with one `kind: task` envelope. Idempotent: a state already recorded sends nothing. */
+  handoffEvent(input: unknown): { recorded: boolean } {
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new HandoffRefusal("invalid", "handoff event must be a data object");
+    const e = input as Record<string, unknown>;
+    if (typeof e.projectId !== "string" || !e.projectId || e.projectId.length > 200 || !Number.isSafeInteger(e.remoteTask) || (e.remoteTask as number) < 1
+      || typeof e.state !== "string" || !(HANDOFF_EVENTS as readonly string[]).includes(e.state)) throw new HandoffRefusal("invalid", "handoff event is malformed");
+    const row = this.d.board.handoffOutboundFor(e.projectId, e.remoteTask as number);
+    if (!row) throw new HandoffRefusal("invalid", "no handoff of ours is recorded for that task");
+    const pr = Number.isSafeInteger(e.pr) && (e.pr as number) > 0 ? e.pr as number : undefined, head = typeof e.head === "string" && /^[0-9a-f]{40}$/.test(e.head) ? e.head : undefined;
+    if (row.state === e.state && (pr === undefined || pr === row.pr) && (head === undefined || head === row.head)) return { recorded: false };
+    this.d.board.recordHandoffOutbound({ remoteProject: row.remoteProject, remoteTask: row.remoteTask, originPeer: row.originPeer, ...(row.localTask === null ? {} : { localTask: row.localTask }), title: row.title, state: e.state, ...(pr === undefined ? {} : { pr }), ...(head === undefined ? {} : { head }) });
+    const body = followBackLine(row.remoteTask, e.state as HandoffEvent, { pr, head });
+    if (row.originPeer !== USER && row.originPeer !== HUB) {
+      try { this.d.bus.publish(newEnvelope(HUB, body, { to: [row.originPeer], kind: "task", priority: "important", refs: { task: String(row.localTask ?? row.remoteTask) } })); }
+      catch { /* never throw after a board write */ }
+    }
+    return { recorded: true };
+  }
+
+  /**
+   * TARGET side, catch-up (#1030 design 4): the origin asks for the current state of the tasks it handed us, by id, after it was down. Answers only for tasks whose recorded origin IS the asking
+   * project, and only with the same fields a live event carries (the event name, a PR number, a full head), so an origin learns nothing it could not have been told live.
+   */
+  handoffStatesFor(projectId: unknown, taskIds: unknown): { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string }[] {
+    if (typeof projectId !== "string" || !projectId || projectId.length > 200 || !Array.isArray(taskIds) || taskIds.length > 200 || !taskIds.every(id => Number.isSafeInteger(id) && id > 0)) throw new HandoffRefusal("invalid", "handoff state request is malformed");
+    const out: { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string }[] = [];
+    for (const id of taskIds as number[]) {
+      const origin = this.d.board.handoffOrigin(id), task = origin?.projectId === projectId ? this.d.board.get(id) : undefined;
+      if (!task) continue;
+      const entry = task.history.findLast(h => handoffEventFor(h.event, task.state) !== undefined);
+      const state = entry ? handoffEventFor(entry.event, task.state) ?? "proposed" : "proposed";
+      const pr = typeof task.sdlc?.pr === "number" && Number.isSafeInteger(task.sdlc.pr) && task.sdlc.pr > 0 ? task.sdlc.pr : undefined;
+      const rawHead = task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead, head = typeof rawHead === "string" && /^[0-9a-f]{40}$/.test(rawHead) ? rawHead : undefined;   // the owner's commit, else the receipt's head; only a full SHA crosses
+      out.push({ task: id, state, ...(pr === undefined ? {} : { pr }), ...(head === undefined ? {} : { head }) });
+    }
+    return out;
+  }
+
+  /** ORIGIN side: record what a target answered to the catch-up, and tell the origin peer about a change this project missed while it was down. */
+  handoffCaughtUp(projectId: string, rows: { task: number; state: string; pr?: number; head?: string }[]): number {
+    let changed = 0;
+    for (const row of rows) {
+      if (!(HANDOFF_EVENTS as readonly string[]).includes(row.state)) continue;
+      try { if (this.handoffEvent({ projectId, remoteTask: row.task, state: row.state, ...(row.pr === undefined ? {} : { pr: row.pr }), ...(row.head === undefined ? {} : { head: row.head }) }).recorded) changed++; }
+      catch { /* a row we hold no handoff for is not ours */ }
+    }
+    return changed;
+  }
+
+  /** ORIGIN side, readback: what this project handed over, with the last state each target reported. */
+  handoffList(): HandoffOutboundRow[] { return this.d.board.handoffOutbound(); }
 
   async studyDraft(by: PeerId, input: unknown): Promise<ResearchCampaignReceipt> {
     const requestCheck = this.requestCheck(by, () => this.studyHold()); this.plannerWriteAuthority(by);

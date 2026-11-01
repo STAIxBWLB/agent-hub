@@ -7,7 +7,7 @@ import { CLASSES, type TaskClass } from "./board.ts";
  * ceiling on the whole request: a body that fills several fields is refused whole, and no partial task is built from it.
  */
 export const HANDOFF_LIMITS = Object.freeze({ title: 300, detail: 4000, paths: 16, path: 512, issue: 2_000_000_000, bodyBytes: 8 * 1024 });
-export const HANDOFF_FIELDS = Object.freeze(["project", "title", "class", "detail", "paths", "issue"] as const);
+export const HANDOFF_FIELDS = Object.freeze(["project", "title", "class", "detail", "paths", "issue", "task"] as const);
 
 export type HandoffRefusalCode =
   | "invalid" | "too_large" | "unregistered" | "same_project" | "not_running" | "older_target" | "pii_turn" | "pii_task" | "no_authority";
@@ -17,7 +17,8 @@ export class HandoffRefusal extends Error {
   constructor(readonly code: HandoffRefusalCode, message: string) { super(message); this.name = "HandoffRefusal"; }
 }
 
-export interface HandoffRequest { title: string; class: TaskClass; detail: string; paths: string[]; issue?: number }
+/** `task` is the caller's OWN task this handoff comes from, so a `[pii]` one is refused and the target can name it in the follow-back. It never crosses as text. */
+export interface HandoffRequest { title: string; class: TaskClass; detail: string; paths: string[]; issue?: number; task?: number }
 
 const hasControl = (text: string): boolean => /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text);
 
@@ -64,7 +65,13 @@ export function parseHandoff(input: unknown): HandoffRequest & { project: string
     issue = typeof rawIssue === "string" && /^[1-9]\d{0,9}$/.test(rawIssue) ? Number(rawIssue) : rawIssue as number;
     if (typeof issue !== "number" || !Number.isSafeInteger(issue) || issue < 1 || issue > HANDOFF_LIMITS.issue) throw new HandoffRefusal("invalid", "handoff issue must be a positive issue number in the target's repository");
   }
-  const request = { project, title, class: cls as TaskClass, detail, paths, ...(issue === undefined ? {} : { issue }) };
+  const rawTask = field("task");
+  let task: number | undefined;
+  if (rawTask !== undefined && rawTask !== null && rawTask !== "") {
+    task = typeof rawTask === "string" && /^[1-9]\d{0,9}$/.test(rawTask) ? Number(rawTask) : rawTask as number;
+    if (typeof task !== "number" || !Number.isSafeInteger(task) || task < 1 || task > HANDOFF_LIMITS.issue) throw new HandoffRefusal("invalid", "handoff task must be a positive task id of this project");
+  }
+  const request = { project, title, class: cls as TaskClass, detail, paths, ...(issue === undefined ? {} : { issue }), ...(task === undefined ? {} : { task }) };
   if (Buffer.byteLength(JSON.stringify(request), "utf8") > HANDOFF_LIMITS.bodyBytes) throw new HandoffRefusal("too_large", `handoff is over ${HANDOFF_LIMITS.bodyBytes} bytes`);
   return request;
 }
@@ -105,6 +112,8 @@ export function handoffEventFor(entryEvent: string, state: string): HandoffEvent
   if (entryEvent === "cancelled" && state === "cancelled") return "cancelled";
   if (entryEvent === "done" && state === "in_review") return "in_review";
   if (entryEvent === "approved" && state === "approved") return "approved";
+  // A class with no reviewer: the done itself approves (`in_progress -> approved`), so the origin hears "approved" for that entry, not "in review".
+  if (entryEvent === "done" && state === "approved") return "approved";
   return undefined;
 }
 

@@ -68,6 +68,7 @@ test("only the listed state changes reach the origin, read from the task's own e
   expect(handoffEventFor("accepted", "in_progress")).toBe("accepted");
   expect(handoffEventFor("done", "in_review")).toBe("in_review");
   expect(handoffEventFor("approved", "approved")).toBe("approved");
+  expect(handoffEventFor("done", "approved")).toBe("approved");                          // a class with no reviewer: the done approves, observed on a real daemon in handoff-daemon.test.ts
   expect(handoffEventFor("declined", "proposed")).toBe("declined");
   expect(handoffEventFor("cancelled", "cancelled")).toBe("cancelled");
   for (const [event, state] of [["proposed", "proposed"], ["assigned", "proposed"], ["reassigned", "proposed"], ["done (checking)", "in_progress"], ["changes_requested", "changes_requested"], ["check passed", "in_progress"], ["approved", "in_review"], ["accepted", "proposed"]] as const)
