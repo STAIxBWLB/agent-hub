@@ -4,6 +4,9 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Upgrade one project while other projects keep working (#1039, #1045): negotiate protocol 17/16, use per-project recovery holds and verified versioned daemon captures, and update the global CLI and shared plugin separately. Doctor reports older shared tools.
+- Refuse incompatible `hub.db` formats before daemon effects or database writes, with a named required-version message. Preserve legacy recovery contracts and require guard-aware targets for new controlled replacements.
+
 ## 0.25.0
 
 - Pin `@staix/agent-mem` 0.18.0 (was 0.17.0), which adds forward-tolerant amem hook-spool handling, an amem console Recap panel and screened tool-input capture. The hub continues to use the library API and does not call the hook spool.

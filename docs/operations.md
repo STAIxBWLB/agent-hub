@@ -3049,7 +3049,7 @@ version is older than the selected running daemon; it installs nothing.
 | Runtime | Control protocol window | Legacy status field |
 | --- | --- | --- |
 | 0.12.20 through 0.24.0 | 16 only | `protocol: 16` |
-| First window-aware runtime | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
+| 0.25.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
 
 New clients choose the highest common protocol. The runtime supports N-1, so the
 published protocol-16 client and channel plugin remain usable; unrelated feature
