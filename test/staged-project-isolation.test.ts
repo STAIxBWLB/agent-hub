@@ -20,6 +20,8 @@ function isolate(root: string) {
     || /(?:_API_KEY|_ACCESS_TOKEN|_SECRET|_TOKEN)$/.test(key)) delete env[key];
   for (const key of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) delete env[key];
   mkdirSync(bin); writeFileSync(join(bin, "git"), '#!/bin/sh\nexec /usr/bin/git "$@"\n'); chmodSync(join(bin, "git"), 0o700);
+  // Preserve process identity tooling without exposing installed native agent CLIs.
+  writeFileSync(join(bin, "ps"), '#!/bin/sh\nexec /bin/ps "$@"\n'); chmodSync(join(bin, "ps"), 0o700);
   Object.assign(env, { HOME: join(root, "home"), AGENTHUB_HOME: join(root, "hub-home"), AMEM_HOME: join(root, "amem-home"),
     CLAUDE_CONFIG_DIR: join(root, "claude-home"), CODEX_HOME: join(root, "codex-home"), KIMI_CODE_HOME: join(root, "kimi-home"),
     PI_CODING_AGENT_DIR: join(root, "pi-home"), QWEN_CODE_HOME: join(root, "qwen-home"), GEMINI_CLI_HOME: join(root, "gemini-home"),
