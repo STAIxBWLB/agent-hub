@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { realPath } from "../src/hub/project.ts";
 import { Board } from "../src/hub/board.ts";
+import { Bus } from "../src/hub/bus.ts";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { readRestartSnapshot, writeRestartSnapshot, type RestartSnapshot } from "../src/hub/restart.ts";
@@ -120,3 +121,20 @@ test("protocol approval is reachable through the console study operation", async
 
   } finally { await f.close(); }
 },20_000);
+
+
+test("restart snapshots retain comparison integrity and refuse incomplete or malformed evidence", () => {
+  const stateDir=realPath(mkdtempSync(join(tmpdir(),"ahub-comparison-snapshot-")));
+  try {
+    const researchComparisons={plans:1,approvals:2,contexts:3,digest:"a".repeat(64)};
+    const snapshot:RestartSnapshot={schemaVersion:1,projectRoot:stateDir,projectId:"fixture",sourceInstanceId:"source",operationId:"comparison",committedAt:1,
+      bus:new Bus({batchMs:0}).snapshot(),manualPaused:[],peers:[],integrity:{queues:{},manualPaused:[],boardDigest:"board",budgetDigest:"budget",researchComparisons}};
+    const expected={projectRoot:stateDir,projectId:"fixture",operationId:"comparison"};
+    writeRestartSnapshot(stateDir,snapshot);
+    expect(readRestartSnapshot(stateDir,expected)?.integrity?.researchComparisons).toEqual(researchComparisons);
+    for (const invalid of [{...researchComparisons,plans:-1},{...researchComparisons,approvals:0.5},{plans:1,approvals:2,digest:"a".repeat(64)},{...researchComparisons,digest:"invalid"},null]) {
+      writeRestartSnapshot(stateDir,{...snapshot,integrity:{...snapshot.integrity!,researchComparisons:invalid}} as RestartSnapshot);
+      expect(readRestartSnapshot(stateDir,expected)).toBeUndefined();
+    }
+  } finally { rmSync(stateDir,{recursive:true,force:true}); }
+});
