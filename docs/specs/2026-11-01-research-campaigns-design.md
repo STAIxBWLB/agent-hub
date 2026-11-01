@@ -218,14 +218,14 @@ Protocol approval:
 - This block lives only in the untracked `.agenthub/config.local.json`. A tracked or shared file naming it throws at load, the `checks.remote` precedent.
 - It is added to `ALL_MACHINE_LOCAL` and is a structural tier-2 key for `ahub settings edit`. Its writes are person only.
 - `name` follows the id rule. At most 16 runners.
-- Revocation sets `revoked: true`. The key is kept, so old receipts still show who signed them, but a revoked key verifies nothing new.
+- Revocation sets `revoked: true`. The key is kept, so old receipts still show who signed them, but a revoked key verifies nothing new. Readback retains the key identity that verified the stored receipt and reports its current status separately (active, revoked, replaced or unavailable); a later config change never rewrites the receipt's as-of-signing provenance.
 - The hub stores no private key.
 
 ### AttemptReceiptV1
 
 The runner signs `"agent-hub.runner-receipt/v1\0" + canonical JSON of the receipt body` with Ed25519. The hub verifies with `node:crypto`.
 
-The body is `{ receiptId, runner, projectId, attemptId, protocolHash, codeCommit, imageDigest, containers: [{ id, role: "candidate" | "evaluator" | "other" }], mounts: [{ container, path, readOnly }], network: "none" | "restricted" | "open", resourceLimits, startedAt, endedAt, exitStatus, outputs: [{ name, sha256 }], metricsFile?: { name, sha256 } }`.
+The body is `{ receiptId, runner, projectId, attemptId, protocolHash, codeCommit, imageDigest, containers: [{ id, role: "candidate" | "evaluator" | "other" }], mounts: [{ container, path, readOnly }], network: "none" | "restricted" | "open", resourceLimits, startedAt, endedAt, exitStatus, outputs: [{ name, sha256 }], metricsFile?: { name, sha256 } }`. The identity fields `receiptId`, `runner`, `projectId`, `attemptId` and `protocolHash` are required; all observed fields are optional and an omitted observation remains `unknown`.
 
 Verification refuses before any write when any of these holds:
 - the runner is unknown or revoked;
@@ -236,7 +236,7 @@ Verification refuses before any write when any of these holds:
 
 Each mount also carries `purpose: "evaluator-code" | "evaluator-data" | "candidate-output" | "other"`.
 
-A verified receipt appends one `attestation` event, and its fields are `runner-attested`. `sealed` becomes verified only when every condition holds:
+A verified receipt appends one host-generated `attestation` event, and its fields are `runner-attested`. The declared event parser refuses caller-supplied attestation events. Runner fields are projected per receipt, separately from declared and host-observed evidence; missing fields remain `unknown`. A matching `codeCommit` may attest the match only when the protocol names that exact commit. For a deliverable-based protocol, the signed commit remains an independent runner claim and the code-to-deliverable match stays `unknown`; it is never a host observation. `sealed` becomes verified only when every condition holds:
 - at least one container has role `candidate` and at least one has role `evaluator`, and their ids are disjoint and unique;
 - every mount's `container` names a listed container;
 - at least one mount has purpose `evaluator-code` or `evaluator-data` and is on an evaluator container;
@@ -244,7 +244,9 @@ A verified receipt appends one `attestation` event, and its fields are `runner-a
 
 Missing, empty or inconsistent isolation evidence leaves `sealed` declared or unverified, never verified.
 
-A receipt with a known `receiptId` and identical bytes is a no-op. The same `receiptId` with different bytes refuses.
+A receipt with a known `receiptId` and identical canonical signed bytes (canonical receipt body and signature) is a no-op, including after its signing key is revoked, replaced or removed. Replay returns the stored proof without a new verification, event or write. The same `receiptId` with different canonical signed bytes refuses. Any new receipt id must pass verification against the current registration and key status; an unknown or revoked key therefore admits nothing new.
+
+The stored receipt, its `attestation` event and the first incompatible database-format marker advance share one transaction. Readers support hub.db format 2 while opening a fresh or legacy database keeps baseline format 1; only the first successful receipt insertion advances it to format 2. A rejected receipt or failed transaction advances nothing. The `research_runners` recovery floor protects both stored receipts and a raw runner config key independently of the earlier research recovery floors. Release-equality integrity includes the stored receipt count and row digest only when receipts exist. Accepted registrations and raw key presence remain config/feature-floor inputs, not board-state equality inputs, so pending file edits and legacy snapshots without runner rows can release normally.
 
 ### Delivery
 
@@ -265,9 +267,10 @@ All new tables live in `hub.db`, created in the `Board` constructor with `CREATE
 | `research_protocols` | `hash` | campaign id and revision, body JSON, by, at |
 | `research_plans` | `hash` | campaign id, body JSON, by, at |
 | `research_attempts` | `attempt_id`, unique `(project, idempotency_key)` | protocol hash, task id, phase, retry_of, reproduces, by, at |
-| `research_attempt_events` | `(attempt_id, seq)`, unique `receipt_id` when present | kind, provenance, body JSON, at |
+| `research_attempt_events` | `(attempt_id, seq)`, unique `(project, idempotency_key)` | kind, authority-derived provenance, body JSON (receipt id for an attestation), at |
+| `research_runner_receipts` | `receipt_id`, unique `(attempt_id, event_seq)` | canonical receipt, signature, signing public key, body hash, by, at, private |
 
-`board.hasResearchState()` reports whether any row exists. Readback is paginated: at most 50 rows per call, with a cursor.
+`board.hasResearchState()` reports whether any row exists. Campaign, attempt and event readback is paginated: at most 50 primary rows per page, with a cursor. The runner slice bounds signed receipts to 64 per attempt and projects them separately; a later expansion needs a reviewed receipt-page contract.
 
 ## Wire names
 

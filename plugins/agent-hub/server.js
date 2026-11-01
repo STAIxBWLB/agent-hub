@@ -10884,6 +10884,14 @@ var init_packs = __esm(() => {
   init_workflow();
 });
 
+// src/hub/research-runner.ts
+var BODY, RUNNER_RECEIPT_DOMAIN;
+var init_research_runner = __esm(() => {
+  init_packs();
+  BODY = 64 * 1024;
+  RUNNER_RECEIPT_DOMAIN = "agent-hub.runner-receipt/v1" + String.fromCharCode(0);
+});
+
 // node_modules/@staix/agent-mem/src/memory/mutation.ts
 var mutations;
 var init_mutation = __esm(() => {
@@ -11903,12 +11911,13 @@ var init_deliverables = __esm(() => {
 });
 
 // src/hub/research-experiments.ts
-var BODY;
+var BODY2;
 var init_research_experiments = __esm(() => {
   init_src();
   init_packs();
+  init_research_runner();
   init_deliverables();
-  BODY = 64 * 1024;
+  BODY2 = 64 * 1024;
 });
 
 // src/hub/task-code-symbols.ts
@@ -11994,15 +12003,16 @@ var init_planning = __esm(() => {
 });
 
 // src/hub/research-campaign.ts
-var BODY2;
+var BODY3;
 var init_research_campaign = __esm(() => {
   init_packs();
-  BODY2 = 64 * 1024;
+  BODY3 = 64 * 1024;
 });
 
 // src/hub/board.ts
 var CLASSES2, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
+  init_research_runner();
   init_packs();
   init_research_experiments();
   init_task_code_symbols();
@@ -23043,7 +23053,7 @@ var MACHINE_LOCAL = [
   "corpus.paths",
   "invocation"
 ];
-var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "start.agents", "adapters", "adapter_modules", "text_projection", "instances"];
+var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "research.runners", "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "start.agents", "adapters", "adapter_modules", "text_projection", "instances"];
 function configRefusal(cwd, name) {
   const tracked = configTracked(cwd, name);
   return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;
@@ -23373,6 +23383,7 @@ init_hub_tools();
 init_envelope();
 
 // src/hub/tasks.ts
+init_research_runner();
 init_queue_backpressure();
 
 // src/hub/memory-symbols.ts

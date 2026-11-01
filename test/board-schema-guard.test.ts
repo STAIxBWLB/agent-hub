@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { assertHubDbCompatible, HUB_DB_SCHEMA, HubDbSchemaError, openHubDatabase } from "../src/hub/db-schema.ts";
+import { assertHubDbCompatible, HUB_DB_BASE_SCHEMA, HUB_DB_SCHEMA, HubDbSchemaError, openHubDatabase } from "../src/hub/db-schema.ts";
 import { VERSION } from "../src/version.ts";
 import { Board } from "../src/hub/board.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
@@ -76,7 +76,7 @@ test("an unversioned legacy database keeps its rows and receives one introducing
   const db = openHubDatabase(file);
   try {
     expect(db.query("SELECT * FROM sentinel").all()).toEqual([{ id: 1, value: "preserved" }]);
-    expect(db.query("SELECT * FROM hub_schema").all()).toEqual([{ id: 1, schema: HUB_DB_SCHEMA, required_version: VERSION }]);
+    expect(db.query("SELECT * FROM hub_schema").all()).toEqual([{ id: 1, schema: HUB_DB_BASE_SCHEMA, required_version: VERSION }]);
   } finally { db.close(); }
   const before = fingerprint(file), compatible = openHubDatabase(file, { reader: { schema: HUB_DB_SCHEMA, version: "99.1.0" } });
   try { expect(compatible.query("SELECT required_version FROM hub_schema").get()).toEqual({ required_version: VERSION }); } finally { compatible.close(); }
@@ -123,7 +123,7 @@ test("a higher-capability reader leaves a lower compatible format and its introd
   initial.run("CREATE TRIGGER deny_schema_upgrade BEFORE UPDATE ON hub_schema BEGIN SELECT RAISE(ABORT,'opening must not migrate'); END"); initial.close();
   const before = fingerprint(file), db = openHubDatabase(file, { reader: { schema: HUB_DB_SCHEMA + 1, version: "99.0.0" } });
   try {
-    expect(db.query("SELECT * FROM hub_schema").get()).toEqual({ id: 1, schema: HUB_DB_SCHEMA, required_version: VERSION });
+    expect(db.query("SELECT * FROM hub_schema").get()).toEqual({ id: 1, schema: HUB_DB_BASE_SCHEMA, required_version: VERSION });
     expect(db.query("SELECT * FROM sentinel").all()).toEqual([{ value: "preserved" }]);
   } finally { db.close(); }
   expect(fingerprint(file)).toEqual(before);
@@ -131,7 +131,7 @@ test("a higher-capability reader leaves a lower compatible format and its introd
 
 test("memory databases use the same guard and marker without filesystem preflight", () => {
   const db = openHubDatabase(":memory:");
-  try { expect(db.query("SELECT * FROM hub_schema").get()).toEqual({ id: 1, schema: HUB_DB_SCHEMA, required_version: VERSION }); } finally { db.close(); }
+  try { expect(db.query("SELECT * FROM hub_schema").get()).toEqual({ id: 1, schema: HUB_DB_BASE_SCHEMA, required_version: VERSION }); } finally { db.close(); }
 });
 
 test("SQLite contention keeps its native busy classification instead of becoming schema corruption", () => {
@@ -201,7 +201,7 @@ test("a closed checkpointed compatible WAL database probes quietly and opens for
   const reopened = openHubDatabase(file);
   try {
     expect(reopened.query("SELECT * FROM sentinel").all()).toEqual([{ value: "preserved" }]);
-    expect(reopened.query("SELECT * FROM hub_schema").get()).toEqual({ id: 1, schema: HUB_DB_SCHEMA, required_version: VERSION });
+    expect(reopened.query("SELECT * FROM hub_schema").get()).toEqual({ id: 1, schema: HUB_DB_BASE_SCHEMA, required_version: VERSION });
   } finally { reopened.close(); }
 });
 
