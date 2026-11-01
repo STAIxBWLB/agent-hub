@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { init, removeBlock, upsertBlock } from "../src/cli/init.ts";
 import { buildLaunch, CLAUDE_CHANNEL, sessionSettings, statusLineSettings, UNATTENDED_WARNING } from "../src/cli/launch.ts";
 import { allocatePorts } from "../src/hub/ports.ts";
-import { nextStep, parseList, pluginState } from "../src/cli/setup.ts";
+import { nextStep, parseList, pluginState } from "../src/adapters/definitions/native-cli-claude-setup.ts";
 import { VERSION } from "../src/version.ts";
 import { childEnv } from "../src/hub/child-process.ts";
 import { hubGitSync } from "../src/hub/git.ts";
