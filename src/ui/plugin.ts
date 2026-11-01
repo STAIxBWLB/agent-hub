@@ -193,9 +193,10 @@ export function createProvider(options: { home: string; registry?: Registry; lif
 
   /**
    * #1012 Part 2: every running project's office as one acon SpaceScene. The office model is kept per project as
-   * `previous`, as the dashboard keeps it, so desk slots and message arcs persist across polls.
+   * `previous`, as the dashboard keeps it, so desk slots and message arcs persist across polls. A restarted daemon
+   * (new instanceId) restarts its event sequence at zero, so its previous model is dropped.
    */
-  const offices = new Map<string, OfficeScene>();
+  const offices = new Map<string, { instanceId: string | null; model: OfficeScene }>();
   async function space() {
     const projects = await running();
     for (const id of offices.keys()) if (!projects.some((p) => p.id === id)) offices.delete(id);
@@ -203,8 +204,9 @@ export function createProvider(options: { home: string; registry?: Registry; lif
     for (const project of projects) {
       const snap = await act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "office" }) as Record<string, unknown>;
       if (snap.ok === false) continue;
-      const model = officeModel(snap as never, offices.get(project.id) ?? null, { cols: 4, now: Date.now() });
-      offices.set(project.id, model);
+      const cached = offices.get(project.id);
+      const model = officeModel(snap as never, cached?.instanceId === project.instanceId ? cached.model : null, { cols: 4, now: Date.now() });
+      offices.set(project.id, { instanceId: project.instanceId, model });
       const label = projects.length > 1 ? (project.root.split("/").filter(Boolean).pop() ?? project.id) : undefined;
       scenes.push(officeSpace(model, { id: project.id, ...(label ? { label } : {}) }));
     }
