@@ -8,6 +8,8 @@ import { DASHBOARD_VIEWS, renderDashboard, startDashboard } from "../src/hub/ui.
 import type { Lifecycle, ProjectRecord } from "../src/hub/manager.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { aconManifestPath, registerAconPlugin } from "../src/cli/acon-register.ts";
+import { officeModel, type OfficeSnapshotInput } from "../src/ui/office-model.ts";
+import { mergeSpaces, officeSpace, SPACE_CAPS } from "../src/ui/office-space.ts";
 
 // #935: the acon console plugin over the manager's own listing and forwarding, against a scripted project hub.
 const dirs: string[] = [];
@@ -17,7 +19,7 @@ afterEach(() => { for (const s of servers.splice(0)) s.stop(true); for (const d 
 const PERMISSION = { t: "permission", id: "perm-1", peer: "kimi", title: "execute: fixture command", createdAt: 1_790_000_000_000, expiresAt: Date.now() + 60_000,
   options: [{ optionId: "yes", kind: "allow_once", name: "Allow" }, { optionId: "no", kind: "reject_once", name: "Deny" }] };
 
-function fixture() {
+function fixture(o: { stallSnapshots?: boolean; spaceBudgetMs?: number } = {}) {
   const home = mkdtempSync(join(tmpdir(), "ahub-acon-")); dirs.push(home);
   const project: ProjectRecord = { id: "p1", root: "/tmp/acon-project", stateDir: join(home, "state"), basePort: 4700, instanceId: "i1", pid: 42 };
   const registry = { get: (id: string) => id === project.id ? project : undefined, list: () => [project], close() {} } as any;
@@ -28,8 +30,11 @@ function fixture() {
     message(ws, data) {
       const m = JSON.parse(String(data));
       if (m.t === "hello") return void ws.send(JSON.stringify({ rid: m.rid, t: "welcome", cwd: project.root, projectId: project.id, instanceId: "i1" }));
+      if (m.t === "ui_snapshot" && o.stallSnapshots) { snapshots.push(m); return; }
       if (m.t === "ui_snapshot") { snapshots.push(m); return void ws.send(JSON.stringify({ rid: m.rid, ok: true, cursor: 1, peers: {}, permissions,
-        tasks: [{ id: 7, title: "Review the parser", state: "in_review", owner: "codex", reviewer: "user" }, { id: 8, title: "Other", state: "in_review", owner: "codex", reviewer: "claude" }] })); }
+        status: { peers: { kimi: { state: "busy", queued: 2, permissionMode: "default" }, codex: { state: "idle" } } },
+        events: [{ seq: 1, event: { t: "envelope", env: { from: "codex", to: ["kimi"], kind: "chat", priority: "status", ts: Date.now(), body: "MARKER-1012 body", refs: { task: "7" } } } }],
+        tasks: [{ id: 7, title: "Review the parser", detail: "MARKER-1012 detail", class: "implement", state: "in_review", owner: "codex", reviewer: "user" }, { id: 8, title: "Other", state: "in_review", owner: "codex", reviewer: "claude" }, { id: 9, title: "Wire the space", class: "implement", state: "in_progress", owner: "kimi" }] })); }
       if (m.t === "ui_action") { actions.push(m.action); if (m.action.action === "permit") permissions = []; return void ws.send(JSON.stringify({ rid: m.rid, ok: true })); }
     },
   } });
@@ -37,7 +42,7 @@ function fixture() {
   mkdirSync(project.stateDir, { recursive: true });
   writeFileSync(join(project.stateDir, "status.json"), JSON.stringify({ pid: process.pid, controlPort: hub.port, protocol: PROTOCOL, cwd: project.root, projectId: project.id, instanceId: "i1" }));
   writeFileSync(join(project.stateDir, "control-token"), "scripted-token");
-  const provider = createProvider({ home, registry, lifecycle });
+  const provider = createProvider({ home, registry, lifecycle, ...(o.spaceBudgetMs ? { spaceBudgetMs: o.spaceBudgetMs } : {}) });
   return { home, provider, actions, snapshots };
 }
 
@@ -123,6 +128,122 @@ describe("dashboard assets (D2)", () => {
     expect(css.startsWith(".ahub-panel{")).toBe(true);
     expect(js).not.toMatch(/<(main|header|footer)\b/); // the shell owns the landmarks
     expect(/@import|url\(\s*["']?(https?:)?\/\//i.test(css)).toBe(false);
+  });
+});
+
+describe("acon Space from the office model (#1012 Part 2)", () => {
+  const MARKER = "XYZZY-MARKER-1012";
+  const dirty = {
+    status: { peers: { codex: { state: "busy", queued: 1, needsReview: 1, permissionMode: "acceptEdits" }, pi: { state: "idle" }, kimi: { state: "busy", paused: "budget" } } },
+    tasks: [
+      { id: 1, title: "[pii]", detail: `${MARKER} private detail`, class: "implement", state: "in_progress", owner: "codex", deps: [] },
+      { id: 2, title: "public title", detail: `${MARKER} other detail`, class: "test", state: "proposed", deps: [] },
+      { id: 3, title: "in review", class: "review", state: "in_review", owner: "pi", reviewer: "codex", deps: [] },
+      { id: 4, title: "shipped", class: "implement", state: "approved", owner: "pi", deps: [] },
+    ],
+    permissions: [{ id: "p1", peer: "codex", title: `${MARKER} approval title`, options: [] }],
+    links: [{ kind: "overlap", tasks: [1, 3], peers: ["codex", "pi"], reason: `${MARKER} overlap reason` }],
+    events: [{ seq: 9, event: { t: "envelope", env: { from: "codex", to: ["pi"], kind: "chat", priority: "status", ts: 1500, body: `${MARKER} body`, refs: { task: "1" } } } }],
+    budget: { codex: { windows: [], paused: null } },
+  } as unknown as OfficeSnapshotInput;
+
+  test("peers, zones, cards and links map onto the SpaceScene contract with project-prefixed ids", () => {
+    const scene = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p1" });
+    const actor = (id: string) => scene.actors.find((a) => a.id === `p1:${id}`)!;
+    expect(actor("codex")).toMatchObject({ name: "codex", state: "waiting", card: "p1:1", link: { panel: "agents" } });
+    expect(actor("codex").marks?.map((m) => m.kind)).toEqual(["approval", "inbox", "mode"]);
+    expect(actor("pi").state).toBe("idle");
+    expect(actor("kimi").marks?.map((m) => m.kind)).toContain("paused");
+    expect(scene.actors.every((a) => a.pet === undefined)).toBe(true); // the shell assigns installed pets
+    expect(scene.zones.map((z) => [z.id, z.kind, z.count])).toEqual([["p1:todo", "queue", 1], ["p1:work", "work", 1], ["p1:review", "review", 1], ["p1:done", "done", 1]]);
+    expect(scene.cards.find((c) => c.id === "p1:1")).toMatchObject({ title: "#1 [pii]", zone: "p1:work", owner: "p1:codex" });
+    expect(scene.cards.find((c) => c.id === "p1:2")?.zone).toBe("p1:todo");
+    expect(scene.actors.every((a) => JSON.stringify(a.link) === JSON.stringify({ panel: "agents", params: { project: "p1" } }))).toBe(true);
+    expect(scene.cards.every((c) => JSON.stringify(c.link) === JSON.stringify({ panel: "board", params: { project: "p1" } }))).toBe(true);
+    expect(scene.links).toEqual([expect.objectContaining({ kind: "overlap", from: "p1:codex", to: "p1:pi", label: "#1 #3" })]);
+    // Message links come from envelope rows that arrive after the first snapshot (the office model's arcs), as on the dashboard.
+    const first = officeModel(dirty, null, { cols: 4, now: 3000 });
+    const flowing = officeSpace(officeModel({ ...dirty, events: [{ seq: 10, event: { t: "envelope", env: { from: "codex", to: ["pi"], kind: "chat", priority: "status", ts: 3500, body: `${MARKER} new`, refs: { task: "1" } } } }] } as OfficeSnapshotInput, first, { cols: 4, now: 4000 }), { id: "p1" });
+    expect(flowing.links).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "message", from: "p1:codex", to: "p1:pi", label: "#1" })]));
+    expect(JSON.stringify(flowing)).not.toContain(MARKER);
+    // With the wall clock passed in, an arc whose time has passed is not forwarded (a quiet project's model clock stands still).
+    const flowModel = officeModel({ ...dirty, events: [{ seq: 10, event: { t: "envelope", env: { from: "codex", to: ["pi"], kind: "chat", priority: "status", ts: 3500, body: "x", refs: { task: "1" } } } }] } as OfficeSnapshotInput, first, { cols: 4, now: 4000 });
+    const arcUntil = flowModel.arcs[0]!.until;
+    expect(officeSpace(flowModel, { id: "p1" }, arcUntil - 1).links?.some((l) => l.kind === "message")).toBe(true);
+    expect(officeSpace(flowModel, { id: "p1" }, arcUntil).links?.some((l) => l.kind === "message")).toBe(false);
+  });
+
+  test("MARKER: no body, detail, approval title, reason or PII text reaches the mapped scene", () => {
+    expect(JSON.stringify(dirty)).toContain(MARKER);
+    const scene = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p1", label: "proj" });
+    expect(JSON.stringify(scene)).not.toContain(MARKER);
+    expect(scene.actors[0]!.name.startsWith("proj / ")).toBe(true);
+  });
+
+  test("merged scenes stay within acon's caps", () => {
+    const one = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p" });
+    const scene = (i: number) => ({ ...one, actors: one.actors.map((a) => ({ ...a, id: `${i}:${a.id}` })), links: Array.from({ length: 8 }, () => ({ ...one.links![0]!, from: `${i}:${one.links![0]!.from}`, to: `${i}:${one.links![0]!.to}` })) });
+    const many = mergeSpaces(Array.from({ length: 40 }, (_, i) => scene(i)));
+    expect(many.actors.length).toBe(SPACE_CAPS.actors);
+    expect(many.links!.length).toBe(SPACE_CAPS.links);
+  });
+
+  test("Codex thread 4: after the caps, links, card owners and actor cards point only inside what was kept", () => {
+    const one = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p" });
+    // 11 projects of 3 actors: project 10's actors are cut. Its links come last (newest) and must not crowd out kept ones.
+    const scenes = Array.from({ length: 11 }, (_, i) => ({ actors: one.actors.map((a) => ({ ...a, id: `${i}:${a.id}`, ...(a.card ? { card: `${i}:${a.card}` } : {}) })), zones: [],
+      cards: one.cards.map((c) => ({ ...c, id: `${i}:${c.id}`, ...(c.owner ? { owner: `${i}:${c.owner}` } : {}) })),
+      links: Array.from({ length: i === 10 ? 64 : 2 }, () => ({ ...one.links![0]!, from: `${i}:p:codex`, to: `${i}:p:pi` })) }));
+    const merged = mergeSpaces(scenes);
+    const actors = new Set(merged.actors.map((a) => a.id)), cards = new Set(merged.cards.map((c) => c.id));
+    expect(merged.actors.length).toBe(SPACE_CAPS.actors);
+    expect(merged.links!.length).toBe(20);
+    expect(merged.links!.every((l) => actors.has(l.from) && actors.has(l.to))).toBe(true);
+    expect(merged.cards.every((c) => !c.owner || actors.has(c.owner))).toBe(true);
+    expect(merged.cards.some((c) => c.id.startsWith("10:") && c.owner === undefined)).toBe(true);
+    expect(merged.actors.every((a) => !a.card || cards.has(a.card))).toBe(true);
+    const tight = mergeSpaces([{ ...scenes[0]!, cards: [] }]);
+    expect(tight.actors.every((a) => a.card === undefined)).toBe(true);
+  });
+
+  test("Codex thread 1: the actor card is only the bubble's attributed task, with no single-card fallback", () => {
+    // pi owns in-progress #5 but its open turn is attributed to reviewing #3: the card is #3, never #5.
+    const input = { ...dirty, status: { peers: { ...(dirty as any).status.peers, pi: { state: "busy", turn: { task: 3 } } } },
+      tasks: [...(dirty as any).tasks, { id: 5, title: "own work", class: "implement", state: "in_progress", owner: "pi", deps: [] }] } as unknown as OfficeSnapshotInput;
+    const scene = officeSpace(officeModel(input, null, { cols: 4, now: 3000 }), { id: "p1" });
+    expect(scene.actors.find((a) => a.id === "p1:pi")?.card).toBe("p1:3");
+    // An open turn without an attributed task gives an empty bubble: no card, even with one in-progress task.
+    const idle = officeSpace(officeModel({ ...input, status: { peers: { ...(dirty as any).status.peers, pi: { state: "busy", turn: {} } } } } as unknown as OfficeSnapshotInput, null, { cols: 4, now: 3000 }), { id: "p1" });
+    expect(idle.actors.find((a) => a.id === "p1:pi")?.card).toBeUndefined();
+  });
+
+  test("Codex thread 2: a broadcast arc (empty to) links the sender to every other visible desk", () => {
+    const first = officeModel(dirty, null, { cols: 4, now: 3000 });
+    const next = officeModel({ ...dirty, events: [{ seq: 10, event: { t: "envelope", env: { from: "codex", to: [], kind: "chat", priority: "status", ts: 3500, body: `${MARKER} all` } } }] } as unknown as OfficeSnapshotInput, first, { cols: 4, now: 4000 });
+    const scene = officeSpace(next, { id: "p1" });
+    const messages = scene.links!.filter((l) => l.kind === "message");
+    expect(messages.map((l) => [l.from, l.to]).sort()).toEqual([["p1:codex", "p1:kimi"], ["p1:codex", "p1:pi"]]);
+    expect(JSON.stringify(scene)).not.toContain(MARKER);
+  });
+
+  test("the provider's space panel aggregates running projects through ui_snapshot and leaks no marker", async () => {
+    const { provider, snapshots } = fixture();
+    const { scene } = await provider.snapshot({ after: 0, panel: "space" }) as { scene: any };
+    expect(snapshots.at(-1)).toMatchObject({ t: "ui_snapshot", view: "office" });
+    expect(scene.actors.map((a: any) => a.id).sort()).toEqual(["p1:codex", "p1:kimi"]);
+    expect(scene.actors.find((a: any) => a.id === "p1:kimi")).toMatchObject({ state: "waiting", card: "p1:9", marks: expect.arrayContaining([{ kind: "approval", text: "1 approval" }]) });
+    expect(scene.cards.map((c: any) => c.id)).toEqual(expect.arrayContaining(["p1:7", "p1:9"]));
+    expect(JSON.stringify(scene)).not.toContain("MARKER-1012");
+    expect(plugin.manifest.capabilities?.space).toBe(true);
+    expect(plugin.manifest.pollMs).toBeLessThan(3000); // acon treats a sample gap over 3000 ms as a break in message links
+  });
+
+  test("a project that never answers is left out of the space poll within the budget", async () => {
+    const { provider } = fixture({ stallSnapshots: true, spaceBudgetMs: 200 });
+    const started = Date.now();
+    const { scene } = await provider.snapshot({ after: 0, panel: "space" }) as { scene: any };
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(scene).toEqual({ actors: [], zones: [], cards: [], links: [] });
   });
 });
 

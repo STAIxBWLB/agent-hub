@@ -31,6 +31,9 @@ ahub ui                                      # the web dashboard
 appears as a panel for every registered project, and pending approvals and reviews assigned
 to you reach the console inbox. The plugin is `@staix/agent-hub/ui-plugin`; it uses the
 dashboard manager's own listing and forwarding, so it adds no protocol and no action.
+The plugin also feeds the console's Space view (Flat, Room and 3D): agents become actors
+at their desks, the task board's columns become zones, and task links and recent messages
+become links. The scene carries labels and states only, never message bodies or details.
 
 `ahub init --dry-run --json` shows what init would write. The
 [Quickstart](docs/quickstart.md) walks through a first session and a working day.
