@@ -135,6 +135,8 @@ trap 'exit 143' TERM
 # keeps the output open must not hold the gate before the leak scan names it.
 scripts/progress-tee.sh "$progress" < "$output_fifo" >&2 &
 tee_pid=$!
+# #613: and no ORCA_* variable (src/hub/orca-env.ts names the launcher's four; the whole prefix goes): a run from an Orca pane would otherwise open real tabs and agents there.
+while IFS= read -r orca_var; do unset "$orca_var"; done < <(compgen -e | grep '^ORCA_' || true)
 env -u AGENTHUB_PEER_ID -u AGENTHUB_DELIVERY_ONLY -u AGENTHUB_CHANNEL -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID \
   -u AGENTHUB_PROJECT_DIR -u AGENTHUB_STATE_DIR -u AGENTHUB_INSTANCE_ID -u AGENTHUB_LAUNCH_ID -u NO_COLOR \
   GIT_CONFIG_GLOBAL=/dev/null TERM=xterm-256color bun test --timeout 20000 ${test_args[@]+"${test_args[@]}"} 2> "$output_fifo" &

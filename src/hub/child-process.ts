@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import { withoutOrcaEnv } from "./orca-env.ts";
 
 /**
  * Recovery authority belongs to the short-lived ahub wrapper/launcher. Native
@@ -19,9 +20,9 @@ export function childEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.Proces
  * typed or started there has the console's identity, whatever started the hub.
  */
 export function personEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env = childEnv(source);
-  // The Orca terminal the hub itself was started in is not this new terminal: a launch there must not record it as its own.
-  for (const name of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_CHANNEL", "AGENTHUB_PEER_ID", "AGENTHUB_UNATTENDED", "ORCA_TERMINAL_HANDLE", "ORCA_WORKTREE_ID"]) delete env[name];
+  // The Orca terminal the hub itself was started in is not this new terminal: a launch there must not record it as its own, so every ORCA_ variable goes (#613).
+  const env = withoutOrcaEnv(childEnv(source));
+  for (const name of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_CHANNEL", "AGENTHUB_PEER_ID", "AGENTHUB_UNATTENDED"]) delete env[name];
   return env;
 }
 
