@@ -11,12 +11,12 @@ import { attachEvent, originOf, sameOrigin } from "../src/hub/provenance.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
-async function rig(options: { roster?: Record<string, boolean>; roles?: Record<string, string[]> } = {}) {
+async function rig(options: { roster?: Record<string, boolean>; roles?: Record<string, string[]>; stateUnderProject?: boolean } = {}) {
   // A tools hello carries the launch id its process inherited (#604 item 9). The expected origins below name only what each test sends, so the run must not inherit one from the session running it.
   const inheritedLaunch = process.env.AGENTHUB_LAUNCH_ID; delete process.env.AGENTHUB_LAUNCH_ID;
   cleanup.push(() => { if (inheritedLaunch !== undefined) process.env.AGENTHUB_LAUNCH_ID = inheritedLaunch; });
-  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-provenance-"))), stateDir = join(root, "state");
-  mkdirSync(stateDir); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-provenance-"))), stateDir = options.stateUnderProject ? join(root, ".agenthub", "state") : join(root, "state");
+  mkdirSync(stateDir, { recursive: true }); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const envKeys = ["HOME", "CLAUDE_CONFIG_DIR", "AGENTHUB_HOME", "AMEM_HOME", "KIMI_CODE_HOME"] as const;
   const saved = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
   for (const key of envKeys) { const dir = join(root, key.toLowerCase()); mkdirSync(dir); process.env[key] = dir; }
@@ -108,3 +108,32 @@ test("AC7: a tools hello naming jcode without an owned launch is refused with th
   expect(noLaunch).toContain("peer id jcode belongs to this project's own launch; another project's session hands work over with hub_task_handoff");
   expect(await refusals({ role: "tools", peer: "jcode", launchId: "forged-launch" })).toContain("hands work over with hub_task_handoff");
 }, 30_000);
+
+// The path item 9 can break: a real `ahub` process in an agent shell. The Claude session's launcher puts AGENTHUB_LAUNCH_ID into its environment, so every shell it spawns inherits it, and
+// the CLI's tools hello sends it. Real CLI, real daemon: the session's own shell still works, and a shell WITHOUT the id (a process that merely knows the peer id) is refused.
+test("the real ahub CLI as claude: a shell that inherited the session's launch id works, and one that only claims the peer id is refused with the named error", async () => {
+  const r = await rig({ stateUnderProject: true });
+  const { writeFileSync } = await import("node:fs");
+  const instanceId = JSON.parse(readFileSync(join(r.stateDir, "status.json"), "utf8")).instanceId as string;
+  const LAUNCH = "22222222-bbbb-4bbb-8bbb-000000000002";
+  writeFileSync(join(r.stateDir, "claude-launch.json"), JSON.stringify({ instanceId, launchId: LAUNCH }));
+  writeFileSync(join(r.root, ".agenthub", "config.json"), "{}");
+  const ahub = async (env: Record<string, string>, ...args: string[]) => {
+    const base = { ...process.env, NO_COLOR: "1", COLUMNS: "100" } as Record<string, string>;
+    for (const key of Object.keys(base)) if (key.startsWith("AGENTHUB_") && key !== "AGENTHUB_HOME" || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CODEX_THREAD_ID", "KIMI_CODE"].includes(key)) delete base[key];
+    const proc = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", r.root, ...args], { cwd: r.root, env: { ...base, ...env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    return { code: await proc.exited, stdout, stderr };
+  };
+  const session = { AGENTHUB_PEER_ID: "claude", AGENTHUB_STATE_DIR: r.stateDir, AGENTHUB_PROJECT_DIR: r.root, AGENTHUB_LAUNCH_ID: LAUNCH };
+  const inside = await ahub(session, "status");
+  expect(inside.code, inside.stderr).toBe(0);                                                    // the session's own shell is unaffected
+  const { AGENTHUB_LAUNCH_ID: _drop, ...noLaunch } = session;
+  const outside = await ahub(noLaunch, "status");
+  expect(outside.code).toBe(1);
+  expect(outside.stderr).toContain("peer id claude belongs to this project's own launch; another project's session hands work over with hub_task_handoff");
+  const forged = await ahub({ ...session, AGENTHUB_LAUNCH_ID: "guessed-launch-id" }, "status");
+  expect(forged.code).toBe(1); expect(forged.stderr).toContain("hands work over with hub_task_handoff");
+  const person = await ahub({}, "status");                                                  // the person's console shell has no peer marker and is unchanged
+  expect(person.code, person.stderr).toBe(0);
+}, 90_000);
