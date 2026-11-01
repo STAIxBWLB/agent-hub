@@ -151,7 +151,7 @@ async function conductorReleaseRig(actor: "codex" | "local" = "codex") {
       return id;
     };
     const liveRoles = async (peer: string): Promise<string[]> => {
-      const reply = await person.request({ t: "status" }); expect(reply.ok === true, reply.error).toBe(true);
+      const reply = await person.request({ t: "status" }); expect(reply.t === "status", reply.error).toBe(true);
       const value: unknown = reply.status?.roleInfo?.[peer]?.flowRoles;
       if (!Array.isArray(value) || value.some(role => typeof role !== "string")) throw new Error("fixture cannot read the daemon's accepted flow roles");
       return value as string[];
