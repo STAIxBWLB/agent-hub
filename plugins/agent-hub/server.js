@@ -11194,10 +11194,12 @@ var init_search_fts = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/capture-input.ts
+var TOOL_INPUT_OMIT;
 var init_capture_input = __esm(() => {
   init_screen();
   init_platform();
   init_private_spans();
+  TOOL_INPUT_OMIT = new Set(["content", "old_string", "new_string", "edits"]);
 });
 
 // node_modules/@staix/agent-mem/src/memory/capture.ts
@@ -23284,7 +23286,7 @@ var package_default = {
     bun: ">=1.4.2"
   },
   dependencies: {
-    "@staix/agent-mem": "0.17.0"
+    "@staix/agent-mem": "0.18.0"
   },
   devDependencies: {
     "@modelcontextprotocol/sdk": "^1.27.1",
