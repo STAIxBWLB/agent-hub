@@ -36,7 +36,7 @@ function readerValue(reader: HubDbSchemaReader): HubDbSchemaReader {
 /** No persistent PRAGMA or schema/data write runs while reading the marker. */
 function schemaOn(db: Database): HubDbSchema | undefined {
   try {
-    const entries = db.query("SELECT type FROM sqlite_master WHERE name='hub_schema' LIMIT 2").all() as { type: string }[];
+    const entries = db.query("SELECT type FROM sqlite_master WHERE name='hub_schema' COLLATE NOCASE LIMIT 2").all() as { type: string }[];
     if (!entries.length) return undefined;
     if (entries.length !== 1 || entries[0]!.type !== "table") throw invalidSchema();
     const rows = db.query("SELECT id,schema,CASE WHEN typeof(required_version)='text' AND length(CAST(required_version AS BLOB))<=64 THEN required_version END AS required_version FROM hub_schema LIMIT 2")

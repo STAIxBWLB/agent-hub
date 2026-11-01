@@ -51,6 +51,16 @@ test("the current guard refuses a future schema before SQL/schema/data or DB/WAL
   finally { db.close(); }
 });
 
+test("SQLite case-insensitive marker names cannot bypass the early future-schema check", () => {
+  const file = fixture(), db = legacy(file);
+  db.run("CREATE TABLE HUB_SCHEMA (id INTEGER PRIMARY KEY,schema INTEGER NOT NULL,required_version TEXT NOT NULL)");
+  db.query("INSERT INTO HUB_SCHEMA VALUES(1,?,?)").run(HUB_DB_SCHEMA + 1, "99.0.0"); db.close();
+  const before = fingerprint(file);
+  expect(() => assertHubDbCompatible(file)).toThrow(named);
+  expect(() => openHubDatabase(file)).toThrow(named);
+  expect(fingerprint(file)).toEqual(before);
+});
+
 test("future metadata visible only through a live WAL is read and refused without changing it", () => {
   const file = fixture(), writer = future(file, true); clean.push(() => writer.close());
   expect(existsSync(`${file}-wal`)).toBe(true);
