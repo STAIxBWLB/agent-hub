@@ -1527,7 +1527,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     };
     if (parsed.op === "experiments") {
       // A read of the records Tasks keeps (hub_experiment_show): it runs no command and reads no file, and the hub blanks a private record itself.
-      const args = parsed.attempt ? { attemptId: parsed.attempt } : parsed.plan ? { planHash: parsed.plan, baselineAttemptId: parsed.baseline, variantAttemptId: parsed.variant } : { campaignId: parsed.campaign, ...(parsed.after === undefined ? {} : { after: parsed.after }) };
+      const args = parsed.attempt ? { attemptId: parsed.attempt, ...(parsed.eventsAfter === undefined ? {} : { eventAfter: parsed.eventsAfter }) } : parsed.plan ? { planHash: parsed.plan, baselineAttemptId: parsed.baseline, variantAttemptId: parsed.variant } : { campaignId: parsed.campaign, ...(parsed.after === undefined ? {} : { after: parsed.after }) };
       return showToolText(data => renderExperiments(data, present.columns), await taskOp("hub_experiment_show", args), present);
     }
     if (parsed.op === "show") return showToolText(data => parsed.id ? renderStudyShow(data, present.columns) : renderStudyList(data, present.columns), await taskOp("hub_study_show", parsed.id ? { id: parsed.id } : parsed.after ? { after: parsed.after } : {}), present);

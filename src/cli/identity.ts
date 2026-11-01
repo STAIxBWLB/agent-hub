@@ -85,7 +85,7 @@ const peerReadForms: Readonly<Record<string, Readonly<Record<string, PeerReadFor
   sdlc: { status: { positional: 1, displayFlags: sdlcReadDisplayFlags }, explain: { positional: 1, displayFlags: sdlcReadDisplayFlags }, queue: { positional: 1, minimum: 1, displayFlags: sdlcReadDisplayFlags }, release: { positional: 33, minimum: 1, displayFlags: sdlcReadDisplayFlags } },
   release: { show: { positional: 1, minimum: 1, displayFlags: [] } },
   // #601: reading a campaign is harmless for any agent (the hub stubs a private one); draft, revise, approve and close fall to `console`.
-  study: { show: { positional: 1, valueFlags: ["--after"], displayFlags: sdlcReadDisplayFlags }, experiments: { valueFlags: ["--campaign", "--attempt", "--after", "--plan", "--baseline", "--variant"], displayFlags: sdlcReadDisplayFlags } },
+  study: { show: { positional: 1, valueFlags: ["--after"], displayFlags: sdlcReadDisplayFlags }, experiments: { valueFlags: ["--campaign", "--attempt", "--after", "--events-after", "--plan", "--baseline", "--variant"], displayFlags: sdlcReadDisplayFlags } },
   projects: { "": {} },
   models: { status: {} },
   recovery: { status: { positional: 1 } },

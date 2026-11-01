@@ -147,6 +147,26 @@ test("AC5: duplicate delivery keeps attempt identity, an explicit retry is a new
   expect(view.attempts.every(row => row.independentlyReproduced === false)).toBe(true);
 });
 
+test("review P2: an attempt with more than fifty events says so, names the command for the next page, and that command's cursor reaches the later events", async () => {
+  const f = await fixture(), hash = await f.saveProtocol(), id = await f.attempt(hash, "long");
+  for (let index = 0; index < 52; index++) await f.add(id, `m${index}`, { kind: "metric", body: { name: "score", value: index / 100 } });
+  await f.add(id, "end", { kind: "end", body: { status: "succeeded", exitStatus: 0 } });
+  const first = await f.tasks.experimentShow(USER, { attemptId: id }), row = first.attempts[0]!;
+  expect(row.eventsComplete).toBe(false); expect(row.nextEventCursor).toBeGreaterThan(0);
+  const text = plain(first);
+  expect(text).toContain(`more events of ${id}: ahub study experiments --attempt ${id} --events-after ${row.nextEventCursor}`);
+  expect(text).toContain("the values above come from the events shown so far");
+  // the CLI's parsed form carries the cursor, and the hub's second page holds the terminal event the first page lacks
+  const parsed = parseStudyArgs(["experiments", "--attempt", id, "--events-after", String(row.nextEventCursor)]);
+  expect(parsed).toEqual({ op: "experiments", attempt: id, eventsAfter: row.nextEventCursor });
+  const second = await f.tasks.experimentShow(USER, { attemptId: id, eventAfter: (parsed as { eventsAfter: number }).eventsAfter });
+  expect(second.attempts[0]!.events.length).toBeGreaterThan(0); expect(second.attempts[0]!.eventsComplete).toBe(true);
+  expect(plain(second)).not.toContain("more events of");
+  // a campaign page and a comparison have no event cursor
+  expect(parseStudyArgs(["experiments", "--campaign", "rc-0123456789ab", "--events-after", "1"])).toHaveProperty("usage");
+  expect(parseStudyArgs(["experiments", "--attempt", id, "--events-after", "-1"])).toHaveProperty("usage");
+});
+
 test("the CLI form is three closed shapes; a stray flag, a missing value, a repeat or a mix is a usage error before anything is sent", () => {
   const ok = (args: string[]) => parseStudyArgs(["experiments", ...args]);
   const campaign = "rc-0123456789ab", attempt = "ra-0123456789ab", other = "ra-abcdef012345", plan = "c".repeat(64);

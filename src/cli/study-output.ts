@@ -122,5 +122,6 @@ export function renderExperiments(view: unknown, columns?: number): Span[][] {
   }
   out.push(blank, [s(`declared values are an agent's own words; only host-observed, runner-attested or person-attested rows are evidence, and none of them proves the science. A repeat is never an independent reproduction.`, "muted")]);
   if (v?.nextCursor !== undefined) out.push([s(`more attempts: ahub study experiments --campaign <id> --after ${v.nextCursor}`, "muted")]);
+  for (const row of attempts) if (row.eventsComplete === false && row.nextEventCursor !== undefined) out.push([s(`more events of ${row.id}: ahub study experiments --attempt ${row.id} --events-after ${row.nextEventCursor}; the values above come from the events shown so far`, "attention")]);
   return out;
 }
