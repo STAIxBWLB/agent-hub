@@ -42,6 +42,20 @@ function fixture() {
   return { root, home, source, registry, capture, project };
 }
 
+function copyPruner(target: string, verifier?: string): string {
+  const file = join(target, "src/hub/runtime-capture-prune.ts");
+  put(target, "src/hub/runtime-capture-prune.ts", readFileSync(new URL("../src/hub/runtime-capture-prune.ts", import.meta.url), "utf8"));
+  const reexport = (relative: string, names: string, actual: string) => put(target, relative, `export { ${names} } from ${JSON.stringify(new URL(actual, import.meta.url).href)};\n`);
+  if (verifier) put(target, "src/cli/recovery-package.ts", verifier);
+  else reexport("src/cli/recovery-package.ts", "verifyPackage", "../src/cli/recovery-package.ts");
+  reexport("src/pi/process-signature.ts", "processLiveness, processSignature", "../src/pi/process-signature.ts");
+  reexport("src/hub/project.ts", "hubHome, realPath", "../src/hub/project.ts");
+  reexport("src/hub/project-runtime-state.ts", "readProjectRuntimeReference, projectRuntimeFile", "../src/hub/project-runtime-state.ts");
+  reexport("src/hub/registry.ts", "Registry, REGISTRY_DB_BUSY_TIMEOUT_MS", "../src/hub/registry.ts");
+  reexport("src/hub/child-process.ts", "childEnv", "../src/hub/child-process.ts");
+  return file;
+}
+
 function managerReference(f: ReturnType<typeof fixture>, runtimeRoot?: string, options: { dead?: boolean; mismatch?: boolean; missingManifest?: boolean; legacyOwner?: boolean } = {}) {
   const manager = join(f.home, "manager"), signature = processSignature(process.pid);
   if (!signature) throw new Error("manager fixture process identity is unavailable");
@@ -280,16 +294,8 @@ test("#610 registry locking nests on one connection across capture publication a
 
 test("#610 a CLI executing from a verified capture protects itself without protecting unrelated captures", async () => {
   const f = fixture();
-  const module = new URL("../src/hub/runtime-capture-prune.ts", import.meta.url);
   // Copy this one production module into a tiny package, with narrow re-exports to its real dependencies.
-  put(f.source, "src/hub/runtime-capture-prune.ts", readFileSync(module, "utf8"));
-  const reexport = (file: string, names: string, actual: string) => put(f.source, file, `export { ${names} } from ${JSON.stringify(new URL(actual, import.meta.url).href)};\n`);
-  reexport("src/cli/recovery-package.ts", "verifyPackage", "../src/cli/recovery-package.ts");
-  reexport("src/pi/process-signature.ts", "processLiveness", "../src/pi/process-signature.ts");
-  reexport("src/hub/project.ts", "hubHome, realPath", "../src/hub/project.ts");
-  reexport("src/hub/project-runtime-state.ts", "readProjectRuntimeReference, projectRuntimeFile", "../src/hub/project-runtime-state.ts");
-  reexport("src/hub/registry.ts", "Registry, REGISTRY_DB_BUSY_TIMEOUT_MS", "../src/hub/registry.ts");
-  reexport("src/hub/child-process.ts", "childEnv", "../src/hub/child-process.ts");
+  copyPruner(f.source);
   const executing = f.capture(), orphan = f.capture();
   const captured = await import(pathToFileURL(join(executing.root, "src/hub/runtime-capture-prune.ts")).href) as typeof import("../src/hub/runtime-capture-prune.ts");
   const result = captured.pruneRuntimeCaptures(f.home, 0);
@@ -343,17 +349,130 @@ writeFileSync(${JSON.stringify(result)}, JSON.stringify(pruneRuntimeCaptures(${J
   }
 }, 20_000);
 
-interface ScheduleRow { id: string; admitted_at: number; phase: string; pid: number | null; outcome: string | null }
+interface ScheduleRow { id: string; admitted_at: number; phase: string; pid: number | null; outcome: string | null; signature: string | null }
 function scheduleRow(home: string): ScheduleRow | undefined {
   const file = join(home, "runtime-prune.db"); if (!existsSync(file)) return undefined;
   let db: Database | undefined;
   try {
     db = new Database(file, { readonly: true });
     db.run(`PRAGMA busy_timeout = ${REGISTRY_DB_BUSY_TIMEOUT_MS}`);
-    return db.query("SELECT id,admitted_at,phase,pid,outcome FROM admission WHERE slot=1").get() as ScheduleRow | undefined;
+    return db.query("SELECT id,admitted_at,phase,pid,outcome,signature FROM admission WHERE slot=1").get() as ScheduleRow | undefined;
   } catch { return undefined; } // another process may still be initializing the exclusively created ledger
   finally { db?.close(); }
 }
+
+function seedSchedule(home: string, row: Omit<ScheduleRow, "outcome">, legacy = false): void {
+  const file = join(home, "runtime-prune.db"); writeFileSync(file, "", { mode: 0o600, flag: "wx" });
+  const db = new Database(file, { create: true });
+  try {
+    db.run(`PRAGMA busy_timeout = ${REGISTRY_DB_BUSY_TIMEOUT_MS}`);
+    db.run(`CREATE TABLE admission (slot INTEGER PRIMARY KEY CHECK(slot=1), id TEXT NOT NULL, admitted_at INTEGER NOT NULL, phase TEXT NOT NULL, pid INTEGER, outcome TEXT${legacy ? "" : ", signature TEXT"})`);
+    if (legacy) db.query("INSERT INTO admission VALUES(1,?,?,?,?,NULL)").run(row.id, row.admitted_at, row.phase, row.pid);
+    else db.query("INSERT INTO admission VALUES(1,?,?,?,?,NULL,?)").run(row.id, row.admitted_at, row.phase, row.pid, row.signature);
+  } finally { db.close(); }
+}
+
+const workerEnv = (home: string): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...process.env, AGENTHUB_HOME: home };
+  for (const key of Object.keys(env)) if (key.startsWith("ORCA_")) delete env[key];
+  return env;
+};
+const waitForFile = async (file: string) => {
+  for (let i = 0; i < 2000 && !existsSync(file); i++) await Bun.sleep(5);
+  expect(existsSync(file), file).toBe(true);
+};
+
+test("#610 exact legacy ledger schema migrates without treating an unsigned running PID as dead", async () => {
+  const f = fixture(), id = randomUUID();
+  seedSchedule(f.home, { id, admitted_at: 0, phase: "running", pid: process.pid, signature: null }, true);
+  scheduleRuntimeCapturePrune(f.home);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(scheduleRow(f.home)).toMatchObject({ id, phase: "running", pid: process.pid, signature: null });
+});
+
+test("#610 a positively gone signed running owner is replaced on next admission, and its old child cannot claim the new token", async () => {
+  const f = fixture(); f.capture();
+  const signature = processSignature(process.pid); expect(signature).toBeString();
+  const retired = `retired-${signature}`, old = randomUUID();
+  expect(processLiveness(process.pid, retired)).toBe("gone");
+  seedSchedule(f.home, { id: old, admitted_at: Date.now(), phase: "running", pid: process.pid, signature: retired });
+  let replacement: ScheduleRow | undefined;
+  try {
+    scheduleRuntimeCapturePrune(f.home);
+    for (let i = 0; i < 2000; i++) {
+      const row = scheduleRow(f.home);
+      if (row?.id !== old && row?.phase === "complete") { replacement = row; break; }
+      await Bun.sleep(5);
+    }
+    expect(replacement?.phase).toBe("complete"); expect(replacement!.id).not.toBe(old); expect(replacement!.signature).toBeString();
+    const module = new URL("../src/hub/runtime-capture-prune.ts", import.meta.url).pathname;
+    const stale = Bun.spawn([process.execPath, module, f.home, old], { cwd: f.root, env: workerEnv(f.home), stdout: "ignore", stderr: "pipe" });
+    expect(await stale.exited, await new Response(stale.stderr).text()).toBe(0);
+    expect(scheduleRow(f.home)).toEqual(replacement);
+  } finally {
+    const row = scheduleRow(f.home);
+    if (row?.id !== old && row?.pid && row.signature && processSignature(row.pid) === row.signature) {
+      try { process.kill(row.pid, "SIGTERM"); } catch {}
+      for (let i = 0; i < 200 && processLiveness(row.pid, row.signature) !== "gone"; i++) await Bun.sleep(5);
+      expect(processLiveness(row.pid, row.signature)).toBe("gone");
+    }
+  }
+}, 20_000);
+
+for (const replace of [false, true]) test(`#610 a busy worker completion ${replace ? "cannot overwrite a replacement token" : "waits for the ledger writer and completes"}`, async () => {
+  const f = fixture(); for (let i = 0; i < 4; i++) f.capture();
+  const held = join(f.root, "verifier-held"), release = join(f.root, "verifier-release"), attempt = join(f.root, "completion-attempt"), id = randomUUID();
+  seedSchedule(f.home, { id, admitted_at: Date.now(), phase: "scheduled", pid: null, signature: null });
+  const actual = new URL("../src/cli/recovery-package.ts", import.meta.url).href;
+  const verifier = `import { existsSync, writeFileSync } from "node:fs";
+import { verifyPackage as actual } from ${JSON.stringify(actual)};
+export function verifyPackage(...args: Parameters<typeof actual>) {
+ writeFileSync(${JSON.stringify(held)}, "held");
+ const deadline = Date.now() + 10000;
+ while (!existsSync(${JSON.stringify(release)}) && Date.now() < deadline) Bun.sleepSync(5);
+ if (!existsSync(${JSON.stringify(release)})) throw new Error("fixture verifier was never released");
+ return actual(...args);
+}
+`;
+  const module = copyPruner(join(f.root, "worker"), verifier), source = readFileSync(module, "utf8");
+  const sql = "UPDATE admission SET phase='complete',outcome=? WHERE slot=1 AND id=? AND phase='running'";
+  const line = `db.query(${JSON.stringify(sql)}).run(outcome, id);`;
+  expect(source.split(line)).toHaveLength(2);
+  // A test-only statement adapter marks the exact run call; it changes neither SQL nor its id/phase fence.
+  writeFileSync(module, 'import { writeFileSync as fixtureWrite } from "node:fs";\n' + source.replace(line,
+    `const fixtureCompletion = db.query(${JSON.stringify(sql)}); fixtureWrite(${JSON.stringify(attempt)}, "attempt"); fixtureCompletion.run(outcome, id);`));
+  const worker = Bun.spawn([process.execPath, module, f.home, id], { cwd: f.root, env: workerEnv(f.home), stdout: "ignore", stderr: "pipe" });
+  let ledger: Database | undefined, holding = false;
+  const next = randomUUID();
+  try {
+    await waitForFile(held);
+    const running = scheduleRow(f.home);
+    expect(running).toMatchObject({ id, phase: "running", pid: worker.pid }); expect(running!.signature).toBeString();
+    ledger = new Database(join(f.home, "runtime-prune.db"));
+    ledger.run(`PRAGMA busy_timeout = ${REGISTRY_DB_BUSY_TIMEOUT_MS}`);
+    ledger.run("BEGIN IMMEDIATE"); holding = true;
+    if (replace) ledger.query("UPDATE admission SET id=?,phase='scheduled',pid=NULL,signature=NULL,outcome='replacement evidence' WHERE slot=1").run(next);
+    writeFileSync(release, "release");
+    await waitForFile(attempt);
+    // After the exact completion run marker, retain contention beyond the former 1ms worker timeout.
+    await Bun.sleep(20);
+    expect(worker.exitCode).toBeNull();
+    ledger.run("COMMIT"); holding = false;
+    expect(await worker.exited, await new Response(worker.stderr).text()).toBe(0);
+    const completed = scheduleRow(f.home);
+    if (replace) expect(completed).toMatchObject({ id: next, phase: "scheduled", signature: null, outcome: "replacement evidence" });
+    else {
+      expect(completed).toMatchObject({ id, phase: "complete", pid: worker.pid });
+      expect(JSON.parse(completed!.outcome!)).toMatchObject({ removed: 1, quarantined: [] });
+    }
+  } finally {
+    writeFileSync(release, "release");
+    if (holding) { try { ledger?.run("ROLLBACK"); } catch {} }
+    ledger?.close();
+    if (worker.exitCode === null) worker.kill("SIGTERM");
+    await worker.exited;
+  }
+}, 20_000);
 
 test("#610 maintenance admits after startup returns, rate-limits across processes and fences stale children", async () => {
   const f = fixture(); f.capture();
@@ -389,7 +508,8 @@ test("#610 maintenance admits after startup returns, rate-limits across processe
     const active = new Database(join(f.home, "runtime-prune.db"));
     try {
       active.run(`PRAGMA busy_timeout = ${REGISTRY_DB_BUSY_TIMEOUT_MS}`);
-      active.query("UPDATE admission SET phase='running',admitted_at=? WHERE slot=1").run(Date.now() - RUNTIME_PRUNE_INTERVAL_MS * 2);
+      const signature = processSignature(process.pid); expect(signature).toBeString();
+      active.query("UPDATE admission SET phase='running',admitted_at=?,pid=?,signature=? WHERE slot=1").run(Date.now() - RUNTIME_PRUNE_INTERVAL_MS * 2, process.pid, signature!);
     } finally { active.close(); }
     scheduleRuntimeCapturePrune(f.home);
     await new Promise<void>(resolve => setImmediate(resolve));

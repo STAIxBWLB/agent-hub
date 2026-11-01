@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, readdirSync, renameSync, rmSync, type Dirent, type Stats } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { verifyPackage } from "../cli/recovery-package.ts";
-import { processLiveness } from "../pi/process-signature.ts";
+import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { childEnv } from "./child-process.ts";
 import { hubHome, realPath } from "./project.ts";
 import { readProjectRuntimeReference, projectRuntimeFile } from "./project-runtime-state.ts";
@@ -314,8 +314,8 @@ export function pruneRuntimeCaptures(home = hubHome(), keepNewest = 3): RuntimeC
   finally { registry?.close(); }
 }
 
-interface Admission { id: string; admitted_at: number; phase: "scheduled" | "running" | "complete" }
-function admissionDatabase(home: string): Database {
+interface Admission { slot: number; id: string; admitted_at: number; phase: "scheduled" | "running" | "complete"; pid: number | null; signature: string | null }
+function admissionFile(home: string): { file: string; fresh: boolean } {
   const file = join(home, "runtime-prune.db");
   if (!directory(home)) fail("runtime maintenance admission state is unavailable");
   let fresh = false;
@@ -323,31 +323,53 @@ function admissionDatabase(home: string): Database {
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
   const info = optionalInfo(file);
   if (!info?.isFile() || info.isSymbolicLink() || info.nlink !== 1 || (info.mode & 0o077) !== 0 || info.size > 1024 * 1024) fail("runtime maintenance admission state is unavailable");
+  return { file, fresh };
+}
+function prepareAdmissionDatabase(db: Database, fresh: boolean): void {
+  db.transaction(() => {
+    if (fresh) db.run("CREATE TABLE admission (slot INTEGER PRIMARY KEY CHECK(slot=1), id TEXT NOT NULL, admitted_at INTEGER NOT NULL, phase TEXT NOT NULL, pid INTEGER, outcome TEXT, signature TEXT)");
+    const tables = db.query("SELECT name,type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 2").all() as { name: string; type: string }[];
+    const columns = db.query("PRAGMA table_info(admission)").all() as { name: string }[];
+    if (tables.length !== 1 || tables[0]?.name !== "admission" || tables[0]?.type !== "table") fail("runtime maintenance admission schema is invalid");
+    const shape = columns.map(column => column.name).join(",");
+    if (shape === "slot,id,admitted_at,phase,pid,outcome") db.run("ALTER TABLE admission ADD COLUMN signature TEXT");
+    else if (shape !== "slot,id,admitted_at,phase,pid,outcome,signature") fail("runtime maintenance admission schema is invalid");
+  }).immediate();
+}
+function startupAdmissionDatabase(home: string): Database {
+  const { file, fresh } = admissionFile(home);
   const db = new Database(file, { create: true });
   try {
     db.run(`PRAGMA busy_timeout = ${RUNTIME_PRUNE_ADMISSION_BUSY_TIMEOUT_MS}`);
-    if (fresh) db.run("CREATE TABLE admission (slot INTEGER PRIMARY KEY CHECK(slot=1), id TEXT NOT NULL, admitted_at INTEGER NOT NULL, phase TEXT NOT NULL, pid INTEGER, outcome TEXT)");
-    const tables = db.query("SELECT name,type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 2").all() as { name: string; type: string }[];
-    const columns = db.query("PRAGMA table_info(admission)").all() as { name: string }[];
-    if (tables.length !== 1 || tables[0]?.name !== "admission" || tables[0]?.type !== "table"
-      || columns.map(column => column.name).join(",") !== "slot,id,admitted_at,phase,pid,outcome") fail("runtime maintenance admission schema is invalid");
-    return db;
+    prepareAdmissionDatabase(db, fresh); return db;
+  } catch (error) { db.close(); throw error; }
+}
+function workerAdmissionDatabase(home: string): Database {
+  const { file, fresh } = admissionFile(home);
+  const db = new Database(file, { create: true });
+  try {
+    db.run(`PRAGMA busy_timeout = ${REGISTRY_DB_BUSY_TIMEOUT_MS}`);
+    prepareAdmissionDatabase(db, fresh); return db;
   } catch (error) { db.close(); throw error; }
 }
 function admissionRow(db: Database): Admission | undefined {
-  const rows = db.query("SELECT id,admitted_at,phase FROM admission LIMIT 2").all() as Admission[];
-  if (rows.length > 1 || rows.some(row => !/^[a-f0-9-]{36}$/.exec(row.id)?.[0] || row.id.length !== 36 || !Number.isSafeInteger(row.admitted_at) || row.admitted_at < 0
-    || !["scheduled", "running", "complete"].includes(row.phase))) fail("runtime maintenance admission state is invalid");
+  const rows = db.query("SELECT slot,id,admitted_at,phase,pid,signature FROM admission LIMIT 2").all() as Admission[];
+  if (rows.length > 1 || rows.some(row => row.slot !== 1 || typeof row.id !== "string" || !/^[a-f0-9-]{36}$/.exec(row.id)?.[0] || row.id.length !== 36
+    || !Number.isSafeInteger(row.admitted_at) || row.admitted_at < 0 || !["scheduled", "running", "complete"].includes(row.phase)
+    || row.pid !== null && (!Number.isSafeInteger(row.pid) || row.pid < 1)
+    || row.signature !== null && (typeof row.signature !== "string" || !row.signature.trim() || Buffer.byteLength(row.signature) > 1024))) fail("runtime maintenance admission state is invalid");
   return rows[0];
 }
 function admitSchedule(home: string): string | undefined {
-  const db = admissionDatabase(home);
+  const db = startupAdmissionDatabase(home);
   try {
     return db.transaction(() => {
       const previous = admissionRow(db), now = Date.now();
-      if (previous && (previous.phase === "running" || now - previous.admitted_at < RUNTIME_PRUNE_INTERVAL_MS)) return undefined;
+      const dead = previous?.phase === "running" && previous.pid !== null && previous.signature !== null
+        && processLiveness(previous.pid, previous.signature) === "gone";
+      if (previous && (previous.phase === "running" && !dead || !dead && now - previous.admitted_at < RUNTIME_PRUNE_INTERVAL_MS)) return undefined;
       const id = randomUUID();
-      db.query("INSERT OR REPLACE INTO admission(slot,id,admitted_at,phase,pid,outcome) VALUES(1,?,?,'scheduled',NULL,NULL)").run(id, now);
+      db.query("INSERT OR REPLACE INTO admission(slot,id,admitted_at,phase,pid,outcome,signature) VALUES(1,?,?,'scheduled',NULL,NULL,NULL)").run(id, now);
       return id;
     }).immediate();
   } finally { db.close(); }
@@ -372,11 +394,13 @@ export function scheduleRuntimeCapturePrune(home?: string): void {
   });
 }
 function runScheduledWorker(home: string, id: string): void {
-  const db = admissionDatabase(home);
+  const signature = processSignature(process.pid);
+  if (!signature) fail("runtime maintenance worker process identity is unavailable");
+  const db = workerAdmissionDatabase(home);
   try {
     const admitted = db.transaction(() => {
       const row = admissionRow(db); if (row?.id !== id || row.phase !== "scheduled") return false;
-      db.query("UPDATE admission SET phase='running',pid=? WHERE slot=1 AND id=? AND phase='scheduled'").run(process.pid, id); return true;
+      db.query("UPDATE admission SET phase='running',pid=?,signature=? WHERE slot=1 AND id=? AND phase='scheduled'").run(process.pid, signature, id); return true;
     }).immediate();
     if (!admitted) return;
     const result = pruneRuntimeCaptures(home), outcome = JSON.stringify({ removed: result.removed.length, quarantined: (result.quarantined ?? []).map(root => relative(home, root)), ...(result.deferred ? { deferred: result.deferred.slice(0, 512) } : {}) });

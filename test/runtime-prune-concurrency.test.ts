@@ -58,7 +58,7 @@ function copiedPruner(f: ReturnType<typeof fixture>, held: string, release: stri
   // The production module is copied unchanged. Dependency wiring is the same narrow pattern used by capture-prune's executing-root fixture.
   put(coordinator, "src/hub/runtime-capture-prune.ts", readFileSync(new URL("../src/hub/runtime-capture-prune.ts", import.meta.url), "utf8"));
   const reexport = (file: string, names: string, dependency: string) => put(coordinator, file, `export { ${names} } from ${JSON.stringify(actual(dependency))};\n`);
-  reexport("src/pi/process-signature.ts", "processLiveness", "../src/pi/process-signature.ts");
+  reexport("src/pi/process-signature.ts", "processLiveness, processSignature", "../src/pi/process-signature.ts");
   reexport("src/hub/project.ts", "hubHome, realPath", "../src/hub/project.ts");
   reexport("src/hub/project-runtime-state.ts", "readProjectRuntime, readProjectRuntimeReference, projectRuntimeFile", "../src/hub/project-runtime-state.ts");
   reexport("src/hub/registry.ts", "Registry, REGISTRY_DB_BUSY_TIMEOUT_MS", "../src/hub/registry.ts");

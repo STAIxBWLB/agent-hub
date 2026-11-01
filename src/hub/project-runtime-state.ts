@@ -59,6 +59,7 @@ function requireRuntimeTrust(project: RuntimeProject): void {
     if (checked.has(root) || selected === ".." || selected.startsWith("../") || isAbsolute(selected)) continue;
     checked.add(root);
     const parts = selected.split("/"), parent = parts.slice(0, -1).join("/");
+    // ponytail: explicit custom stateDir ancestor listings can exceed 256 KiB (default unaffected); use an untracked dedicated state directory, then upgrade to exact ancestor index lookup.
     const specs = [`:(icase,literal)${parent || selected}`];
     for (let i = 1; i < parts.length - 1; i++) specs.push(`:(icase,glob)${exactGlob(parts.slice(0, i).join("/"))}`);
     const tracked = git(["-C", root, "ls-files", "-s", "-z", "--", ...specs]);

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { assertConductorOperationLocal, authorizeConductorOperation, authorizeConductorLaunch, issueConductorOperation, preflightConductorRecovery, retireConductorOperation } from "./conductor-recovery.ts";
+import { runtimePruneHealth } from "../hub/runtime-prune-health.ts";
 import { conductorLocalOperation, conductorOperation, OPERATIONAL_PERSON_GUIDANCE } from "../hub/operational-authority.ts";
 import { sayRecipients } from "./say-input.ts";
 import type { DeliverableRow } from "../hub/tasks.ts";
@@ -2669,6 +2670,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const row = (ok: boolean | undefined, name: string, detail: string) => { checks.push(nativeDoctorCheck(ok, name, detail)); };
 
     try {
+      for (const check of runtimePruneHealth()) row(check.ok, check.name, check.detail);
       const catalog = loadRoleCatalog(cwd);
       for (const error of catalog.errors) row(false, "catalog role", `${error.id}: ${error.reason}`);
       try {

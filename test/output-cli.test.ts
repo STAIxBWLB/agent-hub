@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROTOCOL } from "../src/hub/control-client.ts";
-import { Registry } from "../src/hub/registry.ts";
+import { Registry, REGISTRY_DB_BUSY_TIMEOUT_MS } from "../src/hub/registry.ts";
 import { Turns } from "../src/hub/snapshots.ts";
 import { summarize, summarizeByTask } from "../src/hub/report.ts";
 import { drainCliAudits } from "../src/cli/identity-audit.ts";
@@ -129,6 +130,36 @@ test("doctor structured checks and sections use declared levels/findings, with i
   const text = await f.run(["doctor", "--color=never"], { COLUMNS: "80" });
   expect(text.code).toBe(0); for (const section of ["Tools", "Hub", "Config", "Models", "Memory"]) expect(text.stdout).toContain(`${section}\n`);
   expect(text.stdout).toContain("failures"); for (const line of text.stdout.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+}, 20_000);
+
+test("#610 doctor names uncertain maintenance state and leftover quarantine in JSON and text without changing either", async () => {
+  const f = fixture(), home = join(f.root, "home"), ledger = join(home, "runtime-prune.db");
+  for (const name of ["status.json", "control-token"]) rmSync(join(f.root, ".agenthub", "state", name));
+  const quarantine = join(home, "releases", "0.26.0", ".runtime-prune-11111111-1111-4111-8111-111111111111");
+  mkdirSync(join(quarantine, "capture"), { recursive: true });
+  writeFileSync(join(quarantine, "capture", "sentinel.txt"), "retained unknown contents\n");
+  // A legacy unsigned running row cannot establish which process owns it. Doctor must report, never repair it.
+  const db = new Database(ledger, { create: true });
+  try {
+    db.run(`PRAGMA busy_timeout = ${REGISTRY_DB_BUSY_TIMEOUT_MS}`);
+    db.run("CREATE TABLE admission (slot INTEGER PRIMARY KEY, id TEXT, admitted_at INTEGER, phase TEXT, pid INTEGER, outcome TEXT)");
+    db.query("INSERT INTO admission VALUES(1,?,?, 'running',?,NULL)").run("22222222-2222-4222-8222-222222222222", Date.now() - 7_200_000, process.pid);
+  } finally { db.close(); }
+  chmodSync(ledger, 0o600);
+  const before = readFileSync(ledger);
+  const json = await f.run(["doctor", "--json", "--color=never"]);
+  expect(json.code, json.stderr).toBe(0);
+  const rows = JSON.parse(json.stdout) as { section: string; level: string; detail: string }[];
+  expect(rows.some(row => row.section === "Hub" && row.level !== "ok" && row.detail.includes(ledger))).toBe(true);
+  expect(rows.some(row => row.section === "Hub" && row.level !== "ok" && row.detail.includes(quarantine))).toBe(true);
+  const text = await f.run(["doctor", "--color=never"]);
+  expect(text.code, text.stderr).toBe(0);
+  const compact = text.stdout.replace(/\s+/g, "");
+  expect(compact).toContain(ledger.replace(/\s+/g, ""));
+  expect(compact).toContain(quarantine.replace(/\s+/g, ""));
+  expect(readFileSync(ledger).equals(before)).toBe(true);
+  expect(existsSync(quarantine)).toBe(true);
+  expect(readFileSync(join(quarantine, "capture", "sentinel.txt"), "utf8")).toBe("retained unknown contents\n");
 }, 20_000);
 
 for (const filter of ["--ready", "proposed"]) test(`filtered board ${filter} resolves dependencies against the whole board`, async () => {

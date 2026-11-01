@@ -3075,8 +3075,13 @@ remain. Reserved `.runtime-prune-*` quarantine paths cannot launch a managed
 runtime. Changed or unknown quarantined contents remain undeleted for inspection.
 Admission is home-wide, at most once per hour with at most three removals per
 run. `~/.agenthub/runtime-prune.db` records admission and the bounded outcome.
-A crashed or uncertain running worker leaves its row in place and defers future
-maintenance until inspection; startup still succeeds. A damaged runtime
+Admission stores the worker's PID and process signature. The next admission
+atomically replaces a worker proven gone; live or uncertain owners remain
+fenced. Worker completion uses the normal database wait bound, while startup
+admission keeps its 1 ms contention bound. `ahub doctor` names an uncertain or
+stuck ledger and leftover quarantine paths without changing either. Leftover
+containers remain available for inspection even after a dead worker is replaced.
+Startup still succeeds when maintenance defers. A damaged runtime
 record/capture requires inspection or restoration.
 Archiving the record deliberately resets first-use selection; archived copies
 are not active pruning references.

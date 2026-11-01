@@ -75,3 +75,5 @@ Task 610 follows the staged-upgrade review: ordinary startup forgot the scoped t
 Review of PR #1050 found that including accepted runner configuration and raw-key presence in release-equality integrity made pending config edits and legacy no-receipt snapshots fail the release step. Runner configuration is mutable startup policy; receipt rows are retained board state. The runner integrity rule now separates those roles, with two-daemon prepare/commit/release fixtures covering both transitions.
 
 Review of PR #1052 found that full-index trust sweeps and hashing every retained capture under the registry writer lock made ordinary startup refuse large repositories or starve other project writers. Per-start scoped trust and bounded quarantine transactions separate execution authority and deletion safety from maintenance cost.
+
+The ledger review of PR #1052 found that applying the startup admission wait to worker completion could strand the ledger in running state after contention or a crash. Signed process ownership, an atomic dead-owner replacement, a normal worker wait and read-only doctor paths keep deferred maintenance recoverable and visible.
