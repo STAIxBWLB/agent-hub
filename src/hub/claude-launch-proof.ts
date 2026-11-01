@@ -68,8 +68,14 @@ export function createClaudeLaunchProof(opts: {
     const row = readClaudeLaunchProof(opts.stateDir, peer, opts.instanceId);
     return row?.permissionHook ? row : undefined;
   }
+  /**
+   * #604 PR B item 10. With a current launch record for this peer in this daemon instance, the hello must present that launch id: a different id AND an absent one are refused. Before this,
+   * an absent id was admitted ("legacy compatibility"), so any process that could reach the control port joined as `claude` without ever proving it started the session. With no record
+   * (a first launch, a plain session, an older daemon's state) every hello is still admitted, as before. Not a defence against a same-user process that reads the record: it stops
+   * accidental and inherited-environment joins.
+   */
   function helloLaunch(peer: string, launchId: unknown): "admit" | "refuse" {
-    if (!channel(peer) || launchId === undefined) return "admit";
+    if (!channel(peer)) return "admit";
     let currentLaunch: unknown;
     try {
       const launch = readClaudeLaunchProof(opts.stateDir, peer, opts.instanceId);

@@ -12,7 +12,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS, stateDirFor } from "../hub/control-client.ts";
+import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS } from "../hub/control-client.ts";
+import { channelProject } from "../hub/channel-project.ts";
 import { VERSION } from "../version.ts";
 import { IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION, projectConductorTools, projectToolList, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
 import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
@@ -22,8 +23,20 @@ import { acceptsNativePermissionRequest, buildNativePermissionProbe, NATIVE_PERM
 // A native session is pinned at launch. Unlike a new CLI invocation after `cd`,
 // its MCP server must not silently move to another hub (including while offline).
 // ControlClient verifies the manifest identity on every connection.
-const stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
-const projectRoot = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
+//
+// #604 PR B item 10: which project this plugin joins is decided by `channelProject`, the same decision the CLI makes at startup. An inherited AGENTHUB_STATE_DIR is used only when the root
+// recorded in it equals the resolved root of this process's cwd, or (a declared extra instance) when its managed worktree is this cwd. A session started in `<repo>/.worktrees/<name>` that
+// inherited the main checkout's variables does not join the main repository's hub: it uses its own project, and refuses when it has none. Limit: this stops accidental and
+// inherited-environment joins, not a same-user process that sets the variables and the launch evidence itself.
+const own = channelProject(process.cwd(), process.env, root => {
+  const read = (name: string) => { try { return JSON.parse(readFileSync(join(root, ".agenthub", name), "utf8")).roles ?? {}; } catch { return {}; } };
+  return { ...DEFAULT_ROLES, ...read("config.json"), ...read("config.local.json") };
+});
+/** Why the plugin has no project of its own: every tool says it, and it never falls back to an inherited directory it could not prove. */
+const NO_PROJECT = "agent-hub plugin refused to start: it has no project of its own (its working directory is not a project that runs agent-hub), and an inherited AGENTHUB_STATE_DIR is not used without proof that it belongs to this project. Start the session from the project, or hand work to another project with hub_task_handoff.";
+if (process.env.AGENTHUB_STATE_DIR && own && !own.inherited) console.error(`[agent-hub] ignoring an inherited AGENTHUB_STATE_DIR: it records another project, not ${own.root}. Using this project's own hub.`);
+const stateDir = own?.stateDir ?? "";
+const projectRoot = own?.root ?? "";
 /** tools mode: the same server, run by Kimi (ACP mcpServers), Codex (mcp_servers override) or Jcode. Their messages arrive through their own adapters, so no channel here. Not the "tools-only" Claude below. */
 const toolsMode = process.env.AGENTHUB_MODE === "tools";
 const permissionTool = toolsMode && process.env.AGENTHUB_PERMISSION_TOOL === "1";
@@ -394,6 +407,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 async function callTool(req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal) {
   const { name, arguments: args } = req.params;
   if (unidentified) return { ...text(UNIDENTIFIED), isError: true };
+  if (!own) return { ...text(NO_PROJECT), isError: true };
   if (permissionTool && !IMPLEMENTER_HUB_TOOL_NAMES.includes(name)) return { ...text("tool unavailable to this owned implementer child"), isError: true };
   if (name === "hub_permission_request") {
     const deny = (message: string) => text(JSON.stringify({ behavior: "deny", message }));
@@ -473,4 +487,4 @@ await server.connect(new StdioServerTransport());
 // The host (Claude Code, Codex, Kimi) talks over stdin; once it is gone nothing can use this server, and a leftover would keep reconnecting.
 process.stdin.on("end", () => process.exit(0));
 process.stdin.on("close", () => process.exit(0));
-if (unidentified) log(UNIDENTIFIED); else void connectLoop();
+if (unidentified) log(UNIDENTIFIED); else if (!own) log(NO_PROJECT); else void connectLoop();

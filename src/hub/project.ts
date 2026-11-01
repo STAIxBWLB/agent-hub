@@ -66,15 +66,24 @@ export function projectContext(cwd: string, env: NodeJS.ProcessEnv = process.env
   const root = projectRoot(cwd);
   const override = env.AGENTHUB_STATE_DIR?.trim();
   if (!override) return { root, stateDir: canonical(join(root, ".agenthub", "state")) };
+  const inherited = inheritedStateDir(root, env);
+  return { root, stateDir: inherited ?? canonical(join(root, ".agenthub", "state")) };
+}
 
+/**
+ * The ownership proof for an inherited state directory, on its own so the channel plugin applies the same rule as the CLI (#604 PR B, item 10). The directory is accepted only when the root
+ * recorded in it equals `root`, or when it records none (a freshly initialized state) and the inherited `AGENTHUB_PROJECT_DIR` names `root`. A marker for another project is authoritative:
+ * an inherited pair from the main checkout must not pull a process started in a linked worktree into the main repository's hub.
+ */
+export function inheritedStateDir(root: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const override = env.AGENTHUB_STATE_DIR?.trim();
+  if (!override) return undefined;
   const declared = env.AGENTHUB_PROJECT_DIR?.trim();
   const stateDir = canonical(override);
   const recorded = stateMarker(stateDir);
-  if (recorded === root) return { root, stateDir };
-  // A marker for another project is authoritative; an inherited mismatch must not
-  // redirect this cwd. The explicit pair is only for a freshly initialized state.
-  if (!recorded && declared && canonical(declared) === root) return { root, stateDir };
-  return { root, stateDir: canonical(join(root, ".agenthub", "state")) };
+  if (recorded === root) return stateDir;
+  if (!recorded && declared && canonical(declared) === root) return stateDir;
+  return undefined;
 }
 
 export function hubHome(env: NodeJS.ProcessEnv = process.env): string {

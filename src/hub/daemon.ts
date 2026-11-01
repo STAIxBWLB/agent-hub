@@ -7843,8 +7843,9 @@ export async function startDaemon(opts: DaemonOptions) {
         if (externalRefusedRows.has(c.peer)) return sock.close(4403, "instance kind is unavailable in the startup catalog");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
         if (!recoveryPeerAllowed(c.peer)) return sock.close(4403, "peer id is not part of the recovery roster");
-        if (definitionOf(c.peer)?.transport === "claude-channel" && msg.launchId !== undefined) {
-          if (claudeLaunchProof.helloLaunch(c.peer, msg.launchId) === "refuse") return sock.close(4430, "Claude launch ended; start a new session with ahub claude");
+        if (definitionOf(c.peer)?.transport === "claude-channel") {
+          // #604 PR B item 10: a hello without a launch id is refused while a current launch record exists for this peer (no silent admit).
+          if (claudeLaunchProof.helloLaunch(c.peer, msg.launchId) === "refuse") return sock.close(4430, msg.launchId === undefined ? "this peer id belongs to a managed Claude launch; a session joins it only with that launch's id (start it with ahub claude)" : "Claude launch ended; start a new session with ahub claude");
           if (typeof msg.launchId === "string" && msg.launchId.length <= 128) c.launchId = msg.launchId;
         }
         let peer = bus.peers.get(c.peer);
