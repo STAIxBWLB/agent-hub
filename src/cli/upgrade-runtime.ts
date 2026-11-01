@@ -428,7 +428,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
 
 /** Freeze the coordinator/source package before its mutable global installation is replaced. */
 export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
-  if (!plan.projects.length) throw new Error("no running projects to recover");
+  if (plan.projects?.length === 0) throw new Error("no running projects to recover");
   if (packageDigest(plan.sourceRoot) !== plan.sourceDigest) throw new Error("source package changed since planning");
   const base = join(home, "releases");
   mkdirSync(base, { recursive: true, mode: 0o700 });
