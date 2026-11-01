@@ -50,7 +50,8 @@ test("#607 real lifecycle daemon runs from its retained source digest after the 
     // Bounded package preservation copies only runtime assets and the exact first-party core, never a node_modules tree.
     const digest = verifyPackage(PACKAGE_ROOT, VERSION), fakeGlobal = join(root, "mutable-global");
     preserveRuntimePackage(PACKAGE_ROOT, fakeGlobal, digest);
-    lifecycle = await import(pathToFileURL(join(fakeGlobal, "src/hub/lifecycle.ts")).href);
+    const loaded = await import(pathToFileURL(join(fakeGlobal, "src/hub/lifecycle.ts")).href) as typeof import("../src/hub/lifecycle.ts");
+    lifecycle = loaded;
     const projectRoot = join(root, "project"); mkdirSync(join(projectRoot, ".agenthub"), { recursive: true });
     await command(["/usr/bin/git", "init", "-q", projectRoot], scope.env);
     writeFileSync(join(projectRoot, ".agenthub/config.json"), JSON.stringify({
@@ -61,7 +62,7 @@ test("#607 real lifecycle daemon runs from its retained source digest after the 
     }));
     const registry = new Registry();
     try { project = registry.register(realPath(projectRoot)); } finally { registry.close(); }
-    const status = await lifecycle.startProject(project, { env: scope.env });
+    const status = await loaded.startProject(project, { env: scope.env });
     instanceId = status.instanceId;
     expect(typeof instanceId).toBe("string"); expect(status.version).toBe(VERSION);
     const retainedRoot = realPath(join(scope.env.AGENTHUB_HOME!, "releases", VERSION, `source-${digest}`));
@@ -77,9 +78,9 @@ test("#607 real lifecycle daemon runs from its retained source digest after the 
       const readback = await client.request({ t: "status" });
       expect(readback.status.instanceId).toBe(instanceId); expect(readback.status.pid).toBe(status.pid); expect(readback.status.version).toBe(VERSION);
     } finally { client.close(); }
-    await lifecycle.stopProject(project, instanceId); stopped = true;
+    await loaded.stopProject(project, instanceId); stopped = true;
     expect(readControl(project.stateDir)).toBeUndefined();
-    expect((await lifecycle.inspectProject(project)).state).toBe("stopped");
+    expect((await loaded.inspectProject(project)).state).toBe("stopped");
   } finally {
     try {
       // Stop only this registered fixture project; a failed cleanup keeps its files for inspection.
@@ -109,7 +110,7 @@ test("#607 startDaemon refuses future hub_schema before configuration, external 
     await expect(startDaemon(options)).rejects.toThrow(HubDbSchemaError);
     await expect(startDaemon(options)).rejects.toThrow("use 99.0.0 or later");
     expect(touched).toEqual([]); expect(readdirSync(stateDir).sort()).toEqual(names);
-    for (const name of names) expect(readFileSync(join(stateDir, name))).toEqual(before[name]);
+    for (const name of names) expect(readFileSync(join(stateDir, name))).toEqual(before[name]!);
     expect(existsSync(join(stateDir, "status.json"))).toBe(false);
     expect(existsSync(join(stateDir, "control-token"))).toBe(false);
     const inspect = new Database(file, { readonly: true });
