@@ -144,7 +144,7 @@ async function conductorReleaseRig(actor: "codex" | "local" = "codex") {
     };
     const privateTask = async () => {
       const reply = await person.request({ t: "task", op: "hub_task_propose", args: { title: "Patient 900101-1234567 private follow-up", class: "implement", owner: "local" } });
-      expect(reply.ok, reply.error).toBe(true);
+      expect(reply.ok === true, reply.error).toBe(true);
       const id = Number(String(reply.text).match(/task #(\d+)/)?.[1]); expect(id).toBeGreaterThan(0);
       const board = new Board(join(stateDir, "hub.db"));
       try { expect(board.get(id)?.owner).toBe("local"); expect(board.get(id)?.signals).toContain("pii"); } finally { board.close(); }
@@ -163,14 +163,14 @@ test("#1063 console and the unique conductor record distinguishable consent and 
     const refused = await f.authorize(f.other); expect(refused.ok).toBe(false); expect(f.docsCalls).toBe(0); expect(f.audit()).toEqual([]);
     const live = await f.cli(["--live-test", "sdlc", "authorize-release", "1.2.3", "--json"]);
     expect(live.code).toBe(1); expect(live.stderr).toContain("live-test"); expect(f.docsCalls).toBe(0); expect(f.audit()).toEqual([]);
-    const person = await f.authorize(f.person); expect(person.ok, person.error).toBe(true); expect(person.authorization).toMatchObject({ by: "user", version: "1.2.3", commit: f.commit });
-    const delegated = await f.authorize(); expect(delegated.ok, delegated.error).toBe(true);
+    const person = await f.authorize(f.person); expect(person.ok === true, person.error).toBe(true); expect(person.authorization).toMatchObject({ by: "user", version: "1.2.3", commit: f.commit });
+    const delegated = await f.authorize(); expect(delegated.ok === true, delegated.error).toBe(true);
     expect(delegated.authorization).toMatchObject({ by: "codex", version: "1.2.3", commit: f.commit, docs: { fresh: true } });
     const cli = await f.cli(["sdlc", "authorize-release", "1.2.3", "--json"]); expect(cli.code, cli.stderr).toBe(0);
     const receipt = JSON.parse(cli.stdout); expect(receipt).toMatchObject({ by: "codex", version: "1.2.3", commit: f.commit });
     const events = f.audit(); expect(events.map(row => row.by)).toEqual(["user", "codex", "codex"]);
     expect(events.at(-1)).toMatchObject({ authorization: receipt.id, by: "codex", commit: f.commit, version: "1.2.3" });
-    const allowed = await f.guard(); expect(allowed.ok, allowed.error).toBe(true); expect(allowed.receipts[0].by).toBe("codex");
+    const allowed = await f.guard(); expect(allowed.ok === true, allowed.error).toBe(true); expect(allowed.receipts[0].by).toBe("codex");
     await f.restart(); expect((await f.guard()).ok).toBe(false); // No file or old audit restores consent into the new daemon generation.
   } finally { await f.close(); }
 }, 20_000);
@@ -185,7 +185,7 @@ for (const context of ["associated-private-task", "latched-private-turn"] as con
         const events = readFileSync(join(f.stateDir, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
         expect(events.some(row => row.type === "turn_start" && row.peer === "local")).toBe(true);
         const closed = await f.person.request({ t: "task", op: "hub_task_cancel", args: { id, reason: "End task while preserving the actual private turn latch" } });
-        expect(closed.ok, closed.error).toBe(true); expect(peer.state).toBe("busy");
+        expect(closed.ok === true, closed.error).toBe(true); expect(peer.state).toBe("busy");
         const board = new Board(join(f.stateDir, "hub.db")); try { expect(board.get(id)?.state).toBe("cancelled"); } finally { board.close(); }
       } else expect(peer.state).toBe("idle");
       const denied = await f.authorize(); expect(denied.ok).toBe(false); expect(f.docsCalls).toBe(0); expect(f.audit()).toEqual([]);
