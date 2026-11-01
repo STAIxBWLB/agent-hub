@@ -175,3 +175,17 @@ test("#599 a source hash change during plan screening refuses the stale immutabl
   } finally { release(); }
   expect(await result).toBeInstanceOf(Error); expect(f.board.experimentComparisonPlan(comparisonPlanHash(p))).toBeUndefined();
 }, 20_000);
+
+
+test("#599 corrupt approval or causal context never becomes accepted readback evidence", async () => {
+  const f=await fixture(), hash=await saveProtocol(f), id=await attempt(f,hash,"corruption");
+  await f.tasks.experimentApproveProtocol(USER,{hash});
+  const db=(f.board as unknown as {db:Database}).db;
+  db.query("UPDATE research_protocol_approvals SET evaluator_hash=? WHERE protocol_hash=?").run("f".repeat(64),hash);
+  await expect(show(f,id)).rejects.toThrow();
+  expect(()=>f.board.researchComparisonIntegrity()).toThrow();
+  db.query("DELETE FROM research_protocol_approvals WHERE protocol_hash=?").run(hash);
+  db.query("UPDATE research_protocol_context SET context_sha256=? WHERE protocol_hash=?").run("e".repeat(64),hash);
+  await expect(show(f,id)).rejects.toThrow();
+  expect(()=>f.board.researchComparisonIntegrity()).toThrow();
+});

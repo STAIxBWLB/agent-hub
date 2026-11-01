@@ -65,7 +65,7 @@ async function fixture(options: { draft?: boolean; experiment?: boolean; legacy?
       } finally { board.close(); }
     }
     daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
-      config: { ...DEFAULT_CONFIG, roster: {}, batch_ms: 0,
+      config: { ...DEFAULT_CONFIG, roster: {claude:true}, batch_ms: 0,
         memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
         mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, research: { ...DEFAULT_CONFIG.research, enabled: false },
         task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } });
@@ -112,5 +112,11 @@ test("protocol approval is reachable through the console study operation", async
     expect(JSON.parse(reply.text)).toMatchObject({protocolHash:hash,approvedBy:USER,evaluatorHash:expect.stringMatching(/^[a-f0-9]{64}$/)});
     const replay=await f.client.request({t:"task",op:"study_approve_protocol",args:{hash}});
     expect(replay.text).toBe(reply.text);
+    const agent=await ControlClient.connect(join(f.root,"state"),{role:"tools",peer:"claude"});
+    try {
+      const refused=await agent.request({t:"task",op:"study_approve_protocol",args:{hash}});
+      expect(refused).toMatchObject({ok:false,error:expect.stringContaining("console commands")});
+    } finally { agent.close(); }
+
   } finally { await f.close(); }
 },20_000);
