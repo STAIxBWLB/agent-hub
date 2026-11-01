@@ -7838,7 +7838,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // peer's current owned launch. A forged AGENTHUB_PEER_ID in some other process has no such id, so it never acts as that peer.
         if (definitionOf(c.peer)?.start.daemonPort === "owned-acp") {
           const owner = jcodeLaunches.get(c.peer);
-          if (!owner || !owner.ownsLaunch(msg.launchId)) return sock.close(4403, `${ownPeerRefusal(c.peer)}; start it with ahub jcode`);
+          if (!owner || !owner.ownsLaunch(msg.launchId)) return sock.close(4403, ownPeerRefusal(c.peer));
         }
       } else {
         c.peer = String(msg.peer ?? defaultChannelPeer(undefined));

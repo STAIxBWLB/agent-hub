@@ -90,8 +90,8 @@ test("AC7: a tools hello naming claude without its launch id is refused with the
   expect(await refusals({ role: "tools", peer: "claude" })).toBe("admitted");
   writeFileSync(join(r.stateDir, "claude-launch.json"), JSON.stringify({ instanceId, launchId: "11111111-aaaa-4aaa-8aaa-000000000001" }));
   const noId = await refusals({ role: "tools", peer: "claude" });
-  expect(noId).toContain("peer id claude belongs to this project's own launch; another project's session hands work over with hub_task_handoff");
-  expect(await refusals({ role: "tools", peer: "claude", launchId: "some-other-launch" })).toContain("hands work over with hub_task_handoff");
+  expect(noId).toContain("peer id claude is not an owned launch of this project; other projects use hub_task_handoff");
+  expect(await refusals({ role: "tools", peer: "claude", launchId: "some-other-launch" })).toContain("other projects use hub_task_handoff");
   const before = r.events().filter(event => event.type === "envelope").length;
   expect(r.events().filter(event => event.type === "attach" && event.launch === "some-other-launch")).toEqual([]);         // a refused hello writes no attach event
   expect(await refusals({ role: "tools", peer: "claude", launchId: "11111111-aaaa-4aaa-8aaa-000000000001" })).toBe("admitted");   // the real launch is admitted
@@ -105,8 +105,8 @@ test("AC7: a tools hello naming jcode without an owned launch is refused with th
   const r = await rig({ roster: { jcode: true }, roles: { claude: ["planner"], jcode: ["implementer"] } });
   const refusals = async (hello: Record<string, unknown>) => { try { await r.connect(hello); return "admitted"; } catch (error) { return (error as Error).message; } };
   const noLaunch = await refusals({ role: "tools", peer: "jcode" });
-  expect(noLaunch).toContain("peer id jcode belongs to this project's own launch; another project's session hands work over with hub_task_handoff");
-  expect(await refusals({ role: "tools", peer: "jcode", launchId: "forged-launch" })).toContain("hands work over with hub_task_handoff");
+  expect(noLaunch).toContain("peer id jcode is not an owned launch of this project; other projects use hub_task_handoff");
+  expect(await refusals({ role: "tools", peer: "jcode", launchId: "forged-launch" })).toContain("other projects use hub_task_handoff");
 }, 30_000);
 
 // The path item 9 can break: a real `ahub` process in an agent shell. The Claude session's launcher puts AGENTHUB_LAUNCH_ID into its environment, so every shell it spawns inherits it, and
@@ -131,9 +131,9 @@ test("the real ahub CLI as claude: a shell that inherited the session's launch i
   const { AGENTHUB_LAUNCH_ID: _drop, ...noLaunch } = session;
   const outside = await ahub(noLaunch, "status");
   expect(outside.code).toBe(1);
-  expect(outside.stderr).toContain("peer id claude belongs to this project's own launch; another project's session hands work over with hub_task_handoff");
+  expect(outside.stderr).toContain("peer id claude is not an owned launch of this project; other projects use hub_task_handoff");
   const forged = await ahub({ ...session, AGENTHUB_LAUNCH_ID: "guessed-launch-id" }, "status");
-  expect(forged.code).toBe(1); expect(forged.stderr).toContain("hands work over with hub_task_handoff");
+  expect(forged.code).toBe(1); expect(forged.stderr).toContain("other projects use hub_task_handoff");
   const person = await ahub({}, "status");                                                  // the person's console shell has no peer marker and is unchanged
   expect(person.code, person.stderr).toBe(0);
 }, 90_000);

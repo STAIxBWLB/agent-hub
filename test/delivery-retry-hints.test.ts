@@ -11,9 +11,10 @@ import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { configureJcodeMcp, jcodeMcpEntry } from "../src/cli/jcode-mcp.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { renderHeldHint } from "../src/hub/delivery-hints.ts";
+import { realPath } from "../src/hub/project.ts";
 
 async function rig(peer: string, mode: "channel" | "pull" | "tools", deliveryOnly = false) {
-  const dir = mkdtempSync(join(tmpdir(), "ahub-retry-hints-"));
+  const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-retry-hints-")));   // the plugin compares resolved paths (#604 item 10)
   const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "hint", instanceId: "old" });
   const env = newEnvelope("user", "DO NOT EXPOSE PRIVATE CONTENT", { private: true });
   journal.createDelivery({ id: "my-private-held", peer, state: "needs_review", createdAt: env.ts, originals: [env], out: [env] }); journal.close();
@@ -30,7 +31,7 @@ async function rig(peer: string, mode: "channel" | "pull" | "tools", deliveryOnl
     try { expect((await console_.request({ t: "start", peer: "jcode", args: { mode: "headless" } })).ok).toBe(true); } finally { console_.close(); }
     envs.AGENTHUB_LAUNCH_ID = readFileSync(jcodeRecord, "utf8").trim().split("\n").map(line => JSON.parse(line)).find(row => row.kind === "launch" && row.role === "acp").launch;
   }
-  const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")], env: envs, stderr: "pipe" });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")], cwd: dir, env: envs, stderr: "pipe" });
   let diagnostics = ""; transport.stderr!.on("data", chunk => { diagnostics += chunk.toString(); });
   await client.connect(transport);
   for (let i = 0; i < 100 && !diagnostics.includes(`connected to hub as "${peer}"`); i++) await Bun.sleep(5);
@@ -104,7 +105,7 @@ test("actual in-process local task callback carries person-resolution hints and 
   const { ControlClient } = await import("../src/hub/control-client.ts");
   const { startFakeModelServer } = await import("./fakes/model-server.ts");
   const { PreEffectToolRefusal } = await import("../src/hub/tool-refusal.ts");
-  const dir = mkdtempSync(join(tmpdir(), "ahub-native-retry-hint-"));
+  const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-native-retry-hint-")));
   const previousKey = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "sk-retry-fixture";
   const model = startFakeModelServer({ key: "sk-retry-fixture", models: ["m"] });
   const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "native-hint", instanceId: "old" });
