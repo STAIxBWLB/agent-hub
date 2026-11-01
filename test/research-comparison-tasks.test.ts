@@ -52,7 +52,7 @@ async function fixture(privateSource = false) {
     return { campaignId: campaign.id, fixed: { inputs: p.inputs, splits: p.splits, evaluator: p.evaluator, metrics: p.metrics },
       varying: ["code", "parameters", "seeds", "role"], rule: { kind: "tolerance", value: 0.01 } };
   };
-  return { dir, owner, taskId, campaign, sources, routing, protocol, plan, get board() { return board; }, get tasks() { return tasks; },
+  return { dir, owner, taskId, campaign, contract, sources, routing, protocol, plan, get board() { return board; }, get tasks() { return tasks; },
     setNow(value: number) { now = value; }, setScreen(next: NonNullable<typeof screen>) { screen = next; },
     restart() { board.close(); board = new Board(file); tasks = build(); } };
 }
@@ -188,4 +188,18 @@ test("#599 corrupt approval or causal context never becomes accepted readback ev
   db.query("UPDATE research_protocol_context SET context_sha256=? WHERE protocol_hash=?").run("e".repeat(64),hash);
   await expect(show(f,id)).rejects.toThrow();
   expect(()=>f.board.researchComparisonIntegrity()).toThrow();
+});
+
+
+test("#599 historical and current revisions compare without hiding identities or copying approvals", async () => {
+  const f=await fixture(), originalProtocol=f.protocol(), oldHash=await saveProtocol(f), oldAttempt=await attempt(f,oldHash,"old-revision"), planHash=await savePlan(f);
+  await f.tasks.experimentApproveProtocol(USER,{hash:oldHash});
+  const revised=await f.tasks.studyRevise("claude",{id:f.campaign.id,revision:1,contract:{...f.contract,scope:"Revised synthetic scope"}});
+  await f.tasks.studyApprove(USER,{id:f.campaign.id,revision:revised.revision});
+  const nextHash=await saveProtocol(f,{...originalProtocol,campaignRevision:2,supersedes:oldHash}), nextAttempt=await attempt(f,nextHash,"new-revision");
+  const shown=await pair(f,planHash,oldAttempt,nextAttempt);
+  expect(shown.attempts.map(row=>({revision:row.campaignRevision,approval:row.approval}))).toEqual([{revision:1,approval:"approved"},{revision:2,approval:"unapproved"}]);
+  expect(shown.comparison).toMatchObject({approved:false,projection:{compatibility:{compatible:true},baseline:{protocolHash:oldHash,campaignRevision:1},variant:{protocolHash:nextHash,campaignRevision:2}}});
+  await f.tasks.experimentApproveProtocol(USER,{hash:nextHash});
+  expect((await pair(f,planHash,oldAttempt,nextAttempt)).comparison!.approved).toBe(true);
 });
