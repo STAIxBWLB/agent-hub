@@ -1,3 +1,4 @@
+import { realPath } from "../src/hub/project.ts";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,7 +7,7 @@ import { PROTOCOL } from "../src/hub/control-client.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 
 test("new Claude plugin falls back to needs_review when an old hub rejects failed_safe (#434 follow-up)", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "ahub-channel-receipt-"));
+  const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-channel-receipt-")));
   const receipts: Record<string, unknown>[] = [];
   let socket: { send(text: string): unknown } | undefined;
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request, server) { return server.upgrade(request) ? undefined : new Response("not a websocket", { status: 400 }); }, websocket: {
@@ -25,7 +26,7 @@ test("new Claude plugin falls back to needs_review when an old hub rejects faile
   writeFileSync(join(dir, "control-token"), "fixture-token");
   const env: NodeJS.ProcessEnv = { ...process.env, AGENTHUB_STATE_DIR: dir, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: "claude" };
   delete env.AGENTHUB_CHANNEL; delete env.AGENTHUB_MODE;
-  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/adapters/claude-channel.ts")], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/adapters/claude-channel.ts")], { cwd: dir, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   let diagnostics = "";
   const stderr = (async () => { for await (const chunk of child.stderr) diagnostics = (diagnostics + Buffer.from(chunk).toString()).slice(-8192); })();
   const stdout = new Response(child.stdout).text();

@@ -9,11 +9,12 @@ import { SHIPPED_ROLES } from "../src/hub/shipped-roles.ts";
 import { DEFAULT_ROLES, roleContract } from "../src/hub/hub-tools.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 import { loadConfig } from "../src/hub/daemon.ts";
+import { realPath } from "../src/hub/project.ts";
 import { AcpPeer } from "../src/adapters/acp.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const f of cleanups.splice(0).reverse()) await f(); });
-const root = () => { const dir = mkdtempSync(join(tmpdir(), "ahub-roles-")); cleanups.push(() => rmSync(dir, { recursive: true, force: true })); return dir; };
+const root = () => { const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-roles-"))); cleanups.push(() => rmSync(dir, { recursive: true, force: true })); return dir; };
 const base = SHIPPED_ROLES["code-reviewer"]!;
 const until = async (f: () => boolean) => { for (let i = 0; i < 300 && !f(); i++) await Bun.sleep(10); expect(f()).toBe(true); };
 
@@ -70,7 +71,7 @@ test("MCP instructions carry catalog once for channel/inbox and omit it in nativ
     Object.assign(env, { AGENTHUB_PROJECT_DIR: dir, AGENTHUB_STATE_DIR: join(dir, "state"), AGENTHUB_PEER_ID: channel === "tools" ? "kimi" : "claude" });
     if (channel === "tools") env.AGENTHUB_MODE = "tools"; else if (channel) env.AGENTHUB_CHANNEL = "1";
     const client = new Client({ name: "role-fixture", version: "1" });
-    const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../plugins/agent-hub/server.js")], env, stderr: "pipe" });
+    const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../plugins/agent-hub/server.js")], cwd: dir, env, stderr: "pipe" });
     cleanups.push(() => client.close()); await client.connect(transport);
     const instructions = client.getInstructions()!;
     if (channel === "tools") expect(instructions).not.toContain("Catalog roles (");

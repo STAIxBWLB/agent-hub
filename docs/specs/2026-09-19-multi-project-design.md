@@ -91,5 +91,16 @@ and verified PR. Preserve pre-existing instruction-file changes.
 
 ## Out of scope
 
-Cross-project task routing, fully isolated native memory, new runtime dependencies,
+Cross-machine task routing (broker, #446), fully isolated native memory, new runtime dependencies,
 visual redesign, automatic merging and npm publication.
+
+## Cross-project task handoff (#604, agent-hub#1030)
+
+Same-machine cross-project routing is no longer out of scope: work that belongs to another project that runs agent-hub is registered on that project's board.
+
+- **Target.** `project` names a project in the machine registry (its canonical root or its id). An unregistered target, the caller's own project and a target whose daemon is not running are refused, the last with the person's action (`ahub up` in that project). Nothing is queued.
+- **Who and what.** The person (`ahub task handoff --project <root|id> [<class>] <title...> [--path <p>]... [--issue <n>] [--task <n>] [--detail <text>]`), or a configured planner or the conductor (`hub_task_handoff`). A feature or behavior change first needs a spec issue in the target repository, passed as `issue`; a mechanical chore goes straight to a task. The request is closed (unknown fields refused), bounded (8 KiB whole) and repository-relative for paths.
+- **Transport.** The origin's daemon reads the target's control descriptor (same machine user) and sends `task_handoff` as a console-role control message with origin `{ projectId, peer, taskId? }`. The target's `Tasks` creates an ownerless proposal made by the hub, with the origin recorded in `task_handoff_origin`; its own routing and planner take it from there. The origin peer has no identity or authority in the target: it is a record, never a roster peer.
+- **Follow-back.** On accepted, in review, approved, declined and cancelled the target sends `task_handoff_event`; the origin records it in `task_handoff_outbound` and delivers one `kind: task` envelope to the requesting peer (`agent-hub task 123 approved: PR #N at <sha>`: an event name, a PR number and a full head, never target text). An origin that was down asks the target for the current state of its open handoffs when it starts (`task_handoff_states`). `ahub board --handoffs` and `hub_task_handoffs` list them.
+- **Privacy.** Refused during a private (PII) turn and for a `[pii]` task named with `task`; the target refuses text that matches a PII pattern or that its screen cannot clear. No memory, evidence or turn content crosses beyond the handoff fields.
+- **Compatibility.** The additive daemon feature `task_handoff` (no protocol bump: a new message type is answered as unknown by an older hub, and an optional field is ignored). An older target is refused with a named "upgrade the target hub" error, and a recovery target without the label is refused while either handoff table holds a row.

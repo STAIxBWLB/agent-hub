@@ -1,3 +1,4 @@
+import { realPath } from "../src/hub/project.ts";
 import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,7 +8,7 @@ import { frame, newEnvelope } from "../src/hub/envelope.ts";
 import { TASK_TOOLS } from "../src/hub/hub-tools.ts";
 
 async function client(mode: "channel" | "plain" | "tools", failPush = false) {
-  const root = mkdtempSync(join(tmpdir(), "ahub-channel-inbox-client-"));
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-channel-inbox-client-")));
   const requests: Record<string, any>[] = [], responses = new Map<number, (value: any) => void>();
   let sequence = 0, diagnostics = "", socket: { send(value: string): unknown; close(code: number): unknown } | undefined;
   let inboxReply: Record<string, unknown> = { ok: true, envs: [], waiting: 0, waitingImportant: 0 };

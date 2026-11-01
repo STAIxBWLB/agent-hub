@@ -5446,3 +5446,24 @@ Lists are complete up to 1,100 rows. If an all-room list exceeds that limit, the
 CLI explicitly asks you to choose a room name; it never silently truncates.
 ponytail: pagination is later work; a filtered room's 100 unread plus 1,000
 settled stubs fit the current response ceiling.
+
+## Handing work to another project (#604, agent-hub#1030)
+
+Work that belongs to another repository that runs agent-hub on this machine goes onto that repository's board, not into this session. Its own roles plan, implement and review it, and you are told when it changes state. The first case: after a library you maintain publishes a release, raising its exact pin in a consumer belongs on the consumer's board.
+
+```
+ahub task handoff --project <root|id> [<class>] <title...> [--path <p>]... [--issue <n>] [--task <n>] [--detail <text>]
+```
+
+- `--project` is the other project's canonical root or its id from `ahub projects`. It must be registered and its hub must be running (`ahub up` in that project). Nothing is queued: a hub that is not running is refused with that action.
+- A feature or behavior change first gets a spec issue in the other repository: pass its number as `--issue`. A mechanical chore (an exact version pin, a regenerated file) goes straight to a task.
+- `--path` names files in the other project, repository-relative (no absolute path, `~` or `..`). `--task` names your own task this comes from, so a `[pii]` one is refused.
+- Agents use `hub_task_handoff` (the same fields) when they hold the planner or conductor role; `hub_task_handoffs` and `ahub board --handoffs` list what this project handed over and the last state each target reported.
+
+What the other project sees: an ownerless proposed task, made by its hub, whose detail ends with where it came from; `ahub board` and `ahub task show` there name the origin project and peer. Its own routing offers it as it would a local proposal. The requesting peer has no identity or authority there: it cannot accept, review, approve, assign or cancel.
+
+What you are told: one `kind: task` message per change, `agent-hub task 123 accepted`, `in review`, `approved: PR #7 at <sha>`, `declined` or `cancelled`. It carries an event name, a PR number and a full head, never the other project's text. If this project's hub was stopped meanwhile, it asks the other hub where each open handoff stands when it starts again.
+
+Refusals, each named with the action: an unregistered target, this very project, a hub that is not running, a request over 8 KiB or with an unknown field, a caller that is not a planner, the conductor or the person, a private (PII) turn, a `[pii]` task named with `--task`, text that matches a PII pattern or that the target's screen cannot clear, and an older target hub (it lacks the `task_handoff` feature: run `ahub upgrade` in that project).
+
+Recovery: `task_handoff` is its own recovery label. A project that holds a handoff row, in either direction, refuses a recovery target that lacks it.
