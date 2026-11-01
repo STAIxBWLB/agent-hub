@@ -15,7 +15,7 @@ import { ControlClient, PROTOCOL, PROTOCOL_MIN, controlProtocolWindow, RECOVERY_
 import { negotiateProtocol, protocolWindow } from "../hub/protocol-window.ts";
 import { awaitStopped, inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
-import { canonicalPath, hubHome } from "../hub/project.ts";
+import { canonicalPath, hubHome, realPath } from "../hub/project.ts";
 import { packageDigest, preserveRuntimePackage, stageCurrentRuntime, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectSavedTerminal, inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
 import { ReattachmentRequired, MissingRecordedSession, FinalRefusal, planFingerprint, recoveryScope, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
@@ -685,9 +685,19 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     stage: async (op) => {
       if (packageDigest(op.sourceRoot, { ownDependencies: true }) !== op.plan.sourceDigest) throw new FinalRefusal("preserved source changed");
       const scoped = recoveryScope(op.plan) !== undefined;
-      const staged = op.plan.kind === "restart" ? { root: op.sourceRoot, digest: verifyPackage(op.sourceRoot, op.plan.version, { ownDependencies: true }) }
-        : await stageRelease(op.plan.version, op.plan.integrity!, run, hubHome(), scoped);
-      const target = scoped && op.plan.kind === "upgrade" ? stageCurrentRuntime(staged.root, op.plan.version) : staged;
+      let target: { root: string; digest: string };
+      if (scoped && op.plan.kind === "upgrade" && (op.targetRoot !== undefined || op.targetDigest !== undefined)) {
+        if (!op.targetRoot || !op.targetDigest || !/^[a-f0-9]{64}$/.test(op.targetDigest)
+          || realPath(op.targetRoot) !== realPath(join(hubHome(), "releases", op.plan.version, `source-${op.targetDigest}`)))
+          throw new FinalRefusal("retained project target path changed; runtimes unchanged");
+        const digest = verifyPackage(op.targetRoot, op.plan.version, { ownDependencies: true });
+        if (digest !== op.targetDigest) throw new FinalRefusal("retained project target changed; runtimes unchanged");
+        target = { root: op.targetRoot, digest };
+      } else {
+        const staged = op.plan.kind === "restart" ? { root: op.sourceRoot, digest: verifyPackage(op.sourceRoot, op.plan.version, { ownDependencies: true }) }
+          : await stageRelease(op.plan.version, op.plan.integrity!, run, hubHome(), scoped);
+        target = scoped && op.plan.kind === "upgrade" ? stageCurrentRuntime(staged.root, op.plan.version) : staged;
+      }
       const identityPath = join(target.root, "src/cli/identity.ts");
       if (liveTestPeer && (!existsSync(identityPath) || !readFileSync(identityPath, "utf8").includes("export const LIVE_TEST_SUPPORTED = true;"))) {
         throw new FinalRefusal("target does not support live-test delegation; choose a supporting target before retrying; runtimes unchanged");

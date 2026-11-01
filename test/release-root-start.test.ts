@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { packageDigest, preserveRuntimePackage, stageCurrentRuntime, stageRelease, verifyPackage, type RunCommand } from "../src/cli/recovery-package.ts";
 import { realPath } from "../src/hub/project.ts";
+import { makeRecoveryDriver } from "../src/cli/upgrade-runtime.ts";
+import { planFingerprint, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 
 const VERSION = "0.99.0", CORE_VERSION = "0.18.0";
 const temporary: string[] = [];
@@ -172,4 +174,43 @@ test("#607 an existing legacy verified release keeps its exact path after ordina
   expect(release.root).toBe(join(f.home, "releases", VERSION, "node_modules/@staix/agent-hub"));
   stageCurrentRuntime(f.source, VERSION, f.home);
   expect(await stageRelease(VERSION, "sha512-fixture", async () => { throw new Error("retained legacy target must not move"); }, f.home)).toEqual(release);
+});
+
+test("#607 a committed scoped capture resumes offline after only its registry staging child is removed", async () => {
+  const f = fixture(true), oldHome = process.env.AGENTHUB_HOME;
+  const staged = await stageRelease(VERSION, "sha512-fixture", localRegistryFixture(f.source), f.home, true), captured = stageCurrentRuntime(staged.root, VERSION, f.home);
+  const projectDir = join(f.root, "project"); mkdirSync(projectDir); const projectRoot = realPath(projectDir);
+  const body: Omit<UpgradePlan, "fingerprint"> = { schema: 1, scope: { projectRoot }, kind: "upgrade", version: VERSION, integrity: "sha512-fixture",
+    sourceRoot: f.source, sourceDigest: captured.digest, projects: [{ project: { id: "project", root: projectRoot, stateDir: join(projectRoot, "state"), basePort: 4600, instanceId: "source", pid: null },
+      source: { state: "running", instanceId: "source", protocol: 16, version: VERSION, peers: [], blockers: [] }, terminals: [], blockers: [] }], blockers: [] };
+  const op: RecoveryOperation = { schema: 3, id: "11111111-1111-1111-1111-111111111111", plan: { ...body, fingerprint: planFingerprint(body) }, sourceRoot: f.source,
+    createdAt: 0, updatedAt: 0, phase: "blocked", step: "verify", targetRoot: captured.root, targetDigest: captured.digest, targetFeatures: ["schema_guard"],
+    projects: [{ id: "project", phase: "peers-restored", instanceId: "target", terminals: {} }] };
+  rmSync(join(f.home, "releases", VERSION, "registry"), { recursive: true });
+  const commands: string[][] = [];
+  const offline: RunCommand = async argv => { commands.push(argv); throw new Error("offline fixture forbids registry installation and target probing"); };
+  try {
+    process.env.AGENTHUB_HOME = f.home;
+    expect(await makeRecoveryDriver(offline).stage(op)).toEqual({ root: captured.root, digest: captured.digest, targetFeatures: ["schema_guard"] });
+    expect(commands).toEqual([]); expect(verifyPackage(captured.root, VERSION, { ownDependencies: true })).toBe(captured.digest);
+  } finally { if (oldHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = oldHome; }
+});
+
+test("#607 retained scoped target tampering refuses before any registry install or protocol probe", async () => {
+  const f = fixture(true), oldHome = process.env.AGENTHUB_HOME, captured = stageCurrentRuntime(f.source, VERSION, f.home);
+  const projectDir = join(f.root, "project"); mkdirSync(projectDir); const projectRoot = realPath(projectDir);
+  const body: Omit<UpgradePlan, "fingerprint"> = { schema: 1, scope: { projectRoot }, kind: "upgrade", version: VERSION, integrity: "sha512-fixture",
+    sourceRoot: f.source, sourceDigest: captured.digest, projects: [{ project: { id: "project", root: projectRoot, stateDir: join(projectRoot, "state"), basePort: 4600, instanceId: "source", pid: null },
+      source: { state: "running", instanceId: "source", protocol: 16, version: VERSION, peers: [], blockers: [] }, terminals: [], blockers: [] }], blockers: [] };
+  const op: RecoveryOperation = { schema: 3, id: "22222222-2222-2222-2222-222222222222", plan: { ...body, fingerprint: planFingerprint(body) }, sourceRoot: f.source,
+    createdAt: 0, updatedAt: 0, phase: "blocked", step: "verify", targetRoot: captured.root, targetDigest: captured.digest, targetFeatures: ["schema_guard"],
+    projects: [{ id: "project", phase: "peers-restored", instanceId: "target", terminals: {} }] };
+  put(captured.root, "src/marker.ts", "export const marker = 'tampered-retained-target';\n");
+  const commands: string[][] = [];
+  const offline: RunCommand = async argv => { commands.push(argv); throw new Error("tampered targets must not reach registry or probing"); };
+  try {
+    process.env.AGENTHUB_HOME = f.home;
+    await expect(makeRecoveryDriver(offline).stage(op)).rejects.toThrow("retained project target changed");
+    expect(commands).toEqual([]); expect(packageDigest(f.source, { ownDependencies: true })).toBe(captured.digest);
+  } finally { if (oldHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = oldHome; }
 });

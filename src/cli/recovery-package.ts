@@ -132,7 +132,9 @@ function runtimeDirectory(directory: string): void {
   try { info = lstatSync(directory); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    mkdirSync(directory, { mode: 0o700 }); info = lstatSync(directory);
+    try { mkdirSync(directory, { mode: 0o700 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    info = lstatSync(directory);
   }
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("runtime cache must contain real directories");
 }
