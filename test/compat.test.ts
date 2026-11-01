@@ -225,8 +225,9 @@ test("Codex reviewer 0.164.0 is receipt-verified without machine trust, and its 
 });
 
 
-test("Codex reviewer 0.166.0 stays unverified after the incomplete model-backed receipt (#888)", () => {
-  expect(assessVersion("codex-review", "0.166.0", [])).toMatchObject({ ok: false, state: "refused", version: "0.166.0" });
+test("Codex reviewer 0.166.0 is receipt-verified without machine trust, and nearby versions stay refused (#888)", () => {
+  expect(assessVersion("codex-review", "0.166.0", [])).toMatchObject({ ok: true, state: "verified", version: "0.166.0" });
+  expect(COMPAT["codex-review"].verified).toEqual(["0.146.0", "0.163.0", "0.164.0", "0.166.0"]);
   for (const near of ["0.165.0", "0.166.1", "0.167.0", "0.166.0-rc.1", "codex-cli 0.166.0"]) expect(assessVersion("codex-review", near, []).ok).toBe(false);
 });
 

@@ -4,6 +4,8 @@ Date: 2026-10-31. Platform: macOS arm64, Bun 1.4.2. Scope: issue #888, task 576.
 
 Result: all four model-free legs returned the expected outcome. The subsequent [one-run model-backed receipt](2026-10-31-codex-0166-reviewer-tool-call.md) persisted an approved native verdict but failed its required synthetic-marker readback. The proposed 0.166.0 verified bump was therefore reverted. Both 0.165.0 and 0.166.0 remain unverified; this positive model-free inventory alone does not qualify a version.
 
+Update 2026-11-02: the separately authorized [corrected single-run receipt](2026-11-02-codex-0166-reviewer-tool-call.md) passed marker, head, verdict and cleanup readback after a committed model-free envelope regression. It qualifies 0.166.0 for the verified reviewer set. The results and failed admission below describe the 2026-10-31 attempt; 0.165.0 remains unverified.
+
 ## Source identity and re-read regions
 
 `git ls-remote https://github.com/openai/codex.git 'refs/tags/rust-v0.166.0' 'refs/tags/rust-v0.166.0^{}'` returned annotated tag object `593389380740f7b4762771573c447ccfdc59742f` and peeled commit `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`. The same readback retained the earlier 0.164.0 tag object `fe3b29455488c2e189e43ad5526a107900c5e1b7` and peeled commit `6aaac694803004a63c6f393d153c96d22521a6b9`, matching its receipt.
