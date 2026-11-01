@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Re-review approved, unmerged tasks at a new owner-reported head, or let the reviewer withdraw approval (#1047). Keep each verdict bound to its head, show stale approvals, and block stale-head merges.
+
 - Upgrade one project while other projects keep working (#1039, #1045): negotiate protocol 17/16, use per-project recovery holds and verified versioned daemon captures, and update the global CLI and shared plugin separately. Doctor reports older shared tools.
 - Refuse incompatible `hub.db` formats before daemon effects or database writes, with a named required-version message. Preserve legacy recovery contracts and require guard-aware targets for new controlled replacements.
 
