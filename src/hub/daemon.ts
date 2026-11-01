@@ -824,7 +824,10 @@ export async function startDaemon(opts: DaemonOptions) {
     if (env.from === "hub" || env.from === USER || env.from === "digest" || env.from.includes("@")) return undefined;
     const peer = bus.peers.get(env.from);
     if (!peer) return undefined;
-    const launchId = isWsPeer(peer) ? peer.managedLaunchId : (peer as { ownedLaunchId?: string }).ownedLaunchId;
+    // Read by shape, not by a native-branch predicate: a channel session reports `managedLaunchId`, an owned Jcode `ownedLaunchId`, and the value only labels the log. Nothing here decides
+    // authority or ownership, so it is not an `isWsPeer` host branch (the #625 ratchet lists those, and this is not one).
+    const evidence = peer as { managedLaunchId?: unknown; ownedLaunchId?: unknown };
+    const launchId = [evidence.managedLaunchId, evidence.ownedLaunchId].find((value): value is string => typeof value === "string" && value.length > 0);
     return originOf({ role: "peer", peer: env.from, ...(launchId ? { launchId } : {}) });
   };
   const externalLaunches = new Map<string, { owner: PeerAdapter; options: AcpOptions; launchId: string; binding: ExternalInstanceBinding; workspace: string; generation?: string }>();
@@ -1378,14 +1381,15 @@ export async function startDaemon(opts: DaemonOptions) {
   const claudeLaunchProof = createClaudeLaunchProof({ stateDir: opts.stateDir, cwd: opts.cwd, instanceId, definitionOf, peer: peer => bus.peers.get(peer) });
   /**
    * agent-hub#1036: whether a tools hello is a distinct session instead of the peer it names. True when the plugin asked for it (`session`: it has no project of its own and inherited this hub's
-   * state), or when the name is a Claude channel peer whose current launch record names another launch than the one presented (an absent id included). Everything else keeps its admission as
-   * before: codex, kimi, qwen, agent shells without an inherited id, owned ACP peers and the Claude implementer child are not affected.
+   * state), or when the name is a Claude channel peer and the hello PRESENTS a launch id that is not the current launch record's. An ABSENT id is never enough: the facts hook, a native
+   * helper or a person's own shell connects as the peer with none, and it must keep working (agent-hub#1036 AC4). Everything else keeps its admission as before: codex, kimi, qwen, agent
+   * shells without an inherited id, owned ACP peers and the Claude implementer child are not affected.
    */
   const sessionHello = (msg: Record<string, any>): boolean => {
     if (typeof msg.session === "string") return true;
     const peer = String(msg.peer ?? "");
     if (definitionOf(peer)?.transport !== "claude-channel" || definitionOf(peer)?.start.daemonPort === "claude-implementer") return false;
-    try { const launch = readClaudeLaunchProof(opts.stateDir, peer, instanceId); return !!launch && msg.launchId !== launch.launchId; } catch { return false; }
+    try { const launch = readClaudeLaunchProof(opts.stateDir, peer, instanceId); return !!launch && typeof msg.launchId === "string" && msg.launchId !== launch.launchId; } catch { return false; }
   };
   function frontendProxyState(peer: string, owner: PeerAdapter | undefined): { present: boolean; port: FrontendProxyPort | undefined } {
     if (!owner || !isFixedBuiltinDefinition(definitionOf(peer)) || !("frontendProxy" in owner)) return { present: false, port: undefined };

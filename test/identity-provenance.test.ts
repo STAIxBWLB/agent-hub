@@ -97,7 +97,7 @@ test("AC1: a second session claiming claude is a distinct claude~<id> session; t
   const real = await r.connect({ role: "peer", peer: "claude", channel: true, launchId: LAUNCH });
   const delivered: any[] = []; real.onPush = message => { if (message.t === "deliver") delivered.push(...(message.envs ?? [message.env])); };
   const other = await r.connect({ role: "tools", peer: "claude", launchId: "some-other-launch" });          // not the current launch: before #1036 it acted as claude
-  const noId = await r.connect({ role: "tools", peer: "claude" });                                         // no launch id while a record exists: also a session
+  const noId = await r.connect({ role: "tools", peer: "claude", launchId: "a-third-launch" });             // a second foreign launch: also a session, and never the same id
   expect(other.sessionId).toMatch(/^claude~[a-z0-9-]+$/); expect(noId.sessionId).toMatch(/^claude~[a-z0-9-]+$/);
   expect(other.sessionId).not.toBe(noId.sessionId);                                                        // two live sessions never share an id
   expect(r.daemon.bus.peers.get("claude")?.state).toBe("idle");                                            // the attached session is still the peer
@@ -157,6 +157,8 @@ test("AC4: every connection that worked before is admitted as before, none as a 
   expect((await r.connect({ role: "tools", peer: "codex" })).sessionId).toBeUndefined();
   expect((await r.connect({ role: "tools", peer: "codex", launchId: "anything" })).sessionId).toBeUndefined();
   expect((await r.connect({ role: "console" })).sessionId).toBeUndefined();
+  // a launch record exists and the hello presents NO launch id (the native facts hook, a helper, a person's shell that lost the variable): it is still the peer, and still works (#636, #525-5)
+  expect((await r.connect({ role: "tools", peer: "claude" })).sessionId).toBeUndefined();
   rmSync(join(r.stateDir, "claude-launch.json"));                                                           // no launch record: a plain session is the peer, whatever it sends
   expect((await r.connect({ role: "tools", peer: "claude" })).sessionId).toBeUndefined();
   expect((await r.connect({ role: "tools", peer: "claude", launchId: "unrecorded" })).sessionId).toBeUndefined();
