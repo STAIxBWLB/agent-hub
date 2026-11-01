@@ -182,3 +182,39 @@ test("an agent's ahub up is refused by the CLI before it starts anything, and --
   const live = await ahub(delegated.root, delegated.home, ["--live-test", "up"], { AGENTHUB_PEER_ID: "codex" });
   expect(lines(live.stdout)).toEqual([]); expect(delegated.opened()).toEqual([]);          // delegated live tests never open the person's terminals from the set
 }, 120_000);
+
+test("review P2: a live-test dashboard session's start never opens the default agents, and the lines and failures of an ordinary session's start reach manager.log", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "ahub-manager-review-"))), home = join(base, "home"), root = join(base, "p");
+  mkdirSync(home); mkdirSync(root, { recursive: true });
+  cleanup.push(() => rmSync(base, { recursive: true, force: true }));
+  const registry = new Registry(join(home, "registry.db")); cleanup.push(() => registry.close());
+  const project = registry.register(root);
+  const lifecycle: Lifecycle = { inspectProject: async () => ({ state: "stopped" }) as never, stopProject: async () => {}, startProject: async () => ({ instanceId: "inst-1", controlPort: 1 }) };
+  const asked: string[] = [];
+  let outcome: "lines" | "throws" = "lines";
+  const { act } = projectConsole({ registry, lifecycle, home, afterStart: async started => {
+    asked.push(started.id);
+    if (outcome === "throws") throw new Error("terminal provider broke\nsecond line");
+    return ["claude: not started: no terminal.open command is configured. Run ahub claude in a terminal", "codex: already attached"];
+  } });
+  const written: string[] = [], original = console.error;
+  console.error = (...args: unknown[]) => { written.push(args.join(" ")); };
+  try {
+    // the session, not the manager process, carries the live-test flag: an agent's `ahub --live-test ui` opens one
+    expect((await act({ action: "start", projectId: project.id }, { liveTest: true })).ok).toBe(true);
+    await Bun.sleep(30);
+    expect(asked).toEqual([]); expect(written).toEqual([]);
+    expect((await act({ action: "start", projectId: project.id }, {})).ok).toBe(true);
+    await Bun.sleep(30);
+    expect(asked).toEqual([project.id]);
+    expect(written).toHaveLength(2);
+    expect(written[0]).toContain(`default agents for ${project.id}: claude: not started: no terminal.open command is configured. Run ahub claude in a terminal`);
+    expect(written[1]).toContain("codex: already attached");
+    outcome = "throws"; written.length = 0;
+    expect((await act({ action: "start", projectId: project.id })).ok).toBe(true);        // a failing hook never fails the start
+    await Bun.sleep(30);
+    expect(written).toHaveLength(1);
+    expect(written[0]).toContain("not started: terminal provider broke second line");
+    expect(written[0]).not.toContain("\n");                                                 // one log line, whatever the text held
+  } finally { console.error = original; }
+});

@@ -22,7 +22,7 @@ export type Lifecycle = {
   stopProject(project: Project, expectedInstance?: string): Promise<void>;
 };
 export type ManagerOptions = { registry?: Registry; lifecycle?: Lifecycle; home?: string; cli?: string; orphanWatchMs?: number; liveTest?: boolean;
-  /** #608: runs after the dashboard's "start" has the hub ready, as the person's `ahub up` would; its lines go to the hub log of the manager only. Never part of a dashboard request. */
+  /** #608: runs after the dashboard's "start" has the hub ready, as the person's `ahub up` would, never for a live-test session. Its returned lines and any failure go to manager.log, one line each. Never part of a dashboard request. */
   afterStart?: (project: Project) => Promise<string[]>;
   /** Test clock seam: maps nominal forwarding deadlines, never comes from dashboard input. */
   forwardTimeoutMs?: (action: string, nominalMs: number) => number };
@@ -104,7 +104,7 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
     }));
     return { ok: true, mode: "all", projects: rows };
   };
-  const act = async (input: Record<string, unknown>) => {
+  const act = async (input: Record<string, unknown>, session?: { liveTest?: true }) => {
     if (options.stopping?.()) return { ok: false, error: "manager is stopping" };
     const project = typeof input.projectId === "string" ? registry.get(input.projectId) : undefined;
     if (!project) return { ok: false, error: "unknown project" };
@@ -113,7 +113,13 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
       if (input.action === "start") {
         const status = await bounded(lifecycle.startProject(project, { unattended: false, env: { ...scrubEnv(process.env), AGENTHUB_HOME: home } }), 20_000);
         // The agents start in the background: the dashboard's answer is the hub's readiness, and a terminal that is slow to open must not hold it.
-        if (options.afterStart) void options.afterStart(project).catch(() => { /* the hub is up; the agents are started by hand */ });
+        // A live-test dashboard session is an agent borrowing the person's console: it never opens the person's default agents. The session, not this process, carries that flag.
+        if (options.afterStart && session?.liveTest !== true) {
+          const stamp = (line: string) => `${new Date().toISOString()} default agents for ${project.id}: ${line.replace(/[\x00-\x1f\x7f]+/g, " ").slice(0, 600)}`;
+          void options.afterStart(project).then(
+            lines => { for (const line of lines) console.error(stamp(line)); },
+            error => { console.error(stamp(`not started: ${safeError(error)}`)); });
+        }
         return { ok: true, projectId: project.id, instanceId: status.instanceId };
       }
       if (typeof input.instanceId !== "string" || !input.instanceId) return { ok: false, error: "expected daemon instance is required" };
