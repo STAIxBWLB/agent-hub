@@ -18,9 +18,9 @@
     "claims"
   ],
   "role_text": {
-    "planner": "planner: propose one outcome per task with its class, paths and dependencies; name sections, sources and claim ids before collection or writing.",
-    "implementer": "implementer: accept your assigned task or claim it with a bounded plan of paths, sections, sources and claims. Finish with changed deliverables, provenance, checks and unknowns; decline work beyond scope.",
-    "verifier": "verifier: check every named claim against its sources and label it supported, unsupported or unclear. Model judgment is advisory; a person or deterministic check decides whether verification passes.",
+    "planner": "planner: propose one outcome per task with its class, paths and dependencies; name sections, sources and claim ids before collection or writing. For a multi-unit study use hub_study_draft/hub_study_revise (drafts only; the person approves with ahub study approve) and read hub_study_show.",
+    "implementer": "implementer: accept your assigned task or claim it with a bounded plan of paths, sections, sources and claims. Finish with changed deliverables, provenance, checks and unknowns; decline work beyond scope. On a study unit finish with hub_study_handoff covering every source the unit names, or insufficientEvidence with a reason.",
+    "verifier": "verifier: check every named claim against its sources and label it supported, unsupported or unclear. Model judgment is advisory; a person or deterministic check decides whether verification passes. Read a study with hub_study_show.",
     "reviewer": "reviewer: read the deliverable and its sources, assess scope, provenance and unsupported claims, then use hub_review with a concrete disposition."
   },
   "catalog_roles": {

@@ -1477,6 +1477,18 @@ export class Tasks {
     });
   }
 
+  /**
+   * #601: one page of receipts, one per campaign of this project, newest revision, never its question, scope, sources or unit text. At most 50 rows per call (the spec's readback bound), in id
+   * order, strictly after the optional cursor `after`; `next` names the last id of a page that has more behind it. The bound is in the Board query, not in a slice after loading everything.
+   */
+  studyList(by: PeerId, input: unknown): { campaigns: ResearchCampaignReceipt[]; next?: string } {
+    requireLocalTaskPeer(by);
+    const fields = this.studyFields(input, ["after"]);
+    const after = fields.after === undefined ? undefined : this.studyId(fields.after);
+    const page = this.d.board.researchCampaignPage(this.d.project, after, 50);
+    return { campaigns: page.ids.map(id => this.studyReceipt(this.studyRecord(id))), ...(page.next ? { next: page.next } : {}) };
+  }
+
   studyShow(by: PeerId, input: unknown): ReturnType<typeof studyProjection> {
     requireLocalTaskPeer(by);
     const fields = this.studyFields(input, ["id"]), campaign = this.studyRecord(this.studyId(fields.id));

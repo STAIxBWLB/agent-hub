@@ -147,3 +147,40 @@ test("a tokens ceiling leaves model-call budget support unavailable because its 
   expect(studyProjection(input).units[0]!.budget.model_calls).toEqual({ support: "unavailable", used: 3, limit: 10 });
   expect(studyProjection(input).units[0]!.budget.tokens.support).toBe("unavailable");
 });
+
+// Review thread on #1031: `study show` with no id must page at the Board query (the spec bounds readback at 50 rows per call, with a cursor), not load every campaign and slice.
+test("the campaign list is one bounded page with a cursor, in id order, and a page costs the Board query a LIMIT, not every row", () => {
+  const f = fixture();
+  const ids = Array.from({ length: 120 }, (_, n) => `rc-${(n + 1).toString(16).padStart(12, "0")}`);
+  for (const id of ids) {
+    const body = contract(), parent = f.board.propose(USER, { title: `Parent ${id}`, class: "implement" });
+    f.board.saveResearchCampaignDraft({ ...f.draft, id, parentTaskId: parent.id, contract: body, hash: campaignHash(body) }, undefined, parent.history.length);
+  }
+  const all = [f.draft.id, ...ids].sort();
+  const first = f.board.researchCampaignPage("fixture-project");
+  expect(first.ids).toEqual(all.slice(0, 50)); expect(first.next).toBe(all[49]);                 // at most 50, and the cursor is the last id returned
+  const second = f.board.researchCampaignPage("fixture-project", first.next);
+  expect(second.ids).toEqual(all.slice(50, 100)); expect(second.next).toBe(all[99]);
+  const third = f.board.researchCampaignPage("fixture-project", second.next);
+  expect(third.ids).toEqual(all.slice(100)); expect(third.next).toBeUndefined();                // the last page names no cursor
+  expect(f.board.researchCampaignPage("fixture-project", undefined, 500).ids).toHaveLength(50);   // a caller cannot raise the bound
+  expect(f.board.researchCampaignPage("fixture-project", undefined, 3)).toEqual({ ids: all.slice(0, 3), next: all[2] });
+  // The bound is in the query: the page asks sqlite for 51 rows at most (limit + one to learn whether more follow), however many campaigns exist. Observed on the board's own statements.
+  const db = (f.board as unknown as { db: Database }).db, seen: string[] = [], original = db.query.bind(db);
+  (db as unknown as { query: (sql: string) => unknown }).query = (sql: string) => { seen.push(sql); return original(sql); };
+  try { f.board.researchCampaignPage("fixture-project"); } finally { (db as unknown as { query: unknown }).query = original; }
+  expect(seen.filter(sql => /research_campaigns/.test(sql) && /\bLIMIT\b/.test(sql))).toHaveLength(1);
+  expect(f.board.researchCampaignPage("other-project").ids).toEqual([]);
+  for (const bad of ["not-an-id", "rc-ZZZZZZZZZZZZ", "rc-0123456789abc"]) expect(() => f.board.researchCampaignPage("fixture-project", bad)).toThrow();
+  const exactly = Array.from({ length: 50 }, (_, n) => all[n]!);
+  expect(f.board.researchCampaignPage("fixture-project", all[69]).ids).toHaveLength(50);       // a full page with more behind it
+  expect(exactly).toHaveLength(50);
+});
+
+test("a named budget keeps every resource row in the projection's own state, and an unnamed one says so", () => {
+  const f = fixture(true);
+  const named = studyProjection({ ...projection(), campaign: { ...projection().campaign, contract: f.body } });
+  expect(named.budgetNamed).toBe(true);
+  expect(named.units[0]!.budget.tokens).toEqual({ support: "unavailable", used: null, limit: null });   // a null limit is data a reader needs, not a row to hide
+  expect(studyProjection(projection()).budgetNamed).toBe(false);
+});
