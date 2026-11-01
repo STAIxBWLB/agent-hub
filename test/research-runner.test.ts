@@ -60,6 +60,17 @@ test("#1018 checks the current registration, revocation, exact project and attem
   expect(verifyAttemptReceipt(inherited, signature(inherited), own).provenance).toBe("runner-attested");
 });
 
+test("#1018 a receipt commit remains an independent attested claim without a protocol commit to compare", () => {
+  const body = { ...receipt(), codeCommit: "f".repeat(40) }, current = context();
+  // A deliverable protocol supplies no expected Git commit. The later Tasks integration must check artifact binding and keep its match unknown.
+  const { codeCommit: _commit, ...artifactAttempt } = current.attempt!;
+  expect(verifyAttemptReceipt(body, signature(body), { ...current, attempt: artifactAttempt })).toEqual({
+    receipt: body, provenance: "runner-attested", sealed: true,
+  });
+  // A protocol with an explicit expected commit continues to reject this same signed mismatch.
+  expect(() => verifyAttemptReceipt(body, signature(body), current)).toThrow("protocol commit mismatch");
+});
+
 test("#1018 absent observations stay unknown by absence and cannot establish sealing", () => {
   const full = receipt();
   const body = { receiptId: full.receiptId, runner: full.runner, projectId: full.projectId, attemptId: full.attemptId, protocolHash: full.protocolHash };
