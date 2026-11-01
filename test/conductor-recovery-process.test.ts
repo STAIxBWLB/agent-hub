@@ -81,7 +81,7 @@ test("conductor CLI detached restart completes through a real target process wit
     source = await startDaemon({ cwd: root, stateDir: project.stateDir, projectId: project.id, instanceId: sourceInstance,
       controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: loadConfig(root), snapshotClock: () => 0, configWatch: false,
       agentDrift: false, boundedTools: emulatedBoundedTools(), onShutdownStart: () => {
-        const id = recoveryLock(home), pid = id ? signedRunner(id, home) : undefined, signature = pid ? processSignature(pid) : undefined;
+        const id = recoveryLock(home, root), pid = id ? signedRunner(id, home) : undefined, signature = pid ? processSignature(pid) : undefined;
         if (pid && signature) runner = { pid, signature };
       } });
     const signature = processSignature(process.pid); expect(signature).toBeDefined();
@@ -132,7 +132,7 @@ test("conductor CLI detached restart completes through a real target process wit
   } finally {
     const failures: unknown[] = [], safely = async (work: () => Promise<unknown>) => { try { await work(); } catch (error) { failures.push(error); } };
     await safely(async () => { if (cli && cli.exitCode === null) { cli.kill("SIGTERM"); await cli.exited; } });
-    try { operationId ??= recoveryLock(home); } catch (error) { failures.push(error); }
+    try { operationId ??= recoveryLock(home, root); } catch (error) { failures.push(error); }
     await safely(async () => { if (operationId && recoveryRunner(operationId, home) !== undefined) expect(await stopSignedRunner(operationId, home)).toBe(true); });
     await safely(stopTarget);
     await safely(async () => { await source?.stop(); await sourceRelease; });

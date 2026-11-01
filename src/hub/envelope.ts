@@ -19,6 +19,8 @@ export interface Envelope {
   refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string; reviewRevision?: string; taskOffer?: number; taskCancelled?: number; taskRecipient?: "owner" | "reviewer" | "planner"; planReview?: number; planReviewFlow?: number; planAuthor?: string; backlog?: number[]; supervision?: boolean; supervisionKey?: string; completedFor?: number; boundedCheck?: string; budgetResume?: string; budgetResumeMoves?: { id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]; budgetResumeEarlier?: string[]; invocation?: string; invocationRemote?: true };
   /** The body must not be shown outside its recipients: console tail and log print a stub instead (PII tasks). */
   private?: boolean;
+  /** Sent by a distinct session (`<peer>~<origin>`, agent-hub#1036): a connection that named a peer id but is not that peer's current session. It grants nothing; it marks the sender for the log. */
+  session?: true;
   ts: number;
 }
 

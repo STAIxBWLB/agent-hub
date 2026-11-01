@@ -9,7 +9,7 @@ import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "../hub/r
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { REGISTRY_DB_BUSY_TIMEOUT_MS, PROJECT_COLUMNS, projectFromRow, type Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { readRecoveryWaits } from "./recovery-waits.ts";
@@ -27,6 +27,7 @@ const projectDefinition = (peer: string, root?: string) => {
 
 export interface RecoveryPeer {
   id: string;
+  controlProtocol?: number;
   /** Read-only source observation; never consumed as restoration arguments. */
   observation?: { kind: string; attached: boolean; sessionDigest?: string };
   /** Captured stable module/instance identity; never a portable current-owner proof. */
@@ -42,6 +43,8 @@ export interface Inspection {
   instanceId?: string;
   version?: string;
   protocol?: number;
+  protocolMin?: number;
+  protocolMax?: number;
   peers: RecoveryPeer[];
   /** `waiting` (#272): what the running hub says keeps it from being quiet (busy peers, pending approvals); display only. */
   recovery?: { operationId?: string; phase?: string; ready?: boolean; waiting?: string[] };
@@ -65,6 +68,8 @@ export interface PlannedProject {
 }
 export interface UpgradePlan {
   schema: 1;
+  /** Present for new CLI operations; absent only on retained legacy machine-wide plans. */
+  scope?: { projectRoot: string };
   kind: "restart" | "upgrade";
   version: string;
   integrity?: string;
@@ -122,7 +127,7 @@ export interface RecoveryOperation {
    * #227: 2 marks a stop-and-archive recorded on an operation whose coordinator predates #215. Every older runner and
    * abort refuses a schema other than 1 before it takes the lock or claims the runner, so none can advance it.
    */
-  schema: 1 | 2;
+  schema: 1 | 2 | 3;
   id: string;
   plan: UpgradePlan;
   createdAt: number;
@@ -417,20 +422,45 @@ export function planFingerprint(plan: Omit<UpgradePlan, "fingerprint">): string 
   return createHash("sha256").update(JSON.stringify(stable)).digest("hex");
 }
 
+/** A scoped receipt cannot expand into a second project, even when read by a later coordinator. */
+export function recoveryScope(plan: Pick<UpgradePlan, "scope" | "projects">): string | undefined {
+  if (plan.scope === undefined) return undefined;
+  const scope = plan.scope;
+  if (!scope || typeof scope !== "object" || Array.isArray(scope) || Object.keys(scope).length !== 1 || !Object.hasOwn(scope, "projectRoot")
+    || typeof scope.projectRoot !== "string" || !isAbsolute(scope.projectRoot) || !Array.isArray(plan.projects)
+    || plan.projects.length !== 1 || plan.projects[0]?.project.root !== scope.projectRoot)
+    throw new Error("reviewed project recovery scope is invalid");
+  return scope.projectRoot;
+}
+function sealScopedPlan(op: RecoveryOperation): void {
+  if (op.schema !== 3) return;
+  const seen = new WeakSet<object>();
+  const freeze = (value: unknown): void => {
+    if (!value || typeof value !== "object" || seen.has(value)) return;
+    seen.add(value);
+    for (const item of Object.values(value)) freeze(item);
+    Object.freeze(value);
+  };
+  freeze(op.plan);
+  Object.defineProperty(op, "plan", { value: op.plan, enumerable: true, writable: false, configurable: false });
+}
+
 export function createOperation(plan: UpgradePlan, sourceRoot: string, home = hubHome(), delegation?: RecoveryDelegation, operationId: string = randomUUID()): RecoveryOperation {
   if (!operationIdPattern.test(operationId)) throw new Error("invalid recovery operation ID");
   if (plan.blockers.length || plan.projects.some((p) => p.blockers.length)) throw new Error("upgrade plan has blockers; no runtimes were changed");
   if (!plan.projects.length) throw new Error("no running projects to recover");
   const { fingerprint, ...body } = plan;
   if (planFingerprint(body) !== fingerprint) throw new Error("upgrade plan fingerprint is invalid");
+  const scope = recoveryScope(plan);
   const id = operationId;
   const op: RecoveryOperation = {
-    schema: 1, id, plan, sourceRoot, createdAt: Date.now(), updatedAt: Date.now(), phase: "pending", step: "stage",
+    schema: scope === undefined ? 1 : 3, id, plan, sourceRoot, createdAt: Date.now(), updatedAt: Date.now(), phase: "pending", step: "stage",
     projects: plan.projects.map((p) => ({ id: p.project.id, phase: "pending", terminals: {} })),
   };
   if (delegation) appendRecoveryDelegation(op, delegation, op.createdAt);
+  sealScopedPlan(op);
   writeOperation(id, op, home);
-  acquireRecoveryLock(id, home);
+  acquireRecoveryLock(id, home, scope);
   return op;
 }
 
@@ -488,7 +518,9 @@ function validateReceipt(id: string, op: RecoveryOperation, historical = false):
   // Cleanup validates owned historical facts; this mode never authorizes restore, fresh or reattach.
   const options = historical ? { authority: "historical" as const } : {};
   const decode = (value: unknown) => decodeRestoreReceipt(value, options);
-  if (!(op.schema === 1 || (op.schema === 2 && op.disposition)) || op.id !== id) throw new Error("unsupported operation receipt");
+  const scope = recoveryScope(op.plan);
+  if (!(scope === undefined ? op.schema === 1 || (op.schema === 2 && op.disposition) : op.schema === 3) || op.id !== id)
+    throw new Error("unsupported operation receipt");
   validateRecoveryDelegations(op);
   if (op.targetFeatures !== undefined && (!Array.isArray(op.targetFeatures) || !op.targetFeatures.every(feature => typeof feature === "string" && feature.length > 0) || !op.targetRoot || !op.targetDigest)) throw new Error("invalid target features");
   const { fingerprint, ...reviewed } = op.plan;
@@ -584,13 +616,22 @@ async function authorizeRecoveryDriver(driver: RecoveryDriver, op: RecoveryOpera
   await driver.authorize(op, phase);
 }
 
-/** Closed effect ports only. Inspection stays read-only; person drivers keep their existing behavior. */
-export function guardedRecoveryDriver(driver: RecoveryDriver, operation: () => RecoveryOperation): RecoveryDriver {
-  if (driver.conductorPeer === undefined) return driver;
+function scopedRecoveryCurrent(operation: () => RecoveryOperation, scope: string | undefined, id: string, home: string): (() => void) | undefined {
+  if (scope === undefined) return undefined;
+  return () => {
+    if (recoveryScope(operation().plan) !== scope || recoveryLock(home, scope) !== id) throw new Error("project recovery scope or hold changed");
+  };
+}
+
+/** Closed effect ports only. Scoped operations also fence their project hold; inspection stays read-only. */
+export function guardedRecoveryDriver(driver: RecoveryDriver, operation: () => RecoveryOperation, current?: () => void): RecoveryDriver {
+  if (driver.conductorPeer === undefined && !current) return driver;
   const guard = <A extends unknown[], R>(action: (...args: A) => Promise<R>) => async (...args: A): Promise<R> => {
+    current?.();
     await authorizeRecoveryDriver(driver, operation(), "effect");
+    current?.();
     try { return await action(...args); }
-    finally { await authorizeRecoveryDriver(driver, operation(), "effect"); }
+    finally { await authorizeRecoveryDriver(driver, operation(), "effect"); current?.(); }
   };
   return {
     ...driver,
@@ -619,14 +660,19 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
   // mutable phase. A concurrent runner may have completed the operation meanwhile.
   let op = readOperation<RecoveryOperation>(id, home);
   validateReceipt(id, op);
+  const scope = recoveryScope(op.plan);
+  sealScopedPlan(op);
   if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, "run");
-  acquireRecoveryLock(id, home);
+  const scopeCurrent = scopedRecoveryCurrent(() => op, scope, id, home);
+  acquireRecoveryLock(id, home, scope);
   const releaseRunner = claimRunner(id, home);
   try {
     op = readOperation<RecoveryOperation>(id, home);
+    if (recoveryScope(op.plan) !== scope) throw new Error("project recovery scope changed while claiming its runner");
+    sealScopedPlan(op);
     validateReceipt(id, op);
     if (op.phase === "completed" || op.phase === "cancelled") {
-      if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
+      if (recoveryLock(home, scope) === id) releaseRecoveryLock(id, home, scope);
       releaseRunner();
       return op;
     }
@@ -636,7 +682,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       writeOperation(id, op, home);
     }
   } catch (error) { releaseRunner(); throw error; }
-  driver = guardedRecoveryDriver(driver, () => op);
+  driver = guardedRecoveryDriver(driver, () => op, scopeCurrent);
   let targetFeatures: readonly string[] = [];
   const save = () => { op.updatedAt = driver.now(); writeOperation(id, op, home); };
   const step = (value: string) => { op.step = value; save(); };
@@ -843,8 +889,8 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
         progress.phase = "peers-restored"; save();
       }
     }
-    // Claude is deliberately a shared final phase: no project-level plugin isolation is claimed.
-    if (op.plan.kind === "upgrade" && !op.pluginInstalled) {
+    // Legacy receipts keep their shared installation steps; project upgrades leave global tools alone.
+    if (scope === undefined && op.plan.kind === "upgrade" && !op.pluginInstalled) {
       step("install-plugin"); await driver.installPlugin(op); op.pluginInstalled = true; save();
     }
     for (let i = 0; i < op.projects.length; i++) {
@@ -866,10 +912,10 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       progress.phase = "verified"; save();
     }
     if (driver.refreshManager) { step("refresh-manager"); await driver.refreshManager(op); }
-    if (op.plan.kind === "upgrade" && !op.globalInstalled) {
+    if (scope === undefined && op.plan.kind === "upgrade" && !op.globalInstalled) {
       step("install-global"); await driver.installGlobal(op); op.globalInstalled = true; save();
     }
-    releaseRecoveryLock(id, home); op.phase = "completed"; step("completed");
+    releaseRecoveryLock(id, home, scope); op.phase = "completed"; step("completed");
   } catch (error) {
     // #215: every runner error ends with the choices status shows, read from every open source, never only this one.
     const presentationError = error instanceof RecoveryPresentationError ? error
@@ -936,12 +982,18 @@ export async function reattachRecovery(id: string, peer: string, driver: Recover
     return { progress, planned, marker, native };
   };
   selection(); // Finished or unrelated operations must not acquire a new lock merely to refuse.
-  acquireRecoveryLock(id, home);
+  const scope = recoveryScope(op.plan);
+  sealScopedPlan(op);
+  const scopeCurrent = scopedRecoveryCurrent(() => op, scope, id, home);
+  acquireRecoveryLock(id, home, scope);
   const releaseRunner = claimRunner(id, home);
+  driver = guardedRecoveryDriver(driver, () => op, scopeCurrent);
   let attempted = false;
   const save = () => { op.updatedAt = driver.now(); writeOperation(id, op, home); };
   try {
     op = readOperation<RecoveryOperation>(id, home);
+    if (recoveryScope(op.plan) !== scope) throw new Error("project recovery scope changed while claiming its runner");
+    sealScopedPlan(op);
     validateReceipt(id, op);
     const { progress, planned, marker, native } = selection();
     const expected = structuredClone(marker.binding);
@@ -985,16 +1037,21 @@ export async function reattachRecovery(id: string, peer: string, driver: Recover
 export async function abortRecovery(id: string, driver: RecoveryDriver, home = hubHome()): Promise<void> {
   let op = readOperation<RecoveryOperation>(id, home);
   validateReceipt(id, op, true);
+  const scope = recoveryScope(op.plan);
+  sealScopedPlan(op);
   if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, "abort");
-  acquireRecoveryLock(id, home);
+  const scopeCurrent = scopedRecoveryCurrent(() => op, scope, id, home);
+  acquireRecoveryLock(id, home, scope);
   const releaseRunner = claimRunner(id, home);
   try {
     // Re-read after the exclusive runner claim so cancellation cannot act on a
     // stale pending/prepared receipt after another runner advanced it.
     op = readOperation<RecoveryOperation>(id, home);
+    if (recoveryScope(op.plan) !== scope) throw new Error("project recovery scope changed while claiming its runner");
+    sealScopedPlan(op);
     validateReceipt(id, op, true);
     if (op.phase === "completed" || op.phase === "cancelled") {
-      if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
+      if (recoveryLock(home, scope) === id) releaseRecoveryLock(id, home, scope);
       return;
     }
     if (driver.conductorPeer !== undefined) await authorizeRecoveryDriver(driver, op, "abort");
@@ -1002,7 +1059,7 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
       appendRecoveryDelegation(op, { peer: (driver.conductorPeer ?? driver.liveTestPeer)!, command: "recovery abort" }, driver.now());
       writeOperation(id, op, home);
     }
-    driver = guardedRecoveryDriver(driver, () => op);
+    driver = guardedRecoveryDriver(driver, () => op, scopeCurrent);
     if (abandoned(op)) writeOperation(id, op, home);
     const { fingerprint, ...body } = op.plan;
     if (fingerprint !== planFingerprint(body)) throw new Error("operation plan changed");
@@ -1017,7 +1074,7 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
     }
     delete op.error; delete op.failure; delete op.blockedReattachment; delete op.presentationCause;
     op.phase = "cancelled"; op.step = "cancelled"; op.updatedAt = driver.now();
-    writeOperation(id, op, home); releaseRecoveryLock(id, home);
+    writeOperation(id, op, home); releaseRecoveryLock(id, home, scope);
   } catch (error) {
     if (isDatabaseBusy(error)) throw new RecoveryDatabaseBusy();
     throw error;
@@ -1037,15 +1094,18 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
   if (driver.liveTestPeer && "fresh" in choice && repairedFreshSession(op, choice.fresh) !== false) throw new Error(LIVE_TEST_PERSON_REFUSAL);
   // A finished operation owns no lock: never take one only to refuse.
   if (op.phase === "completed" || op.phase === "cancelled") throw new Error(`operation is already ${op.phase}`);
-  acquireRecoveryLock(id, home);
+  const scope = recoveryScope(op.plan);
+  sealScopedPlan(op);
+  const scopeCurrent = scopedRecoveryCurrent(() => op, scope, id, home);
+  acquireRecoveryLock(id, home, scope);
   const releaseRunner = claimRunner(id, home);
   try {
-    try { op = readOperation<RecoveryOperation>(id, home); validateReceipt(id, op, "stop" in choice); }
+    try { op = readOperation<RecoveryOperation>(id, home); validateReceipt(id, op, "stop" in choice); if (recoveryScope(op.plan) !== scope) throw new Error("project recovery scope changed while claiming its runner"); sealScopedPlan(op); }
     catch (error) { if (driver.liveTestPeer && "fresh" in choice) throw new Error(LIVE_TEST_PERSON_REFUSAL); throw error; }
     if (driver.liveTestPeer && "fresh" in choice && repairedFreshSession(op, choice.fresh) !== false) throw new Error(LIVE_TEST_PERSON_REFUSAL);
     if (op.phase === "completed" || op.phase === "cancelled") {
       // Another runner finished it while this one waited: leave no lock behind, as resume and abort do.
-      if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
+      if (recoveryLock(home, scope) === id) releaseRecoveryLock(id, home, scope);
       throw new Error(`operation is already ${op.phase}`);
     }
     if (driver.liveTestPeer) {
@@ -1155,7 +1215,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     }
     delete op.error; delete op.failure;
     op.phase = "cancelled"; op.step = "disposed: stop-and-archive (abandoned, not completed)"; op.updatedAt = driver.now();
-    writeOperation(id, op, home); releaseRecoveryLock(id, home);
+    writeOperation(id, op, home); releaseRecoveryLock(id, home, scope);
     return op;
   } finally { releaseRunner(); }
 }

@@ -36,8 +36,8 @@ export interface UpgradeHost {
   apply(plan: UpgradePlan, interrupted: () => boolean): Promise<RecoveryOperation>;
   /** End one attached agent now: close a TUI agent's terminal, or ask the hub to stop a headless one. One line of outcome. */
   endPeer(planned: PlannedProject, peer: RecoveryPeer): Promise<string>;
-  /** The operation that holds the machine's recovery lock. */
-  lock(): string | undefined;
+  /** This selected project's hold, or an authoritative retained legacy machine hold. A reset may name another project. */
+  lock(projectRoot?: string): string | undefined;
   read(id: string): RecoveryOperation;
   runner(id: string): number | "unknown" | undefined;
   live(op: RecoveryOperation): Promise<Record<string, Inspection | undefined>>;
@@ -215,13 +215,13 @@ export async function endAgents(host: UpgradeHost, io: ScreenIO, endable: { plan
 
 /** `ahub reset` for one project: the scope, its dry run, a confirmation, then the reset itself. */
 export async function resetFlow(host: UpgradeHost, io: ScreenIO, projects: { id: string; root: string }[]): Promise<void> {
-  if (host.lock()) return human(io, "an operation holds the recovery lock; cancel or end it before a reset");
   let project = projects[0];
   if (projects.length > 1) {
     projects.forEach((p, i) => human(io, `  ${i + 1}  ${p.id}  ${p.root}`));
     project = projects[Number(await ask(io, "Reset which project? [number, Enter: none] ")) - 1];
   }
   if (!project) return human(io, "nothing was reset");
+  if (host.lock(project.root)) return human(io, "an operation holds the recovery lock; cancel or end it before a reset");
   const scope = ((await ask(io, "[r] runtime reset (deliveries, holds, pauses, session pointers)  [a] full reset (archive the state directory)  [Enter] none: ")) ?? "").toLowerCase();
   if (scope !== "r" && scope !== "a") return human(io, "nothing was reset");
   const reset = [host.entry, "--project", project.root, "reset", ...(scope === "a" ? ["--all"] : [])];
@@ -323,7 +323,7 @@ export async function planScreen(host: UpgradeHost, io: ScreenIO): Promise<void>
     if (io.presentation) emit(io, renderPlan(plan, host.version, io.presentation, planLines(plan, host.version)));
     else for (const line of planLines(plan, host.version)) human(io, line);
     const blocked = plan.blockers.length > 0 || plan.projects.some((p) => p.blockers.length > 0);
-    if (!plan.projects.length) human(io, plan.kind === "upgrade" ? `no hub is running, so nothing is carried over: install with \`bun add -g @staix/agent-hub@${plan.version}\`, then \`ahub setup\`` : "this project's hub is not running: `ahub up` starts it");
+    if (!plan.projects.length) human(io, plan.kind === "upgrade" && plan.scope === undefined ? `no hub is running, so nothing is carried over: install with \`bun add -g @staix/agent-hub@${plan.version}\`, then \`ahub setup\`` : "this project's hub is not running: `ahub up` starts it");
     const endable = plan.projects.flatMap((p) => p.source.peers.filter((peer) => ["tui", "headless"].includes(peerKind(p, peer))).map((peer) => ({ planned: p, peer })));
     const keys = [...(blocked ? [] : ["[a] apply"]), "[r] refresh", ...(endable.length ? ["[k] end agents"] : []), "[j] plan as JSON", ...(plan.projects.length ? ["[x] reset a project's hub"] : []), "[q] quit"];
     const preferred = "r"; // Enter never closes terminals, stops a hub, resumes or reattaches implicitly.

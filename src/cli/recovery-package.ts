@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { hubHome, realPath } from "../hub/project.ts";
 
@@ -109,7 +109,11 @@ export function verifyPackage(root: string, version: string, options: { ownDepen
 export function recoveryPackageOptions(kind: "restart" | "upgrade", root: string): { ownDependencies?: boolean; dependencyRoot?: string } {
   if (kind === "restart") return { ownDependencies: true };
   if (kind !== "upgrade") throw new Error("unsupported recovery package kind");
-  const canonical = realPath(root), dependencyRoot = resolve(canonical, "../../..");
+  const canonical = realPath(root);
+  // Project captures own the exact dependency and keep the registry install separate below this version.
+  if (canonical === root && /^source-[a-f0-9]{64}$/.test(basename(canonical)) && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(basename(dirname(canonical)))
+    && basename(dirname(dirname(canonical))) === "releases") return { ownDependencies: true };
+  const dependencyRoot = resolve(canonical, "../../..");
   if (canonical !== root || canonical !== join(dependencyRoot, "node_modules", "@staix", "agent-hub")) throw new Error("invalid staged recovery package path");
   return { dependencyRoot };
 }
@@ -120,6 +124,76 @@ export function recoveryTargetDigest(kind: "restart" | "upgrade", root: string):
 
 export function verifyRecoveryTarget(kind: "restart" | "upgrade", root: string, version: string): string {
   return verifyPackage(root, version, recoveryPackageOptions(kind, root));
+}
+
+const RUNTIME_ASSETS = ["src", "plugins", "templates", ".claude-plugin", "package.json", "README.md", "LICENSE", "CHANGELOG.md"] as const;
+function runtimeDirectory(directory: string): void {
+  let info;
+  try { info = lstatSync(directory); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    try { mkdirSync(directory, { mode: 0o700 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    info = lstatSync(directory);
+  }
+  if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("runtime cache must contain real directories");
+}
+
+/** Preserve the exact bounded asset set; legacy coordinators need not have a plugin identity manifest. */
+function preserveRuntimeAssets(sourceRoot: string, destination: string, expectedDigest: string, version?: string): { root: string; digest: string } {
+  const digest = (root: string, ownDependencies = false) => version === undefined
+    ? packageDigest(root, { ownDependencies }) : verifyPackage(root, version, { ownDependencies });
+  if (digest(sourceRoot) !== expectedDigest) throw new Error("source package changed before preservation");
+  runtimeDirectory(dirname(destination));
+  const cached = () => {
+    let info;
+    try { info = lstatSync(destination); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+    if (info.isSymbolicLink() || !info.isDirectory() || digest(destination, true) !== expectedDigest)
+      throw new Error(version === undefined ? "preserved source package changed" : "preserved runtime changed; refusing it");
+    return { root: realPath(destination), digest: expectedDigest };
+  };
+  const previous = cached(); if (previous) return previous;
+  const temporary = join(dirname(destination), `.source-${randomUUID()}`);
+  mkdirSync(temporary, { mode: 0o700 });
+  try {
+    for (const name of RUNTIME_ASSETS) cpSync(join(sourceRoot, name), join(temporary, name), { recursive: true, dereference: false });
+    preserveRuntimeDependencies(sourceRoot, temporary);
+    if (digest(temporary, true) !== expectedDigest || digest(sourceRoot) !== expectedDigest)
+      throw new Error("source package changed while being preserved");
+    try { renameSync(temporary, destination); }
+    catch (error) {
+      if (!["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      // A concurrent publisher may have won. Validate its complete bytes; never remove its directory.
+      const winner = cached(); if (winner) return winner;
+      throw error;
+    }
+    const published = cached();
+    if (!published) throw new Error("preserved runtime vanished after publication");
+    return published;
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+}
+
+/** Capture a verified package identity and its exact first-party dependency, never a node_modules tree. */
+export function preserveRuntimePackage(sourceRoot: string, destination: string, expectedDigest: string): { root: string; digest: string; version: string } {
+  const version = exactVersion(JSON.parse(readFileSync(join(sourceRoot, "package.json"), "utf8")).version);
+  return { ...preserveRuntimeAssets(sourceRoot, destination, expectedDigest, version), version };
+}
+
+/** Retained legacy coordinators keep their digest-only contract and still require their own exact dependency. */
+export function preserveRuntimeSource(sourceRoot: string, destination: string, expectedDigest: string): string {
+  preserveRuntimeAssets(sourceRoot, destination, expectedDigest);
+  return destination; // Legacy receipts retain the path spelling their coordinator already bound.
+}
+
+/** Ordinary startup preserves the invoking package, including unpublished builds, below its version namespace. */
+export function stageCurrentRuntime(sourceRoot: string, version: string, home = hubHome()): { root: string; digest: string; version: string } {
+  exactVersion(version);
+  const digest = verifyPackage(sourceRoot, version);
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const releases = join(realPath(home), "releases"); runtimeDirectory(releases);
+  const versionRoot = join(releases, version); runtimeDirectory(versionRoot);
+  return preserveRuntimePackage(sourceRoot, join(versionRoot, `source-${digest}`), digest);
 }
 
 export async function registryRelease(version: string, run: RunCommand = runCommand): Promise<{ version: string; integrity: string }> {
@@ -151,10 +225,18 @@ export function newerVersion(a: string, b: string): boolean {
 }
 
 /** Stage outside the mutable global install; retain successful versions for recovery. */
-export async function stageRelease(version: string, integrity: string, run: RunCommand = runCommand, home = hubHome()): Promise<{ root: string; digest: string }> {
+export async function stageRelease(version: string, integrity: string, run: RunCommand = runCommand, home = hubHome(), project = false): Promise<{ root: string; digest: string }> {
   exactVersion(version);
   const base = join(home, "releases");
-  const destination = join(base, version);
+  const versionRoot = join(base, version);
+  // Ordinary startup can create this parent before an unstaged legacy receipt resumes.
+  // An actual legacy install (even a damaged one) must retain its original path and validation.
+  if (!project && existsSync(versionRoot) && !existsSync(join(versionRoot, "verified.json")) && !existsSync(join(versionRoot, "node_modules"))) {
+    runtimeDirectory(versionRoot);
+    if (!readdirSync(versionRoot).every(name => name === "registry" || /^source-[a-f0-9]{64}$/.test(name))) throw new Error("cached release state is unknown; refusing it");
+    project = true;
+  }
+  const destination = project ? join(versionRoot, "registry") : versionRoot;
   const root = join(destination, "node_modules/@staix/agent-hub");
   if (existsSync(destination)) {
     const saved = JSON.parse(readFileSync(join(destination, "verified.json"), "utf8"));
@@ -163,6 +245,7 @@ export async function stageRelease(version: string, integrity: string, run: RunC
     return { root, digest };
   }
   mkdirSync(base, { recursive: true, mode: 0o700 });
+  if (project) runtimeDirectory(join(base, version));
   const temporary = join(base, `.stage-${randomUUID()}`);
   mkdirSync(temporary, { mode: 0o700 });
   try {

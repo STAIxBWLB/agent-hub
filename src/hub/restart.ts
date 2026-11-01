@@ -16,6 +16,8 @@ export type RecoveryPhase = "preparing" | "prepared" | "restored" | "released";
 export interface RestartPeerSnapshot {
   id: PeerId;
   state: PeerState;
+  /** Attached channel's selected wire, not the daemon descriptor's compatibility floor. */
+  controlProtocol?: number;
   queueIds: string[];
   launch?: Record<string, unknown>;
   /** Safe native correlation metadata. Never include prompt/message text here. */
@@ -98,6 +100,7 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
   } catch (error) { if (error instanceof RecoveryDeferredHubError) throw error; return undefined; }
   if (!Array.isArray(s.manualPaused) || !s.manualPaused.every((id) => typeof id === "string") || !Array.isArray(s.peers) || !s.peers.every((peer) => peer && typeof peer === "object" && typeof peer.id === "string" && ["idle", "busy", "paused", "offline"].includes(peer.state as string) && Array.isArray(peer.queueIds) && peer.queueIds.every((id) => typeof id === "string"))) return undefined;
   if (s.peers.some(peer => Object.hasOwn(peer, "externalInstance") && (peer.state !== "offline" || !validExternalInstanceBinding(peer.externalInstance, expected.projectRoot, peer.id)))) return undefined;
+  if (s.peers.some(peer => Object.hasOwn(peer, "controlProtocol") && (typeof peer.controlProtocol !== "number" || !Number.isSafeInteger(peer.controlProtocol) || peer.controlProtocol < 1))) return undefined;
   if (s.integrity !== undefined && (!s.integrity || typeof s.integrity !== "object" || typeof s.integrity.boardDigest !== "string" || typeof s.integrity.budgetDigest !== "string" || !Array.isArray(s.integrity.manualPaused) || !s.integrity.manualPaused.every((id) => typeof id === "string") || !s.integrity.queues || typeof s.integrity.queues !== "object" || !Object.values(s.integrity.queues).every((ids) => Array.isArray(ids) && ids.every((id) => typeof id === "string")))) return undefined;
   if (s.integrity && Object.hasOwn(s.integrity, "externalBindingsDigest") && (typeof s.integrity.externalBindingsDigest !== "string" || !/^[a-f0-9]{64}$/.test(s.integrity.externalBindingsDigest))) return undefined;
   if (s.integrity && Object.hasOwn(s.integrity, "research")) {

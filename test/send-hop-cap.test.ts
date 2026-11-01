@@ -7,13 +7,14 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { MAX_HOP, newEnvelope } from "../src/hub/envelope.ts";
+import { realPath } from "../src/hub/project.ts";
 
 const hopNotice = `not delivered: reply chain reached the hop cap (${MAX_HOP}); send a new message without reply_to`;
 const output = (result: Awaited<ReturnType<Client["callTool"]>>) =>
   (result.content as { type: string; text?: string }[]).filter(item => item.type === "text").map(item => item.text).join("\n");
 
 async function rig() {
-  const dir = mkdtempSync(join(tmpdir(), "ahub-hop-cap-"));
+  const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-hop-cap-")));   // the plugin compares resolved paths (#604 item 10)
   const daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
   const claude = await ControlClient.connect(dir, { role: "peer", peer: "claude", channel: false });
@@ -23,7 +24,7 @@ async function rig() {
     AGENTHUB_PEER_ID: "claude", AGENTHUB_MODE: "tools" };
   delete env.AGENTHUB_CHANNEL; delete env.AGENTHUB_DELIVERY_ONLY;
   const transport = new StdioClientTransport({ command: process.execPath,
-    args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")], env, stderr: "pipe" });
+    args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")], cwd: dir, env, stderr: "pipe" });
   let diagnostic = "";
   transport.stderr!.on("data", chunk => { diagnostic += chunk.toString(); });
   const close = async () => { await client.close(); claude.close(); kimi.close(); await daemon.stop(); rmSync(dir, { recursive: true, force: true }); };

@@ -69,7 +69,7 @@ for (const mutation of ["missing", "altered", "duplicated", "misrouted"] as cons
 });
 
 test("#478 source carries notices normally for a target without deferred-hub support", async () => {
-  const { target, client, carried, sourceNotice } = await restoredFixture(["task_cancel"]);
+  const { target, client, carried, sourceNotice } = await restoredFixture(["task_cancel", "schema_guard"]);
   expect(target.bus.queueIds("claude")).toEqual([carried.id, sourceNotice.id]);
   const inspect = await client.request({ t: "recovery", op: "inspect", expectedInstanceId: "held-target" });
   expect(inspect.recovery.integrity.current).toEqual(inspect.recovery.integrity.expected);

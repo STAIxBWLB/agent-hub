@@ -1,3 +1,4 @@
+import { realPath } from "../src/hub/project.ts";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +15,7 @@ async function until(check: () => boolean) {
 }
 
 async function rig() {
-  const dir = mkdtempSync(join(tmpdir(), "ahub-channel-pull-"));
+  const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-channel-pull-")));
   const daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
   const person = await ControlClient.connect(dir, { role: "console" });
@@ -172,7 +173,7 @@ test("real channel MCP inbox pulls a busy daemon queue and later idle sends no d
   const client = new Client({ name: "busy-channel-fixture", version: "0" }, { capabilities: {} });
   const notifications: unknown[] = [];
   client.fallbackNotificationHandler = async notification => { notifications.push(notification); };
-  const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")],
+  const transport = new StdioClientTransport({ command: process.execPath, cwd: f.dir, args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")],
     env: { ...process.env as Record<string, string>, AGENTHUB_PROJECT_DIR: f.dir, AGENTHUB_STATE_DIR: f.dir, AGENTHUB_PEER_ID: "claude", AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "peer" }, stderr: "pipe" });
   let diagnostic = "";
   transport.stderr!.on("data", chunk => { diagnostic += chunk.toString(); });

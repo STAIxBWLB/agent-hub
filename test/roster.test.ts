@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DEFAULT_CONFIG, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { peerRosterConfig, rosterAllows, staleInstanceKey, type PeerRoster } from "../src/hub/roster.ts";
 import { KNOWN_PEERS } from "../src/hub/peer-catalog.ts";
 import { newEnvelope, USER, type Envelope } from "../src/hub/envelope.ts";
@@ -329,7 +329,7 @@ test("the same Claude channel client retries removal and reconnects by itself af
   process.env.AGENTHUB_HOME = join(root, "home"); mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/config.json"), "{}");
   const hub = await legacyHub(root, false), client = new Client({ name: "roster-channel-fixture", version: "0" }, { capabilities: {} });
   const pushed: any[] = []; client.fallbackNotificationHandler = async notification => { pushed.push(notification); };
-  const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../plugins/agent-hub/server.js")], env: { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: hub.stateDir, AGENTHUB_PEER_ID: "claude", AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "peer" }, stderr: "pipe" });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../plugins/agent-hub/server.js")], env: { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: hub.stateDir, AGENTHUB_PEER_ID: "claude", AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "peer" }, cwd: root, stderr: "pipe" });
   let diagnostics = ""; transport.stderr!.on("data", chunk => { diagnostics += String(chunk); });
   const observed = async (condition: () => boolean) => { const deadline = Date.now() + 10_000; while (!condition() && Date.now() < deadline) await Bun.sleep(10); expect(condition()).toBe(true); };
   try {
@@ -563,8 +563,8 @@ test("recovery commit and release preserve an off-roster peer's retained work fo
     await first.client.request({ t: "settings_set", key: "roster.claude", value: false, confirm: "claude" });
     const original = newEnvelope("hub", "retained recovery review", { to: ["claude"], kind: "review", priority: "important" }); first.daemon.bus.publish(original);
     const instance = (await first.client.request({ t: "status" })).status.instanceId;
-    expect((await first.client.request({ t: "recovery", op: "prepare", operationId: "roster-recovery", expectedInstanceId: instance })).recovery.phase).toBe("prepared");
-    expect((await first.client.request({ t: "recovery", op: "commit", operationId: "roster-recovery", expectedInstanceId: instance })).committed).toBe(true);
+    expect((await first.client.request({ t: "recovery", op: "prepare", operationId: "roster-recovery", expectedInstanceId: instance, targetFeatures: DAEMON_FEATURES })).recovery.phase).toBe("prepared");
+    expect((await first.client.request({ t: "recovery", op: "commit", operationId: "roster-recovery", expectedInstanceId: instance, targetFeatures: DAEMON_FEATURES })).committed).toBe(true);
     await first.daemon.stopped;
     const recovery = process.env.AGENTHUB_RECOVERY_OPERATION;
     try { process.env.AGENTHUB_RECOVERY_OPERATION = "roster-recovery"; second = await legacyHub(root, false, { claude: false }); }

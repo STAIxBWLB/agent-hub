@@ -143,7 +143,7 @@ test("a Jcode ACP transport exit closes its owned daemon and leaves no private s
 });
 
 test("the configured Jcode MCP SDK bridge reaches this project's tools as jcode (#332)", async () => {
-  const dir = root(), stateDir = join(dir, "state"), home = join(dir, "home"); mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
+  const dir = realPath(root()), stateDir = join(dir, "state"), home = join(dir, "home"); mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");   // the plugin compares resolved paths (#604 item 10)
   const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, jcode_cmd: [process.execPath, join(import.meta.dir, "fakes/jcode-instance-agent.ts"), "--record", join(dir, "launch.jsonl")], jcode_home: home, roster: { jcode: true }, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } }); cleanups.push(() => daemon.stop());
   configureJcodeMcp(dir, stateDir, join(import.meta.dir, "../plugins/agent-hub/server.js"));
@@ -153,7 +153,7 @@ test("the configured Jcode MCP SDK bridge reaches this project's tools as jcode 
   const owned = readFileSync(join(dir, "launch.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line)).find(row => row.kind === "launch" && row.role === "acp");
   const entry = JSON.parse(readFileSync(join(dir, JCODE_MCP_FILE), "utf8")).mcpServers[JCODE_MCP_NAME];
   // #685: the shared entry names no peer; the owned ACP child's process env supplies it (peerChildEnv), and jcode merges the two.
-  const transport = new StdioClientTransport({ command: entry.command, args: entry.args, env: { ...process.env, AGENTHUB_PEER_ID: "jcode", AGENTHUB_LAUNCH_ID: owned.launch, ...entry.env }, stderr: "pipe" });
+  const transport = new StdioClientTransport({ command: entry.command, args: entry.args, env: { ...process.env, AGENTHUB_PEER_ID: "jcode", AGENTHUB_LAUNCH_ID: owned.launch, ...entry.env }, cwd: dir, stderr: "pipe" });
   let diagnostics = ""; transport.stderr?.on("data", data => { diagnostics += String(data); });
   const client = new Client({ name: "fixture", version: "1" }); cleanups.push(() => client.close());
   await client.connect(transport);

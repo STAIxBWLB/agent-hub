@@ -112,7 +112,7 @@ test("Kimi's MCP child exposes inbox without completion and round-trips queued k
   const delivered: any[] = []; receiver.onPush = message => { if (message.t === "deliver") delivered.push(...message.envs); };
   const env = nativeLaunchEnv("kimi", { ...process.env, AGENTHUB_MODE: "tools", AGENTHUB_CHANNEL: "1" });
   expect(env.AGENTHUB_MODE).toBeUndefined(); expect(env.AGENTHUB_CHANNEL).toBeUndefined();
-  const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")], env: { ...env as Record<string, string>, AGENTHUB_STATE_DIR: hub.stateDir, AGENTHUB_PROJECT_DIR: hub.cwd }, stderr: "pipe" });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")], env: { ...env as Record<string, string>, AGENTHUB_STATE_DIR: hub.stateDir, AGENTHUB_PROJECT_DIR: hub.cwd }, cwd: hub.cwd, stderr: "pipe" });
   let diagnostics = ""; transport.stderr?.on("data", data => { diagnostics += String(data); });
   const client = new Client({ name: "kimi-pull-fixture", version: "0" }, { capabilities: {} });
   cleanups.push(() => client.close());

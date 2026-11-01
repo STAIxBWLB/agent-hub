@@ -7,7 +7,7 @@ agent-hub connects agents that can each run commands. This page says what the hu
 - **Other agents' text is untrusted.** Every message that crosses from one peer to another is framed as untrusted input: a channel tag with `meta.source` for Claude started with `ahub claude`; otherwise a fixed header line (`frame()`, `[agent-hub message from ...]`) with an instruction that says it is untrusted, the plugin's server instructions for a tools-only Claude reading `hub_inbox` and a standing instruction for the others. A message body cannot forge the hub's own headers: such lines are quoted (`sanitize`). Replies inherit a hop count capped at 3, so agents cannot ping-pong forever; neither a digest nor a steer can reset it.
 - **The control link is loopback plus a secret.** The daemon and the Codex proxy bind 127.0.0.1 only. The control WebSocket requires a per-run token (`.agenthub/state/control-token`, mode 600), and both servers refuse any request that carries an `Origin` header: any web page can open a WebSocket to localhost, and browsers always send `Origin`. The bearer header a Codex TUI sends to the proxy carries only the terminal launch id (#586): it binds terminal ownership and is not a credential. External clients cannot claim the console user's id or a hub-managed peer's id.
 - **Permission prompts stay on unless an operator selects a permission mode.** `ask` leaves native decisions unchanged. `ask-when-needed` grants scoped Claude file tools or Pi/local writes and edits, and a headless Claude implementer's proven shell commands through the host wrapper (#845, below); Kimi and Codex use their own native policies. `never-ask` requires explicit runtime confirmation, a person's console `y` for a config default at hub start, or retained autonomy consent bound to that peer's exact never-ask value in the untracked `config.local.json` (#999, below). Without one of these the peer runs in `ask`. Kimi's and `local`'s permission requests are relayed to the console and cancelled after `approvals.timeout_s` (default 120 s) of silence; the macOS notification for a waiting request carries the peer and the tool name only. The one exception is the hub's own tools (`hub_send` and the task tools, matched by exact name): Kimi's requests for them are approved once without a prompt and logged by name, the same trust Codex gets through `approval_mode` in the hub's config. They invoke hub-owned operations rather than arbitrary file or shell tools, and every call passes the hub's own checks. A call the always-ask policy classes (below) is never approved this way, whatever its title. Identity comes from the exact permission title, or from the earlier tool-call title bound to the same call id and resolved against the configured MCP servers when the permission title contains argument JSON (Qwen). Payload text and unrelated display titles never establish identity. Configured ACP kinds (#451) never get this exception: a request whose title spells a hub tool exactly still goes to the person approval path, and only a mapped native mode changes what the agent itself asks. For ACP agents, a payload longer than the console shows is marked as cut and never offers a session-wide grant. Pi's write, edit, shell and git write requests are relayed the same way and can be answered `Always allow <tool> until Pi restarts`: later calls of that tool by the same Pi start skip the prompt but stay inside the path guard and sandbox. The grant covers every later call of that tool whatever its payload, is kept in memory only, cannot be given from the dashboard, and each call it allows is logged by tool name. A Pi or `local` request whose call was cancelled or whose turn ended is withdrawn at once: a later answer is refused and grants nothing, an `Always allow` included. One shell command runs without a hub approval: the `!command` a person types in the managed Pi TUI. It stays inside the same sandbox and denylist, and the hub takes it only from the verified owner process of a Pi in TUI mode, while Pi is idle, on a reservation that is used once; a model's own bash call never takes that path (issue #253). `--unattended` turns prompts off, says so loudly, and is never the default; a classed call from a hub-owned ACP peer, the local worker or Pi still waits for a person under it.
-- **A committed config cannot choose launch commands, credential files, data endpoints, permission modes or a wider sandbox.** The machine-local fields (`kimi_cmd`, `permission_modes`, `codex_bin`, `pi.cmd`, `checks`, `mlx.bin`, `mlx.runtimeDir`, `mlx.modelPath`, `omniroute.urls`, `omniroute.access_hosts`, the `omniroute` key files, `memory.worker_url` (still accepted, ignored since 0.16.0), `local.read_allow`, `local.bash_network`, `local.network_allow`, `local.doc_read`, `local.web_fetch`, `terminal.open`, `tasks.auto_pull`, `tasks.queue_backpressure`, `context.max_assignment_used`, `schedules`, `folder_triggers`, `corpus.paths`, `invocation`, `instances`, `action_policy`, `rooms`) apply only from a config file git confirms nobody committed (`instances`, `action_policy` and `rooms` are read only from an untracked `.agenthub/config.local.json`; in `config.json` they are ignored even when untracked): `.agenthub/config.json` or `.agenthub/config.local.json`, matched by file identity so no other spelling the file system accepts slips past, and `.agenthub` itself not a committed symlink or submodule. Without a repository, or when git fails, they keep their defaults; an empty value always means the default. "Untracked" is answered by the repository that contains the project: a checkout copied or extracted into an unrelated repository, or into an ignored directory of one, is trusted like your own files. So a cloned repository cannot choose a launch command, a completion check, a gateway to send a key file to, a memory endpoint, a permission mode, the command that opens a terminal, a folder the hub reads, work proposed on a timer, a host a model may fetch from, which of your agents' skills other peers may call, or a wider sandbox. A command in `checks` runs as you, outside the local worker's sandbox, like a git hook. So do the `setup` and `verify` commands of a benchmark suite (issue #251): `ahub bench run <suite.json>` is a person's command, refused from an agent session, and it resets the work tree for each attempt, so it runs only with `bench.enabled`, at the root of a clean repository that tracks nothing under `.agenthub/`. Nothing in `routing.toml` or in task text is ever run. `routing.toml` and the other shared fields still come from the checkout, and they matter: `routing.toml` picks the models the local worker and the hub's inference use at your gateway and can turn the PII constraint off, and roles and budget shape who does what. Review them in a repository you do not trust. The hub's own git calls outside the sandbox (snapshots, facts, config trust, project discovery, memory recall, the bench runner) all use the single hardened implementation in the exact-pinned first-party `@staix/agent-mem/platform` package, re-exported by `src/hub/git.ts`, which disables the programs a repository's configuration can name — the file-system monitor, hooks, external diff, the pager, and the credential and askpass helpers, with prompts failing closed — so a config that ever does get written cannot run code with the hub's rights. Of those, the monitor, hooks and external diff are reachable by commands the hub issues (the planted-program test exercises all three; a `diff --no-index` reads the repo's config, so that call also passes `--no-ext-diff` and `--no-textconv`); the pager is not (every call pipes stdout). Credential and askpass helpers are disabled for project repositories; memory sync alone may use credentials for its own memory repository, without prompts. The cost: `core.fsmonitor=false` also turns off a person's enabled built-in monitor for the hub's own calls, so the per-turn snapshot's `add -A` scans the whole tree (the snapshot Git calls of one burst share a 250 ms budget, each call at most 10 s; a boundary that runs out is recorded as unknown, never as a stale baseline) (#576). git has no global switch for filter drivers, and of the hub's commands only the snapshot's `add`/`restore` would run one (its driver command lives in the protected `.git/config`).
+- **A committed config cannot choose launch commands, credential files, data endpoints, permission modes or a wider sandbox.** The machine-local fields (`kimi_cmd`, `permission_modes`, `codex_bin`, `pi.cmd`, `checks`, `mlx.bin`, `mlx.runtimeDir`, `mlx.modelPath`, `omniroute.urls`, `omniroute.access_hosts`, the `omniroute` key files, `memory.worker_url` (still accepted, ignored since 0.16.0), `local.read_allow`, `local.bash_network`, `local.network_allow`, `local.doc_read`, `local.web_fetch`, `terminal.open`, `tasks.auto_pull`, `tasks.queue_backpressure`, `context.max_assignment_used`, `schedules` (the `every`, `cron` and `tz` forms alike), `folder_triggers`, `corpus.paths`, `invocation`, `instances`, `action_policy`, `rooms`) apply only from a config file git confirms nobody committed (`instances`, `action_policy` and `rooms` are read only from an untracked `.agenthub/config.local.json`; in `config.json` they are ignored even when untracked): `.agenthub/config.json` or `.agenthub/config.local.json`, matched by file identity so no other spelling the file system accepts slips past, and `.agenthub` itself not a committed symlink or submodule. Without a repository, or when git fails, they keep their defaults; an empty value always means the default. "Untracked" is answered by the repository that contains the project: a checkout copied or extracted into an unrelated repository, or into an ignored directory of one, is trusted like your own files. So a cloned repository cannot choose a launch command, a completion check, a gateway to send a key file to, a memory endpoint, a permission mode, the command that opens a terminal, a folder the hub reads, work proposed on a timer, a host a model may fetch from, which of your agents' skills other peers may call, or a wider sandbox. A command in `checks` runs as you, outside the local worker's sandbox, like a git hook. So do the `setup` and `verify` commands of a benchmark suite (issue #251): `ahub bench run <suite.json>` is a person's command, refused from an agent session, and it resets the work tree for each attempt, so it runs only with `bench.enabled`, at the root of a clean repository that tracks nothing under `.agenthub/`. Nothing in `routing.toml` or in task text is ever run. `routing.toml` and the other shared fields still come from the checkout, and they matter: `routing.toml` picks the models the local worker and the hub's inference use at your gateway and can turn the PII constraint off, and roles and budget shape who does what. Review them in a repository you do not trust. The hub's own git calls outside the sandbox (snapshots, facts, config trust, project discovery, memory recall, the bench runner) all use the single hardened implementation in the exact-pinned first-party `@staix/agent-mem/platform` package, re-exported by `src/hub/git.ts`, which disables the programs a repository's configuration can name — the file-system monitor, hooks, external diff, the pager, and the credential and askpass helpers, with prompts failing closed — so a config that ever does get written cannot run code with the hub's rights. Of those, the monitor, hooks and external diff are reachable by commands the hub issues (the planted-program test exercises all three; a `diff --no-index` reads the repo's config, so that call also passes `--no-ext-diff` and `--no-textconv`); the pager is not (every call pipes stdout). Credential and askpass helpers are disabled for project repositories; memory sync alone may use credentials for its own memory repository, without prompts. The cost: `core.fsmonitor=false` also turns off a person's enabled built-in monitor for the hub's own calls, so the per-turn snapshot's `add -A` scans the whole tree (the snapshot Git calls of one burst share a 250 ms budget, each call at most 10 s; a boundary that runs out is recorded as unknown, never as a stale baseline) (#576). git has no global switch for filter drivers, and of the hub's commands only the snapshot's `add`/`restore` would run one (its driver command lives in the protected `.git/config`).
 - **Telemetry holds no bodies.** `.agenthub/state/events.jsonl` (issue #40) records envelope ids, routing and sizes, task ids and states, overlapping paths and token counts, and the task id (with a PII flag) that each usage and token record is attributed to. It never records a message body, a task title or detail, and marks private (PII) envelopes and tasks as such. Budget pauses, resumes and quota resets carry the peer, window, times and the hub's own reason text, and a person's release authorization its commit, version and docs digest. The usage roll-up (#683) folds the usage, token and limit records into `hub.db` and joins issue, PR and release from the board when read; `ahub usage` and the console's Usage panel answer only the console and a configured planner, and a planner not during a private turn. Kimi's token records (#285) are counted from its own session wire log under its home: only the four token integers, the model label and the row time are copied, and the record id is an opaque hash, never a path, session id or text. The log stays on the machine; `ahub export` only prints it. Two opt-in stores copy numbers from it into your home directory, shared by every project on the machine (directories mode 700, files 600): research records (issue #247, `research.enabled`) in `~/.agenthub/research/` hold per approved task the ids, states, counts, tokens, times and PII flag the events hold, a person's label from a closed list, and a hash in place of the project id; benchmark runs (issue #251) in `~/.agenthub/bench/` hold suite name and hash, arm label, the attached peers' ids, models and permission modes, task ids, outcomes, exit codes, counts, tokens and times, never suite text or a command's output.
 - **Snapshots stay in your repository.** Per-turn snapshots (issue #33) are git objects in the project's own object store, written through a temporary index; nothing is referenced, pushed or copied elsewhere, and `git gc` prunes them. They hold what the work tree held, including untracked files that are not ignored, so keep secrets in ignored files. They carry the repository's own permissions, and nothing caps their disk use but `git gc`. A turn of a peer holding an open PII task is not snapshotted; a PII file left in the project is snapshotted by later turns like any other file. `ahub undo` restores only files whose current content is exactly what the turn left.
 - **The edit hook reads, never decides.** `ahub check-path --hook` (issue #32) reads hub.db and returns context for Claude and a line for you; it sets no permission decision, so your permission rules stay in charge. It names other owners' task ids, titles and states, which then reach Claude's model; PII tasks are left out.
@@ -417,6 +417,33 @@ This is an honest default against accidental impersonation and injected commands
 It does not make the token inaccessible to an agent with unrestricted project
 shell access. The existing OS sandbox and loopback authentication boundaries apply.
 
+Distinguishable sessions and sender provenance (#1036, #1037) make a mix-up
+between two sessions of one person visible; they are not authentication. A tools
+hello that names a Claude channel peer while presenting a launch id that is not
+that peer's current launch record, or that asks to be a session (the channel
+plugin does when its process has no project of its own and inherited another
+project's state directory), is bound to an id the daemon mints, `<peer>~<origin>`.
+Such a session may send, read status and run the read task ops in
+`SESSION_READ_OPS`; every other message is refused with `this session is <id>,
+not this project's <peer>`. It is never a bus peer: no delivery, no push, none of
+the peer's roles, and it replaces nobody. Its envelopes carry `session: true` and
+recipients see the minted id in the header; an origin label is kept only when it
+already is a plain lowercase token, so no path or sentence reaches a sender name.
+Every envelope event and one `attach` event per admitted peer or tools hello in
+`events.jsonl` carry `origin`: the connection's role, peer and launch or instance
+id, never a path, cwd, token or body. The channel plugin applies the CLI's
+ownership proof to an inherited `AGENTHUB_STATE_DIR` instead of trusting it, and
+does not join a hub whose `status.json` lacks `session_identity` as a session,
+since that hub would bind the real peer id. What this does not guarantee: a hello
+with no launch id still becomes the peer (the native facts hook, helpers and a
+person's shell connect that way), a launch id is an environment value every child
+of the session inherits, not a secret, and a same-user process that reads the
+control token can present the right id, present none, or connect as the console.
+Nothing that connected before is refused. A recipient weighs a `<peer>~<origin>`
+sender as another session's message; a plain peer id proves no more than it did
+before. A restart, upgrade or recovery onto a daemon without `session_identity`
+is refused while an unsettled delivery holds a session's message.
+
 Steering tools require an explicit `conductor` role, independent of default-allow
 capabilities. Only one peer may hold that role. Two task-scoped exceptions need
 no role: a task's current owner and reviewer may read its public view with
@@ -564,6 +591,42 @@ The manager can start registered hubs in attended mode. Its project launches do
 not inherit state, unattended or gateway URL/key overrides from the session that
 opened the manager. Native memory is deliberately not a project-isolation boundary:
 its existing basename/worktree aliases and provider accounts can remain shared.
+
+## acon console plugin (#935, #1012)
+
+`@staix/agent-hub/ui-plugin` runs inside the agent-console (`acon`) process as the
+same user. It holds no credential of its own: it reaches project hubs only through
+the multi-project manager's listing and forwarding above, which connect as the
+console with each project's control token, so it has exactly what `ahub ui --all`
+has. Every action must be on the manager's closed list and every view one of the
+seven view names, and there is no generic control proxy, task-detail read, shell,
+file access or caller-chosen command.
+
+- **Registration.** `ahub setup` writes `console/plugins/ahub.json` under the hub
+  home (directory 0700, file 0600, atomic replace) with the module path and its
+  sha256; acon refuses to load a module whose hash no longer matches.
+- **Confirmation.** Outward or destructive actions (`stop`, `permit`, `send`,
+  `setting`, `setting_undo`, `setting_reload`, `config_edit_apply`, `start_peer`,
+  `backlog_split` and the inbox's Allow once and Deny) first answer `needsConfirm`
+  with a preview and a fingerprint, a sha256 of the request's own fields; the call
+  runs only when it comes back with `confirmed` and that fingerprint. The
+  fingerprint binds a confirmation to one exact request, so a changed request needs
+  a new confirmation; it is not a secret, and the confirm step is acon's host UI
+  contract, not authentication. A process that can load the module already has the
+  console's reach, and the hostile-agent boundary above applies unchanged.
+- **Inbox.** Items are the pending approvals and the in-review tasks whose reviewer
+  is the person, read from the same redacted dashboard snapshot: a local-worker or
+  Pi approval shows only the fixed private stub and offers Deny, and Allow once for
+  it is refused with "answer this approval with ahub permit". Allow once and Deny
+  resolve to the hub's own `permit` with an option the pending request offers,
+  looked up again at the time of the call; nothing else is reachable from an item.
+  Task titles are the public view's, so a PII task shows the `[pii]` stub.
+- **Space.** The Space scene is built only from the office model the dashboard
+  already allowlists (#264): peer ids, conditions and counts, task ids, classes,
+  states, owners and public titles, approval counts, and overlap, conflict, cohort
+  and message link ids. No envelope body, task detail, approval title, reason, path
+  or symbol reaches it, a PII task never joins a link, and the scene is trimmed to
+  acon's caps. `test/acon-plugin.test.ts` pins this with a marker fixture.
 
 ## Peer roster authority
 
@@ -759,6 +822,95 @@ Deliverable records (#509a). `hub_task_done` and `hub_sdlc_record` name files as
 Person release authorization (#481 S6). `ahub sdlc authorize-release <version>` is taken from the console role only and refused under `--live-test`. It binds the daemon checkout's commit, package version, push remote identity and a fresh-docs verdict, lives only in daemon memory (a restart revokes it) and is logged with its commit, version and docs digest. `ahub sdlc release-guard -- <argv>` is a read-only preflight that agents may run, except during a private or PII turn; it never executes the command and refuses ambient target selectors (`GIT_DIR`, `GH_REPO`, npm prefix and registry settings and the like). The pre-push hook that `ahub init --release-guard` installs refuses an unauthorized or unknown `v*` tag push, also with the daemon down, and passes other pushes through. It and the release block in `AGENTS.md` are a cooperative guard, not an operating-system boundary: `git push --no-verify`, a custom `core.hooksPath` or another Git invocation bypasses the hook, and `gh release create` and `npm publish` are checked only when the preflight is run (tasks 312 and 313).
 
 SDLC metrics and control bands (#481 S7). `ahub sdlc metrics` and `hub_sdlc_metrics` are planner or person only, read-only, and refused during a private or PII turn. A private task is counted as withheld and read for nothing else; the report calls no model and makes no GitHub read. Band breaches are written only by the daemon's evaluator through Tasks, never while it is stopping, recovering or has a storage error. A `diagnose` or `propose` card is a backlog task (`triage` or `plan`) whose text is fixed words, numbers and task ids, never task text; it passes the PII signal check and the candidate-text screen before it is written, and no GitHub issue is created. A `log` breach is one hub notice, remembered in the board's `band_notices` table as a marker (`<metric>:#<task>:log`, checked against a fixed pattern) and a time, nothing else.
+
+## Research campaigns and study tools (#930, #932)
+
+Campaign authority is the person's. `ahub study draft|revise|approve|approve-protocol|close`
+are Console in `classifyPeerCommand`, and the daemon answers the `study_*` operations
+to the console role only; `ahub study show` is the only form an agent shell may run.
+Agents use hub tools instead: `hub_study_draft` and `hub_study_revise` take the
+configured planner's planning authority and store drafts only, `hub_study_show` is
+read-only for every connection, and `hub_study_handoff` takes only the current
+in-progress owner of the bound unit task. No tool approves a campaign or a protocol,
+closes a campaign or attests anything, and a unit's `purpose` or a research role
+grants no authority: dispatch, ownership and review use the existing routing and
+role admission.
+
+- **Approval creates work, nothing else does.** Only the person's `ahub study approve`
+  creates unit tasks, as Backlog cards the planner offers through its ordinary pull.
+  The approval revalidates and screens the revision before a single transaction
+  that rechecks it is still the latest draft; a changed campaign, task or
+  dependency refuses whole. A campaign never assigns an owner or approves a task.
+- **Dispatch is rechecked at the write.** Before a unit task is offered, assigned,
+  pulled or handed to another owner, after any asynchronous screen, the hub rereads
+  the stored campaign and holds the task when the revision is not the latest
+  approved one, the deadline has passed or the stored stop policy is exceeded. A
+  contract's `budget.hardCap` is checked against that exact budget id at approval
+  and again at every dispatch and owner change; another budget covering the task
+  proves nothing. A hold never stops a running native turn.
+- **Provenance is never upgraded.** Experiment fields are `declared` unless the hub
+  measured them itself from a finished check receipt for the same task and commit,
+  or by hashing a deliverable through the #509 path policy; an agent-supplied hash
+  is never host evidence. `ahub study approve-protocol` binds approval to one exact
+  protocol hash and evaluator identity hash, and nothing copies it to a changed
+  protocol. Environment descriptors are refused when they contain assignment
+  forms, Bearer credentials or known secret shapes; that screen detects those forms
+  only and does not prove a secret is absent. This release exposes no hub tool for
+  recording experiments, and runner attestation (`research.runners`) is not
+  implemented yet.
+- **Privacy.** A campaign whose parent task is PII, or that names a private source,
+  is private, and so is an attempt with a private task, input or output path.
+  Public views keep ids, counts, states and provenance and stub every question,
+  scope, text, path, excerpt and metric name as `[pii]`; source text is never stored
+  in a campaign or handoff, only source ids. Study tool arguments and results are
+  excluded from hub-managed memory capture, and raw contract, handoff and attempt
+  text never enters task history, notices or memory.
+- **Recovery.** A restart, upgrade or recovery onto a daemon lacking the matching
+  `research_*` feature is refused while campaign, dispatch, re-offer, experiment or
+  comparison rows exist, or while `research.runners` is configured.
+
+## Cross-project task handoff (#604, #1030)
+
+A handoff crosses a project boundary, but not a security boundary: both projects
+belong to the same machine user. The origin daemon reads the target's control
+token file and connects to the target's daemon as the `console` role through
+`ControlClient`, like every control message; the hello checks the target's project
+root and instance. It sends that connection only the three handoff messages, and
+it has no reach a same-user process lacks (see "What is not defended").
+
+- **Who may hand off.** `ahub task handoff` is Console in `classifyPeerCommand`;
+  agents use `hub_task_handoff`, admitted for the person, a configured planner or
+  the conductor only, and never for a remote room peer. The target is chosen only
+  from the machine registry by canonical root or id, this project is refused, and
+  the target's own `status.json` must advertise `task_handoff` and name no other project. A target
+  that is not running is refused with the action; nothing is queued.
+- **No authority in the target.** The target answers `task_handoff`,
+  `task_handoff_event` and `task_handoff_states` to a console connection only, and
+  refuses a new handoff while it recovers or shuts down. The task is an ownerless proposal
+  its own hub makes and routes. The origin project and peer are a record in
+  `task_handoff_origin` and a line at the end of the detail, never an actor, a
+  roster peer or a role: the origin cannot accept, review, approve, assign or
+  cancel there.
+- **What crosses.** To the target: a title (300 characters), a class, a detail
+  (4,000), up to 16 repository-relative paths, a spec issue number, and the origin
+  project id, peer id and task id, at most 8 KiB in all. The request is parsed
+  closed on both sides: an unknown field, an accessor or a control character is
+  refused, never dropped, and the target sanitizes before it stores. No memory,
+  evidence, turn content or task history crosses. Back to the origin: an event
+  name, a PR number and a full 40-hex head, never the target's title, notes or
+  other text; the restart catch-up answers only for tasks whose recorded origin
+  is the asking project, with the same fields. The origin peer gets that as a
+  hub-written `kind: task` message.
+- **Privacy.** The origin refuses during a private turn and for a `[pii]` task
+  named as the source, before anything leaves. The text itself is checked by the
+  target, against the target's PII patterns and, when the target's model screen is
+  on, that screen under the target's routing; a match or an uncleared verdict
+  refuses the whole handoff and nothing is stored on either board. The origin's
+  own patterns are not applied to the text, so keep private text out of a handoff.
+  `hub_task_handoff` and `hub_task_handoffs` arguments and results are excluded
+  from hub-managed memory capture.
+- **Recovery.** A restart, upgrade or recovery onto a daemon lacking
+  `task_handoff` is refused while either handoff table holds a row.
 
 ## Bounded task specs and isolated checks (#418)
 

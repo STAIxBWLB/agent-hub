@@ -10,11 +10,12 @@ import { SDLC_STAGES } from "../src/hub/sdlc.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
+import { realPath } from "../src/hub/project.ts";
 import { startFakeModelServer } from "./fakes/model-server.ts";
 const cleanup: (() => unknown)[] = []; afterEach(async () => { for (const f of cleanup.splice(0).reverse()) await f(); });
 const ids = ["question", "draft", "approve", "publish"];
 function root() {
-  const dir = mkdtempSync(join(tmpdir(), "ahub-lifecycle-native-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); mkdirSync(join(dir, ".agenthub"));
+  const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-lifecycle-native-"))); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); mkdirSync(join(dir, ".agenthub"));
   writeFileSync(join(dir, ".agenthub/sdlc.toml"), 'mode = "advise"\nstages = ["question", "draft", "approve", "publish"]\n[definitions.question]\nbase = "plan"\n[definitions.draft]\nbase = "implement"\n[definitions.approve]\nbase = "review"\n[definitions.publish]\nbase = "merge"\n');
   return dir;
 }
@@ -39,7 +40,7 @@ test("every managed MCP surface advertises the project lifecycle ids in its real
     Object.assign(env, { AGENTHUB_PROJECT_DIR: dir, AGENTHUB_STATE_DIR: join(dir, "state"), AGENTHUB_PEER_ID: peer });
     if (mode === "channel") env.AGENTHUB_CHANNEL = "1"; if (mode === "tools") env.AGENTHUB_MODE = "tools";
     const client = new Client({ name: "lifecycle-schema-fixture", version: "1" });
-    const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, entry)], env, stderr: "pipe" });
+    const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, entry)], cwd: dir, env, stderr: "pipe" });
     try {
       await client.connect(transport); const tools = await client.listTools();
       const schema = tools.tools.find(t => t.name === "hub_sdlc_record")?.inputSchema.properties?.receipt as { properties: { stage: { enum: string[] } } };
@@ -76,7 +77,7 @@ test("an enabled lifecycle advertises the criteria checklist even with the #257 
     Object.assign(env, { AGENTHUB_PROJECT_DIR: dir, AGENTHUB_STATE_DIR: join(dir, "state"), AGENTHUB_PEER_ID: "codex", AGENTHUB_MODE: "tools" });
     const client = new Client({ name: "lifecycle-criteria-fixture", version: "1" });
     try {
-      await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, entry)], env, stderr: "pipe" }));
+      await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, entry)], cwd: dir, env, stderr: "pipe" }));
       const receipt = (await client.listTools()).tools.find(t => t.name === "hub_sdlc_record")?.inputSchema.properties?.receipt as { properties: Record<string, unknown> };
       return Object.keys(receipt.properties);
     } finally { await client.close(); }

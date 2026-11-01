@@ -6,13 +6,14 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { realPath } from "../src/hub/project.ts";
 import { configureJcodeMcp, JCODE_MCP_FILE, JCODE_MCP_NAME } from "../src/cli/jcode-mcp.ts";
 
 // issue #685 (scope update 2) and #368: extra Jcode instances started through the daemon. The person authenticates inside Jcode;
 // the hub passes -p, -m and --provider-profile as written, and a hub-tools socket is admitted only for an owned launch.
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-const root = () => { const dir = mkdtempSync(join(tmpdir(), "ahub-jcode-inst-d-")); cleanups.push(() => rmSync(dir, { recursive: true, force: true })); return dir; };
+const root = () => { const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-jcode-inst-d-"))); cleanups.push(() => rmSync(dir, { recursive: true, force: true })); return dir; };
 const fake = [process.execPath, join(import.meta.dir, "fakes/jcode-instance-agent.ts")];
 const bundle = join(import.meta.dir, "../plugins/agent-hub/server.js");
 const rows = (file: string) => readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
@@ -151,7 +152,7 @@ test("the shared MCP server run with no AGENTHUB_PEER_ID refuses every hub tool 
   const run = async (env: Record<string, string | undefined>) => {
     const clean = { ...process.env } as Record<string, string | undefined>;
     for (const name of ["AGENTHUB_PEER_ID", "AGENTHUB_LAUNCH_ID", "AGENTHUB_CHANNEL", "CLAUDECODE"]) delete clean[name];
-    const transport = new StdioClientTransport({ command: entry.command, args: entry.args, env: Object.fromEntries(Object.entries({ ...clean, ...entry.env, ...env }).filter(([, v]) => v !== undefined)) as Record<string, string>, stderr: "pipe" });
+    const transport = new StdioClientTransport({ command: entry.command, args: entry.args, env: Object.fromEntries(Object.entries({ ...clean, ...entry.env, ...env }).filter(([, v]) => v !== undefined)) as Record<string, string>, cwd: dir, stderr: "pipe" });
     let diagnostics = ""; transport.stderr?.on("data", data => { diagnostics += String(data); });
     const client = new Client({ name: "fixture", version: "1" }); cleanups.push(() => client.close());
     await client.connect(transport);

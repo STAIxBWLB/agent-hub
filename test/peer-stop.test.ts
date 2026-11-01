@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
-import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
+import { ControlClient, DAEMON_FEATURES, PROTOCOL } from "../src/hub/control-client.ts";
 import { endPlannedPeer } from "../src/cli/upgrade-runtime.ts";
 import type { Inspection, PlannedProject, RecoveryPeer } from "../src/cli/upgrade.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
@@ -150,7 +150,7 @@ test("peer_stop refuses native terminals, unknown peers and tools-role callers w
 
 test("a prepared recovery refuses peer_stop and aborting it restores the stop path (#278)", async () => {
   const h = await rig(), local = await h.start("local"), operationId = crypto.randomUUID();
-  expect((await h.console_.request({ t: "recovery", op: "prepare", expectedInstanceId: h.instanceId, operationId })).ok).toBe(true);
+  expect((await h.console_.request({ t: "recovery", op: "prepare", expectedInstanceId: h.instanceId, operationId, targetFeatures: DAEMON_FEATURES })).ok).toBe(true);
   const denied = await h.console_.request({ t: "peer_stop", peer: "local" }); expect(denied.ok).toBe(false); expect(denied.error).toContain("finish the operation");
   expect(local.state).toBe("idle");
   expect((await h.console_.request({ t: "recovery", op: "abort", expectedInstanceId: h.instanceId, operationId })).ok).toBe(true);

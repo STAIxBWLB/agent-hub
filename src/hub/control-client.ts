@@ -2,16 +2,27 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { projectContext } from "./project.ts";
 import { externalAdapterMetadata, externalInstanceCatalog, type ExternalInstanceCatalog, type ExternalAdapterMetadata } from "../adapters/external-metadata.ts";
+import { negotiateProtocol, protocolWindow, type ProtocolWindow } from "./protocol-window.ts";
 
 export function stateDirFor(cwd: string): string {
   return projectContext(cwd).stateDir;
 }
 
 /** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap; 8 = controlled recovery; 9 = Pi bridge metadata; 10 = durable delivery receipts; 11 = queue hold diagnostics; 12 = generation-bound channel settlement and execution budgets; 13 = turn-free facts (`facts` with tool, session and transcript binding, `silenced`) and per-recipient send results (issue #108). 14 = native context-window status and session-bound context checkpoint request ids (issue #185). 15 = conductor tools and permission deadlines/closed events (issues #190, #194). 16 = a Claude session without channel evidence: hello `channel: false` and `inbox` (issue #205). The plugin is installed apart from the daemon, so they can drift. */
-export const PROTOCOL = 16;
-export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons"] as const;
+export const PROTOCOL = 17;
+/** The descriptor's legacy protocol field remains this floor for previous published clients. */
+export const PROTOCOL_MIN = 16;
+export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "task_handoff", "session_identity", "schema_guard"] as const;
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
-export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL] as const;
+export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, 16, PROTOCOL] as const;
+
+/** Modern descriptors advertise their maximum separately; old descriptors represent singleton windows. */
+export function controlProtocolWindow(descriptor: { protocol?: unknown; protocolMin?: unknown; protocolMax?: unknown }): ProtocolWindow | undefined {
+  const legacy = protocolWindow(descriptor.protocol);
+  const window = protocolWindow(descriptor.protocolMax ?? descriptor.protocol, descriptor.protocolMin ?? descriptor.protocol);
+  if (!legacy || !window || legacy.v < window.vMin || legacy.v > window.v) return undefined;
+  return window;
+}
 
 /** Only a launch retries transient transport failures. Refusals and identity mismatches
  * remain terminal; every attempt rereads the descriptor and applies the instance pin. */
@@ -42,6 +53,12 @@ export interface Hello {
   launchId?: string;
   /** Optional canonical native execution cwd; ownership requires independent host proof. */
   cwd?: string;
+  /**
+   * agent-hub#1036: the plugin has no project of its own and its inherited state directory belongs to another project. It asks to join as a distinct session; the value is the origin label
+   * (possibly empty). The daemon mints `<peer>~<label>` for it and never binds the peer id it names. A daemon without the `session_identity` feature ignores the field, so a client checks
+   * `features` in `status.json` before sending it.
+   */
+  session?: string;
   /** Reclaim after replacement, never an intentional initial takeover. */
   standby?: boolean;
   projectId?: string;
@@ -56,6 +73,8 @@ export interface ControlDescriptor {
   instanceId?: string;
   cwd?: string;
   protocol?: number;
+  protocolMin?: number;
+  protocolMax?: number;
   pid?: number;
   features?: readonly string[];
   /** The daemon's accepted native start modes, used by launchers when the file value is retained. */
@@ -75,7 +94,7 @@ export function readControl(stateDir: string): ControlDescriptor | undefined {
       ? Object.fromEntries(Object.entries(status.startModes).filter((entry): entry is [string, "tui" | "headless"] => entry[1] === "tui" || entry[1] === "headless"))
       : undefined;
     return { url: `ws://127.0.0.1:${status.controlPort}`, token, projectId: status.projectId,
-      instanceId: status.instanceId, cwd: status.cwd, protocol: status.protocol, pid: status.pid, features: Array.isArray(status.features) ? status.features.filter((feature: unknown): feature is string => typeof feature === "string") : [],
+      instanceId: status.instanceId, cwd: status.cwd, protocol: status.protocol, protocolMin: status.protocolMin, protocolMax: status.protocolMax, pid: status.pid, features: Array.isArray(status.features) ? status.features.filter((feature: unknown): feature is string => typeof feature === "string") : [],
       ...(startModes ? { startModes } : {}),
       ...(status.externalAdapters !== undefined ? { externalAdapters: externalAdapterMetadata(status.externalAdapters) } : {}),
       ...(typeof status.pidSignature === "string" && status.pidSignature ? { pidSignature: status.pidSignature } : {}) };
@@ -97,6 +116,10 @@ export function controlRequestTimeout(msg: Record<string, unknown>, requested = 
 /** One authenticated control connection. `request` correlates replies by `rid`; everything else goes to `onPush`. */
 export class ControlClient {
   features: readonly string[] = [];
+  /** The id the hub minted for a distinct session (agent-hub#1036); absent for every ordinary connection. */
+  sessionId?: string;
+  /** Selected wire version, checked against the welcome when that legacy-optional field is present. */
+  protocol?: number;
   private welcomeInstanceId?: string;
   /** Identity from the authenticated welcome, never the unauthenticated descriptor alone. */
   get instanceId(): string | undefined { return this.welcomeInstanceId; }
@@ -120,17 +143,20 @@ export class ControlClient {
   }
 
   /** `protocol` is used only by the upgrade coordinator for an authenticated, explicitly supported source contract. */
-  static connect(stateDir: string, hello: Hello, timeoutMs = 3000, protocol = PROTOCOL): Promise<ControlClient> {
-    if (!RECOVERY_SOURCE_PROTOCOLS.includes(protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number])) return Promise.reject(new Error(`unsupported recovery source protocol ${protocol}`));
+  static connect(stateDir: string, hello: Hello, timeoutMs = 3000, protocol?: number): Promise<ControlClient> {
+    if (protocol !== undefined && !RECOVERY_SOURCE_PROTOCOLS.includes(protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number])) return Promise.reject(new Error(`unsupported recovery source protocol ${protocol}`));
     const control = readControl(stateDir);
     if (!control) return Promise.reject(new Error(`no hub running for ${stateDir} (run: ahub up)`));
     const pin = instancePins.get(resolve(stateDir));
     if (pin && (control.instanceId !== pin.instanceId || hello.instanceId !== undefined && hello.instanceId !== pin.instanceId)) {
       return Promise.reject(new Error("delegated audit consumer changed; refusing a connection to its replacement"));
     }
-    if (control.protocol !== undefined && control.protocol !== protocol) {
-      return Promise.reject(Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocol}, CLI speaks ${protocol}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 }));
-    }
+    const local = protocolWindow(protocol ?? PROTOCOL, protocol ?? PROTOCOL_MIN)!;
+    const versioned = control.protocol !== undefined || control.protocolMin !== undefined || control.protocolMax !== undefined;
+    const remote = versioned ? controlProtocolWindow(control) : undefined;
+    const selected = versioned ? remote && negotiateProtocol(local, remote) : protocol ?? PROTOCOL_MIN;
+    const mismatch = () => Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocolMax ?? control.protocol}, CLI speaks ${protocol ?? PROTOCOL}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 });
+    if (selected === undefined) return Promise.reject(mismatch());
     if ((hello.projectId && hello.projectId !== control.projectId) ||
         (hello.instanceId && hello.instanceId !== control.instanceId) ||
         (hello.projectRoot && hello.projectRoot !== control.cwd)) {
@@ -161,15 +187,18 @@ export class ControlClient {
         client.pending.delete(msg.rid);
         done(msg);
       };
-      ws.onopen = () => void client.request({ t: "hello", v: protocol, token: control.token, ...hello, ...expected }, timeoutMs).then((reply) => {
+      ws.onopen = () => void client.request({ t: "hello", token: control.token, ...hello, ...expected, v: selected, vMin: remote?.vMin === undefined ? selected : Math.max(local.vMin, remote.vMin) }, timeoutMs).then((reply) => {
         if (reply.t !== "welcome" || reply.ok === false) return refuse(new Error(reply.error ?? "hub refused handshake"));
         if ((expected.projectId && reply.projectId !== expected.projectId) ||
             (expected.instanceId && reply.instanceId !== expected.instanceId) ||
             (expected.projectRoot && reply.cwd !== expected.projectRoot)) {
           return refuse(Object.assign(new Error("connected hub has a different project or instance"), { code: 4404 }));
         }
+        if (reply.protocol !== undefined && reply.protocol !== selected) return refuse(mismatch());
+        client.protocol = selected;
         client.features = Object.freeze(Array.isArray(reply.features) ? reply.features.filter((feature: unknown): feature is string => typeof feature === "string") : []);
         client.welcomeInstanceId = typeof reply.instanceId === "string" && reply.instanceId ? reply.instanceId : undefined;
+        client.sessionId = typeof reply.session === "string" && reply.session.length <= 64 ? reply.session : undefined;
         clearTimeout(timer);
         resolve(client);
       });

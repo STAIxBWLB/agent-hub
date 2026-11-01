@@ -10,6 +10,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { readEvents } from "../src/hub/events.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
+import { realPath } from "../src/hub/project.ts";
 import type { InstancesConfig } from "../src/hub/instances.ts";
 import { PiPeer } from "../src/adapters/pi.ts";
 import { startFakeModelServer } from "./fakes/model-server.ts";
@@ -23,7 +24,7 @@ async function until(condition: () => boolean, label: string) {
 }
 const instances: InstancesConfig = { "pi-a": { kind: "pi", roles: ["reviewer"], start_mode: "headless" }, "pi-b": { kind: "pi", roles: ["reviewer"], start_mode: "headless" } };
 async function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "ahub-instance-pi-")), stateDir = join(root, "state"), record = join(root, "native-identities.jsonl"), wrapper = join(root, "fake-pi.ts");
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-instance-pi-"))), stateDir = join(root, "state"), record = join(root, "native-identities.jsonl"), wrapper = join(root, "fake-pi.ts");
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   expect(hubGitSync(["-C", root, "init", "-q"], { encoding: "utf8" }).status).toBe(0);
   mkdirSync(join(root, ".agenthub"));

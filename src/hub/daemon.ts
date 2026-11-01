@@ -150,6 +150,7 @@ import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, sta
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalPath, realPath, hubHome } from "./project.ts";
+import { HandoffRefusal, checkTarget, parseHandoff, resolveTarget, handoffEventFor, type HandoffEvent } from "./handoff.ts";
 import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, profileTaskTools } from "./hub-tools.ts";
@@ -173,9 +174,13 @@ import { githubOriginRepository, githubRemoteRepository } from "./task-repositor
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
+import { assertHubDbCompatible } from "./db-schema.ts";
 import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { codeGroup } from "./task-code-group.ts";
-import { DAEMON_FEATURES, PROTOCOL, readControl, stateDirFor } from "./control-client.ts";
+import { ControlClient, DAEMON_FEATURES, PROTOCOL, PROTOCOL_MIN, readControl, stateDirFor } from "./control-client.ts";
+import { negotiateProtocol, protocolWindow } from "./protocol-window.ts";
+import { attachEvent, originOf, type Origin } from "./provenance.ts";
+import { mintSessionId, sessionGate } from "./session-identity.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type FrontendProxyPort, type PeerAdapter } from "./peers.ts";
 import { ClaudeTodoSource, DoingTracker, readAiTitle, type DoingKind, type PeerDoing, type TitleCursor } from "./peer-doing.ts";
@@ -695,8 +700,11 @@ export interface DaemonOptions {
 
 interface Client {
   authed: boolean;
+  protocol?: number;
   role?: "peer" | "console" | "tools";
   peer?: PeerId;
+  /** agent-hub#1036: this connection is a distinct session; `peer` is the id the daemon minted for it (`<peer>~<origin>`), never a bus peer. */
+  session?: true;
   launchId?: string;
   externalOwner?: { owner: PeerAdapter; launchId: string; generation?: string };
   toolsOwner?: { owner: PeerAdapter; launchId: string; generation: string; cwd: string };
@@ -742,6 +750,8 @@ function capturedRecoverySourceDigest(): string | undefined {
 }
 
 export async function startDaemon(opts: DaemonOptions) {
+  // Refuse unknown formats before logs, session cleanup, module factories or any writable store is opened.
+  assertHubDbCompatible(join(opts.stateDir, "hub.db"));
   const resolveExecutionCwd = (peer: string, currentDeclarations: InstancesConfig | undefined, currentRoles: readonly string[], catalog: ReturnType<typeof createProjectAdapterCatalog>): string =>
     resolveInstanceExecutionCwd(opts.cwd, peer, currentDeclarations, currentRoles, catalog, undefined, undefined, opts.instanceExecutionGit);
   const projectId = opts.projectId ?? randomUUID();
@@ -805,6 +815,27 @@ export async function startDaemon(opts: DaemonOptions) {
   const childToolAuthority = new AsyncLocalStorage<{ by: string; current: () => boolean }>();
   const implementerTranscripts = new Map<string, string>();
   const executionOwners = new Map<string, { owner: PeerAdapter; cwd: string; socket?: Sock; launchId?: string; generation?: string | number }>();
+  /** #604 PR B: envelope id to the connection that sent it, written where a connection builds an envelope and read once when the envelope event is logged. Bounded: an entry whose event never comes ages out. */
+  const envelopeOrigins = new Map<string, Origin>();
+  /** agent-hub#1036: the ids this daemon minted for live distinct sessions. Only the daemon makes them, so `PEER_ID` is not widened and no `@` reaches the remote-room paths. */
+  const sessionIds = new Set<string>();
+  const rememberOrigin = (id: string, origin: Origin): void => { envelopeOrigins.set(id, origin); if (envelopeOrigins.size > 1024) envelopeOrigins.delete(envelopeOrigins.keys().next().value as string); };
+  const takeOrigin = (id: string): Origin | undefined => { const origin = envelopeOrigins.get(id); envelopeOrigins.delete(id); return origin; };
+  /**
+   * agent-hub#1036: the origin of an envelope that no control connection sent, one an adapter published itself (a native peer's final answer goes through `peer.onMessage`, not the `send` case).
+   * It names the sending peer and, where the adapter knows one, the launch it runs under: a channel session's `managedLaunchId`, an owned Jcode's launch id. The hub's own writers (`hub`, `user`,
+   * `digest`) and remote room ids have none, as before. Evidence for the log, never a path or text.
+   */
+  const adapterOrigin = (env: Envelope): Origin | undefined => {
+    if (env.from === "hub" || env.from === USER || env.from === "digest" || env.from.includes("@")) return undefined;
+    const peer = bus.peers.get(env.from);
+    if (!peer) return undefined;
+    // Read by shape, not by a native-branch predicate: a channel session reports `managedLaunchId`, an owned Jcode `ownedLaunchId`, and the value only labels the log. Nothing here decides
+    // authority or ownership, so it is not an `isWsPeer` host branch (the #625 ratchet lists those, and this is not one).
+    const evidence = peer as { managedLaunchId?: unknown; ownedLaunchId?: unknown };
+    const launchId = [evidence.managedLaunchId, evidence.ownedLaunchId].find((value): value is string => typeof value === "string" && value.length > 0);
+    return originOf({ role: "peer", peer: env.from, ...(launchId ? { launchId } : {}) });
+  };
   const externalLaunches = new Map<string, { owner: PeerAdapter; options: AcpOptions; launchId: string; binding: ExternalInstanceBinding; workspace: string; generation?: string }>();
   const externalBindings = new Map<string, ExternalInstanceBinding>();
   const externalSessions = new Map<string, string>();
@@ -1154,6 +1185,7 @@ export async function startDaemon(opts: DaemonOptions) {
         for (const request of sock.data.invocationRequests?.values() ?? []) request.abort();
         sock.data.invocationRequests?.clear();
         nativeHookLaunches.endOwner(sock);
+        if (sock.data.session && sock.data.peer) sessionIds.delete(sock.data.peer);
         consoles.delete(sock);
         operationalLogSubscribers.delete(sock);
         sock.data.tail?.();
@@ -1353,6 +1385,18 @@ export async function startDaemon(opts: DaemonOptions) {
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (isWsPeer(p)) p.notifyQueued(counts); } });
   startupCleanup.push(() => bus.closeJournal());
   const claudeLaunchProof = createClaudeLaunchProof({ stateDir: opts.stateDir, cwd: opts.cwd, instanceId, definitionOf, peer: peer => bus.peers.get(peer) });
+  /**
+   * agent-hub#1036: whether a tools hello is a distinct session instead of the peer it names. True when the plugin asked for it (`session`: it has no project of its own and inherited this hub's
+   * state), or when the name is a Claude channel peer and the hello PRESENTS a launch id that is not the current launch record's. An ABSENT id is never enough: the facts hook, a native
+   * helper or a person's own shell connects as the peer with none, and it must keep working (agent-hub#1036 AC4). Everything else keeps its admission as before: codex, kimi, qwen, agent
+   * shells without an inherited id, owned ACP peers and the Claude implementer child are not affected.
+   */
+  const sessionHello = (msg: Record<string, any>): boolean => {
+    if (typeof msg.session === "string") return true;
+    const peer = String(msg.peer ?? "");
+    if (definitionOf(peer)?.transport !== "claude-channel" || definitionOf(peer)?.start.daemonPort === "claude-implementer") return false;
+    try { const launch = readClaudeLaunchProof(opts.stateDir, peer, instanceId); return !!launch && typeof msg.launchId === "string" && msg.launchId !== launch.launchId; } catch { return false; }
+  };
   function frontendProxyState(peer: string, owner: PeerAdapter | undefined): { present: boolean; port: FrontendProxyPort | undefined } {
     if (!owner || !isFixedBuiltinDefinition(definitionOf(peer)) || !("frontendProxy" in owner)) return { present: false, port: undefined };
     return { present: true, port: owner.frontendProxy };
@@ -3168,6 +3212,71 @@ export async function startDaemon(opts: DaemonOptions) {
   // commit waits for those in flight, or its integrity digest misses their later writes. Completion checks outlive
   // their op, so recoveryReady() also waits for `tasks.checksPending()`: a check the commit's stop kills would write.
   let taskOpsInFlight = 0;
+  /**
+   * #604 ORIGIN side. Order matters: the caller's authority and the PII gates run first (nothing has left this project), then the target is resolved from the machine registry and its own
+   * status descriptor is read, and only then is the request sent. The target answers with the task id it created, which is recorded here. A refusal at any step leaves no row in either board.
+   */
+  async function handoffOut(by: PeerId, input: unknown): Promise<{ project: string; task: number; state: string; note?: string }> {
+    const request = parseHandoff(input);
+    const own = request.task === undefined ? undefined : board.get(request.task);
+    if (request.task !== undefined && !own) throw new HandoffRefusal("invalid", `no task #${request.task} in this project to hand off from`);
+    tasks.handoffOutAuthority(by, own);
+    const self = { id: projectId, root: opts.cwd };
+    const target = resolveTarget(request.project, registeredProjects(hubHome()).map(project => ({ id: project.id, root: project.root, stateDir: project.stateDir })), self, canonicalPath);
+    const descriptor = readControl(target.stateDir);
+    checkTarget(target, descriptor && { ...(descriptor.features ? { features: descriptor.features } : {}), ...(descriptor.projectId ? { projectId: descriptor.projectId } : {}) });
+    let client: ControlClient;
+    try { client = await ControlClient.connect(target.stateDir, { role: "console", projectRoot: descriptor!.cwd ?? target.root }, 5000); }
+    catch { throw new HandoffRefusal("not_running", `the hub of ${target.id} did not answer; run \`ahub up\` in ${target.root}, then hand the task off again (handoffs are not queued)`); }
+    try {
+      const { project: _project, task: originTask, ...body } = request;
+      const reply = await client.request({ t: "task_handoff", origin: { projectId, peer: by, ...(originTask === undefined ? {} : { taskId: originTask }) }, request: body }, 30_000);
+      if (!reply.ok) throw new HandoffRefusal("invalid", sanitize(String(reply.error ?? "the target refused the handoff")).slice(0, 300));
+      const remote = Number(reply.task);
+      if (!Number.isSafeInteger(remote) || remote < 1) throw new HandoffRefusal("invalid", "the target answered without a task id");
+      tasks.handoffSent(by, { projectId: target.id }, remote, request.title, request.task);
+      return { project: target.id, task: remote, state: String(reply.state ?? "proposed"), ...(typeof reply.note === "string" && reply.note ? { note: sanitize(reply.note).slice(0, 300) } : {}) };
+    } finally { client.close(); }
+  }
+  /** The head a handoff reports: the owner's `refs.commit`, else the receipt's verified head. Only a full 40-hex SHA crosses; anything else is dropped. */
+  const handoffHead = (task: Task): string | undefined => { const head = task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead; return typeof head === "string" && /^[0-9a-f]{40}$/.test(head) ? head : undefined; };
+  /** #604 TARGET side: tell the origin project's daemon about a state change of a task it handed us. Best effort and never blocking a board write: an origin that is down reads the state later. */
+  const handoffNotifyOrigin = (task: Task, entry: { event: string }): void => {
+    const event: HandoffEvent | undefined = handoffEventFor(entry.event, task.state);
+    const origin = event ? board.handoffOrigin(task.id) : undefined;
+    if (!event || !origin) return;
+    void (async () => {
+      try {
+        const project = registeredProjects(hubHome()).find(candidate => candidate.id === origin.projectId);
+        const descriptor = project && readControl(project.stateDir);
+        if (!project || !descriptor || !descriptor.features?.includes("task_handoff")) return;
+        const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: descriptor.cwd ?? project.root }, 3000);
+        try { await client.request({ t: "task_handoff_event", event: { projectId, remoteTask: task.id, state: event, ...(typeof task.sdlc?.pr === "number" ? { pr: task.sdlc.pr } : {}), ...(handoffHead(task) ? { head: handoffHead(task) } : {}) } }, 5000); }
+        finally { client.close(); }
+      } catch { /* the origin is down or refused: it reads the target's state on its next start */ }
+    })();
+  };
+  /**
+   * #604 ORIGIN side, on start: for every handoff this project made that has not reached a final state, ask the target (if it is running) where the task stands now, and record the answer.
+   * A target that is down is skipped: it is asked again on the next start. Best effort, in the background, never delaying readiness.
+   */
+  const handoffCatchUp = (): void => {
+    void (async () => {
+      const open = board.handoffOutbound().filter(row => !["approved", "cancelled"].includes(row.state));
+      const byProject = new Map<string, number[]>();
+      for (const row of open) byProject.set(row.remoteProject, [...(byProject.get(row.remoteProject) ?? []), row.remoteTask]);
+      for (const [remote, ids] of byProject) {
+        try {
+          const project = registeredProjects(hubHome()).find(candidate => candidate.id === remote);
+          const descriptor = project && readControl(project.stateDir);
+          if (!project || !descriptor?.features?.includes("task_handoff")) continue;
+          const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: descriptor.cwd ?? project.root }, 3000);
+          try { const reply = await client.request({ t: "task_handoff_states", projectId, tasks: ids.slice(0, 200) }, 5000); if (reply.ok && Array.isArray(reply.states)) tasks.handoffCaughtUp(remote, reply.states); }
+          finally { client.close(); }
+        } catch { /* that target is down or refused: it is asked again on the next start */ }
+      }
+    })();
+  };
   const conductedMutations = new Set(["hub_task_propose", "hub_task_accept", "hub_task_decline", "hub_task_done", "hub_review", "hub_checkpoint", "hub_remember"]);
   const taskOp = async (...args: Parameters<typeof taskOpBody>): Promise<string> => {
     const [by, op, input] = args;
@@ -3596,6 +3705,11 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_study_handoff":
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "handoff")) throw new PreEffectToolRefusal("study handoff takes only a handoff object");
         return JSON.stringify(await tasks.studyHandoff(by, a.handoff));
+      // #604 (agent-hub#1030): a handoff to another project. Tasks checks who may send it and the PII gates; `handoffOut` resolves the target, asks its daemon and records the answer.
+      case "hub_task_handoff":
+        return JSON.stringify(await handoffOut(by, a));
+      case "hub_task_handoffs":
+        return JSON.stringify({ handoffs: tasks.handoffList() });
       // #601: the person's own forms (a read is hub_study_show, which every connection may use). `by` is USER only on the console path; approval and close are never a tool.
       case "study_draft":
         return JSON.stringify(await tasks.studyDraft(by, a));
@@ -3815,7 +3929,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const related = tasks.isPii(task) ? undefined : await taskMemoryResult(task, true).catch(() => ({ items: [], state: "unknown" as const }));
         const fresh = board.get(task.id);
         const relatedMemory = related && fresh?.updated === task.updated && !tasks.isPii(fresh) ? { state: related.state, count: related.items.length, ...("head" in related ? { head: related.head } : {}) } : { state: "unknown" };
-        return JSON.stringify({ ...detail, ...holderReasons(publicTask), relatedMemory, ...(codeSymbols ? { codeSymbols } : {}), ...(consoleDeliverables ? { deliverables: consoleDeliverables } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
+        return JSON.stringify({ ...detail, ...holderReasons(publicTask), relatedMemory, ...(publicTask.handoffOrigin ? { handoffOrigin: publicTask.handoffOrigin } : {}), ...(codeSymbols ? { codeSymbols } : {}), ...(consoleDeliverables ? { deliverables: consoleDeliverables } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
       }
       case "deliverables": {
         // #317 (`ahub deliverables`): the board's deliverable records, person only. `check` measures the files now; without it nothing is opened.
@@ -4291,6 +4405,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const metadata = peer.recoveryMetadata?.() ?? {};
     const row: RestartPeerSnapshot = { id, state: peer.state, queueIds: bus.queueIds(id), ...(metadata.launch ? { launch: metadata.launch as Record<string, unknown> } : {}) };
     if (typeof metadata.threadId === "string") row.threadId = metadata.threadId;
+    if (typeof metadata.controlProtocol === "number" && Number.isSafeInteger(metadata.controlProtocol) && metadata.controlProtocol > 0) row.controlProtocol = metadata.controlProtocol;
     const sessionId = definitionOf(id)?.transport === "claude-channel" ? claudeSession(id).sessionId : metadata.sessionId;
     if (typeof sessionId === "string" && sessionId) row.sessionId = sessionId;
     return [id, row];
@@ -4403,7 +4518,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(lifecycleConfig.mode !== "off" ? { lifecycleCriteria: true } : {}),
     // Every supported peer's membership, for launchers that run outside the console role (#484).
     roster: [...KNOWN_PEERS, ...OPTIONAL_PEERS].map(peer => ({ peer, on: onRoster(peer) })),
-    protocol: PROTOCOL,
+    protocol: PROTOCOL_MIN, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL,
     features: DAEMON_FEATURES,
     configuredAdapters: configuredIds,
     ...(externalAdapters.length ? { externalAdapters } : {}),
@@ -4481,6 +4596,7 @@ export async function startDaemon(opts: DaemonOptions) {
   board.onChange = (task, entry) => {
     try { taskChanged?.(task, entry); }
     finally {
+      try { handoffNotifyOrigin(task, entry); } catch { /* never throw after a board write */ }
       try { settleSupersededDeliveries(); }
       finally { writeStatus(); } // committed task transitions refresh token-free attention even without bus activity
     }
@@ -4976,7 +5092,8 @@ export async function startDaemon(opts: DaemonOptions) {
     } else {
       log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} ${e.env.priority} hop=${e.env.hop}${e.dropped ? ` NOT DELIVERED(${e.dropped})` : ""}: ${e.env.body.slice(0, 200)}`);
       const env = e.env;
-      event({ type: "envelope", id: env.id, from: env.from, ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, ...(env.kind ? { kind: env.kind } : {}), ...(env.refs?.task ? { task: env.refs.task } : {}), ...(env.private ? {} : { bytes: Buffer.byteLength(env.body) }), ...(env.private ? { private: true } : {}), ...(e.dropped ? { dropped: e.dropped } : {}) });
+      const origin = takeOrigin(env.id) ?? adapterOrigin(env);
+      event({ type: "envelope", id: env.id, from: env.from, ...(origin ? { origin } : {}), ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, ...(env.kind ? { kind: env.kind } : {}), ...(env.refs?.task ? { task: env.refs.task } : {}), ...(env.private ? {} : { bytes: Buffer.byteLength(env.body) }), ...(env.private ? { private: true } : {}), ...(e.dropped ? { dropped: e.dropped } : {}) });
     }
     if (!stopping) writeStatus();
   });
@@ -7479,6 +7596,13 @@ export async function startDaemon(opts: DaemonOptions) {
         return "target lacks research_dispatch; persisted campaign stop policies and handoffs require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_dropped_offers")) && board.hasResearchDroppedOffers())
         return "target lacks research_dropped_offers; persisted study re-offers require a supporting daemon";
+      // agent-hub#1036: an unsettled delivery that holds a distinct session's message is an envelope with `session: true` and a minted `<peer>~<id>` sender. A target without the feature
+      // would read that sender as a peer it does not know and queue a reply to it; this is its own label, so a daemon that has the older floors but not this one is still refused.
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("session_identity")) && bus.queueList(undefined, true).some(row => (row.originals as Envelope[]).some(env => env.session === true)))
+        return "target lacks session_identity; unsettled deliveries hold messages from distinct sessions that require a supporting daemon";
+      // #604: a handoff row in either direction (a task another project handed us, or one we handed over) needs a target that knows `task_handoff`; without it the origin is silently lost.
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("task_handoff")) && board.hasHandoffState())
+        return "target lacks task_handoff; stored handoffs require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_experiments")) && board.hasResearchExperimentState())
         return "target lacks research_experiments; persisted experiment records require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_comparisons")) && board.hasResearchComparisonState())
@@ -7519,8 +7643,16 @@ export async function startDaemon(opts: DaemonOptions) {
         } catch { return "calendar_schedules compatibility is unknown; configuration could not be read"; }
         if (namesCalendar) return "target lacks calendar_schedules; the project's schedules use cron or tz, which that daemon cannot load";
       }
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("schema_guard"))
+        return "target lacks schema_guard; controlled recovery requires a guard-aware runtime";
       return undefined;
     };
+    // Preserve lifecycle fences before capability probes; the prepare branch rechecks them after resume capture awaits.
+    if (msg.op === "prepare") {
+      if (rosterChanging) return recoveryError("roster change is in progress; wait for ahub status before preparing recovery");
+      if (requestedPeerStops.size) return recoveryError("peer stop is in progress; wait for ahub status before preparing recovery");
+      if (recoveryCommitted) return recoveryError("recovery commit is already in progress");
+    }
     const checkTarget = msg.op === "prepare" || msg.op === "commit" || msg.op === "inspect" && msg.targetFeatures !== undefined;
     if (checkTarget) {
       const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error);
@@ -7788,7 +7920,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!c.authed) {
       if (msg.t !== "hello" || msg.token !== token) return sock.close(4401, "bad token");
       if (typeof msg.peer === "string" && msg.peer.includes("@")) return sock.close(4403, "remote identities have no control connection");
-      if (msg.v !== PROTOCOL) {
+      const offered = protocolWindow(msg.v, msg.vMin), selectedProtocol = offered && negotiateProtocol({ v: PROTOCOL, vMin: PROTOCOL_MIN }, offered);
+      if (selectedProtocol === undefined) {
         // An outdated plugin would drop every digest without a trace. Refuse it loudly instead.
         log(`refused ${msg.role} ${msg.peer ?? ""}: wire version ${msg.v ?? 1}, hub speaks ${PROTOCOL} (claude plugin update agent-hub@agent-hub)`);
         return sock.close(4426, `wire version mismatch: hub speaks ${PROTOCOL}; update the agent-hub plugin`);
@@ -7799,14 +7932,25 @@ export async function startDaemon(opts: DaemonOptions) {
       try { refreshConductorPolicy(); } catch { return sock.close(4403, "invalid conductor role/feed configuration"); }
       if (stopping && msg.role !== "console") return sock.close(1013, "hub is stopping");
       c.authed = true;
+      c.protocol = selectedProtocol;
       c.role = msg.role;
       if (c.role === "console") consoles.add(sock);
+      else if (c.role === "tools" && sessionHello(msg)) {
+        // agent-hub#1036: a connection that names a peer id but is not that peer's current session gets an id of its own instead of becoming the peer. It can send and read; it holds none of the
+        // peer's board roles, is never a bus peer (no delivery, no push) and replaces nobody. Nothing is refused: a hello that worked before still works, as a session.
+        const named = String(msg.peer ?? "");
+        if (!PEER_ID.test(named) || named === USER || named === "hub") return sock.close(4403, "peer id is reserved or malformed");
+        c.peer = mintSessionId(named, msg.session, id => sessionIds.has(id) || bus.peers.has(id), () => crypto.randomUUID().slice(0, 6));
+        c.session = true; sessionIds.add(c.peer);
+        if (typeof msg.launchId === "string" && msg.launchId.length <= 128) c.launchId = msg.launchId;
+      }
       else if (c.role === "tools") {
         // Acts for a peer the hub manages itself (kimi, codex): may send and use the board as that peer, is never a delivery target.
         c.peer = String(msg.peer ?? "");
         if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === "hub") return sock.close(4403, "peer id is reserved or malformed");
         if (externalRefusedRows.has(c.peer)) return sock.close(4403, "instance kind is unavailable in the startup catalog");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
+        if (typeof msg.launchId === "string" && msg.launchId.length <= 128) c.launchId = msg.launchId;
         if (definitionOf(c.peer)?.start.daemonPort === "claude-implementer") {
           const owner = bus.peers.get(c.peer), launch = owner?.ownedTools?.(msg.launchId), root = ownerWriteRoot(c.peer);
           if (!owner || !launch || launch.signal.aborted || !root || root === opts.cwd || typeof msg.launchId !== "string") return sock.close(4403, "this process is not the current Claude child");
@@ -7873,7 +8017,9 @@ export async function startDaemon(opts: DaemonOptions) {
           if (important) ws.notifyQueued({ queued: bus.queued(c.peer!), important });
         });
       }
-      return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL, features: DAEMON_FEATURES });
+      // #604 PR B: one attach event per admitted peer or tools hello, with the same fields an envelope's `origin` carries. A refused hello returned above and writes none.
+      if (c.role === "peer" || c.role === "tools") event(attachEvent({ role: c.role, peer: c.peer, launchId: c.launchId, ...(c.session ? { session: true } : {}) }));
+      return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: c.protocol, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, features: DAEMON_FEATURES, ...(c.session ? { session: c.peer } : {}) });
     }
     const committedSourceProof = c.role === "tools" && msg.t === "recovery_authority" && msg.op === "verify" && recoveryCommitted
       && msg.binding?.operationId === recoveryOperationId && msg.binding?.sourceInstanceId === instanceId;
@@ -7881,6 +8027,11 @@ export async function startDaemon(opts: DaemonOptions) {
     if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });
     if (c.externalOwner && !currentExternalTools(c)) return void reply({ ok: false, error: "external instance launch or execution root changed" });
     if (c.toolsOwner && !currentImplementerTools(c)) return void reply({ ok: false, error: "Claude child generation or execution root changed" });
+    if (c.session) {
+      // agent-hub#1036: a distinct session sends and reads, and nothing else. The gate runs before any case, so a new control message is refused to a session unless it is added to the list.
+      const refusal = sessionGate(c.peer!, msg);
+      if (refusal) return void reply({ t: msg.t, ok: false, error: refusal });
+    }
     switch (msg.t) {
       case "request_cancel": {
         if (!Number.isSafeInteger(msg.request) || msg.request < 1) return void reply({ t: "request_cancel", ok: false, error: "invalid request id" });
@@ -8137,11 +8288,15 @@ export async function startDaemon(opts: DaemonOptions) {
             const plan = msg.plan as UpgradePlan;
             const { fingerprint, ...body } = plan ?? {} as UpgradePlan;
             if (!plan || !["restart", "upgrade"].includes(plan.kind) || plan.projects.some(row => row.terminals.length > 0) || planFingerprint(body) !== fingerprint || fingerprint !== raw.planFingerprint || plan.kind !== raw.kind || existsSync(operationPath(raw.operationId))
-              || raw.sourceInstanceId !== instanceId || recoveryActive() || recoveryLock() || !plan.projects.some(row => row.project.id === projectId && row.project.root === opts.cwd && row.project.stateDir === opts.stateDir && row.source.instanceId === instanceId)) throw new RecoveryAuthorityError();
+              || raw.sourceInstanceId !== instanceId || recoveryActive() || recoveryLock(undefined, opts.cwd) || !plan.projects.some(row => row.project.id === projectId && row.project.root === opts.cwd && row.project.stateDir === opts.stateDir && row.source.instanceId === instanceId)) throw new RecoveryAuthorityError();
+            const { recoveryScope } = await import("../cli/upgrade.ts"); current();
+            const scope = recoveryScope(plan);
+            if (scope !== undefined && scope !== opts.cwd) throw new RecoveryAuthorityError();
             if (plan.kind === "restart" && plan.projects.length !== 1) throw new RecoveryAuthorityError();
             if (plan.kind === "upgrade") {
-              // Shared package/plugin effects cover every running or uncertain registered project, not a caller-selected subset.
+              // Scoped upgrades bind the source's one registered project; retained shared upgrades still cover every affected project.
               const affected = registeredProjects().filter(project => {
+                if (scope !== undefined) return project.root === scope;
                 const control = readControl(project.stateDir);
                 return control ? processLiveness(control.pid, control.pidSignature) !== "gone" : project.pid !== null && processLiveness(project.pid, project.pidSignature) !== "gone";
               });
@@ -8154,23 +8309,26 @@ export async function startDaemon(opts: DaemonOptions) {
               if (!Array.isArray(selected.reconnectOnly) || new Set(selected.reconnectOnly).size !== selected.reconnectOnly.length) throw new RecoveryAuthorityError();
               for (const id of selected.reconnectOnly) {
                 const row = selected.source.peers.find(peer => peer.id === id), owner = bus.peers.get(id), definition = definitionOf(id);
-                if (!row || selected.freshStart?.includes(id) || Object.keys(row).some(key => !["id", "state", "observation"].includes(key)) || !row.observation
+                if (!row || selected.freshStart?.includes(id) || Object.keys(row).some(key => !["id", "state", "observation", "controlProtocol"].includes(key)) || !row.observation
                   || Object.keys(row.observation).some(key => !["kind", "attached", "sessionDigest"].includes(key))
                   || !isWsPeer(owner) || definition?.transport !== "claude-channel" || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)
+                  || !protocolWindow(row.controlProtocol) || owner.recoveryMetadata().controlProtocol !== row.controlProtocol
                   || row.observation.kind !== definition.kind || row.observation.attached !== owner.attached || row.observation.sessionDigest !== recoverySessionDigest(claudeSession(id).sessionId)) throw new RecoveryAuthorityError();
                 const generation = owner.sessionGeneration;
                 const launcher = await launcherOf(id, opts.cwd, { stateDir: opts.stateDir, instanceId }); current();
-                if (launcher && launcher.state !== "gone" || bus.peers.get(id) !== owner || owner.sessionGeneration !== generation || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)) throw new RecoveryAuthorityError();
+                if (launcher && launcher.state !== "gone" || bus.peers.get(id) !== owner || owner.sessionGeneration !== generation || !owner.attached || owner.managedLaunchId || claudeLaunchProof.verified(id)
+                  || owner.recoveryMetadata().controlProtocol !== row.controlProtocol) throw new RecoveryAuthorityError();
                 reconnectCurrent.push(() => bus.peers.get(id) === owner && owner.sessionGeneration === generation && owner.attached && !owner.managedLaunchId && !claudeLaunchProof.verified(id)
+                  && owner.recoveryMetadata().controlProtocol === row.controlProtocol
                   && definitionOf(id)?.kind === row.observation!.kind && owner.attached === row.observation!.attached && recoverySessionDigest(claudeSession(id).sessionId) === row.observation!.sessionDigest);
                 reconnect.set(id, row.observation);
               }
             }
             if (reconnectCurrent.some(check => !check())) throw new RecoveryAuthorityError();
-            const normalize = (row: { id: string; state: string; observation?: { kind: string; attached: boolean; sessionDigest?: string }; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
+            const normalize = (row: { id: string; state: string; controlProtocol?: number; observation?: { kind: string; attached: boolean; sessionDigest?: string }; threadId?: string; sessionId?: string; sessionFile?: string; args?: Record<string, string>; launch?: Record<string, unknown> }) => {
               const launch = row.args ?? row.launch ?? {};
               const observed = reconnect.get(row.id);
-              return { id: row.id, active: row.state !== "offline", threadId: row.threadId, sessionId: observed ? undefined : row.sessionId,
+              return { id: row.id, active: row.state !== "offline", controlProtocol: row.controlProtocol, threadId: row.threadId, sessionId: observed ? undefined : row.sessionId,
                 ...(observed ? { sessionDigest: row.observation?.sessionDigest ?? recoverySessionDigest(row.sessionId) } : {}),
                 ...(observed ? { kind: row.observation?.kind ?? definitionOf(row.id)?.kind, attached: row.observation?.attached ?? (isWsPeer(bus.peers.get(row.id)) && (bus.peers.get(row.id) as import("../adapters/channel-peer.ts").WsPeer).attached) } : {}),
                 sessionFile: row.sessionFile ?? (typeof launch.sessionFile === "string" ? launch.sessionFile : undefined),
@@ -8184,9 +8342,11 @@ export async function startDaemon(opts: DaemonOptions) {
             if (raw.kind === "restart") {
               if (!sourcePackageDigest || raw.targetDigest !== sourcePackageDigest) throw new RecoveryAuthorityError();
             } else {
-              const staged = join(hubHome(), "releases", plan.version);
-              if (raw.targetRoot !== join(staged, "node_modules/@staix/agent-hub")) throw new RecoveryAuthorityError();
-              const verified = JSON.parse(readFileSync(join(staged, "verified.json"), "utf8"));
+              const staged = join(scope === undefined ? hubHome() : realPath(hubHome()), "releases", plan.version);
+              const expectedTarget = scope === undefined ? join(staged, "node_modules/@staix/agent-hub") : join(staged, `source-${raw.targetDigest}`);
+              if (raw.targetRoot !== expectedTarget) throw new RecoveryAuthorityError();
+              // A new/expired grant still needs registry proof; verification of an already issued grant below uses only retained target bytes.
+              const verified = JSON.parse(readFileSync(join(scope === undefined ? staged : join(staged, "registry"), "verified.json"), "utf8"));
               if (verified.digest !== raw.targetDigest || verified.integrity !== plan.integrity) throw new RecoveryAuthorityError();
             }
             if (!sourcePackageDigest || plan.sourceDigest !== sourcePackageDigest && (plan.kind !== "upgrade" || plan.sourceDigest !== raw.targetDigest)) throw new RecoveryAuthorityError();
@@ -8253,6 +8413,8 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         // Built first: limits count the audience it really has (a reply goes to the parent's sender).
         let env = newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) });
+        if (c.session) env = { ...env, session: true };   // agent-hub#1036: sent by a distinct session; `from` is its minted id, and the header a recipient reads shows it as is
+        rememberOrigin(env.id, originOf({ role: c.role, peer: c.peer, launchId: c.launchId, ...(c.session ? { session: true } : {}) })); // the connection that sent it, for events.jsonl (never a path or text)
         try { bus.checkRemotePublication(env); }
         catch (error) { return void reply({ t: "sent", ok: false, error: error instanceof Error && /^(?:room|remote) /.test(error.message) ? sanitize(error.message).slice(0, 8192) : "message admission unavailable" }); }
         const offRoster = bus.offRosterRecipients(env);
@@ -9044,6 +9206,32 @@ export async function startDaemon(opts: DaemonOptions) {
         // Let the acknowledgement flush before closing the control listener.
         setTimeout(() => void stop().catch((error) => log(`shutdown incomplete: ${(error as Error).message}`)), 0);
         return;
+      // #604 (agent-hub#1030): another project's daemon hands us a task, or reports a state change of one we handed it. Console role only (the same token and the same machine user as every
+      // control message): an agent connection never reaches these. The origin peer named in the request is a record, never an identity here, and nothing in it grants a role.
+      case "task_handoff": {
+        if (c.role !== "console") return void reply({ t: "task_handoff", ok: false, error: "a handoff comes from another project's hub, not from an agent connection" });
+        if (recoveryActive()) return void reply({ t: "task_handoff", ok: false, error: "recovery is holding mutations; hand the task off again after it ends" });
+        // Counted like a task op: a recovery commit waits for it (`recoveryReady` reads `taskOpsInFlight`), and the fence is asked again right before the board write, after the PII screen.
+        taskOpsInFlight++;
+        const recoveryFence = (): string | undefined => recoveryActive() || stopping ? "recovery or shutdown is holding mutations; hand the task off again after it ends" : undefined;
+        void tasks.handoffIn(msg.origin ?? {}, msg.request, recoveryFence).then(
+          result => reply({ t: "task_handoff", ok: true, ...result }),
+          error => reply({ t: "task_handoff", ok: false, error: error instanceof HandoffRefusal ? error.message : "the handoff was refused" })).finally(() => { taskOpsInFlight--; });
+        return;
+      }
+      case "task_handoff_event": {
+        if (c.role !== "console") return void reply({ t: "task_handoff_event", ok: false, error: "a handoff event comes from another project's hub, not from an agent connection" });
+        try { reply({ t: "task_handoff_event", ok: true, ...tasks.handoffEvent(msg.event) }); }
+        catch (error) { reply({ t: "task_handoff_event", ok: false, error: error instanceof HandoffRefusal ? error.message : "the handoff event was refused" }); }
+        return;
+      }
+      case "task_handoff_states": {
+        // #604: the origin asks, after a restart, where the tasks it handed us stand now. Console role only, and only for tasks whose recorded origin is the asking project.
+        if (c.role !== "console") return void reply({ t: "task_handoff_states", ok: false, error: "a handoff state request comes from another project's hub, not from an agent connection" });
+        try { reply({ t: "task_handoff_states", ok: true, states: tasks.handoffStatesFor(msg.projectId, msg.tasks) }); }
+        catch (error) { reply({ t: "task_handoff_states", ok: false, error: error instanceof HandoffRefusal ? error.message : "the handoff state request was refused" }); }
+        return;
+      }
       default:
         // A newer CLI talking to an older hub must get an answer, not wait forever.
         if (msg.rid !== undefined) reply({ t: String(msg.t), ok: false, error: `this hub does not know "${msg.t}" (restart it: ahub kill && ahub up)` });
@@ -9159,6 +9347,7 @@ export async function startDaemon(opts: DaemonOptions) {
   bus.onQueues(); // initial restored holds are reported only after the listener is bound; writes status.json too
   log(`${RUN_START}${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
   ready = true;
+  handoffCatchUp();
   tasks.scheduleQueuePressureRecheck();
   for (const name of opts.configWatch === false ? [] : CONFIG_SOURCE_FILES) {
     const path = join(opts.cwd, ".agenthub", name);

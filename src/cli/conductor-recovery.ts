@@ -9,14 +9,15 @@ import { readRestartSnapshot } from "../hub/restart.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 import { packageDigest, recoveryTargetDigest } from "./recovery-package.ts";
 import type { Project } from "../hub/registry.ts";
-import { planFingerprint, registeredProjects, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
+import { planFingerprint, recoveryScope, registeredProjects, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
 import { realPath } from "../hub/project.ts";
 
 function unavailable(): never { throw new RecoveryAuthorityError(); }
 function validateConductorOperation(op: RecoveryOperation): void {
   try {
     const { fingerprint, ...body } = op.plan;
-    if (op.schema !== 1 || !["restart", "upgrade"].includes(op.plan.kind) || planFingerprint(body) !== fingerprint || !op.plan.projects.length
+    const scope = recoveryScope(op.plan);
+    if (!(op.schema === 1 || op.schema === 3 && scope !== undefined) || !["restart", "upgrade"].includes(op.plan.kind) || planFingerprint(body) !== fingerprint || !op.plan.projects.length
       || op.plan.projects.length > 128 || new Set(op.plan.projects.map(row => row.project.id)).size !== op.plan.projects.length) unavailable();
   } catch { unavailable(); }
 }

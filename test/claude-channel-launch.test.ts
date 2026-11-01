@@ -6,7 +6,7 @@ import { realPath } from "../src/hub/project.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 
 async function plugin(launchId: string | undefined, deletableCwd = false) {
-  const root = mkdtempSync(join(tmpdir(), "ahub-channel-launch-"));
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-channel-launch-")));   // a real project root is resolved: the plugin and the hub compare resolved paths
   const hellos: any[] = [], replies = new Map<number, (value: any) => void>();
   let socket: { close(code: number, reason: string): unknown } | undefined;
   let diagnostics = "", sequence = 0;
@@ -31,6 +31,8 @@ async function plugin(launchId: string | undefined, deletableCwd = false) {
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, AGENTHUB_HOME: join(root, "hub-home"), AMEM_HOME: join(root, "memory-home"), CLAUDE_CONFIG_DIR: join(root, "claude-home"), AGENTHUB_CHANNEL: "1", AGENTHUB_PEER_ID: "claude", AGENTHUB_STATE_DIR: root, AGENTHUB_PROJECT_DIR: root, AGENTHUB_INSTANCE_ID: "fixture-instance" };
   delete env.AGENTHUB_MODE; delete env.AGENTHUB_DELIVERY_ONLY;
   if (launchId === undefined) delete env.AGENTHUB_LAUNCH_ID; else env.AGENTHUB_LAUNCH_ID = launchId;
+  // A real session's cwd is inside its project, which has .agenthub: a bare subdirectory would be its own project root, and the plugin (#604 item 10) would not take the inherited state dir.
+  mkdirSync(join(root, ".agenthub"), { recursive: true }); writeFileSync(join(root, ".agenthub", "config.json"), "{}");
   const cwd = deletableCwd ? join(root, "session-cwd") : root;
   if (deletableCwd) mkdirSync(cwd);
   const child = Bun.spawn([process.execPath, wrapper], { cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });

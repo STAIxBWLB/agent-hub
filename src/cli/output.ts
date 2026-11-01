@@ -348,6 +348,8 @@ export function renderBacklog(cards: any[], columns?: number, now = Date.now(), 
   return [...rows(names, table, columns), [], ...lines(summary, columns)];
 }
 /** #724: one line per task. TITLE goes last and is cut to the room left; at a narrow width REVIEWER, CLASS and AGE give way first. */
+/** #604: a task another project handed over says so on the board: the project id and the peer, both ids and nothing a handoff wrote. */
+const handoffMark = (task: any): string => task?.handoffOrigin ? `  (handed off from ${String(task.handoffOrigin.projectId).slice(0, 24)} by ${String(task.handoffOrigin.peer).slice(0, 32)})` : "";
 function compactBoard(tasks: any[], data: OutputCell[][], columns: number, staged: boolean): Span[][] {
   const head = ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "AFTER", ...(staged ? ["STAGE"] : []), "TITLE"];
   let table = tasks.map((task, i) => {
@@ -356,7 +358,7 @@ function compactBoard(tasks: any[], data: OutputCell[][], columns: number, stage
     const meter = /^\[[^\]]*\](?: cancelled)?/.exec(row[7]?.text ?? "")?.[0] ?? "[----]";
     const stage = task.lifecycle ? `${meter} ${task.lifecycle.stage}: ${stageCode(String(task.lifecycle.next ?? ""))}` : meter;
     const short = task.lifecycle ? `${meter} ${stageCode(String(task.lifecycle.next ?? ""))}` : meter;
-    return [row[0]!, row[1]!, row[2]!, row[3]!, row[4]!, row[5]!, span(after, undefined, true), ...(staged ? [{ ...span(stage, row[7]!.tone, true), short }] : []), span(flat(task.title))];
+    return [row[0]!, row[1]!, row[2]!, row[3]!, row[4]!, row[5]!, span(after, undefined, true), ...(staged ? [{ ...span(stage, row[7]!.tone, true), short }] : []), span(`${flat(task.title)}${handoffMark(task)}`)];
   });
   let names = [...head];
   const drop = (name: string) => { const at = names.indexOf(name); if (at < 0) return; names = names.filter((_, i) => i !== at); table = table.map(row => row.filter((_, i) => i !== at)); };
@@ -390,7 +392,7 @@ export function renderBoard(tasks: any[], columns?: number, now = Date.now(), fu
     const row = cells(s, task, false, now, stages);
     row[2] = span(row[2]!.text, peerTone(task.owner ?? ""));
     row[3] = span(row[3]!.text, peerTone(task.reviewer ?? ""));
-    row[6] = span(`${task.title}${task.deps?.length ? `  after ${task.deps.map((id: number) => `#${id}`).join(", ")}` : ""}${task.signals?.includes("pii") ? `  (ahub task show ${task.id})` : ""}`);
+    row[6] = span(`${task.title}${handoffMark(task)}${task.deps?.length ? `  after ${task.deps.map((id: number) => `#${id}`).join(", ")}` : ""}${task.signals?.includes("pii") ? `  (ahub task show ${task.id})` : ""}`);
     if (allTasks === null) row.pop();
     return row;
   });
