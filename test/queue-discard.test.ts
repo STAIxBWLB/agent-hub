@@ -141,7 +141,7 @@ test("queue discard requires the configured conductor or person, stays validated
 });
 
 test("the help row matches the parser and the Queue panel's D asks for a reason, then a y that names the count (#713 change 5, 6)", () => {
-  expect(HELP.some(entry => entry.usage.startsWith("ahub queue discard --peer <id> --reason <text> [--state queued|needs_review] [--yes]"))).toBe(true);
+  expect(HELP.some(entry => entry.usage.startsWith("ahub queue discard --peer <id> --reason <text> [--state queued|needs_review|failed] [--yes]"))).toBe(true);
   expect(commandNeedsConfirmation(["queue", "discard", "--peer", "claude", "--reason", "x", "--yes"])).toBe(true);
   const s = initialConsoleState(true); s.panel = 4; s.project = "agent-hub";
   s.queue = [...Array.from({ length: 5 }, (_, i) => ({ id: `q:agy:${i}`, peer: "agy", state: "queued", revision: 1, createdAt: 1000 + i })), { id: "q:codex:1", peer: "codex", state: "queued", revision: 1, createdAt: 1 }];
@@ -160,4 +160,123 @@ test("the help row matches the parser and the Queue panel's D asks for a reason,
   expect(reduceConsole(asked.state, "n", 5000).effects).toEqual([]);                                          // n cancels
   expect(keyTable(120).flat().map(c => c.text).join("")).toContain("D discard the peer's whole queued backlog");
   expect(renderConsole(s, 100, 24, 5000).join("\n")).not.toContain("D discard");                              // the 80-column footer keeps its j/k, D lives in the key table
+});
+
+// #1096 (rest): the bulk discard also clears a peer's unsettled failed rows, and `queue list` stops showing rows a resolution already settled.
+type Rig = Awaited<ReturnType<typeof rig>>;
+// The bus keeps its journal private; a test that needs to plant a row or read a resolution reaches it the way test/delivery-retry.test.ts does.
+const journalOf = (f: Rig) => (f.daemon.bus as unknown as { journal: { createDelivery(row: object): unknown; resolution(id: string): { action: string; reason: string; actor: string } | undefined; db: { run(sql: string, ...params: unknown[]): void }; projectId: string } }).journal;
+function failedRow(f: Rig, id: string, peer: string, body: string) {
+  const env = newEnvelope("user", body, { to: [peer] });
+  journalOf(f).createDelivery({ id, peer, state: "failed", createdAt: env.ts, originals: [env], out: [env], reason: "peer refused it before running it" });
+  return env;
+}
+const deliveries = async (f: Rig, peer: string, all = false) => (await f.person.request({ t: "queue", op: "list", peer, ...(all ? { all: true } : {}) })) as { ok: boolean; deliveries: { id: string; state: string }[]; hiddenSettled?: number };
+
+test("queue discard --peer clears the peer's unsettled failed rows in one call, with a recorded reason, and leaves other peers alone (#1096)", async () => {
+  const f = await rig();
+  for (let i = 0; i < 4; i++) failedRow(f, `failed-codex-${i}`, "codex", `refused ${i}`);
+  failedRow(f, "failed-kimi", "kimi", "another peer's failure");
+  for (let i = 0; i < 2; i++) f.daemon.bus.publish(newEnvelope("user", `queued for codex ${i}`, { to: ["codex"] }));
+  // count only: nothing changes, and the kinds are named
+  const dry = await cli(f.root, ["queue", "discard", "--peer", "codex", "--reason", "clearing"]);
+  expect(dry.code, dry.stderr).toBe(0);
+  expect(dry.stdout).toContain("6 deliveries for codex (2 queued and 4 failed); nothing discarded");
+  expect(f.daemon.bus.queueList("codex").filter(r => r.state === "failed")).toHaveLength(4);
+  // with --yes: every queued and failed row of that peer is discarded with the reason
+  const real = await cli(f.root, ["queue", "discard", "--peer", "codex", "--reason", "failed backlog cleared by the person", "--yes"]);
+  expect(real.code, real.stderr).toBe(0);
+  expect(real.stdout).toContain("discarded 6 of 6 deliveries for codex (2 queued and 4 failed)");
+  const after = f.daemon.bus.queueList("codex");
+  expect(after.filter(r => r.state === "failed")).toHaveLength(0);
+  expect(after.filter(r => r.state === "discarded").length).toBeGreaterThanOrEqual(6);
+  expect(after.filter(r => r.id.startsWith("failed-codex-")).every(r => r.state === "discarded" && /failed backlog cleared by the person/.test(String(r.reason)))).toBe(true);
+  // the same record `queue resolve --action discard` writes, so the row is now settled history
+  expect(journalOf(f).resolution("failed-codex-0")).toMatchObject({ action: "discard", reason: "failed backlog cleared by the person", actor: "user" });
+  expect(f.daemon.bus.queueList("kimi").find(r => r.id === "failed-kimi")?.state).toBe("failed"); // another peer's failed row is untouched
+  // a second run finds nothing left to clear
+  const again = await cli(f.root, ["queue", "discard", "--peer", "codex", "--reason", "again", "--yes"]);
+  expect(again.stdout).toContain("discarded 0 of 0 queued deliveries for codex");
+});
+
+test("a failed row that a retry or a resolution already settled is not discarded again, and --state selects exactly one kind (#1096)", async () => {
+  const f = await rig();
+  failedRow(f, "failed-open", "codex", "unsettled");
+  failedRow(f, "failed-settled", "codex", "settled by a retry");
+  const settled = f.daemon.bus.queueShow("failed-settled")!;
+  // mark it settled the way a retry does: a resolution row, state stays failed
+  journalOf(f).db.run("INSERT INTO resolution_history (project_id, delivery_id, observed_revision, action, reason, result_revision, result_state, actor, peer, original_ids) VALUES (?, ?, ?, 'retry', 'redelivered once', ?, 'failed', 'user', 'codex', '[]')", journalOf(f).projectId, "failed-settled", settled.revision, settled.revision);
+  const dry = await f.person.request({ t: "queue", op: "discard", peer: "codex", states: ["failed"] });
+  expect(dry).toMatchObject({ ok: true, count: 1, byState: { failed: 1 } }); // only the unsettled one
+  const real = await f.person.request({ t: "queue", op: "discard", peer: "codex", states: ["failed"], confirmed: true, reason: "only the open one" });
+  expect(real).toMatchObject({ ok: true, discarded: 1, refused: 0 });
+  expect(f.daemon.bus.queueShow("failed-open")!.state).toBe("discarded");
+  expect(f.daemon.bus.queueShow("failed-settled")!.state).toBe("failed"); // the retry's parent is left as history
+  // an explicit single kind never takes another: --state needs_review leaves failed rows alone
+  failedRow(f, "failed-again", "codex", "another");
+  const only = await cli(f.root, ["queue", "discard", "--peer", "codex", "--state", "needs_review", "--reason", "x", "--yes"]);
+  expect(only.stdout).toContain("discarded 0 of 0 needs_review deliveries for codex");
+  expect(f.daemon.bus.queueShow("failed-again")!.state).toBe("failed");
+  // the old single-state wire form keeps its meaning, and a bad kind names the allowed ones
+  expect(await f.person.request({ t: "queue", op: "discard", peer: "codex", state: "queued" })).toMatchObject({ ok: true, state: "queued", count: 0 });
+  expect((await f.person.request({ t: "queue", op: "discard", peer: "codex", state: "failed" })).error).toBe("state is queued or needs_review");
+  expect((await f.person.request({ t: "queue", op: "discard", peer: "codex", states: ["completed"] })).error).toBe("states is a list of queued, needs_review, failed");
+  expect((await f.person.request({ t: "queue", op: "discard", peer: "codex", states: [] })).error).toBe("states is a list of queued, needs_review, failed");
+  expect((await f.person.request({ t: "queue", op: "discard", peer: "codex", states: ["failed", "failed"] })).error).toBe("states is a list of queued, needs_review, failed");
+  expect((await f.person.request({ t: "queue", op: "discard", peer: "codex", states: ["failed"], state: "queued" })).error).toBe("give state or states, not both");
+});
+
+test("a failed row can be discarded while its peer is busy, because it ran nothing (#1096)", async () => {
+  const f = await rig();
+  const agy = await ControlClient.connect(f.stateDir, { role: "peer", peer: "claude", channel: false });
+  cleanup.push(() => agy.close());
+  await until(() => f.daemon.bus.peers.get("claude")?.pullOnly === true);
+  (f.daemon.bus.peers.get("claude") as unknown as { nativeStarted(session: string): void }).nativeStarted("fixture");
+  expect(f.daemon.bus.stateOf("claude")).toBe("busy");
+  failedRow(f, "failed-claude", "claude", "refused while busy");
+  const row = f.daemon.bus.queueShow("failed-claude")!;
+  const ok = await f.person.request({ t: "queue", op: "resolve", id: row.id, revision: row.revision, action: "discard", reason: "busy peer, failed row" });
+  expect(ok.ok, JSON.stringify(ok)).toBe(true);
+  expect(f.daemon.bus.queueShow("failed-claude")!.state).toBe("discarded");
+  // the busy fence still holds for the other resolutions of a failed row
+  failedRow(f, "failed-claude-2", "claude", "second");
+  const second = f.daemon.bus.queueShow("failed-claude-2")!;
+  const completed = await f.person.request({ t: "queue", op: "resolve", id: second.id, revision: second.revision, action: "completed", reason: "x" });
+  expect(completed.ok).toBe(false); expect(completed.error).toMatch(/^peer busy:/);
+});
+
+test("queue list hides rows a resolution already settled, counts them, and --all shows them (#1096)", async () => {
+  const f = await rig();
+  failedRow(f, "failed-open", "codex", "still open");
+  failedRow(f, "failed-discarded", "codex", "to be discarded");
+  const row = f.daemon.bus.queueShow("failed-discarded")!;
+  expect((await f.person.request({ t: "queue", op: "resolve", id: row.id, revision: row.revision, action: "discard", reason: "settled" })).ok).toBe(true);
+  const shown = await deliveries(f, "codex");
+  expect(shown.deliveries.map(r => r.id)).toEqual(["failed-open"]);
+  expect(shown.hiddenSettled).toBe(1);
+  const all = await deliveries(f, "codex", true);
+  expect(all.deliveries.map(r => r.id).sort()).toEqual(["failed-discarded", "failed-open"]);
+  expect(all.hiddenSettled).toBeUndefined();
+  // through the CLI: the table has the open row only, the count and the way to see the rest are on stderr, and --all prints both
+  const plain = await cli(f.root, ["queue", "list", "--peer", "codex"]);
+  expect(plain.code, plain.stderr).toBe(0);
+  expect(plain.stdout).toContain("failed-open"); expect(plain.stdout).not.toContain("failed-discarded");
+  expect(plain.stderr).toContain("1 settled delivery hidden (already resolved); ahub queue list --all shows them");
+  const everything = await cli(f.root, ["queue", "list", "--peer", "codex", "--all"]);
+  expect(everything.stdout).toContain("failed-open"); expect(everything.stdout).toContain("failed-discarded");
+  expect(everything.stderr).not.toContain("hidden");
+  // an unresolved queued or needs_review row is never hidden
+  f.daemon.bus.publish(newEnvelope("user", "still queued", { to: ["codex"] }));
+  expect((await deliveries(f, "codex")).deliveries.some(r => r.state === "queued")).toBe(true);
+  // a bad flag value is refused with the allowed values
+  expect((await f.person.request({ t: "queue", op: "list", peer: "codex", all: "yes" })).error).toBe("all is true or false");
+});
+
+test("an agent shell may read queue list --all, and the help rows match the parser (#1096)", () => {
+  expect(classifyPeerCommand("queue", ["list", "--all"])).toBe("allowed");
+  expect(classifyPeerCommand("queue", ["list", "--all", "--peer", "codex", "--json"])).toBe("allowed");
+  expect(classifyPeerCommand("queue", ["discard", "--peer", "codex", "--yes"])).toBe("conductor"); // the bulk clear is still the person's or the conductor's
+  const list = HELP.find(entry => entry.usage.startsWith("ahub queue list"))!, discard = HELP.find(entry => entry.usage.startsWith("ahub queue discard"))!;
+  expect(list.usage).toContain("[--all]"); expect(list.description).toContain("--all shows them");
+  expect(discard.usage).toContain("[--state queued|needs_review|failed]"); expect(discard.description).toContain("unsettled failed");
 });

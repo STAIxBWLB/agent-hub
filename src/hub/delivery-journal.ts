@@ -1037,6 +1037,12 @@ export class DeliveryJournal {
       return result;
     })();
   }
+  /** #1096: the ids of every delivery an operator action (completed, retry, discard) already settled. One query, so a list of any length costs one read. */
+  resolvedIds(): Set<string> {
+    this.ensureOpen();
+    const rows = this.db.query("SELECT DISTINCT delivery_id FROM resolution_history WHERE project_id=?").all(this.projectId) as { delivery_id: string }[];
+    return new Set(rows.map(row => row.delivery_id));
+  }
   resolution(id: string): { action: JournalResolution; reason: string; observedRevision: number; actor: string } | undefined {
     const row = this.db.query("SELECT action,reason,observed_revision,actor FROM resolution_history WHERE project_id=? AND delivery_id=? ORDER BY id DESC LIMIT 1").get(this.projectId, id) as { action: JournalResolution; reason: string; observed_revision: number; actor: string } | null;
     return row ? { action: row.action, reason: row.reason, observedRevision: row.observed_revision, actor: row.actor } : undefined;

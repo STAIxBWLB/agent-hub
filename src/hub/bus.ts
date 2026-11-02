@@ -633,6 +633,8 @@ export class Bus {
 
   /** #1096: the operator action that settled this delivery, when one did (`queue show` reads it to say what is left to do). */
   deliveryResolution(id: string): JournalResolution | undefined { return this.journal && !this.storageError ? this.journal.resolution(id)?.action : undefined; }
+  /** #1096: ids of the deliveries an operator action already settled, in one read; empty without a journal. `queue list` hides them unless asked for all. */
+  settledIds(): Set<string> { return this.journal && !this.storageError ? this.journal.resolvedIds() : new Set(); }
 
   resolveDelivery(id: string, revision: number, action: "completed" | "retry" | "discard", reason: string, actor: string = "user"): void {
     if (!this.journal || this.storageError) throw new Error("delivery journal unavailable");
@@ -662,7 +664,9 @@ export class Bus {
     // discarding it. `dispatching` and `accepted` stay refused, and every other resolution keeps the busy fence.
     if (["dispatching", "accepted"].includes(record.state)) throw new Error("active delivery cannot be resolved");
     const queuedDiscard = record.state === "queued" && action === "discard";
-    if (this.peers.get(record.peer)?.state === "busy" && !recipientConsent && !queuedDiscard) throw new Error("peer busy: its delivery cannot be resolved while it works");
+    // #1096: a `failed` row was refused before it ran and discarding it touches no queue, so a busy peer has nothing in flight to protect either.
+    const failedDiscard = record.state === "failed" && action === "discard";
+    if (this.peers.get(record.peer)?.state === "busy" && !recipientConsent && !queuedDiscard && !failedDiscard) throw new Error("peer busy: its delivery cannot be resolved while it works");
     if (record.revision !== revision) throw new Error("stale delivery revision");
     if (record.state === "queued" && action === "retry") throw new Error("queued delivery is already scheduled");
     if (action === "retry" && !remoteId(record.peer) && (this.queues.get(record.peer)?.length ?? 0) + record.originals.length > this.opts.queueCap) throw new Error("recipient queue is full");

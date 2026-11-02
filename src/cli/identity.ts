@@ -79,7 +79,7 @@ const sdlcReadDisplayFlags = ["--json", "--color=auto", "--color=always", "--col
 const peerReadForms: Readonly<Record<string, Readonly<Record<string, PeerReadForm>>>> = {
   specs: { list: { displayFlags: ["--json"] }, check: { valueFlags: ["--base"], displayFlags: ["--json", "--require-fresh"] }, covers: { positional: 2000, minimum: 1, displayFlags: [] } },
   room: { list: { displayFlags: ["--json"] }, status: { positional: 1, displayFlags: ["--json"] } },
-  queue: { list: { valueFlags: ["--peer"], displayFlags: publicReadDisplayFlags } },
+  queue: { list: { valueFlags: ["--peer"], displayFlags: [...publicReadDisplayFlags, "--all"] } },
   roster: { "": { displayFlags: publicReadDisplayFlags } },
   settings: { "": { displayFlags: ["--json"] }, list: { displayFlags: ["--json"] }, get: { positional: 1, minimum: 1, displayFlags: ["--json"] } },
   // #814 renders these reads for people and keeps JSON as an explicit data format.
