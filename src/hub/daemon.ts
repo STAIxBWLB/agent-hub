@@ -2286,15 +2286,15 @@ export async function startDaemon(opts: DaemonOptions) {
       classify: (title, detail) => {
         const classify = () => inference?.triage(title, detail) ?? Promise.resolve(undefined);
         const inputPublic = boundedSafe(`${title}\n${detail}`);
-        return controlWriteTelemetry ? controlWriteTelemetry.observe("external", () => inputPublic, classify) : classify();
+        return controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, inputPublic), classify) : classify();
       },
-      onCampus: () => controlWriteTelemetry ? controlWriteTelemetry.observe("external", () => true, () => onCampus()) : onCampus(),
+      onCampus: () => controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, true), () => onCampus()) : onCampus(),
     },
     // #334: the hub model's split, validated against the same `hub_backlog_split` parts schema a planner's call is, and the source registry for `--source`.
     intake: { split: (system, user, opts) => {
       const split = () => inference?.split(system, user, opts) ?? Promise.resolve(undefined);
       const inputPublic = boundedSafe(`${system}\n${user}`);
-      return controlWriteTelemetry ? controlWriteTelemetry.observe("external", () => inputPublic, split) : split();
+      return controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, inputPublic), split) : split();
     }, sourceKnown: id => sourceRegistry.get(id) !== undefined,
       partsSchema: () => profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off").find(tool => tool.name === "hub_backlog_split")?.inputSchema.properties.parts },
     studySource: id => sourceRegistry.get(id),
@@ -2303,7 +2303,7 @@ export async function startDaemon(opts: DaemonOptions) {
     piiScreen: (text) => {
       const screen = () => (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text);
       const inputPublic = boundedSafe(text);
-      return controlWriteTelemetry ? controlWriteTelemetry.observe("external", () => inputPublic, screen) : screen();
+      return controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, inputPublic), screen) : screen();
     },
     recordScreen: (record) => event({ type: "pii_screen", ...record }),
     quota: (): ReturnType<Budget["headroom"]> => projectBudgetHeadroom(budget.headroom(), accountMembers), // budget is built below; this runs at assignment time
@@ -2871,11 +2871,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       return { tree, head, commit, reflog, budget, repo, ms: Math.round(performance.now() - t0) };
     };
-    const privacyCurrent = () => {
-      try { return !peer || !turns.get(peer)?.private && !contextPii(peer); }
-      catch { return false; }
-    };
-    return controlWriteTelemetry ? controlWriteTelemetry.observe("snapshot", privacyCurrent, captureSnapshot) : captureSnapshot();
+    return controlWriteTelemetry ? controlWriteTelemetry.observe("snapshot", controlWritePrivacyGuard(true, true, peer as PeerId | undefined), captureSnapshot) : captureSnapshot();
   };
   function privateSnapshotWindow(): boolean {
     return [...turns.values()].some(turn => turn.private) || board.list().some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
@@ -4871,7 +4867,7 @@ export async function startDaemon(opts: DaemonOptions) {
         finally { writeStatus(); } // committed task transitions refresh token-free attention even without bus activity
       }
     };
-    if (controlWriteTelemetry) controlWriteTelemetry.observe("queue-hook", () => !tasks.isPii(task) && tasks.publicMetadataText(String(task.id)), changed);
+    if (controlWriteTelemetry) controlWriteTelemetry.observe("queue-hook", controlWritePrivacyGuard(true, true, undefined, task.id), changed);
     else changed();
   };
 
