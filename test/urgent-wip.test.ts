@@ -71,22 +71,39 @@ test("a non-urgent accept at the limit is still refused and the refusal separate
   expect(board.get(offer.id)).toMatchObject({ owner: "codex" });
 });
 
-test("an urgent accept never takes accepted work, another urgent offer or pinned work, and then refuses with the split (#1080)", () => {
+test("an urgent accept never takes back another urgent offer (#1080)", () => {
   const { board, tasks, running, offered } = rig(2);
   const active = running("accepted one");
   const otherUrgent = offered("other urgent offer", true);
-  const pinned = offered("pinned offer");
-  board.plan(pinned.id, "user", { pinned: true }, 0, "person pinned it");
   const urgent = offered("urgent work", true);
-  // limit 2: active + otherUrgent + pinned are all in the way; none may be taken back
+  // limit 2: the only offer in the way is itself urgent, so the only way to make room is refused
   let failure: unknown;
   try { tasks.accept("codex", urgent.id); } catch (error) { failure = error; }
   expect(failure).toBeInstanceOf(PreEffectToolRefusal);
   expect((failure as Error).message).toContain(`accepted #${active.id}`);
-  expect((failure as Error).message).toContain(`#${otherUrgent.id}`);
+  expect((failure as Error).message).toContain(`offered, not yet accepted #${otherUrgent.id}`);
   expect(board.get(otherUrgent.id)!.owner).toBe("codex");
+  expect(board.get(urgent.id)!.state).toBe("proposed");
+});
+
+test("an urgent accept never takes back a person-pinned offer (#1080)", () => {
+  const { board, tasks, running, offered } = rig(2);
+  running("accepted one");
+  const pinned = offered("pinned offer");
+  board.plan(pinned.id, "user", { pinned: true }, 0, "person pinned it");
+  expect(board.get(pinned.id)!.pinned).toBe(true);
+  const urgent = offered("urgent work", true);
+  expect(() => tasks.accept("codex", urgent.id)).toThrow(PreEffectToolRefusal);
   expect(board.get(pinned.id)!.owner).toBe("codex");
   expect(board.get(urgent.id)!.state).toBe("proposed");
+});
+
+test("an urgent accept never takes back accepted work (#1080)", () => {
+  const { board, tasks, running, offered } = rig(1);
+  const active = running("accepted one");
+  const urgent = offered("urgent work", true);
+  expect(() => tasks.accept("codex", urgent.id)).toThrow(PreEffectToolRefusal);
+  expect(board.get(active.id)).toMatchObject({ owner: "codex", state: "in_progress" });
 });
 
 test("a refused urgent accept changes nothing, not even an offer it could have taken (#1080)", () => {
