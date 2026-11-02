@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, readdirSync, renameSync, rmSync, type Dirent, type Stats } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { verifyPackage } from "../cli/recovery-package.ts";
+import { RELEASE_CHECKER, verifyPackage } from "../cli/recovery-package.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { childEnv } from "./child-process.ts";
 import { hubHome, realPath } from "./project.ts";
@@ -246,7 +246,9 @@ function knownLayout(root: string, directories: readonly string[], files: readon
   }
 }
 function captureLayout(root: string): void {
-  knownLayout(root, ["src", "plugins", "templates", ".claude-plugin"], ["package.json", "README.md", "LICENSE", "CHANGELOG.md"], ["node_modules"]);
+  knownLayout(root, ["src", "plugins", "templates", ".claude-plugin"], ["package.json", "README.md", "LICENSE", "CHANGELOG.md"], ["node_modules", "scripts"]);
+  // #667: captures made before the release checker was carried have no scripts directory; when present it holds exactly the checker.
+  if (optionalInfo(join(root, "scripts"))) knownLayout(join(root, "scripts"), [], [basename(RELEASE_CHECKER)]);
   const modules = join(root, "node_modules");
   if (optionalInfo(modules)) {
     knownLayout(modules, ["@staix"], []); const scope = join(modules, "@staix"); knownLayout(scope, ["agent-mem"], []);

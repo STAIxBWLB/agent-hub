@@ -1,6 +1,7 @@
 import type { Task } from "./board.ts";
 import type { Release } from "./planning.ts";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { childEnv, stopOwnedProcess } from "./child-process.ts";
 import { hubGitSync } from "./git.ts";
@@ -23,7 +24,7 @@ const sdlcGh: SdlcGh = async (...args) => {
 export interface DocEvidence { schemaVersion: 1; head?: string; version?: string; documents: { path?: string; state: "fresh" | "stale" | "nonancestor" | "unknown"; verifiedAgainst?: string; commits?: number; dirty?: boolean }[]; errors: number; fresh: boolean; }
 export interface ReleaseReadiness { /** #481 AC12: interval, approval-to-release lead time and hotfix rate over shipped releases, filled by Tasks.releaseReadiness. */ releaseMetrics?: ReturnType<typeof releaseMetrics>; repo: string; head?: string; version?: string; tag?: string; tagCommit?: string; commits: string[]; mergedPrs: { pr: number; commit: string }[]; documents?: DocEvidence; liveIssues: { id: number; state: "open" | "closed" | "unknown" }[]; blockers: string[]; sourceReady: boolean; native: "unverified"; ready: false; }
 export type ReleaseGit = (args: string[]) => { code: number; stdout: string };
-export interface ReleaseReaders { gh?: SdlcGh; git?: ReleaseGit; docs?: (root: string, timeoutMs: number) => Promise<DocEvidence | undefined>; }
+export interface ReleaseReaders { gh?: SdlcGh; git?: ReleaseGit; docs?: (root: string, timeoutMs: number) => Promise<DocEvidence | undefined>; /** Test seam (#667): the checker program the default docs reader spawns. */ checker?: string; }
 const SHA = /^[0-9a-f]{40}$/;
 const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -34,21 +35,31 @@ function tagMatches(target: unknown, commit: string): boolean {
   return typeof oid === "string" && SHA.test(oid) && oid === commit;
 }
 /** Package-owned checker only; no caller-supplied program or document text is executed. */
-export function readDocEvidence(root: string, timeoutMs = 10_000): Promise<DocEvidence | undefined> {
+/** #667: why no evidence could be read, apart from evidence that says the documents are stale. */
+export type DocEvidenceRead = { evidence: DocEvidence } | { unavailable: string };
+const CHECKER_PATH = fileURLToPath(new URL("../../scripts/check-docs.mjs", import.meta.url));
+const CHECKER_MISSING = "the documentation checker scripts/check-docs.mjs is missing from the running hub, which predates the fix that carries it into captured runtimes; record consent from a hub started from a checkout or a release that carries the checker (docs/sdlc.md, release preparation)";
+const CHECKER_FAILED = "the documentation checker in the running hub did not finish with readable evidence (it timed out, crashed or printed unreadable output); run `node scripts/check-docs.mjs --json --committed` in the candidate checkout to see why, then retry";
+export async function readDocEvidence(root: string, timeoutMs = 10_000): Promise<DocEvidence | undefined> {
+  const read = await readDocEvidenceDetailed(root, timeoutMs);
+  return "evidence" in read ? read.evidence : undefined;
+}
+export function readDocEvidenceDetailed(root: string, timeoutMs = 10_000, checker = CHECKER_PATH): Promise<DocEvidenceRead> {
+  if (!existsSync(checker)) return Promise.resolve({ unavailable: CHECKER_MISSING });
   return new Promise(resolve => {
-    const child = spawn(process.execPath, [fileURLToPath(new URL("../../scripts/check-docs.mjs", import.meta.url)), root, "--json", "--committed"], { cwd: root, env: childEnv(), detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(process.execPath, [checker, root, "--json", "--committed"], { cwd: root, env: childEnv(), detached: true, stdio: ["ignore", "pipe", "ignore"] });
     let output = "", invalid = false;
     const stop = () => { invalid = true; void stopOwnedProcess(child, { group: true }).catch(() => {}); };
     const timer = setTimeout(stop, Math.max(1, Math.min(10_000, timeoutMs)));
     child.stdout?.setEncoding("utf8"); child.stdout?.on("data", chunk => { output += chunk; if (Buffer.byteLength(output) > 256 * 1024) { output = ""; stop(); } });
-    child.once("error", () => { invalid = true; clearTimeout(timer); resolve(undefined); });
+    child.once("error", () => { invalid = true; clearTimeout(timer); resolve({ unavailable: CHECKER_FAILED }); });
     child.once("close", (code, signal) => {
-      clearTimeout(timer); if (invalid || signal || (code !== 0 && code !== 1)) return resolve(undefined);
+      clearTimeout(timer); if (invalid || signal || (code !== 0 && code !== 1)) return resolve({ unavailable: CHECKER_FAILED });
       try {
         const data = JSON.parse(output);
-        if (data.schemaVersion !== 1 || !Array.isArray(data.documents) || data.documents.length > 128 || !Number.isSafeInteger(data.errors) || data.errors < 0 || typeof data.fresh !== "boolean" || (data.head !== undefined && !SHA.test(data.head)) || (data.version !== undefined && !VERSION.test(data.version)) || data.documents.some((d: {state?:string}) => !["fresh","stale","nonancestor","unknown"].includes(d.state ?? ""))) return resolve(undefined);
-        resolve(data);
-      } catch { resolve(undefined); }
+        if (data.schemaVersion !== 1 || !Array.isArray(data.documents) || data.documents.length > 128 || !Number.isSafeInteger(data.errors) || data.errors < 0 || typeof data.fresh !== "boolean" || (data.head !== undefined && !SHA.test(data.head)) || (data.version !== undefined && !VERSION.test(data.version)) || data.documents.some((d: {state?:string}) => !["fresh","stale","nonancestor","unknown"].includes(d.state ?? ""))) return resolve({ unavailable: CHECKER_FAILED });
+        resolve({ evidence: data });
+      } catch { resolve({ unavailable: CHECKER_FAILED }); }
     });
   });
 }
@@ -101,8 +112,10 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
       } catch { report.blockers.push("merged PR coverage unknown or truncated"); break; }
     }
   }
-  const left = deadline - performance.now(); report.documents = left > 0 ? await (readers.docs ?? readDocEvidence)(root,Math.min(10_000,left)) : undefined;
-  if (!report.documents || report.documents.head !== head || !report.documents.fresh || report.documents.errors || report.documents.documents.some(d => d.state !== "fresh")) report.blockers.push("documentation freshness or ancestry is unknown or stale");
+  const left = deadline - performance.now(); report.documents = left > 0 ? await (readers.docs ?? ((dir, ms) => readDocEvidenceDetailed(dir, ms, readers.checker).then(read => "evidence" in read ? read.evidence : undefined)))(root,Math.min(10_000,left)) : undefined;
+  const checkerMissing = !readers.docs && !existsSync(readers.checker ?? CHECKER_PATH); // #667: a hub without the checker says so instead of calling the documents stale
+  if (checkerMissing) report.blockers.push("documentation checker unavailable in the running hub: " + CHECKER_MISSING);
+  else if (!report.documents || report.documents.head !== head || !report.documents.fresh || report.documents.errors || report.documents.documents.some(d => d.state !== "fresh")) report.blockers.push("documentation freshness or ancestry is unknown or stale");
   if (!liveIssues.length) report.blockers.push("native verification ledger unspecified");
   for (const id of liveIssues) {
     const reply = await gh(["issue","view",String(id),"--repo",repo,"--json","number,state"]); let state: "open"|"closed"|"unknown" = "unknown";
