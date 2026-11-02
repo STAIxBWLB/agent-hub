@@ -49,7 +49,8 @@ test("selected task writes replay one result by request ID while unrelated opera
     expect(first).toMatchObject({ ok: true, requestId });
 
     const changedActor = await f.person.request({ t: "task", op: "hub_task_propose", args, requestId });
-    expect(changedActor).toMatchObject({ ok: false, outcome: "unknown", requestId });
+    expect(changedActor).toMatchObject({ ok: false, outcome: "refused", requestId });
+    expect(changedActor.error).toContain("This attempt did not run");
     expect(f.board.list().filter(task => task.title === args.title)).toHaveLength(1);
 
     const proposed = f.board.propose(USER, { title: "synthetic review fixture", class: "implement", refs: { paths: ["src/hub/bus.ts"] } });
@@ -95,7 +96,8 @@ test("selected task writes replay one result by request ID while unrelated opera
     expect(f.board.get(piiReview.id)?.history.filter(entry => entry.event === "approved")).toHaveLength(1);
 
     const invalid = await f.codex.request({ t: "task", op: "hub_task_propose", args: { title: "different payload", class: "implement" }, requestId });
-    expect(invalid).toMatchObject({ ok: false, outcome: "unknown", requestId });
+    expect(invalid).toMatchObject({ ok: false, outcome: "refused", requestId });
+    expect(invalid.error).toContain("This attempt did not run");
     expect(f.board.list().filter(task => task.title === "different payload")).toHaveLength(0);
   } finally { f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
 });
