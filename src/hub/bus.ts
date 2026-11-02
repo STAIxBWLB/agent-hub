@@ -626,7 +626,8 @@ export class Bus {
     if (!row || row.peer !== peer) return refuse();
     const previous = this.journal.resolution(id);
     if (previous) {
-      if (previous.actor !== actor || previous.action !== action || previous.reason !== cleanReason || (revision !== previous.observedRevision && revision !== row.revision)) return refuse();
+      if (previous.actor !== actor || previous.action !== action || previous.reason !== cleanReason) return refuse();
+      if (revision !== previous.observedRevision && revision !== row.revision) return refuse("held delivery revision changed; read hub_inbox again for the current revision");
       this.resolveDelivery(id, revision, action, cleanReason, actor);
       return;
     }
