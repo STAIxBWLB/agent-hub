@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runSpecs } from "../src/cli/specs.ts";
@@ -68,6 +68,30 @@ test("specs CLI rejects malformed flags with a cause and next step", () => {
   for (const args of [["stamp", "core"], ["check", "--unknown"], ["covers"], ["list", "file.md"]]) {
     const result = invoke(root, args); expect(result.code).toBe(1); expect(result.stderr.join("\n")).toContain("usage:");
   }
+});
+
+test("a deleted tracked source symlink is stale and only require-fresh fails", () => {
+  const { root, git } = fixture();
+  symlinkSync("core.ts", join(root, "src/link.ts")); git("add", "."); git("commit", "-qm", "tracked source symlink");
+  const stamp = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "design.md"), `---\nid: product\ntype: goal\ntitle: Product\npaths: [src/link.ts]\nverified-against: ${stamp}\n---\nDesign.\n`);
+  git("add", "."); git("commit", "-qm", "stamp symlink scope");
+  rmSync(join(root, "src/link.ts"));
+  const result = invoke(root, ["check", "--json"]), report = JSON.parse(result.stdout.join("\n"));
+  expect(result.code).toBe(0); expect(report.errors).toBe(0);
+  expect(report.freshness[0]).toMatchObject({ state: "stale", commitsSince: 0, dirty: true });
+  expect(invoke(root, ["check", "--require-fresh"]).code).toBe(1);
+});
+
+test("a source path behind a replaced ancestor symlink remains unknown", () => {
+  const { root, git } = fixture(), stamp = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "design.md"), `---\nid: product\ntype: goal\ntitle: Product\npaths: [src/core.ts]\nverified-against: ${stamp}\n---\nDesign.\n`);
+  git("add", "."); git("commit", "-qm", "stamp regular source scope");
+  renameSync(join(root, "src"), join(root, "original-src")); symlinkSync("original-src", join(root, "src"));
+  const result = invoke(root, ["check", "--json"]), report = JSON.parse(result.stdout.join("\n"));
+  expect(result.code).toBe(1);
+  expect(report.items.some((item: { code: string }) => item.code === "freshness-unavailable")).toBe(true);
+  expect(report.freshness[0].state).toBe("unknown");
 });
 
 test("warning-only spec checks succeed while malformed specs fail", () => {

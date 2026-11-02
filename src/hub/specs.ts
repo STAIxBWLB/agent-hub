@@ -634,7 +634,7 @@ export class SpecsEngine {
         const rel = relative(this.root, absolute);
         if (!rel || rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) return undefined;
         let info: Stats;
-        try { info = this.safeStat(file!, mode === "120000"); } catch (error) { if ((error as { code?: string }).code === "ENOENT" && mode !== "120000") return true; return undefined; }
+        try { info = this.safeStat(file!, mode === "120000"); } catch (error) { if ((error as { code?: string }).code === "ENOENT") return true; return undefined; }
         let bytes: Buffer;
         if (mode === "120000") { if (!info.isSymbolicLink()) return true; bytes = readlinkSync(absolute, { encoding: "buffer" }); }
         else { if (!info.isFile() || info.isSymbolicLink()) return true; if (info.size > 4 * 1024 * 1024) return undefined; bytes = readFileSync(absolute); }
