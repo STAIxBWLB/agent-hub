@@ -70,7 +70,7 @@ import { inspectProject, startProject, stopProject, runProjectDaemon } from "../
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import { OmniRoute } from "../omniroute/client.ts";
-import { init, initSettingRows, planInit } from "./init.ts";
+import { autonomyInheritanceChange, init, initSettingRows, planInit } from "./init.ts";
 import { INIT_USAGE, parseInitSettings } from "./init-settings.ts";
 import { promptGate, runInitPrompt, settingLines, shadowOffered, type InitAnswers } from "./init-prompt.ts";
 import { loadPacks } from "../hub/packs.ts";
@@ -1093,8 +1093,9 @@ const commands: Record<string, () => Promise<void> | void> = {
       const preview = (answers: InitAnswers): string[] => {
         const rows = initSettingRows(cwd, answers.profile, answers.shadow, answers.releaseGuard, answers.request);
         const plan = planInit(cwd, answers.profile, answers.shadow, answers.releaseGuard, answers.request);
-        // The same autonomy-inheritance row `--dry-run` shows: a new project inherits the trusted machine preset after the writes unless the person answered off, so the plan they approve must name it.
-        if (answers.request.autonomy !== "off" && machine.enabled) plan.push({ action: existsSync(join(cwd, ".agenthub/config.local.json")) ? "modify" : "create", path: join(cwd, ".agenthub/config.local.json"), reason: "inherit the trusted machine autonomy preset; consent is checked at daemon startup" });
+        // The same autonomy-inheritance row `--dry-run` shows, from the one helper: a new project inherits the trusted machine preset after the writes unless the answer was off.
+        const inherit = autonomyInheritanceChange(cwd, machine.enabled, answers.request.autonomy);
+        if (inherit) plan.push(inherit);
         return [...plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`), ...settingLines(rows)];
       };
       let result: Awaited<ReturnType<typeof runInitPrompt>>;
@@ -1112,7 +1113,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       const plan = planInit(cwd, requestedProfile, shadow, releaseGuard, request);
       const rows = initSettingRows(cwd, requestedProfile, shadow, releaseGuard, request);
       const defaults = readAutonomyDefaults(hubHome(), [cwd]);
-      if (inheritAutonomy && defaults.enabled) plan.push({ action: existsSync(join(cwd, ".agenthub/config.local.json")) ? "modify" : "create", path: join(cwd, ".agenthub/config.local.json"), reason: "inherit the trusted machine autonomy preset; consent is checked at daemon startup" });
+      const inherit = inheritAutonomy ? autonomyInheritanceChange(cwd, defaults.enabled, request.autonomy) : undefined;
+      if (inherit) plan.push(inherit);
       if (defaults.notice) console.error(defaults.notice);
       // Without a settings flag the preview is the bare list of file rows, as it always was; with one it is { changes, settings }.
       if (args.includes("--json")) return console.log(JSON.stringify(asked ? { changes: plan, settings: rows } : plan, null, 2));

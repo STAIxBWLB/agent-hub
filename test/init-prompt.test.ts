@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
 import { INIT_SETTINGS } from "../src/cli/init-settings.ts";
-import { initQuestions, promptGate, questionLine, runInitPrompt, shadowOffered, type InitAnswers, type InitPromptPorts } from "../src/cli/init-prompt.ts";
+import { initQuestions, promptGate, questionLine, runInitPrompt, shadowOffered, shownDefault, type InitAnswers, type InitPromptPorts } from "../src/cli/init-prompt.ts";
+import { loadConfig } from "../src/hub/daemon.ts";
+import { loadSdlc } from "../src/hub/sdlc.ts";
+import { autonomyInheritanceChange } from "../src/cli/init.ts";
 import { HELP } from "../src/cli/help.ts";
 
 // #1065 T2 (AC4, AC5): the guided prompt of `ahub init`, scripted. A scripted terminal answers each question and the files it leads to equal the files the equivalent flags write; Ctrl-C and N write nothing;
@@ -276,3 +279,43 @@ test("the plan the person confirms names the machine autonomy inheritance the wr
   expect(off.text).not.toContain("Inherited the trusted machine autonomy default");
   expect(existsSync(join(skipped, ".agenthub/config.local.json"))).toBe(false);
 }, 90_000);
+
+test("each default the prompt shows is the value an init with no flag really leaves in effect, read back through the loaders the daemon uses (#1065 AC4 review, default drift)", () => {
+  const p = fixture(), plain = p.repo("plain");
+  expect(p.run(plain, ["init"]).exitCode).toBe(0);
+  const config = loadConfig(plain), sdlc = loadSdlc(plain);
+  const inEffect: Record<string, unknown> = {
+    "specs.enabled": config.specs.enabled, "specs.review": config.specs.review, "coordination": config.coordination, "sdlc.mode": sdlc.mode,
+    "memory.enabled": config.memory.enabled, "snapshots.enabled": config.snapshots.enabled, "pi.enabled": config.pi.enabled,
+  };
+  const shown = (id: string) => { const v = inEffect[id]; return typeof v === "boolean" ? (v ? "on" : "off") : String(v); };
+  for (const id of Object.keys(inEffect)) {
+    expect(shownDefault(id), `the bracket for ${id}`).toBe(shown(id));
+    const question = initQuestions({ shadowAvailable: false }).find(q => q.id === id);
+    expect(question, id).toBeDefined();
+    expect(questionLine(question!), id).toContain(`[${shown(id)}]`);
+  }
+  // every row of the table with a boolean or choice default is covered above, or this fails and names the row
+  for (const row of INIT_SETTINGS) if (row.id !== "start.agents") expect(Object.keys(inEffect), `${row.id} has no read-back in this test`).toContain(row.id);
+});
+
+test("a setting with no known default fails loudly instead of showing a guess (#1065 AC4 review, default drift)", () => {
+  expect(() => shownDefault("not.a.setting")).toThrow("no init setting not.a.setting");
+});
+
+test("the autonomy plan row comes from one helper: named when the machine default is trusted and the answer is not off, absent otherwise, and --dry-run shows the same row (#1065 AC4 review)", async () => {
+  const p = fixture(), seed = p.repo("seed");
+  expect(p.run(seed, ["init"]).exitCode).toBe(0);
+  expect(p.run(seed, ["autonomy", "on", "--yes"]).exitCode).toBe(0);
+  const dir = p.repo("fresh");
+  expect(autonomyInheritanceChange(dir, true, undefined)).toMatchObject({ action: "create", reason: expect.stringContaining("inherit the trusted machine autonomy preset") });
+  expect(autonomyInheritanceChange(dir, true, "inherit")).toBeDefined();
+  expect(autonomyInheritanceChange(dir, true, "off")).toBeUndefined();
+  expect(autonomyInheritanceChange(dir, false, undefined)).toBeUndefined();
+  // the CLI's --dry-run names the same row, and the guided plan names it too
+  const dry = p.run(dir, ["init", "--dry-run", "--json"]);
+  expect(dry.exitCode, `${dry.stdout}${dry.stderr}`).toBe(0);
+  expect(JSON.parse(dry.stdout.toString()).some((row: { reason: string }) => row.reason.includes("inherit the trusted machine autonomy preset"))).toBe(true);
+  const guided = await p.session(p.repo("guided"), ["init"], [...blank(ALL), "y"]);
+  expect(guided.text.slice(guided.text.indexOf("This will be written:"), guided.text.indexOf("Write this?"))).toContain("inherit the trusted machine autonomy preset");
+}, 60_000);

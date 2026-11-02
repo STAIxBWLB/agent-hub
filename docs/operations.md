@@ -998,7 +998,13 @@ any kind (`--agents`, `--coordination`, `--profile`, `--shadow` and the rest)
 means the person has chosen, so nothing is asked and the flags apply alone. An
 existing project is never asked. The questions are built from the init settings
 table (`INIT_SETTINGS`), so a setting added there is asked without another
-change, and `test/init-prompt.test.ts` fails when the two disagree. `ahub setup`
+change, and `test/init-prompt.test.ts` fails when the two disagree. The default
+in each bracket is read from where the writer gets it (`templates/config.json`,
+the loader's own defaults), and that test reads every one back through the
+loaders after a flagless `ahub init`, so a changed default cannot leave the
+prompt showing one value while Enter writes another. `--dry-run` and the
+prompt's plan take the machine-autonomy row from the same helper
+(`autonomyInheritanceChange`). `ahub setup`
 installs or updates the Claude plugin and a project-neutral PreToolUse hook in each
 Claude configuration home in use (see "Machine autonomy and Claude homes"), and
 registers the acon console plugin (see "acon console plugin"). Keep `ahub console` open when a local worker

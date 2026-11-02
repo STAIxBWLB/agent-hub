@@ -11,7 +11,11 @@
  * terminal never reach `runInitPrompt` and get defaults plus their flags (AC5).
  */
 import { INIT_SETTINGS, SDLC_MODES, SPEC_REVIEW_MODES, COORDINATION_MODES, AUTONOMY_CHOICES, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { PROFILE_NAMES } from "../hub/profiles.ts";
+import { DEFAULT_CONFIG } from "../hub/daemon.ts";
+import { DEFAULT_SPECS_CONFIG } from "../hub/specs-config.ts";
 import { START_AGENTS_ALLOWED, START_AGENTS_DEFAULT } from "../hub/start-agents.ts";
 
 /** What a prompt needs from its surroundings. `ask` resolves to `null` at the end of input and after Ctrl-C (the caller turns both into `null`); it never throws for either. */
@@ -42,6 +46,30 @@ export interface InitQuestion {
   shown: string;
   /** Reads an answer into the value to put in the answers, or throws a reason that names the allowed values. */
   read(text: string): unknown;
+}
+
+/**
+ * The defaults the brackets show, read from where the writer gets them so a change there cannot leave the prompt showing a wrong one while Enter writes the real one: the shipped
+ * `templates/config.json` for the keys it carries (memory, snapshots, each adapter switch, specs), the loader's own `DEFAULT_CONFIG` for coordination, and the specs config defaults. A key neither
+ * source has throws, naming the key, so a new row without a known default is a loud failure in `test/init-prompt.test.ts` and not a guess.
+ */
+const TEMPLATE = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "templates", "config.json"), "utf8")) as Record<string, unknown>;
+const at = (doc: unknown, path: readonly string[]): unknown => path.reduce<unknown>((node, key) => node && typeof node === "object" ? (node as Record<string, unknown>)[key] : undefined, doc);
+export function shownDefault(id: string): string {
+  const row = INIT_SETTINGS.find(entry => entry.id === id);
+  if (!row) throw new Error(`no init setting ${id}`);
+  const path = row.path as readonly string[];
+  const fromTemplate = row.file === "config.json" ? at(TEMPLATE, path) : undefined;
+  const value = fromTemplate !== undefined ? fromTemplate
+    : id === "coordination" ? DEFAULT_CONFIG.coordination
+    : id === "specs.enabled" ? DEFAULT_SPECS_CONFIG.enabled
+    : id === "specs.review" ? DEFAULT_SPECS_CONFIG.review
+    : id === "sdlc.mode" ? "off"                    // no file is written for it: the loader's own default (src/hub/sdlc.ts)
+    : row.id.endsWith(".enabled") ? false           // a legacy `<kind>.enabled` switch that the template does not carry reads as off
+    : undefined;
+  if (typeof value === "boolean") return value ? "on" : "off";
+  if (typeof value === "string") return value;
+  throw new Error(`the shown default of ${id} is unknown: add it to templates/config.json or to shownDefault`);
 }
 
 const onOff = (id: string, label: string, shown: "on" | "off"): InitQuestion => ({
@@ -81,13 +109,13 @@ export function initQuestions(context: InitQuestionContext = {}): InitQuestion[]
   const all: InitQuestion[] = [
     profile,
     agents,
-    onOff("specs.enabled", "Design specs and their freshness checks", "on"),
-    oneOf("specs.review", "Spec review mode", SPEC_REVIEW_MODES, "report"),
-    oneOf("sdlc.mode", "SDLC mode", SDLC_MODES, "off"),
-    oneOf("coordination", "Coordination", COORDINATION_MODES, "advisory"),
-    onOff("memory.enabled", "Shared memory", "on"),
-    onOff("snapshots.enabled", "Per-turn snapshots", "on"),
-    ...switches.map(row => onOff(row.id, row.describe.charAt(0).toUpperCase() + row.describe.slice(1), "off")),
+    onOff("specs.enabled", "Design specs and their freshness checks", shownDefault("specs.enabled") as "on" | "off"),
+    oneOf("specs.review", "Spec review mode", SPEC_REVIEW_MODES, shownDefault("specs.review")),
+    oneOf("sdlc.mode", "SDLC mode", SDLC_MODES, shownDefault("sdlc.mode")),
+    oneOf("coordination", "Coordination", COORDINATION_MODES, shownDefault("coordination")),
+    onOff("memory.enabled", "Shared memory", shownDefault("memory.enabled") as "on" | "off"),
+    onOff("snapshots.enabled", "Per-turn snapshots", shownDefault("snapshots.enabled") as "on" | "off"),
+    ...switches.map(row => onOff(row.id, row.describe.charAt(0).toUpperCase() + row.describe.slice(1), shownDefault(row.id) as "on" | "off")),
     oneOf("autonomy", "Machine autonomy preset", AUTONOMY_CHOICES, "inherit"),
     onOff("release-guard", "Release guard (AGENTS.md block and pre-push hook)", "off"),
     ...(context.shadowAvailable ? [onOff("shadow", "Shadow history (a folder with no Git work tree)", "off")] : []),
