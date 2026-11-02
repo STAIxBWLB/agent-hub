@@ -96,9 +96,15 @@ test("channel pull retains pause, recovery and journal hold fences (#493)", asyn
     await until(() => f.pushes.length === 1);
     const row = f.daemon.bus.queueList("claude").find(r => r.state === "dispatching")!;
     f.daemon.bus.deliveryReceipt("claude", { id: row.id, state: "needs_review", reason: "fixture uncertainty" });
-    f.daemon.bus.publish(newEnvelope("user", "must remain queued", { to: ["claude"] }));
-    expect((await f.peer.request({ t: "inbox" })).ok).toBe(false);
-    expect(f.daemon.bus.queued("claude")).toBe(1);
+    const behind = newEnvelope("user", "queued behind the held row", { to: ["claude"] });
+    f.daemon.bus.publish(behind);
+    // #1079: an explicit pull reads new work behind a needs_review hold, but never the held original, and the hold stays open.
+    const read = await f.peer.request({ t: "inbox" });
+    expect(read.ok).toBe(true);
+    expect(read.envs.map((e: Envelope) => e.id)).toEqual([behind.id]);
+    expect(read.held.rows.map((r: { id: string }) => r.id)).toEqual([row.id]);
+    expect(f.daemon.bus.queueShow(row.id)?.state).toBe("needs_review");
+    expect(f.daemon.bus.queued("claude")).toBe(0);
   } finally { await f.close(); }
 });
 

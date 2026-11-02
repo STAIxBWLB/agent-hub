@@ -104,6 +104,7 @@ test("a delivery-only local peer does not offer recipient retry and waits for pe
   await until(() => durable.list("local").some(row => row.state === "needs_review") && peer.state === "idle", "uncertain local turn");
   expect(readFileSync(join(cwd, "effect.txt"), "utf8")).toBe("saved");
   expect(model.requests[0]!.body.tools.some((tool: any) => tool.function.name === "hub_delivery_retry")).toBe(false);
+  expect(model.requests[0]!.body.tools.some((tool: any) => tool.function.name === "hub_delivery_resolve")).toBe(true);
   const held = durable.list("local").find(row => row.state === "needs_review")!;
   const followup = newEnvelope("user", "ordinary follow-up", { to: ["local"], priority: "important" });
   bus.publish(followup);

@@ -895,8 +895,8 @@ export class DeliveryJournal {
   heldDeliveryHints(peer: string) {
     this.ensureOpen();
     const count = Number((this.db.query("SELECT COUNT(*) AS n FROM deliveries WHERE project_id = ? AND peer = ? AND state = 'needs_review'").get(this.projectId, peer) as { n: number }).n);
-    const rows = this.db.query("SELECT d.id, d.created_at, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.from')) FROM json_each(d.originals) env) AS senders, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.kind')) FROM json_each(d.originals) env) AS kinds FROM deliveries d WHERE d.project_id = ? AND d.peer = ? AND d.state = 'needs_review' ORDER BY d.created_at, d.id LIMIT 33").all(this.projectId, peer) as { id: string; created_at: number; senders: string; kinds: string }[];
-    return heldDeliveryHints(rows.map(row => ({ id: row.id, createdAt: row.created_at, senders: JSON.parse(row.senders) as string[], kinds: JSON.parse(row.kinds) as Kind[] })), count);
+    const rows = this.db.query("SELECT d.id, d.revision, d.created_at, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.from')) FROM json_each(d.originals) env) AS senders, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.kind')) FROM json_each(d.originals) env) AS kinds FROM deliveries d WHERE d.project_id = ? AND d.peer = ? AND d.state = 'needs_review' ORDER BY d.created_at, d.id LIMIT 33").all(this.projectId, peer) as { id: string; revision: number; created_at: number; senders: string; kinds: string }[];
+    return heldDeliveryHints(rows.map(row => ({ id: row.id, revision: row.revision, createdAt: row.created_at, senders: JSON.parse(row.senders) as string[], kinds: JSON.parse(row.kinds) as Kind[] })), count);
   }
   /** Explicit resolutions, not automatic safe failures, consume the immutable originals' retry lineage. */
   retryEvidence(peer: string, originals: readonly Envelope[]): "unused" | "used" | "unknown" {
@@ -993,7 +993,12 @@ export class DeliveryJournal {
       if (prior) return this.get(id)!;
       const current = this.get(id);
       if (!current) throw new Error(`unknown delivery ${id}`);
-      if (actor.startsWith("peer:") && (action !== "retry" || current.peer !== actor.slice(5) || current.state !== "needs_review" || this.retryEvidence(current.peer, current.originals) !== "unused")) throw new Error("recipient retry unavailable; inspect the held delivery or ask the person");
+      if (actor.startsWith("peer:")) {
+        const peer = actor.slice(5);
+        const recipientRetry = action === "retry" && current.peer === peer && current.state === "needs_review" && this.retryEvidence(current.peer, current.originals) === "unused";
+        const ownerDisposition = (action === "completed" || action === "discard") && current.peer === peer && current.state === "needs_review";
+        if (!recipientRetry && !ownerDisposition) throw new Error("recipient delivery resolution unavailable; inspect the held delivery or ask the person");
+      }
       if (current.revision !== revision)
         throw new Error(`stale delivery revision for ${id}`);
       if (

@@ -57,9 +57,11 @@ test("delivery-only MCP sessions hide retry and ask the person while pull-only K
     try {
       const tools = await f.client.listTools();
       expect(tools.tools.some(tool => tool.name === "hub_delivery_retry")).toBe(!deliveryOnly);
+      expect(tools.tools.some(tool => tool.name === "hub_delivery_resolve")).toBe(true);
       const result = await f.client.callTool({ name: "hub_send", arguments: { text: "[FYI] delivery mode hint" } }) as any;
       expect(result.content[1].text).toContain("my-private-held");
-      expect(result.content[1].text).toContain(deliveryOnly ? "Ask the person to resolve" : "Use hub_delivery_retry");
+      expect(result.content[1].text).toContain("hub_delivery_resolve");
+      expect(result.content[1].text).toContain(deliveryOnly ? "Retry remains person-only" : "hub_delivery_retry");
       expect(JSON.stringify(result)).not.toContain("DO NOT EXPOSE PRIVATE CONTENT");
     } finally { await f.close(); }
   }
@@ -125,7 +127,7 @@ test("actual in-process local task callback carries person-resolution hints and 
     expect((refusal as Error).message).toContain("native-held"); expect((refusal as Error).message).not.toContain("NATIVE PRIVATE BODY");
     peer.setState("busy");
     await expect(taskTool("hub_delivery_retry", { delivery_id: "native-held" }, { pii: false })).rejects.toBeInstanceOf(PreEffectToolRefusal);
-    expect(result).toContain("Ask the person to resolve");
+    expect(result).toContain("hub_delivery_resolve"); expect(result).toContain("Retry remains person-only");
     expect(daemon.bus.queueShow("native-held")?.state).toBe("needs_review");
     expect(daemon.bus.queued("local")).toBe(0); expect(daemon.bus.stateOf("local")).toBe("busy");
     expect(model.requests).toHaveLength(0);
@@ -156,7 +158,7 @@ test("the actual Jcode MCP entry hides retry and keeps person-resolution hints a
     const actors: string[] = []; f.daemon.bus.tap(event => { if (event.t === "envelope") actors.push(event.env.from); });
     const result = await f.client.callTool({ name: "hub_send", arguments: { text: "[FYI] jcode held hint" } }) as any;
     expect(result.content[0].text).toStartWith("recorded only");
-    expect(result.content[1].text).toContain("my-private-held"); expect(result.content[1].text).toContain("Ask the person to resolve");
+    expect(result.content[1].text).toContain("my-private-held"); expect(result.content[1].text).toContain("hub_delivery_resolve"); expect(result.content[1].text).toContain("Retry remains person-only");
     expect(JSON.stringify(result)).not.toContain("DO NOT EXPOSE PRIVATE CONTENT"); expect(actors).toContain("jcode");
   } finally { await f.close(); }
 });

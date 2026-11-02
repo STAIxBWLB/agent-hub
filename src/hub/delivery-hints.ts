@@ -3,7 +3,7 @@ import { KINDS, sanitize, type Kind } from "./envelope.ts";
 export const DELIVERY_RETRY_WARNING = sanitize("Hub redelivery warning: An earlier attempt of this delivery is uncertain; check for its effects before acting.");
 export interface HeldDeliveryHints {
   count: number;
-  rows: { id: string; senders: string[]; kinds: Kind[]; createdAt: number }[];
+  rows: { id: string; revision?: number; senders: string[]; kinds: Kind[]; createdAt: number }[];
   truncated: boolean;
 }
 export function heldDeliveryHints(rows: readonly HeldDeliveryHints["rows"][number][], count = rows.length): HeldDeliveryHints {
@@ -23,8 +23,11 @@ export function renderHeldHint(value: unknown, now = Date.now(), recipientRetry 
     if (!Number.isSafeInteger(held.count) || held.count < 1 || !Array.isArray(held.rows) || held.rows.length > 32 || held.rows.length > held.count || typeof held.truncated !== "boolean" || Buffer.byteLength(JSON.stringify(held), "utf8") > 4096) return "";
     if (held.rows.some(row => !row || typeof row !== "object" || typeof row.id !== "string" || !row.id.length || row.id.length > 256 || !Number.isFinite(row.createdAt) || !Array.isArray(row.senders) || !Array.isArray(row.kinds) || row.senders.some(sender => typeof sender !== "string" || sender.length > 256) || row.kinds.some(kind => !kinds.has(kind)))) return "";
   } catch { return ""; }
-  const rows = held.rows.map(row => `${sanitize(row.id)} from ${row.senders.map(sanitize).join(",")} kind ${row.kinds.join(",")} age ${Math.max(0, Math.floor((now - row.createdAt) / 1000))}s`);
-  const action = recipientRetry ? "Use hub_delivery_retry {delivery_id} for one retry of your own uncertain row; check for earlier effects. A repeated uncertain retry needs the person." : "Ask the person to resolve these held deliveries; this delivery-only peer cannot initiate recipient retry.";
+  const rows = held.rows.map(row => `${sanitize(row.id)}${Number.isSafeInteger(row.revision) && row.revision! >= 0 ? ` revision ${row.revision}` : ""} from ${row.senders.map(sanitize).join(",")} kind ${row.kinds.join(",")} age ${Math.max(0, Math.floor((now - row.createdAt) / 1000))}s`);
+  const resolvable = held.rows.some(row => Number.isSafeInteger(row.revision) && row.revision! >= 0);
+  const action = resolvable
+    ? `Use hub_delivery_resolve {delivery_id, revision, action, reason} to confirm completion or discard your own held row. ${recipientRetry ? "Use hub_delivery_retry only to request its one uncertain redelivery; check for earlier effects." : "Retry remains person-only for this delivery mode."}`
+    : `Ask the person to resolve these held deliveries because this hint has no usable revision. ${recipientRetry ? "A retry may be requested with hub_delivery_retry {delivery_id}; check for earlier effects." : "Retry remains person-only for this delivery mode."}`;
   const out = `Held hub deliveries: ${held.count}${held.truncated ? " (metadata truncated)" : ""}\n${rows.join("\n")}\n${action}`;
   return Buffer.byteLength(out, "utf8") <= 4096 ? out : `Held hub deliveries: ${held.count} (metadata truncated; ask the person to inspect the queue).`;
 }

@@ -355,6 +355,21 @@ lineages require a person; unrelated new messages retain the one-retry option.
 
 The local worker and headless ACP peers, including Jcode, receive tools only inside a delivered turn. A hold prevents that turn, so these delivery-only transports do not offer recipient retry; their held hints ask the person to resolve the row. Ordinary messages stay queued. This restriction follows the current transport, not the vendor name: Kimi TUI remains pull-only and can request its one retry.
 
+For an active session, `hub_delivery_resolve { delivery_id, revision, action, reason }`
+settles only its own `needs_review` row, including while busy (#1079). Get the
+observed revision from the bounded held-row metadata returned with `hub_inbox`.
+Use `completed` after handling the delivery, or `discard` when it should not be
+acted on, with a nonempty reason. The journal records the recipient actor and
+reason. Another peer's row, a stale revision, remote-room disposition and active
+`dispatching`/`accepted` rows refuse. This never retries a message, changes a task
+role or cancels the native turn; recipient retry keeps its existing one-use rules.
+
+An explicit `hub_inbox` read can return newly queued messages behind a held row
+and name the retained hold. It does not return the held originals, settle them
+or release automatic delivery. Recovery, pause, lifecycle and storage fences
+still apply. A delivery-only peer with no active turn still needs the person to
+resolve its hold.
+
 Every console resolution needs a reason. Queue `discard` removes queued originals or
 settles a needs_review receipt; it never cancels a task or native turn.
 
@@ -1129,7 +1144,7 @@ assignment skips it until a delivery completes; inspect `ahub route explain` for
 reason. A task owned by a peer whose task delivery exhausts retries is escalated with
 that delivery's error, and the console is notified.
 
-A delivery in `needs_review` holds later deliveries to that peer. The console announces
+A delivery in `needs_review` holds automatic later deliveries to that peer; an explicit `hub_inbox` read may read new queued work behind it without releasing or replaying the hold (#1079). The console announces
 the hold once, and status, task assignment and route explanations name its delivery id.
 Inspect it with `ahub queue show <id>` and explicitly choose `completed`, `retry` or
 `discard` through `ahub queue resolve`. Reassignment or approval of its task never

@@ -62,7 +62,8 @@ for (const value of [true, undefined, false, "absent"] as const) test(`#625 deli
   const begin = source.indexOf("  const deliveryRetryAllowed ="), end = source.indexOf("  /** A model-written peer argument", begin);
   expect(begin).toBeGreaterThan(0); expect(end).toBeGreaterThan(begin);
   const hint = runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(begin, end)) + "\nownHeldHint", { bus: f.daemon.bus, renderHeldHint, Date });
-  expect(hint(peer.id)).toContain(permitted ? "Use hub_delivery_retry" : "Ask the person to resolve");
+  expect(hint(peer.id)).toContain("hub_delivery_resolve");
+  expect(hint(peer.id)).toContain(permitted ? "Use hub_delivery_retry only" : "Retry remains person-only");
   const retried = await tools.request({ t: "task", op: "hub_delivery_retry", args: { delivery_id: held!.id } });
   expect(retried.ok).toBe(permitted);
   if (!permitted) expect(retried.error).toContain("delivery-only peers require the person");

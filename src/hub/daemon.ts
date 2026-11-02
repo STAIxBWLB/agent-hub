@@ -3473,6 +3473,10 @@ export async function startDaemon(opts: DaemonOptions) {
     try { return renderHeldHint(bus.heldDeliveryHints(peer), Date.now(), deliveryRetryAllowed(bus.peers.get(peer))); }
     catch { return ""; } // unavailable telemetry is not a zero count or a reason to fail the tool itself
   }
+  function inboxHeldMetadata(peer: PeerId) {
+    try { return bus.heldDeliveryHints(peer); }
+    catch { return undefined; } // the inbox pull is already settled; advisory held-row metadata cannot hide its result
+  }
   /** A model-written peer argument: a peer id, or nothing for absent, null or "". Anything else is refused. */
   const peerArg = (v: unknown, name: string): PeerId | undefined => {
     if (v == null || v === "") return undefined;
@@ -3815,6 +3819,16 @@ export async function startDaemon(opts: DaemonOptions) {
         if (stopping || recoveryActive()) throw new PreEffectToolRefusal("recovery or shutdown is holding delivery mutations");
         bus.retryDelivery(by, a.delivery_id);
         return `retry queued for delivery ${a.delivery_id}; check for earlier effects before acting`;
+      }
+      case "hub_delivery_resolve": {
+        if (by === USER || by === HUB || !a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !["delivery_id", "revision", "action", "reason"].includes(key))
+          || typeof a.delivery_id !== "string" || !a.delivery_id.trim() || a.delivery_id.length > 256
+          || !Number.isSafeInteger(a.revision) || a.revision < 0 || !["completed", "discard"].includes(a.action)
+          || typeof a.reason !== "string" || !a.reason.trim() || a.reason.trim().length > 1000 || a.reason.length > 1000
+          || !tasks.publicMetadataText(a.reason.trim()) || !boundedSafe(a.reason.trim())) throw new PreEffectToolRefusal("hub_delivery_resolve needs only delivery_id, revision (the whole number hub_inbox showed), action completed or discard, and a public reason of 1 to 1000 characters; call hub_inbox for the revision and keep private or sensitive text out of the reason");
+        if (stopping || recoveryActive()) throw new PreEffectToolRefusal("the hub is not accepting delivery changes now (recovery or shutdown); run ahub status, then call hub_delivery_resolve again after it recovers");
+        bus.resolveOwnDelivery(by, a.delivery_id, a.revision, a.action, a.reason.trim());
+        return `your held delivery was marked ${a.action}`;
       }
       case "hub_backlog_list":
         return JSON.stringify(tasks.backlogList(by));
@@ -8457,6 +8471,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return void reply({ ok: true });
       }
       case "inbox": {
+        if (stopping || recoveryActive()) return void reply({ ok: false, error: "the hub is not serving inbox reads now (recovery or shutdown); run ahub status, then call hub_inbox again after it recovers" });
         if (c.toolsOwner) {
           const peer = c.peer!, current = captureImplementerTools(c), launch = currentImplementerTools(c);
           try {
@@ -8464,9 +8479,9 @@ export async function startDaemon(opts: DaemonOptions) {
             const pending = bus.pendingEnvelopes(peer);
             if (!current() || pending.some(env => { const task = env.refs?.task === undefined ? undefined : board.get(Number(env.refs.task)); return env.private || contextPii(peer) || !!task && tasks.isPii(task); })) return void reply({ ok: false, error: "private inbox delivery refused" });
             if (!launch || pending.some(env => (env.refs?.task === undefined ? implementerChatTask(peer) : Number(env.refs.task)) !== launch.task)) return void reply({ ok: false, error: "inbox delivery belongs to another task session" });
-            const envs = bus.pull(peer);
+            const envs = bus.pull(peer, { allowNeedsReviewHold: true });
             if (!envs) return void reply({ ok: false, error: queueHold(peer) ?? "delivery held" });
-            return void reply({ ok: true, envs, waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
+            return void reply({ ok: true, envs, held: inboxHeldMetadata(peer), waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
           } catch { return void reply({ ok: false, error: "delivery journal unavailable" }); }
         }
         // The attached session can explicitly claim queued work even during a native turn (#493).
@@ -8474,7 +8489,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;
         if (c.role !== "peer" || !isWsPeer(peer) || !peer.owns(sock)) return void reply({ ok: false, error: "not attached to the hub yet; retry hub_inbox in a moment" });
         try {
-          const envs = bus.pull(peer.id);
+          const envs = bus.pull(peer.id, { allowNeedsReviewHold: true });
           if (!envs) return void reply({ ok: false, error: queueHold(peer.id) ?? (bus.isRecoveryHeld ? "recovery is holding deliveries" : pauseReason(peer.id)) });
           peer.lastInboxAt = Date.now();
           let polling: ReturnType<InboxPolling["read"]>;
@@ -8485,7 +8500,7 @@ export async function startDaemon(opts: DaemonOptions) {
           } catch { polling = undefined; } // The pull already completed: advice must never discard its envelopes.
           writeStatus();
           if (envs.length) log(`${peer.id} read ${envs.length} queued message(s) through hub_inbox`);
-          return void reply({ ok: true, envs, waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id), ...(polling ? { pollingAdvice: { count: polling.count, minutes: polling.minutes } } : {}) });
+          return void reply({ ok: true, envs, held: inboxHeldMetadata(peer.id), waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id), ...(polling ? { pollingAdvice: { count: polling.count, minutes: polling.minutes } } : {}) });
         } catch { return void reply({ ok: false, error: "delivery journal unavailable" }); }
       }
       case "delivery_complete": {
