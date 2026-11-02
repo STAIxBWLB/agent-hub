@@ -1,0 +1,7 @@
+---
+id: cycle-b
+type: submodule
+title: Cycle B
+parent: cycle-a
+---
+B.

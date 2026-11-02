@@ -1,0 +1,12 @@
+---
+id: core-module
+type: module
+title: Core module
+status: active
+parent: architecture
+paths:
+  - src/
+depends-on: [architecture]
+covers: [core]
+---
+Module contract.

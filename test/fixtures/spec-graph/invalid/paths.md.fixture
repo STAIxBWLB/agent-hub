@@ -1,0 +1,7 @@
+---
+id: invalid-paths
+type: module
+title: Invalid paths
+paths: [../outside, missing/file.ts]
+---
+Paths.

@@ -1,0 +1,9 @@
+---
+id: architecture
+type: architecture
+title: Architecture
+status: active
+parent: goal
+paths: [src/core.ts]
+---
+Architecture.

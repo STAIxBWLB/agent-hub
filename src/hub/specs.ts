@@ -16,7 +16,6 @@ const GIT_TIMEOUT_MS = 2000;
 const MAX_TRACKED_PATHS_PER_SCOPE = 4096;
 const MAX_REPORT_ITEMS = 500;
 const GIT_SAFE_OPTIONS = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.pager=cat", "-c", "credential.helper=", "-c", "core.askpass="];
-const FIELD_KEYS = new Set(["id", "type", "title", "status", "parent", "depends-on", "references", "implements", "superseded-by", "covers", "tags", "paths", "verified-against"]);
 const LIST_KEYS = new Set(["depends-on", "references", "implements", "covers", "tags", "paths"]);
 const TYPES = new Set(["goal", "architecture", "module", "submodule"]);
 const STATUS = new Set(["draft", "active", "deprecated"]);
@@ -145,29 +144,71 @@ function pathspecBody(value: string): { pattern: string; magic: string[] } {
 
 function pathspecMatchesPath(pathspec: string, candidate: string): boolean {
   if (!isSafeRepoPath(candidate) || !isSafePathspec(pathspec)) return false;
-  const { pattern, magic } = pathspecBody(pathspec);
-  if (magic.includes("literal")) return candidate === pattern || candidate.startsWith(pattern.endsWith("/") ? pattern : `${pattern}/`);
-  const glob = magic.includes("glob");
-  if (!/[?*\[]/.test(pattern)) return candidate === pattern || candidate.startsWith(pattern.endsWith("/") ? pattern : `${pattern}/`);
-  let source = "^";
-  for (let index = 0; index < pattern.length; index++) {
-    const char = pattern[index]!;
-    if (char === "*") {
-      if (glob && pattern.slice(index, index + 3) === "**/") { source += "(?:.*/)?"; index += 2; }
-      else if (glob && pattern[index + 1] === "*") { source += ".*"; index++; }
-      else source += glob ? "[^/]*" : ".*";
-    } else if (char === "?") source += glob ? "[^/]" : ".";
-    else if (char === "[") {
-      const end = pattern.indexOf("]", index + 1);
-      if (end < 0) return false;
-      const contents = pattern.slice(index + 1, end);
-      if (contents.startsWith("!")) source += `[^${contents.slice(1)}]`;
-      else source += `[${contents}]`;
-      index = end;
-    } else source += char.replace(/[\\^$+?.()|{}]/g, "\\$&");
+  const parsed = pathspecBody(pathspec), magic = parsed.magic;
+  const pattern = parsed.pattern.endsWith("/") ? parsed.pattern.slice(0, -1) : parsed.pattern;
+  const icase = magic.includes("icase"), globMagic = magic.includes("glob");
+  const matchSegment = (glob: string, value: string, slash: boolean): boolean => {
+    const p = icase ? glob.toLowerCase() : glob, v = icase ? value.toLowerCase() : value;
+    let previous = new Array<boolean>(v.length + 1).fill(false); previous[0] = true;
+    for (let index = 0; index < p.length; index++) {
+      const char = p[index]!;
+      const next = new Array<boolean>(v.length + 1).fill(false);
+      if (char === "*") {
+        next[0] = previous[0]!;
+        for (let at = 1; at <= v.length; at++) next[at] = previous[at]! || next[at - 1]! && (slash || v[at - 1] !== "/");
+      } else if (char === "?") {
+        for (let at = 1; at <= v.length; at++) next[at] = previous[at - 1]! && (slash || v[at - 1] !== "/");
+      } else if (char === "[") {
+        const end = p.indexOf("]", index + 1); if (end < 0) return false;
+        let range = p.slice(index + 1, end), negate = range.startsWith("!") || range.startsWith("^");
+        if (negate) range = range.slice(1);
+        for (let at = 1; at <= v.length; at++) {
+          const value = v[at - 1]!, match = !(!slash && value === "/") && (() => {
+            for (let i = 0; i < range.length; i++) {
+              if (range[i + 1] === "-" && range[i + 2] !== undefined) { if (value >= range[i]! && value <= range[i + 2]!) return true; i += 2; }
+              else if (value === range[i]) return true;
+            }
+            return false;
+          })();
+          next[at] = previous[at - 1]! && (negate ? !match : match);
+        }
+        index = end;
+      } else {
+        for (let at = 1; at <= v.length; at++) next[at] = previous[at - 1]! && v[at - 1] === char;
+      }
+      previous = next;
+    }
+    return previous[v.length]!;
+  };
+  if (magic.includes("literal")) {
+    const compare = (value: string) => icase ? value.toLowerCase() : value;
+    const prefix = pattern.endsWith("/") ? pattern : `${pattern}/`;
+    return compare(candidate) === compare(pattern) || compare(candidate).startsWith(compare(prefix));
   }
-  source += "$";
-  try { return new RegExp(source, magic.includes("icase") ? "i" : "").test(candidate); } catch { return false; }
+  if (!globMagic) {
+    const parts = candidate.split("/");
+    for (let end = parts.length; end > 0; end--) if (matchSegment(pattern, parts.slice(0, end).join("/"), true)) return true;
+    return false;
+  }
+  const patternParts = pattern.split("/"), candidateParts = candidate.split("/");
+  const matchParts = (parts: string[]): boolean => {
+    const matrix = Array.from({ length: patternParts.length + 1 }, () => new Array<boolean>(parts.length + 1).fill(false));
+    matrix[0]![0] = true;
+    for (let p = 0; p < patternParts.length; p++) {
+      const patternPart = patternParts[p]!;
+      if (patternPart === "**") {
+        for (let at = 0; at <= parts.length; at++) {
+          if (matrix[p]![at]) matrix[p + 1]![at] = true;
+          if (at > 0 && matrix[p + 1]![at - 1]) matrix[p + 1]![at] = true;
+        }
+      } else {
+        for (let at = 0; at < parts.length; at++) if (matrix[p]![at] && matchSegment(patternPart, parts[at]!, false)) matrix[p + 1]![at + 1] = true;
+      }
+    }
+    return matrix[patternParts.length]![parts.length]!;
+  };
+  for (let end = candidateParts.length; end > 0; end--) if (matchParts(candidateParts.slice(0, end))) return true;
+  return false;
 }
 
 function normalizePath(value: string): string { return value.normalize("NFC"); }
@@ -325,7 +366,7 @@ export class SpecsEngine {
     const argv = ["-C", this.root, ...GIT_SAFE_OPTIONS, ...args];
     try {
       const result = hubGitSync(argv, { encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer });
-      return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr, error: result.error ? { code: result.error.code, message: result.error.message } : undefined };
+      return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr, error: result.error ? { code: (result.error as NodeJS.ErrnoException).code, message: result.error.message } : undefined };
     } catch (error) { return { status: null, stdout: "", error: { message: errorText(error) } }; }
   }
 
@@ -365,7 +406,7 @@ export class SpecsEngine {
       const parsed = parseHeader(prefix.subarray(0, got).toString("utf8"), path);
       const candidate = typeof parsed.fields.id === "string" || typeof parsed.fields.type === "string" && TYPES.has(parsed.fields.type);
       let node: SpecNode | undefined;
-      const diagnostics = candidate || parsed.tooLarge ? [...parsed.items] : [];
+      const diagnostics = candidate ? [...parsed.items] : [];
       if (candidate) {
         if (!parsed.closing && !parsed.tooLarge) diagnostics.push(item("error", "frontmatter-unterminated", `${path}: spec frontmatter is incomplete`, "the opening delimiter has no closing delimiter", "close the frontmatter delimiter within 8 KiB", { path }));
         const scalar = (key: string): string | undefined => typeof parsed.fields[key] === "string" ? parsed.fields[key] as string : undefined;
@@ -374,7 +415,7 @@ export class SpecsEngine {
       }
       const after = lstatSync(absolute);
       if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeMs !== before.mtimeMs) return undefined;
-      const cached = { size: before.size, mtimeMs: before.mtimeMs, dev: before.dev, ino: before.ino, node, items: diagnostics, truncated: parsed.tooLarge };
+      const cached = { size: before.size, mtimeMs: before.mtimeMs, dev: before.dev, ino: before.ino, node, items: diagnostics, truncated: candidate && parsed.tooLarge };
       this.cache.set(path, cached);
       return cached;
     } catch {
@@ -421,6 +462,7 @@ export class SpecsEngine {
     const byId = new Map<string, SpecNode>();
     const ids = new Map<string, SpecNode[]>();
     for (const node of scan.nodes) {
+      if (node.frontmatterIncomplete) continue;
       if (!node.id) items.push(item("error", "required-field", `${node.path}: spec is missing id`, "the frontmatter has a type but no id", "add a unique id to the frontmatter", { path: node.path, field: "id" }));
       if (!node.type) items.push(item("error", "required-field", `${node.path}: spec is missing type`, "the frontmatter has an id but no type", "set type to goal, architecture, module or submodule", { path: node.path, id: node.id, field: "type" }));
       if (!node.title?.trim()) items.push(item("error", "required-field", `${node.path}: spec is missing title`, "the frontmatter has no title", "add a non-empty title", { path: node.path, id: node.id, field: "title" }));
@@ -494,8 +536,10 @@ export class SpecsEngine {
 
   covers(paths: readonly string[]): SpecsCoverReport {
     const scan = this.scan(), analysis = this.analyze(scan);
-    const requested = [...new Set(paths.filter(isSafeRepoPath))];
-    const result: SpecSummary[] = [];
+    const valid = paths.filter(isSafeRepoPath), invalid = paths.filter(path => !isSafeRepoPath(path));
+    const items = [...analysis.items, ...invalid.map(path => item("error", "invalid-cover-path", `cannot check unsafe path ${path}`, "covers accepts repository-relative file paths only", "remove absolute paths, dot segments and option-like values", { path }))];
+    const requested = [...new Set(valid)];
+    const result: SpecsCoverSummary[] = [];
     for (const node of scan.nodes) {
       const matches = node.paths.some(pathspec => {
         const indexed = this.pathspecMatches(pathspec, false);
@@ -503,7 +547,7 @@ export class SpecsEngine {
       });
       if (matches) result.push(coverSummary(node));
     }
-    return { specs: result, errors: analysis.counts.errors, truncated: scan.truncated || analysis.items.length > MAX_REPORT_ITEMS, items: boundedItems(analysis.items) };
+    return { specs: result, errors: analysis.counts.errors + invalid.length, truncated: scan.truncated || items.length > MAX_REPORT_ITEMS, items: boundedItems(items) };
   }
 
   check(options: { base?: string; requireFresh?: boolean } = {}): SpecsCheckReport {
@@ -603,7 +647,10 @@ export class SpecsEngine {
     let info: Stats;
     try { info = this.safeStat(path); }
     catch (error) {
-      if ((error as { code?: string }).code === "ENOENT") return { rows: [], truncated: false };
+      if ((error as { code?: string }).code === "ENOENT") {
+        items.push(item("error", "stamps-unavailable", `${path}: configured stamps file is missing`, "specs.stamps_file names no readable file", "create a schemaVersion 1 documents file or clear specs.stamps_file", { path }));
+        return { rows: [], truncated: false };
+      }
       items.push(item("error", "stamps-unavailable", `${path}: stamps file is not a safe regular file`, errorText(error), "use a regular repository file without symlink components or clear specs.stamps_file", { path }));
       return { rows: [], truncated: false };
     }

@@ -1,0 +1,8 @@
+---
+id: goal
+type: goal
+title: Goal
+status: active
+paths: [src/core.ts]
+---
+Goal.

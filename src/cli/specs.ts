@@ -28,6 +28,7 @@ export function runSpecs(args: readonly string[], root: string, config: SpecsCon
       if (json) io.out(JSON.stringify(report));
       else {
         for (const spec of report.specs) io.out(`${spec.id} (${spec.path}): ${spec.title}`);
+        for (const item of report.items) io.error(`specs: ${item.severity} ${item.code}: ${item.message}; ${item.nextSteps}`);
         if (report.truncated) io.error("specs: scan truncated; narrow specs.roots and run ahub specs check again");
       }
       return report.errors ? 1 : 0;

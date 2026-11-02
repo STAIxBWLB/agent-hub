@@ -1,0 +1,10 @@
+---
+id: product
+type: goal
+title: Product goal
+status: active
+paths:
+  - src/core.ts
+covers: [product]
+---
+The goal links to [[architecture]].

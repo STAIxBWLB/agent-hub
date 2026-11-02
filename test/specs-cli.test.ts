@@ -70,6 +70,16 @@ test("specs CLI rejects malformed flags with a cause and next step", () => {
   }
 });
 
+test("warning-only spec checks succeed while malformed specs fail", () => {
+  const { root } = fixture();
+  writeFileSync(join(root, "design.md"), "---\nid: product\ntype: goal\ntitle: Product\nstatus: active\n---\nDesign.\n");
+  const warning = invoke(root, ["check"]);
+  expect(warning.code).toBe(0); expect(warning.stdout.join("\n")).toContain("active-without-paths");
+  writeFileSync(join(root, "design.md"), "---\nid: product\ntype: unknown\ntitle: Product\n---\nDesign.\n");
+  const invalid = invoke(root, ["check"]);
+  expect(invalid.code).toBe(1); expect(invalid.stdout.join("\n")).toContain("unknown-type");
+});
+
 test("specs reads are open to peers while unshipped writes remain person-only", () => {
   for (const args of [["list"], ["list", "--json"], ["check", "--base", "main", "--require-fresh", "--json"], ["covers", "src/core.ts"]]) {
     expect(classifyPeerCommand("specs", args)).toBe("allowed");
