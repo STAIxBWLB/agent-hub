@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { definitionOf } from "../src/adapters/registry.ts";
 import { peerStartConfig, startModeOf } from "../src/hub/start-mode.ts";
 import { launcherPreview } from "../src/cli/preview.ts";
-import { runJcodeEntry, waitForJcodeTui } from "../src/adapters/definitions/native-cli-entry-jcode.ts";
+import { jcodeTuiCauseMessage, runJcodeEntry, waitForJcodeTui } from "../src/adapters/definitions/native-cli-entry-jcode.ts";
 import type { NativeCliEntryContext } from "../src/adapters/definitions/native-cli-entry-types.ts";
 
 test("Jcode defaults to TUI and accepts a configured headless override (#464)", () => {
@@ -205,4 +205,40 @@ test("--print-command names a mismatched session option, as the launch does (#57
     expect(fixture.requests.some(row => row.t === "native_tui_launch")).toBe(true);
     expect(fixture.executed()).toBe(0); expect(fixture.configured()).toBe(0);
   }
+});
+
+// #1085: the launcher names the cause the daemon returned, with the next step, and falls back to the generic sentence for an older daemon that returns no code.
+test("each TUI launch cause class gets its own launcher message and next step (#1085 AC1)", async () => {
+  const fail = (message: string): never => { throw new Error(message); };
+  const messages = new Map<string, string>();
+  for (const code of ["launch_changed", "server_not_running", "socket_changed", "session_unknown", "session_proof_refused", "hub_busy", "not_running", "mcp_stale"]) {
+    const message = jcodeTuiCauseMessage(code)!;
+    expect(message).toBeString();
+    expect(message).toMatch(/run ahub (stop jcode|jcode)|wait for/);
+    expect(message).not.toMatch(/[\\/]|[0-9a-f]{8}-[0-9a-f]{4}/); // no path, no id
+    expect(messages.has(message)).toBe(false); messages.set(message, code);
+    await expect(waitForJcodeTui({ request: async () => ({ ok: false, code }) } as never, fail, new AbortController().signal, {})).rejects.toThrow(message);
+  }
+  expect(jcodeTuiCauseMessage("something else")).toBeUndefined();
+  expect(jcodeTuiCauseMessage(undefined)).toBeUndefined();
+  // An older daemon sends no code: the old generic sentence stands.
+  await expect(waitForJcodeTui({ request: async () => ({ ok: false, error: "owned Jcode launch or saved session could not be verified; details withheld" }) } as never, fail, new AbortController().signal, {}))
+    .rejects.toThrow("Jcode launch changed or its native saved session is unavailable; retry from a terminal");
+});
+
+test("a restored headless Jcode gets the stop-and-start instruction instead of the generic failure (#1085 AC2)", async () => {
+  const fail = (message: string): never => { throw new Error(message); };
+  const instruction = "jcode is running headless after recovery; run ahub stop jcode, then ahub jcode to get its TUI back";
+  for (const code of ["launch_changed", "server_not_running", "socket_changed", "session_unknown", "session_proof_refused"]) {
+    expect(jcodeTuiCauseMessage(code, true)).toContain(instruction);
+    await expect(waitForJcodeTui({ request: async () => ({ ok: false, code, resumed: true }) } as never, fail, new AbortController().signal, {})).rejects.toThrow(instruction);
+  }
+  // The same code without a resumed session keeps its own step.
+  expect(jcodeTuiCauseMessage("session_proof_refused", false)).not.toContain("headless after recovery");
+  // The confirm step and --print-command name the cause too.
+  const entryFixture = entry(["--print-command"]);
+  entryFixture.context.connect = async () => ({ features: ["native_tui_launch"], request: async (message: Record<string, unknown>) =>
+    message.t === "status" ? { status: { roster: [{ peer: "jcode", on: true }] } } : { ok: false, code: "socket_changed" }, close() {} }) as never;
+  entryFixture.context.helpers.readControl = (() => ({ features: ["native_tui_launch"], startModes: { jcode: "tui" } })) as never;
+  await expect(runJcodeEntry(entryFixture.context)).rejects.toThrow(jcodeTuiCauseMessage("socket_changed")!);
 });
