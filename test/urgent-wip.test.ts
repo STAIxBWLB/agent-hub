@@ -98,6 +98,23 @@ test("an urgent accept never takes back a person-pinned offer (#1080)", () => {
   expect(board.get(urgent.id)!.state).toBe("proposed");
 });
 
+test("displacing a planner-pulled offer releases its counted reservation, so the owner ends within its limit (#1080)", () => {
+  const { board, tasks, notices, running, offered } = rig(2);
+  const active = running("accepted one");
+  const card = board.propose("user", { title: "pulled offer", class: "implement", backlog: true });
+  board.pullAssigned(card.id, "claude", "codex", 0, "planner pull", false, null, "to codex", {}, board.get(card.id)!.history.length);
+  expect(board.get(card.id)).toMatchObject({ owner: "codex", reserved: "codex", state: "proposed" });
+  const urgent = offered("urgent work", true);
+  expect(board.plannerWip("codex")).toBe(3); // active + pulled offer + urgent offer: over the limit of 2
+  tasks.accept("codex", urgent.id);
+  expect(board.get(urgent.id)).toMatchObject({ state: "in_progress", owner: "codex" });
+  expect(board.get(card.id)).toMatchObject({ owner: null, reserved: null, state: "proposed" });
+  expect(board.plannerWip("codex")).toBe(2); // the accepted task and the urgent one, never 3
+  expect(board.get(active.id)!.owner).toBe("codex");
+  expect(notices.join("\n")).toContain("(priority 0 or marked urgent)");
+  expect(notices.join("\n")).not.toContain("person-prioritized");
+});
+
 test("an urgent accept never takes back accepted work (#1080)", () => {
   const { board, tasks, running, offered } = rig(1);
   const active = running("accepted one");

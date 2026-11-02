@@ -5739,13 +5739,15 @@ export class Tasks {
    */
   private displaceOffers(urgent: Task, owner: PeerId, offers: readonly Task[]): void {
     for (const offer of offers) {
-      const next = this.d.board.update(offer.id, HUB, "unassigned", { owner: null, reviewer: null }, `displaced by urgent task #${urgent.id}: ${owner} was at its WIP limit with this offer unaccepted`, {}, offer.history.length);
+      // A planner-pulled offer also holds a counted reservation (`plannerWip` counts an ownerless proposed task reserved for the owner with pull history), so clearing the owner alone frees no slot. `decline` clears it the same way.
+      const pulled = this.plannerPullRecord(offer)?.pull === true;
+      const next = this.d.board.update(offer.id, HUB, "unassigned", { owner: null, reviewer: null, ...(pulled ? { reserved: null } : {}) }, `displaced by urgent task #${urgent.id}: ${owner} was at its WIP limit with this offer unaccepted`, {}, offer.history.length);
       this.offered.delete(offer.id);
       this.releaseNotice(`task #${offer.id}: displacement cohort cleanup unavailable`, () => this.cohorts.leave(offer.id));
       this.withdrawRoleRequest(offer, next, "owner");
       this.withdrawRoleRequest(offer, next, "reviewer");
       this.releaseNotice(`task #${offer.id}: displacement notice unavailable`, () => {
-        const body = `Task #${offer.id} was taken back from ${owner}: the person-prioritized urgent task #${urgent.id} needed ${owner}'s WIP slot and #${offer.id} was only offered, never accepted. It is ownerless in To Do and routes again; plan it again if it should wait for ${owner}.`;
+        const body = `Task #${offer.id} was taken back from ${owner}: urgent task #${urgent.id} (priority 0 or marked urgent) needed ${owner}'s WIP slot and #${offer.id} was only offered, never accepted. It is ownerless in To Do and routes again; plan it again if it should wait for ${owner}.`;
         this.d.notify(body);
         for (const planner of this.taskPlanner(offer)) this.d.bus.publish(newEnvelope(HUB, sanitize(body), { to: [planner], kind: "task", refs: { task: String(offer.id) }, ...(this.isPii(offer) ? { private: true } : {}) }));
       });
@@ -5778,7 +5780,12 @@ export class Tasks {
       const takeable = split.offered.filter(offer => this.displaceable(offer))
         .sort((a, b) => handedAt(b) - handedAt(a) || b.id - a.id);
       if (need > 0 && takeable.length >= need) {
-        if (urgent === "displace") this.displaceOffers(task as Task, owner, takeable.slice(0, need));
+        if (urgent === "displace") {
+          this.displaceOffers(task as Task, owner, takeable.slice(0, need));
+          // Defense in depth (#1080): no displacement path may leave the owner over its limit. Clearing the reservation above makes this unreachable today; if it ever fires, the offers are already back in To Do and only the accept is refused.
+          const after = this.wip(owner, task.id) + pending;
+          if (after >= limit) throw new Error(`planner WIP capacity for ${owner}: limit ${limit}; the offers taken back for urgent task #${task.id} are back in To Do but did not free a slot (WIP is now ${after}), so it stays offered; ask the planner to check ${owner}'s reservations, then accept it again`);
+        }
         return;
       }
     }
