@@ -246,7 +246,10 @@ function knownLayout(root: string, directories: readonly string[], files: readon
   }
 }
 function captureLayout(root: string): void {
-  knownLayout(root, ["src", "plugins", "templates", ".claude-plugin"], ["package.json", "README.md", "LICENSE", "CHANGELOG.md"], ["node_modules"]);
+  knownLayout(root, ["src", "plugins", "templates", ".claude-plugin"], ["package.json", "README.md", "LICENSE", "CHANGELOG.md"], ["node_modules", "scripts"]);
+  // #1120: captures made before the release checker was carried have no scripts directory; when present it holds exactly the checker.
+  // The name is repeated here on purpose: a pruner copied into a capture runs beside that capture's own verifier and imports nothing but verifyPackage from it. test/runtime-capture-checker.test.ts pins this name to RELEASE_CHECKER.
+  if (optionalInfo(join(root, "scripts"))) knownLayout(join(root, "scripts"), [], ["check-docs.mjs"]);
   const modules = join(root, "node_modules");
   if (optionalInfo(modules)) {
     knownLayout(modules, ["@staix"], []); const scope = join(modules, "@staix"); knownLayout(scope, ["agent-mem"], []);
