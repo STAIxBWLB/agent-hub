@@ -10044,6 +10044,7 @@ var init_dev = __esm(() => {
     review_checklist: [
       "Map the changed signatures and call sites to {target}, and name each one that does not match.",
       "{check}",
+      "Name each new or changed error, refusal or failure message that lacks its cause (what failed and why) or its next step (the command, setting or target that fixes it); where secrets, ids or paths must stay out, it names the cause class and how to check it.",
       "List what is unmet in hub_review's unmet, one item each."
     ]
   };
@@ -10111,6 +10112,7 @@ var init_research = __esm(() => {
     review_checklist: [
       "Assess scope, provenance and unsupported claims against {target}, and name each one that does not match.",
       "{check}",
+      "Name each new or changed error, refusal or failure message that lacks its cause (what failed and why) or its next step (the command, setting or target that fixes it); where secrets, ids or paths must stay out, it names the cause class and how to check it.",
       "List what is unmet in hub_review's unmet, one item each."
     ]
   };
@@ -10149,6 +10151,7 @@ var init_writing = __esm(() => {
     review_checklist: [
       "Assess scope, provenance and unsupported claims against {target}, and name each one that does not match.",
       "{check}",
+      "Name each new or changed error, refusal or failure message that lacks its cause (what failed and why) or its next step (the command, setting or target that fixes it); where secrets, ids or paths must stay out, it names the cause class and how to check it.",
       "List what is unmet in hub_review's unmet, one item each."
     ]
   };
@@ -10185,6 +10188,7 @@ var init_general = __esm(() => {
     review_checklist: [
       "Assess the deliverables against {target}, and name each one that does not match.",
       "{check}",
+      "Name each new or changed error, refusal or failure message that lacks its cause (what failed and why) or its next step (the command, setting or target that fixes it); where secrets, ids or paths must stay out, it names the cause class and how to check it.",
       "List what is unmet in hub_review's unmet, one item each."
     ]
   };
