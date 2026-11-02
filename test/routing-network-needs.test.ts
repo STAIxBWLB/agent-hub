@@ -43,7 +43,7 @@ test("work that does not declare a network need, and a peer whose network is unk
 function rig(network: boolean) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-needs-network-"));
   mkdirSync(join(cwd, ".agenthub"), { recursive: true });
-  writeFileSync(join(cwd, ".agenthub", "routing.toml"), "[classes.implement]\npeers=[\"pi\",\"codex\"]\n");
+  writeFileSync(join(cwd, ".agenthub", "routing.toml"), "[local]\nfixed_model=\"m\"\n[classes.implement]\npeers=[\"pi\",\"codex\"]\n");
   cleanup.push(() => rmSync(cwd, { recursive: true, force: true }));
   const board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   cleanup.push(() => { bus.closeJournal(); board.close(); });
@@ -72,7 +72,7 @@ test("an explicit assignment of network work to a peer without network is refuse
   const made = await tasks.propose("user", { title: "raise the pin", class: "implement", needs_network: true });
   const before = JSON.stringify(board.get(made.id));
   let failure: unknown;
-  try { await tasks.assign("user", made.id, "pi"); } catch (error) { failure = error; }
+  try { await tasks.assignTo(made.id, "pi"); } catch (error) { failure = error; }
   expect(failure).toBeDefined();
   expect((failure as Error).message).toContain("no network");
   expect(JSON.stringify(board.get(made.id))).toBe(before);
