@@ -223,5 +223,19 @@
         }
       ]
     }
-  ]
+  ],
+  "nearby_proposal_context": {
+    "gap_seconds": 68.894,
+    "from": "2026-11-02T20:56:34.474Z",
+    "to": "2026-11-02T20:57:43.368Z",
+    "from_line": 572993,
+    "to_line": 572994,
+    "end_kind": "memory_brief",
+    "task": 668,
+    "native_items": 4,
+    "fail_items": 4,
+    "legacy_items": 0,
+    "following_offer_at": "2026-11-02T20:57:43.369Z",
+    "interpretation": "A nearby gap ending at a brief record, not a measured memory-call duration or proven cause."
+  }
 }

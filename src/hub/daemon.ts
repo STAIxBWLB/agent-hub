@@ -2253,13 +2253,16 @@ export async function startDaemon(opts: DaemonOptions) {
         read: task => publicCorpus([task.title, ...task.refs.paths ?? [], ...task.plan?.paths ?? [], ...task.plan?.symbols ?? []].join(" "), () => corpusBriefAllowed(task)).map(item => ({ id: item.id, kind: "note", line: `${item.id}: ${item.text.replace(/\s+/g, " ")}` })),
       }),
     ...(memoryStore ? { planFails: (task: import("./board.ts").Task) => {
-      checkMemory();
-      const context = { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny };
-      const nodes = planGuardNodes(task, context);
-      const related = screenMemory(memoryStore.related(memoryProject, nodes, Number.MAX_SAFE_INTEGER));
-      const all = screenMemory(memoryStore.list({ project: memoryProject, kind: "fail", limit: Number.MAX_SAFE_INTEGER }));
-      const rows = [...new Map([...related, ...all].map(row => [row.id, row])).values()];
-      return matchingPlanFails(task, rows, context).slice(0, config.memory.brief_items).map(v => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about }));
+      const read = () => {
+        checkMemory();
+        const context = { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny };
+        const nodes = planGuardNodes(task, context);
+        const related = screenMemory(memoryStore.related(memoryProject, nodes, Number.MAX_SAFE_INTEGER));
+        const all = screenMemory(memoryStore.list({ project: memoryProject, kind: "fail", limit: Number.MAX_SAFE_INTEGER }));
+        const rows = [...new Map([...related, ...all].map(row => [row.id, row])).values()];
+        return matchingPlanFails(task, rows, context).slice(0, config.memory.brief_items).map(v => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about }));
+      };
+      return controlWriteTelemetry ? controlWriteTelemetry.observe("memory", controlWritePrivacyGuard(true, true, undefined, task.id), read) : read();
     } } : {}),
     ...(memoryStore ? { store: { store: memoryStore, project: memoryProject, repo: memoryRepo, deny: config.local.deny, onNote: (id: string) => void suggestEdges(id) } } : {}),
     notify,
