@@ -85,6 +85,12 @@
   },
   {
     "predicate": "isJcodePeer",
+    "function": "src/hub/daemon.ts:startDaemon.jcodeTuiHint",
+    "count": 1,
+    "reason": "#1085: the recovery hint is about the owned Jcode TUI tuple only (a headless Jcode that was recovered and has not served a ready TUI launch); like the launch proof in onMessage it needs the concrete JcodePeer for its resumedSession flag and served-launch set, and no generic adapter port carries a TUI frontend yet."
+  },
+  {
+    "predicate": "isJcodePeer",
     "function": "src/hub/daemon.ts:startDaemon.onMessage",
     "count": 1,
     "reason": "Authenticated channel hello/receipts/inbox and native facts/Stop bind to the host socket generation; Jcode TUI tuple and Kimi admission remain fixed native proofs, with Claude hook extraction in 2e."
