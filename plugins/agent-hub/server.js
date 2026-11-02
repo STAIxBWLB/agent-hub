@@ -9986,6 +9986,443 @@ var init_test_integrity = __esm(() => {
 // src/hub/plan-conformance.ts
 var init_plan_conformance = () => {};
 
+// src/hub/control-write-trace.ts
+import { AsyncLocalStorage } from "async_hooks";
+function isObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function validTaskId(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+function numericTaskId(value) {
+  return validTaskId(value) ? value : undefined;
+}
+function ownValue(value, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
+}
+function controlWriteMetadata(message) {
+  if (!isObject(message))
+    return;
+  try {
+    let kind;
+    let args;
+    const type = ownValue(message, "t"), operation = ownValue(message, "op");
+    if (type === "delivery_complete")
+      kind = "hub_delivery_done";
+    else if (type === "task" && typeof operation === "string") {
+      kind = Object.hasOwn(OPERATIONS, operation) ? OPERATIONS[operation] : undefined;
+      const rawArgs = ownValue(message, "args");
+      args = isObject(rawArgs) ? rawArgs : undefined;
+    }
+    if (!kind)
+      return;
+    const task = numericTaskId(args ? ownValue(args, "id") : undefined);
+    return task === undefined ? { kind } : { kind, task };
+  } catch {
+    return;
+  }
+}
+function isPhase(value) {
+  return CONTROL_WRITE_PHASES.includes(value);
+}
+function isThenable(value) {
+  try {
+    return !!value && (typeof value === "object" || typeof value === "function") && typeof value.then === "function";
+  } catch {
+    return false;
+  }
+}
+function controlWriteSpan(phase, fn) {
+  const request = currentTrace.getStore();
+  if (!request || request.settled || request.privacySuppressed || !isPhase(phase))
+    return fn();
+  const span = request.telemetry.beginSpan(request, phase);
+  let result;
+  try {
+    result = fn();
+  } catch (error) {
+    request.telemetry.finishSpan(span);
+    throw error;
+  }
+  if (!isThenable(result)) {
+    request.telemetry.finishSpan(span);
+    return result;
+  }
+  span.async = true;
+  request.telemetry.recordSyncPrefix(span);
+  return Promise.resolve(result).then((value) => {
+    request.telemetry.finishSpan(span);
+    return value;
+  }, (error) => {
+    request.telemetry.finishSpan(span);
+    throw error;
+  });
+}
+
+class ControlWriteTelemetry {
+  options;
+  nowFn;
+  maxActiveRequests;
+  maxActiveSpans;
+  maxRecentSpans;
+  maxRequestSpans;
+  rateLimitMs;
+  requests = new Map;
+  spans = new Map;
+  recent = [];
+  emitted = [];
+  lastEmit = new Map;
+  nextRequestId = 1;
+  nextSpanId = 1;
+  timer;
+  nextSampleAt;
+  lastNow = 0;
+  stopped = false;
+  completedRequests = 0;
+  slowRequests = 0;
+  blockedLoopSamples = 0;
+  droppedActive = 0;
+  droppedSpans = 0;
+  droppedRecent = 0;
+  droppedLogs = 0;
+  droppedMetadata = 0;
+  clockFailures = 0;
+  constructor(options) {
+    this.options = options;
+    this.nowFn = options.now ?? (() => performance.now());
+    this.maxActiveRequests = options.maxActiveRequests ?? MAX_ACTIVE_REQUESTS;
+    this.maxActiveSpans = options.maxActiveSpans ?? MAX_ACTIVE_SPANS;
+    this.maxRecentSpans = options.maxRecentSpans ?? MAX_RECENT_SPANS;
+    this.maxRequestSpans = options.maxRequestSpans ?? MAX_REQUEST_SPANS;
+    this.rateLimitMs = options.rateLimitMs ?? RATE_LIMIT_MS;
+    if (![this.maxActiveRequests, this.maxActiveSpans, this.maxRecentSpans].every((value) => Number.isSafeInteger(value) && value > 0) || !Number.isSafeInteger(this.maxRequestSpans) || this.maxRequestSpans < 1 || this.maxRequestSpans > MAX_REQUEST_SPANS || !Number.isSafeInteger(this.rateLimitMs) || this.rateLimitMs < 0 || this.rateLimitMs > RATE_LIMIT_MS || this.maxActiveRequests > MAX_ACTIVE_REQUESTS || this.maxActiveSpans > MAX_ACTIVE_SPANS || this.maxRecentSpans > MAX_RECENT_SPANS)
+      throw new Error("invalid control write trace bounds");
+  }
+  run(metadata, privacyCurrent, fn) {
+    if (this.stopped)
+      return fn();
+    const safeMetadata = this.safeMetadata(metadata);
+    if (!safeMetadata || typeof privacyCurrent !== "function") {
+      this.droppedMetadata++;
+      return fn();
+    }
+    if (!this.privateNow(privacyCurrent))
+      return fn();
+    if (this.requests.size >= this.maxActiveRequests) {
+      this.droppedActive++;
+      return fn();
+    }
+    const now = this.readNow();
+    const request = {
+      telemetry: this,
+      metadata: safeMetadata,
+      privacyCurrent,
+      startedAt: now,
+      phases: new Map,
+      phaseOrder: [],
+      spanCount: 0,
+      settled: false,
+      privacySuppressed: false,
+      logPrivacy: () => false
+    };
+    request.logPrivacy = () => !request.privacySuppressed && this.privateNow(request.privacyCurrent);
+    const id = this.nextRequestId++;
+    this.requests.set(id, request);
+    let result;
+    try {
+      result = currentTrace.run(request, fn);
+    } catch (error) {
+      this.finishRequest(id, request, "threw");
+      throw error;
+    }
+    if (!isThenable(result)) {
+      this.finishRequest(id, request, "returned");
+      return result;
+    }
+    return Promise.resolve(result).then((value) => {
+      this.finishRequest(id, request, "returned");
+      return value;
+    }, (error) => {
+      this.finishRequest(id, request, "threw");
+      throw error;
+    });
+  }
+  observe(phase, privacyCurrent, fn) {
+    const current = currentTrace.getStore();
+    if (current?.telemetry === this && !current.settled) {
+      if (!this.privateNow(privacyCurrent))
+        current.privacySuppressed = true;
+      return controlWriteSpan(phase, fn);
+    }
+    return this.run({ kind: "background" }, privacyCurrent, () => controlWriteSpan(phase, fn));
+  }
+  start() {
+    if (this.stopped)
+      this.stopped = false;
+    if (this.timer)
+      return;
+    this.nextSampleAt = this.readNow() + CONTROL_WRITE_SAMPLE_MS;
+    this.timer = setInterval(() => this.sample(), CONTROL_WRITE_SAMPLE_MS);
+    this.timer.unref?.();
+  }
+  stop() {
+    this.stopped = true;
+    if (this.timer)
+      clearInterval(this.timer);
+    this.timer = undefined;
+    this.nextSampleAt = undefined;
+  }
+  sample() {
+    if (this.stopped)
+      return;
+    const now = this.readNow(), expected = this.nextSampleAt ?? now;
+    this.nextSampleAt = now + CONTROL_WRITE_SAMPLE_MS;
+    const delayMs = Math.max(0, now - expected);
+    if (delayMs < CONTROL_WRITE_LOOP_DELAY_MS)
+      return;
+    this.blockedLoopSamples++;
+    const from = expected;
+    const observed = [];
+    for (const interval of this.recent) {
+      if (interval.async || interval.endedAt === undefined || interval.startedAt >= now || interval.endedAt < from)
+        continue;
+      observed.push({ kind: interval.kind, ...interval.task === undefined ? {} : { task: interval.task }, phase: interval.phase, durationMs: this.roundMs(interval.endedAt - interval.startedAt), privacyCurrent: interval.privacyCurrent });
+    }
+    for (const span of this.spans.values()) {
+      if (!span.async || span.startedAt >= now)
+        continue;
+      observed.push({
+        kind: span.request.metadata.kind,
+        ...span.request.metadata.task === undefined ? {} : { task: span.request.metadata.task },
+        phase: span.phase,
+        durationMs: this.roundMs(now - span.startedAt),
+        open: true,
+        privacyCurrent: span.request.logPrivacy
+      });
+    }
+    const unique = new Map;
+    for (const row of observed.sort((a, b) => b.durationMs - a.durationMs)) {
+      const key = `${row.kind}:${row.task ?? ""}:${row.phase}:${row.open === true}`;
+      if (!unique.has(key))
+        unique.set(key, row);
+    }
+    const selected = [...unique.values()].slice(0, MAX_LOOP_SPANS);
+    const spans = selected.map(({ kind, task, phase, durationMs, open }) => ({ kind, ...task === undefined ? {} : { task }, phase, durationMs, ...open ? { open: true } : {} }));
+    const guards = [...new Set(selected.map((row) => row.privacyCurrent))];
+    const attribution = selected.some((row) => row.open !== true) ? "sync_overlap_observed" : selected.length ? "open_async_wait" : "unknown";
+    this.emit("loop", {
+      type: "control_write_loop_delay",
+      delayMs: this.roundMs(delayMs),
+      attribution,
+      spans
+    }, () => guards.every((guard) => this.privateNow(guard)));
+  }
+  status() {
+    return {
+      active: this.requests.size,
+      activeSpans: this.spans.size,
+      completedRequests: this.completedRequests,
+      slowRequests: this.slowRequests,
+      blockedLoopSamples: this.blockedLoopSamples,
+      recentSpans: this.recent.length,
+      droppedActive: this.droppedActive,
+      droppedSpans: this.droppedSpans,
+      droppedRecent: this.droppedRecent,
+      droppedLogs: this.droppedLogs,
+      droppedMetadata: this.droppedMetadata,
+      clockFailures: this.clockFailures
+    };
+  }
+  beginSpan(request, phase) {
+    const span = { request, phase, startedAt: this.readNow(), async: false };
+    if (this.spans.size >= this.maxActiveSpans || request.spanCount >= this.maxRequestSpans) {
+      this.droppedSpans++;
+      return span;
+    }
+    request.spanCount++;
+    span.id = this.nextSpanId++;
+    this.spans.set(span.id, span);
+    return span;
+  }
+  finishSpan(span) {
+    if (span.id === undefined || this.spans.get(span.id) !== span || span.request.settled)
+      return;
+    const endedAt = this.readNow();
+    this.spans.delete(span.id);
+    const durationMs = Math.max(0, endedAt - span.startedAt);
+    const request = span.request;
+    const prior = request.phases.get(span.phase) ?? 0;
+    if (!request.phaseOrder.includes(span.phase))
+      request.phaseOrder.push(span.phase);
+    request.phases.set(span.phase, prior + durationMs);
+    if (!span.async) {
+      this.recent.push({ kind: request.metadata.kind, ...request.metadata.task === undefined ? {} : { task: request.metadata.task }, phase: span.phase, startedAt: span.startedAt, endedAt, async: false, privacyCurrent: request.logPrivacy });
+      while (this.recent.length > this.maxRecentSpans) {
+        this.recent.shift();
+        this.droppedRecent++;
+      }
+    }
+  }
+  recordSyncPrefix(span) {
+    if (span.id === undefined)
+      return;
+    const endedAt = this.readNow();
+    if (endedAt - span.startedAt < MIN_SYNC_PREFIX_MS)
+      return;
+    const request = span.request;
+    this.recent.push({ kind: request.metadata.kind, ...request.metadata.task === undefined ? {} : { task: request.metadata.task }, phase: span.phase, startedAt: span.startedAt, endedAt, async: false, privacyCurrent: request.logPrivacy });
+    while (this.recent.length > this.maxRecentSpans) {
+      this.recent.shift();
+      this.droppedRecent++;
+    }
+  }
+  finishRequest(id, request, outcome) {
+    if (!this.requests.delete(id))
+      return;
+    request.settled = true;
+    for (const [spanId, span] of this.spans)
+      if (span.request === request) {
+        this.spans.delete(spanId);
+        this.droppedSpans++;
+      }
+    this.completedRequests++;
+    const durationMs = this.roundMs(this.readNow() - request.startedAt);
+    if (durationMs < CONTROL_WRITE_SLOW_MS)
+      return;
+    this.slowRequests++;
+    const phases = request.phaseOrder.map((phase) => ({ phase, durationMs: this.roundMs(request.phases.get(phase) ?? 0) }));
+    this.emit("slow", {
+      type: "control_write_slow",
+      kind: request.metadata.kind,
+      ...request.metadata.task === undefined ? {} : { task: request.metadata.task },
+      durationMs,
+      outcome,
+      phases: phases.slice(0, MAX_LOOP_SPANS),
+      ...phases.length > MAX_LOOP_SPANS ? { truncated: true } : {}
+    }, request.logPrivacy);
+  }
+  emit(key, value, privacyCurrent) {
+    if (this.stopped || !this.privateNow(privacyCurrent))
+      return;
+    const now = this.readNow(), last = this.lastEmit.get(key);
+    if (last !== undefined && now - last < this.rateLimitMs) {
+      this.droppedLogs++;
+      return;
+    }
+    while (this.emitted.length && now - this.emitted[0] >= 60000)
+      this.emitted.shift();
+    if (this.emitted.length >= MAX_EMITS_PER_MINUTE) {
+      this.droppedLogs++;
+      return;
+    }
+    let line;
+    try {
+      line = JSON.stringify(value);
+    } catch {
+      this.droppedLogs++;
+      return;
+    }
+    if (Buffer.byteLength(line) > CONTROL_WRITE_MAX_LINE_BYTES) {
+      const minimal = value.type === "control_write_loop_delay" ? { type: "control_write_loop_delay", delayMs: typeof value.delayMs === "number" ? value.delayMs : 0, attribution: "unknown", spans: [], truncated: true } : { type: "control_write_slow", kind: value.kind, ...value.task === undefined ? {} : { task: value.task }, durationMs: value.durationMs, outcome: value.outcome, phases: [], truncated: true };
+      line = JSON.stringify(minimal);
+      if (Buffer.byteLength(line) > CONTROL_WRITE_MAX_LINE_BYTES) {
+        this.droppedLogs++;
+        return;
+      }
+    }
+    this.lastEmit.set(key, now);
+    this.emitted.push(now);
+    try {
+      this.options.emit(line);
+    } catch {
+      this.droppedLogs++;
+    }
+  }
+  privateNow(guard) {
+    try {
+      return guard() === true;
+    } catch {
+      return false;
+    }
+  }
+  safeMetadata(metadata) {
+    if (!isObject(metadata))
+      return;
+    try {
+      const kind = ownValue(metadata, "kind"), task = ownValue(metadata, "task");
+      if (typeof kind !== "string" || !CONTROL_WRITE_KINDS.includes(kind) || task !== undefined && !validTaskId(task))
+        return;
+      return { kind, ...task === undefined ? {} : { task } };
+    } catch {
+      return;
+    }
+  }
+  readNow() {
+    let value;
+    try {
+      value = this.nowFn();
+    } catch {
+      this.clockFailures++;
+      return this.lastNow;
+    }
+    if (!Number.isFinite(value) || value < this.lastNow) {
+      this.clockFailures++;
+      return this.lastNow;
+    }
+    this.lastNow = value;
+    return value;
+  }
+  roundMs(value) {
+    const bounded = Number.isFinite(value) ? Math.min(CONTROL_WRITE_MAX_DURATION_MS, Math.max(0, value)) : CONTROL_WRITE_MAX_DURATION_MS;
+    return Math.round(bounded * 10) / 10;
+  }
+}
+var CONTROL_WRITE_KINDS, CONTROL_WRITE_PHASES, CONTROL_WRITE_SLOW_MS = 1000, CONTROL_WRITE_LOOP_DELAY_MS = 250, CONTROL_WRITE_SAMPLE_MS = 100, CONTROL_WRITE_MAX_LINE_BYTES = 2048, CONTROL_WRITE_MAX_DURATION_MS = 86400000, MAX_ACTIVE_REQUESTS = 128, MAX_ACTIVE_SPANS = 256, MAX_RECENT_SPANS = 512, MAX_REQUEST_SPANS = 32, MAX_LOOP_SPANS = 8, MIN_SYNC_PREFIX_MS = 10, MAX_EMITS_PER_MINUTE = 60, RATE_LIMIT_MS = 1000, currentTrace, OPERATIONS;
+var init_control_write_trace = __esm(() => {
+  CONTROL_WRITE_KINDS = [
+    "hub_task_propose",
+    "hub_review",
+    "hub_task_accept",
+    "hub_task_done",
+    "hub_task_decline",
+    "hub_task_cancel",
+    "hub_task_assign",
+    "task_assign",
+    "task_assign_checked",
+    "task_unassign",
+    "hub_delivery_done",
+    "background"
+  ];
+  CONTROL_WRITE_PHASES = [
+    "client-send",
+    "client-wait",
+    "client-receive",
+    "daemon-receive",
+    "daemon-dispatch",
+    "daemon-reply",
+    "board-write",
+    "queue-hook",
+    "status-hook",
+    "memory",
+    "external",
+    "snapshot"
+  ];
+  currentTrace = new AsyncLocalStorage;
+  OPERATIONS = {
+    hub_task_propose: "hub_task_propose",
+    hub_review: "hub_review",
+    hub_task_accept: "hub_task_accept",
+    hub_task_done: "hub_task_done",
+    hub_task_decline: "hub_task_decline",
+    hub_task_cancel: "hub_task_cancel",
+    hub_task_assign: "hub_task_assign",
+    task_assign: "task_assign",
+    task_assign_checked: "task_assign_checked",
+    task_unassign: "task_unassign"
+  };
+});
+
 // src/hub/review-findings.ts
 var MAX_BYTES2;
 var init_review_findings = __esm(() => {
@@ -10031,6 +10468,7 @@ var SDLC_STAGES, PLAYBOOK_STAGES, BASES, STAGE_GATES, GATES;
 var init_sdlc = __esm(() => {
   init_test_integrity();
   init_plan_conformance();
+  init_control_write_trace();
   init_review_findings();
   init_sdlc_metrics();
   init_eval_gate();
@@ -11216,10 +11654,10 @@ var init_shard_bridge = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/cli-attribution.ts
-import { AsyncLocalStorage } from "async_hooks";
+import { AsyncLocalStorage as AsyncLocalStorage2 } from "async_hooks";
 var scope;
 var init_cli_attribution = __esm(() => {
-  scope = new AsyncLocalStorage;
+  scope = new AsyncLocalStorage2;
 });
 
 // node_modules/@staix/agent-mem/src/memory/private-spans.ts
@@ -12128,6 +12566,7 @@ var init_board = __esm(() => {
   init_task_code_symbols();
   init_plan_conformance();
   init_db_schema();
+  init_control_write_trace();
   init_planning();
   init_envelope();
   init_review_findings();
@@ -23365,6 +23804,9 @@ function negotiateProtocol(local, remote) {
 }
 
 // src/hub/control-client.ts
+init_control_write_trace();
+var clientWriteTelemetry = new ControlWriteTelemetry({ emit: (line) => console.error(`[agent-hub] ${line}`) });
+var publicClientTiming = () => true;
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
@@ -23530,6 +23972,12 @@ class ControlClient {
     return catalog;
   }
   request(msg, timeoutMs = 30000, signal) {
+    const metadata = controlWriteMetadata(msg);
+    if (!metadata)
+      return this.requestBody(msg, timeoutMs, signal);
+    return clientWriteTelemetry.run({ kind: metadata.kind }, publicClientTiming, () => controlWriteSpan("client-wait", () => this.requestBody(msg, timeoutMs, signal).then((reply) => controlWriteSpan("client-receive", () => reply))));
+  }
+  requestBody(msg, timeoutMs, signal) {
     if (this.ws.readyState !== WebSocket.OPEN || this.closing && msg.t !== "request_cancel")
       return Promise.resolve({ ok: false, error: "hub connection is not open" });
     const invocation = msg.t === "task" && msg.op === "hub_invoke";
@@ -23589,7 +24037,7 @@ class ControlClient {
       }
       timer = timeoutMs ? setTimeout(() => abandon(`no answer from the hub within ${Math.round(timeoutMs / 1000)} s`), timeoutMs) : undefined;
       try {
-        this.ws.send(JSON.stringify({ ...wire, rid }));
+        controlWriteSpan("client-send", () => this.ws.send(JSON.stringify({ ...wire, rid })));
       } catch {
         abandon("hub request could not be sent");
       }
@@ -24265,7 +24713,7 @@ function slugify(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 var captureStackTrace = "captureStackTrace" in Error ? Error.captureStackTrace : (..._args) => {};
-function isObject(data) {
+function isObject2(data) {
   return typeof data === "object" && data !== null && !Array.isArray(data);
 }
 var allowsEval = /* @__PURE__ */ cached(() => {
@@ -24284,7 +24732,7 @@ var allowsEval = /* @__PURE__ */ cached(() => {
   }
 });
 function isPlainObject(o) {
-  if (isObject(o) === false)
+  if (isObject2(o) === false)
     return false;
   const ctor = o.constructor;
   if (ctor === undefined)
@@ -24292,7 +24740,7 @@ function isPlainObject(o) {
   if (typeof ctor !== "function")
     return true;
   const prot = ctor.prototype;
-  if (isObject(prot) === false)
+  if (isObject2(prot) === false)
     return false;
   if (Object.prototype.hasOwnProperty.call(prot, "isPrototypeOf") === false) {
     return false;
@@ -26233,7 +26681,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     }
     return propValues;
   });
-  const isObject2 = isObject;
+  const isObject = isObject2;
   const catchall = def.catchall;
   let value;
   const memo = globalConfig.memoizer;
@@ -26241,7 +26689,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input = payload.value;
-    if (!isObject2(input)) {
+    if (!isObject(input)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -26377,7 +26825,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     return doc.compile();
   };
   let fastpass;
-  const isObject2 = isObject;
+  const isObject = isObject2;
   const jit = !globalConfig.jitless;
   const allowsEval2 = allowsEval;
   const fastEnabled = jit && allowsEval2.value;
@@ -26386,7 +26834,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input = payload.value;
-    if (!isObject2(input)) {
+    if (!isObject(input)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -26524,7 +26972,7 @@ var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnio
   const disc = cached(() => discriminatorMap(def));
   inst._zod.parse = (payload, ctx) => {
     const input = payload.value;
-    if (!isObject(input)) {
+    if (!isObject2(input)) {
       payload.issues.push({
         code: "invalid_type",
         expected: "object",
