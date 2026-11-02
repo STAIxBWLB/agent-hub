@@ -1,11 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
-import { newToolRequestId } from "../src/hub/tool-request.ts";
+import { newToolRequestId, toolWriteOperation, toolWriteUnknownReply } from "../src/hub/tool-request.ts";
+import { operationalRequestLabel, operationalRefusal, OPERATIONAL_PERSON_GUIDANCE } from "../src/hub/operational-authority.ts";
 import { newEnvelope, USER } from "../src/hub/envelope.ts";
 
 const resultBody = (reply: Record<string, unknown>) => { const { rid: _rid, ...body } = reply; return body; };
@@ -216,4 +217,30 @@ test("delivery completion replay remains bound to the attached socket and genera
     expect(wrongGeneration).toMatchObject({ ok: false, error: "delivery does not belong to this connection generation" });
     expect(wrongGeneration.outcome).toBeUndefined();
   } finally { claude?.close(); f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
+});
+
+
+test("the final revoked-owner reply fence preserves uncertainty metadata without returning cached text", () => {
+  const source = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
+  const start = source.indexOf("    const reply = (body: Record<string, unknown>) => {", source.indexOf("  function onMessage("));
+  const end = source.indexOf("    const runTaskRequest", start);
+  expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  const snippet = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end));
+  const makeReply = new Function("c", "msg", "sock", "operationalRequestLabel", "currentExternalTools", "currentImplementerTools", "event", "operationalRefusal", "OPERATIONAL_PERSON_GUIDANCE", "toolWriteOperation", "toolWriteUnknownReply", `let refusalRecorded = false; ${snippet}; return reply;`);
+  for (const owner of ["externalOwner", "toolsOwner"]) {
+    for (const unknown of [false, true]) {
+      const id = newToolRequestId("fixture-instance"), sent: string[] = [];
+      const msg = { t: "task", op: "hub_task_propose", rid: 17, requestId: id, args: { title: "synthetic task" } };
+      const c = { authed: true, role: "tools", peer: "codex", [owner]: {} };
+      // These deny-only ports exercise response classification, never native admission or execution.
+      const reply = makeReply(c, msg, { readyState: WebSocket.OPEN, send: (data: string) => sent.push(data) },
+        operationalRequestLabel, () => false, () => false, () => true, operationalRefusal, OPERATIONAL_PERSON_GUIDANCE, toolWriteOperation, toolWriteUnknownReply);
+      reply(unknown ? { ok: false, outcome: "unknown", requestId: id, error: "original pending receipt" }
+        : { ok: true, requestId: id, text: "private/should-not-leak" });
+      expect(sent).toHaveLength(1);
+      const result = JSON.parse(sent[0]!);
+      expect(result).toMatchObject({ rid: 17, ok: false, outcome: "unknown", requestId: id });
+      expect(result.error).toContain("hub_task_list"); expect(sent[0]).not.toContain("private/should-not-leak");
+    }
+  }
 });

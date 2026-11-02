@@ -8060,15 +8060,23 @@ export async function startDaemon(opts: DaemonOptions) {
     const c = sock.data;
     let refusalRecorded=false;
     const reply = (body: Record<string, unknown>) => {
+      const writeRequestId = typeof msg.requestId === "string" && msg.requestId.length <= 256 && !/[\p{Cc}\p{Cf}]/u.test(msg.requestId)
+        && toolWriteOperation(msg) !== undefined && body.requestId === msg.requestId ? msg.requestId : undefined;
+      let writeRefusal: string | undefined;
       const label=operationalRequestLabel(msg);
-      if (msg.t !== "hello" && c.externalOwner && !currentExternalTools(c)) body = { ok: false, error: "external instance launch or execution root changed" };
-      if (c.toolsOwner && !currentImplementerTools(c)) body = { ok: false, error: "Claude child generation or execution root changed", ...(label ? {authorityRefused:true,authorityScope:"operational"}: {}) };
+      if (msg.t !== "hello" && c.externalOwner && !currentExternalTools(c)) { writeRefusal = "external instance launch or execution root changed"; body = { ok: false, error: writeRefusal }; }
+      if (c.toolsOwner && !currentImplementerTools(c)) { writeRefusal = "Claude child generation or execution root changed"; body = { ok: false, error: writeRefusal, ...(label ? {authorityRefused:true,authorityScope:"operational"}: {}) }; }
       if(c.authed && c.role==="tools" && c.peer && body.ok===false && label) {
         if(body.authorityRefused===true) {
           if(!refusalRecorded)refusalRecorded=event({type:"agent_cli",peer:c.peer,command:label,refused:true});
           const error=body.authorityScope==="conductor"?operationalRefusal(c.peer,label):body.authorityScope==="person"?String(body.error):`${String(body.error??"operational authority unavailable")}; ${OPERATIONAL_PERSON_GUIDANCE}`;
           body={...body,error,refusalAudited:refusalRecorded};
         } else body={...body,authorityRefused:false};
+      }
+      if (writeRequestId && body.requestId !== writeRequestId) {
+        const authority = { ...(body.authorityRefused === true || body.authorityRefused === false ? { authorityRefused: body.authorityRefused } : {}),
+          ...(typeof body.authorityScope === "string" ? { authorityScope: body.authorityScope } : {}), ...(typeof body.refusalAudited === "boolean" ? { refusalAudited: body.refusalAudited } : {}) };
+        body = { ...body, ...toolWriteUnknownReply(msg, writeRequestId, writeRefusal ?? "caller authority changed before the result could be returned"), ...authority };
       }
       if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ rid: msg.rid, ...body }));
     };
