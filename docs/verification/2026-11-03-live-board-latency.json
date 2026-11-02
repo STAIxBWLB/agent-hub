@@ -1,0 +1,556 @@
+{
+  "schema": "agent-hub.private-board-profile/v1",
+  "result": "not_reproduced",
+  "source_heads": {
+    "current": "e2ff29696d6a5ddb7a9232c4aadeb7fc97995794",
+    "v027": "1d0557d6ee7f6e1b48416e5905865704b35c9dbe"
+  },
+  "snapshot": {
+    "captured_at_utc": "2026-11-02T21:52:22.818871+00:00",
+    "bytes": 33292288,
+    "tasks": 670,
+    "history_bytes": 4719605,
+    "deliveries_by_state": {
+      "accepted": {
+        "count": 7,
+        "payload_bytes": 77970
+      },
+      "completed": {
+        "count": 1801,
+        "payload_bytes": 8697266
+      },
+      "discarded": {
+        "count": 111,
+        "payload_bytes": 121132
+      },
+      "failed": {
+        "count": 136,
+        "payload_bytes": 492788
+      }
+    }
+  },
+  "read_only_current": {
+    "tasks": 670,
+    "board_list_ms": 100.6,
+    "tasks_constructor_ms": 132.49,
+    "public_view_all_ms": 142.67,
+    "status_tasks_ms": 0.44,
+    "stalled_ms": 0.68,
+    "pending_offers_ms": 0.18
+  },
+  "runs": {
+    "current_core": {
+      "host": {
+        "platform": "darwin",
+        "arch": "arm64",
+        "bun": "1.4.3"
+      },
+      "startup": {
+        "totalMs": 330.14,
+        "includesStartupEventLogReads": true
+      },
+      "iterations_per_phase": 3,
+      "phases": [
+        {
+          "name": "review_approved",
+          "count": 3,
+          "p50Ms": 67.7,
+          "p95Ms": 78.34,
+          "outcomes": {
+            "ok": 3
+          },
+          "states": {
+            "approved": 3
+          },
+          "board": {
+            "listCalls": 21,
+            "listRows": 8103,
+            "listMs": 82.45,
+            "privacyProjectionCalls": 6,
+            "privacyProjectionRows": 84,
+            "privacyProjectionMs": 0.65,
+            "taskWriteCalls": 3,
+            "taskWriteMs": 108.65,
+            "deliveryCompleteCalls": 0,
+            "deliveryCompleteMs": 0
+          }
+        },
+        {
+          "name": "proposal_backlog",
+          "count": 3,
+          "p50Ms": 31.8,
+          "p95Ms": 32.22,
+          "outcomes": {
+            "ok": 3
+          },
+          "states": {
+            "backlog": 3
+          },
+          "board": {
+            "listCalls": 6,
+            "listRows": 2028,
+            "listMs": 19.74,
+            "privacyProjectionCalls": 6,
+            "privacyProjectionRows": 84,
+            "privacyProjectionMs": 0.85,
+            "taskWriteCalls": 3,
+            "taskWriteMs": 69.4,
+            "deliveryCompleteCalls": 0,
+            "deliveryCompleteMs": 0
+          }
+        },
+        {
+          "name": "proposal_claim",
+          "count": 3,
+          "p50Ms": 86.74,
+          "p95Ms": 87.95,
+          "outcomes": {
+            "ok": 3
+          },
+          "states": {
+            "in_progress": 3
+          },
+          "board": {
+            "listCalls": 33,
+            "listRows": 16254,
+            "listMs": 159.76,
+            "privacyProjectionCalls": 15,
+            "privacyProjectionRows": 5364,
+            "privacyProjectionMs": 3.62,
+            "taskWriteCalls": 9,
+            "taskWriteMs": 157.19,
+            "deliveryCompleteCalls": 0,
+            "deliveryCompleteMs": 0
+          }
+        },
+        {
+          "name": "delivery_complete",
+          "count": 3,
+          "p50Ms": 18,
+          "p95Ms": 18.62,
+          "outcomes": {
+            "completed": 3
+          },
+          "states": {
+            "completed": 3
+          },
+          "board": {
+            "listCalls": 0,
+            "listRows": 0,
+            "listMs": 0,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 0,
+            "taskWriteMs": 0,
+            "deliveryCompleteCalls": 3,
+            "deliveryCompleteMs": 51.38
+          }
+        }
+      ],
+      "harness_sha256": "6433ad66b7a696c0bfd6d176a72f6edf28b2446617d7b08467efd9fd7933dcec"
+    },
+    "v027_core": {
+      "host": {
+        "platform": "darwin",
+        "arch": "arm64",
+        "bun": "1.4.3"
+      },
+      "startup": {
+        "totalMs": 350.95,
+        "includesStartupEventLogReads": true
+      },
+      "iterations_per_phase": 3,
+      "phases": [
+        {
+          "name": "review_approved",
+          "count": 3,
+          "p50Ms": 89.69,
+          "p95Ms": 103.84,
+          "outcomes": {
+            "ok": 3
+          },
+          "states": {
+            "approved": 3
+          },
+          "board": {
+            "listCalls": 27,
+            "listRows": 12141,
+            "listMs": 131.62,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 3,
+            "taskWriteMs": 122.15,
+            "deliveryCompleteCalls": 0,
+            "deliveryCompleteMs": 0
+          }
+        },
+        {
+          "name": "proposal_backlog",
+          "count": 3,
+          "p50Ms": 28.07,
+          "p95Ms": 28.43,
+          "outcomes": {
+            "ok": 3
+          },
+          "states": {
+            "backlog": 3
+          },
+          "board": {
+            "listCalls": 6,
+            "listRows": 2028,
+            "listMs": 20.38,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 3,
+            "taskWriteMs": 77.6,
+            "deliveryCompleteCalls": 0,
+            "deliveryCompleteMs": 0
+          }
+        },
+        {
+          "name": "proposal_claim",
+          "count": 3,
+          "p50Ms": 81.62,
+          "p95Ms": 89.19,
+          "outcomes": {
+            "ok": 3
+          },
+          "states": {
+            "in_progress": 3
+          },
+          "board": {
+            "listCalls": 33,
+            "listRows": 16254,
+            "listMs": 175.25,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 9,
+            "taskWriteMs": 177.28,
+            "deliveryCompleteCalls": 0,
+            "deliveryCompleteMs": 0
+          }
+        },
+        {
+          "name": "delivery_complete",
+          "count": 3,
+          "p50Ms": 20.43,
+          "p95Ms": 20.68,
+          "outcomes": {
+            "completed": 3
+          },
+          "states": {
+            "completed": 3
+          },
+          "board": {
+            "listCalls": 0,
+            "listRows": 0,
+            "listMs": 0,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 0,
+            "taskWriteMs": 0,
+            "deliveryCompleteCalls": 3,
+            "deliveryCompleteMs": 56.9
+          }
+        }
+      ],
+      "harness_sha256": "94801693c03d665ee9e044222edb2383a79eac058e35b56b60aab0161de8ebb0"
+    },
+    "v027_matched_isolated": {
+      "host": {
+        "platform": "darwin",
+        "arch": "arm64",
+        "bun": "1.4.3"
+      },
+      "startup": {
+        "totalMs": 1525.36,
+        "includesStartupEventLogReads": true
+      },
+      "iterations_per_phase": 3,
+      "phases": [
+        {
+          "name": "review_approved",
+          "count": 3,
+          "p50Ms": 137.69,
+          "p95Ms": 146.96,
+          "outcomes": {
+            "ok": 3
+          },
+          "states": {
+            "approved": 3
+          },
+          "board": {
+            "listCalls": 42,
+            "listRows": 20217,
+            "listMs": 203.23,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 6,
+            "taskWriteMs": 181.76,
+            "deliveryCompleteCalls": 0,
+            "deliveryCompleteMs": 0
+          }
+        },
+        {
+          "name": "proposal_backlog",
+          "count": 3,
+          "p50Ms": 34.71,
+          "p95Ms": 35.46,
+          "outcomes": {
+            "ok": 3
+          },
+          "states": {
+            "backlog": 3
+          },
+          "board": {
+            "listCalls": 9,
+            "listRows": 4056,
+            "listMs": 36.75,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 3,
+            "taskWriteMs": 98.63,
+            "deliveryCompleteCalls": 0,
+            "deliveryCompleteMs": 0
+          }
+        },
+        {
+          "name": "proposal_claim",
+          "count": 3,
+          "p50Ms": 144.18,
+          "p95Ms": 145.91,
+          "outcomes": {
+            "ok": 3
+          },
+          "states": {
+            "in_progress": 3
+          },
+          "board": {
+            "listCalls": 43,
+            "listRows": 23026,
+            "listMs": 219.58,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 9,
+            "taskWriteMs": 230.26,
+            "deliveryCompleteCalls": 0,
+            "deliveryCompleteMs": 0
+          }
+        },
+        {
+          "name": "delivery_complete",
+          "count": 3,
+          "p50Ms": 19.38,
+          "p95Ms": 20.48,
+          "outcomes": {
+            "completed": 3
+          },
+          "states": {
+            "completed": 3
+          },
+          "board": {
+            "listCalls": 0,
+            "listRows": 0,
+            "listMs": 0,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 0,
+            "taskWriteMs": 0,
+            "deliveryCompleteCalls": 3,
+            "deliveryCompleteMs": 56.87
+          }
+        }
+      ],
+      "harness_sha256": "af94616627702b8aa1f783478a68f6aeaaddeedca65680361d1954f5c3481b32"
+    },
+    "v027_matched_hooks": {
+      "host": {
+        "platform": "darwin",
+        "arch": "arm64",
+        "bun": "1.4.3"
+      },
+      "startup": {
+        "totalMs": 1662.28,
+        "includesStartupEventLogReads": true
+      },
+      "iterations_per_phase": 3,
+      "phases": [
+        {
+          "name": "review_approved",
+          "count": 3,
+          "p50Ms": 134.3,
+          "p95Ms": 144.84,
+          "outcomes": {
+            "ok": 3
+          },
+          "states": {
+            "approved": 3
+          },
+          "board": {
+            "queueHookMs": 90.21,
+            "queueHookCalls": 18,
+            "boardHookMs": 179.69,
+            "boardHookCalls": 6,
+            "listCalls": 42,
+            "listRows": 20217,
+            "listMs": 199.85,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 6,
+            "taskWriteMs": 180.41,
+            "deliveryCompleteCalls": 0,
+            "deliveryCompleteMs": 0
+          }
+        },
+        {
+          "name": "proposal_backlog",
+          "count": 3,
+          "p50Ms": 33.77,
+          "p95Ms": 34.75,
+          "outcomes": {
+            "ok": 3
+          },
+          "states": {
+            "backlog": 3
+          },
+          "board": {
+            "queueHookMs": 0,
+            "queueHookCalls": 0,
+            "boardHookMs": 91.97,
+            "boardHookCalls": 3,
+            "listCalls": 9,
+            "listRows": 4056,
+            "listMs": 39.33,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 3,
+            "taskWriteMs": 98.96,
+            "deliveryCompleteCalls": 0,
+            "deliveryCompleteMs": 0
+          }
+        },
+        {
+          "name": "proposal_claim",
+          "count": 3,
+          "p50Ms": 141.73,
+          "p95Ms": 146.71,
+          "outcomes": {
+            "ok": 3
+          },
+          "states": {
+            "in_progress": 3
+          },
+          "board": {
+            "queueHookMs": 0,
+            "queueHookCalls": 0,
+            "boardHookMs": 223.18,
+            "boardHookCalls": 9,
+            "listCalls": 43,
+            "listRows": 23026,
+            "listMs": 218.43,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 9,
+            "taskWriteMs": 228.89,
+            "deliveryCompleteCalls": 0,
+            "deliveryCompleteMs": 0
+          }
+        },
+        {
+          "name": "task_assign",
+          "count": 3,
+          "p50Ms": 186.26,
+          "p95Ms": 192.51,
+          "outcomes": {
+            "ok": 3
+          },
+          "states": {
+            "proposed": 3
+          },
+          "board": {
+            "queueHookMs": 77.33,
+            "queueHookCalls": 15,
+            "boardHookMs": 116.67,
+            "boardHookCalls": 3,
+            "listCalls": 57,
+            "listRows": 34743,
+            "listMs": 327.33,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 3,
+            "taskWriteMs": 116.94,
+            "deliveryCompleteCalls": 0,
+            "deliveryCompleteMs": 0
+          }
+        },
+        {
+          "name": "delivery_complete",
+          "count": 3,
+          "p50Ms": 21.35,
+          "p95Ms": 21.94,
+          "outcomes": {
+            "completed": 3
+          },
+          "states": {
+            "completed": 3
+          },
+          "board": {
+            "queueHookMs": 58.45,
+            "queueHookCalls": 6,
+            "boardHookMs": 0,
+            "boardHookCalls": 0,
+            "listCalls": 0,
+            "listRows": 0,
+            "listMs": 0,
+            "privacyProjectionCalls": 0,
+            "privacyProjectionRows": 0,
+            "privacyProjectionMs": 0,
+            "taskWriteCalls": 0,
+            "taskWriteMs": 0,
+            "deliveryCompleteCalls": 3,
+            "deliveryCompleteMs": 61.09
+          }
+        }
+      ],
+      "harness_sha256": "3aa30a564680a95c12f00b3432b1c36a34c9e976757df06e57e5185a6b0646d0"
+    }
+  },
+  "limitations": [
+    "Three samples per phase; p95 is the maximum sample, not a stable production percentile.",
+    "Private consistent database backup, not original WAL files, lock holders, memory repository, sessions or scheduler state.",
+    "Models, native agents and outbound fetch were not exercised. Matched runs use fresh isolated memory, disabled inference/MLX/native capture/task sweep and WIP 32.",
+    "MCP stdio wrapper, live socket backlog and live memory capture contention are not measured.",
+    "macOS Bun 1.4.3 diagnostic; not a pinned-Bun gate or exact live-process binary reproduction."
+  ],
+  "replay_audit": {
+    "current_registry": [
+      "hub_task_propose",
+      "hub_review"
+    ],
+    "natural_journal_idempotence": [
+      "delivery_complete"
+    ],
+    "not_in_current_write_operation": [
+      "hub_task_accept",
+      "task_assign",
+      "hub_task_done",
+      "hub_task_decline",
+      "hub_task_cancel"
+    ],
+    "observed_live_replay_feature": false,
+    "accept_history_note": "The four accepts on task 668 were plan revisions; they are not a reproduced timeout retry."
+  }
+}
