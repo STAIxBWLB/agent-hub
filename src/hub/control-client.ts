@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { projectContext } from "./project.ts";
+import { newToolRequestId, TOOL_WRITE_FEATURE, toolWriteOperation, toolWriteUnknownReply } from "./tool-request.ts";
 import { externalAdapterMetadata, externalInstanceCatalog, type ExternalInstanceCatalog, type ExternalAdapterMetadata } from "../adapters/external-metadata.ts";
 import { negotiateProtocol, protocolWindow, type ProtocolWindow } from "./protocol-window.ts";
 
@@ -12,7 +13,7 @@ export function stateDirFor(cwd: string): string {
 export const PROTOCOL = 17;
 /** The descriptor's legacy protocol field remains this floor for previous published clients. */
 export const PROTOCOL_MIN = 16;
-export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "research_runners", "task_handoff", "session_identity", "schema_guard", "design_specs", "queue_discard_states"] as const;
+export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "research_runners", "task_handoff", "session_identity", "schema_guard", "design_specs", "queue_discard_states", TOOL_WRITE_FEATURE] as const;
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
 export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, 16, PROTOCOL] as const;
 
@@ -221,20 +222,29 @@ export class ControlClient {
   request(msg: Record<string, unknown>, timeoutMs = 30_000, signal?: AbortSignal): Promise<any> {
     if (this.ws.readyState !== WebSocket.OPEN || this.closing && msg.t !== "request_cancel") return Promise.resolve({ ok: false, error: "hub connection is not open" });
     const invocation = msg.t === "task" && msg.op === "hub_invoke";
+    const write = toolWriteOperation(msg) !== undefined;
+    let wire = msg;
+    if (write && this.features.includes(TOOL_WRITE_FEATURE) && msg.requestId === undefined) {
+      try { wire = { ...msg, requestId: newToolRequestId(this.instanceId ?? "") }; }
+      catch { return Promise.resolve({ ok: false, error: "write request identity is unavailable; inspect hub_status before retrying" }); }
+    }
+    const requestId = typeof wire.requestId === "string" ? wire.requestId : undefined;
+    const uncertain = (cause: string) => toolWriteUnknownReply(wire, requestId,
+      this.features.includes(TOOL_WRITE_FEATURE) ? cause : `${cause}; this daemon does not advertise replay protection`);
     timeoutMs = controlRequestTimeout(msg, timeoutMs);
     if (signal?.aborted) return Promise.resolve({ ok: false, error: "hub request cancelled before sending" });
     const rid = this.nextRid++;
     return new Promise((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const done = (reply: any) => {
-        this.pending.delete(rid); this.invocations.delete(rid); clearTimeout(timer); signal?.removeEventListener("abort", aborted); resolve(reply);
+        this.pending.delete(rid); this.invocations.delete(rid); clearTimeout(timer); signal?.removeEventListener("abort", aborted); resolve(write && reply?.error === "hub connection closed" ? uncertain(reply.error) : reply);
       };
       const abandon = (error: string) => {
         if (!this.pending.has(rid)) return;
         if (invocation && this.ws.readyState === WebSocket.OPEN) {
           try { this.ws.send(JSON.stringify({ t: "request_cancel", request: rid })); } catch { /* Socket close also withdraws admission. */ }
         }
-        done({ ok: false, error: invocation ? `${error}; invocation admission unconfirmed, inspect before retrying` : error });
+        done(write ? uncertain(error) : { ok: false, error: invocation ? `${error}; invocation admission unconfirmed, inspect before retrying` : error });
       };
       const aborted = () => abandon("hub request cancelled");
       this.pending.set(rid, done);
@@ -242,7 +252,7 @@ export class ControlClient {
       signal?.addEventListener("abort", aborted, { once: true });
       if (signal?.aborted) { aborted(); return; }
       timer = timeoutMs ? setTimeout(() => abandon(`no answer from the hub within ${Math.round(timeoutMs / 1000)} s`), timeoutMs) : undefined;
-      try { this.ws.send(JSON.stringify({ ...msg, rid })); }
+      try { this.ws.send(JSON.stringify({ ...wire, rid })); }
       catch { abandon("hub request could not be sent"); }
     });
   }

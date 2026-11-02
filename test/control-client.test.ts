@@ -130,3 +130,80 @@ test("C3 invocation deadline uses the approval-sized timer and sends request-sco
     expect(client.isOpen).toBe(true);
   } finally { globalThis.setTimeout = original; for (const timer of timers) clearTimeout(timer); }
 });
+
+async function writeOutcomeServer(replay = true) {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-write-outcome-")), seen: Record<string, any>[] = [];
+  let socket: { send(value: string): unknown; close(): unknown } | undefined;
+  const srv = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(_request, server) { return server.upgrade(_request) ? undefined : new Response("no"); },
+    websocket: { message(ws, data) {
+      const msg = JSON.parse(String(data));
+      if (msg.t === "hello") {
+        socket = ws;
+        ws.send(JSON.stringify({ t: "welcome", rid: msg.rid, ok: true, projectId: "p1", instanceId: "i1", cwd: ROOT,
+          features: replay ? ["tool_write_idempotency"] : [] }));
+      } else seen.push(msg);
+    } },
+  });
+  cleanup.push(() => srv.stop(true));
+  writeFileSync(join(stateDir, "control-token"), "write-fixture-token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: srv.port, protocol: PROTOCOL, projectId: "p1", instanceId: "i1", cwd: ROOT }));
+  const client = await ControlClient.connect(stateDir, { role: "tools", peer: "codex" }); cleanup.push(() => client.close());
+  const untilSeen = async (count: number) => {
+    for (let i = 0; i < 200 && seen.length < count; i++) await new Promise<void>(resolve => setImmediate(resolve));
+    expect(seen.length).toBeGreaterThanOrEqual(count);
+  };
+  return { client, seen, untilSeen, respond: (rid: number, body: Record<string, unknown>) => socket!.send(JSON.stringify({ rid, ...body })), close: () => socket!.close() };
+}
+
+test("write timeout reports unknown, keeps the request id, and a replay gets a new correlation rid", async () => {
+  const f = await writeOutcomeServer();
+  const original = globalThis.setTimeout, timers: ReturnType<typeof setTimeout>[] = [];
+  let expire!: () => void;
+  globalThis.setTimeout = ((handler: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    const timer = original(handler, delay, ...args);
+    if (delay === 30_000) { expire = () => handler(...args); timers.push(timer); }
+    return timer;
+  }) as typeof setTimeout;
+  try {
+    const pending = f.client.request({ t: "task", op: "hub_task_propose", args: { title: "synthetic task" } });
+    await f.untilSeen(1); expect(typeof expire).toBe("function");
+    expire(); const unknown = await pending;
+    expect(unknown).toMatchObject({ ok: false, outcome: "unknown", requestId: f.seen[0]!.requestId });
+    expect(unknown.error).toContain("hub_task_list"); expect(unknown.error).toContain("do not resubmit with a new request ID");
+    expect(f.seen[0]!.requestId).toMatch(/^v1\/i1\//);
+    const replay = f.client.request({ t: "task", op: "hub_task_propose", args: { title: "synthetic task" }, requestId: unknown.requestId });
+    await f.untilSeen(2);
+    expect(f.seen[1]!.requestId).toBe(f.seen[0]!.requestId); expect(f.seen[1]!.rid).not.toBe(f.seen[0]!.rid);
+    f.respond(f.seen[1]!.rid, { ok: true, text: "task #1" }); expect(await replay).toMatchObject({ ok: true, text: "task #1" });
+    expect(f.seen.some(msg => msg.t === "request_cancel")).toBe(false);
+  } finally { globalThis.setTimeout = original; for (const timer of timers) clearTimeout(timer); }
+});
+
+test("lost review and delivery connections are unknown and name the right read", async () => {
+  for (const msg of [{ t: "task", op: "hub_review", args: { id: 7, verdict: "approved" } }, { t: "delivery_complete", deliveryId: "a".repeat(32), generation: "fixture-generation" }]) {
+    const f = await writeOutcomeServer();
+    const pending = f.client.request(msg); await f.untilSeen(1); f.close();
+    const reply = await pending;
+    expect(reply).toMatchObject({ outcome: "unknown", requestId: f.seen[0]!.requestId });
+    expect(reply.error).toContain(msg.t === "task" ? "hub_task_show {id: 7}" : "ahub queue show");
+  }
+});
+
+test("legacy write timeout remains unknown without pretending the old daemon supports replay", async () => {
+  const f = await writeOutcomeServer(false);
+  const original = globalThis.setTimeout, timers: ReturnType<typeof setTimeout>[] = [];
+  let expire!: () => void;
+  globalThis.setTimeout = ((handler: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    const timer = original(handler, delay, ...args);
+    if (delay === 30_000) { expire = () => handler(...args); timers.push(timer); }
+    return timer;
+  }) as typeof setTimeout;
+  try {
+    const pending = f.client.request({ t: "task", op: "hub_review", args: { id: 9, verdict: "approved" } });
+    await f.untilSeen(1); expire(); const reply = await pending;
+    expect(f.seen[0]).not.toHaveProperty("requestId");
+    expect(reply).toMatchObject({ outcome: "unknown" }); expect(reply.error).toContain("does not advertise replay protection");
+    expect(reply.error).toContain("hub_task_show {id: 9}");
+  } finally { globalThis.setTimeout = original; for (const timer of timers) clearTimeout(timer); }
+});
