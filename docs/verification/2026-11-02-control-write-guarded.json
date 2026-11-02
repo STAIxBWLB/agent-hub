@@ -1,0 +1,127 @@
+{
+  "schema": "agent-hub.control-write-latency/v1",
+  "ok": true,
+  "mode": "full",
+  "host": {
+    "platform": "linux",
+    "arch": "x64",
+    "bun": "1.4.2"
+  },
+  "fixture": {
+    "tasksSeeded": 600,
+    "taskHistoryNotes": 12,
+    "noteBytes": 4096,
+    "boardAfterSeed": {
+      "hubDb": 30617600,
+      "hubDbWal": 0
+    },
+    "boardAfterRun": {
+      "hubDb": 30859264,
+      "hubDbWal": 4148872
+    },
+    "events": {
+      "bytes": 110100480,
+      "rows": 215040,
+      "bytesAtEndOfSamples": 110322809
+    }
+  },
+  "startup": {
+    "totalMs": 1191.02,
+    "includesStartupEventLogReads": true
+  },
+  "timing": "p50/p95 are ControlClient request round trips; Board method timings are nested synchronous observations and not additive",
+  "scope": {
+    "taskWrites": "ControlClient task RPCs",
+    "deliveryComplete": "real accepted delivery journal path using a synthetic peer ControlClient",
+    "channelMcpWrapper": "not measured",
+    "nativeModelsAndAccounts": "not used"
+  },
+  "iterationsPerPhase": 20,
+  "phases": [
+    {
+      "name": "review_approved",
+      "count": 20,
+      "p50Ms": 302.03,
+      "p95Ms": 368.5,
+      "outcomes": {
+        "ok": 20
+      },
+      "states": {
+        "approved": 20
+      },
+      "board": {
+        "listCalls": 180,
+        "listRows": 92300,
+        "listMs": 5524.54,
+        "taskWriteCalls": 20,
+        "taskWriteMs": 2687.48,
+        "deliveryCompleteCalls": 0,
+        "deliveryCompleteMs": 0
+      }
+    },
+    {
+      "name": "proposal_backlog",
+      "count": 20,
+      "p50Ms": 64.4,
+      "p95Ms": 76.47,
+      "outcomes": {
+        "ok": 20
+      },
+      "states": {
+        "backlog": 20
+      },
+      "board": {
+        "listCalls": 40,
+        "listRows": 21100,
+        "listMs": 1108.5,
+        "taskWriteCalls": 20,
+        "taskWriteMs": 1243.59,
+        "deliveryCompleteCalls": 0,
+        "deliveryCompleteMs": 0
+      }
+    },
+    {
+      "name": "proposal_claim",
+      "count": 20,
+      "p50Ms": 596.16,
+      "p95Ms": 634.64,
+      "outcomes": {
+        "ok": 20
+      },
+      "states": {
+        "in_progress": 20
+      },
+      "board": {
+        "listCalls": 320,
+        "listRows": 187560,
+        "listMs": 10216.67,
+        "taskWriteCalls": 60,
+        "taskWriteMs": 5184.14,
+        "deliveryCompleteCalls": 0,
+        "deliveryCompleteMs": 0
+      }
+    },
+    {
+      "name": "delivery_complete",
+      "count": 20,
+      "p50Ms": 9.82,
+      "p95Ms": 33.77,
+      "outcomes": {
+        "completed": 20
+      },
+      "states": {
+        "completed": 20
+      },
+      "board": {
+        "listCalls": 0,
+        "listRows": 0,
+        "listMs": 0,
+        "taskWriteCalls": 0,
+        "taskWriteMs": 0,
+        "deliveryCompleteCalls": 20,
+        "deliveryCompleteMs": 148.22
+      }
+    }
+  ],
+  "sourceCommit": "7615b065fcc5a6c0f9e0fd78fa4daed1531b4f5a"
+}

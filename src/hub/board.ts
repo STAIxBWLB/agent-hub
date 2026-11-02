@@ -1393,6 +1393,26 @@ export class Board {
   statusTasks(): Pick<Task, "id" | "state" | "owner" | "reviewer">[] {
     return this.db.query("SELECT id, state, owner, reviewer FROM tasks WHERE state NOT IN ('approved','cancelled') ORDER BY id").all() as Pick<Task, "id" | "state" | "owner" | "reviewer">[];
   }
+  /** Fresh privacy classification inputs only; no task history, title, detail or plan decoding. */
+  peerTaskSignals(peer: string): Pick<Task, "state" | "signals">[] {
+    const rows = this.db.query("SELECT state, signals FROM tasks WHERE owner=? OR reviewer=?").all(peer, peer) as { state: unknown; signals: unknown }[];
+    return rows.map(row => {
+      const signals: unknown = JSON.parse(String(row.signals));
+      if (typeof row.state !== "string" || !Array.isArray(signals) || signals.some(signal => typeof signal !== "string")) throw new Error("invalid task privacy projection");
+      return { state: row.state as TaskState, signals: signals as string[] };
+    });
+  }
+  /** Fresh privacy facts for a bounded explicit reference set; no task history or text decoding. */
+  taskPrivacySignals(ids: readonly number[]): Pick<Task, "id" | "signals">[] {
+    if (!Array.isArray(ids) || ids.length > 64 || ids.some(id => !Number.isSafeInteger(id) || id < 1) || new Set(ids).size !== ids.length) throw new Error("invalid task privacy reference set");
+    if (!ids.length) return [];
+    const rows = this.db.query(`SELECT id, signals FROM tasks WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids) as { id: unknown; signals: unknown }[];
+    return rows.map(row => {
+      const signals: unknown = JSON.parse(String(row.signals));
+      if (!Number.isSafeInteger(row.id) || !Array.isArray(signals) || signals.some(signal => typeof signal !== "string")) throw new Error("invalid task privacy projection");
+      return { id: row.id as number, signals: signals as string[] };
+    });
+  }
   statusReservations(): string[] {
     return (this.db.query("SELECT DISTINCT reserved FROM tasks WHERE state NOT IN ('approved', 'cancelled', 'backlog') AND reserved IS NOT NULL ORDER BY reserved").all() as { reserved: string }[]).map(row => row.reserved);
   }

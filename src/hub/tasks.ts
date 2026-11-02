@@ -6743,6 +6743,7 @@ export class Tasks {
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown): Promise<Task> {
     const requestCheck = this.requestCheck(by);
+    if (typeof id !== "number" && !(typeof id === "string" && /^\s*\d+\s*$/.test(id))) this.need(id, false, true);
     const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
     let findingGuard: ((task: Task) => void) | undefined;
     // #520: what the coverage was checked against, pinned through every await: the commit and the lifecycle receipt (the

@@ -43,6 +43,7 @@ import { MemoryObservations } from "./memory-observations.ts";
 import { createStalenessProbe } from "./memory-staleness.ts";
 import { matchingPlanFails, planGuardNodes, taskMemoryQueryNodes } from "./memory-plan-guard.ts";
 import { planningWipLimits } from "./planning.ts";
+import { ToolWriteRegistry, toolWriteOperation, toolWriteUnknownReply } from "./tool-request.ts";
 import { projectedDiff } from "./projected-diff.ts";
 import { listenWithoutPortCollision } from "./listen.ts";
 import { needs, type NeedsInput } from "../ui/needs.ts";
@@ -662,6 +663,8 @@ export interface DaemonOptions {
   releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
   /** Host-only (#285): Kimi's data home for its wire-log usage reader; default `KIMI_CODE_HOME`, else `~/.kimi-code`. Never read from config or tools. */
   kimiHome?: string;
+  /** Host-only replay-window test ceiling (1..512); never read from project config or a tool. */
+  toolWriteReplayMaxEntries?: number;
   /** Host-only evidence seam; never supplied by project config or control messages. */
   releaseDocEvidence?: (root: string) => Promise<DocEvidence | undefined>;
   projectId?: string;
@@ -787,6 +790,7 @@ function capturedRecoverySourceDigest(): string | undefined {
 export async function startDaemon(opts: DaemonOptions) {
   // Refuse unknown formats before logs, session cleanup, module factories or any writable store is opened.
   assertHubDbCompatible(join(opts.stateDir, "hub.db"));
+  if (opts.toolWriteReplayMaxEntries !== undefined && (!Number.isSafeInteger(opts.toolWriteReplayMaxEntries) || opts.toolWriteReplayMaxEntries < 1 || opts.toolWriteReplayMaxEntries > 512)) throw new Error("invalid host tool write replay capacity");
   const resolveExecutionCwd = (peer: string, currentDeclarations: InstancesConfig | undefined, currentRoles: readonly string[], catalog: ReturnType<typeof createProjectAdapterCatalog>): string =>
     resolveInstanceExecutionCwd(opts.cwd, peer, currentDeclarations, currentRoles, catalog, undefined, undefined, opts.instanceExecutionGit);
   const projectId = opts.projectId ?? randomUUID();
@@ -2562,7 +2566,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return typeof session === "string" ? session : undefined;
   };
   const activityRings: Record<string, ActivityRing> = Object.fromEntries(SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.capabilities?.watch).map(peer => [peer, new ActivityRing()]));
-  const contextPii = (peer: PeerId) => !!turns.get(peer)?.private || board.list().some(t => !isClosedTaskState(t.state) && (t.owner === peer || t.reviewer === peer) && tasks.isPii(t));
+  const contextPii = (peer: PeerId) => !!turns.get(peer)?.private || board.peerTaskSignals(peer).some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
   // #878: what each peer is doing. Daemon memory only: never persisted (status.json leaves it out), logged, captured or relayed.
   const doings = new Map<PeerId, DoingTracker>();
   const observeDoing = (peer: PeerId, kind: DoingKind, text?: unknown, learnedPrivate = false) => {
@@ -3292,6 +3296,73 @@ export async function startDaemon(opts: DaemonOptions) {
   // commit waits for those in flight, or its integrity digest misses their later writes. Completion checks outlive
   // their op, so recoveryReady() also waits for `tasks.checksPending()`: a check the commit's stop kills would write.
   let taskOpsInFlight = 0;
+  const toolWriteRegistry = new ToolWriteRegistry(instanceId, opts.toolWriteReplayMaxEntries === undefined ? {} : { maxEntries: opts.toolWriteReplayMaxEntries });
+  const toolWriteScope = (c: Client, operation: string): string => {
+    const actor = c.peer ?? USER, peer = c.peer ? bus.peers.get(c.peer) : undefined;
+    const binding = c.toolsOwner ?? c.externalOwner;
+    return JSON.stringify({ actor, role: c.role ?? "", operation, session: c.session === true, launchId: c.launchId ?? null,
+      generation: binding?.generation ?? (c.peer ? connectionGeneration(c.peer) ?? null : null), owner: binding?.owner.id ?? peer?.id ?? null,
+      executionRoot: c.peer ? executionRoots.get(c.peer) ?? null : null });
+  };
+  const taskWriteId = (value: unknown): number | undefined => {
+    const id = typeof value === "number" ? value : typeof value === "string" && /^\s*\d+\s*$/.test(value) ? Number(value) : NaN;
+    return Number.isInteger(id) ? id : undefined;
+  };
+  const toolWriteCurrent = (c: Client, sock: Sock, operation: string, payload: Record<string, unknown>, scope: string, result?: Record<string, unknown>): boolean => {
+    try {
+      const actor = c.peer ?? USER;
+      if (!c.authed || c.closed || sock.readyState !== WebSocket.OPEN || !c.role || stopping || recoveryActive() && recoveryPhase !== "preparing"
+        || c.peer && !membershipAllowed(c.peer) || c.externalOwner && !currentExternalTools(c, true) || c.toolsOwner && !currentImplementerTools(c)) return false;
+      if (c.session && sessionGate(actor, payload)) return false;
+      if (toolWriteScope(c, operation) !== scope || readOnlyPeer(actor) && !READ_ONLY_HUB_TOOLS.has(operation)
+        || c.toolsOwner && !IMPLEMENTER_HUB_TOOL_NAMES.includes(operation)) return false;
+      const privateContext = actor !== USER && (!!turns.get(actor)?.private || contextPii(actor));
+      const args = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args) ? payload.args as Record<string, unknown> : {};
+      const requestedOwner = typeof args.owner === "string" ? args.owner.trim().toLowerCase() : "";
+      if (operation === "hub_task_propose" && (!may(actor, "propose") || requestedOwner && PEER_ID.test(requestedOwner)
+        && ![actor, USER, HUB, "digest"].includes(requestedOwner) && !may(actor, "assign"))) return false;
+      const safePiiProposalReceipt = operation === "hub_task_propose" && actor !== USER && result?.ok === true && typeof result.text === "string"
+        && /^task #[1-9]\d*: (?:backlog|proposed|in_progress|in_review|approved|changes_requested|cancelled), owner (?:none|[a-z][a-z0-9-]{0,31}), reviewer (?:none|[a-z][a-z0-9-]{0,31})$/.test(result.text);
+      const taskId = operation === "hub_review" ? taskWriteId(args.id)
+        : result?.ok === true && typeof result.text === "string" ? Number(/task #(\d+):/.exec(result.text)?.[1]) : undefined;
+      if (taskId !== undefined) {
+        const task = Number.isSafeInteger(taskId) && taskId > 0 ? board.get(taskId) : undefined;
+        if (!task) {
+          // Let the original Tasks.review validation return its specific pre-effect refusal for a new/bad target.
+          // A successful cached verdict without its task row is no longer safe to replay.
+          if (operation !== "hub_review" || result?.ok === true) return false;
+        } else {
+          const piiTask = tasks.isPii(task);
+          // ponytail: non-console review/PII replays remain held; narrower privacy needs host-proven per-operation private-turn authority.
+          if (operation === "hub_review" && actor !== USER && privateContext) return false;
+          if (actor !== USER && piiTask && !safePiiProposalReceipt
+            || operation === "hub_review" && actor !== USER && task.reviewer !== actor
+            || actor !== USER && result?.ok === true && typeof result.text === "string" && !tasks.publicMetadataText(result.text) && !safePiiProposalReceipt) return false;
+        }
+      }
+      if (actor !== USER && operation === "hub_task_propose" && result?.ok === true && typeof result.text === "string") {
+        const overlapLines = result.text.split(/\r?\n/).filter(line => line.startsWith("Overlaps "));
+        if (overlapLines.length > 1) return false;
+        if (overlapLines.length === 1) {
+          const line = overlapLines[0]!;
+          const markers = [...line.matchAll(/#([1-9]\d*) \(owner ([^)\r\n]{1,128})\)/g)];
+          const markerPrefixes = [...line.matchAll(/#([^()\r\n]{1,128}) \(owner /g)];
+          if (!markers.length || markers.length > 64 || markerPrefixes.length !== markers.length) return false;
+          const refs = new Set<number>();
+          for (const marker of markers) {
+            const id = Number(marker[1]);
+            if (!Number.isSafeInteger(id) || id < 1) return false;
+            refs.add(id);
+          }
+          if (refs.size !== markers.length) return false;
+          const facts = board.taskPrivacySignals([...refs]);
+          if (facts.length !== refs.size || facts.some(task => tasks.isPii(task))) return false;
+        }
+      }
+      if (actor !== USER && typeof result?.error === "string" && result.outcome !== "unknown" && !tasks.publicMetadataText(result.error)) return false;
+      return true;
+    } catch { return false; }
+  };
   /**
    * #604 ORIGIN side. Order matters: the caller's authority and the PII gates run first (nothing has left this project), then the target is resolved from the machine registry and its own
    * status descriptor is read, and only then is the request sent. The target answers with the task id it created, which is recorded here. A refusal at any step leaves no row in either board.
@@ -3552,6 +3623,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify({ invocation: row.id, state: "queued", note: "the result arrives later as one message from the hub, addressed to you only; do not wait for it in this turn" });
   }
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
+    if (inProcess && (op === "hub_task_propose" || op === "hub_review") && a && typeof a === "object" && Object.hasOwn(a, "request_id")) throw new PreEffectToolRefusal("request_id replay keys require the control-protocol task transport");
     if (BOUNDED_TASK_TOOLS.has(op)) {
       const keys = op === "hub_task_spec" ? ["id"] : op === "hub_check_start" ? ["id", "check", "files"] : ["run"];
       if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !keys.includes(key))
@@ -3561,6 +3633,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (op === "hub_specs" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("spec inspection unavailable during a private turn");
     if (MEMORY_READ_TOOLS.has(op)) validateMemoryRead(op, a);
     if (op === "hub_memory_correct") correctionInput(a);
+    if (op === "hub_task_propose" && by !== USER && (piiTurn || turns.get(by)?.private)) {
+      throw new PreEffectToolRefusal("hub_task_propose is not available while working on a PII task: its text must not leave this machine");
+    }
     if (CONDUCTOR_TOOL_NAMES.has(op)) {
       if (piiTurn && ["hub_task_assign", "hub_task_escalate", "hub_peer_start"].includes(op)) throw new PreEffectToolRefusal("conductor mutations are unavailable during a PII turn");
       const result = await conductor.execute(by, op, a);
@@ -8037,9 +8112,12 @@ export async function startDaemon(opts: DaemonOptions) {
     const c = sock.data;
     let refusalRecorded=false;
     const reply = (body: Record<string, unknown>) => {
+      const writeRequestId = typeof msg.requestId === "string" && msg.requestId.length <= 256 && !/[\p{Cc}\p{Cf}]/u.test(msg.requestId)
+        && toolWriteOperation(msg) !== undefined && body.requestId === msg.requestId ? msg.requestId : undefined;
+      let writeRefusal: string | undefined;
       const label=operationalRequestLabel(msg);
-      if (msg.t !== "hello" && c.externalOwner && !currentExternalTools(c)) body = { ok: false, error: "external instance launch or execution root changed" };
-      if (c.toolsOwner && !currentImplementerTools(c)) body = { ok: false, error: "Claude child generation or execution root changed", ...(label ? {authorityRefused:true,authorityScope:"operational"}: {}) };
+      if (msg.t !== "hello" && c.externalOwner && !currentExternalTools(c)) { writeRefusal = "external instance launch or execution root changed"; body = { ok: false, error: writeRefusal }; }
+      if (c.toolsOwner && !currentImplementerTools(c)) { writeRefusal = "Claude child generation or execution root changed"; body = { ok: false, error: writeRefusal, ...(label ? {authorityRefused:true,authorityScope:"operational"}: {}) }; }
       if(c.authed && c.role==="tools" && c.peer && body.ok===false && label) {
         if(body.authorityRefused===true) {
           if(!refusalRecorded)refusalRecorded=event({type:"agent_cli",peer:c.peer,command:label,refused:true});
@@ -8047,7 +8125,44 @@ export async function startDaemon(opts: DaemonOptions) {
           body={...body,error,refusalAudited:refusalRecorded};
         } else body={...body,authorityRefused:false};
       }
+      if (writeRequestId && body.requestId !== writeRequestId) {
+        const authority = { ...(body.authorityRefused === true || body.authorityRefused === false ? { authorityRefused: body.authorityRefused } : {}),
+          ...(typeof body.authorityScope === "string" ? { authorityScope: body.authorityScope } : {}), ...(typeof body.refusalAudited === "boolean" ? { refusalAudited: body.refusalAudited } : {}) };
+        body = { ...body, ...toolWriteUnknownReply(msg, writeRequestId, writeRefusal ?? "caller authority changed before the result could be returned"), ...authority };
+      }
       if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ rid: msg.rid, ...body }));
+    };
+    const runTaskRequest = (run: () => Promise<string>, extraCurrent: () => void = () => {}, formatError: (error: unknown) => Record<string, unknown> = error => ({ t: "task", ok: false, error: error instanceof Error ? error.message : "task write refused" })): void => {
+      const operation = toolWriteOperation(msg);
+      const payload = { t: "task", op: msg.op, args: msg.args ?? {} };
+      const actor = c.peer ?? USER, args = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args) ? payload.args as Record<string, unknown> : {};
+      const knownPreEffectRefusal = operation !== undefined && (
+        readOnlyPeer(actor) && !READ_ONLY_HUB_TOOLS.has(operation)
+        || operation === "hub_task_propose" && (!may(actor, "propose") || (() => {
+          const owner = typeof args.owner === "string" ? args.owner.trim().toLowerCase() : "";
+          return !!owner && PEER_ID.test(owner) && ![actor, USER, HUB, "digest"].includes(owner) && !may(actor, "assign");
+        })())
+        || operation === "hub_review" && actor !== USER && (() => {
+          const id = taskWriteId(args.id);
+          if (id === undefined || id < 1) return false;
+          const task = board.get(id);
+          return !!task && task.reviewer !== actor;
+        })()
+      );
+      if (!operation || msg.requestId === undefined || knownPreEffectRefusal) {
+        void run().then(text => reply({ t: "task", ok: true, text }), error => reply(formatError(error)));
+        return;
+      }
+      const scope = toolWriteScope(c, operation);
+      void toolWriteRegistry.run({ id: msg.requestId, scope, bucket: actor, payload,
+        current: result => toolWriteCurrent(c, sock, operation, payload, scope, result) && (() => { try { extraCurrent(); return true; } catch { return false; } })(),
+      }, async () => {
+        try { return { t: "task", ok: true, text: await run() }; }
+        catch (error) {
+          if (error instanceof PreEffectToolRefusal || error instanceof OperationalAuthorityError) return formatError(error);
+          throw error;
+        }
+      }).then(result => reply(result), () => reply(toolWriteUnknownReply(payload, typeof msg.requestId === "string" ? msg.requestId : undefined)));
     };
     if (!c.authed) {
       if (msg.t !== "hello" || msg.token !== token) return sock.close(4401, "bad token");
@@ -9201,10 +9316,8 @@ export async function startDaemon(opts: DaemonOptions) {
           // #933: a console task op the conductor may run: admitted (role recheck and one audit row) before Tasks sees it; Tasks asks `operational` again.
           let current: () => void;
           try { current = admitOperational(sock, CONDUCTOR_TASK_OPS[String(msg.op)]!); } catch (error) { return void reply({ t: "task", ...operationalFailure(error) }); }
-          void operationalContext.run({ actor: c.peer, current }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})).then(
-            (text) => reply({ t: "task", ok: true, text }),
-            (e: Error) => reply({ t: "task", ...operationalFailure(e) }),
-          );
+          runTaskRequest(() => operationalContext.run({ actor: c.peer!, current }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})), current,
+            error => ({ t: "task", ...operationalFailure(error) }));
           return;
         }
         let invocation: AbortController | undefined;
@@ -9217,14 +9330,14 @@ export async function startDaemon(opts: DaemonOptions) {
           invocation = new AbortController(); c.invocationRequests.set(msg.rid, invocation);
         }
         const run = async () => c.externalOwner ? childToolAuthority.run({ by: c.peer!, current: () => currentExternalTools(c, true) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : c.toolsOwner ? childToolAuthority.run({ by: c.peer!, current: captureImplementerTools(c) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {});
-        (invocation ? invocationRequestSignal.run({ signal: invocation.signal, current: () => {
+        const execute = () => (invocation ? invocationRequestSignal.run({ signal: invocation.signal, current: () => {
           const live = !c.closed && sock.readyState === WebSocket.OPEN && c.invocationRequests?.get(msg.rid) === invocation;
           if (!live) invocation?.abort();
           return live;
-        } }, run) : run()).then(
-          (text) => reply({ t: "task", ok: true, text }),
-          (e: Error) => reply({ t: "task", ok: false, error: e.message }),
-        ).finally(() => { if (invocation && c.invocationRequests?.get(msg.rid) === invocation) c.invocationRequests.delete(msg.rid); });
+        } }, run) : run());
+        if (invocation) void execute().then(text => reply({ t: "task", ok: true, text }), (error: Error) => reply({ t: "task", ok: false, error: error.message }))
+          .finally(() => { if (c.invocationRequests?.get(msg.rid) === invocation) c.invocationRequests.delete(msg.rid); });
+        else runTaskRequest(execute);
         return;
       case "pause":
       case "resume": {
