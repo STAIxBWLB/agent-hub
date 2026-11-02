@@ -486,13 +486,13 @@ export class SpecsEngine {
       while (offset < rows.length && bytes + rows[offset]!.size + 128 <= MAX_BLOB_BATCH_BYTES) {
         const row = rows[offset++]!; batch.push(row); bytes += row.size + 128;
       }
-      const output = this.gitBatch(["--batch"], batch.map(row => row.oid));
+      const output: Buffer | undefined = this.gitBatch(["--batch"], batch.map(row => row.oid));
       if (!output) continue;
-      let cursor = 0;
+      let cursor: number = 0;
       for (const row of batch) {
-        const end = output.indexOf(10, cursor);
+        const end: number = output.indexOf(10, cursor);
         if (end < 0 || output.subarray(cursor, end).toString("ascii") !== `${row.oid} blob ${row.size}`) break;
-        const start = end + 1, next = start + row.size;
+        const start: number = end + 1, next: number = start + row.size;
         if (next >= output.length || output[next] !== 10) break;
         const paths = cold.get(row.oid)!;
         const parsed = this.parseCommittedCandidate(paths[0]!, output.subarray(start, next), false);
