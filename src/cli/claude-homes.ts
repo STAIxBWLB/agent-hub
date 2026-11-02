@@ -2,7 +2,7 @@ import { lstatSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { realPath } from "../hub/project.ts";
 import { launcherOf, recordPath, MAX_COMMAND_MS, type ProcessIdentity } from "./terminal-recovery.ts";
-import { CLAUDE_PLUGIN_INVENTORY, nextStep, pluginState, type InstalledPlugin, type Marketplace, type PluginState, type SetupStep } from "./setup.ts";
+import { CLAUDE_PLUGIN_INVENTORY, PLUGIN, nextStep, pluginState, type InstalledPlugin, type Marketplace, type PluginState, type SetupStep } from "./setup.ts";
 import { checkClaudeProfileHook, type ClaudeProfileHookCheck } from "./claude-profile-hook.ts";
 
 export type ClaudeHomeSource = "environment" | "default" | "recorded-launch";
@@ -115,7 +115,7 @@ export async function checkClaudeHome(home: ClaudeHome, packageRoot: string, env
     if (!marketplaces) return unknown();
     const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
     if (!plugins.every(row => object(row) && typeof row.id === "string" && row.id.length <= 256 &&
-      (row.version === undefined || typeof row.version === "string" && row.version.length <= 64 && /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(row.version)) &&
+      (row.version === undefined || typeof row.version === "string" && row.version.length <= 64 && (row.id !== PLUGIN ? !/[\u0000-\u001f\u007f-\u009f]/.test(row.version) : /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(row.version))) &&
       (row.installPath === undefined || validPath(row.installPath))) ||
       !marketplaces.every(row => object(row) && typeof row.name === "string" && row.name.length <= 256 && (row.path === undefined || validPath(row.path)))) return unknown();
     return { home, plugin: pluginState(plugins as InstalledPlugin[], packageRoot), next: nextStep(plugins as InstalledPlugin[], marketplaces as Marketplace[], packageRoot), hook };

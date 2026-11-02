@@ -137,6 +137,28 @@ test("missing plugin and unavailable inventory stay distinct and error text neve
   }
 });
 
+test("a foreign plugin's git-SHA version does not make the inventory unknown (#1068)", async () => {
+  const f = fixture(), home = { path: f.profile, exists: true, sources: ["environment" as const] };
+  const run = (rows: unknown[]) => checkClaudeHome(home, f.root, f.env, argv => ({ status: 0, stdout: JSON.stringify(argv.includes("marketplace") ? [] : rows) }));
+  const sha = { id: "frontend-design@claude-plugins-official", version: "b8e53f1c05df", installPath: "/abs/path" };
+  expect((await run([sha])).plugin.state).toBe("missing");
+  expect((await run([sha, { id: "agent-hub@agent-hub", version: "0.0.1" }])).plugin.state).toBe("stale");
+  expect((await run([sha, { id: "agent-hub@agent-hub", version: VERSION }])).plugin.state).toBe("current");
+  expect((await run([{ id: "other@x" }])).plugin.state).toBe("missing");
+});
+
+test("the semver rule still binds agent-hub rows and foreign versions stay bounded (#1068)", async () => {
+  const f = fixture(), home = { path: f.profile, exists: true, sources: ["environment" as const] };
+  const run = (rows: unknown[]) => checkClaudeHome(home, f.root, f.env, argv => ({ status: 0, stdout: JSON.stringify(argv.includes("marketplace") ? [] : rows) }));
+  const foreign = (version: unknown) => [{ id: "frontend-design@claude-plugins-official", version }];
+  expect((await run([{ id: "agent-hub@agent-hub", version: "b8e53f1c05df" }])).plugin.state).toBe("unknown");
+  for (const version of [42, null, {}, "a".repeat(65), "abc\ndef", "abc\u0000", "abc\u001b[31m", "abc\u007f"]) {
+    expect((await run(foreign(version))).plugin.state).toBe("unknown");
+  }
+  expect((await run(foreign("a".repeat(64)))).plugin.state).toBe("missing");
+  expect((await run([{ id: "frontend-design@x", version: "b8e53f1c05df", installPath: "relative" }])).plugin.state).toBe("unknown");
+});
+
 test("an explicit missing home is reported without invoking a native CLI that might create it", async () => {
   const f = fixture(), path = join(f.home, "explicit-missing");
   const home = { path, exists: false, sources: ["environment" as const] };
