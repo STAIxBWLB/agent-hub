@@ -37,7 +37,10 @@ The plugin also feeds the console's Space view (Flat, Room and 3D): agents becom
 at their desks, the task board's columns become zones, and task links and recent messages
 become links. The scene carries labels and states only, never message bodies or details.
 
-`ahub init --dry-run --json` shows what init would write. The
+`ahub init --dry-run --json` shows what init would write. On a new project at a
+terminal, `ahub init` asks each main setting with its default before writing; flags
+such as `--agents`, `--sdlc` or `--no-specs` set them directly, and `--yes` takes the
+defaults. The
 [Quickstart](docs/quickstart.md) walks through a first session and a working day.
 
 ## What you get
@@ -66,6 +69,11 @@ become links. The scene carries labels and states only, never message bodies or 
   source. A unit is covered by its owner's `hub_study_handoff` with evidence, not by
   a done task. Experiment attempts are recorded with `hub_experiment_record` and read
   with `ahub study experiments`, each value naming where it came from.
+- **Design specs.** Markdown specs with `id` and `type` frontmatter name the paths
+  they govern. `ahub specs check` validates their links and reports specs that are
+  stale against their covered sources, the hub names the specs covering a task, and
+  agents read them with `hub_specs`. Only a person stamps a spec as reviewed
+  (`ahub specs stamp`).
 - **Shared memory.** Decisions, contracts, fails and findings are kept through the
   first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library,
   in process with no claude-mem worker (short- and long-term tiers, a typed graph,
@@ -127,7 +135,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-11-01-0.27.0.md) and the
+[release verification report](docs/verification/2026-11-02-0.28.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation
