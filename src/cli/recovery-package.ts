@@ -127,9 +127,9 @@ export function verifyRecoveryTarget(kind: "restart" | "upgrade", root: string, 
   return verifyPackage(root, version, recoveryPackageOptions(kind, root));
 }
 
-/** #667: the documentation checker that `ahub sdlc authorize-release` and release readiness spawn. A capture without it can never record release consent. */
+/** #1120: the documentation checker that `ahub sdlc authorize-release` and release readiness spawn. A capture without it can never record release consent. */
 export const RELEASE_CHECKER = "scripts/check-docs.mjs";
-// ponytail: the checker is copied and kept by prune, but is not in packageDigest. Widening the digest would make every release staged before this change refuse as "cached release changed". Ceiling: a tampered checker in a capture is not detected by the digest. Upgrade path: fold it into packageDigest with a digest-version bump once no pre-#667 capture or cached release remains.
+// ponytail: the checker is copied and kept by prune, but is not in packageDigest. Widening the digest would make every release staged before this change refuse as "cached release changed". Ceiling: a tampered checker in a capture is not detected by the digest. Upgrade path: fold it into packageDigest with a digest-version bump once no pre-#1120 capture or cached release remains.
 const RUNTIME_ASSETS = ["src", "plugins", "templates", ".claude-plugin", "package.json", "README.md", "LICENSE", "CHANGELOG.md"] as const;
 function runtimeDirectory(directory: string): void {
   let info;
@@ -162,7 +162,7 @@ function preserveRuntimeAssets(sourceRoot: string, destination: string, expected
   mkdirSync(temporary, { mode: 0o700 });
   try {
     for (const name of RUNTIME_ASSETS) cpSync(join(sourceRoot, name), join(temporary, name), { recursive: true, dereference: false });
-    // Absent in a source that predates the checker (a registry package before #667 ships it): the capture then reports the checker as unavailable, never a stale document.
+    // Absent in a source that predates the checker (a registry package before #1120 ships it): the capture then reports the checker as unavailable, never a stale document.
     if (existsSync(join(sourceRoot, RELEASE_CHECKER))) {
       if (!lstatSync(join(sourceRoot, RELEASE_CHECKER)).isFile()) throw new Error(`${RELEASE_CHECKER} must be a regular file to be preserved in a runtime capture; replace it with a regular file`);
       mkdirSync(join(temporary, dirname(RELEASE_CHECKER)), { recursive: true });

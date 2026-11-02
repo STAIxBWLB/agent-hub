@@ -297,7 +297,7 @@ test("S6 npm preflight refuses tracked changes at the same HEAD before and after
   expect(await f.host.guardRequest({ kind: "npm-publish" })).toMatchObject({ ok: false });
 });
 
-// #667: a hub whose runtime has no (or a failing) documentation checker says so, never "stale documentation".
+// #1120: a hub whose runtime has no (or a failing) documentation checker says so, never "stale documentation".
 const checkers: string[] = [];
 afterEach(() => { for (const dir of checkers.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function checkerFile(source?: string): string {
@@ -308,7 +308,7 @@ function checkerFile(source?: string): string {
 }
 const withChecker = (f: ReturnType<typeof fixture>, checker: string) => new ReleaseAuthorizations(realPath(tmpdir()), { ...f.ports, docs: undefined, checker });
 
-test("#667 authorization names a missing checker, with the next step, and never calls the documents stale", async () => {
+test("#1120 authorization names a missing checker, with the next step, and never calls the documents stale", async () => {
   const f = fixture(), host = withChecker(f, checkerFile());
   const error = await host.authorize("user", "1.2.3", A).then(() => "", (e: Error) => e.message);
   expect(error).toContain("documentation checker scripts/check-docs.mjs is missing from the running hub");
@@ -318,7 +318,7 @@ test("#667 authorization names a missing checker, with the next step, and never 
 });
 
 for (const [name, source] of [["exits with an error", "process.exit(2)"], ["prints unreadable output", "console.log('not json')"], ["prints evidence of another schema", "console.log(JSON.stringify({ schemaVersion: 2, documents: [], errors: 0, fresh: true }))"]] as const) {
-  test(`#667 authorization names a checker that ${name} as unavailable, not as stale documentation`, async () => {
+  test(`#1120 authorization names a checker that ${name} as unavailable, not as stale documentation`, async () => {
     const f = fixture(), host = withChecker(f, checkerFile(source));
     const error = await host.authorize("user", "1.2.3", A).then(() => "", (e: Error) => e.message);
     expect(error).toContain("did not finish with readable evidence");
@@ -328,7 +328,7 @@ for (const [name, source] of [["exits with an error", "process.exit(2)"], ["prin
   });
 }
 
-test("#667 evidence that is read and stale keeps the stale-documentation refusal with its next step", async () => {
+test("#1120 evidence that is read and stale keeps the stale-documentation refusal with its next step", async () => {
   const f = fixture(), host = withChecker(f, checkerFile(`console.log(JSON.stringify(${JSON.stringify({ ...fresh(), fresh: false, documents: [{ path: "README.md", state: "stale", commits: 1, dirty: false }] })}))`));
   const error = await host.authorize("user", "1.2.3", A).then(() => "", (e: Error) => e.message);
   expect(error).toContain("fresh committed documentation evidence");
@@ -336,14 +336,14 @@ test("#667 evidence that is read and stale keeps the stale-documentation refusal
   expect(error).not.toContain("documentation checker");
 });
 
-test("#667 a working checker that is spawned for real records the consent, and the publish guard reads it the same way", async () => {
+test("#1120 a working checker that is spawned for real records the consent, and the publish guard reads it the same way", async () => {
   const f = fixture(), host = withChecker(f, checkerFile(`console.log(JSON.stringify(${JSON.stringify(fresh())}))`));
   const receipt = await host.authorize("user", "1.2.3", A);
   expect(receipt).toMatchObject({ by: "user", commit: A, version: "1.2.3", docs: { fresh: true, errors: 0 } });
   expect(await host.guardRequest({ kind: "npm-publish" })).toEqual({ ok: true, receipts: [receipt] });
 });
 
-test("#667 the publish guard also names a checker that vanished after consent was recorded", async () => {
+test("#1120 the publish guard also names a checker that vanished after consent was recorded", async () => {
   const f = fixture(), file = checkerFile(`console.log(JSON.stringify(${JSON.stringify(fresh())}))`), ports = { ...f.ports, docs: undefined, checker: file };
   const host = new ReleaseAuthorizations(realPath(tmpdir()), ports);
   await host.authorize("user", "1.2.3", A);

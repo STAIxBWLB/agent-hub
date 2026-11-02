@@ -247,7 +247,7 @@ function knownLayout(root: string, directories: readonly string[], files: readon
 }
 function captureLayout(root: string): void {
   knownLayout(root, ["src", "plugins", "templates", ".claude-plugin"], ["package.json", "README.md", "LICENSE", "CHANGELOG.md"], ["node_modules", "scripts"]);
-  // #667: captures made before the release checker was carried have no scripts directory; when present it holds exactly the checker.
+  // #1120: captures made before the release checker was carried have no scripts directory; when present it holds exactly the checker.
   if (optionalInfo(join(root, "scripts"))) knownLayout(join(root, "scripts"), [], [basename(RELEASE_CHECKER)]);
   const modules = join(root, "node_modules");
   if (optionalInfo(modules)) {

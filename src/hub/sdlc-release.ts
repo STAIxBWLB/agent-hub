@@ -24,7 +24,7 @@ const sdlcGh: SdlcGh = async (...args) => {
 export interface DocEvidence { schemaVersion: 1; head?: string; version?: string; documents: { path?: string; state: "fresh" | "stale" | "nonancestor" | "unknown"; verifiedAgainst?: string; commits?: number; dirty?: boolean }[]; errors: number; fresh: boolean; }
 export interface ReleaseReadiness { /** #481 AC12: interval, approval-to-release lead time and hotfix rate over shipped releases, filled by Tasks.releaseReadiness. */ releaseMetrics?: ReturnType<typeof releaseMetrics>; repo: string; head?: string; version?: string; tag?: string; tagCommit?: string; commits: string[]; mergedPrs: { pr: number; commit: string }[]; documents?: DocEvidence; liveIssues: { id: number; state: "open" | "closed" | "unknown" }[]; blockers: string[]; sourceReady: boolean; native: "unverified"; ready: false; }
 export type ReleaseGit = (args: string[]) => { code: number; stdout: string };
-export interface ReleaseReaders { gh?: SdlcGh; git?: ReleaseGit; docs?: (root: string, timeoutMs: number) => Promise<DocEvidence | undefined>; /** Test seam (#667): the checker program the default docs reader spawns. */ checker?: string; }
+export interface ReleaseReaders { gh?: SdlcGh; git?: ReleaseGit; docs?: (root: string, timeoutMs: number) => Promise<DocEvidence | undefined>; /** Test seam (#1120): the checker program the default docs reader spawns. */ checker?: string; }
 const SHA = /^[0-9a-f]{40}$/;
 const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -35,7 +35,7 @@ function tagMatches(target: unknown, commit: string): boolean {
   return typeof oid === "string" && SHA.test(oid) && oid === commit;
 }
 /** Package-owned checker only; no caller-supplied program or document text is executed. */
-/** #667: why no evidence could be read, apart from evidence that says the documents are stale. */
+/** #1120: why no evidence could be read, apart from evidence that says the documents are stale. */
 export type DocEvidenceRead = { evidence: DocEvidence } | { unavailable: string };
 const CHECKER_PATH = fileURLToPath(new URL("../../scripts/check-docs.mjs", import.meta.url));
 const CHECKER_MISSING = "the documentation checker scripts/check-docs.mjs is missing from the running hub, which predates the fix that carries it into captured runtimes; record consent from a hub started from a checkout or a release that carries the checker (docs/sdlc.md, release preparation)";
@@ -113,7 +113,7 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
     }
   }
   const left = deadline - performance.now(); report.documents = left > 0 ? await (readers.docs ?? ((dir, ms) => readDocEvidenceDetailed(dir, ms, readers.checker).then(read => "evidence" in read ? read.evidence : undefined)))(root,Math.min(10_000,left)) : undefined;
-  const checkerMissing = !readers.docs && !existsSync(readers.checker ?? CHECKER_PATH); // #667: a hub without the checker says so instead of calling the documents stale
+  const checkerMissing = !readers.docs && !existsSync(readers.checker ?? CHECKER_PATH); // #1120: a hub without the checker says so instead of calling the documents stale
   if (checkerMissing) report.blockers.push("documentation checker unavailable in the running hub: " + CHECKER_MISSING);
   else if (!report.documents || report.documents.head !== head || !report.documents.fresh || report.documents.errors || report.documents.documents.some(d => d.state !== "fresh")) report.blockers.push("documentation freshness or ancestry is unknown or stale");
   if (!liveIssues.length) report.blockers.push("native verification ledger unspecified");

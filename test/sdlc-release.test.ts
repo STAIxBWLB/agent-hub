@@ -109,7 +109,7 @@ test("release final snapshot invalidates reopened missing or mismatched ledger i
     expect(report.blockers).toContain("live issue states changed or could not be reverified");
   }
 });
-test("#667 release readiness names a missing documentation checker instead of calling the documents stale",async()=>{
+test("#1120 release readiness names a missing documentation checker instead of calling the documents stale",async()=>{
  const f=fake(),{docs:_docs,...readers}=f.readers;
  const missing=await readReleaseReadiness("fixture","owner/repo",[273],{...readers,checker:"/nonexistent/ahub-checker/check-docs.mjs"});
  expect(missing.blockers).toContainEqual(expect.stringContaining("documentation checker unavailable in the running hub: the documentation checker scripts/check-docs.mjs is missing"));

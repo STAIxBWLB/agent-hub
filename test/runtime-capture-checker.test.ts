@@ -9,7 +9,7 @@ import { RELEASE_CHECKER, packageDigest, stageCurrentRuntime } from "../src/cli/
 import { readDocEvidenceDetailed } from "../src/hub/sdlc-release.ts";
 import { VERSION } from "../src/version.ts";
 
-// #667 AC1: a captured runtime (~/.agenthub/releases/<v>/source-<digest>/) must carry the documentation checker that release consent spawns.
+// #1120 AC1: a captured runtime (~/.agenthub/releases/<v>/source-<digest>/) must carry the documentation checker that release consent spawns.
 const REPO = realPath(resolve(import.meta.dir, ".."));
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -32,7 +32,7 @@ function capture(source: string) {
   return { home, registry, value: stageCurrentRuntime(source, VERSION, home, registry) };
 }
 
-test("#667 a capture of this checkout carries the documentation checker byte for byte, and its digest still verifies", () => {
+test("#1120 a capture of this checkout carries the documentation checker byte for byte, and its digest still verifies", () => {
   const { value } = capture(REPO);
   const copy = join(value.root, RELEASE_CHECKER);
   expect(lstatSync(copy).isFile()).toBe(true);
@@ -41,7 +41,7 @@ test("#667 a capture of this checkout carries the documentation checker byte for
   expect(packageDigest(value.root, { ownDependencies: true })).toBe(value.digest);
 });
 
-test("#667 the checker in a capture reads real committed evidence, so consent can be recorded from a captured hub", async () => {
+test("#1120 the checker in a capture reads real committed evidence, so consent can be recorded from a captured hub", async () => {
   const { value } = capture(REPO);
   const repo = temp("ahub-checker-repo-");
   const git = (...args: string[]) => { const run = spawnSync("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd: repo, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test", GIT_CONFIG_GLOBAL: "/dev/null" } }); if (run.status !== 0) throw new Error(run.stderr); return run.stdout.trim(); };
@@ -56,20 +56,20 @@ test("#667 the checker in a capture reads real committed evidence, so consent ca
   expect(read).toMatchObject({ evidence: { schemaVersion: 1, head: git("rev-parse", "HEAD"), version: "1.2.3", fresh: true, errors: 0 } });
 });
 
-test("#667 a source without the checker still captures, and the capture then reports the checker as unavailable, never as stale", async () => {
+test("#1120 a source without the checker still captures, and the capture then reports the checker as unavailable, never as stale", async () => {
   const { value } = capture(tinySource(false));
   expect(existsSync(join(value.root, RELEASE_CHECKER))).toBe(false);
   expect(existsSync(join(value.root, "scripts"))).toBe(false);
   expect(await readDocEvidenceDetailed(temp("ahub-checker-empty-"), 10_000, join(value.root, RELEASE_CHECKER))).toEqual({ unavailable: expect.stringContaining("is missing from the running hub") });
 });
 
-test("#667 a source whose checker is a symlink is refused with the cause and next step, so it cannot produce a capture prune would never accept", () => {
+test("#1120 a source whose checker is a symlink is refused with the cause and next step, so it cannot produce a capture prune would never accept", () => {
   const source = tinySource(false), outside = join(temp("ahub-checker-out-"), "elsewhere.mjs");
   writeFileSync(outside, "// outside\n"); mkdirSync(join(source, "scripts")); symlinkSync(outside, join(source, RELEASE_CHECKER));
   expect(() => capture(source)).toThrow("must be a regular file to be preserved in a runtime capture; replace it with a regular file");
 });
 
-test("#667 the capture checker is the same program the hub reader spawns by default", () => {
+test("#1120 the capture checker is the same program the hub reader spawns by default", () => {
   const reader = readFileSync(join(REPO, "src/hub/sdlc-release.ts"), "utf8");
   expect(reader).toContain(`new URL("../../${RELEASE_CHECKER}", import.meta.url)`);
 });

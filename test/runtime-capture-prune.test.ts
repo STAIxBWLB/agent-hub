@@ -524,11 +524,11 @@ test("#610 maintenance admits after startup returns, rate-limits across processe
   }
 }, 20_000);
 
-// #667: the release checker is a known capture asset. Captures made before it was carried have no scripts directory and must still prune.
-test("#667 a capture that carries the release checker is removed like any verified orphan, and an older capture without it still is", () => {
+// #1120: the release checker is a known capture asset. Captures made before it was carried have no scripts directory and must still prune.
+test("#1120 a capture that carries the release checker is removed like any verified orphan, and an older capture without it still is", () => {
   const f = fixture(); put(f.source, "scripts/check-docs.mjs", "// checker fixture\n");
   const withChecker = f.capture(), plain = f.capture();
-  rmSync(join(plain.root, "scripts"), { recursive: true }); // what a capture made before #667 looks like
+  rmSync(join(plain.root, "scripts"), { recursive: true }); // what a capture made before #1120 looks like
   expect(existsSync(join(withChecker.root, "scripts/check-docs.mjs"))).toBe(true);
   const result = pruneRuntimeCaptures(f.home, 0);
   expect(result.deferred).toBeUndefined(); expect(result.removed.sort()).toEqual([withChecker.root, plain.root].sort());
@@ -542,7 +542,7 @@ for (const [name, change] of [
   ["a scripts entry that is a file", (root: string) => { rmSync(join(root, "scripts"), { recursive: true }); put(root, "scripts", "not a directory\n"); }],
   ["an empty scripts directory", (root: string) => rmSync(join(root, "scripts/check-docs.mjs"))],
 ] as const) {
-  test(`#667 ${name} defers pruning without removing any capture`, () => {
+  test(`#1120 ${name} defers pruning without removing any capture`, () => {
     const f = fixture(); put(f.source, "scripts/check-docs.mjs", "// checker fixture\n");
     const orphan = f.capture(), capture = f.capture();
     change(capture.root);

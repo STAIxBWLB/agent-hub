@@ -17,7 +17,7 @@ export interface ReleaseAuthorization { schemaVersion: 1; id: string; by: PeerId
 export interface ReleaseAuthorizationPorts {
   git?: ReleaseGit;
   docs?: (root: string) => Promise<DocEvidence | undefined>;
-  /** Test seam: the checker program the default reader spawns (#667). Never set from configuration. */
+  /** Test seam: the checker program the default reader spawns (#1120). Never set from configuration. */
   checker?: string;
   gh?: SdlcGh;
   now?: () => number;
@@ -48,7 +48,7 @@ export class ReleaseAuthorizations {
   private latest?: Entry;
   constructor(private readonly root: string, private readonly ports: ReleaseAuthorizationPorts) {}
   private current(): void { if (this.ports.current?.() === false) throw new ReleaseAuthorizationError("release authorization unavailable during lifecycle transition"); }
-  /** #667: a checker that is missing or failed is its own refusal; only evidence that is read and not fresh is "stale documentation". An injected reader keeps its undefined meaning (no evidence). */
+  /** #1120: a checker that is missing or failed is its own refusal; only evidence that is read and not fresh is "stale documentation". An injected reader keeps its undefined meaning (no evidence). */
   private async docs(commit: string, version: string): Promise<ReleaseDocsVerdict | undefined> {
     if (this.ports.docs) return docsVerdict(await this.ports.docs(this.root), commit, version);
     const read = await readDocEvidenceDetailed(this.root, undefined, this.ports.checker);
