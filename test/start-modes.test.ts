@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { shellQuote } from "../src/cli/terminal-recovery.ts";
 import { personEnv } from "../src/hub/child-process.ts";
@@ -200,7 +200,7 @@ test("AC6: a headless start mode is how a person asks for headless: auto-start a
   for (const key of ["terminal.open", "terminal", "peers.pi.cmd", "peers.local.start_mode", "peers.claude.start_mode"]) expect((await settings.act({ action: "setting", key, value: "tui" })).ok).toBe(false);
 }, 30_000);
 
-test("terminal providers: the machine-local template gets one quoted command line, Orca gets the worktree on record, and without either there is none", async () => {
+test("terminal providers: the machine-local template gets one quoted command line, Orca opens the terminal in the worktree whose root is this project (not the caller's), and without either there is none (#1089)", async () => {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "ahub term open-"))), stateDir = join(cwd, "state"); // a space in the path, on purpose
   mkdirSync(stateDir);
   const argv = [process.execPath, "/pkg path/main.ts", "--project", cwd, "pi", "--mode", "tui"], line = argv.map(shellQuote).join(" ");
@@ -213,23 +213,50 @@ test("terminal providers: the machine-local template gets one quoted command lin
   expect(readFileSync(out, "utf8").trimEnd().split("\n")).toEqual([line, "pi (agent-hub)", cwd, "7", "/pkg path/main.ts", cwd]);
   expect(await terminalOpener({ template: ["/bin/sh", "-c", "exit 3", "{command}"], cwd, stateDir, env: {} }).open("t", argv)).toEqual({ ok: false, why: "terminal.open exited 3" });
   expect((await terminalOpener({ template: ["/nonexistent/terminal", "{command}"], cwd, stateDir, env: {} }).open("t", argv)).ok).toBe(false);
-  // Orca: the worktree this hub runs in, and the documented create call with the command as one argument.
+  // Orca (#1089): the worktree is asked of Orca by this project's root, never taken from the environment, and the documented create call carries the command as one argument.
   const calls: string[][] = [];
-  const run = async (args: readonly string[]) => { calls.push([...args]); return { result: { terminal: { handle: "term-1" } } }; };
-  const orca = terminalOpener({ template: [], cwd, stateDir, env: { ORCA_WORKTREE_ID: "wt-7" }, run });
+  const rows = (...worktrees: Record<string, unknown>[]) => ({ result: { worktrees, totalCount: worktrees.length, truncated: false } });
+  const fakeOrca = (list: unknown) => async (args: readonly string[]) => { calls.push([...args]); return args[0] === "worktree" ? list : { result: { terminal: { handle: "term-1" } } }; };
+  const mine = { id: "wt-mine", path: cwd }, other = { id: "wt-other-project", path: "/work/another-project" };
+  const run = fakeOrca(rows(other, mine));
+  // A. Starting this project's peers from ANOTHER project's Orca terminal: the environment names that terminal's worktree, and the terminal still opens in this project's worktree.
+  const orca = terminalOpener({ template: [], cwd, stateDir, env: { ORCA_WORKTREE_ID: "wt-other-project" }, run });
   expect(orca.available()).toEqual({ ok: true, via: "orca" });
   expect(await orca.open("pi (agent-hub)", argv)).toEqual({ ok: true, via: "orca" });
-  expect(calls).toEqual([["terminal", "create", "--worktree", "id:wt-7", "--command", line, "--title", "pi (agent-hub)", "--json"]]);
+  expect(calls[0]).toEqual(["worktree", "list", "--limit", "500", "--json"]);
+  expect(calls.at(-1)).toEqual(["terminal", "create", "--worktree", "id:wt-mine", "--command", line, "--title", "pi (agent-hub)", "--json"]);
+  expect(calls.flat().join(" ")).not.toContain("wt-other-project");
+  // The same answer from a terminal of this project itself.
+  expect(await terminalOpener({ template: [], cwd, stateDir, env: { ORCA_WORKTREE_ID: "wt-mine" }, run }).open("t", argv)).toEqual({ ok: true, via: "orca" });
+  // B. Refusals name the cause and the next step, carry no path, and create nothing.
+  const refusal = async (list: unknown, env: NodeJS.ProcessEnv = { ORCA_WORKTREE_ID: "wt-other-project" }) => {
+    const before = calls.length, result = await terminalOpener({ template: [], cwd, stateDir, env, run: fakeOrca(list) }).open("t", argv);
+    expect(calls.slice(before).some((call) => call[0] === "terminal")).toBe(false);
+    expect(result).toMatchObject({ ok: false });
+    expect((result as { why: string }).why).not.toContain(cwd); expect((result as { why: string }).why).not.toContain("/work/another-project");
+    return (result as { why: string }).why;
+  };
+  expect(await refusal(rows(other))).toContain("Orca has no worktree whose root is this project's root, so no terminal was opened. Open this project in Orca");
+  expect(await refusal(rows({ id: "wt-parent", path: dirname(cwd) }, { id: "wt-child", path: join(cwd, "sub") }))).toContain("no worktree whose root is this project's root"); // a parent or a child is not this project
+  expect(await refusal(rows({ id: "wt-gone", path: cwd, isArchived: true }))).toContain("no worktree whose root is this project's root"); // an archived entry is not a place to open a terminal
+  expect(await refusal(rows({ id: "wt-a", path: cwd }, { id: "wt-b", path: cwd }))).toContain("more than one Orca worktree has this project's root");
+  expect(await refusal({ result: { worktrees: [other], totalCount: 900, truncated: true } })).toContain("cut off at 500 rows");
+  // a cut-off list that does hold the match still opens the terminal: only "not found in a partial list" is a refusal
+  expect(await terminalOpener({ template: [], cwd, stateDir, env: { ORCA_WORKTREE_ID: "wt-other-project" }, run: fakeOrca({ result: { worktrees: [mine], totalCount: 900, truncated: true } }) }).open("t", argv)).toEqual({ ok: true, via: "orca" });
+  // Orca failing to answer is a refusal with a cause and a next step, not a terminal in the wrong place.
   const refusing = terminalOpener({ template: [], cwd, stateDir, env: { ORCA_WORKTREE_ID: "wt-7" }, run: async () => ({ status: 1, stdout: "", stderr: "no such worktree" }) });
-  expect(await refusing.open("t", argv)).toMatchObject({ ok: false });
-  // A worktree recorded by an earlier `ahub <peer>` launch of this project serves when the hub's own environment has none.
+  const failed = await refusing.open("t", argv);
+  expect(failed).toMatchObject({ ok: false, detail: expect.stringContaining("no such worktree") });
+  expect((failed as { why: string }).why).toContain("Orca could not list its worktrees, so no terminal was opened. Check that Orca is running");
+  expect((failed as { why: string }).why).not.toContain("no such worktree");
+  // A launch of this project recorded by an earlier `ahub <peer>` makes Orca available when the hub's own environment has none, and the terminal still opens where Orca says this project's root is.
   const none = terminalOpener({ template: [], cwd, stateDir, env: {}, run });
   expect(none.available()).toEqual({ ok: false, why: "no terminal.open command is configured and this project has no Orca worktree on record" });
   expect(await none.open("t", argv)).toMatchObject({ ok: false });
   writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "codex", projectRoot: cwd, stateDir, instanceId: "i", launcherPid: 1, launcherSignature: "s", launchId: "l", handle: "h", incarnationId: "inc", worktreeId: "wt-recorded", env: {} }]));
   expect(none.available()).toEqual({ ok: true, via: "orca" });
   await none.open("t", argv);
-  expect(calls.at(-1)!.slice(0, 4)).toEqual(["terminal", "create", "--worktree", "id:wt-recorded"]);
+  expect(calls.at(-1)!.slice(0, 4)).toEqual(["terminal", "create", "--worktree", "id:wt-mine"]); // from Orca by root: the recorded id is not what opens the terminal
   // The person's terminal carries no agent marker, whatever started the hub.
   expect(personEnv({ PATH: "/bin", CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "s", CODEX_THREAD_ID: "t", AGENTHUB_PEER_ID: "kimi", AGENTHUB_CHANNEL: "c", AGENTHUB_UNATTENDED: "1", AGENTHUB_RECOVERY_OPERATION: "op", ORCA_TERMINAL_HANDLE: "h", ORCA_WORKTREE_ID: "w" })).toEqual({ PATH: "/bin" });
   // A project path is data, whatever it holds: a quote, a shell command, "$" patterns and the template's own

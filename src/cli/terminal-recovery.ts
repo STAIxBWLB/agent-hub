@@ -300,17 +300,41 @@ function defaultRunner(executable: string): CommandRunner {
 export const orcaExecutable = (): string => resolveOrcaExecutable();
 
 /**
- * #269: the Orca worktree a terminal for this project can be opened in: the one this process runs in, or the one the
- * last recorded `ahub <peer>` launch of this project used. Undefined when there is none or the record does not read.
- * ponytail: the environment's worktree is taken as this project's; a hub started from another project's Orca terminal
- * (`ahub --project`, the dashboard manager's start, an upgrade or restart that brings several projects up from one
- * terminal) opens the terminal there and `ahub <peer>` then fails its root readback. Ask Orca for the worktree's path
- * and compare it if that case shows up.
+ * #269: whether Orca is in play for this project: this process runs in an Orca terminal, or an earlier `ahub <peer>`
+ * launch of this project recorded a worktree. It is only a hint for a synchronous "could a start open a terminal"
+ * answer. It is never the worktree a terminal is opened in: the environment names the worktree of whatever terminal
+ * this process was started from, which is another project's when `ahub --project`, the dashboard manager or an upgrade
+ * brought this project up (#1089). `resolveStartTerminalWorktree` names the worktree.
  */
-export function startTerminalWorktree(projectRoot: string, stateDir: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  if (env.ORCA_WORKTREE_ID) return env.ORCA_WORKTREE_ID;
+export function startTerminalCandidate(projectRoot: string, stateDir: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.ORCA_WORKTREE_ID) return true;
   const records = launchRecords(stateDir);
-  return records === "unreadable" ? undefined : records.rows.filter((row) => row.projectRoot === projectRoot).at(-1)?.worktreeId;
+  return records !== "unreadable" && records.rows.some((row) => row.projectRoot === projectRoot && typeof row.worktreeId === "string");
+}
+
+/** #1089: how many worktrees one `orca worktree list` asks for; a longer list is reported as truncated and never read as "none". */
+const WORKTREE_LIST_LIMIT = 500;
+
+/**
+ * #1089: the Orca worktree whose root is exactly this project's root, asked of Orca and never taken from the caller's
+ * environment. The match is exact because `ahub <peer>` compares the terminal's worktree root with the project root by
+ * equality and refuses on a difference: a terminal opened in any other worktree would only fail later. The refusal names
+ * the cause and the next step and carries no path; Orca's own words go in `detail` for the hub log.
+ */
+export async function resolveStartTerminalWorktree(projectRoot: string, options?: CommandRunner | TerminalRecoveryOptions): Promise<{ ok: true; worktreeId: string } | { ok: false; why: string; detail?: string }> {
+  const config = normalizeOptions(options);
+  let value: unknown;
+  try { value = await run(config.runner, ["worktree", "list", "--limit", String(WORKTREE_LIST_LIMIT), "--json"]); }
+  catch (error) {
+    return { ok: false, why: "Orca could not list its worktrees, so no terminal was opened. Check that Orca is running (orca worktree list), then start the peer again, or set terminal.open", detail: (error as Error).message };
+  }
+  const payload = responseResult(value);
+  const rows = Array.isArray(payload.worktrees) ? payload.worktrees.map(object) : [];
+  const matches = rows.filter((row) => row.isArchived !== true && rootMatches(row.path, projectRoot) && typeof row.id === "string" && row.id.length > 0);
+  if (matches.length === 1) return { ok: true, worktreeId: String(matches[0]!.id) };
+  if (matches.length > 1) return { ok: false, why: "more than one Orca worktree has this project's root, so no terminal was opened. Archive the extra entry in Orca, or set terminal.open" };
+  if (payload.truncated === true) return { ok: false, why: `Orca's worktree list was cut off at ${WORKTREE_LIST_LIMIT} rows before one with this project's root appeared, so no terminal was opened. Archive worktrees you no longer use in Orca, or set terminal.open` };
+  return { ok: false, why: "Orca has no worktree whose root is this project's root, so no terminal was opened. Open this project in Orca (add it as a repository or worktree), then start the peer again, or set terminal.open" };
 }
 
 /** #269: a new Orca terminal running `command` (a complete, already quoted command line); the terminal's handle. */
