@@ -1157,14 +1157,14 @@ export class Tasks {
           truncated: report.truncated || visibleItems.length > 20 || visibleItems.length !== report.items.length
             || visibleFreshness.length > freshness.length || visibleFreshness.length !== report.freshness.length, freshness, items };
       }
-      const visibleItems = report.items.map(diagnostic).filter((row): row is Record<string, unknown> => !!row);
-      const items = visibleItems.slice(0, 20);
-      const remaining = Math.max(0, 20 - items.length);
       const visibleSpecs = report.specs.filter(row => [row.id, row.path, row.title].every(value => this.publicMetadataText(value)));
-      const specs = visibleSpecs.slice(0, remaining)
+      const specs = visibleSpecs.slice(0, 20)
         .map(({ id, path, title }) => ({ id: safe(id), path: safe(path), title: safe(title) }));
-      return { specs, errors: report.errors, truncated: report.truncated || visibleItems.length > 20 || visibleItems.length !== report.items.length
-        || visibleSpecs.length > specs.length || visibleSpecs.length !== report.specs.length, items };
+      const visibleItems = report.items.map(diagnostic).filter((row): row is Record<string, unknown> => !!row);
+      const remaining = Math.max(0, 20 - specs.length);
+      const items = visibleItems.slice(0, remaining);
+      return { specs, errors: report.errors, truncated: report.truncated || visibleSpecs.length > specs.length || visibleSpecs.length !== report.specs.length
+        || visibleItems.length > remaining || visibleItems.length !== report.items.length, items };
     } catch { throw new PreEffectToolRefusal("spec inspection unavailable; retry ahub specs check"); }
   }
 

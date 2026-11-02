@@ -192,10 +192,11 @@ test("hub_specs caps the combined diagnostic and summary projection at 20 items"
   expect(result).toMatchObject({ specCount: 25, warnings: 25, truncated: true });
   expect((result.items as unknown[]).length + (result.freshness as unknown[]).length).toBe(20);
   const covers = fixture("off", { specsRead: action => action === "covers"
-    ? { specs: Array.from({ length: 10 }, (_, index) => ({ id: `spec-${index}`, path: `docs/spec-${index}.md`, title: `Spec ${index}` })), errors: 0, truncated: false, items: items.slice(0, 15) }
+    ? { specs: Array.from({ length: 10 }, (_, index) => index === 0 ? { id: "bus", path: "docs/design/bus.md", title: "Bus" } : ({ id: `spec-${index}`, path: `docs/spec-${index}.md`, title: `Spec ${index}` })), errors: 0, truncated: false, items: items.slice(0, 15) }
     : report });
   const covered = covers.tasks.specsRead("codex", "covers", ["src/hub/bus.ts"]);
   expect((covered.items as unknown[]).length + (covered.specs as unknown[]).length).toBe(20);
+  expect((covered.specs as { id: string }[]).map(spec => spec.id)).toContain("bus");
   expect(covered.truncated).toBe(true);
   expect(() => f.tasks.specsRead("codex", "covers", ["../outside.md"])).toThrow(/repository-relative/);
   expect(() => f.tasks.specsRead("codex", "covers", ["src\\hub\\bus.ts"])).toThrow(/forward slashes/);
