@@ -1164,6 +1164,8 @@ async function failedRow() {
   await peer.start(); bus.add(peer);
   bus.publish(newEnvelope("user", "work that later fails safely", { to: [peer.id] }));
   for (let n = 0; n < 200 && !deliveryId; n++) await Bun.sleep(10);
+  peer.onDelivery?.({ id: deliveryId, state: "accepted" });
+  bus.pause(peer.id); // a safe failure puts the envelope back and redelivers it; a paused peer stays idle with the failed row settled
   peer.onDelivery?.({ id: deliveryId, state: "failed_safe", reason: "peer refused it before running it" });
   peer.set("idle");
   const done = async () => { bus.closeJournal(); await peer.stop(); rmSync(dir, { recursive: true, force: true }); };
