@@ -1056,8 +1056,12 @@ export class Tasks {
     const inspection: PreparedSpecInspection = { policyKey: this.specsPolicyKey(config), ...(task.refs.repo ? { repo: task.refs.repo } : {}), head: declaredHead, privateTurn: initialPrivate, pii };
     if (rawAcks !== undefined && (pii || initialPrivate)) throw new PreEffectToolRefusal("spec_ack is unavailable for private work");
     if (rawAcks !== undefined && (!config.enabled || config.review === "off")) throw new PreEffectToolRefusal("spec_ack is unavailable while specs review is disabled");
-    if (rawAcks !== undefined && !this.d.inspectSpecs) throw new PreEffectToolRefusal("spec inspection is unavailable; cannot accept spec_ack");
-    if (!this.d.inspectSpecs || !config.enabled || config.review === "off" || pii || initialPrivate) return inspection;
+    if (!config.enabled || config.review === "off" || pii || initialPrivate) return inspection;
+    if (!this.d.inspectSpecs) {
+      if (config.review === "require") throw new PreEffectToolRefusal(`task #${task.id}: spec coverage is unknown because the spec inspector is unavailable; restore specs support or explicitly change specs.review`);
+      if (rawAcks !== undefined) throw new PreEffectToolRefusal("spec inspection is unavailable; cannot accept spec_ack");
+      return inspection;
+    }
     const acks = this.parseSpecAcks(rawAcks);
     let changedFiles: BriefFile[] | undefined;
     if (declaredHead) {

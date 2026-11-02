@@ -20,28 +20,28 @@ const until = async (condition: () => boolean) => {
   expect(condition()).toBe(true);
 };
 
-function fixture(review: "report" | "require" | "off" = "report", options: { complete?: boolean; hasHead?: boolean; privateTurn?: (peer: string) => boolean; specsRead?: TasksDeps["specsRead"]; specNotice?: TasksDeps["specNotice"]; inspectSpecs?: TasksDeps["inspectSpecs"]; check?: TasksDeps["check"]; runCheck?: TasksDeps["runCheck"] } = {}) {
+function fixture(review: "report" | "require" | "off" = "report", options: { complete?: boolean; hasHead?: boolean; piiTask?: boolean; enabled?: boolean; noConfig?: boolean; noInspector?: boolean; privateTurn?: (peer: string) => boolean; specsRead?: TasksDeps["specsRead"]; specNotice?: TasksDeps["specNotice"]; inspectSpecs?: TasksDeps["inspectSpecs"]; check?: TasksDeps["check"]; runCheck?: TasksDeps["runCheck"] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-specs-tasks-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const board = new Board(join(dir, "hub.db"));
   cleanup.push(() => board.close());
   const bus = new Bus({ batchMs: 0 });
-  const config = { ...DEFAULT_SPECS_CONFIG, review };
+  const config = { ...DEFAULT_SPECS_CONFIG, review, ...(options.enabled === undefined ? {} : { enabled: options.enabled }) };
   let inspected: { head: string; changed: readonly unknown[] | undefined; acks: readonly { id: string; reason: string }[] }[] = [];
   const report = { ...baseReport(), ...(options.complete === false ? { complete: false, reason: "verified changed-file inventory unavailable" } : {}) };
   const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture", routing: () => loadRouting(dir), notify: () => {},
     piiScreen: async () => ({ label: "clear", ms: 0 }),
-    specsConfig: () => config,
+    ...(options.noConfig ? {} : { specsConfig: () => config }),
     ...(options.privateTurn ? { privateTurn: options.privateTurn } : {}),
     ...(options.specNotice ? { specNotice: options.specNotice } : {}),
     reviewBrief: task => ({ head: task.refs.commit ?? "", base: "origin/main", mergeBase: "b".repeat(40), reviewable: [{ path: "src/hub/bus.ts", status: "M" }], excluded: [], withheld: 0, rules: [], rulesMissing: [], ruleGroups: [], unlisted: [] }),
-    inspectSpecs: options.inspectSpecs ?? (async (_task, head, changed, acks) => { inspected.push({ head, changed, acks }); return { ...report, head }; }),
+    ...(options.noInspector ? {} : { inspectSpecs: options.inspectSpecs ?? (async (_task, head, changed, acks) => { inspected.push({ head, changed, acks }); return { ...report, head }; }) }),
     ...(options.check ? { check: options.check } : {}),
     ...(options.runCheck ? { runCheck: options.runCheck } : {}),
     ...(options.specsRead ? { specsRead: options.specsRead } : {}),
   });
   const task = () => {
-    const proposed = board.propose(USER, { title: "change bus", class: "implement", refs: { paths: ["src/hub/bus.ts"] } });
+    const proposed = board.propose(USER, { title: "change bus", class: "implement", refs: { paths: ["src/hub/bus.ts"] }, ...(options.piiTask ? { signals: ["pii_path"] } : {}) });
     return board.update(proposed.id, "codex", "accepted", { owner: "codex", reviewer: USER, state: "in_progress", refs: { repo: "fixture/project", branch: "feature/specs", paths: ["src/hub/bus.ts"], ...(options.hasHead === false ? {} : { commit: HEAD }) } });
   };
   return { dir, board, bus, tasks, task, config, inspected: () => inspected };
@@ -108,6 +108,35 @@ test("require fails closed when the task head or changed-file inventory is not v
   await expect(f.tasks.done("codex", source.id, "updated the bus", { paths: ["src/hub/bus.ts"] })).rejects.toThrow(/spec coverage is unknown/);
   expect(f.board.get(source.id)?.state).toBe("in_progress");
   expect(f.inspected()[0]).toMatchObject({ head: "", changed: undefined });
+});
+
+test("missing inspector preserves report/off/disabled/PII compatibility but fails closed for public require", async () => {
+  const legacy = fixture("report", { noConfig: true, noInspector: true });
+  const legacyTask = legacy.task();
+  const legacyDone = await legacy.tasks.done("codex", legacyTask.id, "finished", { commit: HEAD });
+  expect(legacy.tasks.resultLine(legacyDone)).not.toContain("Design specs at");
+
+  const report = fixture("report", { noInspector: true });
+  const reportTask = report.task();
+  await expect(report.tasks.done("codex", reportTask.id, "finished", { commit: HEAD })).resolves.toBeDefined();
+
+  const required = fixture("require", { noInspector: true });
+  const publicTask = required.task();
+  await expect(required.tasks.done("codex", publicTask.id, "finished", { commit: HEAD })).rejects.toThrow(/spec inspector is unavailable/);
+  expect(required.board.get(publicTask.id)?.state).toBe("in_progress");
+
+  const off = fixture("off", { noInspector: true });
+  const offTask = off.task();
+  await expect(off.tasks.done("codex", offTask.id, "finished", { commit: HEAD })).resolves.toBeDefined();
+
+  const disabled = fixture("require", { noInspector: true, enabled: false });
+  const disabledTask = disabled.task();
+  await expect(disabled.tasks.done("codex", disabledTask.id, "finished", { commit: HEAD })).resolves.toBeDefined();
+
+  const pii = fixture("require", { noInspector: true, piiTask: true });
+  const piiTask = pii.task();
+  const piiDone = await pii.tasks.done("codex", piiTask.id, "finished", { commit: HEAD });
+  expect(pii.tasks.resultLine(piiDone)).not.toContain("Design specs at");
 });
 
 test("an asynchronous class check carries the verified spec report into the final done entry", async () => {
