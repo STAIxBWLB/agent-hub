@@ -3297,6 +3297,10 @@ export async function startDaemon(opts: DaemonOptions) {
       generation: binding?.generation ?? (isWsPeer(peer) ? peer.sessionGeneration : c.peer ? connectionGeneration(c.peer) ?? null : null), owner: binding?.owner.id ?? peer?.id ?? null,
       executionRoot: c.peer ? executionRoots.get(c.peer) ?? null : null });
   };
+  const taskWriteId = (value: unknown): number | undefined => {
+    const id = typeof value === "number" ? value : typeof value === "string" && /^\s*\d+\s*$/.test(value) ? Number(value) : NaN;
+    return Number.isInteger(id) ? id : undefined;
+  };
   const toolWriteCurrent = (c: Client, sock: Sock, operation: string, payload: Record<string, unknown>, scope: string, result?: Record<string, unknown>): boolean => {
     try {
       const actor = c.peer ?? USER;
@@ -3310,7 +3314,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const requestedOwner = typeof args.owner === "string" ? args.owner.trim().toLowerCase() : "";
       if (operation === "hub_task_propose" && (!may(actor, "propose") || requestedOwner && PEER_ID.test(requestedOwner)
         && ![actor, USER, HUB, "digest"].includes(requestedOwner) && !may(actor, "assign"))) return false;
-      const taskId = operation === "hub_review" ? Number(args.id)
+      const taskId = operation === "hub_review" ? taskWriteId(args.id)
         : result?.ok === true && typeof result.text === "string" ? Number(/task #(\d+):/.exec(result.text)?.[1]) : undefined;
       if (taskId !== undefined) {
         const task = Number.isSafeInteger(taskId) && taskId > 0 ? board.get(taskId) : undefined;
@@ -3323,6 +3327,25 @@ export async function startDaemon(opts: DaemonOptions) {
             && /^task #[1-9]\d*: (?:backlog|proposed|in_progress|in_review|approved|changes_requested|cancelled), owner (?:none|[a-z][a-z0-9-]{0,31}), reviewer (?:none|[a-z][a-z0-9-]{0,31})$/.test(result.text);
           if (actor !== USER && tasks.isPii(task) && !safePiiProposalReceipt || operation === "hub_review" && actor !== USER && task.reviewer !== actor
             || actor !== USER && result?.ok === true && typeof result.text === "string" && !tasks.publicMetadataText(result.text) && !safePiiProposalReceipt) return false;
+        }
+      }
+      if (actor !== USER && operation === "hub_task_propose" && result?.ok === true && typeof result.text === "string") {
+        const overlapLines = result.text.split(/\r?\n/).filter(line => line.startsWith("Overlaps "));
+        if (overlapLines.length > 1) return false;
+        if (overlapLines.length === 1) {
+          const line = overlapLines[0]!;
+          const markers = [...line.matchAll(/#([1-9]\d*) \(owner ([^)\r\n]{1,128})\)/g)];
+          const markerPrefixes = [...line.matchAll(/#([^()\r\n]{1,128}) \(owner /g)];
+          if (!markers.length || markers.length > 64 || markerPrefixes.length !== markers.length) return false;
+          const refs = new Set<number>();
+          for (const marker of markers) {
+            const id = Number(marker[1]);
+            if (!Number.isSafeInteger(id) || id < 1) return false;
+            refs.add(id);
+          }
+          if (refs.size !== markers.length) return false;
+          const facts = board.taskPrivacySignals([...refs]);
+          if (facts.length !== refs.size || facts.some(task => tasks.isPii(task))) return false;
         }
       }
       if (actor !== USER && typeof result?.error === "string" && result.outcome !== "unknown" && !tasks.publicMetadataText(result.error)) return false;
@@ -8083,7 +8106,21 @@ export async function startDaemon(opts: DaemonOptions) {
     const runTaskRequest = (run: () => Promise<string>, extraCurrent: () => void = () => {}, formatError: (error: unknown) => Record<string, unknown> = error => ({ t: "task", ok: false, error: error instanceof Error ? error.message : "task write refused" })): void => {
       const operation = toolWriteOperation(msg);
       const payload = { t: "task", op: msg.op, args: msg.args ?? {} };
-      if (!operation || msg.requestId === undefined) {
+      const actor = c.peer ?? USER, args = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args) ? payload.args as Record<string, unknown> : {};
+      const knownPreEffectRefusal = operation !== undefined && (
+        readOnlyPeer(actor) && !READ_ONLY_HUB_TOOLS.has(operation)
+        || operation === "hub_task_propose" && (!may(actor, "propose") || (() => {
+          const owner = typeof args.owner === "string" ? args.owner.trim().toLowerCase() : "";
+          return !!owner && PEER_ID.test(owner) && ![actor, USER, HUB, "digest"].includes(owner) && !may(actor, "assign");
+        })())
+        || operation === "hub_review" && actor !== USER && (() => {
+          const id = taskWriteId(args.id);
+          if (id === undefined || id < 1) return false;
+          const task = board.get(id);
+          return !!task && task.reviewer !== actor;
+        })()
+      );
+      if (!operation || msg.requestId === undefined || knownPreEffectRefusal) {
         void run().then(text => reply({ t: "task", ok: true, text }), error => reply(formatError(error)));
         return;
       }

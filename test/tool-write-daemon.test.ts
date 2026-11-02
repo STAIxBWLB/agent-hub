@@ -102,12 +102,14 @@ test("selected task writes replay one result by request ID while unrelated opera
 test("invalid or missing review task ids keep Tasks' known refusal and replay without a board write", async () => {
   const f = await fixture();
   try {
+    const existing = f.board.propose(USER, { title: "synthetic existing target", class: "implement" });
+    f.board.update(existing.id, USER, "assigned", { owner: "claude", reviewer: USER });
     const revision = f.board.statusRevision();
-    for (const id of ["not-a-task-id", 999_999]) {
-      const requestId = newToolRequestId(f.person.instanceId!);
+    for (const actor of [f.person, f.codex]) for (const id of ["not-a-task-id", 999_999, null, [existing.id], `${existing.id}.0`, { toString: null, valueOf: null }]) {
+      const requestId = newToolRequestId(actor.instanceId!);
       const request = { t: "task", op: "hub_review", requestId, args: { id, verdict: "approved" } };
-      const first = await f.person.request(request);
-      const replay = await f.person.request(request);
+      const first = await actor.request(request);
+      const replay = await actor.request(request);
       expect(resultBody(first)).toEqual(resultBody(replay));
       expect(first.rid).not.toBe(replay.rid);
       expect(first).toMatchObject({ ok: false, requestId });
@@ -200,6 +202,29 @@ test("cached overlap paths are withheld when the other owner's task becomes PII"
     const replay = await f.codex.request({ t: "task", op: "hub_task_propose", requestId, args });
     expect(consumerCount()).toBe(1);
     expect(JSON.stringify(replay)).not.toContain(sensitivePath);
+  } finally { f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
+});
+
+test("every overlap reference stays private after its task is completed", async () => {
+  const f = await fixture();
+  try {
+    const path = "src/multi-overlap.ts";
+    const sources = ["claude", "kimi"].map(owner => {
+      const task = f.board.propose(USER, { title: `synthetic ${owner} overlap`, class: "implement", plan: { paths: [path] }, refs: { paths: [path] } });
+      return f.board.update(task.id, owner, "accepted", { owner, reviewer: USER, state: "in_progress" });
+    });
+    const requestId = newToolRequestId(f.codex.instanceId!);
+    const request = { t: "task", op: "hub_task_propose", requestId, args: { title: "synthetic multiple overlap consumer", class: "implement", plan: { paths: [path] }, refs: { paths: [path] } } };
+    const first = await f.codex.request(request);
+    expect(first.ok).toBe(true);
+    for (const task of sources) expect(first.text).toContain(`#${task.id} (owner ${task.owner})`);
+    const hidden = sources[1]!;
+    f.board.update(hidden.id, hidden.owner!, "done", { state: "in_review", signals: ["pii_path"] });
+    f.board.update(hidden.id, USER, "approved", { state: "approved" });
+    const replay = await f.codex.request(request);
+    expect(replay).toMatchObject({ ok: false, outcome: "unknown", requestId });
+    expect(JSON.stringify(replay)).not.toContain(path);
+    expect(f.board.list().filter(task => task.title === request.args.title)).toHaveLength(1);
   } finally { f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
 });
 

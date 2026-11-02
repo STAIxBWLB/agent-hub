@@ -43,9 +43,16 @@ test("peer task signal projection stays current without decoding history or losi
     // If this projection accidentally selects or parses history, it fails; history is not a privacy input here.
     raw.query("UPDATE tasks SET history=? WHERE id=?").run("{malformed history", ownerTask.id);
     expect(board.peerTaskSignals("codex")).toContainEqual({ state: "in_progress", signals: ["pii_path"] });
+    expect(board.taskPrivacySignals([ownerTask.id, closedTask.id])).toEqual([
+      { id: ownerTask.id, signals: ["pii_path"] }, { id: closedTask.id, signals: ["pii_path"] },
+    ]);
+    expect(board.taskPrivacySignals([])).toEqual([]);
+    expect(() => board.taskPrivacySignals([ownerTask.id, ownerTask.id])).toThrow();
 
     raw.query("UPDATE tasks SET signals=? WHERE id=?").run("{malformed signals", malformedSignals.id);
     expect(() => board.peerTaskSignals("codex")).toThrow();
+    expect(() => board.taskPrivacySignals([malformedSignals.id])).toThrow();
+    expect(board.taskPrivacySignals([closedTask.id])).toEqual([{ id: closedTask.id, signals: ["pii_path"] }]);
   } finally {
     raw.close(); board.close(); rmSync(dir, { recursive: true, force: true });
   }
