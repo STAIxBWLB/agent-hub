@@ -135,7 +135,7 @@ export type TaskState = "backlog" | "proposed" | "in_progress" | "in_review" | "
 export const isClosedTaskState = (state: string): boolean => state === "approved" || state === "cancelled";
 export interface TaskOffer { envelopeId: string; owner: PeerId; assignmentFlowRevision: number; pullOnly?: boolean }
 export interface TaskCancellation { reason: string; supersededBy?: string; flowRevision: number; withheld?: true }
-export const TASK_STALL_CODES = ["tests", "spec", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "no-writes", "queue-count", "queue-age", "queue-age-unknown"] as const;
+export const TASK_STALL_CODES = ["tests", "spec", "network", "worktree", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "no-writes", "queue-count", "queue-age", "queue-age-unknown"] as const;
 export type TaskStallCode = (typeof TASK_STALL_CODES)[number];
 export interface TaskStall { task: number; signature: string; replanRevision: number; cause: { kind: "reservation" | "no-eligible-peer" | "cancelled-dependency" | "no-writes"; peer?: string; dependency?: number; code: TaskStallCode; turns?: number; acceptance?: number; refusals?: { peer: string; code: TaskStallCode }[] }; at: number }
 
