@@ -106,8 +106,8 @@ test("spec notices and read tools skip private context before calling the host",
 
 test("hub_specs caps the combined diagnostic and summary projection at 20 items", () => {
   const items = Array.from({ length: 25 }, (_, index) => ({ severity: "warning" as const, code: `warning-${index}`, message: `message ${index}`, cause: "fixture cause", nextSteps: "inspect the spec" }));
-  const report: SpecsCheckReport = { specCount: 25, errors: 0, warnings: 25, stale: 0, truncated: false, freshness: [], items: items.slice(0, 15),
-    ...{ freshness: Array.from({ length: 10 }, (_, index) => ({ path: `docs/spec-${index}.md`, state: "fresh" as const, commitsSince: 0, dirty: false })) } };
+  const report: SpecsCheckReport = { specCount: 25, errors: 0, warnings: 25, stale: 0, truncated: false, items: items.slice(0, 15),
+    freshness: Array.from({ length: 10 }, (_, index) => ({ path: `docs/spec-${index}.md`, state: "fresh" as const, commitsSince: 0, dirty: false })) };
   const f = fixture("off", { specsRead: action => action === "check" ? report : { specs: [], errors: 0, truncated: false, items: [] } });
   const result = f.tasks.specsRead("codex", "check");
   expect(result).toMatchObject({ specCount: 25, warnings: 25, truncated: true });
