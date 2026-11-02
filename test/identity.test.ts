@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import ts from "typescript";
+import { findSymbol, parseSource } from "../scripts/lib/ts-ast.ts";
 import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, liveTestRefusal, peerCommandRefusal, type PeerCommandAccess } from "../src/cli/identity.ts";
 import { operationalRequestLabel } from "../src/hub/operational-authority.ts";
 import { HELP, helpCommands } from "../src/cli/help.ts";
@@ -338,5 +342,45 @@ test("autonomy mutations are person-only, including the explicit live-test bypas
   for (const args of [["on"], ["on", "--yes"], ["off"], ["status", "--json"]]) {
     expect(classifyPeerCommand("autonomy", args)).toBe("console");
     expect(liveTestRefusal("autonomy", args)).toBeTruthy();
+  }
+});
+
+// #1084: `autonomy`, `deliverables` and `usage` were in the command table but not in the label table, so an agent shell's refusal and the audit line said "ahub unknown".
+test("no command in the CLI command table is labelled unknown, in the refusal or the audit line (#1084)", () => {
+  const source = parseSource("src/cli/main.ts", readFileSync(join(import.meta.dir, "../src/cli/main.ts"), "utf8"));
+  const table = findSymbol(source, "commands").find(span => ts.isVariableDeclaration(span.node));
+  expect(table).toBeDefined();
+  const literal = (table!.node as ts.VariableDeclaration).initializer;
+  expect(literal && ts.isObjectLiteralExpression(literal)).toBe(true);
+  const names = (literal as ts.ObjectLiteralExpression).properties.flatMap(property => ts.isPropertyAssignment(property) && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) ? [property.name.text] : []);
+  expect(names.length).toBeGreaterThan(60);
+  expect(names).toEqual(expect.arrayContaining(["autonomy", "usage", "deliverables", "task", "setup"]));
+  for (const name of names) {
+    const label = cliCommandLabel(name, []);
+    expect({ name, label: label === "unknown" ? label : "named" }).toEqual({ name, label: "named" });
+    expect(label.split(" ")[0]).toBe(name);
+    expect(peerCommandRefusal("claude", label)).not.toContain("ahub unknown");
+  }
+});
+
+test("autonomy, usage and deliverables name their subcommand and never an operand (#1084)", () => {
+  expect(cliCommandLabel("autonomy", ["status"])).toBe("autonomy status");
+  expect(cliCommandLabel("autonomy", ["status", "--json"])).toBe("autonomy status");
+  expect(cliCommandLabel("autonomy", ["--json", "status"])).toBe("autonomy status");
+  expect(cliCommandLabel("autonomy", ["on", "--all-projects", "--yes"])).toBe("autonomy on");
+  expect(cliCommandLabel("autonomy", ["off"])).toBe("autonomy off");
+  expect(cliCommandLabel("autonomy", [])).toBe("autonomy");
+  expect(cliCommandLabel("autonomy", ["PRIVATE_OPERAND"])).toBe("autonomy");
+  expect(cliCommandLabel("usage", ["limits", "--peer", "PRIVATE_OPERAND"])).toBe("usage limits");
+  expect(cliCommandLabel("usage", ["total"])).toBe("usage total");
+  expect(cliCommandLabel("usage", ["--by", "PRIVATE_OPERAND"])).toBe("usage");
+  expect(cliCommandLabel("deliverables", ["--task", "PRIVATE_OPERAND"])).toBe("deliverables");
+  // Read-only `autonomy status` stays person-only (unchanged by #1084); the refusal now names it.
+  expect(classifyPeerCommand("autonomy", ["status"])).toBe("console");
+  expect(peerCommandRefusal("claude", cliCommandLabel("autonomy", ["status"]))).toStartWith("claude cannot run ahub autonomy status; the person runs it in ahub console or a terminal");
+  // The audit reader accepts exactly the labels the writer produces.
+  for (const label of ["autonomy status", "autonomy on", "autonomy off", "autonomy", "usage limits", "usage total", "usage", "deliverables"]) {
+    const [command = "", ...rest] = label.split(" ");
+    expect(cliCommandLabel(command, rest)).toBe(label);
   }
 });
