@@ -235,3 +235,14 @@ test("a damaged record file is reported, never guessed at", () => {
   expect(f.worktrees.remove({ peer: "pi", task: 1 })).toMatchObject({ removed: false, kept: expect.stringContaining("malformed") });
   expect(existsSync(join(f.root, ".worktrees"))).toBe(false);
 });
+
+test("an index the peer prepared is discarded: a skip-worktree flag it set cannot hide its own edit from the commit", async () => {
+  const f = fixture();
+  const made = f.worktrees.create({ peer: "pi", task: 7 }); if (!made.ok) throw new Error(made.reason);
+  // The peer can write the worktree's index (.git/worktrees/<name>/index is writable under the profile, #864). With skip-worktree set, `git add -A` leaves the edit out.
+  f.git(made.path, "update-index", "--skip-worktree", "a.txt");
+  writeFileSync(join(made.path, "a.txt"), "edit that the flag would hide\n"); writeFileSync(join(made.path, "b.txt"), "the other edit\n");
+  const done = await f.worktrees.commitAndPush({ peer: "pi", task: 7, title: "t" }); if (!done.ok) throw new Error(done.reason);
+  expect(f.git(f.root, "diff", "--name-status", f.base, done.commit).split("\n").sort()).toEqual(["M\ta.txt", "M\tb.txt"]);
+  expect(f.git(f.root, "show", `${done.commit}:a.txt`)).toBe("edit that the flag would hide");
+});
