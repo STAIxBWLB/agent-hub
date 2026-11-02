@@ -120,7 +120,7 @@ test("on an existing project an explicit flag shows a modify row with old and ne
   const before = p.tree(cwd);
   const dry = JSON.parse(p.run(cwd, ["init", "--no-memory", "--coordination", "turn-free", "--dry-run", "--json"]).stdout.toString());
   expect(dry.settings).toEqual([
-    { key: "coordination", file: "config.json", to: "turn-free" },
+    { key: "coordination", file: "config.json", from: "advisory", to: "turn-free" },
     { key: "memory.enabled", file: "config.json", from: true, to: false },
   ]);
   expect(dry.changes.find((change: { path: string }) => change.path.endsWith("config.json"))).toMatchObject({ action: "modify" });
