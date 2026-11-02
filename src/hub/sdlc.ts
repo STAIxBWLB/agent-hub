@@ -506,6 +506,18 @@ export async function readSdlcPr(receipt: SdlcReceipt, run: SdlcGh = sdlcGh, wit
   } catch { return undefined; }
 }
 
+/** Read only the current PR head when broader PR evidence is unavailable. */
+export async function readSdlcPrHead(receipt: SdlcReceipt, run: SdlcGh = sdlcGh): Promise<string | undefined> {
+  if (!repo(receipt.repo) || !id(receipt.pr)) return undefined;
+  try {
+    const result = await run(["pr", "view", String(receipt.pr), "--repo", receipt.repo, "--json", "headRefOid"], 10_000, undefined, 1024);
+    if (result.code !== 0 || Buffer.byteLength(result.stdout) > 1024) return undefined;
+    const value: unknown = JSON.parse(result.stdout);
+    const head = (value as { headRefOid?: unknown } | null)?.headRefOid;
+    return sha(head) ? head : undefined;
+  } catch { return undefined; }
+}
+
 export interface PlanIssueMetadata {
   repo: string;
   issue: number;
