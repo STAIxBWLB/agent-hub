@@ -1190,3 +1190,33 @@ test("a failed delivery resolves at the revision queue show prints, for discard 
     expect(second.bus.queueShow(second.deliveryId)!.state).toBe("completed");
   } finally { await second.done(); }
 });
+
+// #1096: a `failed` row that a `retry` resolution produced is already settled (its redelivery is a new delivery), and the refusal says so, not "stale revision".
+async function retriedRow() {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-retried-row-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "retried-row", instanceId: "one" });
+  const bus = new Bus({ batchMs: 0, journal }), peer = new FakePeer("codex"); let deliveryId = "";
+  peer.deliver = async (_envs, id?: string) => { peer.set("busy"); deliveryId = id!; peer.onDelivery?.({ id: id!, state: "needs_review", reason: "outcome uncertain" }); };
+  await peer.start(); bus.add(peer);
+  bus.publish(newEnvelope("user", "work with an uncertain outcome", { to: [peer.id] }));
+  for (let n = 0; n < 200 && !deliveryId; n++) await Bun.sleep(10);
+  peer.set("idle");
+  const done = async () => { bus.closeJournal(); await peer.stop(); rmSync(dir, { recursive: true, force: true }); };
+  return { bus, journal, peer, deliveryId, done };
+}
+
+test("re-resolving a row that a retry already settled is refused by naming that, never as a stale revision (#1096 AC1, AC3)", async () => {
+  const { bus, deliveryId, peer, done } = await retriedRow();
+  try {
+    const held = bus.queueShow(deliveryId)!;
+    expect(held.state).toBe("needs_review");
+    bus.pause(peer.id); // keep the retried child queued so the parent stays the only row under test
+    bus.resolveDelivery(deliveryId, held.revision, "retry", "redeliver once");
+    const parent = bus.queueShow(deliveryId)!;
+    expect(parent.state).toBe("failed");
+    // The same request again is idempotent. A different action at the revision `queue show` now prints is the case #1096 reports.
+    bus.resolveDelivery(deliveryId, held.revision, "retry", "redeliver once");
+    expect(() => bus.resolveDelivery(deliveryId, parent.revision, "discard", "clear the failed row")).toThrow("delivery already resolved by retry");
+    expect(() => bus.resolveDelivery(deliveryId, parent.revision, "discard", "clear the failed row")).not.toThrow(/stale/);
+  } finally { await done(); }
+});
