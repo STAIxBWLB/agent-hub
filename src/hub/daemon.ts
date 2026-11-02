@@ -2600,6 +2600,17 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const activityRings: Record<string, ActivityRing> = Object.fromEntries(SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.capabilities?.watch).map(peer => [peer, new ActivityRing()]));
   const contextPii = (peer: PeerId) => !!turns.get(peer)?.private || board.peerTaskSignals(peer).some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
+  const controlWritePrivacyGuard = (admittedAtReceive: boolean, inputPublicAtReceive: boolean, peer?: PeerId, taskId?: number) => () => {
+    try {
+      if (!admittedAtReceive || !inputPublicAtReceive) return false;
+      if (peer && (turns.get(peer)?.private || contextPii(peer))) return false;
+      if (taskId !== undefined) {
+        const task = board.get(taskId);
+        if (!task || tasks.isPii(task) || !tasks.publicMetadataText(String(task.id))) return false;
+      }
+      return true;
+    } catch { return false; }
+  };
   // #878: what each peer is doing. Daemon memory only: never persisted (status.json leaves it out), logged, captured or relayed.
   const doings = new Map<PeerId, DoingTracker>();
   const observeDoing = (peer: PeerId, kind: DoingKind, text?: unknown, learnedPrivate = false) => {
@@ -8218,17 +8229,7 @@ export async function startDaemon(opts: DaemonOptions) {
       } catch { return undefined; }
     })();
     const admittedAtReceive = client.authed && !!client.role, peer = client.peer;
-    const privacyCurrent = () => {
-      try {
-        if (!admittedAtReceive || !inputPublicAtReceive) return false;
-        if (peer && (turns.get(peer)?.private || contextPii(peer))) return false;
-        if (metadata.task !== undefined) {
-          const task = board.get(metadata.task);
-          if (!task || tasks.isPii(task) || !tasks.publicMetadataText(String(task.id))) return false;
-        }
-        return true;
-      } catch { return false; }
-    };
+    const privacyCurrent = controlWritePrivacyGuard(admittedAtReceive, inputPublicAtReceive === true, peer, metadata.task);
     let finishControlWrite = () => {};
     let finished = false;
     const finish = () => { if (!finished) { finished = true; finishControlWrite(); } };
