@@ -16,6 +16,7 @@ describe("control write telemetry", () => {
     expect(controlWriteMetadata({ t: "task", op: "task_assign", args: { id: Number.MAX_SAFE_INTEGER + 1 } })).toEqual({ kind: "task_assign" });
     const hostile = Object.defineProperty({ t: "task" }, "op", { get() { throw new Error("must not read accessor"); } });
     expect(controlWriteMetadata(hostile)).toBeUndefined();
+    for (const op of ["toString", "constructor", "__proto__"]) expect(controlWriteMetadata({ t: "task", op })).toBeUndefined();
   });
 
   test("records nested synchronous and asynchronous phases without changing the result", async () => {
