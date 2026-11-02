@@ -821,15 +821,16 @@ var init_orca_env = __esm(() => {
 
 // src/hub/child-process.ts
 function childEnv(source = process.env) {
-  const env = withoutOrcaEnv(source);
+  const env = { ...source };
   delete env.AGENTHUB_RECOVERY_OPERATION;
   delete env.AGENTHUB_RECOVERY_CONDUCTOR;
   delete env.AGENTHUB_RECOVERY_CONTINUATION;
   delete env.AGENTHUB_DELIVERY_ONLY;
   return env;
 }
-function peerChildEnv(peer, source = process.env) {
-  const env = childEnv(source);
+function peerChildEnv(peer, source = process.env, options = {}) {
+  const inherited = childEnv(source);
+  const env = options.preserveOrca ? inherited : withoutOrcaEnv(inherited);
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_SESSION_ID;
   delete env.CODEX_THREAD_ID;
@@ -1081,7 +1082,7 @@ var PS, PS_OPTIONS, own = (text) => {
 var init_child_process = __esm(() => {
   init_orca_env();
   PS = ["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="];
-  PS_OPTIONS = { env: { ...childEnv(process.env), LC_ALL: "C", TZ: "UTC" }, detached: true };
+  PS_OPTIONS = { env: { ...withoutOrcaEnv(childEnv(process.env)), LC_ALL: "C", TZ: "UTC" }, detached: true };
   emptied = new WeakSet;
 });
 
@@ -5217,6 +5218,7 @@ var SUBMIT_CAP, READ_CAP, ANSWERED_CAP = 256, QWEN_STALLED_NOTE = "stalled: Qwen
 var init_qwen_dual = __esm(() => {
   init_envelope();
   init_child_process();
+  init_orca_env();
   init_process_signature();
   init_compat();
   init_qwen_native();
@@ -15473,7 +15475,7 @@ async function runQwenEntry(ctx) {
   if (!verified)
     return fail("Qwen TUI launch metadata was not verified");
   const person = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("AGENTHUB_") || name === "AGENTHUB_HOME"));
-  const env = { ...peerChildEnv(peer, person), ...verified.env };
+  const env = { ...peerChildEnv(peer, person, { preserveOrca: true }), ...verified.env };
   delete env.AGENTHUB_RECOVERY_OPERATION;
   delete env.AGENTHUB_UNATTENDED;
   console.error("Qwen runs in this terminal, driven by the hub through its dual-output files. Limits: a hub deny ends the turn without an answer, and a stalled turn is stopped only by pressing Esc here.");
