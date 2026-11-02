@@ -229,6 +229,8 @@ test("a require policy activated during a class check records the pass and asks 
   let release!: (result: { code: number; timedOut: boolean; interrupted: boolean; tail: string }) => void;
   const gate = new Promise<{ code: number; timedOut: boolean; interrupted: boolean; tail: string }>(resolve => { release = resolve; });
   const f = fixture("report", { check: () => "fixture check", runCheck: async () => gate });
+  const messages: string[] = [];
+  f.bus.tap(event => { if (event.t === "envelope" && event.env.to?.includes("codex")) messages.push(event.env.body); });
   const source = f.task();
   await f.tasks.done("codex", source.id, "finished the work", { commit: HEAD, paths: ["src/hub/bus.ts"] });
   f.config.review = "require";
@@ -240,7 +242,7 @@ test("a require policy activated during a class check records the pass and asks 
   expect(current.history.findLast(entry => entry.event === "check passed")).toBeDefined();
   expect(current.history.some(entry => entry.event === "done (checking)")).toBe(true);
   expect(current.history.some(entry => entry.event === "done")).toBe(false);
-  expect(f.bus.queued("codex")).toBeGreaterThan(0);
+  expect(messages.some(body => body.includes("class check passed") && body.includes("Refile hub_task_done"))).toBe(true);
 });
 
 test("a privacy-context change during spec inspection refuses before the done write", async () => {
