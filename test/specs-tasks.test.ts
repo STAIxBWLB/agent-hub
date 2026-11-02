@@ -171,12 +171,16 @@ test("a mismatched host report cannot replace the task head or display foreign-h
   expect(f.tasks.resultLine(done)).not.toContain("docs/design/bus.md");
 });
 
-test("spec notices and read tools skip private context before calling the host", () => {
-  let calls = 0;
-  const f = fixture("report", { privateTurn: () => true, specsRead: () => { calls++; return { specs: [], errors: 0, truncated: false, items: [] }; } });
+test("spec notices and reads suppress output if the privacy context changes during host inspection", () => {
+  let calls = 0, privateTurn = false;
+  const cover = { specs: [{ id: "bus", path: "docs/design/bus.md", title: "Bus" }], errors: 0, truncated: false, items: [] };
+  const f = fixture("report", { privateTurn: () => privateTurn,
+    specNotice: () => { privateTurn = true; return cover; },
+    specsRead: () => { calls++; privateTurn = true; return { specs: [], errors: 0, truncated: false, items: [] }; } });
   expect(f.tasks.specNotice(f.task(), "codex")).toBe("");
+  privateTurn = false;
   expect(() => f.tasks.specsRead("codex", "check")).toThrow(/private turn/);
-  expect(calls).toBe(0);
+  expect(calls).toBe(1);
 });
 
 test("hub_specs caps the combined diagnostic and summary projection at 20 items", () => {

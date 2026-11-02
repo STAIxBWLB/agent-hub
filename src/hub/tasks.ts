@@ -1113,6 +1113,10 @@ export class Tasks {
     if (!config.enabled || config.review === "off" || this.isPii(task) || by && this.d.privateTurn?.(by)) return "";
     let report: SpecsCoverReport | undefined;
     try { report = this.d.specNotice?.(task); } catch { return ""; }
+    const current = this.d.board.get(task.id);
+    if (!current || this.isPii(current) || by && this.d.privateTurn?.(by)
+      || current.history.length !== task.history.length || current.owner !== task.owner || current.refs.repo !== task.refs.repo
+      || JSON.stringify(current.refs.paths ?? []) !== JSON.stringify(task.refs.paths ?? [])) return "";
     if (!report) return "";
     const refs = report.specs.slice(0, 20).filter(spec => [spec.id, spec.path, spec.title].every(value => this.publicMetadataText(value)));
     const lines = refs.length ? [`Specs covering these paths: ${refs.map(spec => `${spec.id} (${spec.path})`).join(", ")}`] : [];
@@ -1137,8 +1141,11 @@ export class Tasks {
       return { severity: raw.severity, code: safe(raw.code), message: safe(raw.message), cause: safe(raw.cause), nextSteps: safe(raw.nextSteps),
         ...(raw.path ? { path: safe(raw.path) } : {}), ...(raw.id ? { id: safe(raw.id) } : {}), ...(raw.field ? { field: safe(raw.field) } : {}), ...(raw.relatedId ? { relatedId: safe(raw.relatedId) } : {}) };
     };
+    let report: SpecsCheckReport | SpecsCoverReport;
+    try { report = this.d.specsRead(action, paths); }
+    catch { throw new PreEffectToolRefusal("spec inspection unavailable; retry ahub specs check"); }
+    if (this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("spec inspection unavailable during a private turn");
     try {
-      const report = this.d.specsRead(action, paths);
       if ("freshness" in report) {
         const visibleItems = report.items.map(diagnostic).filter((row): row is Record<string, unknown> => !!row);
         const items = visibleItems.slice(0, 20);

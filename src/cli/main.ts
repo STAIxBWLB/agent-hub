@@ -2226,7 +2226,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (args.includes("--all")) return printProjects(options);
     const hub = await connect();
     try {
-      const { status } = await hub.request({ t: "status" });
+      const { status } = await hub.request({ t: "status", specs: true });
       if (options.json) return console.log(JSON.stringify(status, null, 2));
       const quota = await hub.request({ t: "budget" });
       printOutput(renderStatus({ ...status, budget: quota.budget ?? {} }, options.columns, Date.now(), options.full), options.color);
