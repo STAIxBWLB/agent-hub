@@ -8,6 +8,7 @@
  */
 import { checkStartAgents, START_AGENTS_ALLOWED } from "../hub/start-agents.ts";
 import { editSdlcText } from "../hub/config-edit.ts";
+import { ADAPTERS } from "../adapters/registry.ts";
 
 export type InitSettingFile = "config.json" | "config.local.json" | "sdlc.toml";
 export const SDLC_MODES = ["off", "advise", "enforce"] as const;
@@ -49,7 +50,12 @@ export const INIT_SETTINGS: readonly InitSettingDef[] = [
   { id: "coordination", flags: [{ flag: "--coordination" }], file: "config.json", path: ["coordination"], allowed: COORDINATION_MODES.join("|"), describe: "coordination mode", parse: choice("coordination", "--coordination", COORDINATION_MODES) },
   { id: "memory.enabled", flags: [{ flag: "--memory", value: true }, { flag: "--no-memory", value: false }], file: "config.json", path: ["memory", "enabled"], allowed: "on|off", describe: "shared memory", parse: () => { throw new Error("unreachable"); } },
   { id: "snapshots.enabled", flags: [{ flag: "--snapshots", value: true }, { flag: "--no-snapshots", value: false }], file: "config.json", path: ["snapshots", "enabled"], allowed: "on|off", describe: "per-turn snapshots", parse: () => { throw new Error("unreachable"); } },
-  { id: "pi.enabled", flags: [{ flag: "--pi", value: true }, { flag: "--no-pi", value: false }], file: "config.json", path: ["pi", "enabled"], allowed: "on|off", describe: "the Pi peer", parse: () => { throw new Error("unreachable"); } },
+  // One row per adapter that still has a legacy `<kind>.enabled` switch in config.json (its definition says so with `enabledSwitchStartOnly`): no peer is named here, so a second
+  // such adapter gets its `--<kind>` / `--no-<kind>` flags and its row from its own definition (#451: peer policy lives in the registry, not in generic code).
+  ...ADAPTERS.filter(definition => definition.enabledSwitchStartOnly === true).map((definition): InitSettingDef => ({
+    id: `${definition.kind}.enabled`, flags: [{ flag: `--${definition.kind}`, value: true }, { flag: `--no-${definition.kind}`, value: false }],
+    file: "config.json", path: [definition.kind, "enabled"], allowed: "on|off", describe: `the ${definition.displayName} peer`, parse: () => { throw new Error("unreachable"); },
+  })),
 ];
 
 /** `--autonomy inherit|off` is not a config key: it decides whether a new project inherits the machine's autonomy preset (person-only, main.ts applies it). */
