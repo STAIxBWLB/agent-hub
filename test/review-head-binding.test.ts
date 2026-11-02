@@ -22,10 +22,11 @@ async function rig(options: { mode?: SdlcMode; state?: TaskState; linked?: boole
   const dir = mkdtempSync(join(tmpdir(), "ahub-review-head-"));
   const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 });
   for (const name of ["codex", "claude"]) { const peer = new Peer(name); bus.add(peer); await peer.start(); }
-  let currentHead = A;
+  let currentHead = A, unavailable = false;
   const calls: string[][] = [];
   const gh: SdlcGh = async args => {
     calls.push(args);
+    if (unavailable) return { code: 1, stdout: "" };
     if (args[0] === "pr" && args[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: currentHead, state: "OPEN", isDraft: false, reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [], files: [], changedFiles: 0, baseRefName: "main", baseRefOid: A, headRefName: "fix/head" }) };
     const query = args.find(arg => arg.startsWith("query=")) ?? "";
     if (query.includes("reviewThreads")) return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: currentHead, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) };
@@ -39,7 +40,7 @@ async function rig(options: { mode?: SdlcMode; state?: TaskState; linked?: boole
   board.update(t.id, "codex", "done", { state: "in_review", ...(options.linked === false ? {} : { sdlc: { repo: "owner/repo", pr: 7, head: A, reviewedHead: A, localHead: A, localResult: "passed" as const } }) });
   if (options.state === "changes_requested" || options.state === "in_progress") board.update(t.id, "claude", "changes_requested", { state: "changes_requested" });
   if (options.state === "in_progress") board.update(t.id, "codex", "accepted", { state: "in_progress" });
-  return { tasks, board, id: t.id, calls, move: (head: string) => { currentHead = head; } };
+  return { tasks, board, id: t.id, calls, move: (head: string) => { currentHead = head; }, unavailable: () => { unavailable = true; } };
 }
 async function refusal(action: () => Promise<unknown>): Promise<string | undefined> {
   try { await action(); return undefined; } catch (error) { return error instanceof Error ? error.message : String(error); }
@@ -87,4 +88,30 @@ test("an unchanged PR still permits legacy omitted-head approval", async () => {
   const approved = await r.tasks.review("claude", r.id, "approved", "synthetic current head");
   expect(approved.state).toBe("approved");
   expect(approved.sdlc?.reviewedHead).toBe(A);
+});
+
+
+test("an explicit old-head approval cannot bypass known PR head drift", async () => {
+  const r = await rig(); r.move(B);
+  const before = r.board.get(r.id)!;
+  const message = await refusal(() => r.tasks.review("claude", r.id, "approved", "synthetic old explicit head", undefined, A));
+  expect(message).toContain(A); expect(message).toContain(B); ownerNextStep(message);
+  expect(r.board.get(r.id)).toEqual(before);
+});
+
+test("a commitless re-file cannot claim current head when PR readback is unavailable", async () => {
+  const r = await rig({ state: "changes_requested" }); r.unavailable();
+  const before = r.board.get(r.id)!;
+  const message = await refusal(() => r.tasks.done("codex", r.id, "synthetic re-file without a verified head"));
+  ownerNextStep(message); expect(message).toContain(A);
+  expect(message).toMatch(/unknown|unavailable|verify|read/i);
+  expect(r.board.get(r.id)).toEqual(before);
+});
+
+test("private approval keeps head metadata out of external PR reads", async () => {
+  const r = await rig();
+  r.board.update(r.id, USER, "synthetic private work", { signals: ["pii_path"] });
+  const approved = await r.tasks.review(USER, r.id, "approved", "private fixture review");
+  expect(approved.state).toBe("approved");
+  expect(r.calls).toHaveLength(0);
 });
