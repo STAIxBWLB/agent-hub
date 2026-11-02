@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SpecsEngine, parseSpecsConfig, type SpecsConfig } from "../src/hub/specs.ts";
@@ -92,6 +92,19 @@ test("covers matches tracked files and newly supplied untracked files without ex
   expect(report.specs.map(spec => spec.id).sort()).toEqual(["architecture", "core-module", "core-leaf", "product"].sort());
   expect(report.specs.every(spec => !Object.hasOwn(spec, "paths") && !Object.hasOwn(spec, "type"))).toBe(true);
   expect(engine.covers(["../outside.ts"]).items.map(item => item.code)).toContain("invalid-cover-path");
+});
+
+test("a retained engine refreshes changed frontmatter and Git pathspec evidence", () => {
+  const { root, engine, git } = repository("valid");
+  const file = join(root, "new.md");
+  const spec = (title: string) => `---\nid: new\ntype: module\ntitle: ${title}\nparent: product\npaths: [src/future.ts]\n---\n`;
+  writeFileSync(file, spec("First"));
+  expect(engine.check().items.some(item => item.code === "invalid-paths" && item.id === "new")).toBe(true);
+  writeFileSync(file, spec("Other"));
+  const future = new Date(Date.now() + 1000); utimesSync(file, future, future);
+  writeFileSync(join(root, "src/future.ts"), "export const future = true;\n"); git("add", "src/future.ts");
+  expect(engine.check().errors).toBe(0);
+  expect(engine.list().specs.find(spec => spec.id === "new")?.title).toBe("Other");
 });
 
 test("spec roots are literal directory names even when they contain Git glob punctuation", () => {
@@ -209,6 +222,9 @@ test("freshness never runs configured external diff, textconv or clean-filter pr
   writeFileSync(executable, `#!/bin/sh\nprintf called >> '${marker}'\ncat\n`, { mode: 0o700 }); chmodSync(executable, 0o700);
   git(root, "config", "diff.external", executable); git(root, "config", "diff.fixture.textconv", executable); git(root, "config", "filter.fixture.clean", executable); git(root, "config", "filter.fixture.required", "true");
   writeFileSync(join(root, "src/core.ts"), "export const core = 3;\n"); // unstaged so this test can detect an accidental clean-filter read
-  new SpecsEngine(root, parseSpecsConfig({ stamps_file: "docs/verified.json" })).check({ base });
+  const report = new SpecsEngine(root, parseSpecsConfig({ stamps_file: "docs/verified.json" })).check({ base });
+  expect(report.errors).toBe(0);
+  expect(report.freshness).toHaveLength(2);
+  expect(report.freshness.every(row => row.state === "stale" && row.dirty === true)).toBe(true);
   expect(existsSync(marker)).toBe(false);
 });
