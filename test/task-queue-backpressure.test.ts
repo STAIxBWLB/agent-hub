@@ -214,7 +214,7 @@ async function owned(f: Awaited<ReturnType<typeof fixture>>, id: number, owner: 
 }
 
 test("a future queue-pressure origin stays retryable and releaseReady offers it when plannedStart arrives", async () => {
-  const f = await fixture({ onlyOwner: true, hold: false }), plannedStart = 2_000_000_010_000;
+  const f = await fixture({ onlyOwner: true }), plannedStart = 2_000_000_010_000;
   f.wire(); f.control.now = plannedStart - 1; f.control.policy = { max_queued: 1, max_oldest_s: 0 }; f.enqueue("codex", 2);
   const held = await f.tasks.propose(HUB, { title: "scheduled queue-pressure work", class: "implement", owner: "codex" });
   expect(held.owner).toBeNull(); await settled(f.tasks);
