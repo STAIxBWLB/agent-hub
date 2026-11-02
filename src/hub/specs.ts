@@ -381,6 +381,44 @@ function summary(node: SpecNode, includePaths = true): SpecSummary {
 function coverSummary(node: SpecNode): SpecsCoverSummary { return { id: node.id ?? "", path: node.path, title: node.title ?? "" }; }
 
 /** Cached, read-only graph and freshness engine shared by the daemon and CLI. */
+/** One document `ahub specs stamp` would change: a spec's `verified-against` line, or a stamps-file entry's `verifiedAgainst`. `from` is the stamp it holds now (`null`: none). */
+export interface SpecsStampRow { target: string; path: string; kind: "spec" | "stamps-file"; document?: string; from: string | null; to: string; paths: string[] }
+export interface SpecsStampPlan { head: string; rows: SpecsStampRow[]; refusals: string[] }
+
+/**
+ * #1064 T3: the text of a spec with its `verified-against` set to `sha`, changing only that one line (or adding it before the closing delimiter) and keeping every other byte, the line endings and a byte order mark.
+ * Pass the file's bytes decoded as latin1 and write the result back as latin1, so a body that is not valid UTF-8 is never rewritten. A refusal names the cause and the next step.
+ */
+export function stampFrontmatter(text: string, sha: string): { ok: true; text: string; from: string | null } | { ok: false; error: string } {
+  const bom = /^(?:\uFEFF|\u00EF\u00BB\u00BF)/.exec(text)?.[0] ?? "";
+  const lines = text.slice(bom.length).split("\n");
+  if ((lines[0] ?? "").replace(/\r$/, "") !== "---") return { ok: false, error: "the file has no frontmatter; add a --- block with id and type first" };
+  let close = -1, found = -1, bytes = 0;
+  for (let index = 1; index < lines.length; index++) {
+    const raw = lines[index]!, line = raw.replace(/\r$/, "");
+    if (line === "---" || line === "...") { close = index; break; }
+    bytes += raw.length + 1;
+    if (bytes > MAX_FRONTMATTER_BYTES) return { ok: false, error: "the frontmatter is larger than 8 KiB, so the engine would not read a stamp there; shorten it first" };
+    if (/^verified-against\s*:/.test(line)) {
+      if (found >= 0) return { ok: false, error: "verified-against appears more than once in the frontmatter; keep one and run ahub specs check" };
+      found = index;
+    }
+  }
+  if (close < 0) return { ok: false, error: "the frontmatter has no closing --- line; close it first" };
+  let from: string | null = null;
+  if (found >= 0) {
+    const raw = lines[found]!, eol = raw.endsWith("\r") ? "\r" : "";
+    const match = /^(verified-against\s*:\s*)(.*?)\r?$/.exec(raw)!;
+    from = match[2]!.trim().replace(/^(["'])(.*)\1$/, "$2") || null;
+    if (from === sha) return { ok: true, text, from };
+    lines[found] = `${match[1]!.endsWith(" ") || match[1]!.endsWith("\t") ? match[1] : `${match[1]} `}${sha}${eol}`;
+  } else {
+    const eol = (lines[close - 1] ?? "").endsWith("\r") ? "\r" : "";
+    lines.splice(close, 0, `verified-against: ${sha}${eol}`);
+  }
+  return { ok: true, text: bom + lines.join("\n"), from };
+}
+
 export class SpecsEngine {
   private readonly root: string;
   private readonly config: SpecsConfig;
@@ -679,6 +717,67 @@ export class SpecsEngine {
       color.set(id, 2);
     };
     for (const id of byId.keys()) visit(id, []);
+  }
+
+  /** The canonical project root this engine reads, for a caller that writes a stamp back. */
+  get rootPath(): string { return this.root; }
+
+  /** Whether any of these Git pathspecs has uncommitted changes (`undefined`: it could not be told safely). */
+  uncommitted(paths: readonly string[]): boolean | undefined { return this.dirtiness([...paths]); }
+
+  /**
+   * #1064 T3: what `ahub specs stamp <id-or-document>...` would record, without writing anything. The stamp is the full HEAD SHA, so it is an ancestor of HEAD by construction, and
+   * it is only offered while the document's covered paths have no uncommitted change: a stamp records a review of what HEAD contains. Every target is checked and all refusals are
+   * reported together; one refusal means no row is written by the caller.
+   */
+  stampPlan(targets: readonly string[]): SpecsStampPlan {
+    if (this.commit) throw new Error("stamping reads the working tree, not a committed snapshot");
+    const refusals: string[] = [], rows: SpecsStampRow[] = [];
+    const head = this.git(["rev-parse", "--verify", "HEAD^{commit}"]), sha = head.stdout.trim();
+    if (head.status !== 0 || !/^[0-9a-f]{40}$/.test(sha)) return { head: "", rows, refusals: ["HEAD does not resolve to a commit, so there is nothing to stamp against; make a commit first, then run ahub specs stamp again"] };
+    const scan = this.scan();
+    const manifest = this.config.stamps_file ? this.stampsManifest(this.config.stamps_file, refusals) : undefined;
+    for (const target of [...new Set(targets)]) {
+      const nodes = scan.nodes.filter(node => node.id === target || node.path === target);
+      const entry = manifest && Object.hasOwn(manifest, target) ? manifest[target] : undefined;
+      if (nodes.length + (entry !== undefined ? 1 : 0) > 1) { refusals.push(`"${target}" names more than one document; use the spec's file path, or rename the duplicate id (ahub specs check lists them)`); continue; }
+      if (nodes.length === 0 && entry === undefined) {
+        refusals.push(`no spec or stamped document is named "${target}"${scan.truncated ? " in the part of the tree that was scanned; narrow specs.roots" : ""}; ahub specs list shows the ids and ahub specs check the stamped documents`);
+        continue;
+      }
+      if (nodes.length === 1) {
+        const node = nodes[0]!;
+        if (!node.paths.length) { refusals.push(`${node.path} has no paths, so there is nothing a stamp could certify; add paths to its frontmatter first`); continue; }
+        const dirty = this.dirtiness(node.paths);
+        if (dirty === undefined) { refusals.push(`${node.path}: could not tell whether its covered paths have uncommitted changes; check the repository state and run ahub specs stamp again`); continue; }
+        if (dirty) { refusals.push(`${node.path}: its covered paths have uncommitted changes; commit or stash them, then stamp, because a stamp records a review of what HEAD contains`); continue; }
+        rows.push({ target, path: node.path, kind: "spec", from: node.verifiedAgainst ?? null, to: sha, paths: node.paths });
+        continue;
+      }
+      const paths = isRecord(entry) && Array.isArray(entry.paths) ? entry.paths : undefined;
+      if (!isRecord(entry) || !paths?.length || paths.some(scope => typeof scope !== "string" || !isSafePathspec(scope)) || !this.readableRegularFile(target)) {
+        refusals.push(`${target}: its entry in ${this.config.stamps_file} is malformed or its document is missing; repair the entry (ahub specs check names the problem), then stamp`);
+        continue;
+      }
+      const dirty = this.dirtiness(paths as string[]);
+      if (dirty === undefined) { refusals.push(`${target}: could not tell whether its covered paths have uncommitted changes; check the repository state and run ahub specs stamp again`); continue; }
+      if (dirty) { refusals.push(`${target}: its covered paths have uncommitted changes; commit or stash them, then stamp, because a stamp records a review of what HEAD contains`); continue; }
+      rows.push({ target, path: this.config.stamps_file, kind: "stamps-file", document: target, from: typeof entry.verifiedAgainst === "string" ? entry.verifiedAgainst : null, to: sha, paths: paths as string[] });
+    }
+    return { head: sha, rows, refusals };
+  }
+
+  private stampsManifest(path: string, refusals: string[]): Record<string, unknown> | undefined {
+    try {
+      const info = this.safeStat(path);
+      if (info.size > MAX_STAMPS_FILE_BYTES) throw new Error("the file is larger than 4 MiB");
+      const parsed: unknown = JSON.parse(readFileSync(resolve(this.root, path), "utf8"));
+      if (!isRecord(parsed) || parsed.schemaVersion !== 1 || !isRecord(parsed.documents)) throw new Error("expected schemaVersion 1 and a documents object");
+      return parsed.documents;
+    } catch (error) {
+      refusals.push(`${path} (specs.stamps_file) cannot be read: ${errorText(error)}; repair it or clear specs.stamps_file, then stamp`);
+      return undefined;
+    }
   }
 
   list(): SpecsListReport {
