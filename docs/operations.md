@@ -1067,6 +1067,16 @@ the sandbox either. `git add`, `commit`, `stash` and `checkout` work, and
 signs with a key under `~/.ssh` or `~/.gnupg` fails, because the sandbox cannot
 read those directories. Run a refused command yourself, in a terminal.
 
+A task can declare that it needs the network (#1081): `hub_task_propose {needs_network: true}` or
+`ahub task propose --needs-network`, for work that fetches from a package registry, runs `git fetch` or
+`git push`, or calls an API. The hub keeps such a task away from a hub-sandboxed peer (Pi, the local worker)
+while `local.bash_network` is off: automatic routing, a reservation, `ahub task assign` and `hub_task_accept`
+all refuse it, before any write, with `no network: local.bash_network is off ...`, and `ahub route explain <id>`
+prints `pi: skipped, no network: ...` for that peer. It is offered to a peer whose own shell has network
+(Codex, Kimi, Claude). A peer whose network the hub cannot tell is never refused on this ground, and work that
+does not declare the need is routed as before. The flag is a person's or a planner's statement about the work;
+the hub does not infer it from the title.
+
 Network is off unless `local.bash_network` says otherwise. With `true` it goes
 only through the hub's egress proxy on a loopback port (0.11): commands get
 `HTTPS_PROXY` and the other proxy variables, the proxy opens HTTPS (`CONNECT`,
