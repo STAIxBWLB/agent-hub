@@ -11,6 +11,10 @@ import { realPath } from "../hub/project.ts";
 import { hubGitArgv, hubGitEnv, hubGitSync } from "../hub/git.ts";
 import { KIMI_MCP_FILE } from "./kimi-mcp.ts";
 import { AGY_PLUGIN_FILES } from "./agy-mcp.ts";
+import { loadConfig } from "../hub/daemon.ts";
+import { sdlcConfig } from "../hub/sdlc.ts";
+import { VERSION } from "../version.ts";
+import { planInitSettings, type InitSettingFile, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
 
 const TEMPLATES = join(import.meta.dir, "..", "..", "templates");
 const BEGIN = "<!-- AGENT_HUB:BEGIN (managed by `ahub init`, edits inside are overwritten) -->";
@@ -41,7 +45,7 @@ export interface InitChange {
   managedBlock?: "insert" | "replace" | "remove";
 }
 /** Content is internal to apply, never included in a public preview. */
-interface PlannedWrite extends InitChange { next?: string; shadow?: true; directory?: true; executable?: true; moveFrom?: string; expected?: { dev: number; ino: number }; }
+interface PlannedWrite extends InitChange { privateFile?: true; next?: string; shadow?: true; directory?: true; executable?: true; moveFrom?: string; expected?: { dev: number; ino: number }; }
 const RELEASE_BEGIN = "<!-- AGENT_HUB_RELEASE_GUARD:BEGIN (managed by `ahub init --release-guard`) -->";
 const RELEASE_END = "<!-- AGENT_HUB_RELEASE_GUARD:END -->";
 const HOOK_MARKER = "# agent-hub managed release pre-push guard";
@@ -110,7 +114,7 @@ function selection(cwd: string, requested: string | undefined): { profile?: Prof
   const bad = loaded.errors.filter(error => error.id === requested || error.id === "project").map(error => `${error.id}: ${error.reason}`);
   throw new Error(`unknown profile or pack "${requested.slice(0, 48)}"; profiles: ${PROFILE_NAMES.join(", ")}; packs in .agenthub/roles: ${[...loaded.packs.keys()].join(", ") || "none"}${bad.length ? `; not loaded: ${bad.join("; ")}` : ""}`);
 }
-function changes(cwd: string, requestedName?: string, shadow = false, releaseGuard = false): PlannedWrite[] {
+function changes(cwd: string, requestedName?: string, shadow = false, releaseGuard = false, settings?: InitSettingsRequest): { writes: PlannedWrite[]; settingRows: InitSettingRow[] } {
   const { profile: requested, pack } = selection(cwd, requestedName);
   const originalAgents = existsSync(join(cwd, "AGENTS.md")) ? readFileSync(join(cwd, "AGENTS.md"), "utf8") : "";
   const guarded = releaseGuard || originalAgents.includes("<!-- AGENT_HUB_RELEASE_GUARD:BEGIN");
@@ -131,7 +135,8 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
   for (const name of ["config.json", "config.local.json"]) {
     const path = join(cwd, ".agenthub", name);
     if (existsSync(path)) {
-      const layer = JSON.parse(readFileSync(path, "utf8"));
+      let layer: Record<string, unknown>;
+      try { layer = JSON.parse(readFileSync(path, "utf8")); } catch { throw new Error(`.agenthub/${name} is not valid JSON; fix it in your editor, then run ahub init again; nothing was written`); }
       if (layer.profile !== undefined) activeProfile = profileName(layer.profile);
       resolveProfile(activeProfile, layer.profile_overrides);
       overrides = mergeProfileOverrides(overrides, layer.profile_overrides);
@@ -196,18 +201,61 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
   }
   if (existsSync(join(cwd, JCODE_MCP_FILE)) && hubGitSync(["ls-files", "--error-unmatch", "--", JCODE_MCP_FILE], { cwd, encoding: "utf8", timeout: 3000 }).status !== 0 && !lines.split("\n").includes(JCODE_MCP_FILE)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${JCODE_MCP_FILE}\n`;
   write(ignore, lines, "ignore runtime state and machine-local configuration");
-  return [...hooks, ...changed];
+  // #1065 T1: the settings table. config.json is the text it will have after the template and pack writes above; the rest is what is on disk.
+  let settingRows: InitSettingRow[] = [];
+  if (settings && (Object.keys(settings.values).length)) {
+    const planned = (path: string) => changed.find(row => row.path === path && row.next !== undefined)?.next;
+    const read = (path: string): string | null => existsSync(path) ? readFileSync(path, "utf8") : null;
+    const files: Record<InitSettingFile, string> = { "config.json": join(cwd, ".agenthub", "config.json"), "config.local.json": join(cwd, ".agenthub", "config.local.json"), "sdlc.toml": join(cwd, ".agenthub", "sdlc.toml") };
+    const texts = Object.fromEntries((Object.keys(files) as InitSettingFile[]).map(name => [name, planned(files[name]) ?? read(files[name])])) as Record<InitSettingFile, string | null>;
+    const result = planInitSettings(settings, texts);
+    settingRows = result.rows;
+    for (const name of Object.keys(result.next) as InitSettingFile[]) {
+      const path = files[name], text = result.next[name]!;
+      const row = changed.find(entry => entry.path === path);
+      const reason = `set ${result.rows.filter(entry => entry.file === name).map(entry => entry.key).join(", ")} from the init flags`;
+      if (row) { row.next = text; row.reason = `${row.reason}; ${reason}`; }
+      else changed.push({ action: existsSync(path) ? "modify" : "create", path, next: text, reason, ...(name === "config.local.json" ? { privateFile: true as const } : {}) });
+    }
+  }
+  return { writes: [...hooks, ...changed], settingRows };
+}
+/**
+ * #1065: the files init is about to write for the settings flags are checked by the loaders the daemon uses, before anything is written. A refusal
+ * names the loader's reason and writes nothing. Only the settings files are judged, so an unrelated project that already has a warning is not blocked.
+ */
+function checkCandidate(cwd: string, plan: readonly PlannedWrite[]): void {
+  const at = (name: string) => plan.find(row => row.path === join(cwd, ".agenthub", name) && row.next !== undefined)?.next;
+  const config = at("config.json"), local = at("config.local.json"), sdlc = at("sdlc.toml");
+  if (config === undefined && local === undefined && sdlc === undefined) return;
+  const layer = (name: "config.json" | "config.local.json", text: string | undefined) => {
+    const raw = text ?? (existsSync(join(cwd, ".agenthub", name)) ? readFileSync(join(cwd, ".agenthub", name), "utf8") : undefined);
+    return raw === undefined ? [] : [{ name, raw: JSON.parse(raw) as Record<string, unknown> }];
+  };
+  if (config !== undefined || local !== undefined) {
+    try { loadConfig(cwd, [...layer("config.json", config), ...layer("config.local.json", local)] as never); }
+    catch (error) { throw new Error(`the resulting .agenthub config does not pass the hub's config check: ${(error as Error).message}; fix that key in your editor, then run ahub init again; nothing was written`); }
+  }
+  if (sdlc !== undefined) {
+    try { sdlcConfig(Bun.TOML.parse(sdlc), VERSION); }
+    catch (error) { throw new Error(`the resulting .agenthub/sdlc.toml does not pass the hub's check: ${(error as Error).message}; fix it in your editor, then run ahub init again; nothing was written`); }
+  }
 }
 /** What a pack adds, by id only: the preview names the criteria and checks, never their text. */
 const packReason = (pack: DomainPack, how: string) =>
   `${how} pack ${pack.name} (profile ${pack.profile}): rubric ${pack.rubric.map(item => item.id).join(", ")}; checks ${pack.checks.map(check => check.id).join(", ") || "none"}; expects roles ${pack.roles.join(", ") || "none"} from the catalog`;
 /** Read-only metadata, deliberately omitting project/user file contents. `profile` is a shipped profile name or a project pack name. */
-export function planInit(cwd: string, profile?: string, shadow = false, releaseGuard = false): InitChange[] {
-  return changes(cwd, profile, shadow, releaseGuard).map(({ next, shadow: _shadow, directory, executable, moveFrom, expected, ...change }) => change);
+export function planInit(cwd: string, profile?: string, shadow = false, releaseGuard = false, settings?: InitSettingsRequest): InitChange[] {
+  return changes(cwd, profile, shadow, releaseGuard, settings).writes.map(({ next, shadow: _shadow, directory, executable, moveFrom, expected, privateFile, ...change }) => change);
+}
+/** #1065 T1: what the settings flags change, key by key (`ahub init --dry-run --json` shows it as `settings`). Read-only. */
+export function initSettingRows(cwd: string, profile?: string, shadow = false, releaseGuard = false, settings?: InitSettingsRequest): InitSettingRow[] {
+  return changes(cwd, profile, shadow, releaseGuard, settings).settingRows;
 }
 /** Returns the paths it changed, applying the same plan as the preview. */
-export function init(cwd: string, profile?: string, shadow = false, releaseGuard = false): string[] {
-  const plan = changes(cwd, profile, shadow, releaseGuard);
+export function init(cwd: string, profile?: string, shadow = false, releaseGuard = false, settings?: InitSettingsRequest): string[] {
+  const plan = changes(cwd, profile, shadow, releaseGuard, settings).writes;
+  checkCandidate(cwd, plan);
   // Recheck hook parents and rename identities before any project write.
   for (const change of plan.filter(change => change.executable || change.moveFrom)) {
     const parent = lstatSync(dirname(change.path), { throwIfNoEntry: false });
@@ -243,6 +291,7 @@ export function init(cwd: string, profile?: string, shadow = false, releaseGuard
         throw error;
       } finally { if (lstatSync(temporary, { throwIfNoEntry: false })) unlinkSync(temporary); }
     }
+    else if (change.privateFile) { const tmp = `${change.path}.${process.pid}.tmp`; try { writeFileSync(tmp, change.next!, { mode: 0o600, flag: "wx" }); renameSync(tmp, change.path); } catch (error) { try { unlinkSync(tmp); } catch { /* nothing was written */ } throw error; } }
     else writeFileSync(change.path, change.next!);
   }
   return plan.map(change => change.path);
