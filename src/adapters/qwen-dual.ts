@@ -2,7 +2,8 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSy
 import { join } from "node:path";
 import { renderDigest, replyAudience, replyParent, sanitize, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer, type DeliveryReceipt } from "../hub/peers.ts";
-import { peerChildEnv, processTable, type ProcRow } from "../hub/child-process.ts";
+import { childEnv, peerChildEnv, processTable, type ProcRow } from "../hub/child-process.ts";
+import { withoutOrcaEnv } from "../hub/orca-env.ts";
 import { processSignature } from "../pi/process-signature.ts";
 import { assessVersion } from "./compat.ts";
 import { qwenSessionId } from "./definitions/qwen-native.ts";
@@ -97,7 +98,7 @@ export function isQwenTaskNotification(text: string): boolean { return text.leng
 export async function qwenDualVersionAsync(cmd: readonly string[], cwd: string): Promise<{ ok: true; version: string; note?: string } | { ok: false; reason: string }> {
   const [bin, ...prefix] = cmd.filter(word => word !== "--acp");
   try {
-    const child = Bun.spawn([bin ?? "qwen", ...prefix, "--version"], { cwd, stdout: "pipe", stderr: "ignore", stdin: "ignore", env: { ...process.env } });
+    const child = Bun.spawn([bin ?? "qwen", ...prefix, "--version"], { cwd, stdout: "pipe", stderr: "ignore", stdin: "ignore", env: withoutOrcaEnv(childEnv(process.env)) });
     const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
     const out = await new Response(child.stdout).text(); await child.exited; clearTimeout(timer);
     const verdict = assessVersion("qwen-dual", out.trim());

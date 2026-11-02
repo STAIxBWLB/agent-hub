@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { QwenDualPeer, QWEN_STALLED_NOTE, isQwenTaskNotification, qwenDualNamesStateDir, type QwenDualOptions } from "../src/adapters/qwen-dual.ts";
+import { QwenDualPeer, QWEN_STALLED_NOTE, isQwenTaskNotification, qwenDualNamesStateDir, qwenDualVersionAsync, type QwenDualOptions } from "../src/adapters/qwen-dual.ts";
 import { COMPAT, assessVersion } from "../src/adapters/compat.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import type { DeliveryReceipt } from "../src/hub/peers.ts";
@@ -15,6 +15,25 @@ const FAKE = join(import.meta.dir, "fakes/qwen-dual.ts");
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const until = async (condition: () => boolean, diagnostic?: () => string, ms = 6000) => { for (let i = 0; i < ms / 10 && !condition(); i++) await Bun.sleep(10); expect(condition(), diagnostic?.()).toBe(true); };
+
+test("the Qwen dual-output version probe uses the scrubbed child environment and preserves explicit homes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "qwen-version-env-"));
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const trace = join(root, "environment.json"), fake = join(root, "qwen");
+  writeFileSync(fake, `#!${process.execPath}\nconst { writeFileSync } = await import("node:fs");const env={orcaNames:Object.keys(process.env).filter(name=>name.startsWith("ORCA_")).sort(),claude:process.env.CLAUDE_CONFIG_DIR,codex:process.env.CODEX_HOME};writeFileSync(process.env.QWEN_TEST_ENV_TRACE,JSON.stringify(env));console.log("0.26.1");\n`, { mode: 0o700 });
+  const names = ["ORCA_CLI_COMMAND", "ORCA_TERMINAL_HANDLE", "ORCA_AGENT_PANE", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "QWEN_TEST_ENV_TRACE"];
+  const saved = new Map(names.map(name => [name, process.env[name]]));
+  Object.assign(process.env, { ORCA_CLI_COMMAND: "/fake/orca", ORCA_TERMINAL_HANDLE: "term-fake", ORCA_AGENT_PANE: "pane-fake", ORCA_AGENT_HOOK_PORT: "4321", ORCA_AGENT_HOOK_TOKEN: "hook-fake", CLAUDE_CONFIG_DIR: join(root, "claude"), CODEX_HOME: join(root, "codex"), QWEN_TEST_ENV_TRACE: trace });
+  try {
+    expect(await qwenDualVersionAsync([fake], root)).toMatchObject({ ok: true, version: "0.26.1" });
+    const env = JSON.parse(readFileSync(trace, "utf8")) as { orcaNames: string[]; claude: string; codex: string };
+    expect(env.orcaNames).toEqual([]);
+    expect(env.claude).toBe(join(root, "claude"));
+    expect(env.codex).toBe(join(root, "codex"));
+  } finally {
+    for (const [name, value] of saved) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  }
+});
 
 interface Rig {
   root: string; dir: string; peer: QwenDualPeer; answers: { body: string; opts?: any }[]; receipts: DeliveryReceipt[]; notices: string[]; stalled: boolean[]; logs: string[]; requests: PermissionRequest[];
@@ -539,9 +558,12 @@ test("the CLI entry runs the daemon's launch in the person's own environment, wi
   const { runQwenEntry } = await import("../src/adapters/definitions/native-cli-entry-qwen.ts");
   const { definitionOf } = await import("../src/adapters/registry.ts");
   const requests: Record<string, unknown>[] = [], launched: { bin?: string; argv?: string[]; env?: NodeJS.ProcessEnv } = {};
+  const ownPaneOrca = { ORCA_CLI_COMMAND: "/fixture/orca", ORCA_TERMINAL_HANDLE: "term-own-pane", ORCA_WORKTREE_ID: "wt-own-pane", ORCA_DEV_REPO_ROOT: "/fixture/repo", ORCA_AGENT_PANE: "pane-own", ORCA_AGENT_HOOK_PORT: "4321", ORCA_AGENT_HOOK_TOKEN: "token-own" };
   const saved = { PATH: process.env.PATH, FAKE_PROVIDER_KEY: process.env.FAKE_PROVIDER_KEY, AGENTHUB_RECOVERY_OPERATION: process.env.AGENTHUB_RECOVERY_OPERATION, AGENTHUB_HOME: process.env.AGENTHUB_HOME,
-    AGENTHUB_CHANNEL: process.env.AGENTHUB_CHANNEL, AGENTHUB_LAUNCH_ID: process.env.AGENTHUB_LAUNCH_ID, AGENTHUB_MODE: process.env.AGENTHUB_MODE, CLAUDECODE: process.env.CLAUDECODE };
+    AGENTHUB_CHANNEL: process.env.AGENTHUB_CHANNEL, AGENTHUB_LAUNCH_ID: process.env.AGENTHUB_LAUNCH_ID, AGENTHUB_MODE: process.env.AGENTHUB_MODE, CLAUDECODE: process.env.CLAUDECODE,
+    ORCA_CLI_COMMAND: process.env.ORCA_CLI_COMMAND, ORCA_TERMINAL_HANDLE: process.env.ORCA_TERMINAL_HANDLE, ORCA_WORKTREE_ID: process.env.ORCA_WORKTREE_ID, ORCA_DEV_REPO_ROOT: process.env.ORCA_DEV_REPO_ROOT, ORCA_AGENT_PANE: process.env.ORCA_AGENT_PANE, ORCA_AGENT_HOOK_PORT: process.env.ORCA_AGENT_HOOK_PORT, ORCA_AGENT_HOOK_TOKEN: process.env.ORCA_AGENT_HOOK_TOKEN };
   process.env.FAKE_PROVIDER_KEY = "person-key"; process.env.AGENTHUB_RECOVERY_OPERATION = "op-1"; process.env.AGENTHUB_HOME = "/person-hub";
+  Object.assign(process.env, ownPaneOrca);
   // the person ran it from a shell inside an `ahub claude` session
   process.env.AGENTHUB_CHANNEL = "1"; process.env.AGENTHUB_LAUNCH_ID = "claude-launch"; process.env.AGENTHUB_MODE = "tools"; process.env.CLAUDECODE = "1";
   const tty = { in: process.stdin.isTTY, out: process.stdout.isTTY };
@@ -567,6 +589,7 @@ test("the CLI entry runs the daemon's launch in the person's own environment, wi
   expect(launched.env!.AGENTHUB_RECOVERY_OPERATION).toBeUndefined(); // recovery and unattended authority never reach the native child
   expect(launched.env!.AGENTHUB_UNATTENDED).toBeUndefined();
   expect(launched.env!.AGENTHUB_HOME).toBe("/person-hub");           // the person's hub home is theirs to keep
+  for (const [name, value] of Object.entries(ownPaneOrca)) expect(launched.env![name]).toBe(value);
   for (const name of ["AGENTHUB_CHANNEL", "AGENTHUB_LAUNCH_ID", "AGENTHUB_MODE", "CLAUDECODE"]) expect(launched.env![name]).toBeUndefined(); // another agent's identity never reaches Qwen
 });
 

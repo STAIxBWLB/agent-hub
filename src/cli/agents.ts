@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { assessVersion, COMPAT, describe, isCompatId, readTrust, trustFile, writeTrust, type CompatId, type CompatVerdict } from "../adapters/compat.ts";
+import { childEnv } from "../hub/child-process.ts";
+import { withoutOrcaEnv } from "../hub/orca-env.ts";
 
 /** #691: what `ahub agents` and `ahub doctor` show for each gated native CLI. */
 export interface AgentVersionRow { id: CompatId; executable?: string; verdict: CompatVerdict; policy: string }
@@ -25,7 +27,7 @@ export function agentVersions(commands: Partial<Record<CompatId, readonly string
   return (Object.keys(COMPAT) as CompatId[]).map(id => {
     const target = probeTarget(id, commands);
     if (!target) return probeRow(id, undefined, undefined, trusted);
-    const result = spawnSync(target.executable, target.args, { encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024, env: { ...process.env, ...PROBE_ENV } });
+    const result = spawnSync(target.executable, target.args, { encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024, env: withoutOrcaEnv(childEnv({ ...process.env, ...PROBE_ENV })) });
     return probeRow(id, target.executable, result.status === 0 ? result.stdout ?? "" : undefined, trusted);
   });
 }
@@ -42,7 +44,7 @@ const PROBE_EXIT_GRACE_MS = 250;
  * The upgrade is a process group via child_process (as `jcodeVersionAsync` does).
  */
 async function runProbe(executable: string, args: readonly string[], timeoutMs: number, graceMs = PROBE_EXIT_GRACE_MS): Promise<string | undefined> {
-  const child = Bun.spawn([executable, ...args], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: { ...process.env, ...PROBE_ENV }, timeout: timeoutMs, killSignal: "SIGKILL" });
+  const child = Bun.spawn([executable, ...args], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: withoutOrcaEnv(childEnv({ ...process.env, ...PROBE_ENV })), timeout: timeoutMs, killSignal: "SIGKILL" });
   const reader = child.stdout.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0, overflow = false, cancelled = false;

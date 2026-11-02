@@ -8,8 +8,10 @@ import { realPath } from "../src/hub/project.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { Board } from "../src/hub/board.ts";
 import { readClaudeLaunchProof } from "../src/hub/claude-launch-proof.ts";
+import { nativeLaunchEnv } from "../src/cli/launch.ts";
 import { assign, parseRouting } from "../src/hub/routing.ts";
 import { createProjectAdapterCatalog } from "../src/adapters/registry.ts";
+import { childEnv, peerChildEnv } from "../src/hub/child-process.ts";
 
 async function fixture(role: "implementer" | "verifier" = "implementer") {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-terminal-claude-"))), peer = "claude-builder";
@@ -129,6 +131,7 @@ test("#525-5 Claude launcher records and executes the validated worktree while p
   const f = await fixture();
   const names = ["AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID"] as const;
   const previous = names.map(name => process.env[name]);
+  const ownPaneEnv = { PATH: "/fixture/bin", CLAUDE_CONFIG_DIR: "/fixture/claude", CODEX_HOME: "/fixture/codex", ORCA_CLI_COMMAND: "/fixture/orca", ORCA_TERMINAL_HANDLE: "term-own-pane", ORCA_WORKTREE_ID: "wt-own-pane", ORCA_DEV_REPO_ROOT: "/fixture/repo", ORCA_AGENT_PANE: "pane-own", ORCA_AGENT_HOOK_PORT: "4321", ORCA_AGENT_HOOK_TOKEN: "token-own" };
   let executed = false;
   try {
     const context = { args: [], cwd: f.root, instance: f.peer, stateDir: f.stateDir, cliDir: "/fixture/src/cli", unattendedEnv: false,
@@ -139,9 +142,11 @@ test("#525-5 Claude launcher records and executes the validated worktree while p
           expect(project).toBe(f.root); expect(options.executionCwd).toBe(f.executionCwd); return undefined;
         }, claudeObservationHooks: () => undefined, buildLaunch: () => ({ cmd: "fake-never-started", args: [] }),
         processSignature: () => "fixture", recordClaudeLaunch, cleanupStaleClaudeSettings: () => {}, cleanupClaudeSettings: () => {},
-        nativeLaunchEnv: (_kind: string, env: NodeJS.ProcessEnv) => env, childEnv: () => ({}),
+        nativeLaunchEnv, childEnv: () => childEnv(ownPaneEnv),
         runClaudeLaunch: async (_launch: unknown, options: any) => {
           executed = true; expect(options.cwd).toBe(f.executionCwd); expect(options.env.AGENTHUB_PROJECT_DIR).toBe(f.root); expect(options.env.AGENTHUB_PEER_ID).toBe(f.peer);
+          for (const [name, value] of Object.entries(ownPaneEnv).filter(([name]) => name.startsWith("ORCA_"))) expect(options.env[name]).toBe(value);
+          expect(Object.keys(peerChildEnv(f.peer, ownPaneEnv)).filter(name => name.startsWith("ORCA_"))).toEqual([]);
           const proof = readClaudeLaunchProof(f.stateDir, f.peer, f.instanceId);
           expect(proof?.executionCwd).toBe(f.executionCwd); expect(proof?.privateRecord).toBe(true);
           throw new Error("fixture foreground boundary");

@@ -7,6 +7,8 @@ import { withoutOrcaEnv } from "./orca-env.ts";
  * lifecycle calls could bypass the machine recovery lock.
  */
 export function childEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  // Keep the caller's environment for person-owned native launch paths; peer and helper
+  // children that must not inherit Orca use peerChildEnv or withoutOrcaEnv explicitly.
   const env = { ...source };
   delete env.AGENTHUB_RECOVERY_OPERATION;
   delete env.AGENTHUB_RECOVERY_CONDUCTOR;
@@ -20,15 +22,15 @@ export function childEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.Proces
  * typed or started there has the console's identity, whatever started the hub.
  */
 export function personEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  // The Orca terminal the hub itself was started in is not this new terminal: a launch there must not record it as its own, so every ORCA_ variable goes (#613).
   const env = withoutOrcaEnv(childEnv(source));
   for (const name of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_CHANNEL", "AGENTHUB_PEER_ID", "AGENTHUB_UNATTENDED"]) delete env[name];
   return env;
 }
 
 /** Every native child owns its marker; caller vendor markers must not leak across peers (#193). */
-export function peerChildEnv(peer: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env = childEnv(source);
+export function peerChildEnv(peer: string, source: NodeJS.ProcessEnv = process.env, options: { preserveOrca?: true } = {}): NodeJS.ProcessEnv {
+  const inherited = childEnv(source);
+  const env = options.preserveOrca ? inherited : withoutOrcaEnv(inherited);
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_SESSION_ID;
   delete env.CODEX_THREAD_ID;
@@ -60,7 +62,7 @@ export function parseProcessTable(text: string): ProcRow[] {
 
 const PS = ["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="];
 // `lstart` is local time: one zone for every reader, or a reader in another zone sees every identity as changed.
-const PS_OPTIONS = { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, detached: true } as const;
+const PS_OPTIONS = { env: { ...withoutOrcaEnv(childEnv(process.env)), LC_ALL: "C", TZ: "UTC" }, detached: true } as const;
 /** The rows of one read, or undefined when they do not show the reader: a parse that found nothing is not a table. */
 const own = (text: string) => { const rows = parseProcessTable(text); return rows.some((row) => row.pid === process.pid) ? rows : undefined; };
 
