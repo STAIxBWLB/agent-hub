@@ -1,5 +1,7 @@
 # agent-hub design spec
 
+Successor drafts: [goal](../design/agent-hub.md), [architecture](../design/agent-hub-architecture.md), [bus](../design/bus.md), [task board](../design/task-board.md) and [adapters](../design/adapters.md); this file retains the historical change log, and new design amendments belong in the owning spec.
+
 Date: 2026-09-19. Status: M1 to M5 merged; M6 implemented on `feat/m6-packaging-inference` (phase spec: issue #2 of the first public repository, archived). Version 0.1.0.
 Owner: Young Joon Lee. Repo: STAIxBWLB/agent-hub.
 
