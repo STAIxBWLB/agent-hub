@@ -66,8 +66,13 @@ export function nextSweep(task: Task, config: TaskSweepConfig, now: number, read
   return { kind, activity, step: previous ? (previous.step + 1) as 2 | 3 : 1, at: now };
 }
 
+/** A planned start is the earliest automatic start time; the card is eligible at that boundary. */
+export function plannedStartPending(task: Pick<Task, "plannedStart">, now: number): boolean {
+  return task.plannedStart != null && (!Number.isFinite(now) || task.plannedStart > now);
+}
+
 export interface GroomingItem {
-  kind: "text-dependency" | "overlap" | "duplicate" | "over-wip" | "stale" | "superseded" | "blocked" | "closed-issue";
+  kind: "text-dependency" | "overlap" | "duplicate" | "over-wip" | "stale" | "superseded" | "blocked" | "closed-issue" | "scheduled";
   task: number;
   related?: number[];
   code?: string;
@@ -75,6 +80,8 @@ export interface GroomingItem {
 }
 export interface PlannerGroomingOptions {
   repository: string;
+  /** Host clock snapshot; omitted by legacy pure callers. */
+  now?: number;
   limits: Record<string, number>;
   wip: Record<string, number>;
   states: Record<string, string>;
@@ -162,6 +169,8 @@ export function plannerGrooming(tasks: readonly Task[], options: PlannerGrooming
     }
     if (replacements.size) add({ kind: "superseded", task: task.id, related: [...replacements].sort((a, b) => a - b) });
     if (task.state === "cancelled") continue; // Closed rows contribute supersession evidence only.
+    if ((task.state === "backlog" || task.state === "proposed" && !task.owner) && options.now !== undefined && plannedStartPending(task, options.now))
+      add({ kind: "scheduled", task: task.id });
     const issues = new Set<number>();
     for (const issue of [task.external?.issue, task.sdlc?.issue]) {
       if (issue === undefined) continue;

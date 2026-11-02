@@ -41,6 +41,16 @@ test("planner grooming derives all candidate kinds without leaking task text or 
   expect(JSON.stringify(tasks)).toBe(before); expect(result.truncated).toBe(false);
 });
 
+for (const scenario of [
+  { name: "before", offset: -1, scheduled: true },
+  { name: "at the boundary", offset: 0, scheduled: false },
+  { name: "after", offset: 1, scheduled: false },
+] as const) test(`planner grooming marks a planned backlog card scheduled only ${scenario.name}`, () => {
+  const plannedStart = 1_800_000_000_000;
+  const result = groom([task(1, { plannedStart })], { ...options(), now: plannedStart + scenario.offset });
+  expect(result.items).toEqual(scenario.scheduled ? [{ kind: "scheduled", task: 1 }] : []);
+});
+
 test("planner grooming separates repository counterparts and preserves contradictory and unavailable evidence as unknown", () => {
   const tasks = [task(1, { title: "#11", refs: { paths: ["src/a.ts"] } }),
     task(2, { title: "#11", refs: { repo: "other/repo", paths: ["src/a.ts"] } }),

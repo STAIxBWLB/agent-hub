@@ -78,7 +78,7 @@ import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { coverageGap, renderReviewBrief, type ReviewBrief } from "./review-brief.ts";
 import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
-import { plannerGrooming, nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
+import { plannerGrooming, nextSweep, plannedStartPending, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { CiWatchers, pollCi, type CiOutcome, type CiWatch } from "./ci-watch.ts";
 import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
 
@@ -563,7 +563,7 @@ export class Tasks {
       for (const task of this.d.board.list()) {
         if (this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) break;
         if (!task.owner && this.personUnassigned(task)) continue;
-        const finding = nextSweep(task, config, now, this.waitsFor(task).length === 0);
+        const finding = nextSweep(task, config, now, this.waitsFor(task).length === 0 && !plannedStartPending(task, now));
         if (!finding || this.waitsFor(task).length || this.isChecking(task.id) || this.silentFor(task.id)) continue;
         if (finding.kind === "ready-unassigned") {
           this.d.board.update(task.id, HUB, "idle sweep", {}, undefined, { sweep: finding });
@@ -2188,6 +2188,7 @@ export class Tasks {
   /** Write-driven wake-ups (#785): one unsettled ids-only task notice per planner, never a polling pull. */
   private writePlannerNotices(task: Task, before: ReadonlyMap<PeerId, number>, approved = false): void {
     this.releaseNotice(`task #${task.id}: could not notify planner about ready work`, () => {
+      const now = this.d.now?.() ?? Date.now();
       const changes = new Map<PeerId, { capacity: Set<PeerId>; ready: Set<number> }>();
       const add = (planner: PeerId, peer?: PeerId, id?: number) => {
         if (!this.d.bus.isRostered(planner)) return;
@@ -2199,7 +2200,7 @@ export class Tasks {
       const released = new Set<PeerId>();
       for (const [peer, used] of before) if (this.wip(peer) < used) { released.add(peer); for (const planner of this.taskPlanner(task)) add(planner, peer); }
       if (approved) for (const card of this.d.board.list("backlog")) {
-        if (card.deps?.includes(task.id) && !this.waitsFor(card).length) for (const planner of this.taskPlanner(card)) add(planner, undefined, card.id);
+        if (card.deps?.includes(task.id) && !this.waitsFor(card).length && !plannedStartPending(card, now)) for (const planner of this.taskPlanner(card)) add(planner, undefined, card.id);
       }
       for (const [planner, change] of changes) this.releaseNotice(`could not notify planner ${planner} about ready work`, () => {
         const pending = this.d.bus.pendingEnvelopes(planner).filter(env => env.from === HUB && env.kind === "task" && env.body.startsWith("Planner work ready:"));
@@ -2217,7 +2218,7 @@ export class Tasks {
         }
         for (const id of change.ready) {
           const card = this.d.board.get(id);
-          if (card?.state === "backlog" && this.taskPlanner(card).includes(planner) && !this.waitsFor(card).length) lines.push(`backlog_ready: #${id}`);
+          if (card?.state === "backlog" && this.taskPlanner(card).includes(planner) && !this.waitsFor(card).length && !plannedStartPending(card, now)) lines.push(`backlog_ready: #${id}`);
           else change.ready.delete(id);
         }
         for (const env of pending) this.d.bus.withdraw(env.id);
@@ -2231,8 +2232,9 @@ export class Tasks {
 
   /** The top card explicitly reserved for `peer` that this planner may pull now; the notice and the opt-in pull read the same rule. `pullable` keeps the staged backlog cards only. */
   private topReservedReady(peer: PeerId, planner?: PeerId, pullable = false): Task | undefined {
+    const now = this.d.now?.() ?? Date.now();
     return this.d.board.list().filter(card => (pullable ? card.state === "backlog" : ["backlog", "proposed"].includes(card.state)) && !card.owner && card.reserved === peer
-      && (planner === undefined || this.taskPlanner(card).includes(planner)) && !(pullable && this.isPii(card)) && !card.pinned && !card.draft && taskCanPlan(card) && !this.waitsFor(card).length && !this.excluded(card).includes(peer)
+      && (planner === undefined || this.taskPlanner(card).includes(planner)) && !plannedStartPending(card, now) && !(pullable && this.isPii(card)) && !card.pinned && !card.draft && taskCanPlan(card) && !this.waitsFor(card).length && !this.excluded(card).includes(peer)
       && (card.release == null || ["planning", "active"].includes(this.d.board.release(card.release)?.state ?? ""))).sort(this.readyOrder)[0];
   }
 
@@ -2264,10 +2266,15 @@ export class Tasks {
     if (!planner || !this.d.bus.isRostered(planner)) return;
     const reason = `auto_pull: capacity released for ${peer}; hub acted for planner ${planner}`;
     try {
-      await this.pullPlanned(HUB, { id: card.id, revision: card.planningRevision ?? 0, reason }, { onBehalfOf: planner, guard: () => { if (!this.autoPullAdmitted()) throw new PreEffectToolRefusal("auto pull is no longer admitted: tasks.auto_pull was turned off or a recovery, shutdown or storage hold began"); } });
+      await this.pullPlanned(HUB, { id: card.id, revision: card.planningRevision ?? 0, reason }, { onBehalfOf: planner, guard: () => {
+        if (!this.autoPullAdmitted()) throw new PreEffectToolRefusal("auto pull is no longer admitted: tasks.auto_pull was turned off or a recovery, shutdown or storage hold began");
+        const current = this.d.board.get(card.id);
+        if (current && plannedStartPending(current, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("auto pull is waiting for the planned start");
+      } });
     } catch (e) {
       // A guard refusal is the setting or a hold doing its job, not a failure to report.
-      if (!this.autoPullAdmitted()) return;
+      const current = this.d.board.get(card.id);
+      if (!this.autoPullAdmitted() || current && plannedStartPending(current, this.d.now?.() ?? Date.now())) return;
       this.releaseNotice(`task ${this.publicTitle(card)}: auto_pull for ${peer} refused: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
@@ -4038,12 +4045,22 @@ export class Tasks {
         if (!this.queuePressureAdmitted()) return;
         const task = this.d.board.get(stall.task);
         if (!this.ordinaryQueueProposal(stall, task)) { this.d.board.clearStall(stall.task); continue; }
+        if (plannedStartPending(task, this.d.now?.() ?? Date.now())) {
+          const origin = this.d.board.queuePressureStallPage(task.id - 1, 1).rows.find(row => row.task === task.id);
+          if (origin) this.d.board.recordStall({ ...origin, replanRevision: task.planningRevision ?? 0 });
+          pass.retained = true;
+          continue;
+        }
         // A planning revision asks for fresh admission, never erases an automatic offer.
         const namedOwner = stall.cause.peer;
         const retry = namedOwner ? { candidates: [namedOwner], namedOwner } : {};
         const choice = assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), waitsFor: this.waitsFor(task), ...this.weights(task.class, task), ...retry });
         if (choice.owner) {
-          const current = () => { if (!this.queuePressureAdmitted()) throw new PreEffectToolRefusal("queue-pressure retry is no longer admitted"); };
+          const current = () => {
+            if (!this.queuePressureAdmitted()) throw new PreEffectToolRefusal("queue-pressure retry is no longer admitted");
+            const latest = this.d.board.get(task.id);
+            if (latest && plannedStartPending(latest, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("queue-pressure retry is waiting for the planned start");
+          };
           try {
             // Reserved ready work shares the existing WIP, in-flight slot and offered fences.
             if (task.reserved) await this.offerReady(task, "queue pressure cleared", current);
@@ -4203,6 +4220,7 @@ export class Tasks {
   }
 
   async releaseReady(): Promise<void> {
+    const now = this.d.now?.() ?? Date.now();
     const haveQueueOrigins = this.queuePressureKnown !== false && this.d.board.queuePressureStallPage(0, 1).afterTask > 0;
     for (const t of [...this.d.board.list("proposed")].sort(this.readyOrder)) {
       if (t.owner) { this.d.board.clearStall(t.id); continue; }
@@ -4214,6 +4232,7 @@ export class Tasks {
         const origin = this.d.board.queuePressureStallPage(t.id - 1, 1).rows.find(row => row.task === t.id);
         if (origin && this.ordinaryQueueProposal(origin, t)) { this.scheduleQueuePressureRecheck(); continue; }
       }
+      if (plannedStartPending(t, now)) continue;
       const admission = planned ? this.plannerAssignment(t, true) : assign(t, this.states(), this.d.routing(), { exclude: this.excluded(t), ...this.weights(t.class, t) });
       if (!admission.owner) {
         // A diagnostic legacy pass is not evidence that an automatic proposal was attempted.
@@ -4235,6 +4254,7 @@ export class Tasks {
     try {
       const t = this.d.board.get(stale.id);
       if (!t || t.state !== "proposed" || t.owner || this.personUnassigned(t) || this.offered.has(t.id)) return;
+      if (plannedStartPending(t, this.d.now?.() ?? Date.now())) return;
       const planned = this.plannerPullRecord(t)?.pull === true;
       const selected = planned ? this.plannerAssignment(t, true).owner : undefined;
       if (planned && !selected) return;
@@ -4247,10 +4267,16 @@ export class Tasks {
       offering = true;
       const ready = t.history.at(-1)?.event === "ready" ? t : this.d.board.update(t.id, HUB, "ready", {}, why);
       this.releaseNotice(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
-      await this.assignOwner(ready, HUB, { current, ...(planned ? { candidates: [selected!], namedOwner: selected!, planner: true } : {}) });
+      const currentOffer = () => {
+        current?.();
+        const latest = this.d.board.get(ready.id);
+        if (latest && plannedStartPending(latest, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("planned start is in the future");
+      };
+      await this.assignOwner(ready, HUB, { current: currentOffer, ...(planned ? { candidates: [selected!], namedOwner: selected!, planner: true } : {}) });
     } catch (e) {
       // A saved move whose delivery failed is not "could not be assigned" (#297); the console notice was printed
       // where the error was thrown. The offer stays consumed by the error's own evidence, without the readback.
+      if (e instanceof PreEffectToolRefusal && e.message === "planned start is in the future") return;
       if (e instanceof AssignmentUndeliveredError) undelivered = e;
       else this.releaseNotice(`task ${this.publicTitle(stale)}: could not be assigned: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -4419,7 +4445,7 @@ export class Tasks {
       if (!result.owner) for (const refusal of result.refusals ?? []) if (refusal.role === "owner") blockers.push({ task: task.id, code: refusal.code === "instance" || refusal.code === "family" ? "policy" : refusal.code });
       if (this.waitsFor(task).length) blockers.push({ task: task.id, code: "dependency" });
     }
-    const digest = plannerGrooming(visible, { dependencies, dependencyTruncated, repository: this.d.repository ?? `path:${realPath(this.d.cwd)}`,
+    const digest = plannerGrooming(visible, { dependencies, dependencyTruncated, repository: this.d.repository ?? `path:${realPath(this.d.cwd)}`, now: this.d.now?.() ?? Date.now(),
       limits: Object.fromEntries(peers.map(peer => [peer, this.wipLimit(peer)])), wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])),
       states, issues, reviewedIssues, acceptedIssues, blockers });
     return { ...digest, truncated: digest.truncated || incomplete, ...(current.some(task => this.isPii(task)) ? { privateTasks: "withheld" } : {}) };

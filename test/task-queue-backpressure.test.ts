@@ -213,6 +213,27 @@ async function owned(f: Awaited<ReturnType<typeof fixture>>, id: number, owner: 
   await settled(f.tasks);
 }
 
+test("a future queue-pressure origin stays retryable and releaseReady offers it when plannedStart arrives", async () => {
+  const f = await fixture({ onlyOwner: true, hold: false }), plannedStart = 2_000_000_010_000;
+  f.wire(); f.control.now = plannedStart - 1; f.control.policy = { max_queued: 1, max_oldest_s: 0 }; f.enqueue("codex", 2);
+  const held = await f.tasks.propose(HUB, { title: "scheduled queue-pressure work", class: "implement", owner: "codex" });
+  expect(held.owner).toBeNull(); await settled(f.tasks);
+
+  f.board.plan(held.id, USER, { plannedStart }, held.planningRevision ?? 0);
+  f.tasks.scheduleQueuePressureRecheck(); await settled(f.tasks);
+  expect(f.board.queuePressureStallPage().rows.map(row => row.task)).toContain(held.id);
+
+  f.control.policy = { max_queued: 0, max_oldest_s: 0 };
+  await f.tasks.releaseReady(); await settled(f.tasks);
+  expect(f.board.get(held.id)?.owner).toBeNull();
+  expect(f.board.queuePressureStallPage().rows.map(row => row.task)).toContain(held.id);
+
+  f.control.now = plannedStart;
+  await f.tasks.releaseReady();
+  await owned(f, held.id, "codex");
+  expect(f.board.queuePressureStallPage().rows.map(row => row.task)).not.toContain(held.id);
+});
+
 test("a pull-only peer draining its queue without a state change reoffers only the queue-held automatic proposal", async () => {
   const f = await fixture({ onlyOwner: true, pullOnly: true, hold: false }); f.wire();
   f.control.policy = { max_queued: 1, max_oldest_s: 0 }; f.enqueue("codex", 2);
