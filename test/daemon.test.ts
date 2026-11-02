@@ -98,6 +98,7 @@ async function hub(extra: { kimiHome?: string; unattended?: boolean; memoryUrl?:
     codexProxyPort: 0,
     config: {
       ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } },
+      specs: { ...DEFAULT_CONFIG.specs, enabled: false }, // unrelated fixture behavior must not depend on this checkout's design specs
       kimi_cmd: ["bun", join(ROOT, "test/fakes/acp-server.ts")],
       batch_ms: 30,
       ...(modelUrl ? { omniroute: { urls: [modelUrl], access_hosts: [] } } : {}),
@@ -922,7 +923,7 @@ test("task tools from every surface: Claude plugin, a tools-role client acting f
   // a second hub on the same state dir sees the board
   const stateDir = first.stateDir;
   await first.daemon.stop();
-  const again = await startDaemon({ cwd: ROOT, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
+  const again = await startDaemon({ cwd: ROOT, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, specs: { ...DEFAULT_CONFIG.specs, enabled: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
   cleanup.push(() => again.stop());
   const c2 = await ControlClient.connect(stateDir, { role: "console" });
   expect(JSON.parse((await c2.request({ t: "task", op: "hub_task_list", args: {} })).text)[0]).toMatchObject({ id: 1, state: "approved" });
