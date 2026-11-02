@@ -230,7 +230,7 @@ export class ControlClient {
     let wire = msg;
     if (write && this.features.includes(TOOL_WRITE_FEATURE) && msg.requestId === undefined) {
       try { wire = { ...msg, requestId: newToolRequestId(this.instanceId ?? "") }; }
-      catch { return Promise.resolve({ ok: false, error: "write request identity is unavailable; inspect hub_status before retrying" }); }
+      catch { return Promise.resolve({ ok: false, error: "write request identity is unavailable; inspect ahub status before retrying" }); }
     }
     const requestId = typeof wire.requestId === "string" ? wire.requestId : undefined;
     const uncertain = (cause: string) => toolWriteUnknownReply(wire, requestId,
