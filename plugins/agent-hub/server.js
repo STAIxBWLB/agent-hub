@@ -12290,10 +12290,10 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
     return { ...tool, description, inputSchema: { ...tool.inputSchema, properties } };
   });
 }
-var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id2, refs, list = (description) => ({ type: "array", items: str2, description }), specAck, deliverablesSchema, reviewFindings, costPlanProperties, evidencePlanProperties, plan, acceptPlan, tool2 = (name, description, properties, required = []) => ({
+var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id2, toolWriteRequestId, refs, list = (description) => ({ type: "array", items: str2, description }), specAck, deliverablesSchema, reviewFindings, costPlanProperties, evidencePlanProperties, plan, acceptPlan, tool2 = (name, description, properties, required = []) => ({
   name,
   description,
-  inputSchema: { type: "object", properties, required, additionalProperties: false }
+  inputSchema: { type: "object", properties: name === "hub_review" || name === "hub_task_propose" ? { ...properties, request_id: toolWriteRequestId } : properties, required, additionalProperties: false }
 }), STUDY_TOOLS, HANDOFF_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
 var init_hub_tools = __esm(() => {
   init_test_integrity();
@@ -12310,6 +12310,7 @@ var init_hub_tools = __esm(() => {
   };
   str2 = { type: "string" };
   id2 = { type: "integer", description: "task id" };
+  toolWriteRequestId = { type: "string", minLength: 1, maxLength: 256, pattern: "^v1/[A-Za-z0-9._-]{1,128}/[1-9][0-9]{0,15}/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", description: "control-transport-only request_id returned by an outcome-unknown write; inspect first and retry with the same key and identical arguments only if absent. Direct in-process tool calls cannot use request_id" };
   refs = {
     type: "object",
     description: "where the work lives",
@@ -23282,17 +23283,36 @@ function newToolRequestId(instanceId, now = Date.now()) {
     throw new Error("tool request identity is unavailable");
   return `v1/${instanceId}/${now}/${randomUUID12()}`;
 }
-function toolWriteUnknownReply(msg, requestId, cause) {
+function settlingRead(msg) {
   const args = msg.args && typeof msg.args === "object" && !Array.isArray(msg.args) ? msg.args : {};
-  const id = Number.isSafeInteger(args.id) && args.id > 0 ? args.id : undefined;
+  const id = typeof args.id === "number" ? args.id : typeof args.id === "string" && /^\s*\d+\s*$/.test(args.id) ? Number(args.id) : undefined;
   const delivery = typeof msg.deliveryId === "string" && /^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.test(msg.deliveryId) ? msg.deliveryId : "<delivery-id>";
-  const read = toolWriteOperation(msg) === "hub_delivery_done" ? `ahub queue show ${delivery} (person or conductor)` : toolWriteOperation(msg) === "hub_review" && id !== undefined ? `hub_task_show {id: ${id}}` : "hub_task_list (then hub_task_show for the matching task)";
-  const token = typeof requestId === "string" && requestId.length <= 256 && !/[\p{Cc}\p{Cf}]/u.test(requestId) ? requestId : undefined;
+  if (toolWriteOperation(msg) === "hub_delivery_done")
+    return { read: `ahub queue show ${delivery} (person or conductor)`, absent: "completion is absent" };
+  if (toolWriteOperation(msg) === "hub_review" && Number.isSafeInteger(id) && id > 0)
+    return { read: `hub_task_show {id: ${id}}`, absent: "this verdict is absent" };
+  return { read: "hub_task_list (then hub_task_show for the matching task)", absent: "the task is absent" };
+}
+function safeRequestId(requestId) {
+  return typeof requestId === "string" && requestId.length <= 256 && !/[\p{Cc}\p{Cf}]/u.test(requestId) ? requestId : undefined;
+}
+function toolWriteUnknownReply(msg, requestId, cause) {
+  const token = safeRequestId(requestId), settlement = settlingRead(msg);
+  const replay = token && toolWriteOperation(msg) !== "hub_delivery_done" ? `, reusing request_id ${JSON.stringify(token)}` : "";
   return {
     ok: false,
     outcome: "unknown",
     ...token ? { requestId: token } : {},
-    error: `Write outcome unknown${token ? ` (request ${token})` : ""}${cause ? `: ${cause}` : ". The hub may have applied the write"}. Inspect ${read} before another write; do not resubmit with a new request ID.`
+    error: `Write outcome unknown${cause ? `: ${cause}` : ". The hub may have applied the write"}. Read ${settlement.read}; call again only if ${settlement.absent}${replay}.`
+  };
+}
+function toolWriteRefusedReply(msg, requestId, cause) {
+  const token = safeRequestId(requestId);
+  return {
+    ok: false,
+    outcome: "refused",
+    ...token ? { requestId: token } : {},
+    error: `Write request refused: ${cause}. This attempt did not run. Read ${settlingRead(msg).read} before another write.`
   };
 }
 
@@ -23484,12 +23504,20 @@ class ControlClient {
     if (this.ws.readyState !== WebSocket.OPEN || this.closing && msg.t !== "request_cancel")
       return Promise.resolve({ ok: false, error: "hub connection is not open" });
     const invocation = msg.t === "task" && msg.op === "hub_invoke";
-    const write = toolWriteOperation(msg) !== undefined;
-    if (write && msg.requestId !== undefined && !this.features.includes(TOOL_WRITE_FEATURE)) {
-      return Promise.resolve(toolWriteUnknownReply(msg, typeof msg.requestId === "string" ? msg.requestId : undefined, "this daemon does not advertise replay protection; nothing was resubmitted"));
+    const operation = toolWriteOperation(msg), write = operation !== undefined;
+    const keyedWrite = write && operation !== "hub_delivery_done";
+    if (keyedWrite && msg.args && typeof msg.args === "object" && !Array.isArray(msg.args) && Object.hasOwn(msg.args, "request_id")) {
+      const { request_id: key, ...args } = msg.args;
+      if (typeof key !== "string" || !key || key.length > 256 || /[\p{Cc}\p{Cf}]/u.test(key) || msg.requestId !== undefined && msg.requestId !== key) {
+        return Promise.resolve(toolWriteRefusedReply(msg, undefined, "request_id must be a non-empty echoed request key and agree with requestId"));
+      }
+      msg = { ...msg, args, requestId: key };
+    }
+    if (keyedWrite && msg.requestId !== undefined && !this.features.includes(TOOL_WRITE_FEATURE)) {
+      return Promise.resolve(toolWriteRefusedReply(msg, typeof msg.requestId === "string" ? msg.requestId : undefined, "this daemon does not advertise replay protection; nothing was resubmitted"));
     }
     let wire = msg;
-    if (write && this.features.includes(TOOL_WRITE_FEATURE) && msg.requestId === undefined) {
+    if (keyedWrite && this.features.includes(TOOL_WRITE_FEATURE) && msg.requestId === undefined) {
       try {
         wire = { ...msg, requestId: newToolRequestId(this.instanceId ?? "") };
       } catch {
@@ -32371,7 +32399,6 @@ class StdioServerTransport {
 
 // src/adapters/claude-channel.ts
 import { readFileSync as readFileSync17 } from "fs";
-import { createHash as createHash9 } from "crypto";
 import { join as join33 } from "path";
 
 // src/hub/channel-project.ts
@@ -32746,59 +32773,6 @@ var server = new Server({ name: "agent-hub", version: VERSION }, toolsMode ? { c
 var inbox = [];
 var hub;
 var detached;
-var MCP_WRITE_ID_TTL_MS = 15 * 60000;
-var MCP_WRITE_ID_CAP = 512;
-var MCP_WRITE_ID_TOMBSTONE_CAP = 65536;
-var mcpWriteIds = new Map;
-var mcpWriteIdTombstones = new Set;
-function mcpToolWriteId(name, mcpId, client) {
-  const operation = toolWriteOperation(name === "hub_delivery_done" ? { t: "delivery_complete" } : { t: "task", op: name });
-  if (!operation)
-    return {};
-  const instanceId = client.instanceId;
-  const now = Date.now();
-  for (const [key, entry] of mcpWriteIds)
-    if (!entry.expired && now - entry.at >= MCP_WRITE_ID_TTL_MS) {
-      if (mcpWriteIdTombstones.size < MCP_WRITE_ID_TOMBSTONE_CAP) {
-        mcpWriteIdTombstones.add(key);
-        mcpWriteIds.delete(key);
-      } else
-        entry.expired = true;
-    }
-  const validMcpId = mcpId === undefined || typeof mcpId === "string" || typeof mcpId === "number" && Number.isSafeInteger(mcpId);
-  if (!validMcpId)
-    return client.features.includes(TOOL_WRITE_FEATURE) ? { refused: "Write request identity is unavailable; inspect the task or delivery before another write." } : {};
-  const key = mcpId === undefined ? undefined : createHash9("sha256").update(JSON.stringify([typeof mcpId, String(mcpId)])).digest("hex");
-  if (key) {
-    const existing = mcpWriteIds.get(key);
-    if (existing)
-      return existing.expired ? { refused: "This MCP request ID expired; inspect the task or delivery before another write." } : { requestId: existing.requestId };
-    if (mcpWriteIdTombstones.has(key))
-      return { refused: "This MCP request ID expired; inspect the task or delivery before another write." };
-  }
-  if (!client.features.includes(TOOL_WRITE_FEATURE))
-    return {};
-  if (!instanceId)
-    return { refused: "Write request identity is unavailable; inspect the task or delivery before another write." };
-  let requestId;
-  if (mcpId === undefined) {
-    try {
-      requestId = newToolRequestId(instanceId, now);
-    } catch {
-      return { refused: "Write request identity is unavailable; inspect the task or delivery before another write." };
-    }
-    return { requestId };
-  }
-  if (mcpWriteIds.size >= MCP_WRITE_ID_CAP || mcpWriteIdTombstones.size >= MCP_WRITE_ID_TOMBSTONE_CAP)
-    return { refused: "Write request identity window is full; inspect the task or delivery before another write." };
-  try {
-    requestId = newToolRequestId(instanceId, now);
-  } catch {
-    return { refused: "Write request identity is unavailable; inspect the task or delivery before another write." };
-  }
-  mcpWriteIds.set(key, { requestId, at: now });
-  return { requestId };
-}
 var offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
 var pendingQueued;
 var QUEUED_COUNTED = Symbol("queuedCounted");
@@ -33014,8 +32988,8 @@ function toolListFor(lifecycle) {
         ...channel ? [
           {
             name: "hub_delivery_done",
-            description: "Explicitly complete one handled channel delivery using its delivery_id and delivery_generation metadata. Does not change task state. Never use for an unhandled or uncertain delivery.",
-            inputSchema: { type: "object", properties: { delivery_id: { type: "string" }, delivery_generation: { type: "string" } }, required: ["delivery_id", "delivery_generation"], additionalProperties: false }
+            description: "Explicitly complete one handled channel delivery using its delivery_id and delivery_generation metadata. Does not change task state. If a prior result was outcome unknown, read the queue first and retry only if still unresolved, using the same request_id when available. Never complete an unhandled delivery.",
+            inputSchema: { type: "object", properties: { delivery_id: { type: "string" }, delivery_generation: { type: "string" }, request_id: { type: "string", minLength: 1, maxLength: 256, pattern: "^v1/[A-Za-z0-9._-]{1,128}/[1-9][0-9]{0,15}/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", description: "request_id echoed in a prior outcome-unknown result" } }, required: ["delivery_id", "delivery_generation"], additionalProperties: false }
           }
         ] : []
       ],
@@ -33029,7 +33003,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   listedTools = toolKey(list);
   return list;
 });
-async function callTool(req, signal, mcpRequestId) {
+async function callTool(req, signal) {
   const { name, arguments: args } = req.params;
   if (unidentified)
     return { ...text5(UNIDENTIFIED), isError: true };
@@ -33070,13 +33044,10 @@ async function callTool(req, signal, mcpRequestId) {
   if (name === "hub_delivery_done" && channel) {
     if (!hub)
       return text5(offline());
-    const a = args ?? {};
-    const identity = mcpToolWriteId(name, mcpRequestId, hub);
-    if (identity.refused)
-      return text5(identity.refused);
-    const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation, ...identity.requestId ? { requestId: identity.requestId } : {} });
+    const a = args ?? {}, requestId = Object.hasOwn(a, "request_id") ? a.request_id : undefined;
+    const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation, ...requestId !== undefined ? { requestId } : {} });
     if (result.outcome === "unknown")
-      return text5(typeof result.error === "string" ? result.error : "Write outcome unknown. Inspect the delivery before another write; do not resubmit with a new request ID.");
+      return text5(typeof result.error === "string" ? result.error : "Write outcome unknown. Inspect the delivery before another write; call again only if it is absent, with the same delivery id and generation.");
     return text5(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && (!toolsMode || permissionTool)) {
@@ -33135,17 +33106,21 @@ ${polling}` : body);
       return text5(offline());
     if (name === "hub_invoke" && !hub.features.includes("invocation"))
       return { ...text5("error: this hub does not support invocations; restart it with the current agent-hub release (ahub restart)"), isError: true };
-    const identity = mcpToolWriteId(name, mcpRequestId, hub);
-    if (identity.refused)
-      return text5(identity.refused);
-    const res = await hub.request({ t: "task", op: name, args: args ?? {}, ...identity.requestId ? { requestId: identity.requestId } : {} }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" ? signal : undefined);
+    const rawArgs = args ?? {}, operation = toolWriteOperation({ t: "task", op: name });
+    let taskArgs = rawArgs, requestId;
+    if (operation && Object.hasOwn(rawArgs, "request_id")) {
+      requestId = rawArgs.request_id;
+      const { request_id: _requestId, ...withoutRequestId } = rawArgs;
+      taskArgs = withoutRequestId;
+    }
+    const res = await hub.request({ t: "task", op: name, args: taskArgs, ...requestId !== undefined ? { requestId } : {} }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" ? signal : undefined);
     if (res.outcome === "unknown")
-      return text5(typeof res.error === "string" ? res.error : "Write outcome unknown. Inspect the task before another write; do not resubmit with a new request ID.");
+      return text5(typeof res.error === "string" ? res.error : "Write outcome unknown. Inspect the task before another write; call again only if it is absent, with the same request_id and arguments.");
     return { ...text5(res.ok ? res.text : `error: ${res.error}`), ...res.ok ? {} : { isError: true } };
   }
   return text5(`unknown tool ${name}`);
 }
-server.setRequestHandler(CallToolRequestSchema, async (req, extra) => withPendingHint(await callTool(req, extra.signal, extra.requestId), req.params.name !== "hub_inbox" && req.params.name !== "hub_source_read"));
+server.setRequestHandler(CallToolRequestSchema, async (req, extra) => withPendingHint(await callTool(req, extra.signal), req.params.name !== "hub_inbox" && req.params.name !== "hub_source_read"));
 await server.connect(new StdioServerTransport);
 process.stdin.on("end", () => process.exit(0));
 process.stdin.on("close", () => process.exit(0));
