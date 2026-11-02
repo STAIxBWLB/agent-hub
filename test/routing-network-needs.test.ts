@@ -114,6 +114,17 @@ test("accept of ordinary work is unaffected by a peer without network (#1081)", 
   expect(board.get(row.id)!.state).toBe("in_progress");
 });
 
+test("route explain for a network task names the peer without network and why, and offers it to a peer that has it (#1081 AC2)", async () => {
+  const { board, tasks } = await rig(false);
+  const made = await tasks.propose("user", { title: "raise the pin", class: "implement", needs_network: true });
+  const text = tasks.publicExplain(made.id).join("\n");
+  expect(text).toContain("signals: needs_network");
+  expect(text).toContain("pi: skipped, no network: local.bash_network is off");
+  expect(board.get(made.id)!.owner).not.toBe("pi");
+  const plain = await tasks.propose("user", { title: "rename a helper", class: "implement" });
+  expect(tasks.publicExplain(plain.id).join("\n")).not.toContain("no network");
+});
+
 test("a reservation for a peer without network is refused at propose, before any write (#1081)", async () => {
   const { board, tasks } = await rig(false);
   const blocker = board.propose("user", { title: "must land first", class: "implement" });
