@@ -1131,7 +1131,7 @@ says `tokens not reported`; the hub does not estimate usage from text length.
 
 A daemon advertising `tool_write_idempotency` accepts a top-level control
 `requestId` for `hub_task_propose` and `hub_review`. This key is independent of
-transport `rid` and MCP JSON-RPC IDs. The MCP tools expose optional `request_id`:
+transport `rid` and MCP JSON-RPC IDs. The proposal and review MCP tools expose optional `request_id`:
 omit it for a new call; after an unknown outcome, reuse the echoed key with the
 same arguments. The channel removes this transport argument before task
 validation. A new JSON-RPC ID does not change an explicitly supplied retry key.
@@ -1156,9 +1156,8 @@ block another. Replies are capped at 64 KiB and cached overlap metadata checks
 up to 64 current task references. Expired/foreign-instance IDs refuse without
 applying again; restart recovery uses board reads. `delivery_complete` uses the
 existing journal idempotence keyed by delivery ID and the live socket/generation,
-so settlement consumes no replay-window capacity. `hub_delivery_done` accepts
-`request_id` for retry compatibility but its delivery ID/generation are the
-settlement identity.
+so settlement consumes no replay-window capacity. `hub_delivery_done` takes only
+its delivery ID and generation; it has no request key argument.
 
 The latency receipt and its synthetic-only scope are in
 [control-write verification](verification/2026-11-02-control-write-outcomes.md).
