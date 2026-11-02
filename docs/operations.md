@@ -1127,6 +1127,42 @@ Pi 0.86 assistant usage is forwarded at `message_end`, including tool-loop messa
 and recorded before settlement. If a model supplies no usable count, `ahub report`
 says `tokens not reported`; the hub does not estimate usage from text length.
 
+## Control write outcomes and safe retries (#1078)
+
+A daemon advertising `tool_write_idempotency` accepts a top-level control
+`requestId` for `hub_task_propose` and `hub_review`. This key is independent of
+transport `rid` and MCP JSON-RPC IDs. The MCP tools expose optional `request_id`:
+omit it for a new call; after an unknown outcome, reuse the echoed key with the
+same arguments. The channel removes this transport argument before task
+validation. A new JSON-RPC ID does not change an explicitly supplied retry key.
+
+Read `hub_task_list` for an uncertain proposal, `hub_task_show` for an uncertain
+verdict, or `ahub queue show <delivery-id>` (person/conductor) for a delivery.
+Call again only if the task, verdict or completion is absent. For a proposal or
+review retry, copy the returned `request_id`; do not invent a fresh key. An
+in-flight retry joins the original execution. A retained result is the receipt
+of that call, rather than a fresh statement of the task's current state.
+
+`outcome: unknown` means a sent call may already have applied, including after a
+timeout, cancellation or lost connection. `outcome: refused` means this attempt
+did not run (for example an invalid key, insufficient authority or full actor
+window); it does not undo an earlier attempt. Known task permission/validation
+errors retain their specific error. Explicit retries are refused before sending
+to older daemons that do not advertise the feature.
+
+Each authenticated actor has its own 512-entry, 15-minute replay window across
+its operations and launch generations. One actor filling that window does not
+block another. Replies are capped at 64 KiB and cached overlap metadata checks
+up to 64 current task references. Expired/foreign-instance IDs refuse without
+applying again; restart recovery uses board reads. `delivery_complete` uses the
+existing journal idempotence keyed by delivery ID and the live socket/generation,
+so settlement consumes no replay-window capacity. `hub_delivery_done` accepts
+`request_id` for retry compatibility but its delivery ID/generation are the
+settlement identity.
+
+The latency receipt and its synthetic-only scope are in
+[control-write verification](verification/2026-11-02-control-write-outcomes.md).
+
 ## A two-agent task and review
 
 Choose an owner explicitly, then inspect the reviewer selected by the project
