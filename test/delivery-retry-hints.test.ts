@@ -57,9 +57,11 @@ test("delivery-only MCP sessions hide retry and ask the person while pull-only K
     try {
       const tools = await f.client.listTools();
       expect(tools.tools.some(tool => tool.name === "hub_delivery_retry")).toBe(!deliveryOnly);
+      expect(tools.tools.some(tool => tool.name === "hub_delivery_resolve")).toBe(true);
       const result = await f.client.callTool({ name: "hub_send", arguments: { text: "[FYI] delivery mode hint" } }) as any;
       expect(result.content[1].text).toContain("my-private-held");
-      expect(result.content[1].text).toContain(deliveryOnly ? "Ask the person to resolve" : "Use hub_delivery_retry");
+      expect(result.content[1].text).toContain("hub_delivery_resolve");
+      expect(result.content[1].text).toContain(deliveryOnly ? "Retry remains person-only" : "hub_delivery_retry");
       expect(JSON.stringify(result)).not.toContain("DO NOT EXPOSE PRIVATE CONTENT");
     } finally { await f.close(); }
   }

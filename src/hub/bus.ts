@@ -1,4 +1,4 @@
-import { remoteEnvelope, appendNote, DIGEST, frame, HUB, isInvocationKind, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
+import { remoteEnvelope, appendNote, DIGEST, frame, HUB, USER, isInvocationKind, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
 import type { DoingKind } from "./peer-doing.ts";
 import type { QueuePressure } from "./queue-backpressure.ts";
@@ -617,6 +617,24 @@ export class Bus {
     this.resolveDelivery(id, row.revision, "retry", "recipient requested one uncertain redelivery", `peer:${peer}`);
   }
 
+  /** Settle only this peer's own uncertain receipt; this never replays its originals or changes task state. */
+  resolveOwnDelivery(peer: string, id: string, revision: number, action: "completed" | "discard", reason: string): void {
+    const refuse = (message = "owner resolution unavailable; inspect the held delivery or ask the person") => { throw new PreEffectToolRefusal(message); };
+    if (this.closed || this.recoveryHeld || this.storageError || this.paused.has(peer) || this.opts.deliveryHeld?.(peer) === true || peer === USER || peer === HUB || remoteId(peer) || !this.journal) return refuse();
+    if (!Number.isSafeInteger(revision) || revision < 0 || (action !== "completed" && action !== "discard") || typeof reason !== "string" || !reason.trim() || reason.trim().length > 1000) return refuse();
+    const row = this.queueShow(id), actor = `peer:${peer}`, cleanReason = reason.trim();
+    if (!row || row.peer !== peer) return refuse();
+    const previous = this.journal.resolution(id);
+    if (previous) {
+      if (previous.actor !== actor || previous.action !== action || previous.reason !== cleanReason || (revision !== previous.observedRevision && revision !== row.revision)) return refuse();
+      this.resolveDelivery(id, revision, action, cleanReason, actor);
+      return;
+    }
+    if (row.revision !== revision) return refuse("held delivery revision changed; read hub_inbox again for the current revision");
+    if (row.state !== "needs_review") return refuse();
+    this.resolveDelivery(id, revision, action, cleanReason, actor);
+  }
+
   private retryOut(peer: string, originals: Envelope[], out: Envelope[]): Envelope[] {
     if (remoteId(peer)) return out;
     if (!out.length || !this.journal || !this.journal.retryWarning(peer, originals)) return out;
@@ -659,7 +677,7 @@ export class Bus {
       if (!Number.isSafeInteger(deadline) || deadline! <= Date.now()) throw new PreEffectToolRefusal("remote original deadline unavailable or expired; discard it or send a new message explicitly");
       this.checkRemotePublication(record.originals[0]!);
     }
-    const recipientConsent = actor === `peer:${record.peer}` && action === "retry" && record.state === "needs_review";
+    const recipientConsent = actor === `peer:${record.peer}` && record.state === "needs_review" && (action === "retry" || action === "completed" || action === "discard");
     // #713: a `queued` delivery was never handed to the peer, so nothing is in flight and a busy peer (a pull-only TUI is busy most of the time) does not block
     // discarding it. `dispatching` and `accepted` stay refused, and every other resolution keeps the busy fence.
     if (["dispatching", "accepted"].includes(record.state)) throw new Error("active delivery cannot be resolved");
@@ -1448,10 +1466,10 @@ export class Bus {
    * terminal row. The completed row keeps the envelopes (`ahub queue show <id>`) to resend by hand; take/confirm in two
    * steps if loss is ever observed.
    */
-  pull(id: PeerId): Envelope[] | undefined {
+  pull(id: PeerId, options: { allowNeedsReviewHold?: boolean } = {}): Envelope[] | undefined {
     if (remoteId(id)) return undefined; // A local inbox read is not signed remote queue admission.
     if (this.storageError) throw new Error("delivery journal unavailable");
-    if (this.held(id)) return undefined;
+    if (this.held(id) && !(options.allowNeedsReviewHold === true && this.pullMayReadBehindNeedsReview(id))) return undefined;
     const queue = this.queues.get(id) ?? [];
     this.dropIrrelevant(id, queue);
     const preface = this.prefaces.get(id);
@@ -1483,6 +1501,15 @@ export class Bus {
     this.failureStreak.delete(id); this.lastFailure.delete(id); // read, as a completed push receipt clears them
     this.onQueues?.();
     return out;
+  }
+
+  /** Explicit inbox reads may pass only a needs_review hold; every other recovery fence still blocks. */
+  private pullMayReadBehindNeedsReview(id: PeerId): boolean {
+    if (!this.journal || this.closed || this.storageError || !this.isRostered(id) || this.recoveryHeld || this.paused.has(id) || this.opts.deliveryHeld?.(id) === true) return false;
+    if (this.pendingOutcomes.some(row => row.peer === id)) return false;
+    const unresolved = this.journal.unresolved(id);
+    return unresolved.some(row => row.state === "needs_review") &&
+      unresolved.every(row => row.state === "needs_review" || row.state === "queued");
   }
 
   private async drain(id: PeerId): Promise<void> {
