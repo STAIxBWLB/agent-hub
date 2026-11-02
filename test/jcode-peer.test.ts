@@ -721,9 +721,12 @@ test("each TUI launch refusal names its cause class in the reply and in hub.log,
   // server not running: the owned launch ended.
   await daemon.bus.peers.get("jcode")!.stop();
   expect(await refused()).toMatchObject({ ok: false, code: "server_not_running" });
-  // The hub.log line for each class is the class alone: no session id, launch id, socket or directory.
-  const log = rig.log();
+  // The hub.log line for each class is the class alone: no session id, launch id, socket or directory. Only this change's own lines are checked: the daemon's startup line names the project directory by design.
+  const refusals = rig.log().split("\n").filter(line => line.includes("native_tui_launch"));
+  expect(refusals.length).toBe(7);
+  const log = refusals.join("\n");
   for (const code of ["launch_changed", "session_proof_refused", "session_unknown", "socket_changed", "server_not_running"]) expect(log).toContain(`native_tui_launch jcode refused: ${code}`);
+  for (const line of refusals) expect(line).toMatch(/^\S+ native_tui_launch jcode refused: [a-z_]+$/);
   for (const secret of [sessionId, launchId, socketPath, rig.dir, rig.home, "another-launch"]) expect(log).not.toContain(secret);
   // Neither does any reply carry them: the error text stays the generic one and the code is a closed word.
   for (const reply of [changed, await refused()]) for (const secret of [sessionId, launchId, socketPath, rig.dir, rig.home]) expect(JSON.stringify(reply)).not.toContain(secret);
