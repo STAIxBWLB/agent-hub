@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { CLASSES, type Task, type TaskClass } from "./board.ts";
 import { isGitHubRepository, specRefs } from "./spec-read.ts";
 
-export interface PeerCapabilities { tests: boolean; spec: boolean; testsReason?: string; specReason?: string; /** #1081: the peer's shell can reach the network (through the egress proxy or directly). Absent means unknown, never refused. */ network?: boolean; networkReason?: string; /** #1081: the peer can create the task worktree (`git worktree add` runs outside a hub sandbox, #270). Absent means unknown, never refused. */ worktree?: boolean; worktreeReason?: string; }
+export interface PeerCapabilities { tests: boolean; spec: boolean; testsReason?: string; specReason?: string; /** #1081: the peer's shell can reach the network (through the egress proxy or directly). Absent means unknown, never refused. */ network?: boolean; networkReason?: string; /** #1081: the peer can have the task worktree made for it: it makes its own, or (a hub sandbox, #270) the hub makes it (#1115) where it can. Absent means unknown, never refused. */ worktree?: boolean; worktreeReason?: string; }
 import type { PeerId, PeerState } from "./envelope.ts";
 
 import { parseHubRoutes, type HubRoute } from "../models/route/config.ts";

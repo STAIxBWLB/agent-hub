@@ -75,6 +75,7 @@ import { realPath } from "./project.ts";
 import { TaskRepositories } from "./task-repository.ts";
 import { mainCheckoutWarning } from "./main-checkout.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
+import type { TaskWorktreePort } from "./task-worktree.ts";
 import { coverageGap, renderReviewBrief, renderSpecTaskReport, type BriefFile, type ReviewBrief } from "./review-brief.ts";
 import { DEFAULT_SPECS_CONFIG, type SpecsConfig } from "./specs-config.ts";
 import type { SpecsCheckReport, SpecsCoverReport } from "./specs.ts";
@@ -217,6 +218,8 @@ export interface TasksDeps {
   review?: { adaptive: boolean; min_reviews: number; pool?: readonly string[]; rerotate?: boolean; same_family?: "fallback" | "never" };
   /** Peers whose recent deliveries all failed, with the reason (issue #89); routing skips them. */
   capabilities?: () => Record<PeerId, PeerCapabilities>;
+  /** #1115: the hub makes, commits and clears the task worktree of a hub-sandboxed peer. Absent: such a peer keeps the #1081 refusal. */
+  taskWorktree?: TaskWorktreePort;
   repository?: string;
   offerRead?: (peer: PeerId, envelopeId: string) => boolean;
   offerPullOnly?: (peer: PeerId) => boolean;
@@ -4493,6 +4496,7 @@ export class Tasks {
     const capacity = this.capacityBefore(task);
     this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);
     const next = this.d.board.update(task.id, by, "cancelled", { state: "cancelled", reserved: null, cancelled }, cancelled.reason, { ...(withheld ? { withheld: true as const } : {}) }, revision);
+    this.releaseHubWorktree(task, task.owner);
     this.writePlannerNotices(next, capacity);
     this.releaseNotice(`task #${task.id}: cancellation cohort cleanup unavailable`, () => this.cohorts.leave(task.id));
     this.offered.delete(task.id);
@@ -5863,8 +5867,13 @@ export class Tasks {
     const repositoryChanged = this.repositories.scope(task.refs).key !== this.repositories.scope(draft.refs).key;
     const before = new Set(this.overlapHits(task).map((h) => h.task.id));
     this.studyDispatchCheck(task, task.owner ?? undefined);
-    this.acceptanceCapacity(task, 0, "displace"); // #1080: every gate has passed; synchronous from here to the accept write
-    const next = this.linkOnWrite(this.d.board.update(task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}), ...(metadata ? { refs: metadata } : {}) })); // #723: refs.repo may have just arrived
+    // #1115: a hub-sandboxed peer cannot run `git worktree add`, so for work that declares a worktree the hub makes it here, before any write. Anything that throws below clears it again.
+    const undoWorktree = this.hubWorktreeFor(task, task.owner ?? by);
+    let next: Task;
+    try {
+      this.acceptanceCapacity(task, 0, "displace"); // #1080: every gate has passed; synchronous from here to the accept write
+      next = this.linkOnWrite(this.d.board.update(task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}), ...(metadata ? { refs: metadata } : {}) })); // #723: refs.repo may have just arrived
+    } catch (error) { undoWorktree?.(); throw error; }
     this.captureOwnerAcceptance(next);
     this.d.notify(`task ${this.publicTitle(next)} accepted by ${by}`);
     if (repositoryChanged) this.cohorts.leave(next.id);
@@ -5926,6 +5935,51 @@ export class Tasks {
   checkoutNote = (): string | undefined => { const warning = mainCheckoutWarning(this.d.cwd, this.publicMetadataText); return warning ? `Note: ${warning}.` : undefined; };
 
   /**
+   * #1115: the hub makes the worktree of a hub-sandboxed owner for work that explicitly declares `needs_worktree`. Returns a function that clears it again, or
+   * undefined when there is nothing to clear (another peer, an undeclared need, a PII task, or a worktree an earlier accept already made). A failure refuses the
+   * accept before any board write and names the cause and the next step; nothing is left behind.
+   */
+  private hubWorktreeFor(task: Task, peer: PeerId): (() => void) | undefined {
+    const port = this.d.taskWorktree;
+    if (!port || peer === USER || peer === HUB || !port.applies(peer) || this.isPii(task) || !task.signals.includes("needs_worktree")) return undefined;
+    const made = port.create({ peer, task: task.id });
+    if (!made.ok) throw new PreEffectToolRefusal(`task #${task.id} needs its own git worktree and the hub could not make one for ${peer}: ${made.reason}; nothing was created, so no branch ref is left behind. Decline the task so the hub offers it to a peer that makes its own worktree`);
+    return made.created ? () => { try { port.remove({ peer, task: task.id }); } catch { /* the accept error that got us here is the one reported */ } } : undefined;
+  }
+
+  /** The hub-made worktree of the task's owner, for the accept answer: where to edit, and what the hub does at `hub_task_done`. */
+  worktreeNote(task: Task, peer: PeerId): string | undefined {
+    const found = this.d.taskWorktree?.describe(peer, task.id);
+    return found ? `Worktree: the hub made ${found.path} on branch ${found.branch} for this task. Edit files there only; do not run git. At hub_task_done the hub stages, commits and pushes it for you.` : undefined;
+  }
+
+  /**
+   * #1115: at `hub_task_done` the hub commits and pushes a hub-sandboxed peer's worktree and answers the refs the done carries. Undefined when the peer made no
+   * hub worktree for this task (it commits itself). A refused commit or push is a pre-effect refusal that names the cause and the next step: the board is untouched.
+   */
+  async worktreeHandoff(by: PeerId, id: unknown, refs: unknown): Promise<TaskRefs | undefined> {
+    const port = this.d.taskWorktree;
+    if (!port || by === USER || by === HUB || !port.applies(by)) return undefined;
+    const task = this.need(id, false, true);
+    this.mine(task, by, "owner", true);
+    if (this.isPii(task) || !port.describe(by, task.id)) return undefined;
+    const result = await port.commitAndPush({ peer: by, task: task.id, title: task.title });
+    if (!result.ok) throw new PreEffectToolRefusal(`hub_task_done for task #${task.id}: ${result.reason}`);
+    if (result.note) this.doneNotes.set(task.id, result.note);
+    return { ...cleanRefs(refs), commit: result.commit, branch: result.branch };
+  }
+
+  /** Decline or cancel: clear the hub-made worktree and its empty branch. Uncommitted work is kept and reported, never force-removed. */
+  private releaseHubWorktree(task: Task, peer: PeerId | null | undefined): void {
+    const port = this.d.taskWorktree;
+    if (!port || !peer || peer === USER || peer === HUB || !port.applies(peer)) return;
+    this.releaseNotice(`task #${task.id}: the hub-made worktree could not be cleared`, () => {
+      const removal = port.remove({ peer, task: task.id });
+      if (removal.kept) this.d.notify(`task #${task.id}: ${removal.kept}`);
+    });
+  }
+
+  /**
    * `capacity` (#531): the owner has no room right now, so the decline excludes it only from this move's own reroute
    * (below), never from a later reroute or planner pull. Without it, a decline is a lasting refusal (`excluded()`), and so
    * is every older row, which has no such field.
@@ -5939,6 +5993,7 @@ export class Tasks {
     const back = this.d.board.update(task.id, by, "declined", { ...(["in_progress", "changes_requested"].includes(task.state) ? { state: "proposed" as const } : {}), ...(planned ? { reserved: null } : {}) }, reason, task.owner ? { from: task.owner, ...(capacity === true ? { capacity: true as const } : {}) } : {});
     if (planned) this.offered.delete(task.id);
     this.d.notify(`task ${this.publicTitle(back)} declined${capacity === true ? " (capacity only)" : ""} by ${by}${reason && !this.isPii(back) ? `: ${reason}` : ""}`);
+    this.releaseHubWorktree(task, task.owner ?? by);
     // A capacity decline is not in excluded(), so this move's own reroute leaves the decliner out explicitly.
     try {
       return await this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true, ...(capacity === true && task.owner ? { exclude: [task.owner] } : {}), ...(planned ? { planner: true } : {}) });

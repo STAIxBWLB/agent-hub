@@ -174,6 +174,7 @@ import { autonomyPreset, autonomyEnvironment, planAutonomy, autonomyRemovalKeys,
 import { readAutonomyDefaults } from "./autonomy-defaults.ts";
 import { AUTONOMY_UNDO, autonomyOwnershipDigest, autonomyUndoKeys, writeAutonomyPreset, LEARN_CHECKLIST, NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { githubOriginRepository, githubRemoteRepository } from "./task-repository.ts";
+import { TaskWorktrees } from "./task-worktree.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -2047,6 +2048,13 @@ export async function startDaemon(opts: DaemonOptions) {
     }).finally(() => { refreshingRunner = undefined; });
     return refreshingRunner;
   };
+  // #1115: the hub makes, commits and clears the task worktree of a hub-sandboxed peer. The sandbox profile is unchanged; the record file lives in the hub's state dir, which no sandbox root contains.
+  const taskWorktree = new TaskWorktrees({
+    root: opts.cwd, stateFile: join(opts.stateDir, "task-worktrees.json"),
+    applies: peer => definitionOf(peer)?.trust.hubSandboxed === true,
+    deny: () => config.local.deny, protectInstructions: () => config.protect_instruction_files,
+    pushAllowed: urls => { const expected = shellProjectRepository?.toLowerCase(); return !!expected && urls.every(url => githubRemoteRepository(url)?.toLowerCase() === expected); },
+  });
   const peerCapabilities = () => {
     // Keep the last confirmed capability during a bounded, single-flight refresh; replace it only on a result.
     if (Date.now() - runnerStateAt >= 60_000) void refreshRunner();
@@ -2054,9 +2062,10 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!definitionOf(peer)?.trust.hubSandboxed) return [peer, { tests: true, spec: true, network: true, worktree: true }];
     // #1081: Pi and the local worker run their shell under one sandbox network setting (`local.bash_network`): false is no network at all, an egress proxy or "direct" is some.
     const network = sandboxNetwork !== false;
-    // A hub sandbox never lets its shell run `git worktree add` (#270: it writes under the git common dir), so such a peer cannot create the task worktree. The hub-made writable worktree is #1115.
-    return [peer, { tests: runnerState.available && may(peer, "check_run"), spec: specState.available && may(peer, "spec_read"), network, worktree: false,
-      worktreeReason: "git worktree add runs outside the sandbox; this peer cannot create the task worktree (#270; a hub-made worktree is #1115)",
+    // A hub sandbox never lets its shell run `git worktree add` (#270: it writes under the git common dir), so the hub makes the task worktree for such a peer (#1115): the capability is whether it can here.
+    const hubWorktree = taskWorktree.available();
+    return [peer, { tests: runnerState.available && may(peer, "check_run"), spec: specState.available && may(peer, "spec_read"), network, worktree: hubWorktree.ok,
+      ...(hubWorktree.ok ? {} : { worktreeReason: `the hub cannot make a task worktree for it: ${hubWorktree.reason}; ${hubWorktree.next} (#1115)` }),
       ...(network ? {} : { networkReason: "local.bash_network is off, so its shell has no network (ahub settings local.bash_network)" }),
       testsReason: !may(peer, "check_run") ? `capabilities.${peer}` : `runner unavailable: ${runnerState.reason ?? "unknown"}`,
       specReason: !may(peer, "spec_read") ? `capabilities.${peer}` : specState.reason ?? "gh unauthenticated" }];
@@ -2129,7 +2138,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (why || configSourceTexts(opts.cwd)["config.local.json"] === null) throw new Error(`research.runners source trust unavailable${why ? `: ${why}` : ""}`);
       return parseResearchRunners(config.research.runners);
     },
-    capabilities: peerCapabilities, repository: memoryRepo,
+    capabilities: peerCapabilities, taskWorktree, repository: memoryRepo,
     contextAdmission: () => ({
       policy: { max_used: config.context.max_assignment_used ?? 0, stale_min: config.context.stale_min },
       peers: (config.context.max_assignment_used ?? 0) > 0 ? Object.fromEntries(bus.knownPeers().filter(peer => definitionOf(peer)?.budget?.context).map(peer => [peer,
@@ -3925,7 +3934,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const silent = tasks.silentFor(t.id);
         const overlap = a.plan == null && a.refs == null && !silent ? "" : tasks.overlaps(t);
         if (silent && factsOn()) factsFor(by).sawPlans(by, tasks.overlapTasks(t)); // the plans in this answer need no fact later
-        return [line(t), specs, overlap, tasks.planGuardText(t), tasks.submoduleNotice(t)].filter(Boolean).join("\n"); // #798 D1
+        return [line(t), specs, overlap, tasks.planGuardText(t), tasks.submoduleNotice(t), tasks.worktreeNote(t, by)].filter(Boolean).join("\n"); // #798 D1
       }
       case "hub_task_cancel": {
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !["id", "reason", "superseded_by", "revision"].includes(key))
@@ -3938,7 +3947,9 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_task_decline":
         return line(await tasks.decline(by, a.id, a.reason, a.capacity === true));
       case "hub_task_done": {
-        const t = await tasks.done(by, a.id, a.summary, a.refs, a.deliverables, a.spec_ack);
+        // #1115: a hub-sandboxed peer's worktree is staged, committed and pushed by the hub first, so the done carries the real head and branch.
+        const handed = await tasks.worktreeHandoff(by, a.id, a.refs);
+        const t = await tasks.done(by, a.id, a.summary, handed ?? a.refs, a.deliverables, a.spec_ack);
         const completion = t.history.findLast(h => h.by === by && (h.event === "done" || h.event === "done (checking)"));
         if (!piiTurn && !tasks.isPii(t) && completion && !completion.withheld && typeof a.summary === "string" && completion.note?.startsWith(a.summary)) {
           citeMemory(by, a.summary, `summary:${t.id}:${t.history.indexOf(completion)}`, [newEnvelope(by, "", { refs: { task: String(t.id) } })]);

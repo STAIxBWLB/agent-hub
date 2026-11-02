@@ -1097,11 +1097,15 @@ routing, a reservation, `ahub task assign` and `hub_task_accept` all refuse it b
   A hub-sandboxed peer (Pi, the local worker) has none while `local.bash_network` is off: `no network: local.bash_network
   is off ...`.
 - `needs_worktree` is for work that must run in its own git worktree on a task branch (the repository rule). A
-  hub-sandboxed peer cannot create one, because `git worktree add` writes under the git common directory and runs
-  outside the sandbox by design (#270): `no worktree: git worktree add runs outside the sandbox; ...`. A refused
-  accept creates nothing, so no empty branch ref is left behind (the Pi accepts of #621 and #565 left two). Having
-  the hub create the worktree and add it to a sandboxed peer's writable roots would move the sandbox write
-  boundary (a commit writes under `.git/worktrees` and `.git/objects`), so it is the separate spec issue #1115.
+  hub-sandboxed peer cannot run `git worktree add`, because it writes under the git common directory and runs outside
+  the sandbox by design (#270), so since #1115 the hub makes the worktree for it at `.worktrees/<peer>-<task>` on the
+  branch `task/<task>-<peer>`, before the accept write. The peer edits files there and does not run git; at
+  `hub_task_done` the hub stages, commits and pushes the branch. The capability is true only where the hub can make
+  the worktree. Otherwise it is false and the refusal says why and what to do: `no worktree: the hub cannot make a task
+  worktree for it: the project is not a git repository; run git init there, ...`. A refused accept creates nothing,
+  so no empty branch ref is left behind (the Pi accepts of #621 and #565 left two). Declining or cancelling removes
+  the worktree and its empty branch; one with uncommitted changes is kept and reported. The sandbox profile is not
+  changed (docs/security.md, "Hub-made task worktree").
 
 A peer whose capability the hub cannot tell is never refused on this ground, and work that declares no need is
 routed as before. The flags are a person's or a planner's statement about the work, so an unflagged task can still
