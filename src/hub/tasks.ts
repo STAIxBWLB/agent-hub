@@ -7031,7 +7031,7 @@ export class Tasks {
       const record = this.evalRecords.get(task.id); this.evalRecords.delete(task.id);
       if (record) note = `${note ?? ""}\n${record}`.trim();
     } else if (verdict === "approved" && this.d.sdlc?.config().mode === "off" && this.d.sdlc?.gh && task.sdlc?.repo && task.sdlc.pr
-      && (task.sdlc.reviewedHead || task.refs.commit) && !this.isPii(task)) {
+      && (reviewedHead ?? this.ownerReviewHead(task) ?? this.findingHead(task)) && !this.isPii(task)) {
       const expected = reviewedHead ?? this.ownerReviewHead(task) ?? this.findingHead(task);
       const currentHead = await this.currentPrHeadForReview(task, valid);
       task = valid();
