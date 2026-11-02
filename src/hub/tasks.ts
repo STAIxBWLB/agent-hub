@@ -4050,8 +4050,8 @@ export class Tasks {
         const task = this.d.board.get(stall.task);
         if (!this.ordinaryQueueProposal(stall, task)) { this.d.board.clearStall(stall.task); continue; }
         if (plannedStartPending(task, this.d.now?.() ?? Date.now())) {
-          const origin = this.d.board.queuePressureStallPage(task.id - 1, 1).rows.find(row => row.task === task.id);
-          if (origin) this.d.board.recordStall({ ...origin, replanRevision: task.planningRevision ?? 0 });
+          const scheduledOrigin = this.d.board.queuePressureStallPage(task.id - 1, 1).rows.find(row => row.task === task.id);
+          if (scheduledOrigin) this.d.board.recordStall({ ...scheduledOrigin, replanRevision: task.planningRevision ?? 0 });
           pass.retained = true;
           continue;
         }
