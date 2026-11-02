@@ -323,6 +323,21 @@ test("editJsonText changes one key and keeps every other byte, including strings
   expect(() => editJsonText('{ "memory": 5 }', ["memory", "enabled"], true)).toThrow("not an object");
 });
 
+test("a repeated key is edited where the loader reads it, the last occurrence, so the change takes effect (#1065 review)", () => {
+  const top = '{"memory":{"enabled":true},"memory":{"enabled":true}}';
+  const edited = editJsonText(top, ["memory", "enabled"], false);
+  expect(edited).toBe('{"memory":{"enabled":true},"memory":{"enabled":false}}');
+  expect(JSON.parse(edited).memory.enabled).toBe(false); // what the daemon reads
+  const inner = '{"a":1,"memory":{"enabled":true,"enabled":true}}';
+  expect(JSON.parse(editJsonText(inner, ["memory", "enabled"], false)).memory.enabled).toBe(false);
+  const plan = planInitSettings(parseInitSettings(["--no-memory"]).request, { "config.json": top, "config.local.json": null, "sdlc.toml": null });
+  expect(JSON.parse(plan.next["config.json"]!).memory.enabled).toBe(false);
+  expect(plan.rows).toEqual([{ key: "memory.enabled", file: "config.json", from: true, to: false }]);
+  // A flag equal to the effective (last) value is still the no-op, whatever an earlier duplicate says.
+  const lastFalse = '{"memory":{"enabled":true},"memory":{"enabled":false}}';
+  expect(planInitSettings(parseInitSettings(["--no-memory"]).request, { "config.json": lastFalse, "config.local.json": null, "sdlc.toml": null }).rows).toEqual([]);
+});
+
 test("the table is the extension point: each row names its flag, file, key path and allowed values (#1065, for #1064 T3)", () => {
   for (const row of INIT_SETTINGS) {
     expect(row.flags.length).toBeGreaterThan(0);

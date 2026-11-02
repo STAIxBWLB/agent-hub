@@ -159,7 +159,8 @@ export function editJsonText(text: string, path: readonly string[], value: unkno
   return editObject(text, span, head!, tail, value, indentOf(text, span.start));
 }
 function editObject(text: string, span: ObjectSpan, head: string, tail: readonly string[], value: unknown, parentIndent: string): string {
-  const found = span.members.find(member => member.key === head);
+  // JSON.parse (and so the daemon's loader) keeps the LAST occurrence of a repeated key: edit that one, or the file would read as unchanged (#1065 review).
+  const found = span.members.findLast(member => member.key === head);
   if (found) {
     if (!tail.length) return text.slice(0, found.valueStart) + render(value, indentOf(text, found.keyStart), !text.slice(span.start, span.end).includes("\n")) + text.slice(found.valueEnd);
     if (text[found.valueStart] !== "{") throw new Error(`${head} in the project config is not an object, so ${[head, ...tail].join(".")} cannot be set; fix it in your editor, then run ahub init again; nothing was written`);
