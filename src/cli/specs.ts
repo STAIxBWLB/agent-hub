@@ -1,4 +1,5 @@
 import { SpecsEngine, type SpecsConfig } from "../hub/specs.ts";
+import { terminalText } from "./console-state.ts";
 
 export interface SpecsOutput { out(line: string): void; error(line: string): void }
 const output: SpecsOutput = { out: line => console.log(line), error: line => console.error(line) };
@@ -27,8 +28,8 @@ export function runSpecs(args: readonly string[], root: string, config: SpecsCon
       const report = command === "list" ? engine.list() : engine.covers(paths);
       if (json) io.out(JSON.stringify(report));
       else {
-        for (const spec of report.specs) io.out(`${spec.id} (${spec.path}): ${spec.title}`);
-        for (const item of report.items) io.error(`specs: ${item.severity} ${item.code}: ${item.message}; ${item.nextSteps}`);
+        for (const spec of report.specs) io.out(terminalText(`${spec.id} (${spec.path}): ${spec.title}`));
+        for (const item of report.items) io.error(terminalText(`specs: ${item.severity} ${item.code}: ${item.message}; ${item.nextSteps}`));
         if (report.truncated) io.error("specs: scan truncated; narrow specs.roots and run ahub specs check again");
       }
       return report.errors ? 1 : 0;
@@ -36,16 +37,16 @@ export function runSpecs(args: readonly string[], root: string, config: SpecsCon
     const report = engine.check({ ...(base === undefined ? {} : { base }), requireFresh });
     if (json) io.out(JSON.stringify(report));
     else if (report.specCount || report.freshness.length || report.items.length || report.truncated) {
-      for (const item of report.items) io.out(`specs: ${item.severity} ${item.code}: ${item.message}; ${item.nextSteps}`);
+      for (const item of report.items) io.out(terminalText(`specs: ${item.severity} ${item.code}: ${item.message}; ${item.nextSteps}`));
       for (const row of report.freshness) if (row.state === "stale") {
-        io.out(`specs: ${row.path}: stale (${row.commitsSince ?? "unknown"} source commits${row.dirty ? "; uncommitted source changes" : ""})`);
+        io.out(terminalText(`specs: ${row.path}: stale (${row.commitsSince ?? "unknown"} source commits${row.dirty ? "; uncommitted source changes" : ""})`));
       }
       if (report.truncated) io.out("specs: scan truncated; narrow specs.roots and run ahub specs check again");
       io.out(`specs: ${report.specCount} specs, ${report.errors} errors, ${report.warnings} warnings, ${report.stale} stale`);
     }
     return report.errors || requireFresh && report.stale ? 1 : 0;
   } catch (error) {
-    io.error(`specs: ${error instanceof Error ? error.message : "inspection unavailable"}; check the repository and specs configuration, then run ahub specs check again`);
+    io.error(terminalText(`specs: ${error instanceof Error ? error.message : "inspection unavailable"}; check the repository and specs configuration, then run ahub specs check again`));
     return 1;
   }
 }
