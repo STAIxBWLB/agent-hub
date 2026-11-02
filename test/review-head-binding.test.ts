@@ -75,8 +75,8 @@ for (const state of ["in_review", "changes_requested", "in_progress"] as const) 
   }
 });
 
-test("an omitted-head approval refuses a known moved PR rather than approving the recorded head", async () => {
-  const r = await rig(); r.move(B);
+for (const mode of ["off", "advise"] as const) test(`${mode}: omitted-head approval refuses a known moved PR`, async () => {
+  const r = await rig({ mode }); r.move(B);
   const before = r.board.get(r.id)!;
   const message = await refusal(() => r.tasks.review("claude", r.id, "approved", "synthetic no explicit head"));
   expect(message).toContain(A); expect(message).toContain(B); ownerNextStep(message);
@@ -91,8 +91,8 @@ test("an unchanged PR still permits legacy omitted-head approval", async () => {
 });
 
 
-test("an explicit old-head approval cannot bypass known PR head drift", async () => {
-  const r = await rig(); r.move(B);
+for (const mode of ["off", "advise"] as const) test(`${mode}: explicit old-head approval cannot bypass known PR drift`, async () => {
+  const r = await rig({ mode }); r.move(B);
   const before = r.board.get(r.id)!;
   const message = await refusal(() => r.tasks.review("claude", r.id, "approved", "synthetic old explicit head", undefined, A));
   expect(message).toContain(A); expect(message).toContain(B); ownerNextStep(message);
