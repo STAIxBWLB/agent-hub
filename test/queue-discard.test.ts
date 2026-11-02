@@ -335,7 +335,7 @@ test("the daemon advertises queue_discard_states, and the console's D command co
     if (features) s.features = features;
     s.queue = [{ id: "q1", peer: "codex", state: "queued", revision: 1 }, { id: "q2", peer: "codex", state: "failed", revision: 1 }, { id: "q3", peer: "codex", state: "failed", revision: 1 }, { id: "q4", peer: "kimi", state: "failed", revision: 1 }] as never;
     s.input = input; s.editing = true;
-    return reduceConsole(s, "enter", 1).state.confirm as { type: string; args: string[]; prompt: string };
+    return reduceConsole(s, "\r", 1).state.confirm as { type: string; args: string[]; prompt: string };
   };
   const base = "queue discard --peer codex --reason cleaning up";
   // a hub that has the feature: the default clears queued and failed rows, the command leaves --state off, and the count names both kinds
