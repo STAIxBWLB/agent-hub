@@ -10,6 +10,7 @@ import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
 import { peerStartConfig, startModeOf, terminalTemplate } from "../src/hub/start-mode.ts";
 import { terminalOpener, type TerminalOpener } from "../src/hub/terminal-open.ts";
+import type { CommandRunner } from "../src/cli/terminal-recovery.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -216,7 +217,7 @@ test("terminal providers: the machine-local template gets one quoted command lin
   // Orca (#1089): the worktree is asked of Orca by this project's root, never taken from the environment, and the documented create call carries the command as one argument.
   const calls: string[][] = [];
   const rows = (...worktrees: Record<string, unknown>[]) => ({ result: { worktrees, totalCount: worktrees.length, truncated: false } });
-  const fakeOrca = (list: unknown) => async (args: readonly string[]) => { calls.push([...args]); return args[0] === "worktree" ? list : { result: { terminal: { handle: "term-1" } } }; };
+  const fakeOrca = (list: unknown): CommandRunner => async (args) => { calls.push([...args]); return (args[0] === "worktree" ? list : { result: { terminal: { handle: "term-1" } } }) as never; };
   const mine = { id: "wt-mine", path: cwd }, other = { id: "wt-other-project", path: "/work/another-project" };
   const run = fakeOrca(rows(other, mine));
   // A. Starting this project's peers from ANOTHER project's Orca terminal: the environment names that terminal's worktree, and the terminal still opens in this project's worktree.
