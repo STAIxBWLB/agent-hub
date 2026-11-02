@@ -27,7 +27,7 @@ class SyntheticTaskPeer extends BasePeer {
 }
 
 interface Options { smoke: boolean; iterations: number }
-interface Counters { listCalls: number; listRows: number; listMs: number; writeCalls: number; writeMs: number; completeCalls: number; completeMs: number }
+interface Counters { listCalls: number; listRows: number; listMs: number; privacyCalls: number; privacyRows: number; privacyMs: number; writeCalls: number; writeMs: number; completeCalls: number; completeMs: number }
 interface Sample { ms: number; ok: boolean | null; outcome: string; state?: string; owner?: string | null; counters: Counters }
 interface Phase { name: string; samples: Sample[] }
 
@@ -48,7 +48,7 @@ function parseArgs(argv: string[]): Options {
   return { smoke, iterations: iterations ?? (smoke ? 3 : 20) };
 }
 
-const emptyCounters = (): Counters => ({ listCalls: 0, listRows: 0, listMs: 0, writeCalls: 0, writeMs: 0, completeCalls: 0, completeMs: 0 });
+const emptyCounters = (): Counters => ({ listCalls: 0, listRows: 0, listMs: 0, privacyCalls: 0, privacyRows: 0, privacyMs: 0, writeCalls: 0, writeMs: 0, completeCalls: 0, completeMs: 0 });
 const fileSize = (path: string): number => { try { return statSync(path).size; } catch { return 0; } };
 const round = (value: number): number => Math.round(value * 100) / 100;
 
@@ -61,11 +61,12 @@ function percentiles(samples: Sample[]) {
     outcomes[sample.outcome] = (outcomes[sample.outcome] ?? 0) + 1;
     if (sample.state) states[sample.state] = (states[sample.state] ?? 0) + 1;
     totals.listCalls += sample.counters.listCalls; totals.listRows += sample.counters.listRows; totals.listMs += sample.counters.listMs;
+    totals.privacyCalls += sample.counters.privacyCalls; totals.privacyRows += sample.counters.privacyRows; totals.privacyMs += sample.counters.privacyMs;
     totals.writeCalls += sample.counters.writeCalls; totals.writeMs += sample.counters.writeMs;
     totals.completeCalls += sample.counters.completeCalls; totals.completeMs += sample.counters.completeMs;
   }
   return { count: samples.length, p50Ms: at(0.5), p95Ms: at(0.95), outcomes, states,
-    board: { listCalls: totals.listCalls, listRows: totals.listRows, listMs: round(totals.listMs), taskWriteCalls: totals.writeCalls, taskWriteMs: round(totals.writeMs), deliveryCompleteCalls: totals.completeCalls, deliveryCompleteMs: round(totals.completeMs) } };
+    board: { listCalls: totals.listCalls, listRows: totals.listRows, listMs: round(totals.listMs), privacyProjectionCalls: totals.privacyCalls, privacyProjectionRows: totals.privacyRows, privacyProjectionMs: round(totals.privacyMs), taskWriteCalls: totals.writeCalls, taskWriteMs: round(totals.writeMs), deliveryCompleteCalls: totals.completeCalls, deliveryCompleteMs: round(totals.completeMs) } };
 }
 
 function writeSyntheticEventLog(file: string, targetBytes: number): { bytes: number; rows: number } {
@@ -129,11 +130,17 @@ function seedBoard(file: string, taskCount: number, reviewCount: number, history
 function measureBoardMethods(daemon: Awaited<ReturnType<typeof startDaemon>>) {
   let active: Counters | undefined;
   const originalList = Board.prototype.list, originalUpdate = Board.prototype.update, originalPropose = Board.prototype.propose;
+  const originalPrivacy = Board.prototype.peerTaskSignals;
   const originalComplete = daemon.bus.completeDelivery;
   Board.prototype.list = function (this: Board, state?: TaskState) {
     const start = performance.now();
     try { const rows = originalList.call(this, state); if (active) { active.listCalls++; active.listRows += rows.length; active.listMs += performance.now() - start; } return rows; }
     catch (error) { if (active) { active.listCalls++; active.listMs += performance.now() - start; } throw error; }
+  };
+  Board.prototype.peerTaskSignals = function (this: Board, peer: string) {
+    const start = performance.now();
+    try { const rows = originalPrivacy.call(this, peer); if (active) { active.privacyCalls++; active.privacyRows += rows.length; active.privacyMs += performance.now() - start; } return rows; }
+    catch (error) { if (active) { active.privacyCalls++; active.privacyMs += performance.now() - start; } throw error; }
   };
   Board.prototype.update = function (this: Board, ...args: Parameters<typeof originalUpdate>) {
     const start = performance.now();
@@ -152,7 +159,7 @@ function measureBoardMethods(daemon: Awaited<ReturnType<typeof startDaemon>>) {
   };
   return {
     setActive(value: Counters | undefined) { active = value; },
-    restore() { active = undefined; Board.prototype.list = originalList; Board.prototype.update = originalUpdate; Board.prototype.propose = originalPropose; daemon.bus.completeDelivery = originalComplete; },
+    restore() { active = undefined; Board.prototype.list = originalList; Board.prototype.update = originalUpdate; Board.prototype.propose = originalPropose; Board.prototype.peerTaskSignals = originalPrivacy; daemon.bus.completeDelivery = originalComplete; },
   };
 }
 

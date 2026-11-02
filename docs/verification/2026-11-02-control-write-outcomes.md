@@ -25,6 +25,12 @@ Aggregate machine receipt: [baseline JSON](2026-11-02-control-write-baseline.jso
 
 The 35-45 second production symptom is not reproduced by this database/log-size fixture: all four measured p95 values are below 0.5 seconds before behavior changes. Repeated full Board.list decoding is a measurable cost (9 scans per review and 13 per claimed proposal), but this does not establish it as the cause of the reported production stalls. The measured completed-delivery path performs no Board.list calls. External/model-screen waits and the channel MCP wrapper are not measured here; no timeout is widened and no speculative Board cache is added on this evidence.
 
+## Measured privacy-read hot path
+
+The first guarded implementation at `7615b065fcc5a6c0f9e0fd78fa4daed1531b4f5a` exposed three additional full Board.list scans per claimed proposal: 320 calls over 20 samples, versus 260 before the change, with claim p95 634.64 ms. The [intermediate receipt](2026-11-02-control-write-guarded.json) is retained rather than overwritten.
+
+The privacy predicate needs only state and signal flags for tasks owned or reviewed by that peer. A fresh Board.peerTaskSignals query now reads just those fields, without decoding unrelated titles, plans or histories. The daemon retains the same `isClosedTaskState` and `Tasks.isPii` predicates, including the current routing policy; no privacy result is cached. Corrupt required signal data fails closed, while unrelated history bytes are not a privacy input. The benchmark separately counts these fresh projections.
+
 ## Implementation and verification
 
 Replay applies to `hub_task_propose`, `hub_review` and `hub_delivery_done`. The control message carries `requestId` separately from transport `rid`; duplicate calls keep their own transport correlation while joining one pending write or returning its first retained result. A changed actor/role/launch/execution scope or changed arguments cannot reuse that ID. Current authority/privacy gates still run before results leave the daemon. Invocation retains its existing admission/cancellation protocol.

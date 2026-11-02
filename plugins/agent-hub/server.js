@@ -23255,6 +23255,39 @@ init_project();
 import { readFileSync as readFileSync15 } from "fs";
 import { join as join29, resolve as resolve17 } from "path";
 
+// src/hub/tool-request.ts
+init_capabilities();
+import { createHash as createHash8, randomUUID as randomUUID12 } from "crypto";
+var TOOL_WRITE_FEATURE = "tool_write_idempotency";
+var RETENTION_MS = 15 * 60 * 1000;
+var MAX_REPLY_BYTES = 64 * 1024;
+var MAX_PAYLOAD_BYTES = 1024 * 1024;
+function toolWriteOperation(msg) {
+  if (msg.t === "delivery_complete")
+    return "hub_delivery_done";
+  if (msg.t === "task" && (msg.op === "hub_task_propose" || msg.op === "hub_review"))
+    return msg.op;
+  return;
+}
+function newToolRequestId(instanceId, now = Date.now()) {
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(instanceId) || !Number.isSafeInteger(now) || now < 1)
+    throw new Error("tool request identity is unavailable");
+  return `v1/${instanceId}/${now}/${randomUUID12()}`;
+}
+function toolWriteUnknownReply(msg, requestId, cause) {
+  const args = msg.args && typeof msg.args === "object" && !Array.isArray(msg.args) ? msg.args : {};
+  const id = Number.isSafeInteger(args.id) && args.id > 0 ? args.id : undefined;
+  const delivery = typeof msg.deliveryId === "string" && /^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.test(msg.deliveryId) ? msg.deliveryId : "<delivery-id>";
+  const read = toolWriteOperation(msg) === "hub_delivery_done" ? `ahub queue show ${delivery} (person or conductor)` : toolWriteOperation(msg) === "hub_review" && id !== undefined ? `hub_task_show {id: ${id}}` : "hub_task_list (then hub_task_show for the matching task)";
+  const token = typeof requestId === "string" && requestId.length <= 256 && !/[\p{Cc}\p{Cf}]/u.test(requestId) ? requestId : undefined;
+  return {
+    ok: false,
+    outcome: "unknown",
+    ...token ? { requestId: token } : {},
+    error: `Write outcome unknown${token ? ` (request ${token})` : ""}${cause ? `: ${cause}` : ". The hub may have applied the write"}. Inspect ${read} before another write; do not resubmit with a new request ID.`
+  };
+}
+
 // src/hub/protocol-window.ts
 function protocolWindow(v, vMin) {
   if (typeof v !== "number" || !Number.isSafeInteger(v) || v <= 0)
@@ -23443,6 +23476,20 @@ class ControlClient {
     if (this.ws.readyState !== WebSocket.OPEN || this.closing && msg.t !== "request_cancel")
       return Promise.resolve({ ok: false, error: "hub connection is not open" });
     const invocation = msg.t === "task" && msg.op === "hub_invoke";
+    const write = toolWriteOperation(msg) !== undefined;
+    if (write && msg.requestId !== undefined && !this.features.includes(TOOL_WRITE_FEATURE)) {
+      return Promise.resolve(toolWriteUnknownReply(msg, typeof msg.requestId === "string" ? msg.requestId : undefined, "this daemon does not advertise replay protection; nothing was resubmitted"));
+    }
+    let wire = msg;
+    if (write && this.features.includes(TOOL_WRITE_FEATURE) && msg.requestId === undefined) {
+      try {
+        wire = { ...msg, requestId: newToolRequestId(this.instanceId ?? "") };
+      } catch {
+        return Promise.resolve({ ok: false, error: "write request identity is unavailable; inspect hub_status before retrying" });
+      }
+    }
+    const requestId = typeof wire.requestId === "string" ? wire.requestId : undefined;
+    const uncertain = (cause) => toolWriteUnknownReply(wire, requestId, this.features.includes(TOOL_WRITE_FEATURE) ? cause : `${cause}; this daemon does not advertise replay protection`);
     timeoutMs = controlRequestTimeout(msg, timeoutMs);
     if (signal?.aborted)
       return Promise.resolve({ ok: false, error: "hub request cancelled before sending" });
@@ -23454,7 +23501,7 @@ class ControlClient {
         this.invocations.delete(rid);
         clearTimeout(timer);
         signal?.removeEventListener("abort", aborted);
-        resolve(reply);
+        resolve(write && reply?.error === "hub connection closed" ? uncertain(reply.error) : reply);
       };
       const abandon = (error) => {
         if (!this.pending.has(rid))
@@ -23464,7 +23511,7 @@ class ControlClient {
             this.ws.send(JSON.stringify({ t: "request_cancel", request: rid }));
           } catch {}
         }
-        done({ ok: false, error: invocation ? `${error}; invocation admission unconfirmed, inspect before retrying` : error });
+        done(write ? uncertain(error) : { ok: false, error: invocation ? `${error}; invocation admission unconfirmed, inspect before retrying` : error });
       };
       const aborted = () => abandon("hub request cancelled");
       this.pending.set(rid, done);
@@ -23477,7 +23524,7 @@ class ControlClient {
       }
       timer = timeoutMs ? setTimeout(() => abandon(`no answer from the hub within ${Math.round(timeoutMs / 1000)} s`), timeoutMs) : undefined;
       try {
-        this.ws.send(JSON.stringify({ ...msg, rid }));
+        this.ws.send(JSON.stringify({ ...wire, rid }));
       } catch {
         abandon("hub request could not be sent");
       }
@@ -32316,6 +32363,7 @@ class StdioServerTransport {
 
 // src/adapters/claude-channel.ts
 import { readFileSync as readFileSync17 } from "fs";
+import { createHash as createHash9 } from "crypto";
 import { join as join33 } from "path";
 
 // src/hub/channel-project.ts
@@ -32690,6 +32738,59 @@ var server = new Server({ name: "agent-hub", version: VERSION }, toolsMode ? { c
 var inbox = [];
 var hub;
 var detached;
+var MCP_WRITE_ID_TTL_MS = 15 * 60000;
+var MCP_WRITE_ID_CAP = 512;
+var MCP_WRITE_ID_TOMBSTONE_CAP = 65536;
+var mcpWriteIds = new Map;
+var mcpWriteIdTombstones = new Set;
+function mcpToolWriteId(name, mcpId, client) {
+  const operation = toolWriteOperation(name === "hub_delivery_done" ? { t: "delivery_complete" } : { t: "task", op: name });
+  if (!operation)
+    return {};
+  const instanceId = client.instanceId;
+  const now = Date.now();
+  for (const [key, entry] of mcpWriteIds)
+    if (!entry.expired && now - entry.at >= MCP_WRITE_ID_TTL_MS) {
+      if (mcpWriteIdTombstones.size < MCP_WRITE_ID_TOMBSTONE_CAP) {
+        mcpWriteIdTombstones.add(key);
+        mcpWriteIds.delete(key);
+      } else
+        entry.expired = true;
+    }
+  const validMcpId = mcpId === undefined || typeof mcpId === "string" || typeof mcpId === "number" && Number.isSafeInteger(mcpId);
+  if (!validMcpId)
+    return client.features.includes(TOOL_WRITE_FEATURE) ? { refused: "Write request identity is unavailable; inspect the task or delivery before another write." } : {};
+  const key = mcpId === undefined ? undefined : createHash9("sha256").update(JSON.stringify([typeof mcpId, String(mcpId)])).digest("hex");
+  if (key) {
+    const existing = mcpWriteIds.get(key);
+    if (existing)
+      return existing.expired ? { refused: "This MCP request ID expired; inspect the task or delivery before another write." } : { requestId: existing.requestId };
+    if (mcpWriteIdTombstones.has(key))
+      return { refused: "This MCP request ID expired; inspect the task or delivery before another write." };
+  }
+  if (!client.features.includes(TOOL_WRITE_FEATURE))
+    return {};
+  if (!instanceId)
+    return { refused: "Write request identity is unavailable; inspect the task or delivery before another write." };
+  let requestId;
+  if (mcpId === undefined) {
+    try {
+      requestId = newToolRequestId(instanceId, now);
+    } catch {
+      return { refused: "Write request identity is unavailable; inspect the task or delivery before another write." };
+    }
+    return { requestId };
+  }
+  if (mcpWriteIds.size >= MCP_WRITE_ID_CAP || mcpWriteIdTombstones.size >= MCP_WRITE_ID_TOMBSTONE_CAP)
+    return { refused: "Write request identity window is full; inspect the task or delivery before another write." };
+  try {
+    requestId = newToolRequestId(instanceId, now);
+  } catch {
+    return { refused: "Write request identity is unavailable; inspect the task or delivery before another write." };
+  }
+  mcpWriteIds.set(key, { requestId, at: now });
+  return { requestId };
+}
 var offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
 var pendingQueued;
 var QUEUED_COUNTED = Symbol("queuedCounted");
@@ -32920,7 +33021,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   listedTools = toolKey(list);
   return list;
 });
-async function callTool(req, signal) {
+async function callTool(req, signal, mcpRequestId) {
   const { name, arguments: args } = req.params;
   if (unidentified)
     return { ...text5(UNIDENTIFIED), isError: true };
@@ -32962,7 +33063,12 @@ async function callTool(req, signal) {
     if (!hub)
       return text5(offline());
     const a = args ?? {};
-    const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation });
+    const identity = mcpToolWriteId(name, mcpRequestId, hub);
+    if (identity.refused)
+      return text5(identity.refused);
+    const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation, ...identity.requestId ? { requestId: identity.requestId } : {} });
+    if (result.outcome === "unknown")
+      return text5(typeof result.error === "string" ? result.error : "Write outcome unknown. Inspect the delivery before another write; do not resubmit with a new request ID.");
     return text5(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && (!toolsMode || permissionTool)) {
@@ -33021,12 +33127,17 @@ ${polling}` : body);
       return text5(offline());
     if (name === "hub_invoke" && !hub.features.includes("invocation"))
       return { ...text5("error: this hub does not support invocations; restart it with the current agent-hub release (ahub restart)"), isError: true };
-    const res = await hub.request({ t: "task", op: name, args: args ?? {} }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" ? signal : undefined);
+    const identity = mcpToolWriteId(name, mcpRequestId, hub);
+    if (identity.refused)
+      return text5(identity.refused);
+    const res = await hub.request({ t: "task", op: name, args: args ?? {}, ...identity.requestId ? { requestId: identity.requestId } : {} }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" ? signal : undefined);
+    if (res.outcome === "unknown")
+      return text5(typeof res.error === "string" ? res.error : "Write outcome unknown. Inspect the task before another write; do not resubmit with a new request ID.");
     return { ...text5(res.ok ? res.text : `error: ${res.error}`), ...res.ok ? {} : { isError: true } };
   }
   return text5(`unknown tool ${name}`);
 }
-server.setRequestHandler(CallToolRequestSchema, async (req, extra) => withPendingHint(await callTool(req, extra.signal), req.params.name !== "hub_inbox" && req.params.name !== "hub_source_read"));
+server.setRequestHandler(CallToolRequestSchema, async (req, extra) => withPendingHint(await callTool(req, extra.signal, extra.requestId), req.params.name !== "hub_inbox" && req.params.name !== "hub_source_read"));
 await server.connect(new StdioServerTransport);
 process.stdin.on("end", () => process.exit(0));
 process.stdin.on("close", () => process.exit(0));

@@ -2559,7 +2559,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return typeof session === "string" ? session : undefined;
   };
   const activityRings: Record<string, ActivityRing> = Object.fromEntries(SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.capabilities?.watch).map(peer => [peer, new ActivityRing()]));
-  const contextPii = (peer: PeerId) => !!turns.get(peer)?.private || board.list().some(t => !isClosedTaskState(t.state) && (t.owner === peer || t.reviewer === peer) && tasks.isPii(t));
+  const contextPii = (peer: PeerId) => !!turns.get(peer)?.private || board.peerTaskSignals(peer).some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
   // #878: what each peer is doing. Daemon memory only: never persisted (status.json leaves it out), logged, captured or relayed.
   const doings = new Map<PeerId, DoingTracker>();
   const observeDoing = (peer: PeerId, kind: DoingKind, text?: unknown, learnedPrivate = false) => {
@@ -3319,6 +3319,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!task || actor !== USER && tasks.isPii(task) && !safePiiProposalReceipt || operation === "hub_review" && actor !== USER && task.reviewer !== actor
           || actor !== USER && result?.ok === true && typeof result.text === "string" && !tasks.publicMetadataText(result.text) && !safePiiProposalReceipt) return false;
       }
+      if (actor !== USER && typeof result?.error === "string" && result.outcome !== "unknown" && !tasks.publicMetadataText(result.error)) return false;
       return true;
     } catch { return false; }
   };
