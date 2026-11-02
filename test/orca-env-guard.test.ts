@@ -68,7 +68,7 @@ test("the test preload clears ambient Orca and config-home selectors from the pr
   const scrubbed = await run(true);
   expect(scrubbed.own).toEqual({ orcaNames: [], claude: null, codex: null });
   expect(scrubbed.descendant).toEqual(scrubbed.own);
-  canaries.forEach((path, index) => expect(readFileSync(path)).toEqual(before[index]));
+  canaries.forEach((path, index) => expect(readFileSync(path)).toEqual(before[index]!));
 }, 20_000);
 
 /** One bounded child: killed at `ms`, never a blocking spawn, so a test timeout cannot fire inside it (docs/agent-notes/tests.md). */
