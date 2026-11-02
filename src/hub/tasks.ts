@@ -5683,7 +5683,7 @@ export class Tasks {
     const metadata = acceptRefs(refs);
     const task = this.need(id, false, true);
     this.mine(task, by, "owner", true);
-    this.acceptanceCapacity(task);
+    this.acceptanceCapacity(task, 0, "check"); // #1080: an urgent task may still take unaccepted offers; `accept` does that, after its gates
     if (metadata && !this.isPii(task) && (!this.nameable(metadata.repo!) || looksSecret(metadata.repo!) || this.aboutPrivatePath("", metadata.repo!, task))) throw new PreEffectToolRefusal("this repository metadata is private or sensitive and is not kept");
     const draft = metadata ? { ...task, refs: { ...task.refs, ...metadata } } : task;
     this.warmRepository(draft);
@@ -5712,7 +5712,52 @@ export class Tasks {
     if (gap) this.releaseNotice(`task ${this.publicTitle(current)}: ${gap}`);
   }
 
-  private acceptanceCapacity(task: Pick<Task, "id" | "owner" | "reserved" | "state"> & Partial<Pick<Task, "history">>, excludePending = 0): void {
+  /**
+   * What counts toward `owner`'s WIP, split for a refusal and for #1080: `offered` is work handed to the owner that it has not accepted
+   * (state proposed), `reserved` is ownerless planner-pulled work held for it, and `accepted` is everything the owner is actually carrying
+   * (in progress, changes requested, in review).
+   */
+  private wipSplit(owner: PeerId, except: number): { accepted: Task[]; offered: Task[]; reserved: Task[] } {
+    const open = this.d.board.list().filter(other => other.id !== except && !["backlog", "approved", "cancelled"].includes(other.state)
+      && (other.owner === owner || !other.owner && other.reserved === owner && this.plannerPullRecord(other)?.pull));
+    return {
+      accepted: open.filter(other => other.owner === owner && other.state !== "proposed"),
+      offered: open.filter(other => other.owner === owner && other.state === "proposed"),
+      reserved: open.filter(other => !other.owner),
+    };
+  }
+  private static isUrgent(task: Pick<Task, "priority" | "signals">): boolean {
+    return (task.priority ?? (task.signals?.includes("urgent") ? 0 : 2)) === 0;
+  }
+  /** #1080: an offer an urgent accept may take back. Never accepted or started work, never another urgent task, never person-pinned work. */
+  private displaceable(offer: Task): boolean {
+    return offer.state === "proposed" && !!offer.owner && !offer.pinned && !Tasks.isUrgent(offer) && !taskHasStarted(offer);
+  }
+  /**
+   * #1080: the owner is at its limit only because of offers it never accepted, so an urgent task takes the slot. The newest offers go back to
+   * routing (ownerless, in To Do) and the planners are told. Called only from `accept`, immediately before its write.
+   */
+  private displaceOffers(urgent: Task, owner: PeerId, offers: readonly Task[]): void {
+    for (const offer of offers) {
+      // A planner-pulled offer also holds a counted reservation (`plannerWip` counts an ownerless proposed task reserved for the owner with pull history), so clearing the owner alone frees no slot. `decline` clears it the same way.
+      const pulled = this.plannerPullRecord(offer)?.pull === true;
+      const next = this.d.board.update(offer.id, HUB, "unassigned", { owner: null, reviewer: null, ...(pulled ? { reserved: null } : {}) }, `displaced by urgent task #${urgent.id}: ${owner} was at its WIP limit with this offer unaccepted`, {}, offer.history.length);
+      this.offered.delete(offer.id);
+      this.releaseNotice(`task #${offer.id}: displacement cohort cleanup unavailable`, () => this.cohorts.leave(offer.id));
+      this.withdrawRoleRequest(offer, next, "owner");
+      this.withdrawRoleRequest(offer, next, "reviewer");
+      this.releaseNotice(`task #${offer.id}: displacement notice unavailable`, () => {
+        const body = `Task #${offer.id} was taken back from ${owner}: urgent task #${urgent.id} (priority 0 or marked urgent) needed ${owner}'s WIP slot and #${offer.id} was only offered, never accepted. It is ownerless in To Do and routes again; plan it again if it should wait for ${owner}.`;
+        this.d.notify(body);
+        for (const planner of this.taskPlanner(offer)) this.d.bus.publish(newEnvelope(HUB, sanitize(body), { to: [planner], kind: "task", refs: { task: String(offer.id) }, ...(this.isPii(offer) ? { private: true } : {}) }));
+      });
+    }
+  }
+  /**
+   * `urgent`: "refuse" (default) never displaces; "check" only tells whether an urgent accept could (a pre-check before a later write); "displace"
+   * performs it. Only `accept` displaces.
+   */
+  private acceptanceCapacity(task: Pick<Task, "id" | "owner" | "reserved" | "state"> & Partial<Pick<Task, "history" | "priority" | "signals">>, excludePending = 0, urgent: "refuse" | "check" | "displace" = "refuse"): void {
     const owner = task.owner ?? task.reserved;
     if (!owner) return;
     if ((task.state === "in_progress" || task.state === "changes_requested") && task.history) {
@@ -5726,10 +5771,30 @@ export class Tasks {
       if (task.history.slice(boundary).some(entry => entry.event === "accepted" && (entry.by === owner || entry.by === USER))) return;
     }
     const limit = this.wipLimit(owner), pending = Math.max(0, (this.pendingClaims.get(owner) ?? 0) - excludePending);
-    if (this.wip(owner, task.id) + pending < limit) return;
-    const open = this.d.board.list().filter(other => other.id !== task.id && !["backlog", "approved", "cancelled"].includes(other.state)
-      && (other.owner === owner || !other.owner && other.reserved === owner && this.plannerPullRecord(other)?.pull)).map(other => `#${other.id}`);
-    throw new PreEffectToolRefusal(`planner WIP capacity for ${owner}: limit ${limit}; open tasks ${open.join(", ") || "none"}${pending ? `; pending claims ${pending}` : ""}`);
+    const used = this.wip(owner, task.id) + pending;
+    if (used < limit) return;
+    const split = this.wipSplit(owner, task.id), ids = (rows: readonly Task[]) => rows.map(row => `#${row.id}`).join(", ") || "none";
+    // #1080: an urgent task that is the owner's own offer may take back only as many never-accepted offers as it needs, newest first. Anything else refuses.
+    if (urgent !== "refuse" && task.state === "proposed" && task.owner === owner && Tasks.isUrgent(task as Pick<Task, "priority" | "signals">)) {
+      const need = used + 1 - limit;
+      const takeable = split.offered.filter(offer => this.displaceable(offer))
+        .sort((a, b) => handedAt(b) - handedAt(a) || b.id - a.id);
+      if (need > 0 && takeable.length >= need) {
+        if (urgent === "displace") {
+          this.displaceOffers(task as Task, owner, takeable.slice(0, need));
+          // Defense in depth (#1080): no displacement path may leave the owner over its limit. Clearing the reservation above makes this unreachable today; if it ever fires, the offers are already back in To Do and only the accept is refused.
+          const after = this.wip(owner, task.id) + pending;
+          if (after >= limit) throw new Error(`planner WIP capacity for ${owner}: limit ${limit}; the offers taken back for urgent task #${task.id} are back in To Do but did not free a slot (WIP is now ${after}), so it stays offered; ask the planner to check ${owner}'s reservations, then accept it again`);
+        }
+        return;
+      }
+    }
+    const open = [...split.accepted, ...split.offered, ...split.reserved].sort((a, b) => a.id - b.id);
+    const parts = [`accepted ${ids(split.accepted)}`, `offered, not yet accepted ${ids(split.offered)}`, ...(split.reserved.length ? [`reserved, not yet offered ${ids(split.reserved)}`] : [])];
+    const next = split.accepted.length >= limit
+      ? `finish or hand back an accepted task first`
+      : `decline an offered task you will not take, or finish an accepted one; an urgent task may take back an offer you have not accepted`;
+    throw new PreEffectToolRefusal(`planner WIP capacity for ${owner}: limit ${limit}; open tasks ${ids(open)} (${parts.join("; ")})${pending ? `; pending claims ${pending}` : ""}; ${next}`);
   }
 
   /**
@@ -5744,7 +5809,7 @@ export class Tasks {
     this.ready(task, true);
     if (task.state !== "proposed" && task.state !== "changes_requested" && task.state !== "in_progress") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}: cannot move to in_progress`);
     this.studyDispatchCheck(task, task.owner ?? undefined);
-    this.acceptanceCapacity(task);
+    this.acceptanceCapacity(task, 0, "check");
     // S1 spec acceptance and S9 plan review are independent prerequisites; retain S1's missing-spec refusal first.
     if (this.specGated(task) && this.d.sdlc?.config().mode === "enforce" && specState(task.sdlc, undefined) === "missing") throw new PreEffectToolRefusal(this.specText(task, "missing", "blocked"));
     if ((this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode === "enforce" && this.isBuildTask(task)) {
@@ -5772,6 +5837,7 @@ export class Tasks {
     const repositoryChanged = this.repositories.scope(task.refs).key !== this.repositories.scope(draft.refs).key;
     const before = new Set(this.overlapHits(task).map((h) => h.task.id));
     this.studyDispatchCheck(task, task.owner ?? undefined);
+    this.acceptanceCapacity(task, 0, "displace"); // #1080: every gate has passed; synchronous from here to the accept write
     const next = this.linkOnWrite(this.d.board.update(task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}), ...(metadata ? { refs: metadata } : {}) })); // #723: refs.repo may have just arrived
     this.captureOwnerAcceptance(next);
     this.d.notify(`task ${this.publicTitle(next)} accepted by ${by}`);

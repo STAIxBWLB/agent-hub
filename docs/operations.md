@@ -4891,6 +4891,14 @@ admission reads, and the split changes no admission decision. An older hub shows
 acceptance and self-claim in every lifecycle mode, so 0 refuses new acceptances; a
 current owner's redo of sent-back work keeps its slot (#481 S9).
 
+A refusal at the limit separates what the owner carries from what it was only offered (#1080):
+`planner WIP capacity for codex: limit 2; open tasks #621, #624 (accepted #621; offered, not yet accepted #624); <next step>`.
+An `urgent` task (priority 0, or the `urgent` signal) that is the owner's own offer may take back the
+newest offers the owner has not accepted, only as many as it needs, when that is all that keeps it at the
+limit. The hub returns each one ownerless to To Do (history `unassigned`, by the hub, naming the urgent
+task; a planner-pulled offer also loses the reservation that counted toward the owner's WIP), withdraws its offer, and tells the planners and the console. After the displacement the hub checks that the owner is under its limit and refuses the accept with the cause and a next step if not. It never takes back accepted work,
+another urgent offer, a person-pinned offer or an offer with work evidence, and a refusal changes nothing.
+
 Pending unowned, unstarted pull can be undone at its latest owned revision via
 `hub_backlog_undo` or the existing planning undo control, restoring its earlier
 reservation. An ordinary return to Backlog also restores the pre-pull reservation unless a later explicit reservation edit superseded it. Normal release routing offers work only while that reserved peer
