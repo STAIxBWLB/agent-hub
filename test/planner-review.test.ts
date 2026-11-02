@@ -198,7 +198,7 @@ test("grooming withholds private task evidence and does not fetch its issue (#48
 test("planner digest marks a future planned start as scheduled until its exact boundary", async () => {
   const plannedStart = Date.parse("2026-11-05T10:12:00Z"), clock = { now: plannedStart - 1 };
   const r = reviewRig(async () => metadata(), "advise", () => clock.now);
-  r.board.plan(r.task.id, USER, { plannedStart }, r.task.planningRevision ?? 0);
+  r.board.plan(r.task.id, "user", { plannedStart }, r.task.planningRevision ?? 0);
 
   expect((await r.tasks.groomingDigest("claude")).items).toContainEqual({ kind: "scheduled", task: r.task.id });
   clock.now = plannedStart;
