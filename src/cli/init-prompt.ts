@@ -132,6 +132,12 @@ export async function runInitPrompt(ports: InitPromptPorts, context: InitQuestio
   return { ok: true, answers };
 }
 
+/**
+ * Whether the shadow-history question is asked: shadow history exists for a folder with no Git work tree, so an absent repository is eligible (that is the case it is for), a shadow repository that is
+ * already there is eligible too (`--shadow` accepts it), and a real Git work tree is not (`ahub init --shadow` refuses it).
+ */
+export const shadowOffered = (repo: { shadow?: boolean } | undefined): boolean => repo === undefined || repo.shadow === true;
+
 /** The rows of the plan in the words `ahub init --dry-run` prints, so the prompt and the preview cannot disagree. */
 export const settingLines = (rows: readonly InitSettingRow[]): string[] =>
   rows.map(row => `  ${row.key}: ${row.from === undefined ? "(not set)" : JSON.stringify(row.from)} -> ${JSON.stringify(row.to)} (${row.file})`);

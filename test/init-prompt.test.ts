@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
 import { INIT_SETTINGS } from "../src/cli/init-settings.ts";
-import { initQuestions, promptGate, questionLine, runInitPrompt, type InitAnswers, type InitPromptPorts } from "../src/cli/init-prompt.ts";
+import { initQuestions, promptGate, questionLine, runInitPrompt, shadowOffered, type InitAnswers, type InitPromptPorts } from "../src/cli/init-prompt.ts";
 import { HELP } from "../src/cli/help.ts";
 
 // #1065 T2 (AC4, AC5): the guided prompt of `ahub init`, scripted. A scripted terminal answers each question and the files it leads to equal the files the equivalent flags write; Ctrl-C and N write nothing;
@@ -20,6 +20,7 @@ function fixture() {
   for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !/^(AGENTHUB_|CLAUDE|CODEX_|ORCA_|KIMI|QWEN|JCODE|PI_|OMNIROUTE|CI$)/.test(key)) env[key] = value;
   Object.assign(env, { HOME: user, AGENTHUB_HOME: home, CLAUDE_CONFIG_DIR: join(user, "claude"), AMEM_HOME: join(root, "memory"), GIT_CONFIG_GLOBAL: "/dev/null" });
   const repo = (name: string) => { const cwd = join(root, name); mkdirSync(cwd); expect(hubGitSync(["init", "-q"], { cwd, env, encoding: "utf8", timeout: 3000 }).status).toBe(0); return cwd; };
+  const folder = (name: string) => { const cwd = join(root, name); mkdirSync(cwd); return cwd; };   // a folder with no Git work tree
   const run = (cwd: string, args: string[], extra: Record<string, string> = {}) => Bun.spawnSync([process.execPath, MAIN, ...args], { cwd, env: { ...env, ...extra }, stdin: "ignore", timeout: 20_000 });
   /** A real `ahub init` under a pty: each question line is answered from `answers` (an entry per question, in order); a bounded child, killed at `ms`. */
   const session = async (cwd: string, args: string[], answers: readonly string[], ms = 25_000, extraEnv: Record<string, string> = {}) => {
@@ -40,7 +41,7 @@ function fixture() {
     } finally { clearTimeout(timer); }
     return { code: proc.exitCode, text: clean() };
   };
-  return { root, home, env, repo, run, session };
+  return { root, home, env, repo, folder, run, session };
 }
 const tree = (cwd: string): Record<string, string> => {
   const dir = join(cwd, ".agenthub"), result: Record<string, string> = {};
@@ -232,3 +233,46 @@ test("the init help entry lists --yes and describes the prompt and who is asked 
   expect(row.description).toContain("N, Ctrl-C and Ctrl-D write nothing");
   expect(row.description).toContain("A peer, a live test, a pipe and --dry-run are never asked");
 });
+
+test("shadow history is offered in a folder with no Git work tree, kept for an existing shadow repository, and withheld from a real Git work tree (#1065 AC4 review)", async () => {
+  expect(shadowOffered(undefined)).toBe(true);              // no repository: the case shadow history is for
+  expect(shadowOffered({ shadow: true })).toBe(true);       // an existing shadow repository, which `--shadow` accepts
+  expect(shadowOffered({ shadow: false })).toBe(false);     // a real Git work tree, which `ahub init --shadow` refuses
+  expect(shadowOffered({})).toBe(false);
+  const p = fixture();
+  // the real CLI: the question appears in a plain folder and not in a Git repository
+  const plain = p.folder("plain"), offered = await p.session(plain, ["init"], [...blank(ALL + 1), "n"]);
+  expect(offered.text).toContain("Shadow history (a folder with no Git work tree) (on|off) [off]: ");
+  const git = p.repo("git"), withheld = await p.session(git, ["init"], [...blank(ALL), "n"]);
+  expect(withheld.text).not.toContain("Shadow history");
+  // answering on creates the same files `--shadow` does
+  const guided = p.folder("guided"), flagged = p.folder("flagged");
+  const questions = initQuestions({ shadowAvailable: true }).map(q => q.id);
+  const done = await p.session(guided, ["init"], [...questions.map(id => id === "shadow" ? "on" : ""), "y"]);
+  expect(done.code, done.text).toBe(0);
+  expect(p.run(flagged, ["init", "--shadow"]).exitCode).toBe(0);
+  expect(existsSync(join(guided, ".agenthub/shadow.git"))).toBe(true);
+  expect(tree(guided)).toEqual(tree(flagged));
+}, 60_000);
+
+test("the plan the person confirms names the machine autonomy inheritance the write applies, and answering off removes it (#1065 AC4 review)", async () => {
+  const p = fixture();
+  // trust the machine default: `ahub autonomy on` in a first project writes defaults.json, which a new project then inherits
+  const seed = p.repo("seed");
+  expect(p.run(seed, ["init"]).exitCode).toBe(0);
+  const on = p.run(seed, ["autonomy", "on", "--yes"]);
+  expect(on.exitCode, `${on.stdout}${on.stderr}`).toBe(0);
+  const inherits = p.repo("inherits"), kept = await p.session(inherits, ["init"], [...blank(ALL), "y"]);
+  expect(kept.code, kept.text).toBe(0);
+  const plan = kept.text.slice(kept.text.indexOf("This will be written:"), kept.text.indexOf("Write this?"));
+  expect(plan).toContain("config.local.json: inherit the trusted machine autonomy preset");   // named in the plan before the question
+  expect(kept.text).toContain("Inherited the trusted machine autonomy default");                // and then applied, as the plan said
+  expect(JSON.parse(readFileSync(join(inherits, ".agenthub/config.local.json"), "utf8")).permission_modes.codex).toBe("never-ask");
+  // answering off for the autonomy question: the plan does not name it and nothing is inherited
+  const questions = initQuestions({ shadowAvailable: false }).map(q => q.id);
+  const skipped = p.repo("skipped"), off = await p.session(skipped, ["init"], [...questions.map(id => id === "autonomy" ? "off" : ""), "y"]);
+  expect(off.code, off.text).toBe(0);
+  expect(off.text.slice(off.text.indexOf("This will be written:"), off.text.indexOf("Write this?"))).not.toContain("inherit the trusted machine autonomy preset");
+  expect(off.text).not.toContain("Inherited the trusted machine autonomy default");
+  expect(existsSync(join(skipped, ".agenthub/config.local.json"))).toBe(false);
+}, 90_000);

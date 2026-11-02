@@ -982,13 +982,15 @@ A person at a terminal who runs `ahub init` on a new project with no flag that
 sets anything and no `--yes` is asked each setting in turn (#1065 T2): profile,
 the agents `ahub up` starts, design specs and their review mode, SDLC mode,
 coordination, shared memory, snapshots, the Pi peer, the machine autonomy
-preset, the release guard, and shadow history in a folder with no Git work
-tree. Each question is one line, the label, the choices and the default in
+preset, the release guard, and shadow history (asked in a folder with no Git
+work tree, and kept for an existing shadow repository, never in a Git
+repository). Each question is one line, the label, the choices and the default in
 brackets. Enter keeps the default and sets nothing; an answer is an explicit
 choice, exactly as the equivalent flag is, so the files written are the files
 the same flags write. A wrong answer asks again and is never guessed, and three
 wrong answers refuse the prompt. The plan follows, in the words `--dry-run`
-prints, and `Write this? [y/N]` decides: N, an empty answer, Ctrl-C and Ctrl-D
+prints (including the machine autonomy preset a new project inherits, unless
+the answer was `off`), and `Write this? [y/N]` decides: N, an empty answer, Ctrl-C and Ctrl-D
 write nothing. Only the console role at a terminal (stdin and stdout) is asked:
 an agent identity is refused before `init` runs, a `--live-test` delegation, a
 pipe and `--dry-run` are never asked, and `--yes` takes the defaults. A flag of

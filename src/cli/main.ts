@@ -72,7 +72,7 @@ import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import { OmniRoute } from "../omniroute/client.ts";
 import { init, initSettingRows, planInit } from "./init.ts";
 import { INIT_USAGE, parseInitSettings } from "./init-settings.ts";
-import { promptGate, runInitPrompt, settingLines, type InitAnswers } from "./init-prompt.ts";
+import { promptGate, runInitPrompt, settingLines, shadowOffered, type InitAnswers } from "./init-prompt.ts";
 import { loadPacks } from "../hub/packs.ts";
 import { launcherPreview } from "./preview.ts";
 import { instanceLaunchArguments, requirePeerInstances, requireActiveInstance, cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, buildKimiTuiLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
@@ -1093,12 +1093,14 @@ const commands: Record<string, () => Promise<void> | void> = {
       const preview = (answers: InitAnswers): string[] => {
         const rows = initSettingRows(cwd, answers.profile, answers.shadow, answers.releaseGuard, answers.request);
         const plan = planInit(cwd, answers.profile, answers.shadow, answers.releaseGuard, answers.request);
+        // The same autonomy-inheritance row `--dry-run` shows: a new project inherits the trusted machine preset after the writes unless the person answered off, so the plan they approve must name it.
+        if (answers.request.autonomy !== "off" && machine.enabled) plan.push({ action: existsSync(join(cwd, ".agenthub/config.local.json")) ? "modify" : "create", path: join(cwd, ".agenthub/config.local.json"), reason: "inherit the trusted machine autonomy preset; consent is checked at daemon startup" });
         return [...plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`), ...settingLines(rows)];
       };
       let result: Awaited<ReturnType<typeof runInitPrompt>>;
       try {
         result = await runInitPrompt({ ask, print: line => console.log(terminalText(line)) },
-          { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), packs: [...loadPacks(cwd).packs.keys()], shadowAvailable: !!repoOf(cwd)?.shadow }, preview);
+          { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), packs: [...loadPacks(cwd).packs.keys()], shadowAvailable: shadowOffered(repoOf(cwd)) }, preview);
       } finally { rl.close(); }
       if (!result.ok) { console.error(`ahub init: ${result.reason === "refused" ? result.message : result.reason === "interrupted" ? `interrupted; ${result.message}` : result.message}`); process.exitCode = result.reason === "refused" ? 1 : 0; return; }
       requestedProfile = result.answers.profile; request = result.answers.request; asked = Object.keys(request.values).length > 0; shadow = result.answers.shadow; releaseGuard = result.answers.releaseGuard;
