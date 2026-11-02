@@ -6175,6 +6175,10 @@ export class Tasks {
       refresh = { revision: initial.history.length, commit, state: initial.state };
     }
     const submittedCommit = cleanRefs(refs).commit;
+    if (submittedCommit && this.hasReviewHistory(initial) && !/^[a-f0-9]{40}$/.test(submittedCommit)) {
+      const recorded = this.ownerReviewHead(initial);
+      throw new PreEffectToolRefusal(`task #${initial.id}: re-file after review needs refs.commit to be a full lowercase SHA${recorded ? ` (recorded review head ${recorded})` : ""}; owner must re-file hub_task_done with the new full SHA in refs.commit`);
+    }
     const refileHead: RefileHeadGuard | undefined = !submittedCommit && initial.sdlc?.repo && initial.sdlc.pr && this.hasReviewHistory(initial) && !this.isPii(initial)
       ? { recorded: this.ownerReviewHead(initial) } : undefined;
     const draft = refresh ?? (submittedCommit && /^[a-f0-9]{40}$/.test(submittedCommit) ? { commit: submittedCommit } : undefined);
