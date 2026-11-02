@@ -895,3 +895,19 @@ test("unknown receipt IDs and maintenance are distinct from orphan container war
     if (columns) for (const line of rendered.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
   }
 });
+
+// #1096: `ahub queue show` says what to do with a failed row, and says when nothing is left.
+test("queue show prints a resolve hint for a failed row, and says nothing is left for one a resolution settled (#1096 AC2)", () => {
+  const flat = (rows: ReturnType<typeof renderQueueShow>) => rows.map(row => row.map(span => span.text).join("")).join("\n").replace(/\s+/g, " ");
+  const failed = flat(renderQueueShow({ id: "d-failed", peer: "codex", state: "failed", revision: 1898 }, 200, now));
+  expect(failed).toContain("ahub queue resolve d-failed --action discard|completed --reason <text>");
+  expect(failed).toContain("the person or the conductor");
+  const retried = flat(renderQueueShow({ id: "d-failed", peer: "codex", state: "failed", revision: 1898, resolvedBy: "retry" }, 200, now));
+  expect(retried).toContain("already resolved by retry; nothing is left to do for this row");
+  expect(retried).not.toContain("ahub queue resolve");
+  const discarded = flat(renderQueueShow({ id: "d-failed", peer: "codex", state: "failed", revision: 1898, resolvedBy: "discard" }, 200, now));
+  expect(discarded).toContain("already resolved by discard; nothing is left to do for this row");
+  // The needs_review hint is unchanged, and a state with no action gets none.
+  expect(flat(renderQueueShow({ id: "d-held", state: "needs_review" }, 200, now))).toContain("ahub queue resolve d-held --action completed|retry|discard --reason <text>");
+  expect(flat(renderQueueShow({ id: "d-done", state: "completed" }, 200, now))).not.toContain("ahub queue resolve");
+});
