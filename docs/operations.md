@@ -2489,6 +2489,32 @@ Rules:
 - Person only: an agent shell or a hub tool is refused (`ahub settings edit` is a console command in the identity gate, and the three control requests answer only the console role). Recovery or shutdown holds every edit.
 - The hub must run this release: an older hub answers `unknown message` and the command says to upgrade and restart it.
 
+## Design spec inspection
+
+`ahub specs list` discovers Markdown specs whose flat frontmatter names an `id`
+and `type`. `ahub specs covers <file...>` finds their path scopes.
+`ahub specs check` validates graph links, types and stamps without a daemon;
+it prints nothing and exits 0 when there are no specs or stamped documents.
+`--json` returns structured reports, and `--require-fresh` also fails on stale
+documents. `--base <ref>` reports changed paths whose covering spec stayed
+unchanged without making that report an error.
+
+The `specs` config block defaults to
+`{ "enabled": true, "review": "report", "roots": [], "stamps_file": "" }`.
+Roots are repository-relative directories; an empty list scans the repository.
+The optional stamps file uses the schema of `docs/verified.json` for other
+documents. A scan stops at 2,000 Markdown files and 8 KiB of frontmatter per
+file; a truncated report names `specs.roots` as the way to narrow the scan.
+Symlinked files are skipped. Freshness counts commits touching covered paths
+since the stamp and detects uncommitted changes without running Git filters
+or external diffs. These commands never refresh a stamp.
+
+The Switches settings `specs.enabled` and `specs.review` are machine-local
+settings, and the specs config fields are tier 2 structural settings. Explicit
+CLI inspection still works when notices are disabled. Task notices, status
+integration, init instruction blocks and stamp commands ship in later phases
+of issue #1064.
+
 ## Start modes: TUI by default, headless as opt-in
 
 A peer that has a TUI the hub attaches to starts in it by default (issue #269).

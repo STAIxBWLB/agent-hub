@@ -77,6 +77,7 @@ interface PeerReadForm {
 const publicReadDisplayFlags = ["--json", "--full", "--color=auto", "--color=always", "--color=never"] as const;
 const sdlcReadDisplayFlags = ["--json", "--color=auto", "--color=always", "--color=never"] as const;
 const peerReadForms: Readonly<Record<string, Readonly<Record<string, PeerReadForm>>>> = {
+  specs: { list: { displayFlags: ["--json"] }, check: { valueFlags: ["--base"], displayFlags: ["--json", "--require-fresh"] }, covers: { positional: 2000, minimum: 1, displayFlags: [] } },
   room: { list: { displayFlags: ["--json"] }, status: { positional: 1, displayFlags: ["--json"] } },
   queue: { list: { valueFlags: ["--peer"], displayFlags: publicReadDisplayFlags } },
   roster: { "": { displayFlags: publicReadDisplayFlags } },
@@ -202,6 +203,7 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   if (command === "autonomy") { const sub = args.find(arg => !arg.startsWith("--")); return sub !== undefined && ["on", "off", "status"].includes(sub) ? `autonomy ${sub}` : "autonomy"; }
   if (command === "usage") return args[0] === "limits" || args[0] === "total" ? `usage ${args[0]}` : "usage";
   if (command === "deliverables") return "deliverables";
+  if (command === "specs") return ["list", "check", "covers"].includes(args[0] ?? "") ? `specs ${args[0]}` : "specs";
   if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "down", "reset", "doctor", "agents", "source", "broker", "schedule", "intake", "learn", "study"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench", "agents", "roster", "settings"].includes(command)) {
     const sub = command === "bench" || command === "memory" || command === "goal" ? args.find((arg) => arg !== "--json") : args[0];
