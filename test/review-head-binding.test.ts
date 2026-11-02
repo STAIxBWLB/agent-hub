@@ -23,11 +23,13 @@ async function rig(options: { mode?: SdlcMode; state?: TaskState; linked?: boole
   const dir = mkdtempSync(join(tmpdir(), "ahub-review-head-"));
   const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 });
   for (const name of ["codex", "claude"]) { const peer = new Peer(name); bus.add(peer); await peer.start(); }
-  let currentHead = A, unavailable = false;
+  let currentHead = A, unavailable = false, limitedMetadata = false;
   const calls: string[][] = [];
   const gh: SdlcGh = async args => {
     calls.push(args);
     if (unavailable) return { code: 1, stdout: "" };
+    if (args[0] === "pr" && args[1] === "view" && limitedMetadata) return args[args.indexOf("--json") + 1] === "headRefOid"
+      ? { code: 0, stdout: JSON.stringify({ headRefOid: currentHead }) } : { code: 1, stdout: "" };
     if (args[0] === "pr" && args[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: currentHead, state: "OPEN", isDraft: false, reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [], files: [], changedFiles: 0, baseRefName: "main", baseRefOid: A, headRefName: "fix/head" }) };
     const query = args.find(arg => arg.startsWith("query=")) ?? "";
     if (query.includes("reviewThreads")) return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: currentHead, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) };
@@ -41,7 +43,7 @@ async function rig(options: { mode?: SdlcMode; state?: TaskState; linked?: boole
   board.update(t.id, "codex", "done", { state: "in_review", ...(options.linked === false ? {} : { sdlc: { stage: "review" as const, repo: "owner/repo", pr: 7, head: A, reviewedHead: A, localHead: A, localResult: "passed" as const } }) });
   if (options.state === "changes_requested" || options.state === "in_progress") board.update(t.id, "claude", "changes_requested", { state: "changes_requested" });
   if (options.state === "in_progress") board.update(t.id, "codex", "accepted", { state: "in_progress" });
-  return { tasks, board, id: t.id, calls, move: (head: string) => { currentHead = head; }, unavailable: () => { unavailable = true; } };
+  return { tasks, board, id: t.id, calls, move: (head: string) => { currentHead = head; }, unavailable: () => { unavailable = true; }, limitMetadata: () => { limitedMetadata = true; } };
 }
 async function refusal(action: () => Promise<unknown>): Promise<string | undefined> {
   try { await action(); return undefined; } catch (error) { return error instanceof Error ? error.message : String(error); }
@@ -157,4 +159,28 @@ for (const state of ["changes_requested", "in_progress"] as const) test(`${state
   const message = await refusal(() => r.tasks.done("codex", r.id, "synthetic short head bypass", { commit: B.slice(0, 8) }));
   ownerNextStep(message); expect(message).toContain(A); expect(message).toMatch(/full|40/);
   expect(r.board.get(r.id)).toEqual(before);
+});
+
+
+for (const mode of ["off", "advise"] as const) test(`${mode}: head drift is refused even when CI and file inventory are unavailable`, async () => {
+  const r = await rig({ mode }); r.move(B); r.limitMetadata();
+  const before = r.board.get(r.id)!;
+  const message = await refusal(() => r.tasks.review("claude", r.id, "approved", "synthetic partial metadata"));
+  expect(message).toContain(A); expect(message).toContain(B); ownerNextStep(message);
+  expect(r.board.get(r.id)).toEqual(before);
+});
+
+for (const mode of ["off", "advise"] as const) test(`${mode}: commitless re-file reads a head independently of the full PR inventory`, async () => {
+  const r = await rig({ mode, state: "changes_requested" }); r.move(B); r.limitMetadata();
+  const before = r.board.get(r.id)!;
+  const message = await refusal(() => r.tasks.done("codex", r.id, "synthetic partial inventory re-file"));
+  expect(message).toContain(A); expect(message).toContain(B); ownerNextStep(message);
+  expect(r.board.get(r.id)).toEqual(before);
+});
+
+test("a verified unchanged head permits a same-head redo when optional PR evidence is incomplete", async () => {
+  const r = await rig({ state: "changes_requested" }); r.limitMetadata();
+  const submitted = await r.tasks.done("codex", r.id, "synthetic same-head redo");
+  expect(submitted.state).toBe("in_review");
+  expect(submitted.refs.commit).toBe(A);
 });
