@@ -8192,6 +8192,8 @@ export async function startDaemon(opts: DaemonOptions) {
       if (rawArgs === undefined) return true;
       if (!rawArgs || typeof rawArgs !== "object" || Array.isArray(rawArgs)) return false;
       try {
+        const idDescriptor = Object.getOwnPropertyDescriptor(rawArgs, "id");
+        if (idDescriptor && (!Object.hasOwn(idDescriptor, "value") || idDescriptor.value !== undefined) && metadata.task === undefined) return false;
         const stack: { value: unknown; depth: number }[] = [{ value: rawArgs, depth: 0 }];
         const text: string[] = [];
         let bytes = 0, nodes = 0;

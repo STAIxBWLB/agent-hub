@@ -1266,6 +1266,8 @@ Client-side slow records go to stderr, never the MCP stdout stream, and omit tas
 numbers because the client has no authoritative privacy view. No request/rid,
 actor/session identifier, path, task text, argument, external output or error
 message enters a timing record. Host privacy is checked again before logging.
+An unresolved task identity (including a noncanonical string id) suppresses daemon
+diagnostics while the operation keeps its normal validation and behavior.
 
 The daemon samples its event loop every 100 ms. A missed tick delayed by at least
 250 ms can write `control_write_loop_delay`, including bounded observed spans.

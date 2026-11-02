@@ -93,7 +93,7 @@ function ownValue(value: Record<string, unknown>, key: string): unknown {
 const OPERATIONS: Readonly<Record<string, ControlWriteKind>> = {
   hub_task_propose: "hub_task_propose", hub_review: "hub_review", hub_task_accept: "hub_task_accept",
   hub_task_done: "hub_task_done", hub_task_decline: "hub_task_decline", hub_task_cancel: "hub_task_cancel",
-        hub_task_assign: "hub_task_assign", task_assign: "task_assign", task_assign_checked: "task_assign_checked", task_unassign: "task_unassign",
+  hub_task_assign: "hub_task_assign", task_assign: "task_assign", task_assign_checked: "task_assign_checked", task_unassign: "task_unassign",
 };
 
 /** The control protocol contributes only a closed operation name and, when present, a positive task id. */

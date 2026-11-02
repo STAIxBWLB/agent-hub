@@ -11,7 +11,8 @@ import { renderStatus } from "../src/cli/output.ts";
 import { paint } from "../src/cli/console-state.ts";
 
 // The real SQL callback and control transport are used; the only injected fault is a blocked loop.
-for (const privateTask of [false, true]) test(privateTask ? "a blocked private review suppresses daemon phase metadata after the task closes" : "a blocked board write keeps its result and logs bounded phase metadata after the loop resumes", async () => {
+for (const mode of ["public", "private", "private-string"] as const) test(mode === "public" ? "a blocked board write keeps its result and logs bounded phase metadata after the loop resumes" : `a blocked ${mode} review suppresses daemon phase metadata after the task closes`, async () => {
+  const privateTask = mode !== "public";
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-control-timing-"))), stateDir = join(root, "state");
   const config = { ...DEFAULT_CONFIG,
     memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
@@ -47,7 +48,7 @@ for (const privateTask of [false, true]) test(privateTask ? "a blocked private r
     };
     console.error = (...items: unknown[]) => { clientLines.push(items.map(String).join(" ")); };
     const reply = privateTask
-      ? await client.request({ t: "task", op: "hub_review", args: { id: privateId, verdict: "approved", note: marker } })
+      ? await client.request({ t: "task", op: "hub_review", args: { id: mode === "private-string" ? String(privateId) : privateId, verdict: "approved", note: marker } })
       : await client.request({ t: "task", op: "hub_task_propose", args: { title: marker, detail: marker, class: "implement", backlog: true } });
     prototype.taskWrite = original;
     expect(blocked).toBe(true); expect(reply.ok).toBe(true);
