@@ -101,3 +101,15 @@ test("committed scope matching excludes files only present in the daemon index",
   const check = new SpecsEngine(root, parseSpecsConfig(undefined), { commit: submitted }).check();
   expect(check.items.some(item => item.code === "invalid-paths")).toBe(true);
 });
+
+test("missing-block hints distinguish absence from unsafe instruction files", () => {
+  const { root } = repo();
+  const inspector = new SpecTaskInspector(root, () => parseSpecsConfig(undefined));
+  expect(inspector.missingBlock()).toBe(true);
+  writeFileSync(join(root, "AGENTS.md"), "# Project instructions\n");
+  expect(inspector.missingBlock()).toBe(true);
+  writeFileSync(join(root, "AGENTS.md"), "<!-- AGENT_HUB_SPECS:BEGIN -->\nRead specs.\n<!-- AGENT_HUB_SPECS:END -->\n");
+  expect(inspector.missingBlock()).toBe(false);
+  rmSync(join(root, "AGENTS.md")); symlinkSync(join(root, "src/bus.ts"), join(root, "AGENTS.md"));
+  expect(inspector.missingBlock()).toBeUndefined();
+});

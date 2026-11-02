@@ -1,5 +1,8 @@
 import type { BriefFile } from "./review-brief.ts";
 import { parseSpecsConfig, SpecsEngine, type SpecsConfig, type SpecsCheckReport, type SpecsCoverReport } from "./specs.ts";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { realPath } from "./project.ts";
 
 export interface SpecAck { id: string; reason: string }
 export interface SpecRef { id: string; path: string; title: string; reason?: string }
@@ -19,7 +22,26 @@ const UNAVAILABLE = new Set(["discovery-unavailable", "snapshot-unavailable", "c
 /** Host-bound repository inspection only. Tasks owns caller/privacy projection and every board write. */
 export class SpecTaskInspector {
   private readonly engines = new Map<string, SpecsEngine>();
-  constructor(private readonly root: string, private readonly config: () => SpecsConfig) {}
+  private readonly root: string;
+  constructor(root: string, private readonly config: () => SpecsConfig) { this.root = realPath(root); }
+
+  /** A positive absence only; unsafe or incomplete reads must not claim the block is missing. */
+  missingBlock(): boolean | undefined {
+    const file = join(this.root, "AGENTS.md");
+    let fd: number | undefined;
+    try {
+      const before = lstatSync(file);
+      if (!before.isFile() || before.isSymbolicLink() || before.size > 256 * 1024) return undefined;
+      fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const opened = fstatSync(fd);
+      if (opened.dev !== before.dev || opened.ino !== before.ino) return undefined;
+      const text = readFileSync(fd, "utf8"), after = lstatSync(file);
+      if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeMs !== before.mtimeMs) return undefined;
+      const begin = text.indexOf("<!-- AGENT_HUB_SPECS:BEGIN"), end = text.indexOf("<!-- AGENT_HUB_SPECS:END");
+      return begin < 0 || end < begin;
+    } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? true : undefined; }
+    finally { if (fd !== undefined) closeSync(fd); }
+  }
 
   private engine(commit?: string): SpecsEngine {
     const config = parseSpecsConfig(this.config());
