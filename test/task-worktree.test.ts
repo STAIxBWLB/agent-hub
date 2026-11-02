@@ -246,3 +246,55 @@ test("an index the peer prepared is discarded: a skip-worktree flag it set canno
   expect(f.git(f.root, "diff", "--name-status", f.base, done.commit).split("\n").sort()).toEqual(["M\ta.txt", "M\tb.txt"]);
   expect(f.git(f.root, "show", `${done.commit}:a.txt`)).toBe("edit that the flag would hide");
 });
+
+// F-worktree-config-scope: the guard reads the REPOSITORY's config (--local, and --worktree where extensions.worktreeConfig is on), never the person's global or system config.
+function lfsStyleConfig(): { file: string; restore: () => void } {
+  const base = mkdtempSync(join(tmpdir(), "ahub-task-worktree-lfs-")); cleanup.push(() => rmSync(base, { recursive: true, force: true })); // registered before anything can throw
+  const file = join(realPath(base), "gitconfig");
+  writeFileSync(file, '[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n\trequired = true\n[diff "lfs"]\n\ttextconv = cat\n');
+  const saved = { system: process.env.GIT_CONFIG_SYSTEM, global: process.env.GIT_CONFIG_GLOBAL };
+  process.env.GIT_CONFIG_SYSTEM = file; process.env.GIT_CONFIG_GLOBAL = file;
+  const restore = () => { for (const [key, value] of [["GIT_CONFIG_SYSTEM", saved.system], ["GIT_CONFIG_GLOBAL", saved.global]] as const) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } };
+  cleanup.push(restore);
+  return { file, restore };
+}
+
+test("a git-lfs style filter in the person's system and global config does not switch the feature off: available, create and commit all work", async () => {
+  const lfs = lfsStyleConfig();
+  const f = fixture();
+  expect(f.git(f.root, "config", "--get", "filter.lfs.clean")).toContain("git-lfs clean"); // the merged view does carry it, which is what the old guard refused
+  expect(f.worktrees.available()).toEqual({ ok: true });
+  const made = f.worktrees.create({ peer: "pi", task: 7 }); if (!made.ok) throw new Error(made.reason);
+  writeFileSync(join(made.path, "a.txt"), "edit\n");
+  const done = await f.worktrees.commitAndPush({ peer: "pi", task: 7, title: "t" });
+  expect(done.ok).toBe(true); if (!done.ok) throw new Error(done.reason);
+  expect(f.git(f.root, "diff", "--name-status", f.base, done.commit)).toBe("M\ta.txt");
+  expect(lfs.file.length).toBeGreaterThan(0);
+});
+
+test("a filter, textconv or include planted in the repository's own config still refuses, also beside a harmless global one", () => {
+  lfsStyleConfig();
+  for (const [key, value] of [["filter.evil.clean", "cat"], ["diff.evil.textconv", "cat"], ["include.path", "/tmp/evil.cfg"], ["core.sshCommand", "evil"], ["remote.origin.receivepack", "evil"]] as const) {
+    const f = fixture();
+    expect(f.worktrees.available(), "before").toEqual({ ok: true });
+    f.git(f.root, "config", "--local", key, value);
+    const fresh = new TaskWorktrees({ root: f.root, stateFile: join(f.state, "other.json"), applies: () => true, deny: () => [], protectInstructions: () => false });
+    const available = fresh.available();
+    expect(available.ok, key).toBe(false);
+    expect(available.ok ? "" : available.reason, key).toContain("will not run git with it");
+  }
+});
+
+test("a filter in a worktree's own config.worktree refuses when extensions.worktreeConfig is on, and is not read when it is off", async () => {
+  lfsStyleConfig();
+  const f = fixture();
+  f.git(f.root, "config", "--local", "extensions.worktreeConfig", "true");
+  const made = f.worktrees.create({ peer: "pi", task: 7 }); if (!made.ok) throw new Error(made.reason);
+  writeFileSync(join(made.path, "a.txt"), "edit\n");
+  f.git(made.path, "config", "--worktree", "filter.wt.clean", "cat");
+  const refused = await f.worktrees.commitAndPush({ peer: "pi", task: 7, title: "t" });
+  expect(refused.ok).toBe(false); expect(refused.ok ? "" : refused.reason).toContain("will not run git with it");
+  expect(f.git(f.root, "rev-parse", "refs/heads/task/7-pi")).toBe(f.base);
+  f.git(made.path, "config", "--worktree", "--unset", "filter.wt.clean");
+  expect((await f.worktrees.commitAndPush({ peer: "pi", task: 7, title: "t" })).ok).toBe(true);
+});

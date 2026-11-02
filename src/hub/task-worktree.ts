@@ -107,11 +107,21 @@ export class TaskWorktrees implements TaskWorktreePort {
   }
   private key = (peer: PeerId, task: number) => `${peer}-${task}`;
 
-  /** Whether the repository's own configuration lets the hub run git on it at all. */
+  /**
+   * Whether the REPOSITORY's own configuration lets the hub run git on it (F-worktree-config-scope). The guard is against configuration a repository or a peer can plant:
+   * the shared `.git/config` (`--local`, which a linked worktree reads too) and, where `extensions.worktreeConfig` is on, the worktree's own `config.worktree`. The person's
+   * global and system config is theirs and is left alone: git-lfs alone puts `filter.lfs.*` there on most machines, and refusing it would switch the feature off for them.
+   * The hardened git helper's isolation still applies to that config.
+   */
   private configProblem(cwd: string): string | undefined {
-    const found = this.git(["config", "--get-regexp", CONFIG_REFUSED], cwd);
-    if (found.status === 0 && found.stdout.trim()) return `the repository configuration names a helper, filter, include or remote override (${shown(found.stdout.split("\n")[0] ?? "", 60)}); the hub will not run git with it. Ask the person to remove it, or run this work with a peer that makes its own worktree`;
-    if (found.status !== 0 && found.status !== 1) return "the repository configuration could not be read";
+    const scopes: string[][] = [["--local"]];
+    const extension = this.git(["config", "--local", "--type=bool", "--get", "extensions.worktreeConfig"], cwd);
+    if (extension.status === 0 && extension.stdout.trim() === "true") scopes.push(["--worktree"]);
+    for (const scope of scopes) {
+      const found = this.git(["config", ...scope, "--get-regexp", CONFIG_REFUSED], cwd);
+      if (found.status === 0 && found.stdout.trim()) return `the repository configuration names a helper, filter, include or remote override (${shown(found.stdout.split("\n")[0] ?? "", 60)}); the hub will not run git with it. Ask the person to remove it, or run this work with a peer that makes its own worktree`;
+      if (found.status !== 0 && found.status !== 1) return "the repository configuration could not be read";
+    }
     return undefined;
   }
 

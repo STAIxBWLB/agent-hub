@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
@@ -40,6 +40,17 @@ test("outside a git repository the daemon reports no worktree for the hub-sandbo
 test("in a git repository the daemon reports a worktree for the hub-sandboxed peers too, because the hub makes it (#1115)", async () => {
   const caps = await capabilities(false, true);
   for (const peer of ["pi", "local", "claude", "codex", "kimi"]) { expect(caps[peer]!.worktree, peer).toBe(true); expect(caps[peer]!.worktreeReason, peer).toBeUndefined(); }
+});
+
+test("a git-lfs style filter in the person's system and global git config does not turn the hub-made worktree off (F-worktree-config-scope)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-capabilities-lfs-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); // registered before anything can throw
+  const file = join(dir, "gitconfig");
+  writeFileSync(file, '[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n\trequired = true\n');
+  const saved = { system: process.env.GIT_CONFIG_SYSTEM, global: process.env.GIT_CONFIG_GLOBAL };
+  cleanup.push(() => { for (const [key, value] of [["GIT_CONFIG_SYSTEM", saved.system], ["GIT_CONFIG_GLOBAL", saved.global]] as const) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  process.env.GIT_CONFIG_SYSTEM = file; process.env.GIT_CONFIG_GLOBAL = file;
+  const caps = await capabilities(false, true);
+  for (const peer of ["pi", "local"]) { expect(caps[peer]!.worktree, peer).toBe(true); expect(caps[peer]!.worktreeReason, peer).toBeUndefined(); }
 });
 
 test("the daemon reports network from the one sandbox setting: off is none with its setting named, a proxy or direct is some (#1081)", async () => {
