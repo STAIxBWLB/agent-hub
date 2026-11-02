@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { realPath } from "../src/hub/project.ts";
@@ -72,4 +72,10 @@ test("#1120 a source whose checker is a symlink is refused with the cause and ne
 test("#1120 the capture checker is the same program the hub reader spawns by default", () => {
   const reader = readFileSync(join(REPO, "src/hub/sdlc-release.ts"), "utf8");
   expect(reader).toContain(`new URL("../../${RELEASE_CHECKER}", import.meta.url)`);
+});
+
+test("#1120 the pruner names the same checker file as the capture copy, and imports nothing else from the verifier module", () => {
+  const pruner = readFileSync(join(REPO, "src/hub/runtime-capture-prune.ts"), "utf8");
+  expect(pruner).toContain(`knownLayout(join(root, "scripts"), [], [${JSON.stringify(basename(RELEASE_CHECKER))}])`);
+  expect(pruner).toContain('import { verifyPackage } from "../cli/recovery-package.ts";');
 });

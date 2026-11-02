@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, readdirSync, renameSync, rmSync, type Dirent, type Stats } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { RELEASE_CHECKER, verifyPackage } from "../cli/recovery-package.ts";
+import { verifyPackage } from "../cli/recovery-package.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { childEnv } from "./child-process.ts";
 import { hubHome, realPath } from "./project.ts";
@@ -248,7 +248,8 @@ function knownLayout(root: string, directories: readonly string[], files: readon
 function captureLayout(root: string): void {
   knownLayout(root, ["src", "plugins", "templates", ".claude-plugin"], ["package.json", "README.md", "LICENSE", "CHANGELOG.md"], ["node_modules", "scripts"]);
   // #1120: captures made before the release checker was carried have no scripts directory; when present it holds exactly the checker.
-  if (optionalInfo(join(root, "scripts"))) knownLayout(join(root, "scripts"), [], [basename(RELEASE_CHECKER)]);
+  // The name is repeated here on purpose: a pruner copied into a capture runs beside that capture's own verifier and imports nothing but verifyPackage from it. test/runtime-capture-checker.test.ts pins this name to RELEASE_CHECKER.
+  if (optionalInfo(join(root, "scripts"))) knownLayout(join(root, "scripts"), [], ["check-docs.mjs"]);
   const modules = join(root, "node_modules");
   if (optionalInfo(modules)) {
     knownLayout(modules, ["@staix"], []); const scope = join(modules, "@staix"); knownLayout(scope, ["agent-mem"], []);
