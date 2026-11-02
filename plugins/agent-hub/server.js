@@ -23619,6 +23619,8 @@ init_plan_conformance();
 // src/hub/sdlc-release.ts
 init_child_process();
 init_git();
+import { fileURLToPath } from "url";
+var CHECKER_PATH = fileURLToPath(new URL("../../scripts/check-docs.mjs", import.meta.url));
 
 // src/hub/tasks.ts
 init_spec_read();

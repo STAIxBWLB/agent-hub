@@ -2,7 +2,7 @@ import { releaseTrackedClean } from "./release-worktree.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { USER, type PeerId } from "./envelope.ts";
 import { hubGitEnv, hubGitSync } from "./git.ts";
-import { readDocEvidence, type DocEvidence, type ReleaseGit, type ReleaseReadiness } from "./sdlc-release.ts";
+import { readDocEvidenceDetailed, type DocEvidence, type ReleaseGit, type ReleaseReadiness } from "./sdlc-release.ts";
 import type { SdlcGh } from "./sdlc.ts";
 import type { ReleaseGuardRequest, ReleasePushUpdate } from "../cli/sdlc-release-guard.ts";
 
@@ -17,6 +17,8 @@ export interface ReleaseAuthorization { schemaVersion: 1; id: string; by: PeerId
 export interface ReleaseAuthorizationPorts {
   git?: ReleaseGit;
   docs?: (root: string) => Promise<DocEvidence | undefined>;
+  /** Test seam: the checker program the default reader spawns (#1120). Never set from configuration. */
+  checker?: string;
   gh?: SdlcGh;
   now?: () => number;
   current?: () => boolean;
@@ -46,6 +48,13 @@ export class ReleaseAuthorizations {
   private latest?: Entry;
   constructor(private readonly root: string, private readonly ports: ReleaseAuthorizationPorts) {}
   private current(): void { if (this.ports.current?.() === false) throw new ReleaseAuthorizationError("release authorization unavailable during lifecycle transition"); }
+  /** #1120: a checker that is missing or failed is its own refusal; only evidence that is read and not fresh is "stale documentation". An injected reader keeps its undefined meaning (no evidence). */
+  private async docs(commit: string, version: string): Promise<ReleaseDocsVerdict | undefined> {
+    if (this.ports.docs) return docsVerdict(await this.ports.docs(this.root), commit, version);
+    const read = await readDocEvidenceDetailed(this.root, undefined, this.ports.checker);
+    if ("unavailable" in read) throw new ReleaseAuthorizationError(`release authorization needs the documentation checker: ${read.unavailable}`);
+    return docsVerdict(read.evidence, commit, version);
+  }
   private actor(by: PeerId): void {
     if (by !== USER && (typeof by !== "string" || !by.trim() || this.ports.conductor?.() !== by)) throw new ReleaseAuthorizationError("only the person or the configured conductor may authorize a release");
   }
@@ -95,8 +104,8 @@ export class ReleaseAuthorizations {
     this.current();
     const git = this.git(), commit = this.commit(git, "HEAD"), origin = this.origin(git);
     if (commit !== expectedCommit || this.version(git, commit) !== version) throw new ReleaseAuthorizationError("candidate commit or version differs from the person's request");
-    const docs = docsVerdict(await (this.ports.docs ?? readDocEvidence)(this.root), commit, version);
-    if (!docs) throw new ReleaseAuthorizationError("release authorization requires fresh committed documentation evidence");
+    const docs = await this.docs(commit, version);
+    if (!docs) throw new ReleaseAuthorizationError("release authorization requires fresh committed documentation evidence: run `node scripts/check-docs.mjs --committed` in the candidate checkout, restamp the stale documents in a committed change, then authorize again");
     this.current(); this.actor(by);
     if (this.commit(git, "HEAD") !== commit || this.version(git, commit) !== version || this.origin(git).hash !== origin.hash) throw new ReleaseAuthorizationError("release candidate changed during authorization");
     this.current(); this.actor(by);
@@ -127,7 +136,7 @@ export class ReleaseAuthorizations {
         if (!releaseTrackedClean(this.root, git)) throw new ReleaseAuthorizationError("npm publish requires a clean tracked worktree");
         const commit = this.commit(git, "HEAD"), version = this.version(git, commit);
         const receipt = this.matched(git, version, commit);
-        const docs = docsVerdict(await (this.ports.docs ?? readDocEvidence)(this.root), commit, version);
+        const docs = await this.docs(commit, version);
         this.current();
         if (!docs || docs.digest !== receipt.docs.digest || this.commit(git, "HEAD") !== commit || !releaseTrackedClean(this.root, git)) throw new ReleaseAuthorizationError("publish checkout or documentation evidence changed");
         return { ok: true, receipts: [this.matched(git, version, commit)] };

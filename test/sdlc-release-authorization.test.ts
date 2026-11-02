@@ -1,6 +1,8 @@
 import { tmpdir } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { realPath } from "../src/hub/project.ts";
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { ReleaseAuthorizations, type ReleaseAuthorization, type ReleaseAuthorizationPorts } from "../src/hub/sdlc-release-authorization.ts";
 import type { DocEvidence, ReleaseGit, ReleaseReadiness } from "../src/hub/sdlc-release.ts";
 import type { ReleasePushUpdate } from "../src/cli/sdlc-release-guard.ts";
@@ -293,4 +295,58 @@ test("S6 npm preflight refuses tracked changes at the same HEAD before and after
   f.state.dirty = "";
   f.docsRead(async () => { f.state.dirty = " M src/index.ts"; return fresh(); });
   expect(await f.host.guardRequest({ kind: "npm-publish" })).toMatchObject({ ok: false });
+});
+
+// #1120: a hub whose runtime has no (or a failing) documentation checker says so, never "stale documentation".
+const checkers: string[] = [];
+afterEach(() => { for (const dir of checkers.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+function checkerFile(source?: string): string {
+  const made = mkdtempSync(join(tmpdir(), "ahub-checker-")); checkers.push(made); // registered before anything that can throw
+  const file = join(made, "check-docs.mjs");
+  if (source !== undefined) writeFileSync(file, source);
+  return file;
+}
+const withChecker = (f: ReturnType<typeof fixture>, checker: string) => new ReleaseAuthorizations(realPath(tmpdir()), { ...f.ports, docs: undefined, checker });
+
+test("#1120 authorization names a missing checker, with the next step, and never calls the documents stale", async () => {
+  const f = fixture(), host = withChecker(f, checkerFile());
+  const error = await host.authorize("user", "1.2.3", A).then(() => "", (e: Error) => e.message);
+  expect(error).toContain("documentation checker scripts/check-docs.mjs is missing from the running hub");
+  expect(error).toContain("record consent from a hub started from a checkout or a release that carries the checker");
+  expect(error).not.toContain("fresh committed documentation");
+  expect(f.recorded).toEqual([]);
+});
+
+for (const [name, source] of [["exits with an error", "process.exit(2)"], ["prints unreadable output", "console.log('not json')"], ["prints evidence of another schema", "console.log(JSON.stringify({ schemaVersion: 2, documents: [], errors: 0, fresh: true }))"]] as const) {
+  test(`#1120 authorization names a checker that ${name} as unavailable, not as stale documentation`, async () => {
+    const f = fixture(), host = withChecker(f, checkerFile(source));
+    const error = await host.authorize("user", "1.2.3", A).then(() => "", (e: Error) => e.message);
+    expect(error).toContain("did not finish with readable evidence");
+    expect(error).toContain("node scripts/check-docs.mjs --json --committed");
+    expect(error).not.toContain("fresh committed documentation");
+    expect(f.recorded).toEqual([]);
+  });
+}
+
+test("#1120 evidence that is read and stale keeps the stale-documentation refusal with its next step", async () => {
+  const f = fixture(), host = withChecker(f, checkerFile(`console.log(JSON.stringify(${JSON.stringify({ ...fresh(), fresh: false, documents: [{ path: "README.md", state: "stale", commits: 1, dirty: false }] })}))`));
+  const error = await host.authorize("user", "1.2.3", A).then(() => "", (e: Error) => e.message);
+  expect(error).toContain("fresh committed documentation evidence");
+  expect(error).toContain("restamp the stale documents");
+  expect(error).not.toContain("documentation checker");
+});
+
+test("#1120 a working checker that is spawned for real records the consent, and the publish guard reads it the same way", async () => {
+  const f = fixture(), host = withChecker(f, checkerFile(`console.log(JSON.stringify(${JSON.stringify(fresh())}))`));
+  const receipt = await host.authorize("user", "1.2.3", A);
+  expect(receipt).toMatchObject({ by: "user", commit: A, version: "1.2.3", docs: { fresh: true, errors: 0 } });
+  expect(await host.guardRequest({ kind: "npm-publish" })).toEqual({ ok: true, receipts: [receipt] });
+});
+
+test("#1120 the publish guard also names a checker that vanished after consent was recorded", async () => {
+  const f = fixture(), file = checkerFile(`console.log(JSON.stringify(${JSON.stringify(fresh())}))`), ports = { ...f.ports, docs: undefined, checker: file };
+  const host = new ReleaseAuthorizations(realPath(tmpdir()), ports);
+  await host.authorize("user", "1.2.3", A);
+  rmSync(file);
+  expect(await host.guardRequest({ kind: "npm-publish" })).toMatchObject({ ok: false, error: expect.stringContaining("documentation checker scripts/check-docs.mjs is missing") });
 });
