@@ -6,6 +6,7 @@ import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { USER } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
+import type { ReviewBrief } from "../src/hub/review-brief.ts";
 import { DEFAULT_SPECS_CONFIG, type SpecsCheckReport } from "../src/hub/specs.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { TASK_TOOLS } from "../src/hub/hub-tools.ts";
@@ -20,7 +21,7 @@ const until = async (condition: () => boolean) => {
   expect(condition()).toBe(true);
 };
 
-function fixture(review: "report" | "require" | "off" = "report", options: { complete?: boolean; hasHead?: boolean; piiTask?: boolean; enabled?: boolean; noConfig?: boolean; noInspector?: boolean; privateTurn?: (peer: string) => boolean; specsRead?: TasksDeps["specsRead"]; specNotice?: TasksDeps["specNotice"]; inspectSpecs?: TasksDeps["inspectSpecs"]; check?: TasksDeps["check"]; runCheck?: TasksDeps["runCheck"] } = {}) {
+function fixture(review: "report" | "require" | "off" = "report", options: { complete?: boolean; hasHead?: boolean; piiTask?: boolean; enabled?: boolean; noConfig?: boolean; noInspector?: boolean; privateTurn?: (peer: string) => boolean; specsRead?: TasksDeps["specsRead"]; specNotice?: TasksDeps["specNotice"]; inspectSpecs?: TasksDeps["inspectSpecs"]; reviewBrief?: TasksDeps["reviewBrief"]; check?: TasksDeps["check"]; runCheck?: TasksDeps["runCheck"] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-specs-tasks-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const board = new Board(join(dir, "hub.db"));
@@ -34,7 +35,7 @@ function fixture(review: "report" | "require" | "off" = "report", options: { com
     ...(options.noConfig ? {} : { specsConfig: () => config }),
     ...(options.privateTurn ? { privateTurn: options.privateTurn } : {}),
     ...(options.specNotice ? { specNotice: options.specNotice } : {}),
-    reviewBrief: task => ({ head: task.refs.commit ?? "", base: "origin/main", mergeBase: "b".repeat(40), reviewable: [{ path: "src/hub/bus.ts", status: "M" }], excluded: [], withheld: 0, rules: [], rulesMissing: [], ruleGroups: [], unlisted: [] }),
+    ...(options.reviewBrief ? { reviewBrief: options.reviewBrief } : { reviewBrief: task => ({ head: task.refs.commit ?? "", base: "origin/main", mergeBase: "b".repeat(40), reviewable: [{ path: "src/hub/bus.ts", status: "M" }], excluded: [], withheld: 0, rules: [], rulesMissing: [], ruleGroups: [], unlisted: [] }) }),
     ...(options.noInspector ? {} : { inspectSpecs: options.inspectSpecs ?? (async (_task, head, changed, acks) => { inspected.push({ head, changed, acks }); return { ...report, head }; }) }),
     ...(options.check ? { check: options.check } : {}),
     ...(options.runCheck ? { runCheck: options.runCheck } : {}),
@@ -103,11 +104,31 @@ test("require refuses before a board write until every unchanged covering spec h
 });
 
 test("require fails closed when the task head or changed-file inventory is not verified", async () => {
-  const f = fixture("require", { complete: false, hasHead: false });
+  const f = fixture("require", { complete: false, reviewBrief: () => ({ unavailable: "no default branch is available to compare the task head" }) });
   const source = f.task();
-  await expect(f.tasks.done("codex", source.id, "updated the bus", { paths: ["src/hub/bus.ts"] })).rejects.toThrow(/spec coverage is unknown/);
+  await expect(f.tasks.done("codex", source.id, "updated the bus", { commit: HEAD, paths: ["src/hub/bus.ts"] })).rejects.toThrow(/no default branch is available/);
   expect(f.board.get(source.id)?.state).toBe("in_progress");
-  expect(f.inspected()[0]).toMatchObject({ head: "", changed: undefined });
+  expect(f.inspected()[0]).toMatchObject({ head: HEAD, changed: undefined });
+});
+
+test("require refusals name the verified changed-file gap and a remedy", async () => {
+  const defaultBrief: ReviewBrief = { head: HEAD, base: "origin/main", mergeBase: "b".repeat(40), reviewable: [{ path: "src/hub/bus.ts", status: "M" }], excluded: [], withheld: 0, rules: [], rulesMissing: [], ruleGroups: [], unlisted: [] };
+  const cases: { brief: ReviewBrief | { unavailable: string }; cause: string }[] = [
+    { brief: { unavailable: "no default branch is available to compare the task head" }, cause: "no default branch is available" },
+    { brief: { ...defaultBrief, withheld: 2 }, cause: "withheld 2 changed file(s)" },
+    { brief: { ...defaultBrief, unlisted: ["private-omitted-name-a", "private-omitted-name-b"] }, cause: "2 unlisted changed file(s)" },
+  ];
+  for (const entry of cases) {
+    const f = fixture("require", { complete: false, reviewBrief: () => entry.brief });
+    const source = f.task();
+    let refusal = "";
+    try { await f.tasks.done("codex", source.id, "updated the bus", { commit: HEAD, paths: ["src/hub/bus.ts"] }); }
+    catch (error) { refusal = error instanceof Error ? error.message : String(error); }
+    expect(refusal).toContain(entry.cause);
+    expect(refusal).toContain("split the task scope");
+    expect(refusal).toContain("change specs.review");
+    expect(refusal).not.toContain("private-omitted-name");
+  }
 });
 
 test("missing inspector preserves report/off/disabled/PII compatibility but fails closed for public require", async () => {
@@ -125,17 +146,21 @@ test("missing inspector preserves report/off/disabled/PII compatibility but fail
   await expect(required.tasks.done("codex", publicTask.id, "finished", { commit: HEAD })).rejects.toThrow(/spec inspector is unavailable/);
   expect(required.board.get(publicTask.id)?.state).toBe("in_progress");
 
+  const noHead = fixture("require", { noInspector: true, hasHead: false });
+  const noHeadTask = noHead.task();
+  await expect(noHead.tasks.done("codex", noHeadTask.id, "finished", { paths: ["src/hub/bus.ts"] })).resolves.toBeDefined();
+
   const off = fixture("off", { noInspector: true });
   const offTask = off.task();
-  await expect(off.tasks.done("codex", offTask.id, "finished", { commit: HEAD })).resolves.toBeDefined();
+  await expect(off.tasks.done("codex", offTask.id, "finished", { commit: HEAD }, undefined, [])).resolves.toBeDefined();
 
   const disabled = fixture("require", { noInspector: true, enabled: false });
   const disabledTask = disabled.task();
-  await expect(disabled.tasks.done("codex", disabledTask.id, "finished", { commit: HEAD })).resolves.toBeDefined();
+  await expect(disabled.tasks.done("codex", disabledTask.id, "finished", { commit: HEAD }, undefined, [])).resolves.toBeDefined();
 
-  const pii = fixture("require", { noInspector: true, piiTask: true });
+  const pii = fixture("require", { noInspector: true, piiTask: true, privateTurn: () => true });
   const piiTask = pii.task();
-  const piiDone = await pii.tasks.done("codex", piiTask.id, "finished", { commit: HEAD });
+  const piiDone = await pii.tasks.done("codex", piiTask.id, "finished", { commit: HEAD }, undefined, []);
   expect(pii.tasks.resultLine(piiDone)).not.toContain("Design specs at");
 });
 
@@ -150,6 +175,72 @@ test("an asynchronous class check carries the verified spec report into the fina
   await until(() => f.tasks.checksPending() === 0);
   const completed = f.board.get(source.id)!;
   expect(completed.history.findLast(entry => entry.event === "done")?.specReport).toMatchObject({ head: HEAD, unchanged: [{ id: "bus" }] });
+});
+
+test("a reportless asynchronous class check still completes after specs policy and privacy context change", async () => {
+  let release!: (result: { code: number; timedOut: boolean; interrupted: boolean; tail: string }) => void;
+  let privateTurn = false;
+  const gate = new Promise<{ code: number; timedOut: boolean; interrupted: boolean; tail: string }>(resolve => { release = resolve; });
+  const f = fixture("report", { noInspector: true, hasHead: false, privateTurn: () => privateTurn,
+    check: () => "fixture check", runCheck: async () => gate });
+  const source = f.task();
+  const pending = await f.tasks.done("codex", source.id, "finished the work", { paths: ["src/hub/bus.ts"] });
+  expect(pending.history.at(-1)?.event).toBe("done (checking)");
+  expect(pending.history.at(-1)?.specReport).toBeUndefined();
+
+  f.config.review = "off";
+  privateTurn = true;
+  release({ code: 0, timedOut: false, interrupted: false, tail: "fixture check passed" });
+  await until(() => f.tasks.checksPending() === 0);
+
+  const completed = f.board.get(source.id)!;
+  expect(completed.state).toBe("in_review");
+  expect(completed.history.findLast(entry => entry.event === "check passed")).toBeDefined();
+  expect(completed.history.findLast(entry => entry.event === "done")?.note).toContain("Check: fixture check -> exit 0");
+  expect(completed.history.findLast(entry => entry.event === "done")?.specReport).toBeUndefined();
+});
+
+test("an asynchronous class check suppresses its report when specs turn off or the turn becomes private", async () => {
+  for (const change of ["off", "private"] as const) {
+    let release!: (result: { code: number; timedOut: boolean; interrupted: boolean; tail: string }) => void;
+    let privateTurn = false;
+    const gate = new Promise<{ code: number; timedOut: boolean; interrupted: boolean; tail: string }>(resolve => { release = resolve; });
+    const f = fixture("report", { privateTurn: () => privateTurn, check: () => "fixture check", runCheck: async () => gate });
+    const source = f.task();
+    const pending = await f.tasks.done("codex", source.id, "finished the work", { commit: HEAD, paths: ["src/hub/bus.ts"] }, undefined,
+      [{ id: "bus", reason: "The contract is unchanged by this implementation." }]);
+    expect(pending.history.at(-1)?.specReport).toMatchObject({ unchanged: [{ id: "bus", reason: "The contract is unchanged by this implementation." }] });
+
+    if (change === "off") f.config.review = "off";
+    else privateTurn = true;
+    release({ code: 0, timedOut: false, interrupted: false, tail: "fixture check passed" });
+    await until(() => f.tasks.checksPending() === 0);
+
+    const completed = f.board.get(source.id)!;
+    expect(completed.state).toBe("in_review");
+    expect(completed.history.findLast(entry => entry.event === "check passed")).toBeDefined();
+    expect(completed.history.findLast(entry => entry.event === "done")?.specReport).toBeUndefined();
+    expect(f.tasks.publicView(completed).specReport).toBeUndefined();
+    expect(f.tasks.resultLine(completed)).not.toContain("The contract is unchanged by this implementation.");
+  }
+});
+
+test("a require policy activated during a class check records the pass and asks for refile", async () => {
+  let release!: (result: { code: number; timedOut: boolean; interrupted: boolean; tail: string }) => void;
+  const gate = new Promise<{ code: number; timedOut: boolean; interrupted: boolean; tail: string }>(resolve => { release = resolve; });
+  const f = fixture("report", { check: () => "fixture check", runCheck: async () => gate });
+  const source = f.task();
+  await f.tasks.done("codex", source.id, "finished the work", { commit: HEAD, paths: ["src/hub/bus.ts"] });
+  f.config.review = "require";
+  release({ code: 0, timedOut: false, interrupted: false, tail: "fixture check passed" });
+  await until(() => f.tasks.checksPending() === 0);
+
+  const current = f.board.get(source.id)!;
+  expect(current.state).toBe("in_progress");
+  expect(current.history.findLast(entry => entry.event === "check passed")).toBeDefined();
+  expect(current.history.some(entry => entry.event === "done (checking)")).toBe(true);
+  expect(current.history.some(entry => entry.event === "done")).toBe(false);
+  expect(f.bus.queued("codex")).toBeGreaterThan(0);
 });
 
 test("a privacy-context change during spec inspection refuses before the done write", async () => {
@@ -245,7 +336,8 @@ test("filtered private spec metadata makes a report incomplete instead of implyi
   const publicReport = tasks.publicView(done).specReport as { complete: boolean; unchanged: unknown[]; reason?: string };
   expect(publicReport.complete).toBe(false);
   expect(publicReport.unchanged).toEqual([]);
-  expect(publicReport.reason).toBe("some spec metadata could not be safely shown");
+  expect(publicReport.reason).toContain("some spec metadata could not be safely shown");
+  expect(publicReport.reason).toContain("split the task scope");
   expect(JSON.stringify(tasks.publicView(done))).not.toContain("private/design/bus.md");
 });
 

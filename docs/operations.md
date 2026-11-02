@@ -2531,7 +2531,9 @@ cannot satisfy `require`; a refusal names the next step. A call accepts up to
 Tasks without a submitted commit or with no changed files have no coverage
 obligation. Existing spec errors are reported on tasks touching covered paths
 or spec documents. A privacy change during a check suppresses its spec report
-without discarding the check result.
+without discarding the check result. If an applicable review policy changes
+to `require` while that check runs, the pass is retained and the owner is
+asked to refile completion under the current policy.
 
 `hub_specs` offers read-only `check` and `covers` actions with at most 20 report
 items. These explicit reads and status inspect the daemon checkout; task notices

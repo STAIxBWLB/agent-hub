@@ -1042,11 +1042,41 @@ export class Tasks {
   }
 
   private assertSpecInspection(inspection: PreparedSpecInspection, task: Task, by: PeerId): void {
-    const head = task.refs.commit && /^[0-9a-f]{40}$/.test(task.refs.commit) ? task.refs.commit : "";
-    if (this.specsPolicyKey() !== inspection.policyKey || task.refs.repo !== inspection.repo || head !== inspection.head
-      || (this.d.privateTurn?.(by) === true) !== inspection.privateTurn || this.isPii(task) !== inspection.pii) {
+    this.assertSpecTaskBinding(inspection, task);
+    if (this.specsPolicyKey() !== inspection.policyKey || (this.d.privateTurn?.(by) === true) !== inspection.privateTurn || this.isPii(task) !== inspection.pii) {
       throw new PreEffectToolRefusal(`task #${task.id}: specs policy, task head or privacy context changed during inspection; retry hub_task_done`);
     }
+  }
+
+  private assertSpecTaskBinding(inspection: PreparedSpecInspection, task: Task): void {
+    const head = task.refs.commit && /^[0-9a-f]{40}$/.test(task.refs.commit) ? task.refs.commit : "";
+    if (task.refs.repo !== inspection.repo || head !== inspection.head) {
+      throw new PreEffectToolRefusal(`task #${task.id}: task head or repository changed during spec inspection; retry hub_task_done`);
+    }
+  }
+
+  private refreshAsyncSpecInspection(inspection: PreparedSpecInspection, task: Task, by: PeerId): boolean {
+    this.assertSpecTaskBinding(inspection, task);
+    const config = this.d.specsConfig?.() ?? DEFAULT_SPECS_CONFIG;
+    const privateTurn = this.d.privateTurn?.(by) === true;
+    const policyKey = this.specsPolicyKey(config), pii = this.isPii(task);
+    if (inspection.report && policyKey !== inspection.policyKey && config.enabled && config.review === "require" && !privateTurn && !pii) return true;
+    if (policyKey !== inspection.policyKey || privateTurn !== inspection.privateTurn || pii !== inspection.pii) {
+      delete inspection.report;
+      inspection.policyKey = policyKey;
+      inspection.privateTurn = privateTurn;
+      inspection.pii = pii;
+    }
+    return false;
+  }
+
+  private requestSpecRefile(task: Task): void {
+    this.tell(task, `Task #${task.id}: its class check passed, but specs policy changed to require while it ran. Refile hub_task_done so coverage is checked under the current policy.`, this.isPii(task));
+  }
+
+  private specInspectionReason(cause: string): string {
+    const safe = this.publicMetadataText(cause) ? sanitize(cause).replace(/[\r\n\t]+/g, " ").trim().slice(0, 350) : "verified spec evidence is unavailable";
+    return `${safe}; split the task scope or ask the person to change specs.review`;
   }
 
   private async inspectTaskSpecs(task: Task, by: PeerId, rawAcks: unknown, validate: () => Task): Promise<PreparedSpecInspection> {
@@ -1054,27 +1084,34 @@ export class Tasks {
     const initialPrivate = this.d.privateTurn?.(by) === true, pii = this.isPii(task);
     const declaredHead = task.refs.commit && /^[0-9a-f]{40}$/.test(task.refs.commit) ? task.refs.commit : "";
     const inspection: PreparedSpecInspection = { policyKey: this.specsPolicyKey(config), ...(task.refs.repo ? { repo: task.refs.repo } : {}), head: declaredHead, privateTurn: initialPrivate, pii };
-    if (rawAcks !== undefined && (pii || initialPrivate)) throw new PreEffectToolRefusal("spec_ack is unavailable for private work");
-    if (rawAcks !== undefined && (!config.enabled || config.review === "off")) throw new PreEffectToolRefusal("spec_ack is unavailable while specs review is disabled");
+    const ackInput = Array.isArray(rawAcks) && rawAcks.length === 0 ? undefined : rawAcks;
+    if (ackInput !== undefined && (pii || initialPrivate)) throw new PreEffectToolRefusal("spec_ack is unavailable for private work");
+    if (ackInput !== undefined && (!config.enabled || config.review === "off")) throw new PreEffectToolRefusal("spec_ack is unavailable while specs review is disabled");
     if (!config.enabled || config.review === "off" || pii || initialPrivate) return inspection;
     if (!this.d.inspectSpecs) {
-      if (config.review === "require") throw new PreEffectToolRefusal(`task #${task.id}: spec coverage is unknown because the spec inspector is unavailable; restore specs support or explicitly change specs.review`);
-      if (rawAcks !== undefined) throw new PreEffectToolRefusal("spec inspection is unavailable; cannot accept spec_ack");
+      if (config.review === "require" && declaredHead) throw new PreEffectToolRefusal(`task #${task.id}: spec coverage is unknown because the spec inspector is unavailable at the submitted head; restore specs support or explicitly change specs.review`);
+      if (ackInput !== undefined) throw new PreEffectToolRefusal("spec inspection is unavailable; cannot accept spec_ack");
       return inspection;
     }
-    const acks = this.parseSpecAcks(rawAcks);
+    const acks = this.parseSpecAcks(ackInput);
     let changedFiles: BriefFile[] | undefined;
+    let changedEvidenceReason: string | undefined;
     if (declaredHead) {
       const brief = this.d.reviewBrief?.({ ...task, refs: { ...task.refs, commit: declaredHead } });
-      if (brief && !("unavailable" in brief) && brief.head === declaredHead && brief.withheld === 0 && brief.unlisted.length === 0) {
+      if (!brief) changedEvidenceReason = "the verified review brief is unavailable";
+      else if ("unavailable" in brief) changedEvidenceReason = `review brief unavailable: ${brief.unavailable}`;
+      else if (brief.head !== declaredHead) changedEvidenceReason = "the verified review brief does not match the submitted full head";
+      else if (brief.withheld > 0) changedEvidenceReason = `the verified review brief withheld ${brief.withheld} changed file(s)`;
+      else if (brief.unlisted.length > 0) changedEvidenceReason = `the verified review brief has ${brief.unlisted.length} unlisted changed file(s)`;
+      else {
         const files = [...brief.reviewable, ...brief.excluded].flatMap(file => [file, ...(file.oldPath ? [{ path: file.oldPath, status: file.status }] : [])]);
         if (files.every(file => this.publicMetadataText(file.path))) {
           const byPath = new Map<string, BriefFile>();
           for (const file of files) if (!byPath.has(file.path)) byPath.set(file.path, file);
           changedFiles = [...byPath.values()];
-        }
+        } else changedEvidenceReason = "the verified changed-file inventory includes private paths";
       }
-    }
+    } else changedEvidenceReason = "a full task commit head was not supplied";
     const screenedAcks: SpecAck[] = [];
     for (const ack of acks) {
       if (!this.publicMetadataText(ack.reason)) throw new PreEffectToolRefusal("spec_ack reason is private or sensitive");
@@ -1093,22 +1130,30 @@ export class Tasks {
     if (!safe) throw new PreEffectToolRefusal("spec inspection returned invalid or private metadata");
     if (safe.unchanged.length < Math.min(report.unchanged.length, 20) || safe.changed.length < Math.min(report.changed.length, 20)) {
       safe.complete = false;
-      safe.reason = "some spec metadata could not be safely shown";
+      safe.reason = this.specInspectionReason("some spec metadata could not be safely shown");
     }
     if (safe.head !== declaredHead) {
       safe.complete = false;
       safe.head = "";
-      safe.reason = "the spec report does not match the verified task head";
+      safe.reason = this.specInspectionReason("the spec report does not match the verified task head");
       safe.unchanged = [];
       safe.changed = [];
     }
+    if (report.truncated) {
+      safe.complete = false;
+      safe.reason = this.specInspectionReason("the submitted spec scan reached its safety limit; narrow specs.roots");
+    } else if (changedFiles === undefined && changedEvidenceReason && safe.head === declaredHead) {
+      safe.complete = false;
+      safe.reason = this.specInspectionReason(changedEvidenceReason);
+    } else if (!safe.complete && safe.reason) safe.reason = this.specInspectionReason(safe.reason);
+    else if (!safe.complete) safe.reason = this.specInspectionReason(report.reason ?? "spec coverage could not be verified at the submitted task head");
     if (config.review === "require" && report.unchanged.length > 20) throw new PreEffectToolRefusal(`task #${task.id}: ${report.unchanged.length} covering specs are unchanged; update the specs or split the task scope so each task covers at most 20 specs`);
     const pendingIds = new Set(safe.unchanged.map(spec => spec.id));
     for (const ack of screenedAcks) if (!pendingIds.has(ack.id)) throw new PreEffectToolRefusal(`spec_ack ${ack.id} does not name a covering spec that is unchanged at this head`);
     const reasons = new Map(screenedAcks.map(ack => [ack.id, ack.reason]));
     safe.unchanged = safe.unchanged.map(spec => ({ ...spec, ...(reasons.has(spec.id) ? { reason: reasons.get(spec.id)! } : {}) }));
     if (config.review === "require") {
-      if (!safe.complete || report.truncated) throw new PreEffectToolRefusal(`task #${task.id}: spec coverage is unknown at this head${safe.reason ? ` (${safe.reason})` : ""}; inspect the current task head and run ahub specs check`);
+      if (!safe.complete || report.truncated) throw new PreEffectToolRefusal(`task #${task.id}: ${safe.reason ?? this.specInspectionReason("spec coverage is unknown at this submitted task head")}`);
       const unacknowledged = safe.unchanged.filter(spec => !reasons.has(spec.id));
       if (unacknowledged.length) throw new PreEffectToolRefusal(`task #${task.id}: spec not updated: ${unacknowledged.map(spec => spec.id).join(", ")}; update the covering spec or add spec_ack [{id, reason}]`);
     }
@@ -6182,7 +6227,7 @@ export class Tasks {
       return;
     }
     if (result.code === 0 && !result.timedOut) {
-      this.assertSpecInspection(specInspection, task, by);
+      const refileForSpecs = this.refreshAsyncSpecInspection(specInspection, task, by);
       // An integrating member's check counts only for the target it confirmed (issue #107).
       const cohort = this.cohorts.of(id);
       if (cohort?.silent && !this.cohorts.holds(id, ownerGen(task), this.tree(cohort))) {
@@ -6191,8 +6236,9 @@ export class Tasks {
         return;
       }
       this.d.board.update(id, HUB, "check passed", {}, `${outcome}\n${result.tail}`.trim(), this.checkProvenance(task, result.tail));
+      if (refileForSpecs) { this.requestSpecRefile(task); return; }
       // The output goes to the reviewer with the done note, not into shared memory: nobody screened it.
-      await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail, withheld, undefined, undefined, undefined, undefined, undefined, undefined, specInspection);
+      await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail, withheld, undefined, undefined, undefined, undefined, undefined, undefined, specInspection, true);
       return;
     }
     this.d.board.update(id, HUB, "check failed", {}, `${outcome}\n${result.tail}`.trim(), this.checkProvenance(task, result.tail));
@@ -6204,8 +6250,9 @@ export class Tasks {
   }
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
-  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink, records?: DeliverableRecord[], requestCheck: () => void = () => {}, refresh?: CompletionRefresh, specInspection?: PreparedSpecInspection): Promise<Task> {
+  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink, records?: DeliverableRecord[], requestCheck: () => void = () => {}, refresh?: CompletionRefresh, specInspection?: PreparedSpecInspection, asyncCheckCompletion = false): Promise<Task> {
     requestCheck();
+    if (specInspection && asyncCheckCompletion && this.refreshAsyncSpecInspection(specInspection, task, by)) { this.requestSpecRefile(task); return task; }
     // A check's completion carries the records its `done (checking)` bound: the same bytes the owner delivered, not a later read.
     records ??= latestPendingDeliverables(task);
     const submittedCommit = cleanRefs(refs).commit;
@@ -6217,6 +6264,7 @@ export class Tasks {
       reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
       requestCheck();
       task = this.withLink(this.completionDraft(this.completionCurrent(task.id, by, false, refresh), draft), link, refs);
+      if (specInspection && asyncCheckCompletion && this.refreshAsyncSpecInspection(specInspection, task, by)) { this.requestSpecRefile(task); return task; }
       selection = this.poolReview(task, refs);
       reviewer = selection?.reviewer ?? task.reviewer ?? (refresh?.state === "approved" ? USER : undefined);
     }
@@ -6225,6 +6273,7 @@ export class Tasks {
       admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, draft), link, refs), !reviewer);
       requestCheck();
       task = this.withLink(this.completionDraft(this.completionCurrent(task.id, by, false, refresh), draft), link, refs);
+      if (specInspection && asyncCheckCompletion && this.refreshAsyncSpecInspection(specInspection, task, by)) { this.requestSpecRefile(task); return task; }
     }
     selection = this.poolReview(task, refs);
     reviewer = selection?.reviewer ?? task.reviewer ?? (refresh?.state === "approved" ? USER : undefined);
@@ -6234,12 +6283,17 @@ export class Tasks {
     if (refresh?.state === "approved") {
       await this.unmergedForReopen(task, () => { requestCheck(); return this.completionCurrent(task.id, by, true, refresh); });
       task = this.withLink(this.completionDraft(this.completionCurrent(task.id, by, true, refresh), draft), link, refs);
+      if (specInspection && asyncCheckCompletion && this.refreshAsyncSpecInspection(specInspection, task, by)) { this.requestSpecRefile(task); return task; }
     }
     const completedRefs = cleanRefs(refs);
     if (specInspection?.report?.head && !completedRefs.commit) completedRefs.commit = specInspection.report.head;
     if (specInspection?.report && specInspection.repo && !completedRefs.repo) completedRefs.repo = specInspection.repo;
     const storedRefs = { ...task.refs, ...completedRefs };
-    if (specInspection) this.assertSpecInspection(specInspection, { ...task, refs: storedRefs }, by);
+    if (specInspection) {
+      if (asyncCheckCompletion) {
+        if (this.refreshAsyncSpecInspection(specInspection, { ...task, refs: storedRefs }, by)) { this.requestSpecRefile(task); return task; }
+      } else this.assertSpecInspection(specInspection, { ...task, refs: storedRefs }, by);
+    }
     this.warmRepository({ ...task, refs: storedRefs });
     const noWrites = this.noWritesRecorded({ ...task, refs: storedRefs });
     const capacity = this.capacityBefore(task);
