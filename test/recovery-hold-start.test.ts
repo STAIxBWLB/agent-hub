@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
+import { realPath } from "../src/hub/project.ts";
 
 // #1088: while recovery holds mutations, a start request used to be refused with only "recovery is holding mutations". A person who asked to start a peer that already runs could not tell
 // whether the peer was down or what to do. The refusal now names the hold, whether the peer already runs, and the step that works.
@@ -11,8 +12,10 @@ const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
 async function rig() {
-  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-recovery-hold-start-"))), stateDir = join(cwd, "state");
-  cleanup.push(() => rmSync(cwd, { recursive: true, force: true }));
+  // The directory exists as soon as mkdtempSync returns, so its removal is registered before anything that can throw; realPath, never realpathSync (AGENTS.md "Real paths": Bun throws ENOENT for a path with a backslash).
+  const made = mkdtempSync(join(tmpdir(), "agenthub-recovery-hold-start-"));
+  cleanup.push(() => rmSync(made, { recursive: true, force: true }));
+  const cwd = realPath(made), stateDir = join(cwd, "state");
   const instanceId = crypto.randomUUID();
   const daemon = await startDaemon({ cwd, stateDir, projectId: "hold-start-fixture", instanceId, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0,
