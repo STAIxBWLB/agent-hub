@@ -227,7 +227,7 @@ test("the bundled MCP server publishes configured targets and enforces read-only
     expect(listed.isError).not.toBe(true);
     expect(listed.content).toContainEqual({ type: "text", text: "[]" });
     const beforeSpecs = await f.client.request({ t: "task", op: "hub_task_list", args: {} });
-    const specsRead = await readOnly.callTool({ name: "hub_specs", arguments: { action: "covers", paths: ["src/hub/bus.ts"] } });
+    const specsRead = await readOnly.request({ method: "tools/call", params: { name: "hub_specs", arguments: { action: "covers", paths: ["src/hub/bus.ts"] } } }, CallToolResultSchema);
     expect(specsRead.isError).not.toBe(true);
     expect(specsRead.content.some(content => content.type === "text")).toBe(true);
     const afterSpecs = await f.client.request({ t: "task", op: "hub_task_list", args: {} });
