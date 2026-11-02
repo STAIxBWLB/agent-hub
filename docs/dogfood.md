@@ -58,6 +58,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Task sweep (stalls, idle owners) | on | stall and sweep events per week |
 | Turn-free coordination | off: experimental; needs a separate measured trial | coordination events, conflict notices |
 | Pull-only peers (agy) | on; `hub_inbox` drains to 64 KiB (#713) | unread offers, empty-inbox polling (#681); queued count and oldest queued age per pull-only peer in `ahub status`; reads that said `N more waiting` |
+| Bulk clear of failed queue rows and the settled-row filter (#1096, `queue_discard_states`) | on after release and upgrade: `ahub queue discard --peer <id>` also takes the peer's unsettled failed rows and `ahub queue list` hides settled rows (`--all` shows them); fixture coverage only (`test/queue-discard.test.ts`: real daemon and CLI, a fake old hub for the capability refusal). A person using it on a real backlog is not yet recorded | `ahub queue discard --peer` runs that name a failed count, `queue list` stderr lines `N settled deliveries hidden`, and the failed-row count per peer in `ahub status` falling after a discard; a refusal that names `queue_discard_states` means an older hub is still running |
 | Completed-change notices, grouped and superseding (#713) | on after release; accepted tasks only | queued `is done and touches` notices per peer (one per done, not per task and per repeat); `superseded completed-change notice` discards; `ahub queue discard` uses |
 
 ## Review and lifecycle

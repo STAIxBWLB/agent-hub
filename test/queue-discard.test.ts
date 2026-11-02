@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync, mkdirSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { ControlClient, PROTOCOL, PROTOCOL_MIN } from "../src/hub/control-client.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 import { reduceConsole, initialConsoleState, renderConsole, keyTable, commandNeedsConfirmation } from "../src/cli/console-state.ts";
 import { HELP } from "../src/cli/help.ts";
@@ -279,4 +279,61 @@ test("an agent shell may read queue list --all, and the help rows match the pars
   const list = HELP.find(entry => entry.usage.startsWith("ahub queue list"))!, discard = HELP.find(entry => entry.usage.startsWith("ahub queue discard"))!;
   expect(list.usage).toContain("[--all]"); expect(list.description).toContain("--all shows them");
   expect(discard.usage).toContain("[--state queued|needs_review|failed]"); expect(discard.description).toContain("unsettled failed");
+});
+
+// A hub from before `queue_discard_states` ignores `states` and defaults an absent `state` to queued, so a CLI that sent the new form to it would discard queued rows when the person asked for failed ones.
+function oldHub(features: string[]) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-old-hub-"))), stateDir = join(root, ".agenthub/state");
+  mkdirSync(stateDir, { recursive: true });
+  const requests: Record<string, unknown>[] = [];
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(request, owner) { if (request.headers.has("origin")) return new Response("forbidden", { status: 403 }); return owner.upgrade(request) ? undefined : new Response("not websocket"); },
+    websocket: { message(ws, data) {
+      const message = JSON.parse(String(data));
+      if (message.t === "hello") return void ws.send(JSON.stringify({ rid: message.rid, t: "welcome", projectId: "project", instanceId: "instance", cwd: root, protocol: message.v, features }));
+      requests.push(message);
+      // what an old hub answers: it reads `state` (default queued) and ignores `states`
+      ws.send(JSON.stringify({ rid: message.rid, ok: true, t: message.t, peer: message.peer, state: message.state ?? "queued", count: 3, discarded: message.confirmed ? 3 : 0, refused: 0 }));
+    } } });
+  writeFileSync(join(stateDir, "control-token"), "fixture-token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, cwd: root, projectId: "project", instanceId: "instance", protocol: PROTOCOL, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, features }));
+  cleanup.push(() => { server.stop(true); rmSync(root, { recursive: true, force: true }); });
+  return { root, requests };
+}
+
+test("against a hub without queue_discard_states the CLI never sends the new wire form, names the cause and the next step, and the legacy single state still works (#1096)", async () => {
+  const old = oldHub(["schema_guard"]);
+  const bulk = (...extra: string[]) => cli(old.root, ["queue", "discard", "--peer", "codex", "--reason", "x", "--yes", ...extra]);
+  // the default (queued and failed) and --state failed both need the new form: refused before anything is sent
+  for (const extra of [[], ["--state", "failed"]]) {
+    const refused = await bulk(...extra);
+    expect(refused.code).not.toBe(0);
+    expect(refused.stderr).toContain("the running hub predates failed-row discard and would discard queued rows instead");
+    expect(refused.stderr).toContain("nothing was sent");
+    expect(refused.stderr).toContain("Upgrade and restart it first, or run ahub queue discard --peer codex --state queued");
+  }
+  expect(old.requests.filter(r => r.op === "discard")).toEqual([]);
+  // a single legacy kind goes in the `state` field that every hub reads, with no `states`
+  for (const kind of ["queued", "needs_review"]) {
+    const ok = await bulk("--state", kind);
+    expect(ok.code, ok.stderr).toBe(0);
+    const sent = old.requests.filter(r => r.op === "discard").at(-1)!;
+    expect(sent.state).toBe(kind); expect(sent.states).toBeUndefined();
+  }
+  // a hub that has the feature gets the list form for the default
+  const current = oldHub(["schema_guard", "queue_discard_states"]);
+  const ok = await cli(current.root, ["queue", "discard", "--peer", "codex", "--reason", "x", "--yes"]);
+  expect(ok.code, ok.stderr).toBe(0);
+  expect(current.requests.find(r => r.op === "discard")).toMatchObject({ states: ["queued", "failed"] });
+});
+
+test("the daemon advertises queue_discard_states, and the console's D command names the one kind its count shows (#1096)", async () => {
+  const f = await rig();
+  expect(f.person.features).toContain("queue_discard_states");
+  const s = initialConsoleState();
+  s.queue = [{ id: "q1", peer: "codex", state: "queued", revision: 1 }, { id: "q2", peer: "codex", state: "failed", revision: 1 }] as never;
+  s.input = "queue discard --peer codex --reason cleaning up"; s.editing = true;
+  const next = reduceConsole(s, "enter", 1).state;
+  expect(next.confirm).toMatchObject({ type: "command", args: ["queue", "discard", "--peer", "codex", "--state", "queued", "--reason", "cleaning up", "--yes"] });
+  expect(String((next.confirm as { prompt: string }).prompt)).toContain("discard all 1 queued delivery of codex");
 });

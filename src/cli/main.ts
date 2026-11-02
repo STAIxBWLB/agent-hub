@@ -1241,7 +1241,10 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (yes && !one["--reason"]?.trim()) fail("ahub queue discard needs --reason <text> with --yes: it is recorded on every discarded delivery");
         // #1096: with no --state the bulk clear takes the peer's queued rows and its unsettled failed rows (needs_review rows still need an explicit --state, as before); an explicit --state names exactly one kind.
         const states = one["--state"] === undefined ? ["queued", "failed"] : [one["--state"]];
-        const result = await hub.request({ t: "queue", op: "discard", peer: one["--peer"], states, ...(yes ? { confirmed: true, reason: one["--reason"] } : {}) }, 60_000);
+        // A hub from before `queue_discard_states` ignores `states` and discards queued rows whatever kind was asked for, so the new wire form is never sent to it. A single queued or needs_review kind still goes in the legacy `state` field that every hub reads.
+        const legacy = states.length === 1 && (states[0] === "queued" || states[0] === "needs_review");
+        if (!legacy && !hub.features.includes("queue_discard_states")) fail(`the running hub predates failed-row discard and would discard queued rows instead of ${one["--state"] === undefined ? "queued and failed rows" : `${one["--state"]} rows`}; nothing was sent. Upgrade and restart it first, or run ahub queue discard --peer ${one["--peer"]} --state queued to clear queued rows only`);
+        const result = await hub.request({ t: "queue", op: "discard", peer: one["--peer"], ...(legacy ? { state: states[0] } : { states }), ...(yes ? { confirmed: true, reason: one["--reason"] } : {}) }, 60_000);
         if (!result.ok) fail(result.error,result.refusalAudited===true,result.authorityRefused);
         if (options.json) return console.log(JSON.stringify(result, null, 2));
         // One kind keeps the sentence this command always printed ("12 queued deliveries for claude"); a mix of kinds names each ("3 queued and 2 failed deliveries for claude").

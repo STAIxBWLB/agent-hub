@@ -638,7 +638,8 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
           const reason = words.join(" ").trim();
           if (!peer || !reason) throw new Error("queue discard needs --peer and --reason (it is recorded on every discarded delivery)");
           const count = s.queue.filter(row => row.peer === peer && row.state === state).length;
-          const args = ["queue", "discard", "--peer", peer, ...(parsed.includes("--state") ? ["--state", state] : []), "--reason", reason, "--yes"];
+          // The prompt below counts one kind, so the command names it: without --state the CLI would also take the peer's failed rows (#1096) and the count shown would be short.
+          const args = ["queue", "discard", "--peer", peer, "--state", state, "--reason", reason, "--yes"];
           s.history = [...s.history, input].slice(-(s.historyLimit ?? CONSOLE_HISTORY_LIMIT)); s.historyIndex = s.history.length;
           s.confirm = { type: "command", args, prompt: `discard all ${count} ${state} deliver${count === 1 ? "y" : "ies"} of ${peer}; no task or native turn is cancelled, other peers are untouched` };
           return done();
