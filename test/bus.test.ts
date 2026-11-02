@@ -1154,3 +1154,37 @@ test("#550 a hop drop never claims mixed roster recipients were retained or deli
     expect(bus.snapshot().prefaces.local?.body ?? "").not.toContain("retained off roster");
   } finally { bus.closeJournal(); await Promise.all([sender.stop(), allowed.stop(), blocked.stop()]); }
 });
+
+// #1096: a `failed` delivery is settled by the person or the conductor at the revision `queue show` prints.
+async function failedRow() {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-failed-row-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "failed-row", instanceId: "one" });
+  const bus = new Bus({ batchMs: 0, journal }), peer = new FakePeer("codex"); let deliveryId = "";
+  peer.deliver = async (_envs, id?: string) => { peer.set("busy"); deliveryId = id!; peer.onDelivery?.({ id: id!, state: "accepted" }); };
+  await peer.start(); bus.add(peer);
+  bus.publish(newEnvelope("user", "work that later fails safely", { to: [peer.id] }));
+  for (let n = 0; n < 200 && !deliveryId; n++) await Bun.sleep(10);
+  peer.onDelivery?.({ id: deliveryId, state: "failed_safe", reason: "peer refused it before running it" });
+  peer.set("idle");
+  const done = async () => { bus.closeJournal(); await peer.stop(); rmSync(dir, { recursive: true, force: true }); };
+  return { bus, journal, peer, deliveryId, done };
+}
+
+test("a failed delivery resolves at the revision queue show prints, for discard and for completed (#1096 AC1, AC3)", async () => {
+  const { bus, journal, deliveryId, done } = await failedRow();
+  try {
+    const shown = bus.queueShow(deliveryId)!;
+    expect(shown.state).toBe("failed");
+    expect(journal.get(deliveryId)!.revision).toBe(shown.revision);
+    bus.resolveDelivery(deliveryId, shown.revision, "discard", "the person discards a failed row");
+    const after = bus.queueShow(deliveryId)!;
+    expect(after.state).toBe("discarded");
+    expect(journal.resolution(deliveryId)).toMatchObject({ action: "discard", reason: "the person discards a failed row", actor: "user" });
+  } finally { await done(); }
+  const second = await failedRow();
+  try {
+    const shown = second.bus.queueShow(second.deliveryId)!;
+    second.bus.resolveDelivery(second.deliveryId, shown.revision, "completed", "acknowledged: handled elsewhere");
+    expect(second.bus.queueShow(second.deliveryId)!.state).toBe("completed");
+  } finally { await second.done(); }
+});
