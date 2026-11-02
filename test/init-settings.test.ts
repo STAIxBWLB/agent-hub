@@ -90,6 +90,17 @@ test("without a settings flag the dry-run JSON is the bare list it always was, a
   expect(existsSync(join(cwd, ".agenthub"))).toBe(false);
 });
 
+test("an explicit --coordination advisory on a new project is written, so the choice is explicit and committable; the same flag again is the no-op (#1065 AC1, AC2)", () => {
+  const p = fixture(), cwd = p.repo("explicit");
+  expect(p.run(cwd, ["init", "--coordination", "advisory"]).exitCode).toBe(0);
+  expect(p.json(cwd, "config.json").coordination).toBe("advisory");
+  const before = p.tree(cwd);
+  const again = JSON.parse(p.run(cwd, ["init", "--coordination", "advisory", "--dry-run", "--json"]).stdout.toString());
+  expect(again.settings).toEqual([]);
+  expect(p.run(cwd, ["init", "--coordination", "advisory"]).exitCode).toBe(0);
+  expect(p.tree(cwd)).toEqual(before);
+});
+
 test("--sdlc off on a new project writes no sdlc.toml, and nothing else changes (#1065 AC1)", () => {
   const p = fixture(), cwd = p.repo("off");
   expect(p.run(cwd, ["init", "--sdlc", "off"]).exitCode).toBe(0);
@@ -100,7 +111,7 @@ test("--sdlc off on a new project writes no sdlc.toml, and nothing else changes 
 
 // ---- AC2: an existing project changes only what a flag names, shows old and new, keeps formatting, and a flag equal to the value is a no-op ----
 
-const formatted = '{\n  "watchdog_ms": 300000,\n  "memory": { "enabled": true, "inject_tokens": 2000 },\n  "pi": {"enabled":false,"auto_start":false},\n  "roles": {\n    "claude": ["planner", "reviewer"]\n  }\n}\n';
+const formatted = '{\n  "watchdog_ms": 300000,\n  "coordination": "advisory",\n  "memory": { "enabled": true, "inject_tokens": 2000 },\n  "pi": {"enabled":false,"auto_start":false},\n  "roles": {\n    "claude": ["planner", "reviewer"]\n  }\n}\n';
 
 test("on an existing project an explicit flag shows a modify row with old and new values and writes only that key (#1065 AC2)", () => {
   const p = fixture(), cwd = p.repo("existing");
@@ -116,7 +127,7 @@ test("on an existing project an explicit flag shows a modify row with old and ne
   expect(p.tree(cwd)).toEqual(before); // the preview wrote nothing
   expect(p.run(cwd, ["init", "--no-memory", "--coordination", "turn-free"]).exitCode).toBe(0);
   // Every byte outside the two changed keys is as the person wrote it, including the compact `pi` object and the one-line memory object.
-  expect(p.text(cwd, "config.json")).toBe(formatted.replace('"enabled": true', '"enabled": false').replace('  }\n}\n', '  },\n  "coordination": "turn-free"\n}\n'));
+  expect(p.text(cwd, "config.json")).toBe(formatted.replace('"enabled": true', '"enabled": false').replace('"coordination": "advisory"', '"coordination": "turn-free"'));
   expect(p.tree(cwd)["config.local.json"]).toBeUndefined();
 });
 
@@ -216,13 +227,14 @@ test("a config file the editor cannot change safely is refused with the next ste
 test("the daemon's loader judges the files before any write: a request it would refuse writes nothing (#1065 AC3)", () => {
   const p = fixture(), cwd = p.repo("loader");
   expect(p.run(cwd, ["init"]).exitCode).toBe(0);
-  // `coordination` passes the closed set; make the candidate invalid some other way so the loader's own check is what refuses it.
-  writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ ...p.json(cwd, "config.json"), budget: { gate: "not a number" } }, null, 2) + "\n");
+  // `coordination` passes the closed set; the candidate is invalid some other way (a key the flag never touches), so the loader's own check is what refuses it.
+  writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ ...p.json(cwd, "config.json"), terminal: 5 }, null, 2) + "\n");
   const before = p.tree(cwd);
   const result = p.run(cwd, ["init", "--coordination", "turn-free"]);
   expect(result.exitCode).not.toBe(0);
-  expect(out(result)).toContain("do not pass the hub's config check");
-  expect(out(result)).toContain("nothing was written");
+  expect(out(result)).toContain("does not pass the hub's config check");
+  expect(out(result)).toContain("terminal must be an object");
+  expect(out(result)).toContain("fix that key in your editor, then run ahub init again; nothing was written");
   expect(p.tree(cwd)).toEqual(before);
 });
 
@@ -297,7 +309,7 @@ test("the planner reads only the files it is given and is the one place the tabl
   const request = parseInitSettings(["--coordination", "turn-free", "--no-pi", "--agents", "none"]).request;
   const plan = planInitSettings(request, { "config.json": formatted, "config.local.json": null, "sdlc.toml": null });
   expect(plan.rows.map(row => row.key)).toEqual(["start.agents", "coordination"]); // pi is already off: no row
-  expect(plan.next["config.json"]).toBe(formatted.replace('  }\n}\n', '  },\n  "coordination": "turn-free"\n}\n'));
+  expect(plan.next["config.json"]).toBe(formatted.replace('"coordination": "advisory"', '"coordination": "turn-free"'));
   expect(JSON.parse(plan.next["config.local.json"]!)).toEqual({ start: { agents: [] } });
   expect(plan.next["sdlc.toml"]).toBeUndefined();
 });

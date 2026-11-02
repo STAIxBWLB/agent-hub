@@ -135,7 +135,8 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
   for (const name of ["config.json", "config.local.json"]) {
     const path = join(cwd, ".agenthub", name);
     if (existsSync(path)) {
-      const layer = JSON.parse(readFileSync(path, "utf8"));
+      let layer: Record<string, unknown>;
+      try { layer = JSON.parse(readFileSync(path, "utf8")); } catch { throw new Error(`.agenthub/${name} is not valid JSON; fix it in your editor, then run ahub init again; nothing was written`); }
       if (layer.profile !== undefined) activeProfile = profileName(layer.profile);
       resolveProfile(activeProfile, layer.profile_overrides);
       overrides = mergeProfileOverrides(overrides, layer.profile_overrides);
@@ -233,11 +234,11 @@ function checkCandidate(cwd: string, plan: readonly PlannedWrite[]): void {
   };
   if (config !== undefined || local !== undefined) {
     try { loadConfig(cwd, [...layer("config.json", config), ...layer("config.local.json", local)] as never); }
-    catch (error) { throw new Error(`the requested settings do not pass the hub's config check: ${(error as Error).message}; nothing was written`); }
+    catch (error) { throw new Error(`the resulting .agenthub config does not pass the hub's config check: ${(error as Error).message}; fix that key in your editor, then run ahub init again; nothing was written`); }
   }
   if (sdlc !== undefined) {
     try { sdlcConfig(Bun.TOML.parse(sdlc), VERSION); }
-    catch (error) { throw new Error(`the requested SDLC mode does not pass the hub's check: ${(error as Error).message}; nothing was written`); }
+    catch (error) { throw new Error(`the resulting .agenthub/sdlc.toml does not pass the hub's check: ${(error as Error).message}; fix it in your editor, then run ahub init again; nothing was written`); }
   }
 }
 /** What a pack adds, by id only: the preview names the criteria and checks, never their text. */

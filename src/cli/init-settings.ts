@@ -31,8 +31,6 @@ interface InitSettingDef {
   parse(text: string): unknown;
   /** What the setting is, for a refusal or a plan line. */
   describe: string;
-  /** The value in effect while the key is absent. A request equal to it is a no-op, never a row that only writes the default down. */
-  absent?: unknown;
 }
 
 const choice = <T extends string>(id: string, flag: string, values: readonly T[]) => (text: string): T => {
@@ -48,10 +46,10 @@ export const INIT_SETTINGS: readonly InitSettingDef[] = [
       catch (error) { throw new Error(`${(error as Error).message}; allowed: ${START_AGENTS_ALLOWED.join(", ")} or none; nothing was written`); }
     } },
   { id: "sdlc.mode", flags: [{ flag: "--sdlc" }], file: "sdlc.toml", path: ["mode"], allowed: SDLC_MODES.join("|"), describe: "SDLC mode", parse: choice("sdlc.mode", "--sdlc", SDLC_MODES) },
-  { id: "coordination", flags: [{ flag: "--coordination" }], file: "config.json", path: ["coordination"], allowed: COORDINATION_MODES.join("|"), describe: "coordination mode", absent: "advisory", parse: choice("coordination", "--coordination", COORDINATION_MODES) },
-  { id: "memory.enabled", flags: [{ flag: "--memory", value: true }, { flag: "--no-memory", value: false }], file: "config.json", path: ["memory", "enabled"], allowed: "on|off", describe: "shared memory", absent: true, parse: () => { throw new Error("unreachable"); } },
-  { id: "snapshots.enabled", flags: [{ flag: "--snapshots", value: true }, { flag: "--no-snapshots", value: false }], file: "config.json", path: ["snapshots", "enabled"], allowed: "on|off", describe: "per-turn snapshots", absent: true, parse: () => { throw new Error("unreachable"); } },
-  { id: "pi.enabled", flags: [{ flag: "--pi", value: true }, { flag: "--no-pi", value: false }], file: "config.json", path: ["pi", "enabled"], allowed: "on|off", describe: "the Pi peer", absent: false, parse: () => { throw new Error("unreachable"); } },
+  { id: "coordination", flags: [{ flag: "--coordination" }], file: "config.json", path: ["coordination"], allowed: COORDINATION_MODES.join("|"), describe: "coordination mode", parse: choice("coordination", "--coordination", COORDINATION_MODES) },
+  { id: "memory.enabled", flags: [{ flag: "--memory", value: true }, { flag: "--no-memory", value: false }], file: "config.json", path: ["memory", "enabled"], allowed: "on|off", describe: "shared memory", parse: () => { throw new Error("unreachable"); } },
+  { id: "snapshots.enabled", flags: [{ flag: "--snapshots", value: true }, { flag: "--no-snapshots", value: false }], file: "config.json", path: ["snapshots", "enabled"], allowed: "on|off", describe: "per-turn snapshots", parse: () => { throw new Error("unreachable"); } },
+  { id: "pi.enabled", flags: [{ flag: "--pi", value: true }, { flag: "--no-pi", value: false }], file: "config.json", path: ["pi", "enabled"], allowed: "on|off", describe: "the Pi peer", parse: () => { throw new Error("unreachable"); } },
 ];
 
 /** `--autonomy inherit|off` is not a config key: it decides whether a new project inherits the machine's autonomy preset (person-only, main.ts applies it). */
@@ -186,7 +184,7 @@ function parseJsonObject(file: string, text: string): Record<string, unknown> {
 
 /**
  * What the requested settings change, given the current files. `texts["config.json"]` is the text the file will have (the template, with the profile applied, for
- * a new project). A request equal to the value in effect makes no row and no write. Only the named keys change: an existing file is edited in place by
+ * a new project). A key that already holds the requested value makes no row and no write; an absent key is written. Only the named keys change: an existing file is edited in place by
  * `editJsonText` (and `editSdlcText` for sdlc.toml), a missing config.local.json is created with just the keys asked for. The same key given twice is
  * refused by the parser, so each key appears at most once.
  */
@@ -211,7 +209,7 @@ export function planInitSettings(request: InitSettingsRequest, texts: InitSettin
     }
     const file = row.file, doc = parsed(file);
     const held = valueAt(doc, row.path);
-    if (same(held ?? row.absent, to) && (held !== undefined || row.absent !== undefined)) continue;
+    if (held !== undefined && same(held, to)) continue; // a key that already holds the value is a no-op; an absent key is written, so the choice is explicit and a team can commit it
     current[file] = current[file] === null ? editJsonText("{}\n", row.path, to) : editJsonText(current[file]!, row.path, to);
     next[file] = current[file]!;
     rows.push({ key: row.id, file, ...(held === undefined ? {} : { from: held }), to } as InitSettingRow);
