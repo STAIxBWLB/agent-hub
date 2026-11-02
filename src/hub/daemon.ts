@@ -663,6 +663,8 @@ export interface DaemonOptions {
   releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
   /** Host-only (#285): Kimi's data home for its wire-log usage reader; default `KIMI_CODE_HOME`, else `~/.kimi-code`. Never read from config or tools. */
   kimiHome?: string;
+  /** Host-only replay-window test ceiling (1..512); never read from project config or a tool. */
+  toolWriteReplayMaxEntries?: number;
   /** Host-only evidence seam; never supplied by project config or control messages. */
   releaseDocEvidence?: (root: string) => Promise<DocEvidence | undefined>;
   projectId?: string;
@@ -788,6 +790,7 @@ function capturedRecoverySourceDigest(): string | undefined {
 export async function startDaemon(opts: DaemonOptions) {
   // Refuse unknown formats before logs, session cleanup, module factories or any writable store is opened.
   assertHubDbCompatible(join(opts.stateDir, "hub.db"));
+  if (opts.toolWriteReplayMaxEntries !== undefined && (!Number.isSafeInteger(opts.toolWriteReplayMaxEntries) || opts.toolWriteReplayMaxEntries < 1 || opts.toolWriteReplayMaxEntries > 512)) throw new Error("invalid host tool write replay capacity");
   const resolveExecutionCwd = (peer: string, currentDeclarations: InstancesConfig | undefined, currentRoles: readonly string[], catalog: ReturnType<typeof createProjectAdapterCatalog>): string =>
     resolveInstanceExecutionCwd(opts.cwd, peer, currentDeclarations, currentRoles, catalog, undefined, undefined, opts.instanceExecutionGit);
   const projectId = opts.projectId ?? randomUUID();
@@ -3289,7 +3292,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // commit waits for those in flight, or its integrity digest misses their later writes. Completion checks outlive
   // their op, so recoveryReady() also waits for `tasks.checksPending()`: a check the commit's stop kills would write.
   let taskOpsInFlight = 0;
-  const toolWriteRegistry = new ToolWriteRegistry(instanceId);
+  const toolWriteRegistry = new ToolWriteRegistry(instanceId, opts.toolWriteReplayMaxEntries === undefined ? {} : { maxEntries: opts.toolWriteReplayMaxEntries });
   const toolWriteScope = (c: Client, operation: string): string => {
     const actor = c.peer ?? USER, peer = c.peer ? bus.peers.get(c.peer) : undefined;
     const binding = c.toolsOwner ?? c.externalOwner;
@@ -3309,11 +3312,13 @@ export async function startDaemon(opts: DaemonOptions) {
       if (c.session && sessionGate(actor, payload)) return false;
       if (toolWriteScope(c, operation) !== scope || readOnlyPeer(actor) && !READ_ONLY_HUB_TOOLS.has(operation)
         || c.toolsOwner && !IMPLEMENTER_HUB_TOOL_NAMES.includes(operation)) return false;
-      if (actor !== USER && (turns.get(actor)?.private || contextPii(actor))) return false;
+      const privateContext = actor !== USER && (!!turns.get(actor)?.private || contextPii(actor));
       const args = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args) ? payload.args as Record<string, unknown> : {};
       const requestedOwner = typeof args.owner === "string" ? args.owner.trim().toLowerCase() : "";
       if (operation === "hub_task_propose" && (!may(actor, "propose") || requestedOwner && PEER_ID.test(requestedOwner)
         && ![actor, USER, HUB, "digest"].includes(requestedOwner) && !may(actor, "assign"))) return false;
+      const safePiiProposalReceipt = operation === "hub_task_propose" && actor !== USER && result?.ok === true && typeof result.text === "string"
+        && /^task #[1-9]\d*: (?:backlog|proposed|in_progress|in_review|approved|changes_requested|cancelled), owner (?:none|[a-z][a-z0-9-]{0,31}), reviewer (?:none|[a-z][a-z0-9-]{0,31})$/.test(result.text);
       const taskId = operation === "hub_review" ? taskWriteId(args.id)
         : result?.ok === true && typeof result.text === "string" ? Number(/task #(\d+):/.exec(result.text)?.[1]) : undefined;
       if (taskId !== undefined) {
@@ -3323,9 +3328,11 @@ export async function startDaemon(opts: DaemonOptions) {
           // A successful cached verdict without its task row is no longer safe to replay.
           if (operation !== "hub_review" || result?.ok === true) return false;
         } else {
-          const safePiiProposalReceipt = operation === "hub_task_propose" && actor !== USER && result?.ok === true && typeof result.text === "string"
-            && /^task #[1-9]\d*: (?:backlog|proposed|in_progress|in_review|approved|changes_requested|cancelled), owner (?:none|[a-z][a-z0-9-]{0,31}), reviewer (?:none|[a-z][a-z0-9-]{0,31})$/.test(result.text);
-          if (actor !== USER && tasks.isPii(task) && !safePiiProposalReceipt || operation === "hub_review" && actor !== USER && task.reviewer !== actor
+          const piiTask = tasks.isPii(task);
+          // ponytail: non-console review/PII replays remain held; narrower privacy needs host-proven per-operation private-turn authority.
+          if (operation === "hub_review" && actor !== USER && privateContext) return false;
+          if (actor !== USER && piiTask && !safePiiProposalReceipt
+            || operation === "hub_review" && actor !== USER && task.reviewer !== actor
             || actor !== USER && result?.ok === true && typeof result.text === "string" && !tasks.publicMetadataText(result.text) && !safePiiProposalReceipt) return false;
         }
       }
@@ -3612,6 +3619,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify({ invocation: row.id, state: "queued", note: "the result arrives later as one message from the hub, addressed to you only; do not wait for it in this turn" });
   }
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
+    if (inProcess && (op === "hub_task_propose" || op === "hub_review") && a && typeof a === "object" && Object.hasOwn(a, "request_id")) throw new PreEffectToolRefusal("request_id replay keys require the control-protocol task transport");
     if (BOUNDED_TASK_TOOLS.has(op)) {
       const keys = op === "hub_task_spec" ? ["id"] : op === "hub_check_start" ? ["id", "check", "files"] : ["run"];
       if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !keys.includes(key))
@@ -3621,6 +3629,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (op === "hub_specs" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("spec inspection unavailable during a private turn");
     if (MEMORY_READ_TOOLS.has(op)) validateMemoryRead(op, a);
     if (op === "hub_memory_correct") correctionInput(a);
+    if (op === "hub_task_propose" && by !== USER && (piiTurn || turns.get(by)?.private || contextPii(by))) {
+      throw new PreEffectToolRefusal("hub_task_propose is not available while working on a PII task: its text must not leave this machine");
+    }
     if (CONDUCTOR_TOOL_NAMES.has(op)) {
       if (piiTurn && ["hub_task_assign", "hub_task_escalate", "hub_peer_start"].includes(op)) throw new PreEffectToolRefusal("conductor mutations are unavailable during a PII turn");
       const result = await conductor.execute(by, op, a);
@@ -8125,7 +8136,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       }
       const scope = toolWriteScope(c, operation);
-      void toolWriteRegistry.run({ id: msg.requestId, scope, payload,
+      void toolWriteRegistry.run({ id: msg.requestId, scope, bucket: actor, payload,
         current: result => toolWriteCurrent(c, sock, operation, payload, scope, result) && (() => { try { extraCurrent(); return true; } catch { return false; } })(),
       }, async () => {
         try { return { t: "task", ok: true, text: await run() }; }
@@ -8462,17 +8473,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "delivery_complete": {
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;
         if (c.role !== "peer" || !isWsPeer(peer) || typeof msg.deliveryId !== "string" || !peer.ownsDelivery(sock, msg.generation, msg.deliveryId)) return void reply({ ok: false, error: "delivery does not belong to this connection generation" });
-        const operation = toolWriteOperation(msg);
-        if (!operation || msg.requestId === undefined) return void reply(bus.completeDelivery(peer.id, msg.deliveryId) ? { ok: true } : { ok: false, error: "delivery is not live and accepted; inspect ahub queue show before resolving" });
-        const payload = { t: "delivery_complete", deliveryId: msg.deliveryId, generation: msg.generation };
-        const scope = toolWriteScope(c, operation);
-        const current = () => !stopping && c.authed && !c.closed && sock.readyState === WebSocket.OPEN && c.role === "peer"
-          && c.peer === peer.id && bus.peers.get(peer.id) === peer && peer.ownsDelivery(sock, msg.generation, msg.deliveryId) && toolWriteScope(c, operation) === scope;
-        void toolWriteRegistry.run({ id: msg.requestId, scope, payload, current }, async () => {
-          const completed = bus.completeDelivery(peer.id, msg.deliveryId);
-          return completed ? { t: "delivery_complete", ok: true } : { t: "delivery_complete", ok: false, error: "delivery is not live and accepted; inspect ahub queue show before resolving" };
-        }).then(result => reply(result), () => reply(toolWriteUnknownReply(payload, typeof msg.requestId === "string" ? msg.requestId : undefined)));
-        return;
+        return void reply(bus.completeDelivery(peer.id, msg.deliveryId) ? { ok: true } : { ok: false, error: "delivery is not live and accepted; inspect ahub queue show before resolving" });
       }
       case "execution_budget": {
         if (c.role !== "console") return void reply({ ok: false, error: "execution budgets are console-only" });

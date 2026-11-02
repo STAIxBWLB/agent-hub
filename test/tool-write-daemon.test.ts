@@ -13,11 +13,12 @@ const resultBody = (reply: Record<string, unknown>) => { const { rid: _rid, ...b
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-async function fixture(options: { screen?: boolean; piiScreen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }>; capabilities?: Record<string, string[]> } = {}) {
+async function fixture(options: { screen?: boolean; piiScreen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }>; capabilities?: Record<string, string[]>; toolWriteReplayMaxEntries?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-tool-write-daemon-")); roots.push(root);
   const stateDir = join(root, ".agenthub", "state"); mkdirSync(stateDir, { recursive: true });
   if (options.screen) writeFileSync(join(root, ".agenthub", "routing.toml"), '[local]\nfixed_model = "coding"\n[signals]\npii_screen = "local"\n[constraints]\npii = "local_only"\n');
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    ...(options.toolWriteReplayMaxEntries === undefined ? {} : { toolWriteReplayMaxEntries: options.toolWriteReplayMaxEntries }),
     config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, research: { ...DEFAULT_CONFIG.research, enabled: false },
@@ -97,6 +98,28 @@ test("selected task writes replay one result by request ID while unrelated opera
     expect(invalid).toMatchObject({ ok: false, outcome: "unknown", requestId });
     expect(f.board.list().filter(task => task.title === "different payload")).toHaveLength(0);
   } finally { f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
+});
+
+test("one actor cannot fill another actor's replay capacity", async () => {
+  const f = await fixture({ toolWriteReplayMaxEntries: 1 });
+  let kimi: ControlClient | undefined;
+  try {
+    const requestId = newToolRequestId(f.codex.instanceId!);
+    const args = { title: "synthetic codex capacity slot", class: "implement" };
+    const request = { t: "task", op: "hub_task_propose", args, requestId };
+    const first = await f.codex.request(request);
+    expect(first).toMatchObject({ ok: true, requestId });
+    expect(resultBody(await f.codex.request(request))).toEqual(resultBody(first));
+
+    const overflow = await f.codex.request({ t: "task", op: "hub_task_propose", args: { title: "synthetic over-capacity slot", class: "implement" }, requestId: newToolRequestId(f.codex.instanceId!) });
+    expect(overflow).toMatchObject({ ok: false, outcome: "refused" });
+    expect(f.board.list().some(task => task.title === "synthetic over-capacity slot")).toBe(false);
+
+    kimi = await ControlClient.connect(f.stateDir, { role: "tools", peer: "kimi", projectRoot: f.root });
+    const otherActor = await kimi.request({ t: "task", op: "hub_task_propose", args: { title: "synthetic kimi capacity slot", class: "implement" }, requestId: newToolRequestId(kimi.instanceId!) });
+    expect(otherActor.ok).toBe(true);
+    expect(f.board.list().filter(task => task.title === "synthetic kimi capacity slot")).toHaveLength(1);
+  } finally { kimi?.close(); f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
 });
 
 test("invalid or missing review task ids keep Tasks' known refusal and replay without a board write", async () => {
@@ -234,20 +257,40 @@ test("a PII proposal still replays the exact fixed public task receipt", async (
     const requestId = newToolRequestId(f.codex.instanceId!);
     const args = { title: "synthetic private title", class: "implement", refs: { paths: ["private/fixture.md"] } };
     const request = { t: "task", op: "hub_task_propose", requestId, args };
-    const [first, replay] = await Promise.all([f.codex.request(request), f.codex.request(request)]);
-    expect(resultBody(first)).toEqual(resultBody(replay));
-    expect(first.rid).not.toBe(replay.rid);
+    const first = await f.codex.request(request);
     expect(first).toMatchObject({ ok: true, requestId });
     expect(first.text).toMatch(/^task #[1-9]\d*: (?:backlog|proposed|in_progress|in_review|approved|changes_requested|cancelled), owner (?:none|[a-z][a-z0-9-]{0,31}), reviewer (?:none|[a-z][a-z0-9-]{0,31})$/);
     expect(String(first.text)).not.toContain(args.title);
     expect(String(first.text)).not.toContain("private/fixture.md");
+
+    const privateContext = f.board.propose(USER, { title: "synthetic codex private context", class: "implement", signals: ["pii_path"] });
+    f.board.update(privateContext.id, "codex", "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });
+    const replay = await f.codex.request(request);
+    expect(resultBody(replay)).toEqual(resultBody(first));
+    expect(replay.rid).not.toBe(first.rid);
+    expect(f.board.list().filter(task => task.title === args.title)).toHaveLength(1);
+  } finally { f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
+});
+
+test("a new proposal remains refused if the actor's private context starts before execution", async () => {
+  const f = await fixture();
+  try {
+    const privateContext = f.board.propose(USER, { title: "synthetic codex private context", class: "implement", signals: ["pii_path"] });
+    f.board.update(privateContext.id, "codex", "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });
+    const args = { title: "synthetic proposal during private context", class: "implement" };
+    const result = await f.codex.request({ t: "task", op: "hub_task_propose", args, requestId: newToolRequestId(f.codex.instanceId!) });
+    expect(result).toMatchObject({ ok: false });
+    expect(String(result.error)).toContain("not available while working on a PII task");
+    expect(f.board.list().some(task => task.title === args.title)).toBe(false);
   } finally { f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
 });
 
 test("delivery completion replay remains bound to the attached socket and generation", async () => {
-  const f = await fixture();
+  const f = await fixture({ toolWriteReplayMaxEntries: 1 });
   let claude: ControlClient | undefined;
   try {
+    const codexSlot = await f.codex.request({ t: "task", op: "hub_task_propose", args: { title: "synthetic codex replay slot", class: "implement" }, requestId: newToolRequestId(f.codex.instanceId!) });
+    expect(codexSlot.ok).toBe(true);
     claude = await ControlClient.connect(f.stateDir, { role: "peer", peer: "claude", channel: true, projectRoot: f.root });
     let pushed: { deliveryId: string; generation: string } | undefined;
     claude.onPush = message => {
@@ -259,12 +302,11 @@ test("delivery completion replay remains bound to the attached socket and genera
     expect(pushed).toBeDefined();
     const delivery = pushed!;
     expect(await claude.request({ t: "delivery_receipt", ...delivery, state: "accepted" })).toMatchObject({ ok: true });
-    const requestId = newToolRequestId(claude.instanceId!);
-    const settlement = { t: "delivery_complete", ...delivery, requestId };
+    const settlement = { t: "delivery_complete", ...delivery };
     const [first, replay] = await Promise.all([claude.request(settlement), claude.request(settlement)]);
     expect(resultBody(first)).toEqual(resultBody(replay));
     expect(first.rid).not.toBe(replay.rid);
-    expect(first).toMatchObject({ ok: true, requestId });
+    expect(first).toMatchObject({ ok: true });
     expect(f.daemon.bus.queueShow(delivery.deliveryId)?.state).toBe("completed");
     const wrongGeneration = await claude.request({ ...settlement, generation: "wrong-generation" });
     expect(wrongGeneration).toMatchObject({ ok: false, error: "delivery does not belong to this connection generation" });
