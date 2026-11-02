@@ -6,7 +6,7 @@ test("cost scopes are typed and bounded, and legacy plans stay unknown (#481 S10
   expect(cleanCostPlan({})).toEqual({});
   expect(cleanCostPlan({ review: { scope: "delta", reviewers: 2 }, ci: "reuse" })).toEqual({ review: { scope: "delta", reviewers: 2 }, ci: "reuse" });
   for (const value of [{ review: { scope: "none", reviewers: 1 } }, { review: { scope: "full", reviewers: 0 } }, { review: { scope: "full", reviewers: 9 } }, { ci: "skip" }, { review: { scope: "full", reviewers: 1, prompt: "untrusted" } }]) {
-    expect(() => cleanCostPlan(value)).toThrow("cost scope");
+    expect(() => cleanCostPlan(value)).toThrow(CostScopeError); // #1087: the exact field and rule per shape is asserted in the table below
   }
 });
 
