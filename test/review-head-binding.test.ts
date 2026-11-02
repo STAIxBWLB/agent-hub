@@ -38,7 +38,7 @@ async function rig(options: { mode?: SdlcMode; state?: TaskState; linked?: boole
   cleanups.push(() => { tasks.stopCiWatchers(); bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
   const t = board.propose(USER, { title: "synthetic head binding", class: "implement", refs: { repo: "owner/repo", ...(options.noCommit ? {} : { commit: A }) } });
   board.update(t.id, USER, "accepted", { owner: "codex", reviewer: "claude", state: "in_progress" });
-  board.update(t.id, "codex", "done", { state: "in_review", ...(options.linked === false ? {} : { sdlc: { repo: "owner/repo", pr: 7, head: A, reviewedHead: A, localHead: A, localResult: "passed" as const } }) });
+  board.update(t.id, "codex", "done", { state: "in_review", ...(options.linked === false ? {} : { sdlc: { stage: "review" as const, repo: "owner/repo", pr: 7, head: A, reviewedHead: A, localHead: A, localResult: "passed" as const } }) });
   if (options.state === "changes_requested" || options.state === "in_progress") board.update(t.id, "claude", "changes_requested", { state: "changes_requested" });
   if (options.state === "in_progress") board.update(t.id, "codex", "accepted", { state: "in_progress" });
   return { tasks, board, id: t.id, calls, move: (head: string) => { currentHead = head; }, unavailable: () => { unavailable = true; } };
@@ -148,4 +148,13 @@ test("legacy receipt-only re-file can submit the PR head named by its stale-head
   expect(submitted.sdlc?.reviewedHead).not.toBe(A);
   const approved = await r.tasks.review("claude", r.id, "approved", "synthetic legacy repair approved");
   expect(approvalBinding(approved)).toMatchObject({ head: B, latestHead: B, mismatch: false, current: true });
+});
+
+
+for (const state of ["changes_requested", "in_progress"] as const) test(`${state}: malformed refs.commit cannot bypass re-file head validation`, async () => {
+  const r = await rig({ state }); r.move(B);
+  const before = r.board.get(r.id)!;
+  const message = await refusal(() => r.tasks.done("codex", r.id, "synthetic short head bypass", { commit: B.slice(0, 8) }));
+  ownerNextStep(message); expect(message).toContain(A); expect(message).toMatch(/full|40/);
+  expect(r.board.get(r.id)).toEqual(before);
 });
