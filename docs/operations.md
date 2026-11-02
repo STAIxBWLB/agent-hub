@@ -4896,7 +4896,7 @@ A refusal at the limit separates what the owner carries from what it was only of
 An `urgent` task (priority 0, or the `urgent` signal) that is the owner's own offer may take back the
 newest offers the owner has not accepted, only as many as it needs, when that is all that keeps it at the
 limit. The hub returns each one ownerless to To Do (history `unassigned`, by the hub, naming the urgent
-task), withdraws its offer, and tells the planners and the console. It never takes back accepted work,
+task; a planner-pulled offer also loses the reservation that counted toward the owner's WIP), withdraws its offer, and tells the planners and the console. After the displacement the hub checks that the owner is under its limit and refuses the accept with the cause and a next step if not. It never takes back accepted work,
 another urgent offer, a person-pinned offer or an offer with work evidence, and a refusal changes nothing.
 
 Pending unowned, unstarted pull can be undone at its latest owned revision via
