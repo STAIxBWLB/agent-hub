@@ -7,6 +7,11 @@ import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
 import { parseSpecsConfig, SpecsEngine } from "../src/hub/specs.ts";
 import { SpecTaskInspector } from "../src/hub/specs-task.ts";
+import { Board } from "../src/hub/board.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { USER } from "../src/hub/envelope.ts";
+import { loadRouting } from "../src/hub/routing.ts";
+import { Tasks } from "../src/hub/tasks.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -181,4 +186,34 @@ test("batched binary boundaries preserve non-ASCII spec text and cached diagnost
   const report = new SpecsEngine(root, config, { commit: git("rev-parse", "HEAD") }).check();
   expect(report.items.some(row => row.code === "invalid-frontmatter" && row.path === "renamed.md" && row.message.startsWith("renamed.md:"))).toBe(true);
   expect(report.items.some(row => row.path === "invalid.md" || row.message.startsWith("invalid.md:"))).toBe(false);
+});
+
+
+test("a covering spec missing its title completes through the real inspector and Board with the schema error intact", async () => {
+  const { root, git, spec } = repo();
+  writeFileSync(join(root, "bus.md"), spec().replace("title: Bus\n", ""));
+  writeFileSync(join(root, "src/bus.ts"), "export const bus = 2;\n");
+  git("add", "."); git("commit", "-qm", "covered change with an invalid design title");
+  const head = git("rev-parse", "HEAD");
+  for (const review of ["report", "require"] as const) {
+    const config = parseSpecsConfig({ review }), inspector = new SpecTaskInspector(root, () => config);
+    const board = new Board(join(root, `${review}.db`));
+    try {
+      const tasks = new Tasks({ board, bus: new Bus({ batchMs: 0 }), cwd: root, project: "fixture",
+        routing: () => loadRouting(root), notify: () => {}, piiScreen: async () => ({ label: "clear", ms: 0 }), specsConfig: () => config,
+        reviewBrief: () => ({ head, base: "main", mergeBase: head, reviewable: [{ path: "src/bus.ts", status: "M" }], excluded: [], withheld: 0, rules: [], rulesMissing: [], ruleGroups: [], unlisted: [] }),
+        inspectSpecs: async (_task, submitted, files, acks) => inspector.inspect(submitted, files, { complete: files !== undefined, acks }),
+      });
+      const proposed = board.propose(USER, { title: "change bus", class: "implement", refs: { commit: head, paths: ["src/bus.ts"] } });
+      const source = board.update(proposed.id, "codex", "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });
+      const done = await tasks.done("codex", source.id, "changed the bus", undefined, undefined,
+        review === "require" ? [{ id: "bus", reason: "The implementation preserves the contract." }] : undefined);
+      expect(done.state).toBe("in_review");
+      const report = done.history.findLast(entry => entry.event === "done")?.specReport;
+      expect(report?.errors).toBeGreaterThan(0);
+      expect(report?.unchanged).toMatchObject([{ id: "bus", title: "bus" }]);
+      expect(tasks.resultLine(done)).toContain(`spec errors: ${report!.errors}`);
+      expect(tasks.publicView(done).specReport).toMatchObject({ errors: report!.errors, unchanged: [{ id: "bus", title: "bus" }] });
+    } finally { board.close(); }
+  }
 });

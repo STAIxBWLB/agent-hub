@@ -1006,10 +1006,13 @@ export class Tasks {
     const ref = (value: unknown): SpecTaskReport["unchanged"][number] | undefined => {
       if (!value || typeof value !== "object" || Array.isArray(value)) return;
       const row = value as Record<string, unknown>;
-      if (typeof row.id !== "string" || typeof row.path !== "string" || typeof row.title !== "string") return;
-      const strings = [row.id, row.path, row.title, ...(typeof row.reason === "string" ? [row.reason] : [])];
-      if (strings.some(text => text.length > 1000 || !this.publicMetadataText(text))) return;
-      return { id: row.id, path: row.path, title: row.title, ...(typeof row.reason === "string" ? { reason: row.reason } : {}) };
+      if (typeof row.id !== "string" || typeof row.path !== "string" || typeof row.title !== "string"
+        || !row.id.trim() || row.id.length > 160 || !row.path.trim()) return;
+      // Missing titles are schema diagnostics, not a report-mode completion gate.
+      const title = row.title.trim() ? row.title : row.id;
+      const strings = [row.id, row.path, title, ...(typeof row.reason === "string" ? [row.reason] : [])];
+      if (strings.some(text => text.length > 1000 || /[\p{Cc}\p{Cf}]/u.test(text) || !this.publicMetadataText(text))) return;
+      return { id: row.id, path: row.path, title, ...(typeof row.reason === "string" ? { reason: row.reason } : {}) };
     };
     const unchanged = report.unchanged.slice(0, 20).map(ref).filter((row): row is NonNullable<typeof row> => !!row);
     const changed = report.changed.slice(0, 20).map(ref).filter((row): row is NonNullable<typeof row> => !!row);
