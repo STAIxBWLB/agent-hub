@@ -395,8 +395,8 @@ function toolListFor(lifecycle: Awaited<ReturnType<typeof activeLifecycle>>) {
             ? [
                 {
                   name: "hub_delivery_done",
-                  description: "Explicitly complete one handled channel delivery using its delivery_id and delivery_generation metadata. Does not change task state. If a prior result was outcome unknown, read the queue first and retry only if still unresolved, using the same request_id when available. Never complete an unhandled delivery.",
-                  inputSchema: { type: "object", properties: { delivery_id: { type: "string" }, delivery_generation: { type: "string" }, request_id: { type: "string", minLength: 1, maxLength: 256, pattern: "^v1/[A-Za-z0-9._-]{1,128}/[1-9][0-9]{0,15}/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", description: "request_id echoed in a prior outcome-unknown result" } }, required: ["delivery_id", "delivery_generation"], additionalProperties: false },
+                  description: "Explicitly complete one handled channel delivery using its delivery_id and delivery_generation metadata. Does not change task state. If a prior result was outcome unknown, read the queue first and retry only if the delivery is still unresolved, with the same delivery_id and delivery_generation. Never complete an unhandled delivery.",
+                  inputSchema: { type: "object", properties: { delivery_id: { type: "string" }, delivery_generation: { type: "string" } }, required: ["delivery_id", "delivery_generation"], additionalProperties: false },
                 },
               ]
             : []),
@@ -442,8 +442,8 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
   }
   if (name === "hub_delivery_done" && channel) {
     if (!hub) return text(offline());
-    const a = args ?? {}, requestId = Object.hasOwn(a, "request_id") ? a.request_id : undefined;
-    const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation, ...(requestId !== undefined ? { requestId } : {}) });
+    const a = args ?? {};
+    const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation });
     if (result.outcome === "unknown") return text(typeof result.error === "string" ? result.error : "Write outcome unknown. Inspect the delivery before another write; call again only if it is absent, with the same delivery id and generation.");
     return text(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }

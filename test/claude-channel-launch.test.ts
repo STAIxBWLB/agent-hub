@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realPath } from "../src/hub/project.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
-import { newToolRequestId, ToolWriteRegistry, toolWriteUnknownReply } from "../src/hub/tool-request.ts";
+import { ToolWriteRegistry, toolWriteUnknownReply } from "../src/hub/tool-request.ts";
 
 async function plugin(launchId: string | undefined, deletableCwd = false, options: { features?: string[]; response?: (message: any) => Record<string, unknown>; handler?: (message: any) => Promise<Record<string, unknown>> | Record<string, unknown> } = {}) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-channel-launch-")));   // a real project root is resolved: the plugin and the hub compare resolved paths
@@ -88,7 +88,7 @@ test("#631 channel echoes explicit request_id across MCP calls and surfaces unkn
     const tool = (name: string) => listed.tools.find((row: any) => row.name === name);
     expect(tool("hub_task_propose").inputSchema.properties).toHaveProperty("request_id");
     expect(tool("hub_review").inputSchema.properties).toHaveProperty("request_id");
-    expect(tool("hub_delivery_done").inputSchema.properties).toHaveProperty("request_id");
+    expect(tool("hub_delivery_done").inputSchema.properties).not.toHaveProperty("request_id");
 
     const params = { name: "hub_task_propose", arguments: { title: "synthetic channel retry", class: "implement" } };
     const first = await f.rpc("tools/call", params, 41);
@@ -120,15 +120,15 @@ test("#631 channel echoes explicit request_id across MCP calls and surfaces unkn
     expect(text(downgraded)).toContain("does not advertise replay protection; nothing was resubmitted");
     expect(f.requests.filter(message => message.t === "task" && message.op === "hub_task_propose")).toHaveLength(3);
 
-    // Delivery journal completion needs no registry token; an explicit key is forwarded for the settling receipt.
+    // Delivery journal completion needs no request key; delivery id and generation are its idempotent identity.
     f.setFeatures(["tool_write_idempotency"]);
     f.disconnect(4000);
     await f.until(() => f.hellos.length === 3, "channel reconnects to the replay-capable hub");
     await f.rpc("tools/call", { name: "hub_delivery_done", arguments: { delivery_id: "abc-12345", delivery_generation: "generation" } }, 45);
     const settlement = f.requests.findLast(message => message.t === "delivery_complete");
     expect(settlement?.requestId).toBeUndefined();
-    await f.rpc("tools/call", { name: "hub_delivery_done", arguments: { delivery_id: "abc-12345", delivery_generation: "generation", request_id: originalId } }, 46);
-    expect(f.requests.findLast(message => message.t === "delivery_complete")?.requestId).toBe(originalId);
+    await f.rpc("tools/call", { name: "hub_delivery_done", arguments: { delivery_id: "abc-12345", delivery_generation: "generation" } }, 46);
+    expect(f.requests.findLast(message => message.t === "delivery_complete")?.requestId).toBeUndefined();
   } finally { await f.close(); }
 });
 
