@@ -105,7 +105,7 @@ test("a commitless re-file cannot claim current head when PR readback is unavail
   const before = r.board.get(r.id)!;
   const message = await refusal(() => r.tasks.done("codex", r.id, "synthetic re-file without a verified head"));
   ownerNextStep(message); expect(message).toContain(A);
-  expect(message).toMatch(/unknown|unavailable|verify|read/i);
+  expect(message).toMatch(/unknown|unavailable|verif|read/i);
   expect(r.board.get(r.id)).toEqual(before);
 });
 
