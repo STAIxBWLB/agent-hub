@@ -115,6 +115,22 @@ test("displacing a planner-pulled offer releases its counted reservation, so the
   expect(notices.join("\n")).not.toContain("person-prioritized");
 });
 
+test("if a displacement ever fails to free a slot, the accept is refused with the cause and a next step instead of overshooting (#1080)", () => {
+  const { board, tasks, running, offered } = rig(2);
+  running("accepted one");
+  const offer = offered("an offer");
+  const urgent = offered("urgent work", true);
+  // The reservation release makes this unreachable with real data, so simulate a counted slot that survives the displacement.
+  const real = tasks.wip.bind(tasks);
+  tasks.wip = (peer, except) => board.get(offer.id)!.owner === null ? 99 : real(peer, except);
+  let failure: unknown;
+  try { tasks.accept("codex", urgent.id); } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as Error).message).toContain("did not free a slot");
+  expect((failure as Error).message).toContain("accept it again");
+  expect(board.get(urgent.id)!.state).toBe("proposed");
+});
+
 test("an urgent accept never takes back accepted work (#1080)", () => {
   const { board, tasks, running, offered } = rig(1);
   const active = running("accepted one");
