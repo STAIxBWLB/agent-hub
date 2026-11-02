@@ -70,7 +70,7 @@ export interface InitSettingsRequest {
 }
 
 /** The usage line `ahub init` prints for a bad argument; help.ts shows the same flags. */
-export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--coordination advisory|turn-free] [--memory|--no-memory] [--snapshots|--no-snapshots] [--pi|--no-pi] [--specs|--no-specs] [--spec-review off|report|require] [--autonomy inherit|off] [--shadow] [--release-guard] [--dry-run --json]";
+export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--coordination advisory|turn-free] [--memory|--no-memory] [--snapshots|--no-snapshots] [--pi|--no-pi] [--specs|--no-specs] [--spec-review off|report|require] [--autonomy inherit|off] [--shadow] [--release-guard] [--yes] [--dry-run --json]";
 
 /** Every flag the table and the two non-key choices own, for the caller's own argument loop and for help. */
 export const INIT_SETTING_FLAGS: readonly string[] = [...INIT_SETTINGS.flatMap(row => row.flags.map(flag => flag.flag)), "--autonomy"];
