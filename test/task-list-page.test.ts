@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { Board } from "../src/hub/board.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { LIST_DEFAULT_LIMIT, LIST_MAX_LIMIT, compactRow, pageTasks, parseListQuery } from "../src/hub/task-list-page.ts";
 import { TASK_TOOLS } from "../src/hub/hub-tools.ts";
@@ -92,16 +93,16 @@ test("hub_task_list advertises limit, cursor, ids and detail, bounded (#1083)", 
 
 async function hub(count: number) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-task-list-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
-  const stateDir = join(dir, ".agenthub", "state");
+  const stateDir = join(dir, ".agenthub", "state"); mkdirSync(stateDir, { recursive: true });
+  // Seeded straight into the board: a control client's replay window refuses the 513th outstanding write (#631), and this test is about reading, not proposing.
+  const seed = new Board(join(stateDir, "hub.db"));
+  try { for (let index = 0; index < count; index++) seed.propose("user", { title: `fixture task ${index} ${"x".repeat(80)}`, detail: "d".repeat(2000), class: "implement" }); }
+  finally { seed.close(); }
   const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, research: { ...DEFAULT_CONFIG.research, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false } } });
   cleanup.push(() => daemon.stop());
   const person = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => person.close());
   const peer = new FakePeer("kimi"); daemon.bus.add(peer); await peer.start();
   const tools = await ControlClient.connect(stateDir, { role: "tools", peer: "kimi" }); cleanup.push(() => tools.close());
-  for (let index = 0; index < count; index++) {
-    const reply = await person.request({ t: "task", op: "hub_task_propose", args: { title: `fixture task ${index} ${"x".repeat(80)}`, detail: "d".repeat(2000), class: "implement" } });
-    expect(reply.ok, `proposal ${index} refused: ${String(reply.error)}`).toBe(true);
-  }
   return { daemon, person, tools, stateDir };
 }
 const list = async (client: ControlClient, args: Record<string, unknown> = {}) => {
@@ -165,8 +166,11 @@ test("state and ready filters still apply before paging, and a bad argument is r
 test("PII tasks stay stubs in compact rows and in ids rows (#1083)", async () => {
   const r = await hub(0);
   const secret = "patient Kim Minsoo 900101-1234567";
+  // The daemon is the board's only writer while it runs, so a PII task is proposed through it and then checked to be flagged, not assumed.
   const made = await r.person.request({ t: "task", op: "hub_task_propose", args: { title: secret, detail: secret, class: "implement" } });
   expect(made.ok).toBe(true);
+  const shown = await r.person.request({ t: "task", op: "task_show", args: { id: 1 } });
+  expect(JSON.parse(String(shown.text)).signals).toContain("pii");
   for (const args of [{}, { ids: [1] }, { detail: true }]) {
     const page = await list(r.tools, args);
     expect(page.reply.ok).toBe(true);
