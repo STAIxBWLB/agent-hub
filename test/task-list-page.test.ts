@@ -100,7 +100,7 @@ async function hub(count: number) {
   const tools = await ControlClient.connect(stateDir, { role: "tools", peer: "kimi" }); cleanup.push(() => tools.close());
   for (let index = 0; index < count; index++) {
     const reply = await person.request({ t: "task", op: "hub_task_propose", args: { title: `fixture task ${index} ${"x".repeat(80)}`, detail: "d".repeat(2000), class: "implement" } });
-    expect(reply.ok).toBe(true);
+    expect(reply.ok, `proposal ${index} refused: ${String(reply.error)}`).toBe(true);
   }
   return { daemon, person, tools, stateDir };
 }
