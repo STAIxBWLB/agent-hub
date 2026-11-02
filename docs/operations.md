@@ -2769,8 +2769,8 @@ neither.
      the dashboard or `ahub settings` can write. It is read at hub start.
      `{command}` is quoted for a POSIX shell; `{title}` and `{cwd}` are raw,
      so give each an argv element of its own.
-  2. Orca, when the hub runs in an Orca terminal or an earlier `ahub <peer>`
-     launch of this project recorded an Orca worktree. The terminal opens in the
+  2. Orca, when the hub runs in an Orca worktree or an earlier `ahub <peer>`
+     launch of this project recorded one (the path recovery uses). The terminal opens in the
      Orca worktree whose root is exactly this project's root, found with `orca
      worktree list` (#1105); it never uses the worktree of whichever terminal
      started the hub, which is another project's after `ahub --project`, a
