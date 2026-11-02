@@ -218,6 +218,7 @@ import { SourceRegistry } from "./sources.ts";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead, sourceRead, validateSourceRead } from "./read-tools.ts";
 import { nativeRecall } from "../memory/recall.ts";
 import { promotionScreen, withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
+import { DEFAULT_SPECS_CONFIG, parseSpecsConfig, type SpecsConfig } from "./specs-config.ts";
 
 export interface HubConfig {
   adapter_modules?: readonly AdapterModuleDeclaration[];
@@ -260,6 +261,7 @@ export interface HubConfig {
   text_projection?: ProjectionConfig;
   /** #510: machine-local folders of plain notes the hub may index, read-only; vault folders are refused when the index reads them. */
   corpus: { paths: string[] };
+  specs: SpecsConfig;
   catalog_roles?: Record<string, string[]>;
   conductor: { feed: "own" | "all" | "off"; approval_wait_s: number };
   budget: BudgetConfig;
@@ -352,6 +354,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   schedules: [],
   folder_triggers: [],
   corpus: { paths: [] },
+  specs: { ...DEFAULT_SPECS_CONFIG, roots: [] },
   checks: { timeout_s: 600 },
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
   snapshots: { enabled: false, keep: 20 },
@@ -377,7 +380,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet"];
+const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "specs", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet"];
 
 /** Older targets parse raw keys before placement/trust checks, so even an empty or refused declaration needs the floor. */
 function rawResearchRunnersPresent(cwd: string): boolean {
@@ -483,6 +486,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     resolveProfile(file.profile, file.profile_overrides);
     projectionConfig(file.text_projection);
     corpusConfig(file.corpus);
+    if (file.specs !== undefined) parseSpecsConfig(file.specs);
     queueBackpressurePolicy(file.tasks?.queue_backpressure);
     validateOperationalConfig(file);
     for (const [block, key] of [["pii", "paths"], ["data", "readonly"]] as const) {
@@ -599,6 +603,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     schedules: schedulesConfig(file.schedules),
     folder_triggers: foldersConfig(file.folder_triggers),
     corpus: corpusConfig(file.corpus),
+    specs: parseSpecsConfig(file.specs),
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks, runner: file.checks?.runner === "remote" ? "remote" : file.checks?.runner === "container" ? "container" : undefined,
       ...(file.checks?.remote !== undefined || file.checks?.runner === "remote" ? { remote: remoteRunnerConfig(file.checks?.remote) } : {}) },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
