@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient, PROTOCOL, PROTOCOL_MIN } from "../src/hub/control-client.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
+import { realPath } from "../src/hub/project.ts";
 import { reduceConsole, initialConsoleState, renderConsole, keyTable, commandNeedsConfirmation } from "../src/cli/console-state.ts";
 import { HELP } from "../src/cli/help.ts";
 import { frame, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
@@ -283,7 +284,9 @@ test("an agent shell may read queue list --all, and the help rows match the pars
 
 // A hub from before `queue_discard_states` ignores `states` and defaults an absent `state` to queued, so a CLI that sent the new form to it would discard queued rows when the person asked for failed ones.
 function oldHub(features: string[]) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-old-hub-"))), stateDir = join(root, ".agenthub/state");
+  const made = mkdtempSync(join(tmpdir(), "ahub-old-hub-"));
+  cleanup.push(() => rmSync(made, { recursive: true, force: true })); // registered before anything that can throw
+  const root = realPath(made), stateDir = join(root, ".agenthub/state"); // realPath, never realpathSync (AGENTS.md "Real paths")
   mkdirSync(stateDir, { recursive: true });
   const requests: Record<string, unknown>[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
@@ -297,7 +300,7 @@ function oldHub(features: string[]) {
     } } });
   writeFileSync(join(stateDir, "control-token"), "fixture-token\n");
   writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, cwd: root, projectId: "project", instanceId: "instance", protocol: PROTOCOL, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, features }));
-  cleanup.push(() => { server.stop(true); rmSync(root, { recursive: true, force: true }); });
+  cleanup.push(() => { server.stop(true); });
   return { root, requests };
 }
 
