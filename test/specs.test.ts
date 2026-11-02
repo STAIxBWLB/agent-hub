@@ -96,7 +96,7 @@ test("covers matches tracked files and newly supplied untracked files without ex
 
 test("spec roots are literal directory names even when they contain Git glob punctuation", () => {
   const root = tempRoot("literal-root"); git(root, "init", "-q");
-  for (const [directory, id] of [["design[one]", "literal"], ["designxone", "wildcard-collision"]]) {
+  for (const [directory, id] of [["design[one]", "literal"], ["designxone", "wildcard-collision"]] as const) {
     mkdirSync(join(root, directory), { recursive: true });
     writeFileSync(join(root, directory, "spec.md"), `---\nid: ${id}\ntype: goal\ntitle: ${id}\n---\n`);
   }

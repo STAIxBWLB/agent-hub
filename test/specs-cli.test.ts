@@ -80,6 +80,19 @@ test("warning-only spec checks succeed while malformed specs fail", () => {
   expect(invalid.code).toBe(1); expect(invalid.stdout.join("\n")).toContain("unknown-type");
 });
 
+test("a stamps-file entry with a non-ancestor commit fails the offline check", () => {
+  const { root, git } = fixture();
+  const unrelated = git("commit-tree", git("write-tree"), "-m", "unrelated reviewed root");
+  writeFileSync(join(root, "README.md"), "Project documentation.\n");
+  writeFileSync(join(root, "stamps.json"), JSON.stringify({ schemaVersion: 1, documents: { "README.md": { verifiedAgainst: unrelated, paths: ["src/core.ts"] } } }));
+  const stdout: string[] = [], stderr: string[] = [];
+  const code = runSpecs(["check", "--json"], root, parseSpecsConfig({ stamps_file: "stamps.json" }), { out: line => stdout.push(line), error: line => stderr.push(line) });
+  expect(code).toBe(1); expect(stderr).toEqual([]);
+  const report = JSON.parse(stdout.join("\n"));
+  expect(report.items.some((item: { code: string }) => item.code === "nonancestor-stamp")).toBe(true);
+  expect(report.freshness[0].state).toBe("nonancestor");
+});
+
 test("specs reads are open to peers while unshipped writes remain person-only", () => {
   for (const args of [["list"], ["list", "--json"], ["check", "--base", "main", "--require-fresh", "--json"], ["covers", "src/core.ts"]]) {
     expect(classifyPeerCommand("specs", args)).toBe("allowed");
