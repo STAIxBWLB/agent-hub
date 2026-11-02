@@ -8,6 +8,7 @@ import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { newToolRequestId } from "../src/hub/tool-request.ts";
 import { newEnvelope, USER } from "../src/hub/envelope.ts";
 
+const resultBody = (reply: Record<string, unknown>) => { const { rid: _rid, ...body } = reply; return body; };
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
@@ -16,7 +17,7 @@ async function fixture(options: { screen?: boolean; piiScreen?: (text: string) =
   const stateDir = join(root, ".agenthub", "state"); mkdirSync(stateDir, { recursive: true });
   if (options.screen) writeFileSync(join(root, ".agenthub", "routing.toml"), '[local]\nfixed_model = "coding"\n[signals]\npii_screen = "local"\n[constraints]\npii = "local_only"\n');
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, research: { ...DEFAULT_CONFIG.research, enabled: false },
       task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false },
@@ -39,7 +40,8 @@ test("selected task writes replay one result by request ID while unrelated opera
       f.codex.request({ t: "task", op: "hub_task_propose", args, requestId }),
       f.codex.request({ t: "task", op: "hub_task_propose", args, requestId }),
     ]);
-    expect(first).toEqual(replay);
+    expect(resultBody(first)).toEqual(resultBody(replay));
+    expect(first.rid).not.toBe(replay.rid);
     const rows = f.board.list().filter(task => task.title === args.title);
     expect(rows).toHaveLength(1);
     expect(first).toMatchObject({ ok: true, requestId });
@@ -57,7 +59,8 @@ test("selected task writes replay one result by request ID while unrelated opera
       f.person.request({ t: "task", op: "hub_review", args: reviewArgs, requestId: reviewId }),
       f.person.request({ t: "task", op: "hub_review", args: reviewArgs, requestId: reviewId }),
     ]);
-    expect(review).toEqual(reviewReplay);
+    expect(resultBody(review)).toEqual(resultBody(reviewReplay));
+    expect(review.rid).not.toBe(reviewReplay.rid);
     expect(review).toMatchObject({ ok: true, requestId: reviewId });
     expect(f.board.get(proposed.id)?.history.filter(entry => entry.event === "approved")).toHaveLength(1);
 
@@ -70,7 +73,8 @@ test("selected task writes replay one result by request ID while unrelated opera
       f.codex.request({ t: "task", op: "hub_review", args: peerReviewArgs, requestId: peerReviewId }),
       f.codex.request({ t: "task", op: "hub_review", args: peerReviewArgs, requestId: peerReviewId }),
     ]);
-    expect(peerReview).toEqual(peerReviewReplay);
+    expect(resultBody(peerReview)).toEqual(resultBody(peerReviewReplay));
+    expect(peerReview.rid).not.toBe(peerReviewReplay.rid);
     expect(peerReview).toMatchObject({ ok: true, requestId: peerReviewId });
     expect(f.board.get(peerReviewed.id)?.history.filter(entry => entry.event === "approved")).toHaveLength(1);
 
@@ -83,7 +87,8 @@ test("selected task writes replay one result by request ID while unrelated opera
       f.person.request({ t: "task", op: "hub_review", args: piiReviewArgs, requestId: piiReviewId }),
       f.person.request({ t: "task", op: "hub_review", args: piiReviewArgs, requestId: piiReviewId }),
     ]);
-    expect(piiVerdict).toEqual(piiReplay);
+    expect(resultBody(piiVerdict)).toEqual(resultBody(piiReplay));
+    expect(piiVerdict.rid).not.toBe(piiReplay.rid);
     expect(piiVerdict).toMatchObject({ ok: true, requestId: piiReviewId });
     expect(f.board.get(piiReview.id)?.history.filter(entry => entry.event === "approved")).toHaveLength(1);
 
@@ -157,7 +162,8 @@ test("a PII proposal still replays the exact fixed public task receipt", async (
     const args = { title: "synthetic private title", class: "implement", refs: { paths: ["private/fixture.md"] } };
     const request = { t: "task", op: "hub_task_propose", requestId, args };
     const [first, replay] = await Promise.all([f.codex.request(request), f.codex.request(request)]);
-    expect(first).toEqual(replay);
+    expect(resultBody(first)).toEqual(resultBody(replay));
+    expect(first.rid).not.toBe(replay.rid);
     expect(first).toMatchObject({ ok: true, requestId });
     expect(first.text).toMatch(/^task #[1-9]\d*: (?:backlog|proposed|in_progress|in_review|approved|changes_requested|cancelled), owner (?:none|[a-z][a-z0-9-]{0,31}), reviewer (?:none|[a-z][a-z0-9-]{0,31})$/);
     expect(String(first.text)).not.toContain(args.title);
@@ -183,7 +189,8 @@ test("delivery completion replay remains bound to the attached socket and genera
     const requestId = newToolRequestId(claude.instanceId!);
     const settlement = { t: "delivery_complete", ...delivery, requestId };
     const [first, replay] = await Promise.all([claude.request(settlement), claude.request(settlement)]);
-    expect(first).toEqual(replay);
+    expect(resultBody(first)).toEqual(resultBody(replay));
+    expect(first.rid).not.toBe(replay.rid);
     expect(first).toMatchObject({ ok: true, requestId });
     expect(f.daemon.bus.queueShow(delivery.deliveryId)?.state).toBe("completed");
     const wrongGeneration = await claude.request({ ...settlement, generation: "wrong-generation" });

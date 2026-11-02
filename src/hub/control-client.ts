@@ -225,7 +225,7 @@ export class ControlClient {
     const write = toolWriteOperation(msg) !== undefined;
     if (write && msg.requestId !== undefined && !this.features.includes(TOOL_WRITE_FEATURE)) {
       return Promise.resolve(toolWriteUnknownReply(msg, typeof msg.requestId === "string" ? msg.requestId : undefined,
-        "this daemon does not support replaying the original request; nothing was resubmitted"));
+        "this daemon does not advertise replay protection; nothing was resubmitted"));
     }
     let wire = msg;
     if (write && this.features.includes(TOOL_WRITE_FEATURE) && msg.requestId === undefined) {
