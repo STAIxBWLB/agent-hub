@@ -196,7 +196,7 @@ test("queue discard --peer clears the peer's unsettled failed rows in one call, 
   expect(f.daemon.bus.queueList("kimi").find(r => r.id === "failed-kimi")?.state).toBe("failed"); // another peer's failed row is untouched
   // a second run finds nothing left to clear
   const again = await cli(f.root, ["queue", "discard", "--peer", "codex", "--reason", "again", "--yes"]);
-  expect(again.stdout).toContain("discarded 0 of 0 queued deliveries for codex");
+  expect(again.stdout).toContain("discarded 0 of 0 queued or failed deliveries for codex");
 });
 
 test("a failed row that a retry or a resolution already settled is not discarded again, and --state selects exactly one kind (#1096)", async () => {
