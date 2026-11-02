@@ -736,7 +736,7 @@ test("a session the hub loaded from a record is flagged resumed, and its TUI ref
   const rig = tuiRig({ mode: "headless", sessionId: "jcode-s1" }), { daemon, consoleClient } = await rig.start();
   const status = async () => (await consoleClient.request({ t: "status" })).status;
   // Recovered and headless, with the person's start mode tui: status says how to get the TUI back.
-  expect((await status()).jcodeTuiHint).toBe("jcode is running headless after recovery; run ahub stop jcode, then ahub jcode to get its TUI back");
+  expect((await status()).peers.jcode.statusNotice).toEqual({ code: "jcode-headless-after-recovery", message: "jcode is running headless after recovery; run ahub stop jcode, then ahub jcode to get its TUI back" });
   const waiting = await consoleClient.request({ t: "native_tui_launch", peer: "jcode" });
   expect(waiting.state).toBe("waiting");
   // A refusal for this launch says it was resumed, so the launcher can give the stop-and-start step.
@@ -753,10 +753,10 @@ test("a session the hub loaded from a record is flagged resumed, and its TUI ref
   await until(() => existsSync(file));
   await until(() => daemon.bus.peers.get("jcode")!.state === "idle");
   expect((await consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding: waiting.binding })).state).toBe("ready");
-  expect((await status()).jcodeTuiHint).toBeUndefined();
+  expect((await status()).peers.jcode.statusNotice).toBeUndefined();
 });
 
 test("a fresh headless Jcode that was not recovered gets no TUI hint (#1085)", async () => {
   const rig = tuiRig(), { consoleClient } = await rig.start();
-  expect((await consoleClient.request({ t: "status" })).status.jcodeTuiHint).toBeUndefined();
+  expect((await consoleClient.request({ t: "status" })).status.peers.jcode.statusNotice).toBeUndefined();
 });

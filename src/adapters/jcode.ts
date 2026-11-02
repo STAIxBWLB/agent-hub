@@ -19,6 +19,8 @@ export interface JcodeOptions extends Omit<AcpOptions, "cmd" | "qwen025" | "expe
   provider?: string;
   /** How long a native steer may take to be acknowledged (#572); default 5 s. */
   steerTimeoutMs?: number;
+  /** #1085: what the hub knows that the adapter does not, asked when status is built: is this peer's start mode tui, and did this hub run start after a crash report. */
+  tuiHintContext?: () => { tui: boolean; afterCrash: boolean };
 }
 export function jcodeCommand(command: string[], kind: "serve" | "acp", socket: string, cwd: string, model?: string, profile?: string, provider?: string, peer = "jcode"): string[] {
   if (!command.length || command.some(word => typeof word !== "string" || !word)) throw new Error("jcode_cmd must name an executable argv");
@@ -204,6 +206,8 @@ export class JcodePeer extends AcpPeer {
   private ending = false;
   private preserveRoot = false;
   private stopPromise: Promise<void> | undefined;
+  /** #1085: a ready TUI launch was served for this owned launch, so the person is on the way to its TUI. */
+  private tuiServed = false;
 
   constructor(private readonly jcode: JcodeOptions) {
     if (!isAbsolute(jcode.home)) throw new Error("jcode_home must be an absolute native data path");
@@ -224,6 +228,17 @@ export class JcodePeer extends AcpPeer {
   get ownedLaunchId(): string | undefined { return this.ending ? undefined : this.launchId; }
 
   ownsLaunch(launchId: unknown): boolean { return !this.ending && typeof launchId === "string" && launchId === this.launchId; }
+
+  /**
+   * #1085: after recovery this Jcode can be live and headless while its start mode is tui and no `ahub jcode` has reached its TUI yet: say how to get the TUI back.
+   * Only while it is live, only after a crash report or a resumed session, and never once a ready TUI launch was served. Fixed text: no id, path or socket.
+   */
+  get statusNotice(): { code: "jcode-headless-after-recovery"; message: string } | undefined {
+    if (this.state === "offline" || this.tuiServed) return undefined;
+    const context = this.jcode.tuiHintContext?.();
+    if (!context?.tui || !(context.afterCrash || this.resumedSession)) return undefined;
+    return { code: "jcode-headless-after-recovery", message: JCODE_HEADLESS_AFTER_RECOVERY };
+  }
 
   /** #1085: this owned launch loaded a recorded session id (crash or controlled recovery, or the person's --session-id) instead of making a new one. A boolean only, never the id. */
   get resumedSession(): boolean { return typeof this.jcode.resumeSessionId === "string" && this.jcode.resumeSessionId.length > 0; }
@@ -342,6 +357,7 @@ export class JcodePeer extends AcpPeer {
     let saved: boolean;
     try { saved = savedSession(this.jcode.home, sessionId); } catch { throw new JcodeTuiRefusal("session_proof_refused"); }
     if (!saved) return { state: "waiting", binding };
+    this.tuiServed = true;
     const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile, this.jcode.provider);
     // The TUI is the person's own client of this peer's server. The shared project MCP entry names no peer (#685), so every launch
     // path supplies its own id: the base Jcode's too, or its MCP child would fall back to the channel default.

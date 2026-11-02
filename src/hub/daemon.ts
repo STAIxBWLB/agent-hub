@@ -54,7 +54,7 @@ import { buildReviewBrief, withCodeSymbols } from "./review-brief.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
-import { JcodeOptionMismatch, JcodeTuiRefusal, JCODE_HEADLESS_AFTER_RECOVERY, isJcodePeer, jcodeVersionAsync, type JcodePeer } from "../adapters/jcode.ts";
+import { JcodeOptionMismatch, JcodeTuiRefusal, isJcodePeer, jcodeVersionAsync, type JcodePeer } from "../adapters/jcode.ts";
 import { VERSION_REFUSAL, configuredCommands, describe, isCompatId } from "../adapters/compat.ts";
 import { agentVersionsAsync, type AgentVersionRow } from "../cli/agents.ts";
 import { driftedAgents, noticeDrift, type DriftedAgent } from "./agent-drift.ts";
@@ -1750,18 +1750,6 @@ export async function startDaemon(opts: DaemonOptions) {
   const modelRelays = new Map<string, ModelRelay>();
   /** #368: the owned Jcode launch of each Jcode peer, from creation (its MCP child connects while `start()` runs, before the bus has the peer). */
   const jcodeLaunches = new Map<string, JcodePeer>();
-  /** #1085: owned Jcode launches that already served a ready TUI launch. A weak set: a replaced launch is a different object and is not in it. */
-  const jcodeTuiServed = new WeakSet<JcodePeer>();
-  /**
-   * #1085: after recovery a Jcode can be live and headless while its start mode is tui, and no `ahub jcode` has reached its TUI yet. Say how to get the TUI back.
-   * Only a Jcode this hub owns, only after a crash report or a resumed session, and never once a ready launch was served. No id, path or socket.
-   */
-  const jcodeTuiHint = (): string | undefined => {
-    const owner = bus.peers.get("jcode");
-    if (!isJcodePeer(owner) || owner.state === "offline" || startModeOf(config.peers, "jcode", declarations, adapterCatalog) !== "tui" || jcodeTuiServed.has(owner)) return undefined;
-    if (crashReport.length === 0 && !owner.resumedSession) return undefined;
-    return JCODE_HEADLESS_AFTER_RECOVERY;
-  };
   const globalModelRelay = (relay: ModelRelay) => { modelRelay = relay; };
   const nativeStateDir = (peer: string) => declarations[peer] ? join(opts.stateDir, "instances", peer) : opts.stateDir;
   const instanceAppPorts = new Map<string, number>();
@@ -4563,7 +4551,6 @@ export async function startDaemon(opts: DaemonOptions) {
     const view = {
     ...(queueBackpressure ? { queueBackpressure } : {}),
     ...(crashReport.length ? { crash: crashReport } : {}),
-    ...(() => { const hint = jcodeTuiHint(); return hint ? { jcodeTuiHint: hint } : {}; })(),
     projectId,
     instanceId,
     rooms: roomCommands.statusView(),
@@ -5678,6 +5665,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ...(instance?.provider ? { provider: instance.provider } : {}),
         ...(args.model ?? instance?.model ? { launchModel: (args.model ?? instance?.model)! } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}), cwd: executionCwd, watchdogMs: config.watchdog_ms,
         toolCeilingMs: adapterTiming.acpToolCeilingMs(), activityBatchMs: adapterTiming.acpActivityBatchMs(), steerTimeoutMs: adapterTiming.jcodeSteerTimeoutMs(),
+        tuiHintContext: () => ({ tui: startMode(peer) === "tui", afterCrash: crashReport.length > 0 }),
         preamble: sessionRoleContract(peer), log: () => log("Jcode native diagnostic: details withheld"),
         // #801: Jcode 0.99.1's usage_update is `{ used, size }`, the live session's context occupancy: a context reading bound to the adapter's own session id, never a tokens event
         // or a quota window. An invalid shape reports a null reading (unknown, not the previous value).
@@ -9067,9 +9055,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (msg.binding !== undefined && (!msg.binding || typeof msg.binding.launchId !== "string" || typeof msg.binding.sessionId !== "string")) throw new Error("invalid binding");
           const options = msg.args ?? {};
           for (const key of ["model", "providerProfile", "sessionId"]) if (options[key] !== undefined && typeof options[key] !== "string") throw new Error("invalid option");
-          const launch = owner.tuiLaunch(msg.binding, options);
-          if (launch.state === "ready") jcodeTuiServed.add(owner);
-          return void reply({ ok: true, ...launch });
+          return void reply({ ok: true, ...owner.tuiLaunch(msg.binding, options) });
         } catch (error) {
           if (error instanceof JcodeOptionMismatch) return void reply({ ok: false, option: error.option, error: `owned Jcode launch differs from its running session in ${error.option}; start without it or stop jcode first` });
           if (error instanceof JcodeTuiRefusal) return refuseTui(error.code, "owned Jcode launch or saved session could not be verified; details withheld", owner.resumedSession);

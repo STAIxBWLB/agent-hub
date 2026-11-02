@@ -5003,6 +5003,7 @@ var init_jcode = __esm(() => {
     ending = false;
     preserveRoot = false;
     stopPromise;
+    tuiServed = false;
     constructor(jcode) {
       if (!isAbsolute4(jcode.home))
         throw new Error("jcode_home must be an absolute native data path");
@@ -5022,6 +5023,14 @@ var init_jcode = __esm(() => {
     }
     ownsLaunch(launchId) {
       return !this.ending && typeof launchId === "string" && launchId === this.launchId;
+    }
+    get statusNotice() {
+      if (this.state === "offline" || this.tuiServed)
+        return;
+      const context = this.jcode.tuiHintContext?.();
+      if (!context?.tui || !(context.afterCrash || this.resumedSession))
+        return;
+      return { code: "jcode-headless-after-recovery", message: JCODE_HEADLESS_AFTER_RECOVERY };
     }
     get resumedSession() {
       return typeof this.jcode.resumeSessionId === "string" && this.jcode.resumeSessionId.length > 0;
@@ -5194,6 +5203,7 @@ var init_jcode = __esm(() => {
       }
       if (!saved)
         return { state: "waiting", binding };
+      this.tuiServed = true;
       const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile, this.jcode.provider);
       return { state: "ready", binding, launch: { cmd, args, env: { JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, AGENTHUB_PEER_ID: this.id, AGENTHUB_LAUNCH_ID: this.launchId, ...JCODE_OWNED_ENV } } };
     }

@@ -64,7 +64,7 @@ export interface PeerAdapter {
   /** Fixed-builtin native proof only; present undefined is unknown, not an absent proxy. */
   readonly frontendProxy?: FrontendProxyPort;
   /** Fixed operator notices from builtin native adapters, never provider text or native ids. */
-  readonly statusNotice?: { code: "unidentified-cancellation" | "qwen-detached" | "qwen-stalled"; message: string };
+  readonly statusNotice?: { code: "unidentified-cancellation" | "qwen-detached" | "qwen-stalled" | "jcode-headless-after-recovery"; message: string };
   /** Fixed builtins with session.nativeRevert only. Native conversation effects remain in the adapter. */
   revertTurn?(nativeTurn: string): Promise<void>;
   /** #445 C1: what this peer's native source lists right now (a probed version only), or an empty manifest. Never throws for an unprobed version; a transport failure rejects. */
