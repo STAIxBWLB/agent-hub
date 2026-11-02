@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.27.0 and control protocols 16 through 17. Live verification
+This guide describes ahub 0.28.0 and control protocols 16 through 17. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -360,8 +360,11 @@ settles only its own `needs_review` row, including while busy (#1079). Get the
 observed revision from the bounded held-row metadata returned with `hub_inbox`.
 Use `completed` after handling the delivery, or `discard` when it should not be
 acted on, with a nonempty reason. The journal records the recipient actor and
-reason. Another peer's row, a stale revision, remote-room disposition and active
-`dispatching`/`accepted` rows refuse. This never retries a message, changes a task
+reason. Another peer's row, a stale revision, remote-room disposition, active
+`dispatching`/`accepted` rows, a paused or held peer, recovery, shutdown or storage
+holds, and a reason that is private or sensitive all refuse. A row that carries an
+invocation stays person-only (`ahub queue show <id>`, then `ahub queue resolve
+<id>`), because the invocation may still be running. This never retries a message, changes a task
 role or cancels the native turn; recipient retry keeps its existing one-use rules.
 
 An explicit `hub_inbox` read can return newly queued messages behind a held row
@@ -399,7 +402,11 @@ behavior is unchanged. `ahub queue resolve ... [--revision N]` uses the supplied
 revision instead of a fresh show. A `queued` delivery was never handed to its peer, so it can be discarded while the peer is busy (a pull-only TUI is busy most of
 the time); `dispatching` and `accepted` deliveries stay refused, and `retry` keeps its rules. A refused resolution names its cause (`active delivery`, `peer busy`,
 `stale revision`, `unknown delivery`, `already resolved`, `queued delivery is already scheduled`, `recipient queue is full`, `delivery journal unavailable`), never one
-generic sentence (#713).
+generic sentence (#713). A failed row that a resolution already settled (for
+example the parent of a retry, whose redelivery is a separate row) is refused as
+`already resolved`, never `stale revision`. `ahub queue show` on a failed row says
+that nothing is left to do, or, if the row is unsettled, prints the `ahub queue
+resolve <id> --action discard|completed` command (#1098).
 
 `ahub queue discard --peer <id> --reason <text> [--state queued|needs_review|failed] [--yes] [--json]` clears one peer's backlog and is for the person or the configured conductor (any other agent identity is
 refused, and a remote `peer@label` queue is the person's only). Without `--yes` it only says how many deliveries it would discard; with `--yes` it discards each delivery of that peer through the
@@ -993,6 +1000,19 @@ ahub up
 `ahub init` writes the project configuration and managed instruction blocks.
 Run it after an upgrade when those blocks need refreshing.
 
+Settings flags (#1100) set the main project settings without a file edit.
+`--agents <a,b,...|none>` (`start.agents`) and `--autonomy inherit|off` (whether a
+new project inherits the machine autonomy preset) go to the untracked
+`config.local.json`. `--sdlc off|advise|enforce` sets `mode` in `sdlc.toml` (`off`
+writes no file on a new project). `--coordination advisory|turn-free`,
+`--memory`/`--no-memory`, `--snapshots`/`--no-snapshots` and `--pi`/`--no-pi` set
+their keys in `config.json`. On an existing project only a flag you give changes
+anything: `--dry-run` shows each change as `old -> new` (`--dry-run --json` adds a
+`settings` array), and a value equal to the current one is a no-op. An invalid
+value, or a flag given twice with different values, is refused with the allowed
+values, and nothing is written. Executables, secrets, models, providers, instances
+and permissions have no flags; they stay file edits.
+
 A person at a terminal who runs `ahub init` on a new project with no flag that
 sets anything and no `--yes` is asked each setting in turn (#1065 T2): profile,
 the agents `ahub up` starts, design specs and their review mode, SDLC mode,
@@ -1197,7 +1217,7 @@ A daemon advertising `tool_write_idempotency` accepts a top-level control
 transport `rid` and MCP JSON-RPC IDs. The proposal and review MCP tools expose optional `request_id`:
 omit it for a new call; after an unknown outcome, reuse the echoed key with the
 same arguments. The channel removes this transport argument before task
-validation. A new JSON-RPC ID does not change an explicitly supplied retry key.
+validation. A new JSON-RPC ID does not change an explicitly supplied retry key. In-process tool calls (the local worker and Pi) refuse `request_id`: replay keys need the control-protocol transport.
 
 Read `hub_task_list` for an uncertain proposal, `hub_task_show` for an uncertain
 verdict, or `ahub queue show <delivery-id>` (person/conductor) for a delivery.
@@ -2175,6 +2195,16 @@ A newly initialized `ahub init` project inherits a trusted machine opt-in and sa
 
 `ahub setup` selects the explicit `CLAUDE_CONFIG_DIR`, otherwise an existing default Claude home (or the not-yet-created default when no other home is selected), plus distinct homes proven in use by live registered Claude launcher records. It does not scan arbitrary profile directories. Each native plugin command receives that home's environment. One confirmation covers plugin setup and a project-neutral PreToolUse hook while preserving unrelated hooks and statusLine settings. The profile fallback requires the inherited hub state and peer identity and does nothing for a managed launch that already has its session hook, preventing duplicate delivery. Installing a hook proves configuration, not live enforcement.
 
+Setup manages only the user-scope `agent-hub@agent-hub` plugin row (`claude
+plugin install|uninstall ... --scope user`). A project- or local-scope row of that
+plugin is kept and named in a notice (`... plugin row preserved ...; setup never
+removes non-user scopes`). While such a row exists, setup is blocked rather than
+removing an agent-hub marketplace that points at another source (#1073). The
+semver check on installed plugin versions applies only to agent-hub rows, so
+another plugin recorded with a git SHA no longer fails the inventory (#1074). When
+a Claude home step fails, setup still records the `start.agents` answer before it
+reports the failure.
+
 `ahub autonomy status [--json]` includes the machine default and each discovered Claude home's plugin/hook state. Missing, unsafe, stale, unavailable or incomplete evidence is explicit; a missing selected home is reported without starting a native inventory command that could create it. The native Orca zero-prompt receipt remains T4.
 
 
@@ -2634,7 +2664,8 @@ still work when notices are disabled.
 off|report|require` sets `specs.review`. Both are rows of the init settings
 table: on an existing project an explicit flag shows as one old -> new row in
 `--dry-run`, a flag equal to the current value is a no-op, and a plain `ahub
-init` keeps the project's own choice and leaves the block as it is. Text outside
+init` follows the project's `specs.enabled` (on unless the project set it to false):
+it adds or refreshes the block when specs are on and removes it when they are off. Text outside
 the markers is never touched. A block with only one of its two markers is
 refused, naming the cause, and nothing is written.
 
@@ -2738,8 +2769,15 @@ neither.
      the dashboard or `ahub settings` can write. It is read at hub start.
      `{command}` is quoted for a POSIX shell; `{title}` and `{cwd}` are raw,
      so give each an argv element of its own.
-  2. Orca, when the hub runs in an Orca worktree or an earlier `ahub <peer>`
-     launch of this project recorded one (the path recovery uses).
+  2. Orca, when the hub runs in an Orca terminal or an earlier `ahub <peer>`
+     launch of this project recorded an Orca worktree. The terminal opens in the
+     Orca worktree whose root is exactly this project's root, found with `orca
+     worktree list` (#1105); it never uses the worktree of whichever terminal
+     started the hub, which is another project's after `ahub --project`, a
+     dashboard manager start or an upgrade. The start is refused, naming the cause
+     and `terminal.open` as the alternative, when Orca cannot list its worktrees,
+     has no worktree with this root, has more than one, or cut its list off at 500
+     rows first.
 - **No provider:** the start is refused with the command to run by hand. It is
   never downgraded to headless. `ahub settings` lists each start mode, and the
   dashboard's Start control says which mode a start will use and where its
@@ -3139,6 +3177,13 @@ the history entry reads `by: hub` with that planner and the reason
 is paused for recovery pulls nothing, also when the setting is turned off or recovery begins while a pull is already waiting on its screening: that pull writes nothing, and a recovery waits for pulls in flight. A committed `config.json` cannot turn it on: like
 the other machine-local policies it is ignored there with a log line.
 
+A backlog or unowned proposed card whose `plannedStart` is still in the future is
+not started automatically (#1092). Until that time the hub sends no
+`backlog_ready` line, makes no auto-pull, makes no ready-queue or queue-pressure
+owner offer, and the task sweep reports no stall. Planner grooming lists the card
+as `scheduled`. The card becomes eligible at the planned start itself. A planner's
+explicit pull or a person's assignment is unchanged.
+
 ## Resetting a project's hub
 
 `ahub reset` returns a project's hub to a clean state. Without `--yes` it is a
@@ -3345,7 +3390,7 @@ version is older than the selected running daemon; it installs nothing.
 | Runtime | Control protocol window | Legacy status field |
 | --- | --- | --- |
 | 0.12.20 through 0.25.0 | 16 only | `protocol: 16` |
-| 0.26.0 through 0.27.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
+| 0.26.0 through 0.28.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
 
 New clients choose the highest common protocol. The runtime supports N-1, so the
 published protocol-16 client and channel plugin remain usable; unrelated feature
@@ -4641,6 +4686,16 @@ Qwen controlled recovery and automatic crash resume load the recorded conversati
 Use `ahub roster add jcode`, then `ahub jcode [--model <alias>] [--provider-profile <name>]`. It opens the native TUI attached to the hub-owned ACP session by default. Use `--mode headless` or `ahub settings set peers.jcode.start_mode headless` to keep headless startup. The launcher reads roster membership from the hub's status reply; a hub older than 0.12.35 does not send it, so the launcher stops with an upgrade-or-restart remedy and starts nothing (#484). The person launcher configures only agent-hub-jcode in .jcode/mcp.json; run ahub init afterwards to ignore the untracked machine-path file. It writes the plugin bundle the running hub reports in `status`, so a CLI from another install no longer leaves a stale entry; `ahub kimi` does the same for Kimi's TUI entry (#502). Conductor/dashboard starts read that entry without editing it. Preview starts nothing, and ahub stop jcode stops only the owned private daemon/ACP groups. jcode_cmd, jcode_home and jcode_provider_profile are machine-local and never editable from settings.
 
 The native TUI opens only after Jcode has saved the selected session. On 0.98.1, `session/new` does not save it; the first real hub turn does. The launcher prints `jcode's TUI opens after its first hub turn; send it work, or Ctrl-C` once and waits for the same owned launch's saved session. Send Jcode work from the hub, or press Ctrl-C to end only the wait. No artificial prompt is sent. A console `peer_start` uses a terminal provider to run the same launcher, even while ACP is running; a conductor or dashboard start of an attached Jcode answers `already` and opens nothing (#559). Without a provider, run its displayed command in your own terminal. Options with no terminal need that manual path.
+
+A refused TUI launch names its cause and the next step (#1093): Jcode was
+restarted during the launch, its owned server is not running, its private socket
+was replaced, no session has been reported yet, the saved session failed the hub's
+safety check, the hub is busy stopping or recovering, Jcode is not running under
+this hub, or the project MCP entry is stale. The daemon logs only the cause code,
+never a path or id. After a crash or controlled recovery a Jcode whose start mode
+is `tui` runs headless. Until a TUI launch is served, `ahub status` and the
+launcher say `jcode is running headless after recovery; run ahub stop jcode, then
+ahub jcode to get its TUI back`.
 
 `ahub jcode --dry-run` stays pure and redacted. A person's `--print-command` can show the actual top-level native argv and closed native environment for an already-saved running session; it starts nothing, and like the launch it names a `--model`, `--provider-profile` or `--session-id` that differs from the running session (#574). The private socket/session tuple is not returned to hub tools or status. Native saved-session evidence is read-only and capped at 32 MiB; unsafe, mismatched or larger evidence refuses the TUI launch.
 
