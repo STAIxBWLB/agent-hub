@@ -10892,13 +10892,28 @@ var init_research_runner = __esm(() => {
   RUNNER_RECEIPT_DOMAIN = "agent-hub.runner-receipt/v1" + String.fromCharCode(0);
 });
 
+// node_modules/@staix/agent-mem/src/memory/formats.ts
+import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, openSync as openSync7, readFileSync as readFileSync8, readSync as readSync5 } from "fs";
+var MAX_BYTES3, SEMVER, READER_VERSION;
+var init_formats = __esm(() => {
+  MAX_BYTES3 = 64 * 1024;
+  SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
+  READER_VERSION = (() => {
+    try {
+      const { version } = JSON.parse(readFileSync8(new URL("../../package.json", import.meta.url), "utf8"));
+      return typeof version === "string" && SEMVER.test(version) ? version : undefined;
+    } catch {
+      return;
+    }
+  })();
+});
+
 // node_modules/@staix/agent-mem/src/memory/mutation.ts
 var mutations;
 var init_mutation = __esm(() => {
   init_platform();
   mutations = new WeakMap;
 });
-
 // node_modules/@staix/agent-mem/src/memory/lifecycle-log.ts
 var MAX_LOG_BYTES;
 var init_lifecycle_log = __esm(() => {
@@ -11147,12 +11162,12 @@ var init_project2 = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/policy.ts
-var MAX_BYTES3, MAX_STRING_BYTES, flags;
+var MAX_BYTES4, MAX_STRING_BYTES, flags;
 var init_policy = __esm(() => {
   init_screen();
   init_platform();
   init_project2();
-  MAX_BYTES3 = 256 * 1024;
+  MAX_BYTES4 = 256 * 1024;
   MAX_STRING_BYTES = 16 * 1024;
   flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
 });
@@ -11236,6 +11251,7 @@ var init_capture_input = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/capture.ts
 var SPOOL_MAX_BYTES;
 var init_capture = __esm(() => {
+  init_formats();
   init_screen();
   init_capture_input();
   init_capture_input();
@@ -11335,6 +11351,7 @@ var init_reader_lease = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/store.ts
 var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP;
 var init_store = __esm(() => {
+  init_formats();
   init_public_prune_view();
   init_shard_bridge();
   init_cli_attribution();
@@ -11410,6 +11427,7 @@ var init_curated_read = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/work-lists.ts
 var forbidden;
 var init_work_lists = __esm(() => {
+  init_formats();
   init_generation();
   init_mutation();
   init_platform();
@@ -11463,6 +11481,7 @@ var init_note_add = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/candidates.ts
 var CANDIDATE_RETENTION, COUNTER_RETENTION;
 var init_candidates = __esm(() => {
+  init_formats();
   init_candidate_pending();
   init_note_add();
   init_cli_attribution();
@@ -11516,17 +11535,18 @@ var init_generation_sync = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-screen.ts
-var MAX_BYTES4, GENERATED;
+var MAX_BYTES5, GENERATED;
 var init_sync_screen = __esm(() => {
   init_config();
   init_policy();
-  MAX_BYTES4 = 8 * 1024 * 1024;
+  MAX_BYTES5 = 8 * 1024 * 1024;
   GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "target", "promotedFrom", "supersedes", "expires", "by", "tier", "scope", "kind", "source"]);
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync.ts
 var liveGroups;
 var init_sync = __esm(() => {
+  init_formats();
   init_generation();
   init_platform();
   init_mutation();
@@ -11709,6 +11729,9 @@ var init_mcp_memory = __esm(() => {
   init_work_lists();
 });
 
+// node_modules/@staix/agent-mem/src/hook-resources.ts
+var init_hook_resources = () => {};
+
 // node_modules/@staix/agent-mem/src/hook-git.ts
 var init_hook_git = __esm(() => {
   init_platform();
@@ -11722,19 +11745,21 @@ var init_hook_contract = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/hook-spool.ts
-var RECORD_BYTES, MAX_BYTES5, DRAIN_BYTES, CAPACITY_BYTES, RETIRE_AFTER_MS;
+var RECORD_BYTES, MAX_BYTES6, DRAIN_BYTES, CAPACITY_BYTES, RETIRE_AFTER_MS;
 var init_hook_spool = __esm(() => {
+  init_formats();
   init_capture_input();
   init_platform();
   init_policy();
   init_config();
   init_policy();
+  init_private_spans();
   init_screen();
   init_metrics();
   init_lifecycle();
   init_hook_contract();
   RECORD_BYTES = HOOK_INPUT_BYTES + 8192;
-  MAX_BYTES5 = 2 * 1024 * 1024;
+  MAX_BYTES6 = 2 * 1024 * 1024;
   DRAIN_BYTES = 256 * 1024;
   CAPACITY_BYTES = 256 * 1024;
   RETIRE_AFTER_MS = 7 * 24 * 3600000;
@@ -11743,15 +11768,17 @@ var init_hook_spool = __esm(() => {
 // node_modules/@staix/agent-mem/src/hook-native.ts
 var SUPERVISOR;
 var init_hook_native = __esm(() => {
+  init_hook_resources();
   SUPERVISOR = [
     "marker=$1; seconds=$2; shift 2; leader=$$",
     'owned() { identity=$(/bin/ps -ww -p "$leader" -o pgid=,command=) || return 1; case "$identity" in *"$marker"*) ;; *) return 1 ;; esac; set -f; set -- $identity; [ "$1" = "$leader" ]; }',
-    'reap() { if owned; then kill -KILL "-$leader"; fi; }',
+    `rss() { [ -r "/proc/$leader/status" ] || return 0; trap '' PIPE; hwm=0; virtual=0; while read -r key value unit rest; do case "$key" in VmPeak:) virtual=$value ;; VmHWM:) hwm=$value; break ;; esac; done < "/proc/$leader/status"; printf "%s:RSS:%s:%s\\n" "$marker" "$hwm" "$virtual" >&2; trap - PIPE; }`,
+    'reap() { if owned; then rss; kill -KILL "-$leader"; fi; }',
     "[ -x /bin/sleep ] && [ -x /bin/ps ] && owned || exit 125",
     "trap reap EXIT HUP INT TERM",
     '( /bin/sleep "$seconds" & sleeper=$!; kill -0 "$sleeper" 2>/dev/null || { reap; exit 125; }; printf "\\n%s:ARMED\\n" "$marker"; wait "$sleeper"; reap ) & watchdog=$!',
     'kill -0 "$watchdog" 2>/dev/null || { reap; exit 125; }',
-    '"$@" </dev/null; code=$?; printf "\\n%s:%s\\n" "$marker" "$code"',
+    '"$@" </dev/null 2>/dev/null; code=$?; rss; printf "\\n%s:%s\\n" "$marker" "$code"',
     "read -r ignored || :",
     'wait "$watchdog"'
   ].join("; ");
@@ -11759,6 +11786,7 @@ var init_hook_native = __esm(() => {
 
 // node_modules/@staix/agent-mem/src/hook-project.ts
 var init_hook_project = __esm(() => {
+  init_hook_resources();
   init_hook_git();
   init_hook_spool();
   init_platform();
@@ -11767,8 +11795,16 @@ var init_hook_project = __esm(() => {
   init_hook_native();
 });
 
-// node_modules/@staix/agent-mem/src/hook-resources.ts
-var init_hook_resources = () => {};
+// node_modules/@staix/agent-mem/src/hook-rss-wire.ts
+var init_hook_rss_wire = __esm(() => {
+  init_hook_resources();
+});
+
+// node_modules/@staix/agent-mem/src/hook-jcode.ts
+var FIELD_BYTES;
+var init_hook_jcode = __esm(() => {
+  FIELD_BYTES = 16 * 1024 + 64;
+});
 
 // node_modules/@staix/agent-mem/src/hooks.ts
 var init_hooks = __esm(() => {
@@ -11776,8 +11812,10 @@ var init_hooks = __esm(() => {
   init_hook_native();
   init_aliases();
   init_hook_resources();
+  init_hook_rss_wire();
   init_metrics();
   init_hook_spool();
+  init_hook_jcode();
   init_home();
   init_platform();
   init_policy();
@@ -11787,7 +11825,7 @@ var init_hooks = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/ingest.ts
-var MAX_BYTES6, DEFAULT_BYTES, MAX_CURSOR_BYTES, utf8, MAX_RECORD;
+var MAX_BYTES7, DEFAULT_BYTES, MAX_CURSOR_BYTES, utf8, MAX_RECORD;
 var init_ingest = __esm(() => {
   init_capture();
   init_home();
@@ -11796,7 +11834,7 @@ var init_ingest = __esm(() => {
   init_config();
   init_project2();
   init_shard();
-  MAX_BYTES6 = 16 * 1024 * 1024;
+  MAX_BYTES7 = 16 * 1024 * 1024;
   DEFAULT_BYTES = 4 * 1024 * 1024;
   MAX_CURSOR_BYTES = 128 * 1024;
   utf8 = new TextDecoder("utf-8", { fatal: true });
@@ -11948,7 +11986,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.2"
     },
     dependencies: {
-      "@staix/agent-mem": "0.18.0"
+      "@staix/agent-mem": "0.19.0"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -12982,12 +13020,12 @@ var init_launch2 = __esm(() => {
 
 // src/adapters/claude-task-sessions.ts
 import { randomUUID as randomUUID8 } from "crypto";
-import { mkdirSync as mkdirSync10, readFileSync as readFileSync8 } from "fs";
+import { mkdirSync as mkdirSync10, readFileSync as readFileSync9 } from "fs";
 import { dirname as dirname11 } from "path";
 function readState(file) {
   let text;
   try {
-    text = readFileSync8(file, "utf8");
+    text = readFileSync9(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return { version: 1, sessions: {} };
@@ -13723,7 +13761,7 @@ var init_reviewer_variants = __esm(() => {
 });
 
 // src/adapters/agy/hooks.ts
-import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, lstatSync as lstatSync14, openSync as openSync7, readSync as readSync5 } from "fs";
+import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, lstatSync as lstatSync14, openSync as openSync8, readSync as readSync6 } from "fs";
 import { homedir as homedir5 } from "os";
 import { isAbsolute as isAbsolute6, join as join18, relative as relative5 } from "path";
 import { createHash as createHash7 } from "crypto";
@@ -13774,8 +13812,8 @@ function readAgyTranscript(session, transcript) {
       if (lstatSync14(cursor).isSymbolicLink())
         return empty;
     }
-    fd = openSync7(transcript, constants6.O_RDONLY | constants6.O_NOFOLLOW);
-    const stat = fstatSync6(fd);
+    fd = openSync8(transcript, constants7.O_RDONLY | constants7.O_NOFOLLOW);
+    const stat = fstatSync7(fd);
     if (!stat.isFile() || stat.nlink !== 1)
       return empty;
     const cap = 4 * 1024 * 1024;
@@ -13784,7 +13822,7 @@ function readAgyTranscript(session, transcript) {
       const buffer = Buffer.alloc(stat.size - from);
       let bytes = 0;
       while (bytes < buffer.length) {
-        const count = readSync5(fd, buffer, bytes, buffer.length - bytes, from + bytes);
+        const count = readSync6(fd, buffer, bytes, buffer.length - bytes, from + bytes);
         if (!count)
           break;
         bytes += count;
@@ -13817,7 +13855,7 @@ function readAgyTranscript(session, transcript) {
     return empty;
   } finally {
     if (fd !== undefined)
-      closeSync7(fd);
+      closeSync8(fd);
   }
 }
 var EVENTS2, UUID2, record3 = (value) => !!value && typeof value === "object" && !Array.isArray(value), AGY_FACTS_HOOK;
@@ -13895,7 +13933,7 @@ function builtinCliEntries(definitions) {
   return Object.freeze(definitions.flatMap((definition) => definition.cli.entry ? [Object.freeze({ ...definition.cli.entry, command: definition.cli.command })] : []));
 }
 // src/adapters/definitions/native-cli-entry-claude.ts
-import { readFileSync as readFileSync9 } from "fs";
+import { readFileSync as readFileSync10 } from "fs";
 import { join as join19 } from "path";
 import { randomUUID as randomUUID10 } from "crypto";
 async function runClaudeEntry(ctx) {
@@ -13949,13 +13987,13 @@ async function runClaudeEntry(ctx) {
   let original;
   for (const file of [join19(executionCwd, ".claude", "settings.local.json"), join19(executionCwd, ".claude", "settings.json"), join19(process.env.HOME ?? "", ".claude", "settings.json")]) {
     try {
-      original ??= JSON.parse(readFileSync9(file, "utf8")).statusLine;
+      original ??= JSON.parse(readFileSync10(file, "utf8")).statusLine;
     } catch {}
   }
   const facts = claudeObservationHooks(projectConfig(), { script: join19(cliDir, "facts-hook.ts"), stateDir });
   let previousLaunch;
   try {
-    previousLaunch = JSON.parse(readFileSync9(join19(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
+    previousLaunch = JSON.parse(readFileSync10(join19(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
   } catch {}
   const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join19(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
   let result;
@@ -14441,7 +14479,7 @@ var WAITING = "jcode's TUI opens after its first hub turn; send it work, or Ctrl
 var init_native_cli_entry_jcode = () => {};
 
 // src/adapters/definitions/native-cli-preview-claude.ts
-import { readFileSync as readFileSync10 } from "fs";
+import { readFileSync as readFileSync11 } from "fs";
 import { join as join20 } from "path";
 function previewClaude(ctx) {
   const { args, cwd, stateDir, cliDir, unattended, config } = ctx;
@@ -14452,7 +14490,7 @@ function previewClaude(ctx) {
   let original;
   for (const file of [join20(cwd, ".claude/settings.local.json"), join20(cwd, ".claude/settings.json"), join20(process.env.HOME ?? "", ".claude/settings.json")]) {
     try {
-      original ??= JSON.parse(readFileSync10(file, "utf8")).statusLine;
+      original ??= JSON.parse(readFileSync11(file, "utf8")).statusLine;
     } catch {}
   }
   const facts = claudeObservationHooks(config, { script: join20(cliDir, "facts-hook.ts"), stateDir });
@@ -14655,7 +14693,7 @@ var init_native_config_policy = __esm(() => {
 });
 
 // src/adapters/definitions/native-policy-aux.ts
-import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, openSync as openSync8, readdirSync as readdirSync3, readFileSync as readFileSync11 } from "fs";
+import { closeSync as closeSync9, constants as constants8, fstatSync as fstatSync8, openSync as openSync9, readdirSync as readdirSync3, readFileSync as readFileSync12 } from "fs";
 import { isAbsolute as isAbsolute7, join as join23, normalize } from "path";
 function claudeCrashPlan(_meta) {
   return { how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
@@ -14760,16 +14798,16 @@ function absoluteContinuityPath(value) {
 var str3 = (value) => typeof value === "string" && value ? value : undefined, PLUGINS, CLAUDE_ONLY, text2 = (file) => {
   let fd;
   try {
-    fd = openSync8(file, constants7.O_RDONLY | constants7.O_NONBLOCK);
-    const st = fstatSync7(fd);
+    fd = openSync9(file, constants8.O_RDONLY | constants8.O_NONBLOCK);
+    const st = fstatSync8(fd);
     if (!st.isFile() || st.size > 1024 * 1024)
       return;
-    return readFileSync11(fd, "utf8");
+    return readFileSync12(fd, "utf8");
   } catch {
     return;
   } finally {
     if (fd !== undefined)
-      closeSync8(fd);
+      closeSync9(fd);
   }
 }, json = (file) => {
   try {
@@ -14821,7 +14859,7 @@ var init_native_cli_launch_common = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-claude-launch.ts
-import { mkdirSync as mkdirSync11, writeFileSync as writeFileSync9, renameSync as renameSync5, unlinkSync as unlinkSync3, readFileSync as readFileSync12 } from "fs";
+import { mkdirSync as mkdirSync11, writeFileSync as writeFileSync9, renameSync as renameSync5, unlinkSync as unlinkSync3, readFileSync as readFileSync13 } from "fs";
 import { randomUUID as randomUUID11 } from "crypto";
 import { resolve as resolve16, join as join24 } from "path";
 function claudeChannel(userArgs) {
@@ -14832,7 +14870,7 @@ function claudeChannel(userArgs) {
     if (!path)
       continue;
     try {
-      const server = JSON.parse(readFileSync12(resolve16(path), "utf8")).mcpServers?.["agent-hub"];
+      const server = JSON.parse(readFileSync13(resolve16(path), "utf8")).mcpServers?.["agent-hub"];
       if (server?.command === "bun" && Array.isArray(server.args) && server.args.some((value) => typeof value === "string" && resolve16(value) === bundle))
         return "server:agent-hub";
     } catch {}
@@ -14856,7 +14894,7 @@ function claudeNativeLaunch(ctx) {
         throw new Error("--settings requires a JSON object or readable file so the hub permission hook can be installed");
       let caller;
       try {
-        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync12(resolve16(value), "utf8"));
+        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync13(resolve16(value), "utf8"));
         if (!caller || typeof caller !== "object" || Array.isArray(caller))
           throw new Error("not an object");
       } catch {
@@ -14942,11 +14980,11 @@ var init_native_cli_codex_launch = __esm(() => {
 });
 
 // src/hub/events.ts
-import { appendFileSync, closeSync as closeSync9, existsSync as existsSync8, fstatSync as fstatSync8, openSync as openSync9, readFileSync as readFileSync13, readSync as readSync6 } from "fs";
+import { appendFileSync, closeSync as closeSync10, existsSync as existsSync8, fstatSync as fstatSync9, openSync as openSync10, readFileSync as readFileSync14, readSync as readSync7 } from "fs";
 function readEvents(file, since = 0) {
   if (!existsSync8(file))
     return [];
-  return readFileSync13(file, "utf8").split(`
+  return readFileSync14(file, "utf8").split(`
 `).flatMap((line) => {
     if (!line.trim())
       return [];
@@ -22912,7 +22950,7 @@ init_project();
 
 // src/hub/instance-config.ts
 init_registry();
-import { readFileSync as readFileSync15 } from "fs";
+import { readFileSync as readFileSync16 } from "fs";
 import { join as join30 } from "path";
 
 // src/adapters/external-metadata.ts
@@ -23132,7 +23170,7 @@ function readAdapterModuleDeclarations(cwd, layers) {
 
 // src/hub/control-client.ts
 init_project();
-import { readFileSync as readFileSync14 } from "fs";
+import { readFileSync as readFileSync15 } from "fs";
 import { join as join29, resolve as resolve17 } from "path";
 
 // src/hub/protocol-window.ts
@@ -23170,8 +23208,8 @@ function controlProtocolWindow(descriptor) {
 }
 function readControl(stateDir) {
   try {
-    const status = JSON.parse(readFileSync14(join29(stateDir, "status.json"), "utf8"));
-    const token = readFileSync14(join29(stateDir, "control-token"), "utf8").trim();
+    const status = JSON.parse(readFileSync15(join29(stateDir, "status.json"), "utf8"));
+    const token = readFileSync15(join29(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
       return;
     const startModes = status.startModes && typeof status.startModes === "object" && !Array.isArray(status.startModes) ? Object.fromEntries(Object.entries(status.startModes).filter((entry) => entry[1] === "tui" || entry[1] === "headless")) : undefined;
@@ -23492,7 +23530,7 @@ var LEARNING_DEFAULTS = { windowMs: 30 * 24 * 3600000, threshold: 3, maxGroups: 
 init_deliverables();
 
 // src/hub/deliverable-files.ts
-import { constants as constants8, lstatSync as lstatSync16 } from "fs";
+import { constants as constants9, lstatSync as lstatSync16 } from "fs";
 init_tools();
 init_deny();
 init_permission_mode();
@@ -23500,7 +23538,7 @@ init_project();
 init_path_policy();
 init_deliverables();
 var CHUNK = 1024 * 1024;
-var NOFOLLOW = constants8.O_NOFOLLOW ?? 0;
+var NOFOLLOW = constants9.O_NOFOLLOW ?? 0;
 
 // src/hub/tasks.ts
 init_src();
@@ -23793,7 +23831,7 @@ var INSTANCE_CONFIG_FILES = ["config.json", "config.local.json"];
 function readInstanceConfigLayers(cwd) {
   return INSTANCE_CONFIG_FILES.flatMap((name) => {
     try {
-      return [{ name, raw: JSON.parse(readFileSync15(join30(cwd, ".agenthub", name), "utf8")) }];
+      return [{ name, raw: JSON.parse(readFileSync16(join30(cwd, ".agenthub", name), "utf8")) }];
     } catch (error) {
       if (error.code === "ENOENT")
         return [];
@@ -32185,7 +32223,7 @@ class StdioServerTransport {
 }
 
 // src/adapters/claude-channel.ts
-import { readFileSync as readFileSync16 } from "fs";
+import { readFileSync as readFileSync17 } from "fs";
 import { join as join33 } from "path";
 
 // src/hub/channel-project.ts
@@ -32413,7 +32451,7 @@ function buildNativePermissionProbe(request) {
 var own3 = channelProject(process.cwd(), process.env, (root) => {
   const read = (name) => {
     try {
-      return JSON.parse(readFileSync16(join33(root, ".agenthub", name), "utf8")).roles ?? {};
+      return JSON.parse(readFileSync17(join33(root, ".agenthub", name), "utf8")).roles ?? {};
     } catch {
       return {};
     }
@@ -32438,7 +32476,7 @@ var channel = !toolsMode && process.env.AGENTHUB_CHANNEL === "1";
 function roles2() {
   const read = (name) => {
     try {
-      return JSON.parse(readFileSync16(join33(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
+      return JSON.parse(readFileSync17(join33(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
     } catch {
       return {};
     }
@@ -32457,7 +32495,7 @@ function sessionProfile() {
     for (const name of ["config.json", "config.local.json"]) {
       let data;
       try {
-        data = JSON.parse(readFileSync16(join33(projectRoot2, ".agenthub", name), "utf8"));
+        data = JSON.parse(readFileSync17(join33(projectRoot2, ".agenthub", name), "utf8"));
       } catch (error) {
         if (error.code === "ENOENT")
           continue;
@@ -32484,7 +32522,7 @@ function sessionRoles() {
     const read = (name) => {
       let raw;
       try {
-        raw = JSON.parse(readFileSync16(join33(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
+        raw = JSON.parse(readFileSync17(join33(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
       } catch {
         return {};
       }
@@ -32514,14 +32552,14 @@ var HELD = `another session is attached to the hub as "${peerId}"; this one is s
 var INBOX_CAP = 200;
 function sessionSupported() {
   try {
-    return (JSON.parse(readFileSync16(join33(stateDir, "status.json"), "utf8")).features ?? []).includes("session_identity");
+    return (JSON.parse(readFileSync17(join33(stateDir, "status.json"), "utf8")).features ?? []).includes("session_identity");
   } catch {
     return false;
   }
 }
 function peerHeld() {
   try {
-    const status = JSON.parse(readFileSync16(join33(stateDir, "status.json"), "utf8"));
+    const status = JSON.parse(readFileSync17(join33(stateDir, "status.json"), "utf8"));
     const peer = status.peers?.[peerId];
     if (channel && peer?.toolsOnly && !peer.claiming)
       return false;
