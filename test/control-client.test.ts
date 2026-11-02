@@ -207,3 +207,11 @@ test("legacy write timeout remains unknown without pretending the old daemon sup
     expect(reply.error).toContain("hub_task_show {id: 9}");
   } finally { globalThis.setTimeout = original; for (const timer of timers) clearTimeout(timer); }
 });
+
+
+test("an explicit replay is never resubmitted to a legacy daemon that would ignore its request id", async () => {
+  const f = await writeOutcomeServer(false);
+  const reply = await f.client.request({ t: "task", op: "hub_task_propose", args: { title: "synthetic task" }, requestId: "old-daemon-request" });
+  expect(reply).toMatchObject({ outcome: "unknown", requestId: "old-daemon-request" });
+  expect(reply.error).toContain("nothing was resubmitted"); expect(f.seen).toHaveLength(0);
+});

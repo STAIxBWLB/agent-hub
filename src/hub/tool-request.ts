@@ -24,7 +24,7 @@ export function newToolRequestId(instanceId: string, now = Date.now()): string {
 export function toolWriteUnknownReply(msg: Record<string, unknown>, requestId?: string, cause?: string): Reply {
   const args = msg.args && typeof msg.args === "object" && !Array.isArray(msg.args) ? msg.args as Record<string, unknown> : {};
   const id = Number.isSafeInteger(args.id) && (args.id as number) > 0 ? args.id : undefined;
-  const delivery = typeof msg.deliveryId === "string" && /^[a-f0-9-]{8,64}$/.test(msg.deliveryId) ? msg.deliveryId : "<delivery-id>";
+  const delivery = typeof msg.deliveryId === "string" && /^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.test(msg.deliveryId) ? msg.deliveryId : "<delivery-id>";
   const read = toolWriteOperation(msg) === "hub_delivery_done" ? `ahub queue show ${delivery} (person or conductor)`
     : toolWriteOperation(msg) === "hub_review" && id !== undefined ? `hub_task_show {id: ${id}}` : "hub_task_list (then hub_task_show for the matching task)";
   const token = typeof requestId === "string" && requestId.length <= 256 && !/[\p{Cc}\p{Cf}]/u.test(requestId) ? requestId : undefined;

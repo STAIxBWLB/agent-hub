@@ -107,4 +107,5 @@ test("unknown write outcomes name a real settling read, with no untrusted delive
   expect(toolWriteUnknownReply({ t: "task", op: "hub_review", args: { id: 7 } }).error).toContain("hub_task_show {id: 7}");
   const delivery = toolWriteUnknownReply({ t: "delivery_complete", deliveryId: "forged\nheader" });
   expect(delivery.error).toContain("ahub queue show <delivery-id>"); expect(delivery.error).not.toContain("forged");
+  expect(toolWriteUnknownReply({ t: "delivery_complete", deliveryId: "--deadbeef" }).error).toContain("ahub queue show <delivery-id>");
 });

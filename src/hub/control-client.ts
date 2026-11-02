@@ -223,6 +223,10 @@ export class ControlClient {
     if (this.ws.readyState !== WebSocket.OPEN || this.closing && msg.t !== "request_cancel") return Promise.resolve({ ok: false, error: "hub connection is not open" });
     const invocation = msg.t === "task" && msg.op === "hub_invoke";
     const write = toolWriteOperation(msg) !== undefined;
+    if (write && msg.requestId !== undefined && !this.features.includes(TOOL_WRITE_FEATURE)) {
+      return Promise.resolve(toolWriteUnknownReply(msg, typeof msg.requestId === "string" ? msg.requestId : undefined,
+        "this daemon does not support replaying the original request; nothing was resubmitted"));
+    }
     let wire = msg;
     if (write && this.features.includes(TOOL_WRITE_FEATURE) && msg.requestId === undefined) {
       try { wire = { ...msg, requestId: newToolRequestId(this.instanceId ?? "") }; }
