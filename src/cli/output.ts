@@ -10,9 +10,11 @@ import { ownerIsolationText } from "./role-holders.ts";
 import { schedulePeriodText, scheduleWhen } from "../hub/schedules.ts";
 import { formatReport, formatTaskReport, type Report, type TaskReport } from "../hub/report.ts";
 import type { Counter, LimitsResult, TotalResult, UsageResult } from "../hub/usage-rollup.ts";
+import type { SpecsStatus } from "../hub/specs-task.ts";
 
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
+  specs?: SpecsStatus & { missingBlockHint?: boolean };
   queueBackpressure?: QueueBackpressureStatus;
   pendingRestart?: readonly { key: string; reason: string }[];
   retainedConfig?: readonly { key: string; reason: string }[];
@@ -211,6 +213,13 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (data.roleInfo) data = { ...data, peers: Object.fromEntries(Object.entries(data.peers).map(([peer, value]) => [peer, { ...value, ...data.roleInfo?.[peer] }])) };
   const out = lines(`agent-hub${data.version ? ` ${data.version}` : ""}  pid ${data.pid ?? "unknown"}  control 127.0.0.1:${data.controlPort ?? "unknown"}`, columns, "info");
   if (data.cwd) out.push(...lines(data.cwd, columns));
+  const specs = data.specs;
+  if (specs && [specs.specCount, specs.documents, specs.errors, specs.stale].every(value => Number.isSafeInteger(value) && value >= 0)
+    && (specs.specCount > 0 || specs.documents > 0 || specs.errors > 0)) {
+    out.push(...lines(`specs: ${specs.specCount} (errors ${specs.errors}, stale ${specs.stale})`, columns, specs.errors || specs.stale ? "attention" : undefined));
+    if (specs.truncated) out.push(...lines("specs: report truncated; narrow specs.roots and run ahub specs check", columns, "attention"));
+    if (specs.missingBlockHint) out.push(...lines("specs: AGENTS.md has no specs instruction block; read the covering specs before changing their paths", columns, "attention"));
+  }
   for (const pending of data.pendingRestart ?? []) out.push(...detail("pending restart", `${pending.key}: ${pending.reason}`, columns, "attention"));
   if (data.mainCheckout) out.push(...detail("main checkout", data.mainCheckout, columns, "attention"));
   for (const drift of data.agentDrift ?? []) out.push(...detail("agent CLI drift", `${drift.id} ${drift.version} ${drift.state}; last receipt ${drift.receipt}`, columns, "attention"));
