@@ -1,0 +1,8 @@
+---
+id: invalid-stamp
+type: module
+title: Invalid stamp
+paths: [src/core.ts]
+verified-against: not-a-commit
+---
+Stamp.

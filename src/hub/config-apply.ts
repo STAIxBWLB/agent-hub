@@ -27,6 +27,7 @@ import { peerRosterConfig, staleInstanceKey } from "./roster.ts";
 import { CHARACTER_IDS } from "../pet/characters.ts";
 import { autonomyOwnership, checkSettingValue, settingDef } from "./settings.ts";
 import { petPalette } from "../pet/config.ts";
+import { parseSpecsConfig } from "./specs-config.ts";
 
 export type ApplyClass = "live" | "next use" | "restart";
 export interface ApplyRule { applies: ApplyClass; reason?: string }
@@ -202,6 +203,7 @@ const schema: Record<string, Check> = {
   pii: block({ paths: strings }), data: block({ readonly: strings }),
   text_projection: v => { projectionConfig(v); },
   corpus: v => { corpusConfig(v); },
+  specs: (v, k) => { block({ enabled: bool, review: words(["off", "report", "require"]), roots: strings, stamps_file: text })(v, k); parseSpecsConfig(v); },
   conductor: block({ feed: words(["own", "all", "off"]), approval_wait_s: number(0, 2_147_483_647 / 1000) }),
   budget: block({ gate: number(0, 1), stale_min: timerMinutes, poll_min: timerMinutes, checkpoint_timeout_s: timerSeconds, kimi_tokens_5h: number(0), wait_max_min: number(0) }),
   context: block({ gate: number(0, 1), stale_min: timerMinutes, max_assignment_used: number(0, 1) }),
@@ -271,7 +273,7 @@ const restart: Record<string, string> = {
   profile: "Session tool schemas and profile contracts are bound at startup", profile_overrides: "Session tool schemas and profile contracts are bound at startup",
   text_projection: "Converter and cache ownership are bound at startup", corpus: "The corpus index is bound to its roots at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
 };
-const live = new Set(["action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "pet"]);
+const live = new Set(["action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "pet", "specs"]);
 const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges"]);
 /** Closed top-level schema; leaf overrides retain the existing session/runtime boundaries. */
 export function configApply(key: string, scopes: readonly ConfigIdentityScope[] = []): ApplyRule {
@@ -279,6 +281,7 @@ export function configApply(key: string, scopes: readonly ConfigIdentityScope[] 
   if (!(Object.hasOwn(schema, top) || top === "permission" || top === "routing")) return fail(key, "unknown configuration key");
   if (top !== "routing" && top !== "permission" && key.includes(".")) {
     const special: Record<string, readonly string[]> = {
+      specs: ["enabled", "review", "roots", "stamps_file"],
       task_sweep: ["enabled", "auto_reassign", "no_writes_turns", "interval_s", "unaccepted_min", "idle_min", "review_min", "ready_min", "ladder_min"],
       checks: ["timeout_s", "runner", "remote", ...CLASSES], terminal: ["open"], start: ["agents"],
     };

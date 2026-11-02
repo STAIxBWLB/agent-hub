@@ -1,0 +1,11 @@
+---
+id: core-leaf
+type: submodule
+title: Core leaf
+status: draft
+parent: core-module
+paths: [src/core.ts]
+implements:
+  - core-module
+---
+Leaf details.

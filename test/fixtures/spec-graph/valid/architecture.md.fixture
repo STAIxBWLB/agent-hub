@@ -1,0 +1,13 @@
+---
+id: architecture
+type: architecture
+title: Architecture
+status: active
+parent: product
+paths: [src/core.ts]
+covers:
+  - architecture
+---
+## Boundary
+
+The architecture links to [[core-module]].

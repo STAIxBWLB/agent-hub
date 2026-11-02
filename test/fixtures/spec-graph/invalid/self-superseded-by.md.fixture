@@ -1,0 +1,8 @@
+---
+id: self-superseded-by
+type: module
+title: Self superseded-by
+status: deprecated
+superseded-by: self-superseded-by
+---
+Self.

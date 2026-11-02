@@ -39,6 +39,7 @@ const isObject = (value: unknown): value is Record<string, unknown> => !!value &
 export function configTier(file: ConfigEditFile, path: readonly string[], value?: unknown, held?: unknown): ConfigTier {
   if (!path.length || path.some(part => typeof part !== "string" || !part || part.length > 64 || UNSAFE.has(part) || /[\s\x00-\x1f]/.test(part))) return refuse("invalid configuration path");
   const key = path.join(".");
+  if (file === "config.local.json" && path[0] === "specs" && path.length === 2 && ["enabled", "review", "roots", "stamps_file"].includes(path[1]!)) return { tier: 2 };
   if (file === "sdlc.toml") return path.length === 1 && (SDLC_KEYS as readonly string[]).includes(path[0]!) ? { tier: 2 } : refuse(`sdlc.${key} is not editable here: only mode and required_checks are; edit .agenthub/sdlc.toml in your editor`);
   if (registryKey(key)) return { refused: `${key} is already editable with ahub settings set ${key}; nothing was written` };
   if (path[0] === "research" && path[1] === "runners") {

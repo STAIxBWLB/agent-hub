@@ -32,6 +32,7 @@
   "tasks": { "release_after_min": 30 },
   "checks": { "timeout_s": 600 },
   "snapshots": { "enabled": true, "keep": 20 },
+  "specs": { "enabled": true, "review": "report", "roots": [], "stamps_file": "" },
   "review": { "adaptive": false, "min_reviews": 5 },
   "recovery": { "auto_resume_after_crash": false },
   "capabilities": {},

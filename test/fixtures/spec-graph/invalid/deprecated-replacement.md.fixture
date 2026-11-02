@@ -1,0 +1,9 @@
+---
+id: deprecated-replacement
+type: module
+title: Deprecated replacement source
+status: deprecated
+parent: architecture
+superseded-by: deprecated-target
+---
+Source.

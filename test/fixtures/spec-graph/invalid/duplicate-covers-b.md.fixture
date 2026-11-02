@@ -1,0 +1,8 @@
+---
+id: duplicate-covers-b
+type: module
+title: Duplicate covers B
+parent: architecture
+covers: [shared-token]
+---
+B.

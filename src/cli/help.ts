@@ -7,6 +7,7 @@ export interface HelpEntry { section: string; usage: string; description: string
 
 const SECTIONS: [string, [usage: string, description: string][]][] = [
   ["Projects", [
+    ["ahub specs list [--json] | check [--require-fresh] [--base <ref>] [--json] | covers <file...>", "read design specs, validate their graph and source freshness, or find covering specs; runs without a daemon; check exits 1 on errors and, with --require-fresh, stale documents"],
     ["ahub --project <path|id> <command>", "select a repository or worktree explicitly"],
     ["ahub projects [--json] [--full] [--color=auto|always|never]", "list registered projects and live status"],
     ["ahub projects remove <id>", "forget a stopped registration (keeps project files)"],

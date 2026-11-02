@@ -1,0 +1,8 @@
+---
+id: deprecated-target
+type: module
+title: Deprecated replacement target
+status: deprecated
+parent: architecture
+---
+Target.

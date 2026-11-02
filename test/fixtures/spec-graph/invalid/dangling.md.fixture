@@ -1,0 +1,8 @@
+---
+id: dangling
+type: module
+title: Dangling
+parent: absent-parent
+depends-on: [absent-dependency]
+---
+Dangling frontmatter links.

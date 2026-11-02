@@ -1,0 +1,7 @@
+---
+id: wrong-superseded-by
+type: module
+title: Wrong superseded-by
+superseded-by: goal
+---
+Wrong field use.
