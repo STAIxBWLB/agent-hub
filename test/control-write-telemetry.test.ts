@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { USER } from "../src/hub/envelope.ts";
 import { Board } from "../src/hub/board.ts";
+import { controlWriteSpan } from "../src/hub/control-write-trace.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { realPath } from "../src/hub/project.ts";
@@ -42,7 +43,11 @@ for (const mode of ["public", "private", "private-string"] as const) test(mode =
     }
     prototype.taskWrite = function<T extends { changes: number }>(this: Board, write: () => T): T {
       return original.call(this, () => {
-        if (!blocked) { blocked = true; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1600); }
+        if (!blocked) {
+          blocked = true;
+          for (let index = 0; index < 40; index++) controlWriteSpan("status-hook", () => {});
+          controlWriteSpan("memory", () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1600));
+        }
         return write();
       }) as T;
     };
@@ -68,8 +73,10 @@ for (const mode of ["public", "private", "private-string"] as const) test(mode =
       const slow = records.find(record => record.type === "control_write_slow" && record.kind === "hub_task_propose");
       expect(slow).toBeDefined();
       expect(slow.phases.some((phase: { phase: string }) => phase.phase === "board-write")).toBe(true);
+      expect(slow.phases.some((phase: { phase: string }) => phase.phase === "memory")).toBe(true);
       const lag = records.find(record => record.type === "control_write_loop_delay" && record.spans.some((span: { phase: string }) => span.phase === "board-write"));
       expect(lag).toBeDefined();
+      expect(lag.spans.some((span: { phase: string }) => span.phase === "memory")).toBe(true);
     }
     expect(JSON.stringify(records)).not.toContain(marker);
     expect(JSON.stringify(records)).not.toContain(root);
