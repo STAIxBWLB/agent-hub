@@ -12302,7 +12302,7 @@ var init_hub_tools = __esm(() => {
   init_roles();
   init_registry();
   init_envelope();
-  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs"]);
+  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve"]);
   IMPLEMENTER_PERMISSION_TOOL = {
     name: "hub_permission_request",
     description: "Native permission prompt for this current owned child. The person allows once or denies; failure is deny.",
@@ -12368,6 +12368,7 @@ var init_hub_tools = __esm(() => {
     tool2("hub_check_result", "Read your current task-bound isolated check receipt. Stale ownership/generation refuses; output is policy screened.", { run: str2 }, ["run"]),
     tool2("hub_check_cancel", "Cancel your task-bound isolated check; only its owner or the person may cancel.", { run: str2 }, ["run"]),
     tool2("hub_delivery_retry", "Request one redelivery of your own needs_review delivery. An earlier attempt may have effects: inspect those effects before acting. Refuses another peer's row or any lineage already explicitly retried; a repeated uncertain row needs the person. Never completes/discards a delivery or changes task state.", { delivery_id: { type: "string", minLength: 1, maxLength: 256 } }, ["delivery_id"]),
+    tool2("hub_delivery_resolve", "Confirm completion or discard your own needs_review delivery using the revision shown by hub_inbox. Requires a reason. Never replays the delivery or changes task state; another peer's row and stale revisions are refused.", { delivery_id: { type: "string", minLength: 1, maxLength: 256 }, revision: { type: "integer", minimum: 0 }, action: { type: "string", enum: ["completed", "discard"] }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["delivery_id", "revision", "action", "reason"]),
     tool2("hub_backlog_list", "Read public backlog cards with planning revisions. Configured planners only; PII remains a stub.", {}),
     tool2("hub_backlog_plan", "Plan an unpinned backlog item outside frozen releases with the revision you read and a bounded reason. Omit fields or give {} for a note-only revision. fields.sdlc accepts only repo/issue identity on unstarted backlog work; relinking clears old spec acceptance. A person's rank is retained. Actual dates cannot be set.", { id: id2, revision: { type: "integer", minimum: 0 }, reason: { type: "string", maxLength: 1000 }, fields: { type: "object", properties: { sdlc: { type: "object", minProperties: 1, properties: { repo: { type: ["string", "null"], maxLength: 400 }, issue: { type: ["integer", "null"], minimum: 1 } }, additionalProperties: false }, rank: { type: ["integer", "null"], minimum: 0 }, priority: { type: ["integer", "null"], minimum: 0, maximum: 3 }, release: { type: ["integer", "null"], minimum: 1 }, plannedStart: { type: ["integer", "null"], minimum: 1 }, due: { type: ["integer", "null"], minimum: 1 }, deps: { type: "array", maxItems: 64, uniqueItems: true, items: { type: "integer", minimum: 1 } }, reserved: { type: ["string", "null"], minLength: 1, maxLength: 32 } }, additionalProperties: false } }, ["id", "revision", "reason"]),
     tool2("hub_backlog_pull", "Reserve a WIP slot and pull ready unpinned backlog work into To Do at its current revision. Preserves person order/reservations and frozen scope; pending unowned work can be undone with hub_backlog_undo.", { id: id2, revision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["id", "revision", "reason"]),
@@ -32541,8 +32542,9 @@ function renderHeldHint(value, now = Date.now(), recipientRetry = true) {
   } catch {
     return "";
   }
-  const rows = held.rows.map((row) => `${sanitize(row.id)} from ${row.senders.map(sanitize).join(",")} kind ${row.kinds.join(",")} age ${Math.max(0, Math.floor((now - row.createdAt) / 1000))}s`);
-  const action = recipientRetry ? "Use hub_delivery_retry {delivery_id} for one retry of your own uncertain row; check for earlier effects. A repeated uncertain retry needs the person." : "Ask the person to resolve these held deliveries; this delivery-only peer cannot initiate recipient retry.";
+  const rows = held.rows.map((row) => `${sanitize(row.id)}${Number.isSafeInteger(row.revision) && row.revision >= 0 ? ` revision ${row.revision}` : ""} from ${row.senders.map(sanitize).join(",")} kind ${row.kinds.join(",")} age ${Math.max(0, Math.floor((now - row.createdAt) / 1000))}s`);
+  const resolvable = held.rows.some((row) => Number.isSafeInteger(row.revision) && row.revision >= 0);
+  const action = resolvable ? `Use hub_delivery_resolve {delivery_id, revision, action, reason} to confirm completion or discard your own held row. ${recipientRetry ? "Use hub_delivery_retry only to request its one uncertain redelivery; check for earlier effects." : "Retry remains person-only for this delivery mode."}` : `Ask the person to resolve these held deliveries because this hint has no usable revision. ${recipientRetry ? "A retry may be requested with hub_delivery_retry {delivery_id}; check for earlier effects." : "Retry remains person-only for this delivery mode."}`;
   const out = `Held hub deliveries: ${held.count}${held.truncated ? " (metadata truncated)" : ""}
 ${rows.join(`
 `)}
