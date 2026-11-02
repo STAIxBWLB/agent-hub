@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { personEnv } from "./child-process.ts";
-import { openStartTerminal, orcaExecutable, shellQuote, startTerminalWorktree, type CommandRunner } from "../cli/terminal-recovery.ts";
+import { openStartTerminal, orcaExecutable, resolveStartTerminalWorktree, shellQuote, startTerminalCandidate, type CommandRunner } from "../cli/terminal-recovery.ts";
 
 /** #269: where a terminal for a hub-made start comes from, or why there is none. */
 export type TerminalOpened = { ok: true; via: string } | { ok: false; why: string; detail?: string };
@@ -18,14 +18,15 @@ const PLACEHOLDER = /\{(command|title|cwd)\}/g;
 
 /**
  * The providers, in order: the machine-local `terminal.open` command template, then Orca (the path recovery uses)
- * when this project has an Orca worktree. `run` replaces the Orca CLI in tests.
+ * when Orca is in play for this project. `available` only says Orca could be used; `open` asks Orca for the worktree
+ * whose root is this project's root and refuses when there is none (#1089). `run` replaces the Orca CLI in tests.
  */
 export function terminalOpener(opts: { template: string[]; cwd: string; stateDir: string; env?: NodeJS.ProcessEnv; run?: CommandRunner }): TerminalOpener {
   const env = opts.env ?? process.env;
-  const worktree = () => startTerminalWorktree(opts.cwd, opts.stateDir, env);
+  const orcaInPlay = () => startTerminalCandidate(opts.cwd, opts.stateDir, env);
   const available = (): TerminalOpened => {
     if (opts.template.length) return { ok: true, via: "terminal.open" };
-    if (!worktree()) return { ok: false, why: "no terminal.open command is configured and this project has no Orca worktree on record" };
+    if (!orcaInPlay()) return { ok: false, why: "no terminal.open command is configured and this project has no Orca worktree on record" };
     if (!opts.run && !Bun.which(orcaExecutable())) return { ok: false, why: `the ${orcaExecutable()} command is not on PATH` };
     return { ok: true, via: "orca" };
   };
@@ -38,7 +39,11 @@ export function terminalOpener(opts: { template: string[]; cwd: string; stateDir
       const command = argv.map(shellQuote).join(" ");
       try {
         if (can.via === "orca") {
-          await openStartTerminal(worktree()!, command, title, opts.run ? { runner: opts.run } : undefined);
+          // The worktree comes from Orca by this project's root, never from the environment of whatever terminal started this hub (#1089).
+          const orca = opts.run ? { runner: opts.run } : undefined;
+          const target = await resolveStartTerminalWorktree(opts.cwd, orca);
+          if (!target.ok) return target;
+          await openStartTerminal(target.worktreeId, command, title, orca);
           return can;
         }
         // One pass with a function: a placeholder inside a substituted value (a project path that contains "{cwd}")

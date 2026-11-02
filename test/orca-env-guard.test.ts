@@ -103,7 +103,10 @@ async function orcaCallsOfUp(scrubbed: boolean): Promise<string[]> {
 test("AC2: without the preload a real ahub up reaches the stub Orca CLI with the parent's ORCA_ values, so the guard below can fail", async () => {
   const exposed = await orcaCallsOfUp(false);
   expect(exposed.length, "the unscrubbed run must reach the stub, or the guard proves nothing").toBeGreaterThan(0);
-  expect(exposed[0]).toContain("terminal create --worktree id:wt-fake613");
+  // #1089: the opener asks Orca which worktree has this project's root; it no longer trusts the worktree id of the terminal that started the hub. The unscrubbed run still reaches the stub through
+  // the parent's ORCA_CLI_COMMAND, which is what the scrubbed leg below must never do, and the parent's fake worktree id is not sent to Orca at all.
+  expect(exposed[0]).toBe("worktree list --limit 500 --json");
+  expect(exposed.join("\n")).not.toContain("wt-fake613");
 }, 20_000);
 
 test("AC1/AC2: under the preload a real ahub up never calls the Orca CLI with the parent's ORCA_ values", async () => {
