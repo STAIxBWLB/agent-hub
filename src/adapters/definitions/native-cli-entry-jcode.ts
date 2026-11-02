@@ -3,9 +3,39 @@ import { resolve } from "node:path";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
 import type { ControlClient } from "../../hub/control-client.ts";
 import type { JcodeTuiBinding, JcodeTuiState } from "../jcode.ts";
+import { JCODE_HEADLESS_AFTER_RECOVERY } from "../jcode.ts";
 import { bundleInStatus, rosterInStatus } from "../../hub/status-roster.ts";
 
 const WAITING = "jcode's TUI opens after its first hub turn; send it work, or Ctrl-C";
+
+/**
+ * #1085: what to tell the person for each cause class the daemon returns as `code`. Fixed text: the daemon's reply carries a code, never a path or id, and nothing else is echoed.
+ * A session that was loaded from a record (`resumed`, crash or controlled recovery) is running headless: the way back to its TUI is stop, then start.
+ */
+export function jcodeTuiCauseMessage(code: unknown, resumed = false): string | undefined {
+  // The cause sentence is per class (AC1). The next step is per class too, except that a session loaded from a record is
+  // running headless from recovery, whatever refused the TUI: its way back is always stop, then start (AC2).
+  const recoveredStep = `${JCODE_HEADLESS_AFTER_RECOVERY}`;
+  const step = (own: string) => resumed ? recoveredStep : own;
+  switch (code) {
+    case "launch_changed": return `Jcode was restarted while ahub jcode was starting its TUI; ${step("run ahub jcode again")}`;
+    case "server_not_running": return `Jcode's owned server is not running; ${step("run ahub stop jcode, then ahub jcode")}`;
+    case "socket_changed": return `Jcode's private socket was replaced by another process; ${step("run ahub stop jcode, then ahub jcode")}`;
+    case "session_unknown": return `Jcode has not reported a session yet; ${step("wait for it to attach, then run ahub jcode again")}`;
+    case "session_proof_refused": return `Jcode's saved session failed the hub's safety check (not a plain file, too large, or another session); ${step("run ahub stop jcode, then ahub jcode for a new session")}`;
+    case "hub_busy": return "the hub is stopping, recovering or changing its roster; wait for ahub status to settle, then run ahub jcode again";
+    case "not_running": return "Jcode is not running under this hub; run ahub jcode again";
+    case "mcp_stale": return "the project's Jcode MCP entry is missing or stale; run ahub jcode again to rewrite it";
+    default: return undefined;
+  }
+}
+
+/** Names the cause class the daemon returned (#1085). An older daemon sends no code: the caller's generic message stands. */
+function refuseTuiCause(reply: { ok?: unknown; code?: unknown; resumed?: unknown }, fail: NativeCliEntryContext["fail"]): void {
+  if (reply.ok) return;
+  const message = jcodeTuiCauseMessage(reply.code, reply.resumed === true);
+  if (message) fail(message);
+}
 
 /** The daemon names the one session option that differs from the attached saved session (#559 N2, #574). */
 function refuseNamedOption(reply: { ok?: unknown; option?: unknown }, fail: NativeCliEntryContext["fail"]): void {
@@ -20,6 +50,7 @@ export async function waitForJcodeTui(hub: ControlClient, fail: NativeCliEntryCo
       const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", binding, args: options });
       if (signal.aborted) return;
       refuseNamedOption(reply, fail);
+      refuseTuiCause(reply, fail);
       if (!reply.ok || !reply.binding || !["waiting", "ready"].includes(reply.state)) fail("Jcode launch changed or its native saved session is unavailable; retry from a terminal");
       current = reply as JcodeTuiState;
     }
@@ -78,6 +109,7 @@ export async function runJcodeEntry(ctx: NativeCliEntryContext): Promise<void> {
       if (!hub.features.includes("native_tui_launch") || mode !== "tui") return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
       const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", args: options });
       refuseNamedOption(reply, fail);
+      refuseTuiCause(reply, fail);
       if (!reply.ok || reply.state !== "ready") fail("Jcode's selected native session is not saved and ready; run ahub jcode to wait for its first hub turn");
       return console.log(JSON.stringify(reply.launch, null, 2));
     }
@@ -102,6 +134,7 @@ export async function runJcodeEntry(ctx: NativeCliEntryContext): Promise<void> {
     // no terminal recovery adapter (#564).
     const confirmed = await hub.request({ t: "native_tui_launch", peer: "jcode", binding: ready.binding, args: options });
     if (interruptedWait()) return;
+    refuseTuiCause(confirmed, fail);
     if (!confirmed.ok || confirmed.state !== "ready") fail("Jcode launch changed before its terminal opened");
     // ponytail: jcode 0.98.1's top-level TUI spawns a shared server (no --temporary-server or --owner-pid) when nothing
     // answers on the dialed socket at startup, and on its reload-handoff reconnect. A hub stop or an owned-server crash

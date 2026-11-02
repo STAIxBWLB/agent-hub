@@ -31,7 +31,7 @@ export interface StatusOutput {
   taskWip?: Record<string, { wip: number; wipLimit: number; active?: number; reviewWait?: number; reserved?: number }>;
   pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; actionPolicyInfo?: Record<string, { note: string; enforceable: boolean }>; budget?: Record<string, any>; planner?: { peers?: string[]; source?: string };
   ownerIsolation?: Record<string, boolean>; ownerIsolationNotes?: Record<string, string>;
-  tasks?: Record<string, number>; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; crash?: string[];
+  tasks?: Record<string, number>; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; crash?: string[]; jcodeTuiHint?: string;
 }
 /** `peers`: one note per peer that shows no number, and why (no quota, nothing read yet); absent from an older hub. */
 export interface BudgetOutput { budget: Record<string, any>; gate?: number; peers?: { peer: string; kind?: string; note: string }[] }
@@ -248,6 +248,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (data.deliveryError) out.push(...detail("delivery storage", `${data.deliveryError}; dispatch is stopped`, columns, "failure"));
   for (const pending of data.permissionDefaults ?? []) out.push(...detail("permission default", `${pending.peer}: never-ask from ${pending.source}, stays ask until a person confirms in ahub console`, columns, "attention"));
   for (const crash of data.crash ?? []) out.push(...detail("crash recovery", crash, columns, "attention"));
+  if (data.jcodeTuiHint) out.push(...detail("jcode", data.jcodeTuiHint, columns, "attention"));
   for (const warning of data.isolatedChecks?.orphans ?? []) out.push(...detail("isolated check warning", warning, columns, "attention"));
   for (const id of data.isolatedChecks?.unknownReceipts ?? []) out.push(...detail("check receipt", `${id}: unknown; receipt storage unavailable`, columns, "attention"));
   if (data.isolatedChecks?.maintenanceUnavailable) out.push(...detail("check maintenance", "unavailable; saved run outcomes are unchanged", columns, "attention"));
