@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realPath } from "../src/hub/project.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
+import { ToolWriteRegistry, toolWriteUnknownReply } from "../src/hub/tool-request.ts";
 
-async function plugin(launchId: string | undefined, deletableCwd = false) {
+async function plugin(launchId: string | undefined, deletableCwd = false, options: { features?: string[]; response?: (message: any) => Record<string, unknown>; handler?: (message: any) => Promise<Record<string, unknown>> | Record<string, unknown> } = {}) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-channel-launch-")));   // a real project root is resolved: the plugin and the hub compare resolved paths
-  const hellos: any[] = [], replies = new Map<number, (value: any) => void>();
+  const hellos: any[] = [], requests: any[] = [], replies = new Map<number, (value: any) => void>();
   let socket: { close(code: number, reason: string): unknown } | undefined;
   let diagnostics = "", sequence = 0;
   const daemon = Bun.serve({ hostname: "127.0.0.1", port: 0,
@@ -16,8 +17,12 @@ async function plugin(launchId: string | undefined, deletableCwd = false) {
       const message = JSON.parse(String(raw));
       if (message.t === "hello") {
         hellos.push(message); socket = ws;
-        ws.send(JSON.stringify({ t: "welcome", rid: message.rid, ok: true, projectId: "launch-fixture", instanceId: "fixture-instance", cwd: root }));
-      } else ws.send(JSON.stringify({ rid: message.rid, ok: true, held: { count: 0, rows: [], truncated: false }, envs: [], queued: 0, important: 0 }));
+        ws.send(JSON.stringify({ t: "welcome", rid: message.rid, ok: true, projectId: "launch-fixture", instanceId: "fixture-instance", cwd: root, ...(options.features ? { features: options.features } : {}) }));
+      } else {
+        requests.push(message);
+        const answer = options.handler?.(message) ?? options.response?.(message) ?? { ok: true, text: "task #1: in_progress, owner codex, reviewer user", held: { count: 0, rows: [], truncated: false }, envs: [], queued: 0, important: 0 };
+        void Promise.resolve(answer).then(body => ws.send(JSON.stringify({ rid: message.rid, ...body })), () => ws.send(JSON.stringify({ rid: message.rid, ok: false, error: "fixture handler failed" })));
+      }
     } },
   });
   const manifest = { protocol: PROTOCOL, controlPort: daemon.port, projectId: "launch-fixture", instanceId: "fixture-instance", cwd: root };
@@ -49,8 +54,8 @@ async function plugin(launchId: string | undefined, deletableCwd = false) {
       }
     }
   })();
-  const rpc = (method: string, params: unknown = {}) => new Promise<any>((resolve, reject) => {
-    const id = ++sequence, timer = setTimeout(() => { replies.delete(id); reject(new Error(`MCP ${method} timeout: ${diagnostics}`)); }, 3000);
+  const rpc = (method: string, params: unknown = {}, id = ++sequence) => new Promise<any>((resolve, reject) => {
+    const timer = setTimeout(() => { replies.delete(id); reject(new Error(`MCP ${method} timeout: ${diagnostics}`)); }, 3000);
     replies.set(id, value => { clearTimeout(timer); value.error ? reject(new Error(JSON.stringify(value.error))) : resolve(value.result); });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
   });
@@ -63,7 +68,7 @@ async function plugin(launchId: string | undefined, deletableCwd = false) {
     await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "launch-test", version: "1" } });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
     await until(() => diagnostics.includes('connected to hub as "claude"'), "plugin consumed welcome");
-    return { hellos, rpc, until, close, removeCwd: () => { if (!deletableCwd) throw new Error("not a disposable cwd"); rmSync(cwd, { recursive: true }); }, diagnostics: () => diagnostics, disconnect: (code: number) => socket!.close(code, code === 4430 ? "stale launch" : "replaced"),
+    return { hellos, requests, rpc, until, close, setFeatures: (features: string[]) => { options.features = features; }, removeCwd: () => { if (!deletableCwd) throw new Error("not a disposable cwd"); rmSync(cwd, { recursive: true }); }, diagnostics: () => diagnostics, disconnect: (code: number) => socket!.close(code, code === 4430 ? "stale launch" : "replaced"),
       status: (peers: unknown) => writeFileSync(join(root, "status.json"), JSON.stringify({ ...manifest, peers })) };
   } catch (error) { await close(); throw error; }
 }
@@ -72,6 +77,91 @@ for (const launchId of ["managed-launch", undefined]) test(`#551 plugin hello ${
   const f = await plugin(launchId);
   try { expect(f.hellos).toHaveLength(1); expect(f.hellos[0].launchId).toBe(launchId); expect(f.hellos[0].standby).not.toBe(true); expect(f.hellos[0].cwd).toBe(realPath(f.hellos[0].projectRoot)); }
   finally { await f.close(); }
+});
+
+test("#631 channel echoes explicit request_id across MCP calls and surfaces unknown without a tool error", async () => {
+  const f = await plugin("stable-launch", false, { features: ["tool_write_idempotency"],
+    response: message => message.t === "task" ? { ok: false, outcome: "unknown", requestId: message.requestId, error: `Write outcome unknown (request ${message.requestId}). Read hub_task_list; call again only if the task is absent, reusing request_id ${JSON.stringify(message.requestId)}.` }
+      : { ok: true, held: { count: 0, rows: [], truncated: false }, envs: [], queued: 0, important: 0 } });
+  try {
+    const listed = await f.rpc("tools/list");
+    const tool = (name: string) => listed.tools.find((row: any) => row.name === name);
+    expect(tool("hub_task_propose").inputSchema.properties).toHaveProperty("request_id");
+    expect(tool("hub_review").inputSchema.properties).toHaveProperty("request_id");
+    expect(tool("hub_delivery_done").inputSchema.properties).not.toHaveProperty("request_id");
+
+    const params = { name: "hub_task_propose", arguments: { title: "synthetic channel retry", class: "implement" } };
+    const first = await f.rpc("tools/call", params, 41);
+    const originalId = f.requests.findLast(message => message.t === "task" && message.op === "hub_task_propose")!.requestId as string;
+    const text = (result: any) => result.content.filter((row: any) => row.type === "text").map((row: any) => row.text).join("\n");
+    expect(first.isError).toBeUndefined();
+    expect(text(first)).toContain("Write outcome unknown");
+    expect(text(first)).toContain(originalId);
+    expect(text(first)).toContain("reusing request_id");
+    expect(f.requests.findLast(message => message.t === "task" && message.op === "hub_task_propose")!.args).not.toHaveProperty("request_id");
+
+    const replayArgs = { title: "synthetic channel retry", class: "implement", request_id: originalId };
+    const replay = await f.rpc("tools/call", { name: "hub_task_propose", arguments: replayArgs }, 42);
+    expect(replay.isError).toBeUndefined();
+    expect(text(replay)).toContain(originalId);
+    const changed = await f.rpc("tools/call", { name: "hub_task_propose", arguments: { ...replayArgs, title: "different payload under same explicit id" } }, 43);
+    expect(changed.isError).toBeUndefined();
+    const writes = f.requests.filter(message => message.t === "task" && message.op === "hub_task_propose");
+    expect(writes).toHaveLength(3);
+    expect(writes.map(message => message.requestId)).toEqual([originalId, originalId, originalId]);
+    expect(writes[1]!.args).not.toHaveProperty("request_id");
+    expect(writes[2]!.args).not.toHaveProperty("request_id");
+
+    f.setFeatures([]);
+    f.disconnect(4000);
+    await f.until(() => f.hellos.length === 2, "channel reconnects to a hub without replay support");
+    const downgraded = await f.rpc("tools/call", { name: "hub_task_propose", arguments: replayArgs }, 44);
+    expect(downgraded.isError).toBe(true);
+    expect(text(downgraded)).toContain("does not advertise replay protection; nothing was resubmitted");
+    expect(f.requests.filter(message => message.t === "task" && message.op === "hub_task_propose")).toHaveLength(3);
+
+    // Delivery journal completion needs no request key; delivery id and generation are its idempotent identity.
+    f.setFeatures(["tool_write_idempotency"]);
+    f.disconnect(4000);
+    await f.until(() => f.hellos.length === 3, "channel reconnects to the replay-capable hub");
+    await f.rpc("tools/call", { name: "hub_delivery_done", arguments: { delivery_id: "abc-12345", delivery_generation: "generation" } }, 45);
+    const settlement = f.requests.findLast(message => message.t === "delivery_complete");
+    expect(settlement?.requestId).toBeUndefined();
+    await f.rpc("tools/call", { name: "hub_delivery_done", arguments: { delivery_id: "abc-12345", delivery_generation: "generation" } }, 46);
+    expect(f.requests.findLast(message => message.t === "delivery_complete")?.requestId).toBeUndefined();
+  } finally { await f.close(); }
+});
+
+test("#631 a channel retry with the echoed request_id replays one actual registry receipt", async () => {
+  const registry = new ToolWriteRegistry("fixture-instance");
+  let effects = 0, first = true;
+  const f = await plugin("registry-retry", false, { features: ["tool_write_idempotency"], handler: async message => {
+    if (message.t !== "task" || message.op !== "hub_task_propose") return { ok: true, held: { count: 0, rows: [], truncated: false }, envs: [], queued: 0, important: 0 };
+    const payload = { t: message.t, op: message.op, args: message.args };
+    const receipt = await registry.run({ id: message.requestId, scope: "claude-session", bucket: "claude",
+      payload, current: () => true }, async () => { effects++; return { t: "task", ok: true, text: "task #81: proposed, owner none, reviewer none" }; });
+    if (first) { first = false; return toolWriteUnknownReply(payload, String(message.requestId), "fixture lost the first reply"); }
+    return receipt;
+  } });
+  try {
+    const params = { name: "hub_task_propose", arguments: { title: "synthetic registry replay", class: "implement" } };
+    const uncertain = await f.rpc("tools/call", params, 71);
+    const readText = (result: any) => result.content.filter((row: any) => row.type === "text").map((row: any) => row.text).join("\n");
+    expect(uncertain.isError).toBeUndefined();
+    const requestId = f.requests.findLast(message => message.t === "task" && message.op === "hub_task_propose")!.requestId as string;
+    expect(readText(uncertain)).toContain(requestId);
+    expect(readText(uncertain)).toContain("call again only if the task is absent");
+
+    const replay = await f.rpc("tools/call", { name: "hub_task_propose", arguments: { ...params.arguments, request_id: requestId } }, 72);
+    expect(replay.isError).toBeUndefined();
+    expect(readText(replay)).toContain("task #81: proposed, owner none, reviewer none");
+    expect(effects).toBe(1);
+    const writes = f.requests.filter(message => message.t === "task" && message.op === "hub_task_propose");
+    expect(writes).toHaveLength(2);
+    expect(writes[0]!.requestId).toBe(requestId);
+    expect(writes[1]!.requestId).toBe(requestId);
+    expect(writes[1]!.args).not.toHaveProperty("request_id");
+  } finally { await f.close(); }
 });
 
 test("#551 stale-launch 4430 stops plugin reconnect scheduling and explains the ended launch through hub tools", async () => {

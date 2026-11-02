@@ -13,6 +13,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS } from "../hub/control-client.ts";
+import { toolWriteOperation } from "../hub/tool-request.ts";
 import { channelProject } from "../hub/channel-project.ts";
 import { VERSION } from "../version.ts";
 import { IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION, projectConductorTools, projectToolList, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
@@ -394,7 +395,7 @@ function toolListFor(lifecycle: Awaited<ReturnType<typeof activeLifecycle>>) {
             ? [
                 {
                   name: "hub_delivery_done",
-                  description: "Explicitly complete one handled channel delivery using its delivery_id and delivery_generation metadata. Does not change task state. Never use for an unhandled or uncertain delivery.",
+                  description: "Explicitly complete one handled channel delivery using its delivery_id and delivery_generation metadata. Does not change task state. If a prior result was outcome unknown, read the queue first and retry only if the delivery is still unresolved, with the same delivery_id and delivery_generation. Never complete an unhandled delivery.",
                   inputSchema: { type: "object", properties: { delivery_id: { type: "string" }, delivery_generation: { type: "string" } }, required: ["delivery_id", "delivery_generation"], additionalProperties: false },
                 },
               ]
@@ -443,6 +444,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     if (!hub) return text(offline());
     const a = args ?? {};
     const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation });
+    if (result.outcome === "unknown") return text(typeof result.error === "string" ? result.error : "Write outcome unknown. Inspect the delivery before another write; call again only if it is absent, with the same delivery id and generation.");
     return text(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && (!toolsMode || permissionTool)) {
@@ -483,7 +485,15 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     if (!hub) return text(offline());
     // #445 C2: a daemon that predates invocations would answer with a generic unknown-operation error; say what is missing instead.
     if (name === "hub_invoke" && !hub.features.includes("invocation")) return { ...text("error: this hub does not support invocations; restart it with the current agent-hub release (ahub restart)"), isError: true };
-    const res = await hub.request({ t: "task", op: name, args: args ?? {} }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" ? signal : undefined);
+    const rawArgs = args ?? {}, operation = toolWriteOperation({ t: "task", op: name });
+    let taskArgs = rawArgs, requestId: unknown;
+    if (operation && Object.hasOwn(rawArgs, "request_id")) {
+      requestId = rawArgs.request_id;
+      const { request_id: _requestId, ...withoutRequestId } = rawArgs;
+      taskArgs = withoutRequestId;
+    }
+    const res = await hub.request({ t: "task", op: name, args: taskArgs, ...(requestId !== undefined ? { requestId } : {}) }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" ? signal : undefined);
+    if (res.outcome === "unknown") return text(typeof res.error === "string" ? res.error : "Write outcome unknown. Inspect the task before another write; call again only if it is absent, with the same request_id and arguments.");
     return { ...text(res.ok ? res.text : `error: ${res.error}`), ...(res.ok ? {} : { isError: true }) };
   }
   return text(`unknown tool ${name}`);

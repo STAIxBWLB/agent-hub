@@ -21,6 +21,7 @@ export const ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, do
 
 const str = { type: "string" } as const;
 const id = { type: "integer", description: "task id" } as const;
+const toolWriteRequestId = { type: "string", minLength: 1, maxLength: 256, pattern: "^v1/[A-Za-z0-9._-]{1,128}/[1-9][0-9]{0,15}/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", description: "control-transport-only request_id returned by an outcome-unknown write; inspect first and retry with the same key and identical arguments only if absent. Direct in-process tool calls cannot use request_id" } as const;
 const refs = {
   type: "object",
   description: "where the work lives",
@@ -79,7 +80,7 @@ export interface HubTool {
 const tool = (name: string, description: string, properties: Record<string, unknown>, required: string[] = []): HubTool => ({
   name,
   description,
-  inputSchema: { type: "object", properties, required, additionalProperties: false },
+  inputSchema: { type: "object", properties: name === "hub_review" || name === "hub_task_propose" ? { ...properties, request_id: toolWriteRequestId } : properties, required, additionalProperties: false },
 });
 
 /** #601: a campaign's contract and handoff are model-written text about its sources. The write tools' arguments and every study result stay out of memory capture. */

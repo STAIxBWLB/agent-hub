@@ -139,7 +139,7 @@ test("#625 local memory provenance stays unbound even when its other native sess
   const recorded: { session: unknown }[] = [];
   const { contextSession, memoryObservations } = hostVariables(["contextSession", "contextPii", "memoryObservations"], {
     bus, isWsPeer, definitionOf, claudeSession: () => { throw new Error("local must not read Claude state"); },
-    turns: new Map(), board: { list: () => [], get: () => undefined }, isClosedTaskState, deliveryTask, taskKey, memoryProject: "fixture",
+    turns: new Map(), board: { list: () => [], peerTaskSignals: () => [], get: () => undefined }, isClosedTaskState, deliveryTask, taskKey, memoryProject: "fixture",
     tasks: { isPii: () => { throw new Error("fixture has no tasks to screen"); } }, MemoryObservations,
     memoryTelemetry: { record: (_text: string, context: { session: unknown }) => recorded.push(context) },
   });
