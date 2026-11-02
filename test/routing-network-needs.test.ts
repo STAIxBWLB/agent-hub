@@ -8,6 +8,14 @@ import { assign, loadRouting, type PeerCapabilities } from "../src/hub/routing.t
 import { Tasks } from "../src/hub/tasks.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
+import { BasePeer } from "../src/hub/peers.ts";
+import type { Envelope } from "../src/hub/envelope.ts";
+
+class Peer extends BasePeer {
+  async start() { this.setState("idle"); }
+  async stop() { this.setState("offline"); }
+  async deliver(_envs: Envelope[]) {}
+}
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0)) close(); });
@@ -40,13 +48,14 @@ test("work that does not declare a network need, and a peer whose network is unk
   expect(assign({ ...task(["needs_network"]), reserved: "pi" }, states, routing, { capabilities: caps({ network: true }), namedOwner: "pi" }).owner).toBe("pi");
 });
 
-function rig(network: boolean) {
+async function rig(network: boolean) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-needs-network-"));
   mkdirSync(join(cwd, ".agenthub"), { recursive: true });
   writeFileSync(join(cwd, ".agenthub", "routing.toml"), "[local]\nfixed_model=\"m\"\n[classes.implement]\npeers=[\"pi\",\"codex\"]\n");
   cleanup.push(() => rmSync(cwd, { recursive: true, force: true }));
   const board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   cleanup.push(() => { bus.closeJournal(); board.close(); });
+  for (const id of ["pi", "codex"]) { const peer = new Peer(id); bus.add(peer); await peer.start(); }
   const live = { value: network };
   const tasks = new Tasks({ cwd, board, bus, project: "fixture", roles: { claude: ["planner"] }, routing: () => loadRouting(cwd), notify: () => {}, wipLimit: () => 5,
     sdlc: { config: () => sdlcConfig({ mode: "off" }) },
@@ -55,7 +64,7 @@ function rig(network: boolean) {
 }
 
 test("hub_task_propose records needs_network as a signal, and a non-boolean is refused with the next step (#1081)", async () => {
-  const { board, tasks } = rig(true);
+  const { board, tasks } = await rig(true);
   const made = await tasks.propose("user", { title: "raise the agent-mem pin", class: "implement", needs_network: true });
   expect(board.get(made.id)!.signals).toContain("needs_network");
   const plain = await tasks.propose("user", { title: "rename a helper", class: "implement" });
@@ -68,7 +77,7 @@ test("hub_task_propose records needs_network as a signal, and a non-boolean is r
 });
 
 test("an explicit assignment of network work to a peer without network is refused before any write (#1081)", async () => {
-  const { board, tasks } = rig(false);
+  const { board, tasks } = await rig(false);
   const made = await tasks.propose("user", { title: "raise the pin", class: "implement", needs_network: true });
   const before = JSON.stringify(board.get(made.id));
   let failure: unknown;
@@ -79,7 +88,7 @@ test("an explicit assignment of network work to a peer without network is refuse
 });
 
 test("accept refuses network work when the owner's network went away after the offer, before any write, naming the next step (#1081)", async () => {
-  const { board, tasks, live } = rig(true);
+  const { board, tasks, live } = await rig(true);
   const row = board.propose("user", { title: "raise the pin", class: "implement", signals: ["needs_network"] });
   board.update(row.id, "user", "assigned", { owner: "pi" });
   live.value = false; // the sandbox network was switched off after the offer
@@ -97,10 +106,20 @@ test("accept refuses network work when the owner's network went away after the o
   expect(board.get(row.id)).toMatchObject({ state: "in_progress", owner: "pi" });
 });
 
-test("accept of ordinary work is unaffected by a peer without network (#1081)", () => {
-  const { board, tasks } = rig(false);
+test("accept of ordinary work is unaffected by a peer without network (#1081)", async () => {
+  const { board, tasks } = await rig(false);
   const row = board.propose("user", { title: "rename a helper", class: "implement" });
   board.update(row.id, "user", "assigned", { owner: "pi" });
   expect(() => tasks.accept("pi", row.id)).not.toThrow();
   expect(board.get(row.id)!.state).toBe("in_progress");
+});
+
+test("a reservation for a peer without network is refused at propose, before any write (#1081)", async () => {
+  const { board, tasks } = await rig(false);
+  const blocker = board.propose("user", { title: "must land first", class: "implement" });
+  let failure: unknown;
+  try { await tasks.propose("user", { title: "raise the pin", class: "implement", owner: "pi", after: [blocker.id], needs_network: true }); } catch (error) { failure = error; }
+  expect(failure).toBeDefined();
+  expect((failure as Error).message).toContain("no network");
+  expect(board.list().length).toBe(1); // only the blocker; the refused reservation left no task behind
 });
