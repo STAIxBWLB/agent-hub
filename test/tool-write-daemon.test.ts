@@ -6,6 +6,7 @@ import { Board } from "../src/hub/board.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { newToolRequestId, toolWriteOperation, toolWriteUnknownReply } from "../src/hub/tool-request.ts";
+import { controlWriteSpan } from "../src/hub/control-write-trace.ts";
 import { operationalRequestLabel, operationalRefusal, OPERATIONAL_PERSON_GUIDANCE } from "../src/hub/operational-authority.ts";
 import { newEnvelope, USER } from "../src/hub/envelope.ts";
 
@@ -340,7 +341,7 @@ test("the final revoked-owner reply fence preserves uncertainty metadata without
   const end = source.indexOf("    const runTaskRequest", start);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
   const snippet = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end));
-  const makeReply = new Function("c", "msg", "sock", "operationalRequestLabel", "currentExternalTools", "currentImplementerTools", "event", "operationalRefusal", "OPERATIONAL_PERSON_GUIDANCE", "toolWriteOperation", "toolWriteUnknownReply", `let refusalRecorded = false; ${snippet}; return reply;`);
+  const makeReply = new Function("c", "msg", "sock", "operationalRequestLabel", "currentExternalTools", "currentImplementerTools", "event", "operationalRefusal", "OPERATIONAL_PERSON_GUIDANCE", "toolWriteOperation", "toolWriteUnknownReply", "controlWriteSpan", "finishControlWrite", `let refusalRecorded = false; ${snippet}; return reply;`);
   for (const owner of ["externalOwner", "toolsOwner"]) {
     for (const unknown of [false, true]) {
       const id = newToolRequestId("fixture-instance"), sent: string[] = [];
@@ -348,7 +349,7 @@ test("the final revoked-owner reply fence preserves uncertainty metadata without
       const c = { authed: true, role: "tools", peer: "codex", [owner]: {} };
       // These deny-only ports exercise response classification, never native admission or execution.
       const reply = makeReply(c, msg, { readyState: WebSocket.OPEN, send: (data: string) => sent.push(data) },
-        operationalRequestLabel, () => false, () => false, () => true, operationalRefusal, OPERATIONAL_PERSON_GUIDANCE, toolWriteOperation, toolWriteUnknownReply);
+        operationalRequestLabel, () => false, () => false, () => true, operationalRefusal, OPERATIONAL_PERSON_GUIDANCE, toolWriteOperation, toolWriteUnknownReply, controlWriteSpan, () => {});
       reply(unknown ? { ok: false, outcome: "unknown", requestId: id, error: "original pending receipt" }
         : { ok: true, requestId: id, text: "private/should-not-leak" });
       expect(sent).toHaveLength(1);
