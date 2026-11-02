@@ -198,6 +198,10 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   // #601: a campaign id and a contract path are text the person chose, so the audit names the subcommand only.
   if (command === "study") return ["draft", "revise", "approve", "close", "show", "experiments"].includes(args[0] ?? "") ? `study ${args[0]}` : "study";
   if (command === "release") return ["new", "list", "show", "plan", "activate", "freeze", "ship", "drop"].includes(args[0] ?? "") ? `release ${args[0]}` : "release";
+  // #1084: `autonomy`, `deliverables` and `usage` were missing from the table below, so a refusal and its audit line named them "unknown". Operands (a flag value, a task id) never reach the label.
+  if (command === "autonomy") { const sub = args.find(arg => !arg.startsWith("--")); return sub !== undefined && ["on", "off", "status"].includes(sub) ? `autonomy ${sub}` : "autonomy"; }
+  if (command === "usage") return args[0] === "limits" || args[0] === "total" ? `usage ${args[0]}` : "usage";
+  if (command === "deliverables") return "deliverables";
   if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "down", "reset", "doctor", "agents", "source", "broker", "schedule", "intake", "learn", "study"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench", "agents", "roster", "settings"].includes(command)) {
     const sub = command === "bench" || command === "memory" || command === "goal" ? args.find((arg) => arg !== "--json") : args[0];
