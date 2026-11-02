@@ -12,6 +12,7 @@ import { realPath } from "../../src/hub/project.ts";
 
 const OUTPUT_SCHEMA = "agent-hub.control-write-latency/v1";
 const MIB = 1024 * 1024;
+const MAX_TASK_WIP = 32;
 let fixtureStage = "setup";
 let fixtureFailure: Record<string, unknown> | undefined;
 
@@ -37,10 +38,10 @@ function parseArgs(argv: string[]): Options {
     if (arg === "--smoke") smoke = true;
     else if (arg === "--iterations") {
       const value = Number(argv[++index]);
-      if (!Number.isSafeInteger(value) || value < 1 || value > 100) throw new Error("invalid iterations");
+      if (!Number.isSafeInteger(value) || value < 1 || value > MAX_TASK_WIP) throw new Error("invalid iterations");
       iterations = value;
     } else if (arg === "--help") {
-      process.stdout.write(`${JSON.stringify({ schema: OUTPUT_SCHEMA, usage: "bun scripts/benchmarks/control-write-latency.ts [--smoke] [--iterations 1..100]" })}\n`);
+      process.stdout.write(`${JSON.stringify({ schema: OUTPUT_SCHEMA, usage: `bun scripts/benchmarks/control-write-latency.ts [--smoke] [--iterations 1..${MAX_TASK_WIP}]` })}\n`);
       process.exit(0);
     } else throw new Error("unknown argument");
   }
@@ -181,7 +182,7 @@ async function main(options: Options): Promise<void> {
     setEnv("HOME", privateHome); setEnv("AGENTHUB_HOME", join(privateHome, "agenthub")); setEnv("AMEM_HOME", join(privateHome, "amem"));
     setEnv("CLAUDE_CONFIG_DIR", join(privateHome, "claude")); setEnv("CODEX_HOME", join(privateHome, "codex")); setEnv("KIMI_CODE_HOME", join(privateHome, "kimi"));
     for (const path of [process.env.AGENTHUB_HOME!, process.env.AMEM_HOME!, process.env.CLAUDE_CONFIG_DIR!, process.env.CODEX_HOME!, process.env.KIMI_CODE_HOME!]) mkdirSync(path, { recursive: true });
-    writeFileSync(join(project, ".agenthub", "config.json"), JSON.stringify({ memory: { enabled: false, native: false }, inference: { enabled: false, triage: false }, mlx: { enabled: false }, snapshots: { enabled: false, keep: 1 }, research: { enabled: false }, tasks: { wip_limits: { claude: taskRows * 4, codex: taskRows * 4 } }, batch_ms: 0 }, null, 2));
+    writeFileSync(join(project, ".agenthub", "config.json"), JSON.stringify({ memory: { enabled: false, native: false }, inference: { enabled: false, triage: false }, mlx: { enabled: false }, snapshots: { enabled: false, keep: 1 }, research: { enabled: false }, tasks: { wip_limits: { claude: MAX_TASK_WIP, codex: MAX_TASK_WIP } }, batch_ms: 0 }, null, 2));
     writeFileSync(join(project, "AGENTS.md"), "# Synthetic benchmark project\n");
     writeFileSync(join(project, "src", "hub", "bus.ts"), "export const bus = 1;\n");
     git(project, "init", "--quiet"); git(project, "config", "user.name", "Benchmark fixture"); git(project, "config", "user.email", "benchmark@example.invalid");
@@ -196,7 +197,7 @@ async function main(options: Options): Promise<void> {
     const seedSizes = { hubDb: fileSize(dbFile), hubDbWal: fileSize(`${dbFile}-wal`) };
     const eventFile = join(stateDir, "events.jsonl"), eventSize = writeSyntheticEventLog(eventFile, eventTargetBytes);
 
-    const config = { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, research: { ...DEFAULT_CONFIG.research, enabled: false }, tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: { ...DEFAULT_CONFIG.tasks.wip_limits, claude: taskRows * 4, codex: taskRows * 4 } } };
+    const config = { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, research: { ...DEFAULT_CONFIG.research, enabled: false }, tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: { ...DEFAULT_CONFIG.tasks.wip_limits, claude: MAX_TASK_WIP, codex: MAX_TASK_WIP } } };
     fixtureStage = "startup";
     const startupStart = performance.now();
     daemon = await startDaemon({ cwd: project, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config, configWatch: false, piiScreen: async () => ({ label: "clear", ms: 0 }) });
@@ -229,6 +230,11 @@ async function main(options: Options): Promise<void> {
       return { ok: typeof reply?.ok === "boolean" ? reply.ok : null, outcome: reply?.ok === true ? "ok" : reply?.ok === false ? "refused_or_unknown" : "unknown", ...(task ? { state: task.state, owner: task.owner } : {}) };
     };
 
+    fixtureStage = "reviews";
+    for (let index = 0; index < Math.min(options.iterations, seededReviewIds.length); index++) {
+      const task = seededReviewIds[index]!;
+      await run("review_approved", () => person.request({ t: "task", op: "hub_review", args: { id: task, verdict: "approved" } }), reply => observeTask(reply, task));
+    }
     fixtureStage = "proposals";
     for (let index = 0; index < options.iterations; index++) {
       await run("proposal_backlog", () => person.request({ t: "task", op: "hub_task_propose", args: { title: `synthetic backlog ${index}`, class: "implement", backlog: true, refs: { paths: ["src/hub/bus.ts"] } } }), reply => observeTask(reply));
@@ -240,11 +246,6 @@ async function main(options: Options): Promise<void> {
       }
     }
     codex.close(); clients.splice(clients.indexOf(codex), 1);
-    fixtureStage = "reviews";
-    for (let index = 0; index < Math.min(options.iterations, seededReviewIds.length); index++) {
-      const task = seededReviewIds[index]!;
-      await run("review_approved", () => person.request({ t: "task", op: "hub_review", args: { id: task, verdict: "approved" } }), reply => observeTask(reply, task));
-    }
     fixtureStage = "delivery-client";
     const deliveryPeer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude", channel: true, projectRoot: project }); clients.push(deliveryPeer);
     const pushed: { deliveryId: string; generation: string; envIds: string[] }[] = [];
