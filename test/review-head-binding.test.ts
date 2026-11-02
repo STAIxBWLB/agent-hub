@@ -19,7 +19,7 @@ class Peer extends BasePeer {
   async stop() { this.setState("offline"); }
   async deliver(_messages: Envelope[]) {}
 }
-async function rig(options: { mode?: SdlcMode; state?: TaskState; linked?: boolean } = {}) {
+async function rig(options: { mode?: SdlcMode; state?: TaskState; linked?: boolean; noCommit?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-review-head-"));
   const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 });
   for (const name of ["codex", "claude"]) { const peer = new Peer(name); bus.add(peer); await peer.start(); }
@@ -36,7 +36,7 @@ async function rig(options: { mode?: SdlcMode; state?: TaskState; linked?: boole
   const tasks = new Tasks({ board, bus, cwd: dir, project: "head-fixture", repository: "owner/repo", routing: () => loadRouting(dir), notify: () => {},
     sdlc: { config: () => sdlcConfig({ mode: options.mode ?? "advise", required_checks: [] }), gh } });
   cleanups.push(() => { tasks.stopCiWatchers(); bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
-  const t = board.propose(USER, { title: "synthetic head binding", class: "implement", refs: { repo: "owner/repo", commit: A } });
+  const t = board.propose(USER, { title: "synthetic head binding", class: "implement", refs: { repo: "owner/repo", ...(options.noCommit ? {} : { commit: A }) } });
   board.update(t.id, USER, "accepted", { owner: "codex", reviewer: "claude", state: "in_progress" });
   board.update(t.id, "codex", "done", { state: "in_review", ...(options.linked === false ? {} : { sdlc: { repo: "owner/repo", pr: 7, head: A, reviewedHead: A, localHead: A, localResult: "passed" as const } }) });
   if (options.state === "changes_requested" || options.state === "in_progress") board.update(t.id, "claude", "changes_requested", { state: "changes_requested" });
@@ -134,5 +134,18 @@ test("an explicit new full owner commit repairs the stale receipt and permits a 
   expect(submitted.refs.commit).toBe(B);
   expect(submitted.sdlc?.reviewedHead).not.toBe(A);
   const approved = await r.tasks.review("claude", r.id, "approved", "synthetic repaired review");
+  expect(approvalBinding(approved)).toMatchObject({ head: B, latestHead: B, mismatch: false, current: true });
+});
+
+
+test("legacy receipt-only re-file can submit the PR head named by its stale-head refusal", async () => {
+  const r = await rig({ noCommit: true }); r.move(B);
+  const prior = r.board.get(r.id)!;
+  r.board.update(r.id, USER, "synthetic observed PR head", { sdlc: { ...prior.sdlc!, head: B } });
+  const submitted = await r.tasks.done("codex", r.id, "synthetic legacy repair", { commit: B });
+  expect(submitted.state).toBe("in_review");
+  expect(submitted.refs.commit).toBe(B);
+  expect(submitted.sdlc?.reviewedHead).not.toBe(A);
+  const approved = await r.tasks.review("claude", r.id, "approved", "synthetic legacy repair approved");
   expect(approvalBinding(approved)).toMatchObject({ head: B, latestHead: B, mismatch: false, current: true });
 });
