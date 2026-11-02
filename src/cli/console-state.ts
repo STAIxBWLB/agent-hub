@@ -637,10 +637,15 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
           for (let i = reasonAt + 1; reasonAt >= 0 && i < parsed.length && !parsed[i]!.startsWith("--"); i++) words.push(parsed[i]!);
           const reason = words.join(" ").trim();
           if (!peer || !reason) throw new Error("queue discard needs --peer and --reason (it is recorded on every discarded delivery)");
-          const count = s.queue.filter(row => row.peer === peer && row.state === state).length;
-          const args = ["queue", "discard", "--peer", peer, ...(parsed.includes("--state") ? ["--state", state] : []), "--reason", reason, "--yes"];
+          // #1096: with no --state the CLI clears the peer's queued rows and its unsettled failed rows (the list this panel shows already hides settled ones), so the count names both. A hub without `queue_discard_states` cannot take that form: the command then names the one kind it can clear, queued, and the count follows it.
+          const bulk = !parsed.includes("--state") && s.features?.includes("queue_discard_states") === true;
+          const kinds = bulk ? ["queued", "failed"] : [state];
+          const counts = kinds.map(kind => [kind, s.queue.filter(row => row.peer === peer && row.state === kind).length] as const);
+          const count = counts.reduce((sum, [, n]) => sum + n, 0);
+          const what = bulk && counts.every(([, n]) => n > 0) ? counts.map(([kind, n]) => `${n} ${kind}`).join(" and ") : bulk ? `${count} ${counts.find(([, n]) => n > 0)?.[0] ?? "queued"}` : `${count} ${state}`;
+          const args = ["queue", "discard", "--peer", peer, ...(parsed.includes("--state") ? ["--state", state] : s.features !== undefined && !bulk ? ["--state", "queued"] : []), "--reason", reason, "--yes"];
           s.history = [...s.history, input].slice(-(s.historyLimit ?? CONSOLE_HISTORY_LIMIT)); s.historyIndex = s.history.length;
-          s.confirm = { type: "command", args, prompt: `discard all ${count} ${state} deliver${count === 1 ? "y" : "ies"} of ${peer}; no task or native turn is cancelled, other peers are untouched` };
+          s.confirm = { type: "command", args, prompt: `discard all ${what} deliver${count === 1 ? "y" : "ies"} of ${peer}; no task or native turn is cancelled, other peers are untouched` };
           return done();
         }
         const reviewProblem = reviewRefusal(parsed);                                           // an empty changes note never reaches the hub (#711)

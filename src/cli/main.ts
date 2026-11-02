@@ -1222,29 +1222,42 @@ const commands: Record<string, () => Promise<void> | void> = {
     const hub = await connect();
     try {
       if (operation === "list") {
-        const { one, rest: flags } = takeFlags(rest, ["--peer"], []);
-        if (flags.length) fail("usage: ahub queue list [--peer <id>] [--json] [--full] [--color=auto|always|never]");
-        const result = await hub.request({ t: "queue", op: "list", ...(one["--peer"] ? { peer: one["--peer"] } : {}) });
+        const all = rest.includes("--all");
+        const { one, rest: flags } = takeFlags(rest.filter((word) => word !== "--all"), ["--peer"], []);
+        if (flags.length) fail("usage: ahub queue list [--peer <id>] [--all] [--json] [--full] [--color=auto|always|never]");
+        const result = await hub.request({ t: "queue", op: "list", ...(one["--peer"] ? { peer: one["--peer"] } : {}), ...(all ? { all: true } : {}) });
         if (!result.ok) fail(result.error,result.refusalAudited===true,result.authorityRefused);
         if (options.json) return console.log(JSON.stringify(result.deliveries, null, 2));
         printOutput(renderQueue(result.deliveries, options.columns, Date.now()), options.color);
+        // #1096: rows a resolution already settled are history, hidden by default; say how many and how to see them, on stderr so a pipe of the table stays clean.
+        if (result.hiddenSettled) console.error(`${result.hiddenSettled} settled deliver${result.hiddenSettled === 1 ? "y" : "ies"} hidden (already resolved); ahub queue list --all shows them`);
         return;
       }
       if (operation === "discard") {
         // #713: the person's bulk clear of one peer's queue. Without --yes it only says how many it would discard.
         const yes = rest.includes("--yes");
         const { one, rest: others } = takeFlags(rest.filter((word) => word !== "--yes"), ["--peer", "--reason", "--state"], []);
-        if (others.length || !one["--peer"] || (one["--state"] !== undefined && !["queued", "needs_review"].includes(one["--state"]))) fail("usage: ahub queue discard --peer <id> --reason <text> [--state queued|needs_review] [--yes]");
+        if (others.length || !one["--peer"] || (one["--state"] !== undefined && !["queued", "needs_review", "failed"].includes(one["--state"]))) fail("usage: ahub queue discard --peer <id> --reason <text> [--state queued|needs_review|failed] [--yes]; without --state it clears the peer's queued and unsettled failed deliveries");
         if (yes && !one["--reason"]?.trim()) fail("ahub queue discard needs --reason <text> with --yes: it is recorded on every discarded delivery");
-        const result = await hub.request({ t: "queue", op: "discard", peer: one["--peer"], ...(one["--state"] ? { state: one["--state"] } : {}), ...(yes ? { confirmed: true, reason: one["--reason"] } : {}) }, 60_000);
+        // #1096: with no --state the bulk clear takes the peer's queued rows and its unsettled failed rows (needs_review rows still need an explicit --state, as before); an explicit --state names exactly one kind.
+        const states = one["--state"] === undefined ? ["queued", "failed"] : [one["--state"]];
+        // A hub from before `queue_discard_states` ignores `states` and discards queued rows whatever kind was asked for, so the new wire form is never sent to it. A single queued or needs_review kind still goes in the legacy `state` field that every hub reads.
+        const legacy = states.length === 1 && (states[0] === "queued" || states[0] === "needs_review");
+        if (!legacy && !hub.features.includes("queue_discard_states")) fail(`the running hub predates failed-row discard and would discard queued rows instead of ${one["--state"] === undefined ? "queued and failed rows" : `${one["--state"]} rows`}; nothing was sent. Upgrade and restart it first, or run ahub queue discard --peer ${one["--peer"]} --state queued to clear queued rows only`);
+        const result = await hub.request({ t: "queue", op: "discard", peer: one["--peer"], ...(legacy ? { state: states[0] } : { states }), ...(yes ? { confirmed: true, reason: one["--reason"] } : {}) }, 60_000);
         if (!result.ok) fail(result.error,result.refusalAudited===true,result.authorityRefused);
         if (options.json) return console.log(JSON.stringify(result, null, 2));
-        if (!yes) return console.log(`${result.count} ${result.state} deliver${result.count === 1 ? "y" : "ies"} for ${result.peer}; nothing discarded. Run again with --reason <text> --yes to discard them.`);
-        console.log(`discarded ${result.discarded} of ${result.count} ${result.state} deliver${result.count === 1 ? "y" : "ies"} for ${result.peer}${result.refused ? `; ${result.refused} refused (${Object.entries(result.refusedBy ?? {}).map(([why, n]) => `${why} ${n}`).join(", ")})` : ""}`);
+        // One kind keeps the sentence this command always printed ("12 queued deliveries for claude"); a mix of kinds names each ("3 queued and 2 failed deliveries for claude").
+        const present = Object.entries(result.byState ?? {}).filter(([, n]) => n) as [string, number][];
+        const noun = `deliver${result.count === 1 ? "y" : "ies"}`;
+        const what = present.length > 1 ? `${result.count} ${noun}` : `${result.count} ${present[0]?.[0] ?? states.join(" or ")} ${noun}`;
+        const split = present.length > 1 ? ` (${present.map(([kind, n]) => `${n} ${kind}`).join(" and ")})` : "";
+        if (!yes) return console.log(`${what} for ${result.peer}${split}; nothing discarded. Run again with --reason <text> --yes to discard them.`);
+        console.log(`discarded ${result.discarded} of ${what} for ${result.peer}${split}${result.refused ? `; ${result.refused} refused (${Object.entries(result.refusedBy ?? {}).map(([why, n]) => `${why} ${n}`).join(", ")})` : ""}`);
         return;
       }
       const [id, ...flags] = rest;
-      if (!id || !["show", "resolve"].includes(operation)) fail("usage: ahub queue show <id> | resolve <id> --action completed|retry|discard --reason <text> [--revision N] | discard --peer <id> --reason <text> [--state queued|needs_review] [--yes]");
+      if (!id || !["show", "resolve"].includes(operation)) fail("usage: ahub queue show <id> | resolve <id> --action completed|retry|discard --reason <text> [--revision N] | discard --peer <id> --reason <text> [--state queued|needs_review|failed] [--yes]");
       if (operation === "show") {
         if (flags.length) fail("usage: ahub queue show <id>");
         const shown = await hub.request({ t: "queue", op: "show", id });

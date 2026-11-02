@@ -8241,7 +8241,11 @@ export async function startDaemon(opts: DaemonOptions) {
         if(c.role!=="console" && msg.reason!==undefined && (typeof msg.reason!=="string" || !tasks.publicMetadataText(msg.reason)))return void reply({ok:false,error:"queue reason withheld by privacy policy"});
         if (msg.op === "list") {
           if (msg.peer !== undefined && (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer) && !parseRemotePeerId(msg.peer))) return void reply({ ok: false, error: "invalid peer" });
-          return void reply({ ok: true, deliveries: bus.queueList(msg.peer).map((row) => queueView(row,false,c.role!=="console")) });
+          if (msg.all !== undefined && typeof msg.all !== "boolean") return void reply({ ok: false, error: "all is true or false" });
+          // #1096: a row an operator action already settled (a retry parent left `failed` for good, a discarded or completed row) is history, not open work: hidden unless `all`.
+          const everything = bus.queueList(msg.peer), settled = msg.all === true ? new Set<string>() : bus.settledIds();
+          const shown = everything.filter((row) => !settled.has(row.id));
+          return void reply({ ok: true, deliveries: shown.map((row) => queueView(row,false,c.role!=="console")), ...(shown.length < everything.length ? { hiddenSettled: everything.length - shown.length } : {}) });
         }
         if (msg.op === "discard") {
           // #713: the person's bulk clear of one peer's backlog. Without `confirmed` it only counts; with it, every queued (or needs_review) delivery of that peer is discarded
@@ -8249,10 +8253,18 @@ export async function startDaemon(opts: DaemonOptions) {
           // because only the named peer is read. Refused while recovery or shutdown holds queue mutations, like every queue resolution.
           if (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer) && !parseRemotePeerId(msg.peer)) return void reply({ ok: false, error: "peer must be a peer id" });
           if (msg.peer.includes("@") && c.role !== "console") return void reply({ ok: false, error: "remote delivery disposition is person-only" });
-          const state = msg.state === undefined ? "queued" : msg.state;
-          if (state !== "queued" && state !== "needs_review") return void reply({ ok: false, error: "state is queued or needs_review" });
-          const rows = bus.queueList(msg.peer).filter((row) => row.state === state);
-          if (msg.confirmed !== true) return void reply({ ok: true, op: "discard", peer: msg.peer, state, count: rows.length, discarded: 0, refused: 0 });
+          // #1096: `states` (a list of queued, needs_review, failed) clears several kinds in one call, and a `failed` row counts only while no resolution settled it. The older single `state` keeps its meaning.
+          const KINDS = ["queued", "needs_review", "failed"] as const;
+          if (msg.states !== undefined && msg.state !== undefined) return void reply({ ok: false, error: "give state or states, not both" });
+          if (msg.states !== undefined && (!Array.isArray(msg.states) || !msg.states.length || msg.states.some((entry: unknown) => !(KINDS as readonly unknown[]).includes(entry)) || new Set(msg.states).size !== msg.states.length)) return void reply({ ok: false, error: `states is a list of ${KINDS.join(", ")}` });
+          if (msg.states === undefined && msg.state !== undefined && msg.state !== "queued" && msg.state !== "needs_review") return void reply({ ok: false, error: "state is queued or needs_review" });
+          const wanted: readonly string[] = msg.states ?? [msg.state === undefined ? "queued" : msg.state];
+          const settledRows = wanted.includes("failed") ? bus.settledIds() : new Set<string>();
+          const rows = bus.queueList(msg.peer).filter((row) => wanted.includes(row.state) && !(row.state === "failed" && settledRows.has(row.id)));
+          const byState = Object.fromEntries(wanted.map((kind) => [kind, rows.filter((row) => row.state === kind).length]));
+          const state = wanted.length === 1 ? wanted[0]! : wanted.join("+");
+          const many = msg.states !== undefined ? { states: wanted, byState } : {};
+          if (msg.confirmed !== true) return void reply({ ok: true, op: "discard", peer: msg.peer, state, ...many, count: rows.length, discarded: 0, refused: 0 });
           if (typeof msg.reason !== "string" || !msg.reason.trim() || msg.reason.length > 2000) return void reply({ ok: false, error: "discard needs a reason" });
           if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding queue mutations" });
           let discarded = 0; const refused: Record<string, number> = {};
@@ -8261,7 +8273,7 @@ export async function startDaemon(opts: DaemonOptions) {
             // discarding it, so the 12th discard is not refused as stale because of the 11 before it. A row that is gone or changed state meanwhile is counted as refused.
             const current = bus.queueShow(row.id) ?? bus.queueList(msg.peer).find((r) => r.id === row.id);
             try {
-              if (!current || current.state !== state) throw new Error("unknown delivery");
+              if (!current || current.state !== row.state) throw new Error("unknown delivery");
               bus.resolveDelivery(row.id, current.revision, "discard", msg.reason.trim());
               if (row.peer.includes("@")) roomChat.disposition(row.peer, row.id, "discard");
               discarded++;
@@ -8269,7 +8281,7 @@ export async function startDaemon(opts: DaemonOptions) {
             catch (error) { const why = resolutionRefusal(error).split(":")[0]!; refused[why] = (refused[why] ?? 0) + 1; }
           }
           writeStatus();
-          return void reply({ ok: true, op: "discard", peer: msg.peer, state, count: rows.length, discarded, refused: rows.length - discarded, ...(rows.length - discarded ? { refusedBy: refused } : {}) });
+          return void reply({ ok: true, op: "discard", peer: msg.peer, state, ...many, count: rows.length, discarded, refused: rows.length - discarded, ...(rows.length - discarded ? { refusedBy: refused } : {}) });
         }
         if (typeof msg.id !== "string" || !msg.id || msg.id.length > 256) return void reply({ ok: false, error: "invalid delivery ID" });
         if (msg.op === "show") {

@@ -386,9 +386,12 @@ the time); `dispatching` and `accepted` deliveries stay refused, and `retry` kee
 `stale revision`, `unknown delivery`, `already resolved`, `queued delivery is already scheduled`, `recipient queue is full`, `delivery journal unavailable`), never one
 generic sentence (#713).
 
-`ahub queue discard --peer <id> --reason <text> [--state queued|needs_review] [--yes] [--json]` clears one peer's backlog and is for the person or the configured conductor (any other agent identity is
-refused, and a remote `peer@label` queue is the person's only). Without `--yes` it only says how many deliveries it would discard; with `--yes` it discards each queued (default) or `needs_review` delivery of that peer through the
-same resolution as `queue resolve --action discard`, each recorded with the reason, and prints `discarded N of M` with the causes of any it could not discard. Only the
+`ahub queue discard --peer <id> --reason <text> [--state queued|needs_review|failed] [--yes] [--json]` clears one peer's backlog and is for the person or the configured conductor (any other agent identity is
+refused, and a remote `peer@label` queue is the person's only). Without `--yes` it only says how many deliveries it would discard; with `--yes` it discards each delivery of that peer through the
+same resolution as `queue resolve --action discard`, each recorded with the reason, and prints `discarded N of M` with the causes of any it could not discard. With no `--state` it takes the peer's queued rows and its
+failed rows that no resolution has settled yet (#1096); `needs_review` rows need an explicit `--state needs_review`, and `--state` names exactly one kind. A failed row ran nothing, so it can be discarded while its peer is busy.
+The new request form needs the `queue_discard_states` hub feature: against an older hub the CLI sends nothing for `failed` or for the default and says to upgrade, because that hub would discard queued rows instead.
+`ahub queue list` hides rows a resolution already settled (for example the parent of a retry), prints how many on stderr, and `--all` shows them. Only the
 named peer's queue is read, so other peers are untouched; it is refused while recovery or shutdown holds queue mutations. In the console Queue panel, `D` on a row opens
 the same command for that row's peer, asks for a reason, then a `y` that names the count. No task is cancelled and no native turn is stopped.
 
