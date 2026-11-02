@@ -1691,11 +1691,11 @@ const commands: Record<string, () => Promise<void> | void> = {
     const state = rest.find((a) => !a.startsWith("--"));
     if (byColumn && !boardStatus) boardStatus = (await boardHub.request({ t: "status" })).status;
     if (byColumn && !supportsBoardColumnMetadata(boardStatus)) fail("running hub does not support accurate board column metadata; use a compatible daemon");
-    const tasks = await readAllTasks(args => taskOp("hub_task_list", args, false, boardHub), { ...(ready ? { ready: true } : state ? { state } : {}), ...(release ? { release } : {}), ...(byColumn ? { columnMetadata: true } : {}) });
+    const tasks = await readAllTasks(args => taskOp("hub_task_list", args, false, boardHub), { ...(ready ? { ready: true } : state ? { state } : {}), ...(release ? { release } : {}), ...(byColumn ? { columnMetadata: true } : {}) }, identity.role === "tools");
     if (options.json && !byColumn) return console.log(JSON.stringify(tasks, null, 2));
     let allTasks: any[] | null = tasks;
     if (ready || state || release) {
-      try { allTasks = await readAllTasks(args => taskOp("hub_task_list", args, true, boardHub), byColumn ? { columnMetadata: true } : {}); }
+      try { allTasks = await readAllTasks(args => taskOp("hub_task_list", args, true, boardHub), byColumn ? { columnMetadata: true } : {}, identity.role === "tools"); }
       catch (error) {
         if (byColumn) fail("board column dependency context unavailable; retry with a complete snapshot");
         allTasks = null;

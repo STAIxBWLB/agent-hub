@@ -53,7 +53,7 @@ function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; ki
         : req.t === "execution_budget" ? req.op === "disable" ? { disabled: true } : { budgets }
         : req.t === "queue" ? ["show", "resolve"].includes(req.op) ? { delivery } : { deliveries }
         : req.t === "task" && options.rejectChecked && ["task_assign_checked", "task_unassign"].includes(req.op) ? { ok: false, error: "unknown operation" }
-        : req.t === "task" && options.failFullBoard && !Object.keys(req.args ?? {}).length ? { ok: false, error: "full board temporarily unavailable" }
+        : req.t === "task" && options.failFullBoard && req.args?.state === undefined && req.args?.ready === undefined && req.args?.release === undefined ? { ok: false, error: "full board temporarily unavailable" }
         : req.t === "task" && String(req.op).startsWith("study_") ? { text: JSON.stringify({ id: "rc-0123456789ab", parentTaskId: 7, revision: req.args?.revision ?? 1, status: req.op === "study_approve" ? "approved" : req.op === "study_close" ? "closed" : "draft", unitCount: 0, units: [] }) }
         : req.t === "task" && req.op === "hub_experiment_show" ? { text: JSON.stringify({ attempts: [], counts: { all: 0, statuses: { declared: 0, running: 0, succeeded: 0, failed: 0, cancelled: 0, unknown: 0 } } }) }
         : req.t === "task" && req.op === "hub_study_show" ? { text: JSON.stringify(req.args?.id ? STUDY_PROJECTION : req.args?.after ? { campaigns: [{ id: "rc-0123456789ac", parentTaskId: 7, revision: 1, status: "draft", unitCount: 1 }] } : { campaigns: [{ id: "rc-0123456789ab", parentTaskId: 7, revision: 1, status: "approved", unitCount: 2 }], next: "rc-0123456789ab" }) }

@@ -19,11 +19,12 @@ export const BOARD_MAX_PAGES = 100;
  * Read the whole board either way: ask for full rows in the largest page, follow `next` until it is absent, and return one flat array of rows.
  * A person's console answers the bare array to a request that names no paging argument, but this reader names them, so it reads both shapes.
  */
-export async function readAllTasks(call: (args: Record<string, unknown>) => Promise<string>, args: Record<string, unknown>): Promise<any[]> {
+export async function readAllTasks(call: (args: Record<string, unknown>) => Promise<string>, args: Record<string, unknown>, paged = true): Promise<any[]> {
   const rows: any[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < BOARD_MAX_PAGES; page++) {
-    const parsed: unknown = JSON.parse(await call({ ...args, detail: true, limit: 200, ...(cursor ? { cursor } : {}) }));
+    // A person's console is answered the bare array to a request with no paging argument, so it sends none and its request is unchanged; an agent shell is always paged.
+    const parsed: unknown = JSON.parse(await call(paged ? { ...args, detail: true, limit: 200, ...(cursor ? { cursor } : {}) } : args));
     if (Array.isArray(parsed)) return parsed; // an older hub ignores the paging arguments and answers the whole board
     const body = parsed as { tasks?: unknown; next?: unknown };
     if (!body || !Array.isArray(body.tasks)) throw new Error("the hub's task list reply has neither rows nor a task array; upgrade or restart the hub (ahub status)");
