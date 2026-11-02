@@ -9,6 +9,7 @@ import { BasePeer } from "../src/hub/peers.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig, type SdlcGh, type SdlcMode } from "../src/hub/sdlc.ts";
 import { Tasks } from "../src/hub/tasks.ts";
+import { approvalBinding } from "../src/hub/task-approval.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40);
 const cleanups: (() => void)[] = [];
@@ -114,4 +115,24 @@ test("private approval keeps head metadata out of external PR reads", async () =
   const approved = await r.tasks.review(USER, r.id, "approved", "private fixture review");
   expect(approved.state).toBe("approved");
   expect(r.calls).toHaveLength(0);
+});
+
+
+for (const mode of ["off", "advise"] as const) for (const head of [undefined, B]) test(`${mode}: a fresh PR receipt cannot replace the owner's submitted review head (${head ? "supplied" : "omitted"})`, async () => {
+  const r = await rig({ mode }); r.move(B);
+  const prior = r.board.get(r.id)!;
+  r.board.update(r.id, USER, "synthetic current PR metadata", { sdlc: { ...prior.sdlc!, head: B } });
+  const before = r.board.get(r.id)!;
+  const message = await refusal(() => r.tasks.review("claude", r.id, "approved", "synthetic mixed receipt", undefined, head));
+  expect(message).toContain(A); expect(message).toContain(B); ownerNextStep(message);
+  expect(r.board.get(r.id)).toEqual(before);
+});
+
+test("an explicit new full owner commit repairs the stale receipt and permits a matching approval", async () => {
+  const r = await rig({ state: "changes_requested" }); r.move(B);
+  const submitted = await r.tasks.done("codex", r.id, "synthetic exact new head", { commit: B });
+  expect(submitted.refs.commit).toBe(B);
+  expect(submitted.sdlc?.reviewedHead).not.toBe(A);
+  const approved = await r.tasks.review("claude", r.id, "approved", "synthetic repaired review");
+  expect(approvalBinding(approved)).toMatchObject({ head: B, latestHead: B, mismatch: false, current: true });
 });
