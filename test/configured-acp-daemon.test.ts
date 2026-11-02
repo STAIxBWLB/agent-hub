@@ -209,6 +209,7 @@ test("the bundled MCP server publishes configured targets and enforces read-only
     expect(names.every(name => allowed.includes(name))).toBe(true);
     expect(names).toContain("hub_review"); expect(names).toContain("hub_task_list");
     expect(names).toContain("hub_source_read");
+    expect(names).toContain("hub_specs");
     expect(names).toContain("hub_study_show"); expect(names).toContain("hub_experiment_show"); for (const writer of ["hub_study_draft", "hub_study_revise", "hub_study_handoff"]) expect(names).not.toContain(writer);
     const sources = new SourceRegistry(f.stateDir);
     const body = "public source through a read-only MCP client";
