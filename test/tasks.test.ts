@@ -1289,7 +1289,7 @@ test("the review envelope carries a checklist against the plan and the check res
   release();
   await until(() => board.get(t.id)!.state === "in_review");
   const review = peers.claude!.got.find((e) => e.kind === "review")!.body;
-  expect(review).toContain("Checklist:\n- Map the changed signatures and call sites to the plan (signatures: set(key: string): void), and name each one that does not match.\n- Check result: make test -> exit 0\n- List what is unmet in hub_review's unmet, one item each.");
+  expect(review).toContain("Checklist:\n- Map the changed signatures and call sites to the plan (signatures: set(key: string): void), and name each one that does not match.\n- Check result: make test -> exit 0\n- Name each new or changed error, refusal or failure message that lacks its cause (what failed and why) or its next step (the command, setting or target that fixes it); where secrets, ids or paths must stay out, it names the cause class and how to check it.\n- List what is unmet in hub_review's unmet, one item each."); // #1095: the shipped dev checklist carries the error-message item between the check and the unmet line
   await tasks.review("claude", t.id, "changes_requested", "close", ["set() does not take a value", "no test for overwrite"]);
   expect(board.get(t.id)!.history.find((h) => h.event === "changes_requested")!.note).toBe("close\nUnmet: set() does not take a value; no test for overwrite");
   await tick();
