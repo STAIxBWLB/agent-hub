@@ -6,19 +6,35 @@ export interface CostTask { repo: string; pr: number; private?: boolean; history
 export interface CostPr { repo: string; pr: number; state: "OPEN" | "CLOSED" | "MERGED"; mergedAt?: number; complete: boolean; ciRuns?: { id: number; attempt: number }[]; reviews?: number }
 export interface CostRow { repo: string; pr: number; reviewRounds: number; ciRuns: number | null; ciReruns: number | null; fullReReviews: number; deltaReviews: number; reviewMs: number | null; unknownReviewScopes: number; githubReviews: number | null; complete: boolean }
 export interface CostReport { rows: CostRow[]; truncated: boolean }
-export function cleanCostPlan(input: unknown): CostPlan {
-  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("invalid cost scope");
+/**
+ * #1087: why a cost scope was refused. The message is fixed text that names the field and its allowed values and never the value given, so a call site may show it
+ * as it is. Only this class is passed through; any other error keeps the generic refusal.
+ */
+export class CostScopeError extends Error {
+  constructor(message: string) { super(message); this.name = "CostScopeError"; }
+}
+/**
+ * `field` says how the caller's own argument is named, so the refusal points at what the caller actually wrote: `plan` for a task plan (`plan.review.scope`), empty for the
+ * plan-review tool's own `review` and `ci` arguments (`review.scope`). One string covers both keys; an object names each key's source separately, for a call that mixes them.
+ */
+export function cleanCostPlan(input: unknown, field: string | { review: string; ci: string } = "plan"): CostPlan {
+  const at = (name: string) => { const prefix = typeof field === "string" ? field : field[name.split(".")[0] as "review" | "ci"]; return prefix ? `${prefix}.${name}` : name; };
+  const refuse = (message: string): never => { throw new CostScopeError(message); };
+  if (!input || typeof input !== "object" || Array.isArray(input)) refuse(`${typeof field === "string" && field ? field : "the request"} must be an object; review and ci are its cost scope fields`);
   const value = input as Record<string, unknown>;
   const result: CostPlan = {};
   if (value.review !== undefined) {
     const review = value.review as Record<string, unknown>;
-    if (!review || typeof review !== "object" || Array.isArray(review) || Object.keys(review).some(key => !["scope", "reviewers"].includes(key))
-      || !["none", "delta", "full"].includes(review.scope as string) || !Number.isSafeInteger(review.reviewers)
-      || (review.scope === "none" ? review.reviewers !== 0 : (review.reviewers as number) < 1 || (review.reviewers as number) > 8)) throw new Error("invalid review cost scope");
+    if (!review || typeof review !== "object" || Array.isArray(review)) refuse(`${at("review")} must be an object with scope (none, delta or full) and reviewers (a whole number)`);
+    if (Object.keys(review).some(key => !["scope", "reviewers"].includes(key))) refuse(`${at("review")} takes only scope and reviewers`);
+    if (!["none", "delta", "full"].includes(review.scope as string)) refuse(`${at("review.scope")} must be none, delta or full`);
+    if (!Number.isSafeInteger(review.reviewers)) refuse(`${at("review.reviewers")} must be a whole number: 0 when scope is none, 1 to 8 when scope is delta or full`);
+    if (review.scope === "none" && review.reviewers !== 0) refuse(`${at("review.reviewers")} must be 0 when scope is none`);
+    if (review.scope !== "none" && ((review.reviewers as number) < 1 || (review.reviewers as number) > 8)) refuse(`${at("review.reviewers")} must be 1 to 8 when scope is delta or full`);
     result.review = { scope: review.scope as ReviewScope["scope"], reviewers: review.reviewers as number };
   }
   if (value.ci !== undefined) {
-    if (!["focused", "full", "reuse"].includes(value.ci as string)) throw new Error("invalid CI cost scope");
+    if (!["focused", "full", "reuse"].includes(value.ci as string)) refuse(`${at("ci")} must be focused, full or reuse`);
     result.ci = value.ci as CostPlan["ci"];
   }
   return result;

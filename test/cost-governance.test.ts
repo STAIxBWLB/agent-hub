@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { costMetrics, costBandProposals, cleanCostPlan } from "../src/hub/cost-governance.ts";
+import { costMetrics, costBandProposals, cleanCostPlan, CostScopeError } from "../src/hub/cost-governance.ts";
 
 const head = "a".repeat(40);
 test("cost scopes are typed and bounded, and legacy plans stay unknown (#481 S10)", () => {
@@ -8,6 +8,86 @@ test("cost scopes are typed and bounded, and legacy plans stay unknown (#481 S10
   for (const value of [{ review: { scope: "none", reviewers: 1 } }, { review: { scope: "full", reviewers: 0 } }, { review: { scope: "full", reviewers: 9 } }, { ci: "skip" }, { review: { scope: "full", reviewers: 1, prompt: "untrusted" } }]) {
     expect(() => cleanCostPlan(value)).toThrow("cost scope");
   }
+});
+
+// #1087: each invalid shape is refused with its field and the allowed values, never a value, and a valid plan is unchanged.
+test("each invalid cost scope shape names its field and the allowed values (#1087 AC1)", () => {
+  const cases: [string, unknown, string][] = [
+    ["a plan that is not an object", "scope", "plan must be an object; review and ci are its cost scope fields"],
+    ["a plan that is a list", [], "plan must be an object; review and ci are its cost scope fields"],
+    ["review that is not an object", { review: "full" }, "plan.review must be an object with scope (none, delta or full) and reviewers (a whole number)"],
+    ["review that is null", { review: null }, "plan.review must be an object with scope (none, delta or full) and reviewers (a whole number)"],
+    ["review that is a list", { review: [] }, "plan.review must be an object with scope (none, delta or full) and reviewers (a whole number)"],
+    ["an unknown review key", { review: { scope: "full", reviewers: 1, prompt: "untrusted" } }, "plan.review takes only scope and reviewers"],
+    ["an unknown scope", { review: { scope: "partial", reviewers: 1 } }, "plan.review.scope must be none, delta or full"],
+    ["a missing scope", { review: { reviewers: 1 } }, "plan.review.scope must be none, delta or full"],
+    ["reviewers that is not a whole number", { review: { scope: "full", reviewers: 1.5 } }, "plan.review.reviewers must be a whole number: 0 when scope is none, 1 to 8 when scope is delta or full"],
+    ["reviewers missing", { review: { scope: "none" } }, "plan.review.reviewers must be a whole number: 0 when scope is none, 1 to 8 when scope is delta or full"],
+    ["reviewers as text", { review: { scope: "delta", reviewers: "2" } }, "plan.review.reviewers must be a whole number: 0 when scope is none, 1 to 8 when scope is delta or full"],
+    ["scope none with reviewers", { review: { scope: "none", reviewers: 1 } }, "plan.review.reviewers must be 0 when scope is none"],
+    ["scope full with no reviewers", { review: { scope: "full", reviewers: 0 } }, "plan.review.reviewers must be 1 to 8 when scope is delta or full"],
+    ["scope delta with too many reviewers", { review: { scope: "delta", reviewers: 9 } }, "plan.review.reviewers must be 1 to 8 when scope is delta or full"],
+    ["a negative reviewer count", { review: { scope: "full", reviewers: -1 } }, "plan.review.reviewers must be 1 to 8 when scope is delta or full"],
+    ["an unknown ci", { ci: "skip" }, "plan.ci must be focused, full or reuse"],
+    ["ci as a boolean", { ci: true }, "plan.ci must be focused, full or reuse"],
+    ["ci as null", { ci: null }, "plan.ci must be focused, full or reuse"],
+  ];
+  for (const [name, value, message] of cases) {
+    let thrown: unknown;
+    try { cleanCostPlan(value); } catch (error) { thrown = error; }
+    expect(thrown, name).toBeInstanceOf(CostScopeError);
+    expect((thrown as Error).message, name).toBe(message);
+    expect(JSON.stringify((thrown as Error).message), `${name} must not echo a value`).not.toContain("untrusted");
+  }
+});
+
+test("the field prefix follows the caller's own argument names, per key (#1087 AC1)", () => {
+  expect(() => cleanCostPlan({ review: { scope: "none", reviewers: 2 } }, "")).toThrow("review.reviewers must be 0 when scope is none");
+  expect(() => cleanCostPlan({ ci: "x" }, "")).toThrow("ci must be focused, full or reuse");
+  expect(() => cleanCostPlan("x", "")).toThrow("the request must be an object");
+  expect(() => cleanCostPlan({ review: { scope: "none", reviewers: 2 }, ci: "full" }, { review: "", ci: "plan" })).toThrow("review.reviewers must be 0 when scope is none");
+  expect(() => cleanCostPlan({ review: { scope: "full", reviewers: 1 }, ci: "x" }, { review: "", ci: "plan" })).toThrow("plan.ci must be focused, full or reuse");
+  expect(() => cleanCostPlan({ review: { scope: "full", reviewers: 1 }, ci: "x" }, { review: "plan", ci: "" })).toThrow("ci must be focused, full or reuse");
+});
+
+test("valid cost scopes are unchanged by the rewrite, at every bound (#1087 AC2)", () => {
+  expect(cleanCostPlan({})).toEqual({});
+  expect(cleanCostPlan({ review: { scope: "none", reviewers: 0 }, ci: "reuse" })).toEqual({ review: { scope: "none", reviewers: 0 }, ci: "reuse" });
+  for (const scope of ["delta", "full"] as const) for (const reviewers of [1, 8]) expect(cleanCostPlan({ review: { scope, reviewers } })).toEqual({ review: { scope, reviewers } });
+  for (const ci of ["focused", "full", "reuse"] as const) expect(cleanCostPlan({ ci })).toEqual({ ci });
+  expect(cleanCostPlan({ review: { scope: "full", reviewers: 3 }, other: "ignored" })).toEqual({ review: { scope: "full", reviewers: 3 } });
+});
+
+test("a task plan with an invalid scope is refused with the field and the allowed values at the plan-cleaning call site (#1087 AC1)", async () => {
+  const r = scopeRig("enforce");
+  const bad: [unknown, string][] = [
+    [{ paths: ["a.ts"], review: { scope: "none", reviewers: 1 }, ci: "reuse" }, "plan.review.reviewers must be 0 when scope is none"],
+    [{ paths: ["a.ts"], review: { scope: "delta", reviewers: 2 }, ci: "maybe" }, "plan.ci must be focused, full or reuse"],
+    [{ paths: ["a.ts"], review: { scope: "huge", reviewers: 2 } }, "plan.review.scope must be none, delta or full"],
+  ];
+  for (const [plan, message] of bad) {
+    const before = r.board.list().length;
+    await expect(r.tasks.propose("user", { title: "bad scope", class: "summarize", backlog: true, plan: plan as never })).rejects.toThrow(message);
+    expect(r.board.list().length).toBe(before); // a refused plan creates nothing
+  }
+  // The valid shape from the issue is accepted: scope none needs reviewers 0.
+  const ok = await r.tasks.propose("user", { title: "none scope", class: "summarize", backlog: true, plan: { paths: ["a.ts"], review: { scope: "none", reviewers: 0 }, ci: "reuse" } });
+  expect(ok.plan).toMatchObject({ review: { scope: "none", reviewers: 0 }, ci: "reuse" });
+});
+
+test("hub_plan_review refuses an invalid scope naming the argument the planner wrote, and a bad stored plan names plan.* (#1087 AC1)", async () => {
+  const r = scopeRig("enforce");
+  const task = await r.tasks.propose("user", { title: "review me", class: "summarize", backlog: true, plan: { paths: ["a.ts"] } });
+  await expect(r.tasks.recordPlanReview("claude", task.id, { revision: 0, reason: "r", review: { scope: "none", reviewers: 3 }, ci: "reuse" })).rejects.toThrow("review.reviewers must be 0 when scope is none");
+  await expect(r.tasks.recordPlanReview("claude", task.id, { revision: 0, reason: "r", review: { scope: "full", reviewers: 1 }, ci: "sometimes" })).rejects.toThrow("ci must be focused, full or reuse");
+  const refused = await r.tasks.recordPlanReview("claude", task.id, { revision: 0, reason: "r", review: { scope: "full", reviewers: 1 }, ci: "sometimes" }).catch(error => error as Error);
+  expect((refused as Error).message).not.toContain("plan.ci"); // the planner passed ci itself, so the refusal names ci, not plan.ci
+  expect((refused as Error).message).not.toContain("sometimes"); // and never echoes the value
+  // A stored plan that is already wrong is named as the plan's own field when the planner passes no override for it.
+  r.board.update(task.id, "user", "bad stored scope", { plan: { paths: ["a.ts"], review: { scope: "none", reviewers: 4 } } as never });
+  await expect(r.tasks.recordPlanReview("claude", task.id, { revision: 0, reason: "r", ci: "reuse" })).rejects.toThrow("plan.review.reviewers must be 0 when scope is none");
+  // Nothing was recorded by any refusal.
+  expect(r.board.get(task.id)!.sdlc?.planReview).toBeUndefined();
 });
 
 test("merged-PR costs deduplicate CI attempts, count redo scopes and measure review intervals (#481 S10)", () => {
