@@ -91,7 +91,7 @@ test("per-home plugin probes preserve the caller environment, use exact scoped p
   const calls: { argv: readonly string[]; env: NodeJS.ProcessEnv; timeoutMs: number }[] = [];
   const result = await checkClaudeHome(home, packageRoot, ambient, (argv, options) => {
     calls.push({ argv, ...options });
-    return { status: 0, stdout: JSON.stringify(argv.includes("marketplace") ? [{ name: "agent-hub", path: packageRoot }] : [{ id: "agent-hub@agent-hub", version: VERSION }]) };
+    return { status: 0, stdout: JSON.stringify(argv.includes("marketplace") ? [{ name: "agent-hub", path: packageRoot }] : [{ id: "agent-hub@agent-hub", scope: "user", version: VERSION }]) };
   });
   expect(result.plugin.state).toBe("current");
   expect(result.next).toBeUndefined();
@@ -103,6 +103,26 @@ test("per-home plugin probes preserve the caller environment, use exact scoped p
   }
   expect(ambient.CLAUDE_CONFIG_DIR).toBe(join(f.root, "other-profile"));
   expect(claudeHomeEnvironment(home, ambient)).not.toBe(ambient);
+});
+
+test("plugin inventory judges only the explicit user-scope row and reports other scopes", async () => {
+  const f = fixture(), packageRoot = join(f.root, "package"), projectPath = join(f.root, "project-home");
+  mkdirSync(packageRoot);
+  const home = { path: f.profile, exists: true, sources: ["environment" as const] };
+  const currentUser = await checkClaudeHome(home, packageRoot, f.env, argv => ({ status: 0, stdout: JSON.stringify(argv.includes("marketplace")
+    ? [{ name: "agent-hub", path: packageRoot }]
+    : [
+      { id: "agent-hub@agent-hub", scope: "project", projectPath, version: "0.23.1" },
+      { id: "agent-hub@agent-hub", scope: "user", version: VERSION },
+    ]) }));
+  expect(currentUser.plugin).toMatchObject({ state: "current", version: VERSION, notices: [expect.stringContaining(`project plugin row preserved at ${projectPath} (version 0.23.1)`)] });
+  expect(currentUser.next).toBeUndefined();
+
+  const projectOnly = await checkClaudeHome(home, packageRoot, f.env, argv => ({ status: 0, stdout: JSON.stringify(argv.includes("marketplace")
+    ? [{ name: "agent-hub", path: packageRoot }]
+    : [{ id: "agent-hub@agent-hub", scope: "project", projectPath, version: "0.23.1" }]) }));
+  expect(projectOnly.plugin).toMatchObject({ state: "missing" });
+  expect(projectOnly.next?.argv).toEqual(["claude", "plugin", "install", "agent-hub@agent-hub", "--scope", "user"]);
 });
 
 test("missing plugin and unavailable inventory stay distinct and error text never reflects native output", async () => {

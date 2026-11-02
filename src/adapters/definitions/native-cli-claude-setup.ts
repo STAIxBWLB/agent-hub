@@ -14,6 +14,8 @@ export interface InstalledPlugin {
   id: string;
   version?: string;
   installPath?: string;
+  scope?: string;
+  projectPath?: string;
 }
 export interface Marketplace {
   name: string;
@@ -45,26 +47,43 @@ const read = (p: string) => {
   }
 };
 
-export type PluginState = { state: "missing" } | { state: "current"; version: string } | { state: "stale"; version: string; why: string };
+export type PluginState =
+  | { state: "missing"; notices?: string[] }
+  | { state: "current"; version: string; notices?: string[] }
+  | { state: "stale"; version: string; why: string; notices?: string[] };
+
+const safeDisplayValue = (value: unknown): string | undefined =>
+  typeof value === "string" && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value) ? value : undefined;
+
+function nonUserPluginNotices(plugins: InstalledPlugin[]): string[] {
+  return plugins.filter(plugin => plugin.id === PLUGIN && plugin.scope !== "user").map(plugin => {
+    const scope = plugin.scope === "project" || plugin.scope === "local" ? plugin.scope : "unknown-scope";
+    const path = safeDisplayValue(plugin.projectPath) ?? safeDisplayValue(plugin.installPath);
+    const version = safeDisplayValue(plugin.version) ?? "unknown";
+    return `${scope} plugin row preserved${path ? ` at ${path}` : ""} (version ${version}); setup never removes non-user scopes`;
+  });
+}
 
 /**
  * Is the installed Claude plugin the one this hub ships? The version is compared, and so is the bundle itself: Claude
  * Code runs a cached copy, and a copy taken from an earlier build of the same version speaks an older wire protocol.
  */
 export function pluginState(plugins: InstalledPlugin[], packageRoot: string): PluginState {
-  const mine = plugins.find((p) => p.id === PLUGIN);
-  if (!mine) return { state: "missing" };
+  const notices = nonUserPluginNotices(plugins);
+  const mine = plugins.find((p) => p.id === PLUGIN && p.scope === "user");
+  if (!mine) return { state: "missing", ...(notices.length ? { notices } : {}) };
   const version = mine.version ?? "unknown";
-  if (version !== VERSION) return { state: "stale", version, why: `version ${version}, this hub is ${VERSION}` };
+  if (version !== VERSION) return { state: "stale", version, why: `version ${version}, this hub is ${VERSION}`, ...(notices.length ? { notices } : {}) };
   const shipped = read(join(packageRoot, "plugins", "agent-hub", "server.js"));
   const cached = mine.installPath ? read(join(mine.installPath, "server.js")) : undefined;
-  if (shipped !== undefined && cached !== undefined && shipped !== cached) return { state: "stale", version, why: "same version, but the cached bundle differs from the one this hub ships" };
-  return { state: "current", version };
+  if (shipped !== undefined && cached !== undefined && shipped !== cached) return { state: "stale", version, why: "same version, but the cached bundle differs from the one this hub ships", ...(notices.length ? { notices } : {}) };
+  return { state: "current", version, ...(notices.length ? { notices } : {}) };
 }
 
 export interface SetupStep {
   why: string;
   argv: string[];
+  blocked?: true;
 }
 
 /**
@@ -74,11 +93,14 @@ export interface SetupStep {
 export function nextStep(plugins: InstalledPlugin[], marketplaces: Marketplace[], packageRoot: string): SetupStep | undefined {
   const root = real(packageRoot);
   const market = marketplaces.find((m) => m.name === MARKETPLACE);
-  if (market && real(market.path ?? "") !== root) return { why: `the ${MARKETPLACE} marketplace points at ${market.path ?? "another source"}, not at this package`, argv: ["claude", "plugin", "marketplace", "remove", MARKETPLACE] };
+  if (market && real(market.path ?? "") !== root) {
+    if (plugins.some(plugin => plugin.id === PLUGIN && plugin.scope !== "user")) return { why: `the ${MARKETPLACE} marketplace points at another source; removing it may remove non-user plugin rows`, argv: [], blocked: true };
+    return { why: `the ${MARKETPLACE} marketplace points at ${market.path ?? "another source"}, not at this package`, argv: ["claude", "plugin", "marketplace", "remove", MARKETPLACE] };
+  }
   if (!market) return { why: "register this package as a Claude Code plugin marketplace", argv: ["claude", "plugin", "marketplace", "add", root] };
   const state = pluginState(plugins, root);
-  if (state.state === "missing") return { why: "install the channel plugin", argv: ["claude", "plugin", "install", PLUGIN] };
+  if (state.state === "missing") return { why: "install the user-scope channel plugin", argv: ["claude", "plugin", "install", PLUGIN, "--scope", "user"] };
   // Uninstall rather than update: with an unchanged version number an update has nothing to do.
-  if (state.state === "stale") return { why: `replace the installed plugin (${state.why})`, argv: ["claude", "plugin", "uninstall", PLUGIN] };
+  if (state.state === "stale") return { why: `replace the installed user-scope plugin (${state.why})`, argv: ["claude", "plugin", "uninstall", PLUGIN, "--scope", "user"] };
   return undefined;
 }
