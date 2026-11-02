@@ -185,15 +185,15 @@ test("a verified unchanged head permits a same-head redo when optional PR eviden
   expect(submitted.refs.commit).toBe(A);
 });
 
-test("off: a legacy receipt-resolved head still gets current PR drift protection", async () => {
+test("off: a legacy history-bound head still gets current PR drift protection", async () => {
   const r = await rig({ mode: "off", noCommit: true }); r.move(B);
   const receipt = { ...r.board.get(r.id)!.sdlc! };
   delete receipt.reviewedHead;
-  r.board.update(r.id, USER, "synthetic legacy receipt-only binding", { sdlc: receipt });
+  r.board.update(r.id, "claude", "changes_requested", { sdlc: receipt }, "synthetic legacy history binding", { reviewedHead: A });
   const before = r.board.get(r.id)!;
   expect(before.refs.commit).toBeUndefined();
   expect(before.sdlc?.reviewedHead).toBeUndefined();
-  const message = await refusal(() => r.tasks.review("claude", r.id, "approved", "synthetic legacy receipt head"));
+  const message = await refusal(() => r.tasks.review("claude", r.id, "approved", "synthetic legacy history head"));
   expect(message).toContain(A); expect(message).toContain(B); ownerNextStep(message);
   expect(r.board.get(r.id)).toEqual(before);
 });
