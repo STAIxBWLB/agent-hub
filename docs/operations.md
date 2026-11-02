@@ -4094,7 +4094,7 @@ has appeared for `AHUB_CHECK_QUIET_S` seconds (300 by default, set to 300 in CI)
 slow suite that is still passing tests is never cut. `scripts/progress-tee.sh` passes bun's
 output through unchanged and appends one byte to a progress file for each of those lines;
 the watchdog polls that file's size. On a stop it prints where the run is and the process
-table below it first. `AHUB_CHECK_HANG_S` (960 by default) is only the backstop for a run
+table below it first. `AHUB_CHECK_HANG_S` (2250 by default, sized in #1086 from two measured full runs on dgx02 of 1483 s and 1487 s of test time, 1.5 times the longer; it was 960) is only the backstop for a run
 that keeps printing results while hung; hosted CI sets 1500 on Linux inside a 35-minute
 job limit (#378, #593, #752, task 516). The macOS leg runs as four shards (#548): `AHUB_CHECK_SHARD=i/n`
 makes `scripts/check.sh` run slice `i` of the full suite through `bun test --shard=i/n --timings=scripts/test-timings.json`, which puts

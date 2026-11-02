@@ -129,7 +129,7 @@
   "scripts/check-docs.mjs:timeout:inline:timeout=2000#0": "operational",
   "scripts/check-memory-consumer-parity.ts:timeout:inline:timeout=15_000#0": "operational",
   "scripts/check-roles.ts:<module>:inline:file.slice=-3#0": "contract",
-  "scripts/check.sh:shell:inline:AHUB_CHECK_HANG_S=960#0": "test seam",
+  "scripts/check.sh:shell:inline:AHUB_CHECK_HANG_S=2250#0": "test seam",
   "scripts/check.sh:shell:inline:AHUB_CHECK_LOCK_WAIT_S=1800#0": "test seam",
   "scripts/check.sh:shell:inline:bun test --timeout=20000#0": "operational",
   "scripts/check.sh:shell:inline:sleep=5#0": "operational",

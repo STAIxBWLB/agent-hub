@@ -143,7 +143,10 @@ env -u AGENTHUB_PEER_ID -u AGENTHUB_DELIVERY_ONLY -u AGENTHUB_CHANNEL -u CLAUDEC
 test_pid=$!
 # A suite still printing test results is slow, not hung (hosted ubuntu runs of 14-17 minutes were cut at 1080 s while passing tests line
 # by line): the quiet bound (AHUB_CHECK_QUIET_S, 300 s without a result line or file header) is the hang detector and AHUB_CHECK_HANG_S the backstop.
-scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-960}" "$progress" "${AHUB_CHECK_QUIET_S:-300}" &
+# #1086: the backstop is sized from measured runs, not guessed. The full suite on the dgx02 Linux host takes 1487 s of test time (1519 s wall, two runs 1483 s and 1487 s
+# at current main) and a `--changed` run that selects most of it 925 to 958 s, so the old 960 s default cut both while they were still passing tests (exit 143, quiet_for 1s).
+# 2250 s is 1.5 times the longest full run. A hung run is still stopped by the quiet bound within AHUB_CHECK_QUIET_S, long before this one; hosted CI sets its own value per shard.
+scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-2250}" "$progress" "${AHUB_CHECK_QUIET_S:-300}" &
 watch_pid=$!
 wait "$test_pid" || tests=$?
 test_pid=""

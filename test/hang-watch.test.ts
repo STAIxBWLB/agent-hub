@@ -158,3 +158,41 @@ test("through the real fifo, filter and watchdog: plain log lines are not progre
   expect(out.stderr).toContain("cause=quiet");
   expect(out.stdout).toMatch(/GATE exit=143 progress=0/);
 }, 15_000);
+
+// #1086: the full suite on the dgx02 Linux host takes about 1490 s and the old 960 s total default cut healthy runs while they still passed tests. The default is now sized from measured runs.
+// The quiet rule is what catches a hang, so it must stay far below the total backstop, and the shipped default must sit above the measured healthy runs.
+const checkScript = readFileSync(join(import.meta.dir, "..", "scripts", "check.sh"), "utf8");
+const shippedDefault = (name: string) => Number(new RegExp(`\\$\\{${name}:-(\\d+)\\}`).exec(checkScript)?.[1]);
+
+test("the shipped total backstop clears the measured healthy full runs, and the quiet bound stays the hang detector far below it (#1086)", () => {
+  const total = shippedDefault("AHUB_CHECK_HANG_S"), quiet = shippedDefault("AHUB_CHECK_QUIET_S");
+  expect(Number.isSafeInteger(total) && Number.isSafeInteger(quiet)).toBe(true);
+  // Two measured full runs on dgx02 at one main: 1483 s and 1487 s of test time (1514 s and 1519 s wall), and 925 to 958 s for a --changed run that selected most of the suite.
+  const slowestMeasuredFullRun = 1487;
+  expect(total).toBeGreaterThan(slowestMeasuredFullRun * 1.25);
+  // The quiet bound is unchanged and detects a hang in minutes, not at the backstop; a hung run never waits for the backstop.
+  expect(quiet).toBe(300);
+  expect(total).toBeGreaterThanOrEqual(quiet * 5);
+});
+
+test("through the real fifo, filter and watchdog with the shipped quiet bound's ratio: a run that goes silent is stopped on the quiet bound while the total bound is far away (#1086 AC2)", async () => {
+  // The shipped total is at least five times the shipped quiet bound; scale both down by the same factor so the real watchdog is exercised in seconds: a quiet bound of 2 s against a total of 10 s.
+  const quiet = 2, total = Math.round(quiet * shippedDefault("AHUB_CHECK_HANG_S") / shippedDefault("AHUB_CHECK_QUIET_S"));
+  expect(total).toBeGreaterThanOrEqual(quiet * 5);
+  const started = Date.now();
+  const out = await gate('echo "(pass) a" >&2; echo "(pass) b" >&2; exec sleep 60', quiet, total);
+  expect(out.stderr).toContain("cause=quiet");
+  expect(out.stderr).not.toContain("cause=total");
+  expect(out.stdout).toMatch(/GATE exit=143 progress=2/);
+  expect(Date.now() - started).toBeLessThan(total * 1000 - 2000); // stopped on the quiet rule, well before the backstop
+}, 30_000);
+
+test("a healthy run that keeps passing tests for longer than the old 960 s default is not cut by the shipped default (#1086 AC1)", async () => {
+  // Scaled by the old-default ratio: results keep arriving past 960/300 quiet bounds' worth of time (3.2 bounds) and the run ends on its own under the shipped total.
+  const quiet = 2, total = Math.round(quiet * shippedDefault("AHUB_CHECK_HANG_S") / shippedDefault("AHUB_CHECK_QUIET_S"));
+  const oldTotalInQuietBounds = 960 / 300, seconds = Math.ceil(quiet * oldTotalInQuietBounds) + 1; // longer than the old default would have allowed, in these units
+  expect(seconds).toBeLessThan(total);
+  const out = await gate(`for i in $(seq 1 ${seconds * 2}); do echo "(pass) t$i" >&2; sleep 0.5; done; exit 0`, quiet, total);
+  expect(out.stdout).toContain(`GATE exit=0 progress=${seconds * 2}`);
+  expect(out.stderr).not.toContain("cause=");
+}, 30_000);
