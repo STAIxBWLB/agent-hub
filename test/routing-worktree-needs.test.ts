@@ -126,6 +126,43 @@ test("accept of worktree work by a sandboxed peer is refused before any write, n
   expect(board.get(row.id)).toMatchObject({ state: "in_progress", owner: "pi" });
 });
 
+test("the console user accepting on a sandboxed owner's behalf is held to the owner's capability (#1081)", async () => {
+  const { board, tasks } = await rig(false); // pi cannot create a worktree
+  const row = board.propose("user", { title: "console accept worktree work", class: "implement", signals: ["needs_worktree"] });
+  board.update(row.id, "user", "assigned", { owner: "pi" });
+  const before = JSON.stringify(board.get(row.id));
+  let failure: unknown;
+  try { tasks.accept("user", row.id); } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(PreEffectToolRefusal);
+  expect((failure as Error).message).toContain("pi cannot create one");
+  expect(JSON.stringify(board.get(row.id))).toBe(before);
+  // the same console acceptance of ordinary work still goes through
+  const plain = board.propose("user", { title: "console accept ordinary work", class: "implement" });
+  board.update(plain.id, "user", "assigned", { owner: "pi" });
+  expect(() => tasks.accept("user", plain.id)).not.toThrow();
+});
+
+test("the console user accepting network work for a network-less owner is refused too (#1081)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-console-network-"));
+  mkdirSync(join(cwd, ".agenthub"), { recursive: true });
+  writeFileSync(join(cwd, ".agenthub", "routing.toml"), "[local]\nfixed_model=\"m\"\n[classes.implement]\npeers=[\"pi\",\"codex\"]\n");
+  cleanup.push(() => rmSync(cwd, { recursive: true, force: true }));
+  const board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
+  cleanup.push(() => { bus.closeJournal(); board.close(); });
+  for (const id of ["pi", "codex"]) { const peer = new Peer(id); bus.add(peer); await peer.start(); }
+  const tasks = new Tasks({ cwd, board, bus, project: "fixture", roles: { claude: ["planner"] }, routing: () => loadRouting(cwd), notify: () => {}, wipLimit: () => 5,
+    sdlc: { config: () => sdlcConfig({ mode: "off" }) },
+    capabilities: () => ({ pi: { tests: true, spec: true, network: false, networkReason: "local.bash_network is off", worktree: true }, codex: { tests: true, spec: true, network: true, worktree: true } }) });
+  const row = board.propose("user", { title: "console accept network work", class: "implement", signals: ["needs_network"] });
+  board.update(row.id, "user", "assigned", { owner: "pi" });
+  const before = JSON.stringify(board.get(row.id));
+  let failure: unknown;
+  try { tasks.accept("user", row.id); } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(PreEffectToolRefusal);
+  expect((failure as Error).message).toContain("pi has none");
+  expect(JSON.stringify(board.get(row.id))).toBe(before);
+});
+
 test("accept of ordinary work is unaffected by a sandboxed peer (#1081)", async () => {
   const { board, tasks } = await rig(false);
   const row = board.propose("user", { title: "rename a helper", class: "implement" });

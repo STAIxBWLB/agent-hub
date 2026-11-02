@@ -5834,7 +5834,7 @@ export class Tasks {
     this.ready(task, true);
     if (task.state !== "proposed" && task.state !== "changes_requested" && task.state !== "in_progress") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}: cannot move to in_progress`);
     this.studyDispatchCheck(task, task.owner ?? undefined);
-    this.declaredNeedCheck(task, by);
+    this.declaredNeedCheck(task, task.owner ?? by); // the owner's capability, also when the console user accepts on its behalf (`mine` admits USER)
     this.acceptanceCapacity(task, 0, "check");
     // S1 spec acceptance and S9 plan review are independent prerequisites; retain S1's missing-spec refusal first.
     if (this.specGated(task) && this.d.sdlc?.config().mode === "enforce" && specState(task.sdlc, undefined) === "missing") throw new PreEffectToolRefusal(this.specText(task, "missing", "blocked"));
