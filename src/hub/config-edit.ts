@@ -132,7 +132,7 @@ function topLevel(lines: readonly string[]): { end: number; spans: Map<string, [
  * Edits `mode` and `required_checks` line by line. Every line the edit does not touch keeps its own ending, so a one-key change never
  * rewrites a CRLF checkout; a line the edit writes or adds takes the ending of the first line break the file has (LF for a new file).
  */
-function editSdlcText(text: string | null, set: ConfigEditSet[]): string | null {
+export function editSdlcText(text: string | null, set: ConfigEditSet[]): string | null {
   const raw = text === null ? [] : text.split("\n");
   const trailing = raw.length > 0 && raw.at(-1) === "";
   if (trailing) raw.pop();

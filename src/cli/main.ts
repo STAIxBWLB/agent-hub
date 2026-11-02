@@ -70,7 +70,8 @@ import { inspectProject, startProject, stopProject, runProjectDaemon } from "../
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import { OmniRoute } from "../omniroute/client.ts";
-import { init, planInit } from "./init.ts";
+import { init, initSettingRows, planInit } from "./init.ts";
+import { INIT_USAGE, parseInitSettings } from "./init-settings.ts";
 import { launcherPreview } from "./preview.ts";
 import { instanceLaunchArguments, requirePeerInstances, requireActiveInstance, cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, buildKimiTuiLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
 import { configureKimiMcp } from "./kimi-mcp.ts";
@@ -1068,28 +1069,42 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   init: async () => {
-    const flags = takeFlags(args.filter(arg => arg !== "--dry-run" && arg !== "--json" && arg !== "--shadow" && arg !== "--release-guard"), ["--profile"], []);
-    if (flags.rest.length) fail("usage: ahub init [--profile dev|research|writing|general|<pack>] [--shadow] [--release-guard] [--dry-run --json]");
+    // #1065 T1: the settings flags come out first (a value flag takes the next word), then the older flags as before.
+    let settings: ReturnType<typeof parseInitSettings>;
+    try { settings = parseInitSettings(args); } catch (error) { return fail((error as Error).message); }
+    const flags = takeFlags(settings.rest.filter(arg => arg !== "--dry-run" && arg !== "--json" && arg !== "--shadow" && arg !== "--release-guard"), ["--profile"], []);
+    if (flags.rest.length) fail(INIT_USAGE);
     // A pack is a project file in .agenthub/roles/<name>.pack.json (#513a); init resolves the name and refuses an unknown one with the profiles and packs it knows.
     const requestedProfile = flags.one["--profile"];
     const newProject = !existsSync(join(cwd, ".agenthub/config.json"));
+    const request = settings.request, asked = Object.keys(request.values).length > 0;
+    // `--autonomy off` skips the machine inheritance on a new project; `inherit` is today's behaviour. Neither changes an existing project.
+    const inheritAutonomy = newProject && request.autonomy !== "off";
+    if (!newProject && request.autonomy !== undefined) console.error("note: --autonomy applies to a new project only; this project already exists, so its autonomy settings are unchanged");
     if (args.includes("--dry-run")) {
-      const plan = planInit(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"));
+      const plan = planInit(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"), request);
+      const rows = initSettingRows(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"), request);
       const defaults = readAutonomyDefaults(hubHome(), [cwd]);
-      if (newProject && defaults.enabled) plan.push({ action: existsSync(join(cwd, ".agenthub/config.local.json")) ? "modify" : "create", path: join(cwd, ".agenthub/config.local.json"), reason: "inherit the trusted machine autonomy preset; consent is checked at daemon startup" });
+      if (inheritAutonomy && defaults.enabled) plan.push({ action: existsSync(join(cwd, ".agenthub/config.local.json")) ? "modify" : "create", path: join(cwd, ".agenthub/config.local.json"), reason: "inherit the trusted machine autonomy preset; consent is checked at daemon startup" });
       if (defaults.notice) console.error(defaults.notice);
-      return console.log(args.includes("--json") ? JSON.stringify(plan, null, 2) : plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`).join("\n") || "already up to date");
+      // Without a settings flag the preview is the bare list of file rows, as it always was; with one it is { changes, settings }.
+      if (args.includes("--json")) return console.log(JSON.stringify(asked ? { changes: plan, settings: rows } : plan, null, 2));
+      const settingLines = rows.map(row => `  ${row.key}: ${row.from === undefined ? "(not set)" : JSON.stringify(row.from)} -> ${JSON.stringify(row.to)} (${row.file})`);
+      return console.log([...plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`), ...settingLines].join("\n") || "already up to date");
     }
     assertLifecycleAvailable(cwd);
-    if (newProject && delegatedPeer && readAutonomyDefaults(hubHome(), [cwd]).enabled) fail("machine autonomy inheritance is person-only; delegated live tests cannot apply it");
-    const changed = init(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"));
+    if (inheritAutonomy && delegatedPeer && readAutonomyDefaults(hubHome(), [cwd]).enabled) fail("machine autonomy inheritance is person-only; delegated live tests cannot apply it (ahub init --autonomy off skips it)");
+    let changed: string[];
+    try { changed = init(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"), request); } catch (error) { return fail((error as Error).message); }
     const project = registeredProject();
     console.log(changed.length ? changed.map((p) => `${existsSync(p) ? "wrote" : "removed"} ${p}`).join("\n") : "already up to date");
     if (newProject) {
-      const registry = new Registry();
-      try { for (const line of await inheritMachineAutonomy(project, hubHome(), autonomyEnvironment(process.env, !!process.stdin.isTTY), registry)) console.log(terminalText(line)); }
-      finally { registry.close(); }
-      // #608: the machine's default agent set, copied the same way (person-only: a delegated live test never inherits it).
+      if (inheritAutonomy) {
+        const registry = new Registry();
+        try { for (const line of await inheritMachineAutonomy(project, hubHome(), autonomyEnvironment(process.env, !!process.stdin.isTTY), registry)) console.log(terminalText(line)); }
+        finally { registry.close(); }
+      }
+      // #608: the machine's default agent set, copied the same way (person-only: a delegated live test never inherits it). An explicit --agents is already in config.local.json, so it wins.
       if (!delegatedPeer) { const roots = (() => { const r = new Registry(); try { return r.list().map(row => row.root); } finally { r.close(); } })(); for (const line of inheritMachineStart(cwd, hubHome(), [...roots, cwd])) console.log(terminalText(line)); }
     }
     const config = projectConfig(), examples = resolveProfile(config.profile, config.profile_overrides).example_checks;
