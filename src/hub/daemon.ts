@@ -8199,7 +8199,7 @@ export async function startDaemon(opts: DaemonOptions) {
 
   function onControlMessage(sock: Sock, msg: any): void {
     const metadata = controlWriteMetadata(msg);
-    if (!metadata || !controlWriteTelemetry) return onMessageBody(sock, msg);
+    if (!metadata || !controlWriteTelemetry) return onMessage(sock, msg);
     const client = sock.data;
     const inputPublicAtReceive = (() => {
       const rawArgs = msg?.args;
