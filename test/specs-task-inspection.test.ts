@@ -110,6 +110,8 @@ test("missing-block hints distinguish absence from unsafe instruction files", ()
   expect(inspector.missingBlock()).toBe(true);
   writeFileSync(join(root, "AGENTS.md"), "<!-- AGENT_HUB_SPECS:BEGIN -->\nRead specs.\n<!-- AGENT_HUB_SPECS:END -->\n");
   expect(inspector.missingBlock()).toBe(false);
+  writeFileSync(join(root, "AGENTS.md"), "x".repeat(257 * 1024));
+  expect(inspector.missingBlock()).toBeUndefined();
   rmSync(join(root, "AGENTS.md")); symlinkSync(join(root, "src/bus.ts"), join(root, "AGENTS.md"));
   expect(inspector.missingBlock()).toBeUndefined();
 });
