@@ -1,5 +1,8 @@
-import { SpecsEngine, type SpecsConfig } from "../hub/specs.ts";
+import { chmodSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { SpecsEngine, stampFrontmatter, type SpecsConfig, type SpecsStampRow } from "../hub/specs.ts";
 import { terminalText } from "./console-state.ts";
+import { editJsonText } from "./init-settings.ts";
 
 export interface SpecsOutput { out(line: string): void; error(line: string): void }
 const output: SpecsOutput = { out: line => console.log(line), error: line => console.error(line) };
@@ -47,6 +50,101 @@ export function runSpecs(args: readonly string[], root: string, config: SpecsCon
     return report.errors || requireFresh && report.stale ? 1 : 0;
   } catch (error) {
     io.error(terminalText(`specs: ${error instanceof Error ? error.message : "inspection unavailable"}; check the repository and specs configuration, then run ahub specs check again`));
+    return 1;
+  }
+}
+
+interface PreparedStamp { path: string; absolute: string; original: Buffer; next: Buffer; mode: number }
+/** The new bytes for every file a stamp would change, made without writing; a string is the reason one could not be made. A stamps file takes all of its entries in one write. */
+function prepareStamps(root: string, rows: readonly SpecsStampRow[]): PreparedStamp[] | string {
+  const byFile = new Map<string, SpecsStampRow[]>();
+  for (const row of rows) byFile.set(row.path, [...(byFile.get(row.path) ?? []), row]);
+  const files: PreparedStamp[] = [];
+  for (const [path, group] of byFile) {
+    const absolute = resolve(root, path), original = readFileSync(absolute), mode = statSync(absolute).mode & 0o777; // the file keeps its own permissions
+    if (group[0]!.kind === "stamps-file") {
+      let text = original.toString("utf8");
+      for (const row of group) text = editJsonText(text, ["documents", row.document!, "verifiedAgainst"], row.to);
+      JSON.parse(text); // the edit must still be the JSON the engine reads
+      files.push({ path, absolute, original, next: Buffer.from(text, "utf8"), mode });
+    } else {
+      const done = stampFrontmatter(original.toString("latin1"), group[0]!.to);
+      if (!done.ok) return `${path}: ${done.error}`;
+      files.push({ path, absolute, original, next: Buffer.from(done.text, "latin1"), mode });
+    }
+  }
+  return files;
+}
+
+/** What `ahub specs stamp` needs from its surroundings: whether a person is at a terminal, and a yes/no question to ask them. Tests pass their own. */
+export interface SpecsStampTerminal { isTTY: boolean; ask(question: string): Promise<boolean> }
+
+const STAMP_USAGE = "usage: ahub specs stamp <id-or-document>... [--yes]";
+const writeAtomic = (path: string, bytes: Buffer, mode: number): void => {
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temporary, bytes, { mode, flag: "wx" });
+  chmodSync(temporary, mode);
+  renameSync(temporary, path);
+};
+
+/**
+ * #1064 T3: `ahub specs stamp <id-or-document>... [--yes]`, a person's record that they reviewed a spec or stamped document against HEAD.
+ * Person only, three ways: main.ts refuses any agent identity before this runs (the command is `console` class, and `--live-test` delegation is refused for it too), this refuses
+ * a run without a terminal even with --yes, and nothing here talks to the hub. It shows what it would write (the old and new stamp per document), asks, and then changes only the
+ * `verified-against` line of a spec, or the `verifiedAgainst` value of a stamps-file entry, keeping every other byte. It is refused, writing nothing, while a document's covered
+ * paths have uncommitted changes. The new stamp is the full HEAD SHA, so it is an ancestor of HEAD.
+ */
+export async function runSpecsStamp(args: readonly string[], root: string, config: SpecsConfig, terminal: SpecsStampTerminal, io: SpecsOutput = output): Promise<number> {
+  const targets: string[] = [];
+  let yes = false;
+  for (const arg of args) {
+    if (arg === "--yes" && !yes) yes = true;
+    else if (!arg.startsWith("-")) targets.push(arg);
+    else { io.error(STAMP_USAGE); return 1; }
+  }
+  if (!targets.length) { io.error(STAMP_USAGE); return 1; }
+  if (!terminal.isTTY) {
+    io.error("specs: stamping records a person's review and needs a terminal, even with --yes; run ahub specs stamp in your own terminal, or in ahub console; nothing was written");
+    return 1;
+  }
+  try {
+    const engine = new SpecsEngine(root, config);
+    const plan = engine.stampPlan(targets);
+    if (plan.refusals.length) {
+      for (const refusal of plan.refusals) io.error(terminalText(`specs: ${refusal}`));
+      io.error("specs: nothing was written");
+      return 1;
+    }
+    const short = (sha: string | null) => sha === null ? "none" : sha.slice(0, 12);
+    io.out(terminalText(`stamp against HEAD ${plan.head.slice(0, 12)}:`));
+    for (const row of plan.rows) io.out(terminalText(`  ${row.path}${row.document ? ` (${row.document})` : ""}: ${short(row.from)} -> ${short(row.to)}${row.from === row.to ? " (already this stamp)" : ""}`));
+    const changing = plan.rows.filter(row => row.from !== row.to);
+    if (!changing.length) { io.out("specs: every named document already holds this stamp; nothing to write"); return 0; }
+    // Every file's new bytes are made before anyone is asked, so a document that cannot be stamped is refused up front and no file is written for it, and what the person approves is
+    // exactly what is written. `original` is what the new bytes were made from.
+    const prepared = prepareStamps(engine.rootPath, changing);
+    if (typeof prepared === "string") { io.error(terminalText(`specs: ${prepared}; nothing was written`)); return 1; }
+    if (!yes && !await terminal.ask(`Record that you reviewed ${changing.length === 1 ? "this document" : `these ${changing.length} documents`} against HEAD ${plan.head.slice(0, 12)}?`)) {
+      io.out("specs: not stamped; nothing was written");
+      return 0;
+    }
+    // The answer may have taken minutes. Revalidate what the person was shown before any write: HEAD, every target's plan row (so a covered path that became dirty is refused), and each
+    // file's bytes. Any difference refuses the whole run.
+    const again = engine.stampPlan(targets);
+    const changed = again.refusals.length ? again.refusals.map(refusal => `specs: ${refusal}`)
+      : again.head !== plan.head || JSON.stringify(again.rows) !== JSON.stringify(plan.rows) ? ["specs: HEAD or a document's covered paths changed while you were deciding"]
+      : prepared.filter(file => !readFileSync(file.absolute).equals(file.original)).map(file => `specs: ${file.path} changed while you were deciding`);
+    if (changed.length) {
+      for (const line of changed) io.error(terminalText(line));
+      io.error("specs: nothing was written; review the current state and run ahub specs stamp again");
+      return 1;
+    }
+    // ponytail: a change in the instant between this recheck and the renames below is not seen; each rename is atomic and the diff is the person's to review before committing, so there is no lock. A lock file if two people stamp one checkout.
+    for (const file of prepared) writeAtomic(file.absolute, file.next, file.mode);
+    io.out(`specs: stamped ${changing.length} document${changing.length === 1 ? "" : "s"} at ${plan.head.slice(0, 12)}; review the diff and commit it`);
+    return 0;
+  } catch (error) {
+    io.error(terminalText(`specs: ${error instanceof Error ? error.message : "stamping unavailable"}; check the repository and specs configuration, then run ahub specs stamp again`));
     return 1;
   }
 }

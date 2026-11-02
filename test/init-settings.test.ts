@@ -53,7 +53,7 @@ test("every flag of the table writes a different key in the right file, and --me
   expect(p.json(cwd, "config.local.json").start.agents).toEqual([]);
   expect(p.text(cwd, "sdlc.toml")).toBe('mode = "advise"\n');
   // The table lists exactly the flags the CLI owns, so a row added later is reachable and tested through the same path.
-  expect(INIT_SETTING_FLAGS.slice().sort()).toEqual(["--agents", "--autonomy", "--coordination", "--memory", "--no-memory", "--no-pi", "--no-snapshots", "--pi", "--sdlc", "--snapshots"].sort());
+  expect(INIT_SETTING_FLAGS.slice().sort()).toEqual(["--agents", "--autonomy", "--coordination", "--memory", "--no-memory", "--no-pi", "--no-snapshots", "--no-specs", "--pi", "--sdlc", "--snapshots", "--spec-review", "--specs"].sort());
   expect(new Set(INIT_SETTINGS.map(row => row.id)).size).toBe(INIT_SETTINGS.length);
 });
 
@@ -345,7 +345,7 @@ test("the table is the extension point: each row names its flag, file, key path 
     expect(row.path.length).toBeGreaterThan(0);
     expect(row.allowed.length).toBeGreaterThan(0);
   }
-  expect(INIT_SETTINGS.map(row => row.id)).toEqual(["start.agents", "sdlc.mode", "coordination", "memory.enabled", "snapshots.enabled", "pi.enabled"]);
+  expect(INIT_SETTINGS.map(row => row.id)).toEqual(["start.agents", "sdlc.mode", "coordination", "memory.enabled", "snapshots.enabled", "specs.enabled", "specs.review", "pi.enabled"]);
 });
 
 test("planInit and initSettingRows agree, and neither writes (#1065 AC1)", () => {

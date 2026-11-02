@@ -102,7 +102,7 @@ import { armRuns, benchCompare, benchCsv, benchReport, formatCompare, formatRepo
 import { benchPreflight, defaultIo, runBench } from "./bench.ts";
 import { ADDONS, isAddon, type AddonName } from "../hub/tooling.ts";
 import { goalCommand, memoryCommand, memoryStaleAnchorsCommand } from "./memory.ts";
-import { runSpecs } from "./specs.ts";
+import { runSpecs, runSpecsStamp } from "./specs.ts";
 import { formatMemoryStaleAnchors } from "../hub/memory-stale-anchors.ts";
 import { AGENT_MEM_VERSION, assertAgentMemVersion, selectedMemoryProfile } from "../hub/memory-profile.ts";
 import { checkMemoryProfiles, formatMemoryProfileCheck } from "../hub/memory-profile-check.ts";
@@ -2407,7 +2407,14 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (options.json) return console.log(JSON.stringify(data, null, 2));
     printOutput(renderReport(data, options.columns, Date.now(), by >= 0), options.color);
   },
-  specs: () => { process.exitCode = runSpecs(args, cwd, loadConfig(cwd).specs); },
+  specs: async () => {
+    if (args[0] !== "stamp") { process.exitCode = runSpecs(args, cwd, loadConfig(cwd).specs); return; }
+    // #1064 T3: person only. An agent identity never gets here (stamp is a `console` command in classifyPeerCommand); runSpecsStamp also refuses a run with no terminal.
+    const rl = process.stdin.isTTY && process.stdout.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+    try {
+      process.exitCode = await runSpecsStamp(args.slice(1), cwd, loadConfig(cwd).specs, { isTTY: !!rl, ask: async question => /^y(es)?$/i.test((await rl!.question(`${question} [y/N] `)).trim()) });
+    } finally { rl?.close(); }
+  },
   usage: async () => {
     const options = outputOptions();
     const rest = outputArguments();
