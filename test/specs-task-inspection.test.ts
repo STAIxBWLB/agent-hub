@@ -1,0 +1,219 @@
+import { afterEach, expect, test } from "bun:test";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { hubGitSync } from "../src/hub/git.ts";
+import { realPath } from "../src/hub/project.ts";
+import { parseSpecsConfig, SpecsEngine } from "../src/hub/specs.ts";
+import { SpecTaskInspector } from "../src/hub/specs-task.ts";
+import { Board } from "../src/hub/board.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { USER } from "../src/hub/envelope.ts";
+import { loadRouting } from "../src/hub/routing.ts";
+import { Tasks } from "../src/hub/tasks.ts";
+
+const roots: string[] = [];
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+function repo() {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-spec-head-"))); roots.push(root);
+  const git = (...args: string[]) => {
+    const result = hubGitSync(["-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", ...args], { encoding: "utf8", timeout: 5000 });
+    if (result.status !== 0) throw new Error(`fixture git ${args[0]} failed`);
+    return result.stdout.trim();
+  };
+  git("init", "-q"); mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src/bus.ts"), "export const bus = 1;\n");
+  writeFileSync(join(root, "src/other.ts"), "export const other = 1;\n");
+  git("add", "."); git("commit", "-qm", "source baseline");
+  const baseline = git("rev-parse", "HEAD");
+  const spec = (scope = "src/bus.ts", type = "goal") => `---\nid: bus\ntype: ${type}\ntitle: Bus\npaths: [${scope}]\nverified-against: ${baseline}\n---\nBus design.\n`;
+  return { root, git, baseline, spec };
+}
+
+test("submitted-head coverage ignores the daemon checkout and dirty spec edits", () => {
+  const { root, git, spec } = repo();
+  writeFileSync(join(root, "bus.md"), spec()); git("add", "."); git("commit", "-qm", "main design");
+  const main = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "src/bus.ts"), "export const bus = 2;\n"); git("add", "."); git("commit", "-qm", "branch source change");
+  const submitted = git("rev-parse", "HEAD");
+  git("checkout", "-q", "--detach", main);
+  writeFileSync(join(root, "bus.md"), spec("src/other.ts"));
+  const inspector = new SpecTaskInspector(root, () => parseSpecsConfig(undefined));
+  expect(inspector.notice(["src/bus.ts"])).toBeUndefined();
+  const report = inspector.inspect(submitted, [{ path: "src/bus.ts", status: "M" }], { complete: true });
+  expect(report).toMatchObject({ head: submitted, complete: true, errors: 0, unchanged: [{ id: "bus", path: "bus.md", title: "Bus" }], changed: [] });
+  const check = new SpecsEngine(root, parseSpecsConfig(undefined), { commit: submitted }).check();
+  expect(check.freshness[0]).toMatchObject({ state: "stale", commitsSince: 1, dirty: false });
+  expect(git("rev-parse", "HEAD")).toBe(main);
+});
+
+test("branch-added spec updates and schema errors are read from the same submitted tree", () => {
+  const { root, git, baseline, spec } = repo();
+  writeFileSync(join(root, "bus.md"), spec("src/bus.ts", "invalid-type"));
+  writeFileSync(join(root, "src/bus.ts"), "export const bus = 2;\n");
+  git("add", "."); git("commit", "-qm", "submitted invalid design");
+  const head = git("rev-parse", "HEAD"); git("checkout", "-q", "--detach", baseline);
+  const inspector = new SpecTaskInspector(root, () => parseSpecsConfig(undefined));
+  expect(inspector.status()).toBeUndefined();
+  const report = inspector.inspect(head, [{ path: "src/bus.ts", status: "M" }, { path: "bus.md", status: "A" }], { complete: true });
+  expect(report?.errors).toBeGreaterThan(0);
+  expect(report).toMatchObject({ head, complete: true, unchanged: [], changed: [{ id: "bus", path: "bus.md", title: "Bus" }] });
+  expect(existsSync(join(root, "bus.md"))).toBe(false);
+});
+
+test("unknown changed-file evidence cannot produce an acknowledged complete report", () => {
+  const { root, git, spec } = repo();
+  writeFileSync(join(root, "bus.md"), spec()); git("add", "."); git("commit", "-qm", "design");
+  const head = git("rev-parse", "HEAD"), inspector = new SpecTaskInspector(root, () => parseSpecsConfig(undefined));
+  const report = inspector.inspect(head, undefined, { complete: false, acks: [{ id: "bus", reason: "public reason" }] });
+  expect(report).toMatchObject({ head, complete: false, unchanged: [], changed: [] });
+  expect(inspector.inspect("", undefined, { complete: false })).toBeUndefined();
+  expect(inspector.inspect("a".repeat(40), undefined, { complete: false })?.complete).toBe(false);
+});
+
+test("empty projects and effective off switches are quiet while explicit reads still work", () => {
+  const { root, git, baseline, spec } = repo();
+  let config = parseSpecsConfig(undefined);
+  const inspector = new SpecTaskInspector(root, () => config);
+  expect(inspector.inspect(baseline, undefined, { complete: false })).toBeUndefined();
+  expect(inspector.status()).toBeUndefined();
+  writeFileSync(join(root, "bus.md"), spec()); git("add", "."); git("commit", "-qm", "design");
+  const head = git("rev-parse", "HEAD");
+  expect(inspector.notice(["src/bus.ts"])?.specs[0]?.id).toBe("bus");
+  config = { ...config, enabled: false };
+  expect(inspector.notice(["src/bus.ts"])).toBeUndefined(); expect(inspector.status()).toBeUndefined();
+  expect(inspector.inspect(head, [], { complete: true })).toBeUndefined();
+  expect(inspector.read("check", []).specCount).toBe(1);
+  config = { ...config, enabled: true, review: "off" };
+  expect(inspector.inspect(head, [], { complete: true })).toBeUndefined();
+  expect(inspector.read("covers", ["src/bus.ts"]).specs[0]?.id).toBe("bus");
+});
+
+test("committed symlink specs are skipped without reading their targets", () => {
+  const { root, git, spec } = repo();
+  const outside = realPath(mkdtempSync(join(tmpdir(), "ahub-spec-target-"))); roots.push(outside);
+  writeFileSync(join(outside, "secret.md"), spec()); symlinkSync(join(outside, "secret.md"), join(root, "linked.md"));
+  git("add", "."); git("commit", "-qm", "symlink source");
+  const report = new SpecsEngine(root, parseSpecsConfig(undefined), { commit: git("rev-parse", "HEAD") }).check();
+  expect(report).toMatchObject({ specCount: 0, errors: 0, items: [] });
+});
+
+test("committed scope matching excludes files only present in the daemon index", () => {
+  const { root, git, spec } = repo();
+  writeFileSync(join(root, "bus.md"), spec("src/future.ts")); git("add", "."); git("commit", "-qm", "invalid submitted scope");
+  const submitted = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "src/future.ts"), "export const future = true;\n"); git("add", ".");
+  const check = new SpecsEngine(root, parseSpecsConfig(undefined), { commit: submitted }).check();
+  expect(check.items.some(item => item.code === "invalid-paths")).toBe(true);
+});
+
+test("missing-block hints distinguish absence from unsafe instruction files", () => {
+  const { root } = repo();
+  const inspector = new SpecTaskInspector(root, () => parseSpecsConfig(undefined));
+  expect(inspector.missingBlock()).toBe(true);
+  writeFileSync(join(root, "AGENTS.md"), "# Project instructions\n");
+  expect(inspector.missingBlock()).toBe(true);
+  writeFileSync(join(root, "AGENTS.md"), "<!-- AGENT_HUB_SPECS:BEGIN -->\nRead specs.\n<!-- AGENT_HUB_SPECS:END -->\n");
+  expect(inspector.missingBlock()).toBe(false);
+  writeFileSync(join(root, "AGENTS.md"), "x".repeat(257 * 1024));
+  expect(inspector.missingBlock()).toBeUndefined();
+  rmSync(join(root, "AGENTS.md")); symlinkSync(join(root, "src/bus.ts"), join(root, "AGENTS.md"));
+  expect(inspector.missingBlock()).toBeUndefined();
+});
+
+
+test("commitless and known empty changes stay quiet in report and require, even with stamps configured", () => {
+  const { root, git, spec } = repo();
+  writeFileSync(join(root, "bus.md"), spec()); git("add", "."); git("commit", "-qm", "design");
+  for (const review of ["report", "require"] as const) {
+    const inspector = new SpecTaskInspector(root, () => parseSpecsConfig({ review, stamps_file: "missing-stamps.json" }));
+    for (const head of ["", "main", "not-a-sha"]) expect(inspector.inspect(head, undefined, { complete: false })).toBeUndefined();
+    expect(inspector.inspect(git("rev-parse", "HEAD"), [], { complete: true })).toBeUndefined();
+    expect(inspector.inspect(git("rev-parse", "HEAD"), undefined, { complete: false })?.complete).toBe(false);
+  }
+});
+
+test("pre-existing graph errors are reported only when the task touches covered source or a spec", () => {
+  const { root, git, spec } = repo();
+  writeFileSync(join(root, "bus.md"), spec().replace("title: Bus\n", "")); git("add", "."); git("commit", "-qm", "invalid design");
+  const head = git("rev-parse", "HEAD"), inspector = new SpecTaskInspector(root, () => parseSpecsConfig(undefined));
+  expect(inspector.inspect(head, [{ path: "src/other.ts", status: "M" }], { complete: true })).toBeUndefined();
+  expect(inspector.inspect(head, [{ path: "src/bus.ts", status: "M" }], { complete: true })?.errors).toBeGreaterThan(0);
+  expect(inspector.inspect(head, [{ path: "bus.md", status: "M" }], { complete: true })?.errors).toBeGreaterThan(0);
+});
+
+test("committed Markdown reads are batched and unchanged blobs are reused across heads", () => {
+  const { root, git } = repo();
+  // Unique fixture bodies keep the process-wide cache cold regardless of test order.
+  for (let index = 0; index < 200; index++) writeFileSync(join(root, `note-${index}.md`), `# Note ${index} ${root}\n일반 문서 ${index}\n`);
+  git("add", "."); git("commit", "-qm", "ordinary Markdown");
+  const first = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "src/bus.ts"), "export const bus = 2;\n"); git("add", "."); git("commit", "-qm", "source only");
+  const second = git("rev-parse", "HEAD");
+  const bin = join(root, "bin"), calls = join(root, "git-calls"), original = process.env.PATH, actual = Bun.which("git")!;
+  mkdirSync(bin);
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  const shim = join(bin, "git");
+  writeFileSync(shim, ["#!/bin/sh", `printf '%s ' \"$@\" >> ${quote(calls)}`, `printf '\\n' >> ${quote(calls)}`, `exec ${quote(actual)} \"$@\"`, ""].join("\n"));
+  chmodSync(shim, 0o755);
+  spawnSync(shim, ["--version"], { stdio: "ignore" }); writeFileSync(calls, "");
+  process.env.PATH = `${bin}:${original}`;
+  try {
+    const config = parseSpecsConfig(undefined);
+    expect(new SpecsEngine(root, config, { commit: first }).check()).toMatchObject({ specCount: 0, errors: 0, truncated: false });
+    const initialCalls = readFileSync(calls, "utf8").trim().split("\n");
+    expect(initialCalls.filter(line => /cat-file --batch(?: |$)/.test(line))).toHaveLength(1);
+    expect(initialCalls.filter(line => /cat-file --batch-check(?: |$)/.test(line))).toHaveLength(1);
+    expect(initialCalls.some(line => line.includes("cat-file blob "))).toBe(false);
+    writeFileSync(calls, "");
+    expect(new SpecsEngine(root, config, { commit: second }).check()).toMatchObject({ specCount: 0, errors: 0, truncated: false });
+    const nextCalls = readFileSync(calls, "utf8");
+    expect(nextCalls).not.toContain("cat-file --batch");
+    expect(nextCalls).not.toContain("cat-file blob ");
+  } finally { process.env.PATH = original; }
+});
+
+test("batched binary boundaries preserve non-ASCII spec text and cached diagnostic paths after rename", () => {
+  const { root, git, spec } = repo();
+  writeFileSync(join(root, "old.md"), spec().replace("title: Bus", "title: 버스 설계").replace("Bus design.", "설계 본문 [[없는대상]]"));
+  // An invalid header diagnostic includes its source path and must follow an object-id cache hit.
+  writeFileSync(join(root, "invalid.md"), spec().replace("title: Bus", "title: 버스 설계\n  nested: invalid"));
+  git("add", "."); git("commit", "-qm", "non-ASCII design");
+  const first = git("rev-parse", "HEAD"), config = parseSpecsConfig(undefined);
+  expect(new SpecsEngine(root, config, { commit: first }).list().specs.some(row => row.title === "버스 설계")).toBe(true);
+  git("mv", "invalid.md", "renamed.md"); git("commit", "-qm", "rename invalid design");
+  const report = new SpecsEngine(root, config, { commit: git("rev-parse", "HEAD") }).check();
+  expect(report.items.some(row => row.code === "invalid-frontmatter" && row.path === "renamed.md" && row.message.startsWith("renamed.md:"))).toBe(true);
+  expect(report.items.some(row => row.path === "invalid.md" || row.message.startsWith("invalid.md:"))).toBe(false);
+});
+
+
+test("a covering spec missing its title completes through the real inspector and Board with the schema error intact", async () => {
+  const { root, git, spec } = repo();
+  writeFileSync(join(root, "bus.md"), spec().replace("title: Bus\n", ""));
+  writeFileSync(join(root, "src/bus.ts"), "export const bus = 2;\n");
+  git("add", "."); git("commit", "-qm", "covered change with an invalid design title");
+  const head = git("rev-parse", "HEAD");
+  for (const review of ["report", "require"] as const) {
+    const config = parseSpecsConfig({ review }), inspector = new SpecTaskInspector(root, () => config);
+    const board = new Board(join(root, `${review}.db`));
+    try {
+      const tasks = new Tasks({ board, bus: new Bus({ batchMs: 0 }), cwd: root, project: "fixture",
+        routing: () => loadRouting(root), notify: () => {}, piiScreen: async () => ({ label: "clear", ms: 0 }), specsConfig: () => config,
+        reviewBrief: () => ({ head, base: "main", mergeBase: head, reviewable: [{ path: "src/bus.ts", status: "M" }], excluded: [], withheld: 0, rules: [], rulesMissing: [], ruleGroups: [], unlisted: [] }),
+        inspectSpecs: async (_task, submitted, files, acks) => inspector.inspect(submitted, files, { complete: files !== undefined, acks }),
+      });
+      const proposed = board.propose(USER, { title: "change bus", class: "implement", refs: { commit: head, paths: ["src/bus.ts"] } });
+      const source = board.update(proposed.id, "codex", "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });
+      const done = await tasks.done("codex", source.id, "changed the bus", undefined, undefined,
+        review === "require" ? [{ id: "bus", reason: "The implementation preserves the contract." }] : undefined);
+      expect(done.state).toBe("in_review");
+      const report = done.history.findLast(entry => entry.event === "done")?.specReport;
+      expect(report?.errors).toBeGreaterThan(0);
+      expect(report?.unchanged).toMatchObject([{ id: "bus", title: "bus" }]);
+      expect(tasks.resultLine(done)).toContain(`spec errors: ${report!.errors}`);
+      expect(tasks.publicView(done).specReport).toMatchObject({ errors: report!.errors, unchanged: [{ id: "bus", title: "bus" }] });
+    } finally { board.close(); }
+  }
+});

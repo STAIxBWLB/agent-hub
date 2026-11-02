@@ -11,8 +11,12 @@ export { DEFAULT_SPECS_CONFIG, parseSpecsConfig, type SpecsConfig, type SpecsRev
 const MAX_FILES = 2000;
 const MAX_FRONTMATTER_BYTES = 8 * 1024;
 const MAX_STAMPS_FILE_BYTES = 4 * 1024 * 1024;
+// ponytail: committed bodies stop at 4 MiB; stream bounded headers/body links when larger specs are needed.
+const MAX_COMMITTED_SPEC_BYTES = 4 * 1024 * 1024;
 const MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 2000;
+const MAX_PARSED_BLOB_CACHE_BYTES = 16 * 1024 * 1024;
+const MAX_BLOB_BATCH_BYTES = 8 * 1024 * 1024;
 const MAX_TRACKED_PATHS_PER_SCOPE = 4096;
 const MAX_REPORT_ITEMS = 500;
 const GIT_SAFE_OPTIONS = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.pager=cat", "-c", "credential.helper=", "-c", "core.askpass="];
@@ -100,6 +104,30 @@ interface CachedFile {
   truncated: boolean;
   node?: SpecNode;
   items: SpecsDiagnostic[];
+}
+
+// Immutable object ids allow unchanged Markdown (including non-specs) to survive
+// submitted-head/engine rotation. Bound retained parsed data, never whole bodies.
+const committedCandidates = new Map<string, { path: string; read: CachedFile; weight: number }>();
+let committedCandidateBytes = 0;
+function cachedCandidate(oid: string, path: string): CachedFile | undefined {
+  const cached = committedCandidates.get(oid);
+  if (!cached) return undefined;
+  committedCandidates.delete(oid); committedCandidates.set(oid, cached);
+  return { ...cached.read, node: cached.read.node ? { ...cached.read.node, path } : undefined,
+    items: cached.read.items.map(diagnostic => ({ ...diagnostic, path,
+      message: diagnostic.message.startsWith(`${cached.path}:`) ? `${path}:${diagnostic.message.slice(cached.path.length + 1)}` : diagnostic.message })) };
+}
+function cacheCandidate(oid: string, path: string, read: CachedFile): void {
+  const weight = Math.max(512, Buffer.byteLength(JSON.stringify(read)));
+  if (weight > MAX_PARSED_BLOB_CACHE_BYTES) return;
+  const previous = committedCandidates.get(oid);
+  if (previous) { committedCandidateBytes -= previous.weight; committedCandidates.delete(oid); }
+  committedCandidates.set(oid, { path, read, weight }); committedCandidateBytes += weight;
+  while (committedCandidateBytes > MAX_PARSED_BLOB_CACHE_BYTES) {
+    const oldest = committedCandidates.keys().next().value!;
+    committedCandidateBytes -= committedCandidates.get(oldest)!.weight; committedCandidates.delete(oldest);
+  }
 }
 
 interface ScanResult {
@@ -358,10 +386,125 @@ export class SpecsEngine {
   private readonly config: SpecsConfig;
   private readonly cache = new Map<string, CachedFile>();
   private readonly pathspecCache = new Map<string, string[]>();
+  private readonly commit?: string;
+  private treeLoaded = false;
+  private tree?: Map<string, { mode: string; oid: string }>;
+  private committedCheck?: SpecsCheckReport;
+  private coverageUnavailable = false;
 
-  constructor(root: string, config: SpecsConfig) {
+  constructor(root: string, config: SpecsConfig, options: { commit?: string } = {}) {
     this.root = realPath(root);
     this.config = parseSpecsConfig(config);
+    if (options.commit !== undefined) {
+      if (!/^[0-9a-f]{40}$/.test(options.commit) || this.git(["cat-file", "-e", `${options.commit}^{commit}`]).status !== 0) throw new Error("spec snapshot commit is unavailable; submit an existing full commit SHA");
+      this.commit = options.commit;
+    }
+  }
+
+  private head(): string { return this.commit ?? "HEAD"; }
+
+  private snapshotTree(): Map<string, { mode: string; oid: string }> | undefined {
+    if (this.treeLoaded) return this.tree;
+    const result = this.git(["ls-tree", "-r", "-z", "--full-tree", this.commit!]);
+    if (result.status !== 0) return undefined;
+    const tree = new Map<string, { mode: string; oid: string }>();
+    for (const entry of splitNul(result.stdout)) {
+      const match = /^([0-7]{6}) (?:blob|commit) ([0-9a-f]{40})\t([\s\S]+)$/.exec(entry);
+      if (!match) return undefined;
+      tree.set(match[3]!, { mode: match[1]!, oid: match[2]! });
+    }
+    this.tree = tree;
+    this.treeLoaded = true;
+    return tree;
+  }
+
+  private readCommittedCandidate(path: string): CachedFile | undefined {
+    const entry = this.snapshotTree()?.get(path);
+    if (!entry || !["100644", "100755"].includes(entry.mode) || !isSafeRepoPath(path)) return undefined;
+    const cached = this.cache.get(path); if (cached) return cached;
+    const shared = cachedCandidate(entry.oid, path);
+    if (shared) { this.cache.set(path, shared); return shared; }
+    // A batch failure stays unknown; never fall back to one process per file.
+    return this.parseCommittedCandidate(path, Buffer.alloc(0), true);
+  }
+
+  private parseCommittedCandidate(path: string, bytes: Buffer, incomplete: boolean): CachedFile {
+    const parsed = parseHeader(bytes.subarray(0, MAX_FRONTMATTER_BYTES + 16).toString("utf8"), path);
+    const candidate = Object.hasOwn(parsed.fields, "id") && Object.hasOwn(parsed.fields, "type");
+    const items = candidate ? [...parsed.items] : [];
+    if (incomplete && (!bytes.length || candidate)) items.push(item("error", "snapshot-unavailable", `${path}: committed spec read is incomplete`, "the Git blob exceeded the 4 MiB body cap or could not be read", "shorten the spec or narrow specs.roots and retry", { path }));
+    let node: SpecNode | undefined;
+    if (candidate) {
+      if (!parsed.closing && !parsed.tooLarge) items.push(item("error", "frontmatter-unterminated", `${path}: spec frontmatter is incomplete`, "the opening delimiter has no closing delimiter", "close the frontmatter delimiter within 8 KiB", { path }));
+      const scalar = (key: string) => typeof parsed.fields[key] === "string" ? parsed.fields[key] as string : undefined;
+      const list = (key: string) => Array.isArray(parsed.fields[key]) ? parsed.fields[key] as string[] : [];
+      const bodyLinks = parsed.closing && !incomplete ? [...new Set([...bytes.subarray(parsed.bodyOffset).toString("utf8").matchAll(/\[\[([^\]\r\n]{1,256})\]\]/g)].map(match => Buffer.from(match[1]!.trim()).toString("utf8")).filter(Boolean))] : [];
+      node = { path, id: scalar("id"), type: scalar("type"), title: scalar("title"), status: scalar("status"), parent: scalar("parent"), dependsOn: list("depends-on"), references: list("references"), implements: list("implements"), supersededBy: scalar("superseded-by"), covers: list("covers"), tags: list("tags"), paths: list("paths"), verifiedAgainst: scalar("verified-against"), bodyLinks, ...(!parsed.closing ? { frontmatterIncomplete: true } : {}) };
+    }
+    const read = { size: bytes.length, mtimeMs: 0, dev: 0, ino: 0, node, items, truncated: candidate && (incomplete || parsed.tooLarge) || incomplete && !bytes.length };
+    return read;
+  }
+
+  private gitBatch(args: string[], oids: readonly string[]): Buffer | undefined {
+    try {
+      const result = hubGitSync(["-C", this.root, ...GIT_SAFE_OPTIONS, "cat-file", ...args], {
+        input: `${oids.join("\n")}\n`, encoding: "latin1", timeout: GIT_TIMEOUT_MS, maxBuffer: MAX_GIT_OUTPUT_BYTES,
+      });
+      return result.status === 0 ? Buffer.from(result.stdout ?? "", "latin1") : undefined;
+    } catch { return undefined; }
+  }
+
+  private warmCommittedCandidates(files: readonly string[]): void {
+    const tree = this.snapshotTree();
+    const cold = new Map<string, string[]>();
+    for (const path of files) {
+      const entry = tree?.get(path);
+      if (!entry || !isSafeRepoPath(path) || !["100644", "100755"].includes(entry.mode) || this.cache.has(path)) continue;
+      const cached = cachedCandidate(entry.oid, path);
+      if (cached) { this.cache.set(path, cached); continue; }
+      const paths = cold.get(entry.oid) ?? []; paths.push(path); cold.set(entry.oid, paths);
+    }
+    if (!cold.size) return;
+    // Obtain sizes first so each binary batch fits the output bound, even when a
+    // repository has thousands of large Markdown files or adversarial blobs.
+    const sizes = this.gitBatch(["--batch-check"], [...cold.keys()]);
+    if (!sizes) return;
+    const lines = sizes.toString("ascii").trimEnd().split("\n");
+    if (lines.length !== cold.size) return;
+    const rows: { oid: string; size: number }[] = [];
+    let index = 0;
+    for (const oid of cold.keys()) {
+      const match = /^([0-9a-f]{40}) blob ([0-9]+)$/.exec(lines[index++]!);
+      if (!match || match[1] !== oid) return;
+      const size = Number(match[2]);
+      if (!Number.isSafeInteger(size)) return;
+      if (size > MAX_COMMITTED_SPEC_BYTES) continue; // Unknown, without loading an oversized object.
+      rows.push({ oid, size });
+    }
+    let offset = 0;
+    while (offset < rows.length) {
+      const batch: typeof rows = []; let bytes = 0;
+      while (offset < rows.length && bytes + rows[offset]!.size + 128 <= MAX_BLOB_BATCH_BYTES) {
+        const row = rows[offset++]!; batch.push(row); bytes += row.size + 128;
+      }
+      const output: Buffer | undefined = this.gitBatch(["--batch"], batch.map(row => row.oid));
+      if (!output) continue;
+      let cursor: number = 0;
+      for (const row of batch) {
+        const end: number = output.indexOf(10, cursor);
+        if (end < 0 || output.subarray(cursor, end).toString("ascii") !== `${row.oid} blob ${row.size}`) break;
+        const start: number = end + 1, next: number = start + row.size;
+        if (next >= output.length || output[next] !== 10) break;
+        const paths = cold.get(row.oid)!;
+        const parsed = this.parseCommittedCandidate(paths[0]!, output.subarray(start, next), false);
+        cacheCandidate(row.oid, paths[0]!, parsed);
+        for (const path of paths) this.cache.set(path, path === paths[0] ? parsed : { ...parsed,
+          node: parsed.node ? { ...parsed.node, path } : undefined,
+          items: parsed.items.map(diagnostic => ({ ...diagnostic, path,
+            message: diagnostic.message.startsWith(`${paths[0]}:`) ? `${path}:${diagnostic.message.slice(paths[0]!.length + 1)}` : diagnostic.message })) });
+        cursor = next + 1;
+      }
+    }
   }
 
   private git(args: string[], maxBuffer = MAX_GIT_OUTPUT_BYTES): { status: number | null; stdout: string; stderr?: string; error?: { code?: string; message?: string } } {
@@ -378,6 +521,7 @@ export class SpecsEngine {
   }
 
   private readCandidate(path: string): CachedFile | undefined {
+    if (this.commit) return this.readCommittedCandidate(path);
     if (!isSafeRepoPath(path) || !path.toLowerCase().endsWith(".md")) return undefined;
     const absolute = resolve(this.root, path);
     const rel = relative(this.root, absolute);
@@ -426,8 +570,11 @@ export class SpecsEngine {
   }
 
   private scan(): ScanResult {
-    this.pathspecCache.clear();
-    const result = this.git(["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ...this.discoveryPathspecs()]);
+    this.coverageUnavailable = false;
+    if (!this.commit) this.pathspecCache.clear();
+    const tree = this.commit ? this.snapshotTree() : undefined;
+    const result = this.commit ? { status: tree ? 0 : 1, stdout: tree ? [...tree].filter(([path, entry]) => ["100644", "100755"].includes(entry.mode) && path.endsWith(".md") && (!this.config.roots.length || this.config.roots.some(root => path.startsWith(`${root}/`)))).map(([path]) => path).join("\0") : "", stderr: "committed spec tree unavailable", error: undefined }
+      : this.git(["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ...this.discoveryPathspecs()]);
     if (result.status !== 0) {
       return { files: [], nodes: [], items: [item("error", "discovery-unavailable", "spec discovery is unavailable", result.error?.message ?? result.stderr ?? "git ls-files failed", "check that this is a readable Git worktree", { path: this.root })], truncated: false };
     }
@@ -435,6 +582,7 @@ export class SpecsEngine {
     let truncated = discovered.length > MAX_FILES;
     const files = discovered.slice(0, MAX_FILES);
     const nodes: SpecNode[] = [], items: SpecsDiagnostic[] = [];
+    if (this.commit) this.warmCommittedCandidates(files);
     const seen = new Set(files);
     for (const old of this.cache.keys()) if (!seen.has(old)) this.cache.delete(old);
     for (const file of files) {
@@ -449,12 +597,13 @@ export class SpecsEngine {
   }
 
   private pathspecMatches(pathspec: string, trackedOnly: boolean): string[] {
-    const key = `${trackedOnly ? "tracked" : "all"}\0${pathspec}`;
+    const key = `${this.commit !== undefined || trackedOnly ? "tracked" : "all"}\0${pathspec}`;
     const cached = this.pathspecCache.get(key); if (cached) return cached;
     if (!isSafePathspec(pathspec)) return [];
-    const args = trackedOnly ? ["ls-files", "-z", "--", pathspec] : ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", pathspec];
+    const args = this.commit ? ["ls-files", `--with-tree=${this.commit}`, "-z", "--", pathspec] : trackedOnly ? ["ls-files", "-z", "--", pathspec] : ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", pathspec];
     const result = this.git(args);
-    const paths = result.status === 0 ? splitNul(result.stdout).sort(comparePath).slice(0, MAX_TRACKED_PATHS_PER_SCOPE) : [];
+    if (result.status !== 0) { this.coverageUnavailable = true; return []; }
+    const paths = result.status === 0 ? [...new Set(splitNul(result.stdout))].filter(path => !this.commit || this.snapshotTree()?.has(path)).sort(comparePath).slice(0, MAX_TRACKED_PATHS_PER_SCOPE) : [];
     this.pathspecCache.set(key, paths);
     return paths;
   }
@@ -506,6 +655,7 @@ export class SpecsEngine {
       const parent = byId.get(node.parent);
       if (parent && node.type && parent.type && ranks(node.type) !== undefined && ranks(parent.type) !== undefined && ranks(node.type)! <= ranks(parent.type)!) items.push(item("error", "rank", `${node.path}: ${node.type} must be below ${parent.type}`, "a child spec rank must be greater than its parent's rank", "move the spec under a lower-ranked parent or change its type", { path: node.path, id: node.id, relatedId: parent.id }));
     }
+    if (this.coverageUnavailable) items.push(item("error", "coverage-unavailable", "spec path coverage is unavailable", "Git could not read the submitted pathspec evidence", "check repository state and retry"));
     const counts = { errors: items.filter(entry => entry.severity === "error").length, warnings: items.filter(entry => entry.severity === "warning").length };
     return { items, byId, counts };
   }
@@ -549,16 +699,23 @@ export class SpecsEngine {
       });
       if (matches) result.push(coverSummary(node));
     }
+    if (this.coverageUnavailable && !analysis.items.some(row => row.code === "coverage-unavailable")) {
+      analysis.items.push(item("error", "coverage-unavailable", "spec path coverage is unavailable", "Git could not read pathspec evidence", "check repository state and retry"));
+      analysis.counts.errors++;
+    }
     return { specs: result, errors: analysis.counts.errors + invalid.length, truncated: scan.truncated || items.length > MAX_REPORT_ITEMS, items: boundedItems(items) };
   }
 
   check(options: { base?: string; requireFresh?: boolean } = {}): SpecsCheckReport {
+    if (this.commit && !options.base && this.committedCheck) return structuredClone(this.committedCheck);
     const scan = this.scan(), analysis = this.analyze(scan), items = [...analysis.items];
     const fresh = this.freshness(scan.nodes, items), freshness = fresh.rows;
     if (options.base) this.baseDrift(scan.nodes, options.base, items);
     const errors = items.filter(entry => entry.severity === "error").length;
     const warnings = items.filter(entry => entry.severity === "warning").length;
-    return { specCount: scan.nodes.length, errors, warnings, stale: freshness.filter(row => row.state === "stale").length, truncated: scan.truncated || fresh.truncated || items.length > MAX_REPORT_ITEMS, freshness, items: boundedItems(items) };
+    const report = { specCount: scan.nodes.length, errors, warnings, stale: freshness.filter(row => row.state === "stale").length, truncated: scan.truncated || fresh.truncated || items.length > MAX_REPORT_ITEMS, freshness, items: boundedItems(items) };
+    if (this.commit && !options.base && !report.errors && !report.truncated) this.committedCheck = structuredClone(report);
+    return report;
   }
 
   private freshness(nodes: SpecNode[], items: SpecsDiagnostic[]): { rows: SpecsFreshness[]; truncated: boolean } {
@@ -582,7 +739,7 @@ export class SpecsEngine {
     }
     const commit = this.git(["cat-file", "-e", `${stamp}^{commit}`]);
     if (commit.status !== 0) { items.push(item("error", "invalid-verified-against", `${path}: verified commit does not resolve`, "the stamp is missing or is not a commit", "set verified-against to an existing ancestor commit", { path, id, field: "verified-against" })); return "unknown"; }
-    const ancestor = this.git(["merge-base", "--is-ancestor", stamp, "HEAD"]);
+    const ancestor = this.git(["merge-base", "--is-ancestor", stamp, this.head()]);
     if (ancestor.status !== 0) {
       const nonancestor = ancestor.status === 1;
       items.push(item("error", "nonancestor-stamp", `${path}: verified commit is not an ancestor of HEAD`, nonancestor ? "the stamp belongs to another history" : "Git could not verify stamp ancestry", "stamp from an ancestor commit in this repository", { path, id, field: "verified-against" }));
@@ -595,7 +752,7 @@ export class SpecsEngine {
     const row: SpecsFreshness = { path, ...(id ? { id } : {}), state: "unknown", commitsSince: null, dirty: null };
     const stampState = this.validateStamp(path, id, stamp, items);
     if (stampState !== "valid") { row.state = stampState; return row; }
-    const count = this.git(["rev-list", "--count", `${stamp}..HEAD`, "--", ...paths]);
+    const count = this.git(["rev-list", "--count", `${stamp}..${this.head()}`, "--", ...paths]);
     const dirty = this.dirtiness(paths);
     if (count.status !== 0 || dirty === undefined) {
       items.push(item("error", "freshness-unavailable", `${path}: cannot compute source freshness`, "Git history or the working tree could not be read safely", "check repository state and retry the specs check", { path, id }));
@@ -613,6 +770,7 @@ export class SpecsEngine {
   }
 
   private dirtiness(paths: string[]): boolean | undefined {
+    if (this.commit) return false;
     const staged = this.git(["diff-index", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--", ...paths]);
     if (staged.status === 1) return true;
     if (staged.status !== 0) return undefined;
@@ -646,6 +804,19 @@ export class SpecsEngine {
   }
 
   private readStampFile(path: string, items: SpecsDiagnostic[]): { rows: SpecsFreshness[]; truncated: boolean } {
+    if (this.commit) {
+      const entry = this.snapshotTree()?.get(path);
+      if (!entry || !["100644", "100755"].includes(entry.mode)) {
+        items.push(item("error", "stamps-unavailable", `${path}: configured committed stamps file is missing or not a regular file`, "the submitted tree has no regular stamps file", "add a schemaVersion 1 documents file or clear specs.stamps_file", { path }));
+        return { rows: [], truncated: false };
+      }
+      const result = this.git(["cat-file", "blob", entry.oid], MAX_STAMPS_FILE_BYTES);
+      if (result.status !== 0) {
+        items.push(item("error", "stamps-unavailable", `${path}: committed stamps file is unavailable`, "the blob exceeds 4 MiB or cannot be read", "reduce the stamps file or clear specs.stamps_file", { path }));
+        return { rows: [], truncated: true };
+      }
+      return this.parseStampFile(path, result.stdout, items);
+    }
     let info: Stats;
     try { info = this.safeStat(path); }
     catch (error) {
@@ -661,8 +832,13 @@ export class SpecsEngine {
       return { rows: [], truncated: true };
     }
     const absolute = resolve(this.root, path);
+    try { return this.parseStampFile(path, readFileSync(absolute, "utf8"), items); }
+    catch (error) { items.push(item("error", "stamps-invalid", `${path}: stamps file cannot be read`, errorText(error), "repair the stamps file or clear specs.stamps_file", { path })); return { rows: [], truncated: false }; }
+  }
+
+  private parseStampFile(path: string, text: string, items: SpecsDiagnostic[]): { rows: SpecsFreshness[]; truncated: boolean } {
     let manifest: unknown;
-    try { manifest = JSON.parse(readFileSync(absolute, "utf8")); }
+    try { manifest = JSON.parse(text); }
     catch (error) { items.push(item("error", "stamps-invalid", `${path}: stamps file cannot be parsed`, errorText(error), "repair the schemaVersion 1 documents object", { path })); return { rows: [], truncated: false }; }
     if (!isRecord(manifest) || manifest.schemaVersion !== 1 || !isRecord(manifest.documents)) {
       items.push(item("error", "stamps-invalid", `${path}: stamps file schema is invalid`, "expected schemaVersion 1 and a documents object", "repair the stamps file or clear specs.stamps_file", { path })); return { rows: [], truncated: false };
@@ -708,7 +884,10 @@ export class SpecsEngine {
     return lstatSync(current);
   }
 
-  private readableRegularFile(path: string): boolean { try { const stat = this.safeStat(path); return stat.isFile() && !stat.isSymbolicLink(); } catch { return false; } }
+  private readableRegularFile(path: string): boolean {
+    if (this.commit) return isSafeRepoPath(path) && ["100644", "100755"].includes(this.snapshotTree()?.get(path)?.mode ?? "");
+    try { const stat = this.safeStat(path); return stat.isFile() && !stat.isSymbolicLink(); } catch { return false; }
+  }
 
   private baseDrift(nodes: SpecNode[], base: string, items: SpecsDiagnostic[]): void {
     if (!base || base.length > 200 || base.startsWith("-") || /[\u0000-\u0020\u007f]/.test(base)) {
@@ -716,12 +895,12 @@ export class SpecsEngine {
     }
     const verifiedBase = this.git(["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`]);
     if (verifiedBase.status !== 0) { items.push(item("error", "base-unavailable", "cannot compare specs against base", "the requested base does not resolve to a commit", "check the branch or commit name and retry")); return; }
-    const diff = this.git(["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", `${base}..HEAD`, "--"]);
+    const diff = this.git(["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", `${base}..${this.head()}`, "--"]);
     if (diff.status !== 0) { items.push(item("error", "base-unavailable", "cannot compare specs against base", diff.stderr ?? "Git could not read the requested base", "check that the base exists and is reachable")); return; }
     const changed = new Set(splitNul(diff.stdout));
     for (const node of nodes) {
       if (!node.id || !node.paths.length || changed.has(node.path)) continue;
-      const scoped = this.git(["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", `${base}..HEAD`, "--", ...node.paths]);
+      const scoped = this.git(["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", `${base}..${this.head()}`, "--", ...node.paths]);
       if (scoped.status !== 0) continue;
       const touching = splitNul(scoped.stdout).filter(file => file !== node.path);
       if (touching.length) items.push(item("info", "paths-changed-spec-unchanged", `${node.path}: covered paths changed since ${base}, but the spec did not`, `${touching.slice(0, 20).join(", ")}${touching.length > 20 ? ", ..." : ""}`, "review the spec and update it in the same change when the design changed", { path: node.path, id: node.id }));

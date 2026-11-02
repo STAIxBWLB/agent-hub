@@ -204,11 +204,12 @@ test("the bundled MCP server publishes configured targets and enforces read-only
 
     const readOnly = await session("fixture-check");
     const names = (await readOnly.listTools()).tools.map(tool => tool.name);
-    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_capabilities", "hub_study_show", "hub_experiment_show"];   // #601: the one study tool that only reads. The three that write are not here, and the next line proves it
+    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_capabilities", "hub_study_show", "hub_experiment_show", "hub_specs"];   // #601: the one study tool that only reads. The three that write are not here, and the next line proves it
     expect(names.length).toBeGreaterThan(0);
     expect(names.every(name => allowed.includes(name))).toBe(true);
     expect(names).toContain("hub_review"); expect(names).toContain("hub_task_list");
     expect(names).toContain("hub_source_read");
+    expect(names).toContain("hub_specs");
     expect(names).toContain("hub_study_show"); expect(names).toContain("hub_experiment_show"); for (const writer of ["hub_study_draft", "hub_study_revise", "hub_study_handoff"]) expect(names).not.toContain(writer);
     const sources = new SourceRegistry(f.stateDir);
     const body = "public source through a read-only MCP client";
@@ -225,6 +226,12 @@ test("the bundled MCP server publishes configured targets and enforces read-only
     const listed = await readOnly.callTool({ name: "hub_task_list", arguments: {} });
     expect(listed.isError).not.toBe(true);
     expect(listed.content).toContainEqual({ type: "text", text: "[]" });
+    const beforeSpecs = await f.client.request({ t: "task", op: "hub_task_list", args: {} });
+    const specsRead = await readOnly.request({ method: "tools/call", params: { name: "hub_specs", arguments: { action: "covers", paths: ["src/hub/bus.ts"] } } }, CallToolResultSchema);
+    expect(specsRead.isError).not.toBe(true);
+    expect(specsRead.content.some(content => content.type === "text")).toBe(true);
+    const afterSpecs = await f.client.request({ t: "task", op: "hub_task_list", args: {} });
+    expect(JSON.parse(afterSpecs.text)).toEqual(JSON.parse(beforeSpecs.text));
     const before = await f.client.request({ t: "task", op: "hub_task_list", args: {} });
     // Bypass tool-list absence deliberately: the authenticated server/daemon must still refuse the mutation.
     const refused = await readOnly.request({ method: "tools/call", params: { name: "hub_task_propose", arguments: { title: "raw SDK mutation must not be recorded", class: "implement" } } }, CallToolResultSchema);

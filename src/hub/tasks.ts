@@ -64,7 +64,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type Scope, type Tier } from "@staix/agent-mem";
-import { parseClaimVerdict, claimListId, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type PlannerBinding } from "./board.ts";
+import { parseClaimVerdict, claimListId, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
@@ -75,7 +75,9 @@ import { realPath } from "./project.ts";
 import { TaskRepositories } from "./task-repository.ts";
 import { mainCheckoutWarning } from "./main-checkout.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
-import { coverageGap, renderReviewBrief, type ReviewBrief } from "./review-brief.ts";
+import { coverageGap, renderReviewBrief, renderSpecTaskReport, type BriefFile, type ReviewBrief } from "./review-brief.ts";
+import { DEFAULT_SPECS_CONFIG, type SpecsConfig } from "./specs-config.ts";
+import type { SpecsCheckReport, SpecsCoverReport } from "./specs.ts";
 import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, plannedStartPending, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
@@ -87,6 +89,15 @@ function requireLocalTaskPeer(peer: unknown): void {
 }
 
 export type TaskAssignmentRole = "owner" | "reviewer" | "planner";
+
+interface PreparedSpecInspection {
+  report?: SpecTaskReport;
+  policyKey: string;
+  repo?: string;
+  head: string;
+  privateTurn: boolean;
+  pii: boolean;
+}
 
 export interface ReleaseWindow { at: number; host: boolean; quota: boolean; idle: boolean; reasons: string[]; current?: () => boolean; close?: () => Promise<void>; }
 
@@ -134,6 +145,14 @@ export interface TasksDeps {
   /** #520: the review brief for a task's commit (git only, bounded); undefined when the task names no commit. */
   prepareReviewBrief?: (task: Task) => Promise<void>;
   reviewBrief?: (task: Task) => ReviewBrief | { unavailable: string } | undefined;
+  /** Current public coverage for a task's declared paths; absent when notices are disabled or no specs exist. */
+  specNotice?: (task: Task) => SpecsCoverReport | undefined;
+  /** Inspect spec metadata at a verified task head; undefined is authoritative quiet (no specs/stamps or review off). */
+  inspectSpecs?: (task: Task, head: string, changedFiles: readonly BriefFile[] | undefined, acks: readonly SpecAck[]) => Promise<SpecTaskReport | undefined>;
+  /** Effective shared and machine-local specs policy. */
+  specsConfig?: () => SpecsConfig;
+  /** Explicit, read-only inspection remains available when task notices are disabled. */
+  specsRead?: (action: "check" | "covers", paths: readonly string[]) => SpecsCheckReport | SpecsCoverReport;
   /** Host-verified existing symbols at this task's admitted completion head; never plan guesses. */
   memorySymbolNodes?: (task: Task) => MemorySymbolNodes | undefined;
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
@@ -906,6 +925,8 @@ export class Tasks {
     if (rest.sdlc?.redFirst && !this.publicMetadataText(JSON.stringify(rest.sdlc.redFirst))) {
       const { redFirst: _withheld, ...receipt } = rest.sdlc; rest.sdlc = receipt;
     }
+    const currentSpecReport = this.currentSpecReport(task);
+    const currentSpecEntry = currentSpecReport ? history.findLast(entry => entry.event === "done" || entry.event === "done (checking)") : undefined;
     const screenHistoryText = (text: string, field: string, withheld = false): string => !withheld && this.nameable(text) ? text : `[history ${field} withheld: ${this.whyWithheld(text)}; ahub task show ${task.id}]`;
     const publicHistory = (fullHistory ? history : history.slice(-5)).map(h => ({
       at: h.at, by: h.by, event: h.event,
@@ -933,16 +954,23 @@ export class Tasks {
       ...(h.planning ? { planning: { revision: h.planning.revision, fields: h.planning.fields, ...(h.planning.split ? { children: h.planning.split.children.map(child => child.id) } : {}) } } : {}),
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
+      ...(h === currentSpecEntry && currentSpecReport ? { specReport: currentSpecReport } : {}),
     }));
     const sets = this.reviewFindingSets(task), current = findingsForHead(sets, this.findingHead(task));
     const symbolRepository = codeSymbols && this.codeSymbolsRepository(task);
     const publicSymbols = codeSymbols && symbolRepository ? publicTaskCodeSymbols(codeSymbols, this.reviewHead(task), symbolRepository.key, this.publicMetadataText) : undefined;
     const handedOff = this.d.board.handoffOrigin(task.id);   // #604: where another project's handoff came from; two ids, never text
-    return { ...rest, ...(approvalBinding(task) ? { approval: approvalBinding(task) } : {}), ...(handedOff ? { handoffOrigin: { projectId: handedOff.projectId, peer: handedOff.peer, ...(handedOff.originTask === null ? {} : { task: handedOff.originTask }) } } : {}), ...(publicSymbols ? { codeSymbols: publicSymbols } : {}), ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
+    return { ...rest, ...(currentSpecReport ? { specReport: currentSpecReport } : {}), ...(approvalBinding(task) ? { approval: approvalBinding(task) } : {}), ...(handedOff ? { handoffOrigin: { projectId: handedOff.projectId, peer: handedOff.peer, ...(handedOff.originTask === null ? {} : { task: handedOff.originTask }) } } : {}), ...(publicSymbols ? { codeSymbols: publicSymbols } : {}), ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
-  resultLine(task: Task): string {
+  specReportText(task: Task, by?: PeerId): string {
+    if (by && this.d.privateTurn?.(by)) return "";
+    const report = this.currentSpecReport(task);
+    return report ? renderSpecTaskReport(report) : "";
+  }
+
+  resultLine(task: Task, by?: PeerId): string {
     const base = `task #${task.id}: ${task.state}, owner ${task.owner ?? "none"}, reviewer ${task.reviewer ?? "none"}`;
     const noReview = task.class !== "review" && !task.reviewer && OPEN.includes(task.state) && !this.waitsFor(task).length
       ? this.noReviewer(assign(task, this.states(), this.d.routing(), { candidates: task.owner ? [task.owner] : [], notReviewer: task.owner ?? undefined, ...this.weights(task.class, task) }))
@@ -951,7 +979,250 @@ export class Tasks {
     const holdText = held ? `${task.owner}'s queue is held (${held}); it receives the task once the hold is resolved` : undefined;
     const request = task.history.findLast(entry => ["done", "reviewer changed", "reviewer unavailable"].includes(entry.event));
     const poolBlocked = task.state === "in_review" && task.reviewer === USER && request?.reviewBlocked ? "blocked: no reviewer can run" : undefined;
-    return [base, noReview, poolBlocked, holdText].filter(Boolean).join("; ");
+    const specText = this.specReportText(task, by) || undefined;
+    return [base, noReview, poolBlocked, holdText, specText].filter(Boolean).join("; ");
+  }
+
+  private currentSpecReport(task: Task): SpecTaskReport | undefined {
+    const config = this.d.specsConfig?.() ?? DEFAULT_SPECS_CONFIG;
+    if (this.isPii(task) || !config.enabled || config.review === "off") return;
+    const head = task.refs.commit && /^[0-9a-f]{40}$/.test(task.refs.commit) ? task.refs.commit : "";
+    const binding = this.specRefBinding(task);
+    const latest = task.history.findLast(row => row.event === "done" || row.event === "done (checking)");
+    const report = latest?.specReport;
+    if (!latest || !report || !(report.head === head || report.head === "" && !report.complete) || latest.specRefBinding !== binding) return;
+    return this.publicSpecReport(report);
+  }
+
+  private specRefBinding(task: Pick<Task, "refs">): string {
+    return createHash("sha256").update(JSON.stringify([task.refs.repo ?? "", task.refs.branch ?? "", task.refs.commit ?? ""])).digest("hex");
+  }
+
+  private publicSpecReport(report: SpecTaskReport): SpecTaskReport | undefined {
+    if (!report || typeof report.head !== "string" || report.head !== "" && !/^[0-9a-f]{40}$/.test(report.head)
+      || report.complete && !/^[0-9a-f]{40}$/.test(report.head)
+      || typeof report.complete !== "boolean" || !Number.isSafeInteger(report.errors) || report.errors < 0
+      || !Array.isArray(report.unchanged) || !Array.isArray(report.changed)) return;
+    const ref = (value: unknown): SpecTaskReport["unchanged"][number] | undefined => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return;
+      const row = value as Record<string, unknown>;
+      if (typeof row.id !== "string" || typeof row.path !== "string" || typeof row.title !== "string"
+        || !row.id.trim() || row.id.length > 160 || !row.path.trim()) return;
+      // Missing titles are schema diagnostics, not a report-mode completion gate.
+      const title = row.title.trim() ? row.title : row.id;
+      const strings = [row.id, row.path, title, ...(typeof row.reason === "string" ? [row.reason] : [])];
+      if (strings.some(text => text.length > 1000 || /[\p{Cc}\p{Cf}]/u.test(text) || !this.publicMetadataText(text))) return;
+      return { id: row.id, path: row.path, title, ...(typeof row.reason === "string" ? { reason: row.reason } : {}) };
+    };
+    const unchanged = report.unchanged.slice(0, 20).map(ref).filter((row): row is NonNullable<typeof row> => !!row);
+    const changed = report.changed.slice(0, 20).map(ref).filter((row): row is NonNullable<typeof row> => !!row);
+    const privacyFiltered = unchanged.length < Math.min(report.unchanged.length, 20) || changed.length < Math.min(report.changed.length, 20);
+    const reason = privacyFiltered ? "some spec metadata could not be safely shown"
+      : typeof report.reason === "string" && report.reason.length <= 500 && this.publicMetadataText(report.reason) ? report.reason : undefined;
+    return { head: report.head, complete: report.complete && !privacyFiltered, errors: report.errors, unchanged, changed,
+      ...(report.truncated || report.unchanged.length > 20 || report.changed.length > 20 ? { truncated: true } : {}), ...(reason ? { reason } : {}) };
+  }
+
+  private parseSpecAcks(value: unknown): SpecAck[] {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.length > 20) throw new PreEffectToolRefusal("spec_ack must contain at most 20 {id, reason} entries");
+    const seen = new Set<string>();
+    return value.map(raw => {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new PreEffectToolRefusal("each spec_ack entry needs an id and reason");
+      const row = raw as Record<string, unknown>;
+      if (Object.keys(row).some(key => key !== "id" && key !== "reason") || typeof row.id !== "string" || !row.id.trim() || row.id.length > 160 || /[\p{Cc}\p{Cf}]/u.test(row.id)
+        || typeof row.reason !== "string" || !row.reason.trim() || row.reason.length > 1000 || /[\p{Cc}\p{Cf}]/u.test(row.reason)) throw new PreEffectToolRefusal("each spec_ack entry needs a bounded id and reason");
+      const id = row.id.trim();
+      if (!this.publicMetadataText(id)) throw new PreEffectToolRefusal("spec_ack id is private or sensitive");
+      if (seen.has(id)) throw new PreEffectToolRefusal(`spec_ack repeats ${id}`);
+      seen.add(id);
+      return { id, reason: row.reason.trim() };
+    });
+  }
+
+  private specsPolicyKey(config = this.d.specsConfig?.() ?? DEFAULT_SPECS_CONFIG): string {
+    return JSON.stringify([config.enabled, config.review, config.roots, config.stamps_file]);
+  }
+
+  private assertSpecInspection(inspection: PreparedSpecInspection, task: Task, by: PeerId): void {
+    this.assertSpecTaskBinding(inspection, task);
+    if (this.specsPolicyKey() !== inspection.policyKey || (this.d.privateTurn?.(by) === true) !== inspection.privateTurn || this.isPii(task) !== inspection.pii) {
+      throw new PreEffectToolRefusal(`task #${task.id}: specs policy, task head or privacy context changed during inspection; retry hub_task_done`);
+    }
+  }
+
+  private assertSpecTaskBinding(inspection: PreparedSpecInspection, task: Task): void {
+    const head = task.refs.commit && /^[0-9a-f]{40}$/.test(task.refs.commit) ? task.refs.commit : "";
+    if (task.refs.repo !== inspection.repo || head !== inspection.head) {
+      throw new PreEffectToolRefusal(`task #${task.id}: task head or repository changed during spec inspection; retry hub_task_done`);
+    }
+  }
+
+  private refreshAsyncSpecInspection(inspection: PreparedSpecInspection, task: Task, by: PeerId): boolean {
+    this.assertSpecTaskBinding(inspection, task);
+    const config = this.d.specsConfig?.() ?? DEFAULT_SPECS_CONFIG;
+    const privateTurn = this.d.privateTurn?.(by) === true;
+    const policyKey = this.specsPolicyKey(config), pii = this.isPii(task);
+    if (inspection.report && policyKey !== inspection.policyKey && config.enabled && config.review === "require" && !privateTurn && !pii) return true;
+    if (policyKey !== inspection.policyKey || privateTurn !== inspection.privateTurn || pii !== inspection.pii) {
+      delete inspection.report;
+      inspection.policyKey = policyKey;
+      inspection.privateTurn = privateTurn;
+      inspection.pii = pii;
+    }
+    return false;
+  }
+
+  private requestSpecRefile(task: Task): void {
+    this.tell(task, `Task #${task.id}: its class check passed, but specs policy changed to require while it ran. Refile hub_task_done so coverage is checked under the current policy.`, this.isPii(task));
+  }
+
+  private specInspectionReason(cause: string): string {
+    const safe = this.publicMetadataText(cause) ? sanitize(cause).replace(/[\r\n\t]+/g, " ").trim().slice(0, 350) : "verified spec evidence is unavailable";
+    return `${safe}; split the task scope or ask the person to change specs.review`;
+  }
+
+  private async inspectTaskSpecs(task: Task, by: PeerId, rawAcks: unknown, validate: () => Task): Promise<PreparedSpecInspection> {
+    const config = this.d.specsConfig?.() ?? DEFAULT_SPECS_CONFIG;
+    const initialPrivate = this.d.privateTurn?.(by) === true, pii = this.isPii(task);
+    const declaredHead = task.refs.commit && /^[0-9a-f]{40}$/.test(task.refs.commit) ? task.refs.commit : "";
+    const inspection: PreparedSpecInspection = { policyKey: this.specsPolicyKey(config), ...(task.refs.repo ? { repo: task.refs.repo } : {}), head: declaredHead, privateTurn: initialPrivate, pii };
+    const ackInput = Array.isArray(rawAcks) && rawAcks.length === 0 ? undefined : rawAcks;
+    if (ackInput !== undefined && (pii || initialPrivate)) throw new PreEffectToolRefusal("spec_ack is unavailable for private work");
+    if (ackInput !== undefined && (!config.enabled || config.review === "off")) throw new PreEffectToolRefusal("spec_ack is unavailable while specs review is disabled");
+    if (!config.enabled || config.review === "off" || pii || initialPrivate) return inspection;
+    if (!this.d.inspectSpecs) {
+      if (config.review === "require" && declaredHead) throw new PreEffectToolRefusal(`task #${task.id}: spec coverage is unknown because the spec inspector is unavailable at the submitted head; restore specs support or explicitly change specs.review`);
+      if (ackInput !== undefined) throw new PreEffectToolRefusal("spec inspection is unavailable; cannot accept spec_ack");
+      return inspection;
+    }
+    const acks = this.parseSpecAcks(ackInput);
+    let changedFiles: BriefFile[] | undefined;
+    let changedEvidenceReason: string | undefined;
+    if (declaredHead) {
+      const brief = this.d.reviewBrief?.({ ...task, refs: { ...task.refs, commit: declaredHead } });
+      if (!brief) changedEvidenceReason = "the verified review brief is unavailable";
+      else if ("unavailable" in brief) changedEvidenceReason = `review brief unavailable: ${brief.unavailable}`;
+      else if (brief.head !== declaredHead) changedEvidenceReason = "the verified review brief does not match the submitted full head";
+      else if (brief.withheld > 0) changedEvidenceReason = `the verified review brief withheld ${brief.withheld} changed file(s)`;
+      else if (brief.unlisted.length > 0) changedEvidenceReason = `the verified review brief has ${brief.unlisted.length} unlisted changed file(s)`;
+      else {
+        const files = [...brief.reviewable, ...brief.excluded].flatMap(file => [file, ...(file.oldPath ? [{ path: file.oldPath, status: file.status }] : [])]);
+        if (files.every(file => this.publicMetadataText(file.path))) {
+          const byPath = new Map<string, BriefFile>();
+          for (const file of files) if (!byPath.has(file.path)) byPath.set(file.path, file);
+          changedFiles = [...byPath.values()];
+        } else changedEvidenceReason = "the verified changed-file inventory includes private paths";
+      }
+    } else changedEvidenceReason = "a full task commit head was not supplied";
+    const screenedAcks: SpecAck[] = [];
+    for (const ack of acks) {
+      if (!this.publicMetadataText(ack.reason)) throw new PreEffectToolRefusal("spec_ack reason is private or sensitive");
+      if (await this.withholds("note", ack.reason, task)) throw new PreEffectToolRefusal(`spec_ack reason for ${ack.id} was withheld; use a public, non-sensitive rationale`);
+      screenedAcks.push(ack);
+      this.assertSpecInspection(inspection, validate(), by);
+    }
+    this.assertSpecInspection(inspection, validate(), by);
+    const report = await this.d.inspectSpecs(task, declaredHead, changedFiles, screenedAcks);
+    this.assertSpecInspection(inspection, validate(), by);
+    if (!report) {
+      if (acks.length) throw new PreEffectToolRefusal("spec_ack was supplied but no spec requires acknowledgement");
+      return inspection;
+    }
+    const safe = this.publicSpecReport(report);
+    if (!safe) throw new PreEffectToolRefusal("spec inspection returned invalid or private metadata");
+    if (safe.unchanged.length < Math.min(report.unchanged.length, 20) || safe.changed.length < Math.min(report.changed.length, 20)) {
+      safe.complete = false;
+      safe.reason = this.specInspectionReason("some spec metadata could not be safely shown");
+    }
+    if (safe.head !== declaredHead) {
+      safe.complete = false;
+      safe.head = "";
+      safe.reason = this.specInspectionReason("the spec report does not match the verified task head");
+      safe.unchanged = [];
+      safe.changed = [];
+    }
+    if (report.truncated) {
+      safe.complete = false;
+      safe.reason = this.specInspectionReason("the submitted spec scan reached its safety limit; narrow specs.roots");
+    } else if (changedFiles === undefined && changedEvidenceReason && safe.head === declaredHead) {
+      safe.complete = false;
+      safe.reason = this.specInspectionReason(changedEvidenceReason);
+    } else if (!safe.complete && safe.reason) safe.reason = this.specInspectionReason(safe.reason);
+    else if (!safe.complete) safe.reason = this.specInspectionReason(report.reason ?? "spec coverage could not be verified at the submitted task head");
+    if (config.review === "require" && report.unchanged.length > 20) throw new PreEffectToolRefusal(`task #${task.id}: ${report.unchanged.length} covering specs are unchanged; update the specs or split the task scope so each task covers at most 20 specs`);
+    const pendingIds = new Set(safe.unchanged.map(spec => spec.id));
+    for (const ack of screenedAcks) if (!pendingIds.has(ack.id)) throw new PreEffectToolRefusal(`spec_ack ${ack.id} does not name a covering spec that is unchanged at this head`);
+    const reasons = new Map(screenedAcks.map(ack => [ack.id, ack.reason]));
+    safe.unchanged = safe.unchanged.map(spec => ({ ...spec, ...(reasons.has(spec.id) ? { reason: reasons.get(spec.id)! } : {}) }));
+    if (config.review === "require") {
+      if (!safe.complete || report.truncated) throw new PreEffectToolRefusal(`task #${task.id}: ${safe.reason ?? this.specInspectionReason("spec coverage is unknown at this submitted task head")}`);
+      const unacknowledged = safe.unchanged.filter(spec => !reasons.has(spec.id));
+      if (unacknowledged.length) throw new PreEffectToolRefusal(`task #${task.id}: spec not updated: ${unacknowledged.map(spec => spec.id).join(", ")}; update the covering spec or add spec_ack [{id, reason}]`);
+    }
+    inspection.report = safe;
+    return inspection;
+  }
+
+  /** Narrow public task-path notice used by the tool response after propose/accept. */
+  specNotice(task: Task, by?: PeerId): string {
+    const config = this.d.specsConfig?.() ?? DEFAULT_SPECS_CONFIG;
+    if (!config.enabled || config.review === "off" || this.isPii(task) || by && this.d.privateTurn?.(by)) return "";
+    let report: SpecsCoverReport | undefined;
+    try { report = this.d.specNotice?.(task); } catch { return ""; }
+    const current = this.d.board.get(task.id);
+    if (!current || this.isPii(current) || by && this.d.privateTurn?.(by)
+      || current.history.length !== task.history.length || current.owner !== task.owner || current.refs.repo !== task.refs.repo
+      || JSON.stringify(current.refs.paths ?? []) !== JSON.stringify(task.refs.paths ?? [])) return "";
+    if (!report) return "";
+    const refs = report.specs.slice(0, 20).filter(spec => [spec.id, spec.path, spec.title].every(value => this.publicMetadataText(value)));
+    const lines = refs.length ? [`Specs covering these paths: ${refs.map(spec => `${spec.id} (${spec.path})`).join(", ")}`] : [];
+    if (report.errors) lines.push(`Spec coverage check reports ${report.errors} error${report.errors === 1 ? "" : "s"}; run ahub specs check.`);
+    if (report.truncated || report.specs.length > 20 || refs.length < Math.min(report.specs.length, 20)) lines.push("Spec coverage list truncated; run ahub specs covers for the full list.");
+    return sanitize(lines.join("\n"));
+  }
+
+  specsRead(by: PeerId, action: "check" | "covers", rawPaths: unknown = []): Record<string, unknown> {
+    if (this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("spec inspection unavailable during a private turn");
+    if (!this.d.specsRead) throw new PreEffectToolRefusal("spec inspection unavailable");
+    if (action !== "check" && action !== "covers") throw new PreEffectToolRefusal('hub_specs action must be "check" or "covers"');
+    if (!Array.isArray(rawPaths) || rawPaths.length > 32 || rawPaths.some(path => typeof path !== "string" || !path.trim() || path.length > 2000 || /[\p{Cc}\p{Cf}]/u.test(path)
+      || path.startsWith("/") || path.includes("\\") || path.split("/").includes("..") || !this.publicMetadataText(path))) throw new PreEffectToolRefusal("hub_specs paths must be bounded, public repository-relative paths using forward slashes");
+    const paths = rawPaths as string[];
+    if (action === "check" && paths.length) throw new PreEffectToolRefusal('hub_specs "check" takes no paths');
+    if (action === "covers" && paths.length === 0) throw new PreEffectToolRefusal('hub_specs "covers" needs at least one repository-relative path');
+    const safe = (value: string) => sanitize(value);
+    const diagnostic = (raw: SpecsCheckReport["items"][number]): Record<string, unknown> | undefined => {
+      const fields = [raw.code, raw.message, raw.cause, raw.nextSteps, ...(raw.path ? [raw.path] : []), ...(raw.id ? [raw.id] : []), ...(raw.field ? [raw.field] : []), ...(raw.relatedId ? [raw.relatedId] : [])];
+      if (fields.some(value => !this.publicMetadataText(value))) return;
+      return { severity: raw.severity, code: safe(raw.code), message: safe(raw.message), cause: safe(raw.cause), nextSteps: safe(raw.nextSteps),
+        ...(raw.path ? { path: safe(raw.path) } : {}), ...(raw.id ? { id: safe(raw.id) } : {}), ...(raw.field ? { field: safe(raw.field) } : {}), ...(raw.relatedId ? { relatedId: safe(raw.relatedId) } : {}) };
+    };
+    let report: SpecsCheckReport | SpecsCoverReport;
+    try { report = this.d.specsRead(action, paths); }
+    catch { throw new PreEffectToolRefusal("spec inspection unavailable; retry ahub specs check"); }
+    if (this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("spec inspection unavailable during a private turn");
+    try {
+      if ("freshness" in report) {
+        const visibleItems = report.items.map(diagnostic).filter((row): row is Record<string, unknown> => !!row);
+        const items = visibleItems.slice(0, 20);
+        const remaining = Math.max(0, 20 - items.length);
+        const visibleFreshness = report.freshness.filter(row => this.publicMetadataText(row.path) && (row.id === undefined || this.publicMetadataText(row.id)));
+        const freshness = visibleFreshness.slice(0, remaining)
+          .map(row => ({ path: safe(row.path), ...(row.id ? { id: safe(row.id) } : {}), state: row.state, commitsSince: row.commitsSince, dirty: row.dirty }));
+        return { specCount: report.specCount, errors: report.errors, warnings: report.warnings, stale: report.stale,
+          truncated: report.truncated || visibleItems.length > 20 || visibleItems.length !== report.items.length
+            || visibleFreshness.length > freshness.length || visibleFreshness.length !== report.freshness.length, freshness, items };
+      }
+      const visibleSpecs = report.specs.filter(row => [row.id, row.path, row.title].every(value => this.publicMetadataText(value)));
+      const specs = visibleSpecs.slice(0, 20)
+        .map(({ id, path, title }) => ({ id: safe(id), path: safe(path), title: safe(title) }));
+      const visibleItems = report.items.map(diagnostic).filter((row): row is Record<string, unknown> => !!row);
+      const remaining = Math.max(0, 20 - specs.length);
+      const items = visibleItems.slice(0, remaining);
+      return { specs, errors: report.errors, truncated: report.truncated || visibleSpecs.length > specs.length || visibleSpecs.length !== report.specs.length
+        || visibleItems.length > remaining || visibleItems.length !== report.items.length, items };
+    } catch { throw new PreEffectToolRefusal("spec inspection unavailable; retry ahub specs check"); }
   }
 
   private states(): Record<PeerId, PeerState> {
@@ -5752,7 +6023,7 @@ export class Tasks {
     if (state !== "OPEN" && state !== "CLOSED") throw new PreEffectToolRefusal(`task #${task.id}: PR merge state unavailable; cannot reopen approval`);
   }
 
-  async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs, deliverables?: unknown): Promise<Task> {
+  async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs, deliverables?: unknown, specAck?: unknown): Promise<Task> {
     const requestCheck = this.requestCheck(by);
     const initial = this.need(id, false, true);
     this.mine(initial, by, "owner", true);
@@ -5790,6 +6061,10 @@ export class Tasks {
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review"); task = current(); }
     const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, draft), link, refs), !task.reviewer) : undefined;
     task = current();
+    const currentSpecTask = () => { const fresh = current(); return { ...fresh, refs: { ...fresh.refs, ...cleanRefs(refs) } }; };
+    const specInspection = await this.inspectTaskSpecs(currentSpecTask(), by, specAck, currentSpecTask);
+    task = current(); // the host head and task authority are revalidated after spec inspection
+    this.assertSpecInspection(specInspection, { ...task, refs: { ...task.refs, ...cleanRefs(refs) } }, by);
     // A member of a silent cohort (issue #107): its done is an intent, and the last of them integrates first.
     const cohort = this.cohorts.of(task.id);
     const silentMember = !!cohort?.silent && this.turnFree() && !!task.owner && !this.isPii(task);
@@ -5820,19 +6095,23 @@ export class Tasks {
     }
     if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
-    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records, requestCheck, refresh);
+    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records, requestCheck, refresh, specInspection);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
     if (refresh?.state === "approved") { await this.unmergedForReopen(task, valid); task = current(); }
     this.checking.set(task.id, task.owner);
     const checkedRefs = cleanRefs(refs);
+    if (specInspection.report?.head && !checkedRefs.commit) checkedRefs.commit = specInspection.report.head;
+    if (specInspection.report && specInspection.repo && !checkedRefs.repo) checkedRefs.repo = specInspection.repo;
+    const storedRefs = { ...task.refs, ...checkedRefs };
     this.warmRepository({ ...task, refs: { ...task.refs, ...checkedRefs } });
-    const pending = this.d.board.update(task.id, by, "done (checking)", { ...(refresh ? { state: "in_progress" as const } : {}), ...(refresh?.state === "approved" && !task.reviewer ? { reviewer: USER } : {}), codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...checkedRefs } }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    this.assertSpecInspection(specInspection, { ...task, refs: storedRefs }, by);
+    const pending = this.d.board.update(task.id, by, "done (checking)", { ...(refresh ? { state: "in_progress" as const } : {}), ...(refresh?.state === "approved" && !task.reviewer ? { reviewer: USER } : {}), codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}), ...(specInspection.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     if (refresh) { this.ciWatchers.cancel(pending.id); this.heldReviews.delete(pending.id); }
     this.releaseNotice(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
     this.pendingChecks++;
     this.checkQueue = this.checkQueue
-      .then(() => this.finishChecked(pending.id, by, summary, command, seen, withheld))
+      .then(() => this.finishChecked(pending.id, by, summary, command, seen, withheld, specInspection))
       .catch((e: Error) => {
         this.releaseNotice(`task #${pending.id}: its check result could not be recorded: ${e.message}`);
         this.releaseNotice(`task #${pending.id}: its owner retry notice could not be published`, () => {
@@ -5935,7 +6214,7 @@ export class Tasks {
     return { ...(key ? { checkKey: key } : {}), ...(match ? { missingKeys: Number(match[2]) } : {}) };
   }
 
-  private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }, withheld: boolean): Promise<void> {
+  private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }, withheld: boolean, specInspection: PreparedSpecInspection): Promise<void> {
     const result = await this.d.runCheck!(command).catch((e: Error) => ({ code: null, timedOut: false, interrupted: false, tail: e.message }));
     this.checking.delete(id);
     const task = this.d.board.get(id);
@@ -5951,6 +6230,7 @@ export class Tasks {
       return;
     }
     if (result.code === 0 && !result.timedOut) {
+      const refileForSpecs = this.refreshAsyncSpecInspection(specInspection, task, by);
       // An integrating member's check counts only for the target it confirmed (issue #107).
       const cohort = this.cohorts.of(id);
       if (cohort?.silent && !this.cohorts.holds(id, ownerGen(task), this.tree(cohort))) {
@@ -5959,8 +6239,9 @@ export class Tasks {
         return;
       }
       this.d.board.update(id, HUB, "check passed", {}, `${outcome}\n${result.tail}`.trim(), this.checkProvenance(task, result.tail));
+      if (refileForSpecs) { this.requestSpecRefile(task); return; }
       // The output goes to the reviewer with the done note, not into shared memory: nobody screened it.
-      await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail, withheld);
+      await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail, withheld, undefined, undefined, undefined, undefined, undefined, undefined, specInspection, true);
       return;
     }
     this.d.board.update(id, HUB, "check failed", {}, `${outcome}\n${result.tail}`.trim(), this.checkProvenance(task, result.tail));
@@ -5972,8 +6253,9 @@ export class Tasks {
   }
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
-  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink, records?: DeliverableRecord[], requestCheck: () => void = () => {}, refresh?: CompletionRefresh): Promise<Task> {
+  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink, records?: DeliverableRecord[], requestCheck: () => void = () => {}, refresh?: CompletionRefresh, specInspection?: PreparedSpecInspection, asyncCheckCompletion = false): Promise<Task> {
     requestCheck();
+    if (specInspection && asyncCheckCompletion && this.refreshAsyncSpecInspection(specInspection, task, by)) { this.requestSpecRefile(task); return task; }
     // A check's completion carries the records its `done (checking)` bound: the same bytes the owner delivered, not a later read.
     records ??= latestPendingDeliverables(task);
     const submittedCommit = cleanRefs(refs).commit;
@@ -5985,6 +6267,7 @@ export class Tasks {
       reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
       requestCheck();
       task = this.withLink(this.completionDraft(this.completionCurrent(task.id, by, false, refresh), draft), link, refs);
+      if (specInspection && asyncCheckCompletion && this.refreshAsyncSpecInspection(specInspection, task, by)) { this.requestSpecRefile(task); return task; }
       selection = this.poolReview(task, refs);
       reviewer = selection?.reviewer ?? task.reviewer ?? (refresh?.state === "approved" ? USER : undefined);
     }
@@ -5993,6 +6276,7 @@ export class Tasks {
       admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, draft), link, refs), !reviewer);
       requestCheck();
       task = this.withLink(this.completionDraft(this.completionCurrent(task.id, by, false, refresh), draft), link, refs);
+      if (specInspection && asyncCheckCompletion && this.refreshAsyncSpecInspection(specInspection, task, by)) { this.requestSpecRefile(task); return task; }
     }
     selection = this.poolReview(task, refs);
     reviewer = selection?.reviewer ?? task.reviewer ?? (refresh?.state === "approved" ? USER : undefined);
@@ -6002,12 +6286,21 @@ export class Tasks {
     if (refresh?.state === "approved") {
       await this.unmergedForReopen(task, () => { requestCheck(); return this.completionCurrent(task.id, by, true, refresh); });
       task = this.withLink(this.completionDraft(this.completionCurrent(task.id, by, true, refresh), draft), link, refs);
+      if (specInspection && asyncCheckCompletion && this.refreshAsyncSpecInspection(specInspection, task, by)) { this.requestSpecRefile(task); return task; }
     }
     const completedRefs = cleanRefs(refs);
-    this.warmRepository({ ...task, refs: { ...task.refs, ...completedRefs } });
-    const noWrites = this.noWritesRecorded({ ...task, refs: { ...task.refs, ...completedRefs } });
+    if (specInspection?.report?.head && !completedRefs.commit) completedRefs.commit = specInspection.report.head;
+    if (specInspection?.report && specInspection.repo && !completedRefs.repo) completedRefs.repo = specInspection.repo;
+    const storedRefs = { ...task.refs, ...completedRefs };
+    if (specInspection) {
+      if (asyncCheckCompletion) {
+        if (this.refreshAsyncSpecInspection(specInspection, { ...task, refs: storedRefs }, by)) { this.requestSpecRefile(task); return task; }
+      } else this.assertSpecInspection(specInspection, { ...task, refs: storedRefs }, by);
+    }
+    this.warmRepository({ ...task, refs: storedRefs });
+    const noWrites = this.noWritesRecorded({ ...task, refs: storedRefs });
     const capacity = this.capacityBefore(task);
-    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...completedRefs } }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, refs: { ...task.refs, ...completedRefs } }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, refs: storedRefs }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.queueReviewWritten(next);
     this.writePlannerNotices(next, capacity, next.state === "approved");
     this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id); // a newer head or a move ends the old head's watcher (#785 P1b)
@@ -6438,11 +6731,12 @@ export class Tasks {
   briefText(task: Task): string {
     if (this.isPii(task)) return "";
     const approval = approvalText(approvalBinding(task));
-    const prefix = (brief: string) => [approval, brief].filter(Boolean).join("\n");
-    if (!task.refs.commit) return approval;
+    const spec = this.currentSpecReport(task);
+    const prefix = (brief: string) => [approval, spec ? renderSpecTaskReport(spec) : "", brief].filter(Boolean).join("\n");
+    if (!task.refs.commit) return prefix("");
     try {
       const brief = this.d.reviewBrief?.(task);
-      if (!brief) return approval;
+      if (!brief) return prefix("");
       return prefix("unavailable" in brief ? `Review brief unavailable: ${brief.unavailable}.` : sanitize(renderReviewBrief(brief)));
     } catch { return prefix("Review brief unavailable: it could not be built."); }
   }

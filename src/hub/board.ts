@@ -18,6 +18,8 @@ import type { SdlcReceipt } from "./sdlc.ts";
 import { parseReviewFindings, type ReviewFindingSet } from "./review-findings.ts";
 import { parseDeliverableRecords, type DeliverableRecord } from "./deliverables.ts";
 import type { CostPlan, ReviewCost } from "./cost-governance.ts";
+import type { SpecRef, SpecTaskReport } from "./specs-task.ts";
+export type { SpecAck, SpecRef, SpecTaskReport } from "./specs-task.ts";
 import { campaignHash, parseResearchCampaign, parseResearchHandoff, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchUnit, type ResearchHandoffV1, type ResearchHandoffRecord } from "./research-campaign.ts";
 
 export interface ResearchCampaignRecord {
@@ -201,6 +203,10 @@ export interface HistoryEntry {
   sweep?: SweepRecord;
   /** The PII screen did not clear this entry's note (#198): only the console reads it. */
   withheld?: true;
+  /** Public, head-bound design-spec status; acknowledgement text is screened before this is written. */
+  specReport?: SpecTaskReport;
+  /** Internal identity for incomplete reports without a full commit SHA; never projected publicly. */
+  specRefBinding?: string;
   /** Host evidence at done, never inferred from the owner's summary. */
   noWrites?: true;
   /** Host-recorded expected cost and exact review head, never narrative. */
@@ -276,6 +282,31 @@ function reviewerHistory(extra: ReviewerHistory): ReviewerHistory {
   const failure = extra.reviewerFailure;
   if (failure && (!id(failure.peer) || !["start_failed", "quota", "no_verdict"].includes(failure.cause) || failure.head !== undefined && (typeof failure.head !== "string" || !failure.head.trim() || failure.head.length > 300 || Buffer.byteLength(failure.head) > 1200 || /\p{Cc}/u.test(failure.head)))) throw new Error("invalid reviewer failure metadata");
   return { ...(extra.reviewerFamily ? { reviewerFamily: extra.reviewerFamily } : {}), ...(extra.reviewerReason ? { reviewerReason: extra.reviewerReason } : {}), ...(extra.reviewBlocked ? { reviewBlocked: true } : {}), ...(extra.queueReviewHeld ? { queueReviewHeld: true, ...(extra.queueReviewBinding !== undefined ? { queueReviewBinding: extra.queueReviewBinding } : {}) } : {}), ...(failure ? { reviewerFailure: { peer: failure.peer, cause: failure.cause, ...(failure.head ? { head: failure.head } : {}) } } : {}) };
+}
+function specReportHistory(report: unknown, binding: unknown, event: string): Pick<HistoryEntry, "specReport" | "specRefBinding"> {
+  if (!report || typeof report !== "object" || Array.isArray(report) || !["done", "done (checking)"].includes(event)
+    || typeof binding !== "string" || !/^[a-f0-9]{64}$/.test(binding)) throw new Error("invalid task spec report metadata");
+  const value = report as Record<string, unknown>;
+  if (Object.keys(value).some(key => !["head", "complete", "errors", "unchanged", "changed", "truncated", "reason"].includes(key))
+    || typeof value.head !== "string" || value.head !== "" && !/^[a-f0-9]{40}$/.test(value.head)
+    || value.head === "" && value.complete !== false || typeof value.complete !== "boolean"
+    || !Number.isSafeInteger(value.errors) || (value.errors as number) < 0 || (value.errors as number) > 1_000_000
+    || value.truncated !== undefined && value.truncated !== true
+    || value.reason !== undefined && (typeof value.reason !== "string" || value.reason.length > 500 || /[\p{Cc}\p{Cf}]/u.test(value.reason))
+    || !Array.isArray(value.unchanged) || value.unchanged.length > 20 || !Array.isArray(value.changed) || value.changed.length > 20) throw new Error("invalid task spec report metadata");
+  const ref = (raw: unknown): SpecRef => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid task spec report metadata");
+    const row = raw as Record<string, unknown>;
+    if (Object.keys(row).some(key => !["id", "path", "title", "reason"].includes(key))
+      || typeof row.id !== "string" || !row.id.trim() || row.id.length > 160 || /[\p{Cc}\p{Cf}]/u.test(row.id)
+      || typeof row.path !== "string" || !row.path.trim() || row.path.length > 1000 || /[\p{Cc}\p{Cf}]/u.test(row.path)
+      || typeof row.title !== "string" || !row.title.trim() || row.title.length > 1000 || /[\p{Cc}\p{Cf}]/u.test(row.title)
+      || row.reason !== undefined && (typeof row.reason !== "string" || row.reason.length > 1000 || /[\p{Cc}\p{Cf}]/u.test(row.reason))) throw new Error("invalid task spec report metadata");
+    return { id: row.id, path: row.path, title: row.title, ...(typeof row.reason === "string" ? { reason: row.reason } : {}) };
+  };
+  const specReport: SpecTaskReport = { head: value.head, complete: value.complete, errors: value.errors as number,
+    unchanged: value.unchanged.map(ref), changed: value.changed.map(ref), ...(value.truncated === true ? { truncated: true } : {}), ...(typeof value.reason === "string" ? { reason: value.reason } : {}) };
+  return { specReport, specRefBinding: binding };
 }
 export interface PlannerBinding { planner: PeerId | null; plannerReason: PlannerReason }
 function plannerValue(value: unknown): PeerId | null {
@@ -1454,7 +1485,7 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "planner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled" | "codeSymbols">>, note?: string, extra: Pick<HistoryEntry, "invocation" | "plannerReason" | "planAuthor" | "selfReview" | "profile" | "sweep" | "reason" | "from" | "capacity" | "conductorManual" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewScope" | "evidenceOnly" | "reviewedHead" | "reviewFindings" | "unmetCriteria" | "deliverables" | "checkKey" | "missingKeys" | "claim" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number, codeSymbolsAuthority?: typeof HOST_CODE_SYMBOLS): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "planner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled" | "codeSymbols">>, note?: string, extra: Pick<HistoryEntry, "invocation" | "plannerReason" | "planAuthor" | "selfReview" | "profile" | "sweep" | "reason" | "from" | "capacity" | "conductorManual" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewScope" | "evidenceOnly" | "reviewedHead" | "reviewFindings" | "unmetCriteria" | "deliverables" | "checkKey" | "missingKeys" | "claim" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | "specReport" | "specRefBinding" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number, codeSymbolsAuthority?: typeof HOST_CODE_SYMBOLS): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
@@ -1480,6 +1511,8 @@ export class Board {
     const plannerHistory = Object.hasOwn(patch, "planner") || extra.plannerReason !== undefined ? plannerMetadata(planner, extra.plannerReason) : {};
     const authorHistory = Object.hasOwn(extra, "planAuthor") ? { planAuthor: plannerValue(extra.planAuthor) } : {};
     if (extra.selfReview !== undefined && extra.selfReview !== true) throw new Error("invalid self-review metadata");
+    const specMetadata = extra.specReport !== undefined || extra.specRefBinding !== undefined
+      ? specReportHistory(extra.specReport, extra.specRefBinding, event) : {};
     if (extra.conductorManual !== undefined && (extra.conductorManual !== true || by === "user" || by === "hub" || extra.reason !== "manual"
       || !["assigned", "reassigned", "reserved", "unassigned", "reviewer changed"].includes(event))) throw new Error("invalid conductor manual metadata");
     if (extra.invocation && (by !== HUB || event !== "invocation")) throw new Error("invocation audit is host-only");
@@ -1533,7 +1566,7 @@ export class Board {
       && priorHead !== undefined && /^[a-f0-9]{40}$/.test(priorHead);
     const previousHistory = backfill ? task.history.map((entry, index) => index === priorApproval && !entry.reviewedHead
       ? { ...entry, reviewedHead: entry.reviewFindings?.head ?? priorHead } : entry) : task.history;
-    const history = [...previousHistory, { at: Date.now(), by, event, ...(extra.invocation ? { invocation: extra.invocation } : {}), ...plannerHistory, ...authorHistory, ...(extra.selfReview === true ? { selfReview: true as const } : {}), ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(departureInvalidated ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.conductorManual === true ? { conductorManual: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(extra.reviewedHead ? { reviewedHead: extra.reviewedHead } : {}), ...(unmetCriteria?.length ? { unmetCriteria } : {}), ...(deliverables ? { deliverables } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewScope === "code" ? { reviewScope: "code" as const } : {}), ...(extra.evidenceOnly === true && event === "changes_requested" ? { evidenceOnly: true as const } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}), ...(["check passed", "check failed"].includes(event) && typeof extra.checkKey === "string" && /^[a-z][a-z0-9_]{0,47}$/.test(extra.checkKey) ? { checkKey: extra.checkKey } : {}), ...(["check passed", "check failed"].includes(event) && Number.isSafeInteger(extra.missingKeys) && extra.missingKeys! >= 0 && extra.missingKeys! <= 100_000 ? { missingKeys: extra.missingKeys } : {}), ...(event === "claim verdict" && extra.claim ? { claim: extra.claim } : {}) }];
+    const history = [...previousHistory, { at: Date.now(), by, event, ...(extra.invocation ? { invocation: extra.invocation } : {}), ...plannerHistory, ...authorHistory, ...(extra.selfReview === true ? { selfReview: true as const } : {}), ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(departureInvalidated ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...specMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.conductorManual === true ? { conductorManual: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(extra.reviewedHead ? { reviewedHead: extra.reviewedHead } : {}), ...(unmetCriteria?.length ? { unmetCriteria } : {}), ...(deliverables ? { deliverables } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewScope === "code" ? { reviewScope: "code" as const } : {}), ...(extra.evidenceOnly === true && event === "changes_requested" ? { evidenceOnly: true as const } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}), ...(["check passed", "check failed"].includes(event) && typeof extra.checkKey === "string" && /^[a-z][a-z0-9_]{0,47}$/.test(extra.checkKey) ? { checkKey: extra.checkKey } : {}), ...(["check passed", "check failed"].includes(event) && Number.isSafeInteger(extra.missingKeys) && extra.missingKeys! >= 0 && extra.missingKeys! <= 100_000 ? { missingKeys: extra.missingKeys } : {}), ...(event === "claim verdict" && extra.claim ? { claim: extra.claim } : {}) }];
     this.taskWrite(() => {
       const result = this.db.query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ?, planner = ? WHERE id = ?")
         .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), planner, id);

@@ -2510,10 +2510,41 @@ since the stamp and detects uncommitted changes without running Git filters
 or external diffs. These commands never refresh a stamp.
 
 The Switches settings `specs.enabled` and `specs.review` are machine-local
-settings, and the specs config fields are tier 2 structural settings. Explicit
-CLI inspection still works when notices are disabled. Task notices, status
-integration, init instruction blocks and stamp commands ship in later phases
-of issue #1064.
+settings, and the specs config fields are tier 2 structural settings. Setting
+`specs.enabled` to false suppresses this machine's notices and status summary,
+leaving the shared config unchanged. Explicit CLI and `hub_specs` inspection
+still work when notices are disabled. Init instruction blocks and stamp
+commands ship in later phases of issue #1064.
+
+Task proposal and acceptance replies name the specs covering the task's refs
+paths. At completion the hub reads spec metadata from the submitted commit,
+compares the host-verified changed-file inventory with those scopes, and adds
+`spec not updated: <id>` and `spec errors: <n>` to the result and review brief.
+Dirty spec edits in another checkout do not satisfy this check. `report` records
+the report; `off` suppresses task notices. Under `require`, unchanged covering
+specs must be updated or named in `spec_ack`, for example
+`[{ "id": "bus", "reason": "Only an internal allocation changed; the contract is unchanged." }]`.
+Acknowledgements are screened, recorded at the exact head, and shown to the
+reviewer. A new head invalidates the old report. Unknown or truncated coverage
+cannot satisfy `require`; a refusal names the next step. A call accepts up to
+20 acknowledgements; larger changes can update the specs or split the task.
+Tasks without a submitted commit or with no changed files have no coverage
+obligation. Existing spec errors are reported on tasks touching covered paths
+or spec documents. A privacy change during a check suppresses its spec report
+without discarding the check result. If an applicable review policy changes
+to `require` while that check runs, the pass is retained and the owner is
+asked to refile completion under the current policy.
+
+`hub_specs` offers read-only `check` and `covers` actions with at most 20 report
+items. These explicit reads and status inspect the daemon checkout; task notices
+inspect the owner's execution root and completion reports inspect its submitted
+commit. Immutable Markdown blobs are read in bounded batches and parsed results
+are cached by object id across submitted heads. PII tasks and private turns do not publish spec paths through task
+notices. Completion snapshots skip Git symlinks and cap each committed spec
+body at 4 MiB; an incomplete read stays unknown. Status shows a specs count,
+error count and stale count only when specs or stamped documents exist, with
+one hint when the specs instruction block is missing. Empty projects stay
+silent.
 
 ## Start modes: TUI by default, headless as opt-in
 

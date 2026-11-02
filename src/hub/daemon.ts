@@ -104,6 +104,7 @@ import { conductorRecoveryBinding } from "../cli/conductor-recovery.ts";
 import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
 import { eventLog, readEvents, type RoleIdentity } from "./events.ts";
+import { SpecTaskInspector } from "./specs-task.ts";
 import { KimiUsage, kimiSeedRows } from "./kimi-usage.ts";
 import { TokenWindow } from "./token-window.ts";
 import { budgetNotes, type BudgetPeerNote } from "./budget-notes.ts";
@@ -373,7 +374,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_specs"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -2085,6 +2086,27 @@ export async function startDaemon(opts: DaemonOptions) {
     return () => token!==undefined && binding!==undefined && bus.peers.get(by)===peer && peer?.reviewToken(task)===token && tasks.reviewBindingCurrent(by,task,binding)
       ? undefined : `no review of task #${task} is running for ${by} at its bound head and revision`;
   };
+  type SpecRootSnapshot = { peer: PeerId; root: string; executionRoot: string; verifiedRoot?: string; owner?: PeerAdapter; attached?: PeerAdapter; cwd?: string; socket?: Sock; launchId?: string; generation?: string | number; repo?: string };
+  const specInspectors = new Map<string, SpecTaskInspector>();
+  const specInspectorAt = (root: string): SpecTaskInspector => {
+    const cached = specInspectors.get(root);
+    if (cached) { specInspectors.delete(root); specInspectors.set(root, cached); return cached; }
+    const created = new SpecTaskInspector(root, () => config.specs);
+    specInspectors.set(root, created);
+    if (specInspectors.size > 8) specInspectors.delete(specInspectors.keys().next().value!);
+    return created;
+  };
+  const specRootSnapshot = (task: Task): SpecRootSnapshot => {
+    const peer = task.owner ?? USER, binding = executionOwners.get(peer), execution = executionRoots.get(peer) ?? opts.cwd;
+    const root = binding?.socket && !currentExecutionOwner(peer) ? opts.cwd : execution;
+    const verifiedRoot = ownerWriteRoot(peer), attached = bus.peers.get(peer);
+    return { peer, root, executionRoot: execution, ...(verifiedRoot ? { verifiedRoot } : {}), ...(binding ? { owner: binding.owner, cwd: binding.cwd, ...(binding.socket ? { socket: binding.socket } : {}), ...(binding.launchId ? { launchId: binding.launchId } : {}), ...(binding.generation === undefined ? {} : { generation: binding.generation }) } : {}), ...(attached ? { attached } : {}), ...(task.refs.repo ? { repo: task.refs.repo } : {}) };
+  };
+  const sameSpecRoot = (left: SpecRootSnapshot, right: SpecRootSnapshot): boolean => left.peer === right.peer && left.root === right.root
+    && left.executionRoot === right.executionRoot && left.verifiedRoot === right.verifiedRoot && left.owner === right.owner && left.attached === right.attached
+    && left.cwd === right.cwd && left.socket === right.socket && left.launchId === right.launchId && left.generation === right.generation && left.repo === right.repo;
+  const projectSpecs = specInspectorAt(opts.cwd);
+  let specsMissingBlockHintShown = false;
   const tasks: Tasks = new Tasks({
     releaseWindow,
     researchRunners: () => {
@@ -2171,6 +2193,20 @@ export async function startDaemon(opts: DaemonOptions) {
       const brief = buildReviewBrief(root, task.refs.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(root, path, config.pii?.paths ?? [], true), nameable: tasks.nameable });
       return "unavailable" in brief ? brief : withCodeSymbols(brief, reviewSymbols.get(JSON.stringify([root, brief.head, brief.mergeBase])) ?? { state: "unknown" }, task.plan?.symbols, tasks.publicMetadataText);
     },
+    specsConfig: () => config.specs,
+    specNotice: task => {
+      const snapshot = specRootSnapshot(task);
+      return specInspectorAt(snapshot.root).notice(task.refs.paths ?? []);
+    },
+    inspectSpecs: async (task, head, changedFiles, acks) => {
+      const snapshot = specRootSnapshot(task), inspector = specInspectorAt(snapshot.root);
+      const report = await Promise.resolve(inspector.inspect(head, changedFiles, { complete: changedFiles !== undefined, acks }));
+      const current = specRootSnapshot(task), currentTask = board.get(task.id);
+      if (!sameSpecRoot(snapshot, current) || !currentTask || currentTask.owner !== task.owner) throw new PreEffectToolRefusal("task repository scope changed during spec inspection; retry hub_task_done");
+      if (config.specs.enabled !== true || config.specs.review === "off") return undefined;
+      return report;
+    },
+    specsRead: (action, paths) => projectSpecs.read(action, paths),
     sdlc: { config: () => lifecycleConfig, gh: (args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound) },
     board,
     bus,
@@ -3518,6 +3554,7 @@ export async function startDaemon(opts: DaemonOptions) {
         || (keys.includes("id") ? !Number.isSafeInteger(a.id) || a.id < 1 : typeof a.run !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(a.run))) throw new PreEffectToolRefusal("invalid bounded task request");
       if (by !== USER && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("bounded task tools unavailable during a PII turn");
     }
+    if (op === "hub_specs" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("spec inspection unavailable during a private turn");
     if (MEMORY_READ_TOOLS.has(op)) validateMemoryRead(op, a);
     if (op === "hub_memory_correct") correctionInput(a);
     if (CONDUCTOR_TOOL_NAMES.has(op)) {
@@ -3690,6 +3727,9 @@ export async function startDaemon(opts: DaemonOptions) {
       return JSON.stringify(publicCheck(receipt));
     }
     switch (op) {
+      case "hub_specs":
+        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "action" && key !== "paths")) throw new PreEffectToolRefusal("hub_specs accepts only action and paths");
+        return JSON.stringify(tasks.specsRead(by, a.action, a.paths));
       case "hub_delivery_retry": {
         if (by === USER || by === HUB || !a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "delivery_id") || typeof a.delivery_id !== "string" || a.delivery_id.length < 1 || a.delivery_id.length > 256) throw new PreEffectToolRefusal("hub_delivery_retry accepts only your delivery_id; completed and discard require the person");
         if (!deliveryRetryAllowed(bus.peers.get(by))) throw new PreEffectToolRefusal("delivery-only peers require the person to resolve held deliveries");
@@ -3772,19 +3812,21 @@ export async function startDaemon(opts: DaemonOptions) {
         const t = await tasks.propose(by, a);
         const repoHint = tasks.refsRepoHint(t); // #723: advice only; never part of the write
         const submodules = tasks.submoduleNotice(t); // #798 D1: advice only too
-        if (t.state === "backlog") return [line(t), repoHint, submodules].filter(Boolean).join("\n");
+        const specs = tasks.specNotice(t, by);
+        if (t.state === "backlog") return [line(t), specs, repoHint, submodules].filter(Boolean).join("\n");
         const overlap = tasks.overlaps(t, t.owner === by);
         if (t.owner === by && tasks.silentFor(t.id) && factsOn()) factsFor(by).sawPlans(by, tasks.overlapTasks(t)); // as for an accept
-        return [line(t), tasks.namedOwnerNote(t, a.owner as PeerId | undefined, by), overlap, tasks.claimRoleGuidance(t, by), t.owner === by ? tasks.planGuardText(t) : "", repoHint, submodules].filter(Boolean).join("\n");
+        return [line(t), specs, tasks.namedOwnerNote(t, a.owner as PeerId | undefined, by), overlap, tasks.claimRoleGuidance(t, by), t.owner === by ? tasks.planGuardText(t) : "", repoHint, submodules].filter(Boolean).join("\n");
       }
       case "hub_task_accept": {
         // S1 spec acceptance and S9 plan review are checked against one task snapshot before acceptance.
         const t = await tasks.acceptReviewed(by, a.id, a.plan, a.refs);
+        const specs = tasks.specNotice(t, by);
         // A silent cohort (issue #107): the owners' plans come with every accept, as what the newcomer works from.
         const silent = tasks.silentFor(t.id);
         const overlap = a.plan == null && a.refs == null && !silent ? "" : tasks.overlaps(t);
         if (silent && factsOn()) factsFor(by).sawPlans(by, tasks.overlapTasks(t)); // the plans in this answer need no fact later
-        return [line(t), overlap, tasks.planGuardText(t), tasks.submoduleNotice(t)].filter(Boolean).join("\n"); // #798 D1
+        return [line(t), specs, overlap, tasks.planGuardText(t), tasks.submoduleNotice(t)].filter(Boolean).join("\n"); // #798 D1
       }
       case "hub_task_cancel": {
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !["id", "reason", "superseded_by", "revision"].includes(key))
@@ -3797,7 +3839,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_task_decline":
         return line(await tasks.decline(by, a.id, a.reason, a.capacity === true));
       case "hub_task_done": {
-        const t = await tasks.done(by, a.id, a.summary, a.refs, a.deliverables);
+        const t = await tasks.done(by, a.id, a.summary, a.refs, a.deliverables, a.spec_ack);
         const completion = t.history.findLast(h => h.by === by && (h.event === "done" || h.event === "done (checking)"));
         if (!piiTurn && !tasks.isPii(t) && completion && !completion.withheld && typeof a.summary === "string" && completion.note?.startsWith(a.summary)) {
           citeMemory(by, a.summary, `summary:${t.id}:${t.history.indexOf(completion)}`, [newEnvelope(by, "", { refs: { task: String(t.id) } })]);
@@ -3806,8 +3848,10 @@ export async function startDaemon(opts: DaemonOptions) {
         const last = t.history.at(-1);
         if (last?.event === "integration requested" && last.by === HUB) return last.note ?? "";
         const extra = [tasks.takeDoneNote(t.id), tasks.checkoutNote()].filter(Boolean).join("\n"); // held silence notices, then the #572 checkout advisory
-        const result = tasks.isChecking(t.id) ? `${line(t)}; its check is queued or running, and the result comes as a task message` : line(t);
-        return extra ? `${result}\n${extra}` : result;
+        const doneLine = by === USER ? tasks.resultLine(t, by) : line(t);
+        const result = tasks.isChecking(t.id) ? `${doneLine}; its check is queued or running, and the result comes as a task message` : doneLine;
+        const specReport = by === USER ? "" : tasks.specReportText(t, by);
+        return [result, specReport, extra].filter(Boolean).join("\n");
       }
       case "hub_sdlc_record":
         await tasks.specStageGate(by, a.id, a.receipt); // #481 S1: a live spec edit-time check before a build stage
@@ -7615,6 +7659,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ? `target lacks task_cancel; cancelled tasks: ${ids.map(id => `#${id}`).join(", ")}` : undefined;
     };
     const incompatibleRecoveryTarget = () => {
+      if (config.specs.enabled && config.specs.review === "require" && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("design_specs"))) return "target lacks design_specs; specs.enabled is on and specs.review is require; use a supporting release or explicitly change specs.enabled/specs.review";
       if (board.hasConductorManualState() && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("conductor_recovery"))) return "target lacks conductor_recovery; open conductor manual-assignment intent cannot be preserved";
       if (allExternalInstanceIds().length && (!Array.isArray(msg.targetFeatures) || !["external_adapter_instances", "external_adapter_modules", "peer_instances"].every(feature => msg.targetFeatures.includes(feature)))) return "target lacks external_adapter_instances or its module/instance prerequisites";
       if (!(msg.op === "inspect" && recoveryPhase === "restored")) for (const id of allExternalInstanceIds()) if (!retainedExternalBinding(id, true)) return "external instance retained binding changed or unavailable";
@@ -8969,8 +9014,18 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         return void reply({ ok: false, error: "unknown room operation" });
       }
-      case "status":
-        return void reply({ t: "status", status: status(c.role === "console", false, true) });
+      case "status": {
+        const current = status(c.role === "console", false, true);
+        if ((c.role === "console" || c.role === "tools") && msg.specs === true) {
+          const summary = projectSpecs.status();
+          if (summary) {
+            const missingBlockHint = !specsMissingBlockHintShown && projectSpecs.missingBlock() === true;
+            if (missingBlockHint) specsMissingBlockHintShown = true;
+            return void reply({ t: "status", status: { ...current, specs: { ...summary, ...(missingBlockHint ? { missingBlockHint: true } : {}) } } });
+          }
+        }
+        return void reply({ t: "status", status: current });
+      }
       case "cli_audit_ack": {
         if (c.role !== "console") return void reply({ ok: false, error: "cli_audit_ack is a console command" });
         if (typeof msg.auditId !== "string" || !/^[a-f0-9-]{36}$/.test(msg.auditId)) return void reply({ ok: false, error: "invalid audit id" });
