@@ -175,6 +175,34 @@ test("a cached public proposal is withheld if its task becomes PII before replay
   } finally { f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
 });
 
+test("cached overlap paths are withheld when the other owner's task becomes PII", async () => {
+  const f = await fixture();
+  try {
+    const sensitivePath = "src/shared-sensitive.ts";
+    const source = f.board.propose(USER, { title: "synthetic public overlap source", class: "implement",
+      refs: { paths: [sensitivePath] }, plan: { paths: [sensitivePath] } });
+    f.board.update(source.id, "claude", "accepted", { owner: "claude", reviewer: USER, state: "in_progress" });
+
+    const requestId = newToolRequestId(f.codex.instanceId!);
+    const args = { title: "synthetic public overlap consumer", class: "implement", refs: { paths: [sensitivePath] }, plan: { paths: [sensitivePath] } };
+    const first = await f.codex.request({ t: "task", op: "hub_task_propose", requestId, args });
+    expect(first.ok).toBe(true);
+    expect(String(first.text)).toContain(`#${source.id} (owner claude)`);
+    expect(String(first.text)).toContain(sensitivePath);
+    const consumerCount = () => f.board.list().filter(task => task.title === args.title).length;
+    expect(consumerCount()).toBe(1);
+
+    f.board.update(source.id, USER, "source marked private", { signals: ["pii_path"] });
+    expect(f.board.get(source.id)?.signals).toContain("pii_path");
+    const consumer = f.board.list().find(task => task.title === args.title);
+    expect(consumer).toBeDefined();
+    expect(consumer?.signals).not.toContain("pii_path");
+    const replay = await f.codex.request({ t: "task", op: "hub_task_propose", requestId, args });
+    expect(consumerCount()).toBe(1);
+    expect(JSON.stringify(replay)).not.toContain(sensitivePath);
+  } finally { f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
+});
+
 test("a PII proposal still replays the exact fixed public task receipt", async () => {
   const f = await fixture({ screen: true, piiScreen: async () => ({ label: "pii", ms: 0 }) });
   try {
