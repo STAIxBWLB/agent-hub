@@ -807,14 +807,21 @@ var init_agy_mcp = __esm(() => {
 });
 
 // src/hub/orca-env.ts
-var ORCA_LAUNCHER_ENV;
+function withoutOrcaEnv(env) {
+  const out = { ...env };
+  for (const name of Object.keys(out))
+    if (isOrcaEnvName(name))
+      delete out[name];
+  return out;
+}
+var ORCA_LAUNCHER_ENV, isOrcaEnvName = (name) => name.startsWith("ORCA_");
 var init_orca_env = __esm(() => {
   ORCA_LAUNCHER_ENV = Object.freeze(["ORCA_CLI_COMMAND", "ORCA_DEV_REPO_ROOT", "ORCA_TERMINAL_HANDLE", "ORCA_WORKTREE_ID"]);
 });
 
 // src/hub/child-process.ts
 function childEnv(source = process.env) {
-  const env = { ...source };
+  const env = withoutOrcaEnv(source);
   delete env.AGENTHUB_RECOVERY_OPERATION;
   delete env.AGENTHUB_RECOVERY_CONDUCTOR;
   delete env.AGENTHUB_RECOVERY_CONTINUATION;
@@ -1074,7 +1081,7 @@ var PS, PS_OPTIONS, own = (text) => {
 var init_child_process = __esm(() => {
   init_orca_env();
   PS = ["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="];
-  PS_OPTIONS = { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, detached: true };
+  PS_OPTIONS = { env: { ...childEnv(process.env), LC_ALL: "C", TZ: "UTC" }, detached: true };
   emptied = new WeakSet;
 });
 
