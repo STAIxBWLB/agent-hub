@@ -5687,8 +5687,12 @@ export class Tasks {
     const receipt = task.sdlc && { ...task.sdlc, ...(reviewedHead ? { reviewedHead } : {}) };
     const approvalHead = transition === "approval" ? reviewedHead ?? this.ownerReviewHead(task) ?? this.findingHead(task) : undefined;
     const guardedHead = !!refileHead || !!approvalHead && !!receipt?.repo && !!receipt.pr && !this.isPii(task);
-    const identity = (value: Task) => JSON.stringify([value.id, value.state, value.owner, value.reviewer, value.history.length, this.isPii(value), value.refs, value.sdlc]);
-    const beforeHeadRead = guardedHead ? identity(task) : undefined;
+    // Compare raw head identity on both sides; `task` may carry an uncommitted identityLink.
+    // Completion state/history races stay with completionCurrent's existing post-readback fence.
+    const identity = (value: Task) => JSON.stringify([value.id, value.owner, value.reviewer, this.isPii(value),
+      value.refs.repo, value.refs.commit, value.refs.branch, value.sdlc?.repo, value.sdlc?.pr,
+      value.sdlc?.head, value.sdlc?.localHead, value.sdlc?.reviewedHead]);
+    const beforeHeadRead = guardedHead ? identity(this.need(task.id, false, true)) : undefined;
     const deadline = performance.now() + 20_000;
     const read: SdlcGh = (args, timeout, cwd, cap) => {
       const current = this.need(task.id, false, true);
