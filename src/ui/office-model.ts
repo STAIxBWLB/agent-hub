@@ -163,6 +163,11 @@ export interface OfficeScene {
   links: OfficeLink[];
   /** Sticky desk assignment; pass the whole scene back as `previous` so slots survive churn. */
   slots: Record<string, number>;
+  /**
+   * Public card data for tasks a desk bubble names that the rendering limits (8 per room, 2 on an overfull desk) left out of
+   * every `cards` list. Zero geometry: the dashboard never draws it, acon Space maps it. Same allowlisted fields as `cards`.
+   */
+  attributedCards: OfficeCard[];
   /** Task id -> placement ("room:todo" | "room:work" | "room:review" | "shelf:done" | "desk:<peer>" | "counted:unknown"). */
   placed: Record<string, string>;
   arcs: OfficeArc[];
@@ -359,6 +364,17 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
       : state === "in_progress" || state === "changes_requested" ? (owner && shownSet.has(owner) ? `desk:${owner}` : "room:work")
       : state === "backlog" ? "counted:backlog" : "counted:unknown";
   }
+  // A bubble's attributed task may sit past the rendering cut; keep its public card so a consumer that draws more cards than the page can.
+  const drawn = new Set<number>([...desks.flatMap((desk) => desk.cards), ...rooms.flatMap((room) => room.cards)].map((entry) => entry.id));
+  const taskById = new Map<number, OfficeTaskInput>(tasks.map((task) => [task.id, task]));
+  const attributedCards: OfficeCard[] = [];
+  for (const desk of desks) {
+    const id = /^#(\d+) /.exec(desk.bubble)?.[1];
+    const task = id === undefined ? undefined : taskById.get(Number(id));
+    if (!task || drawn.has(task.id)) continue;
+    drawn.add(task.id);
+    attributedCards.push(card(task, 0, 0, 0, 0));
+  }
   const transitions: OfficeTransitions = { desksAdded: [], desksRemoved: [], cardsMoved: [] };
   if (previous) {
     const prevPlaced = previous.placed ?? {};
@@ -440,7 +456,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     cols,
     width: Math.max(desksWidth, ...rooms.map(room => room.x + room.w), 1),
     height: Math.max(desksBottom, ...rooms.map(room => room.y + room.h), 1),
-    desks, extraPeers, rooms, counts, transitions, slots, placed,
+    desks, extraPeers, rooms, counts, transitions, slots, placed, attributedCards,
     links,
     arcs: keptArcs, alerts: keptAlerts, latched, settle, at, eventTime, lastSeq,
   };

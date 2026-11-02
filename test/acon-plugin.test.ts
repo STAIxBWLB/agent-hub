@@ -217,6 +217,29 @@ describe("acon Space from the office model (#1012 Part 2)", () => {
     expect(idle.actors.find((a) => a.id === "p1:pi")?.card).toBeUndefined();
   });
 
+  test("#1038: a peer attributed to a task past the room's visible cards gets that card in the scene, a [pii] one as a stub", () => {
+    const review = Array.from({ length: 10 }, (_, i) => ({ id: 20 + i, title: i === 9 ? "[pii]" : `review ${i}`, detail: `${MARKER} detail ${i}`, class: "review", state: "in_review", owner: "codex", reviewer: "pi", deps: [] }));
+    const input = (task: number) => ({ status: { peers: { pi: { state: "busy", turn: { task } }, codex: { state: "idle" } } }, tasks: review }) as unknown as OfficeSnapshotInput;
+    // #28 and #29 are past the room's eight visible cards.
+    const model = officeModel(input(28), null, { cols: 4, now: 3000 });
+    expect(model.rooms.find((r) => r.id === "review")!.cards.map((c) => c.id)).not.toContain(28);
+    const scene = officeSpace(model, { id: "p1" });
+    expect(scene.actors.find((a) => a.id === "p1:pi")?.card).toBe("p1:28");
+    expect(scene.cards.find((c) => c.id === "p1:28")).toMatchObject({ title: "#28 review 8", zone: "p1:review", owner: "p1:codex", link: { panel: "board" } });
+    expect(scene.cards.filter((c) => c.id === "p1:28")).toHaveLength(1);
+    expect(scene.cards).toHaveLength(9); // eight visible cards plus the attributed one, nothing else
+    const pii = officeSpace(officeModel(input(29), null, { cols: 4, now: 3000 }), { id: "p1" });
+    expect(pii.cards.find((c) => c.id === "p1:29")?.title).toBe("#29 [pii]");
+    expect(pii.actors.find((a) => a.id === "p1:pi")?.card).toBe("p1:29");
+    expect(JSON.stringify(pii)).not.toContain(MARKER);
+    expect(JSON.stringify(scene)).not.toContain(MARKER);
+    // A visible card is not added twice, and an attributed task that is not on the floor still gives no card.
+    expect(officeModel(input(21), null, { cols: 4, now: 3000 }).attributedCards).toEqual([]);
+    expect(officeModel(input(999), null, { cols: 4, now: 3000 }).attributedCards).toEqual([]);
+    // The merged scene keeps the attributed card inside SPACE_CAPS.cards.
+    expect(mergeSpaces([scene]).actors.find((a) => a.id === "p1:pi")?.card).toBe("p1:28");
+  });
+
   test("Codex thread 2: a broadcast arc (empty to) links the sender to every other visible desk", () => {
     const first = officeModel(dirty, null, { cols: 4, now: 3000 });
     const next = officeModel({ ...dirty, events: [{ seq: 10, event: { t: "envelope", env: { from: "codex", to: [], kind: "chat", priority: "status", ts: 3500, body: `${MARKER} all` } } }] } as unknown as OfficeSnapshotInput, first, { cols: 4, now: 4000 });
