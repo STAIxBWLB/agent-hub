@@ -1,7 +1,9 @@
 import type { CodeFactResult, CodeSymbol } from "./code-facts.ts";
+import { sanitize } from "./envelope.ts";
 import { childEnv } from "./child-process.ts";
 import { hubGitSync } from "./git.ts";
 import { symbolsOverlap } from "./symbol-normalizer.ts";
+import type { SpecTaskReport } from "./board.ts";
 
 /**
  * #520: the review brief ahub builds itself, in place of `ocr delegate preview` and `rule`. Every reviewer gets the same
@@ -29,6 +31,22 @@ export interface ReviewBrief {
   ruleGroups: { sources: string[]; paths: string[] }[];
   /** Paths in the plain name list of the range that the brief does not list: read them directly. */
   unlisted: string[];
+}
+
+/** A bounded, public summary of the design specs affected by one exact task head. */
+export function renderSpecTaskReport(report: SpecTaskReport): string {
+  const head = /^[0-9a-f]{40}$/.test(report.head) ? report.head : "unknown";
+  const lines = [`Design specs at ${head}:`];
+  if (!report.complete) lines.push(`Spec inspection incomplete${report.reason ? `: ${report.reason}` : "; coverage is unknown"}.`);
+  if (report.errors > 0) lines.push(`spec errors: ${report.errors}; run ahub specs check.`);
+  for (const spec of report.unchanged.slice(0, 20)) {
+    const label = `${spec.id}${spec.path ? ` (${spec.path})` : ""}`;
+    lines.push(`spec not updated: ${label}${spec.reason ? `; acknowledged: ${spec.reason}` : ""}`);
+  }
+  for (const spec of report.changed.slice(0, 20)) lines.push(`spec updated: ${spec.id}${spec.path ? ` (${spec.path})` : ""}`);
+  if (report.truncated || report.unchanged.length > 20 || report.changed.length > 20) lines.push("Spec report truncated; run ahub specs check for the full report.");
+  if (report.complete && report.errors === 0 && report.unchanged.length === 0 && report.changed.length === 0) lines.push("No covering specs were found for the changed files.");
+  return sanitize(lines.join("\n"));
 }
 export interface BriefPolicy { privatePath(path: string): boolean; nameable(text: string): boolean }
 

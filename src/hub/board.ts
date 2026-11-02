@@ -18,6 +18,8 @@ import type { SdlcReceipt } from "./sdlc.ts";
 import { parseReviewFindings, type ReviewFindingSet } from "./review-findings.ts";
 import { parseDeliverableRecords, type DeliverableRecord } from "./deliverables.ts";
 import type { CostPlan, ReviewCost } from "./cost-governance.ts";
+import type { SpecTaskReport } from "./specs-task.ts";
+export type { SpecAck, SpecRef, SpecTaskReport } from "./specs-task.ts";
 import { campaignHash, parseResearchCampaign, parseResearchHandoff, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchUnit, type ResearchHandoffV1, type ResearchHandoffRecord } from "./research-campaign.ts";
 
 export interface ResearchCampaignRecord {
@@ -201,6 +203,10 @@ export interface HistoryEntry {
   sweep?: SweepRecord;
   /** The PII screen did not clear this entry's note (#198): only the console reads it. */
   withheld?: true;
+  /** Public, head-bound design-spec status; acknowledgement text is screened before this is written. */
+  specReport?: SpecTaskReport;
+  /** Internal identity for incomplete reports without a full commit SHA; never projected publicly. */
+  specRefBinding?: string;
   /** Host evidence at done, never inferred from the owner's summary. */
   noWrites?: true;
   /** Host-recorded expected cost and exact review head, never narrative. */
