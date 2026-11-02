@@ -1,0 +1,139 @@
+{
+  "schema": "agent-hub.control-write-latency/v1",
+  "ok": true,
+  "mode": "full",
+  "host": {
+    "platform": "linux",
+    "arch": "x64",
+    "bun": "1.4.2"
+  },
+  "fixture": {
+    "tasksSeeded": 600,
+    "taskHistoryNotes": 12,
+    "noteBytes": 4096,
+    "boardAfterSeed": {
+      "hubDb": 30617600,
+      "hubDbWal": 0
+    },
+    "boardAfterRun": {
+      "hubDb": 30859264,
+      "hubDbWal": 4136512
+    },
+    "events": {
+      "bytes": 110100480,
+      "rows": 215040,
+      "bytesAtEndOfSamples": 110322624
+    }
+  },
+  "startup": {
+    "totalMs": 1289.06,
+    "includesStartupEventLogReads": true
+  },
+  "timing": "p50/p95 are ControlClient request round trips; Board method timings are nested synchronous observations and not additive",
+  "scope": {
+    "taskWrites": "ControlClient task RPCs",
+    "deliveryComplete": "real accepted delivery journal path using a synthetic peer ControlClient",
+    "channelMcpWrapper": "not measured",
+    "nativeModelsAndAccounts": "not used"
+  },
+  "iterationsPerPhase": 20,
+  "phases": [
+    {
+      "name": "review_approved",
+      "count": 20,
+      "p50Ms": 247.64,
+      "p95Ms": 301.97,
+      "outcomes": {
+        "ok": 20
+      },
+      "states": {
+        "approved": 20
+      },
+      "board": {
+        "listCalls": 140,
+        "listRows": 68300,
+        "listMs": 4229.38,
+        "privacyProjectionCalls": 40,
+        "privacyProjectionRows": 6600,
+        "privacyProjectionMs": 7.28,
+        "taskWriteCalls": 20,
+        "taskWriteMs": 2951.22,
+        "deliveryCompleteCalls": 0,
+        "deliveryCompleteMs": 0
+      }
+    },
+    {
+      "name": "proposal_backlog",
+      "count": 20,
+      "p50Ms": 60.86,
+      "p95Ms": 75.6,
+      "outcomes": {
+        "ok": 20
+      },
+      "states": {
+        "backlog": 20
+      },
+      "board": {
+        "listCalls": 40,
+        "listRows": 21100,
+        "listMs": 1085.81,
+        "privacyProjectionCalls": 0,
+        "privacyProjectionRows": 0,
+        "privacyProjectionMs": 0,
+        "taskWriteCalls": 20,
+        "taskWriteMs": 1218.1,
+        "deliveryCompleteCalls": 0,
+        "deliveryCompleteMs": 0
+      }
+    },
+    {
+      "name": "proposal_claim",
+      "count": 20,
+      "p50Ms": 473.43,
+      "p95Ms": 529.83,
+      "outcomes": {
+        "ok": 20
+      },
+      "states": {
+        "in_progress": 20
+      },
+      "board": {
+        "listCalls": 260,
+        "listRows": 150340,
+        "listMs": 7893.86,
+        "privacyProjectionCalls": 60,
+        "privacyProjectionRows": 1790,
+        "privacyProjectionMs": 9.21,
+        "taskWriteCalls": 60,
+        "taskWriteMs": 4949.73,
+        "deliveryCompleteCalls": 0,
+        "deliveryCompleteMs": 0
+      }
+    },
+    {
+      "name": "delivery_complete",
+      "count": 20,
+      "p50Ms": 8.89,
+      "p95Ms": 26.97,
+      "outcomes": {
+        "completed": 20
+      },
+      "states": {
+        "completed": 20
+      },
+      "board": {
+        "listCalls": 0,
+        "listRows": 0,
+        "listMs": 0,
+        "privacyProjectionCalls": 0,
+        "privacyProjectionRows": 0,
+        "privacyProjectionMs": 0,
+        "taskWriteCalls": 0,
+        "taskWriteMs": 0,
+        "deliveryCompleteCalls": 20,
+        "deliveryCompleteMs": 141.43
+      }
+    }
+  ],
+  "sourceCommit": "2adfd6bd0e108baec09b9c75e937b162ff6e316c"
+}

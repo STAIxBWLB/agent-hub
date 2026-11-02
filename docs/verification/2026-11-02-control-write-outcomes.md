@@ -31,6 +31,19 @@ The first guarded implementation at `7615b065fcc5a6c0f9e0fd78fa4daed1531b4f5a` e
 
 The privacy predicate needs only state and signal flags for tasks owned or reviewed by that peer. A fresh Board.peerTaskSignals query now reads just those fields, without decoding unrelated titles, plans or histories. The daemon retains the same `isClosedTaskState` and `Tasks.isPii` predicates, including the current routing policy; no privacy result is cached. Corrupt required signal data fails closed, while unrelated history bytes are not a privacy input. The benchmark separately counts these fresh projections.
 
+## Post-projection measurement
+
+Source snapshot `2adfd6bd0e108baec09b9c75e937b162ff6e316c` used the same 600-task/12-note/105 MiB fixture and 20 samples per operation. All 80 operations succeeded. The aggregate [post-change receipt](2026-11-02-control-write-after.json) has SHA-256 `44e932568954c387d9a278f4c3bc5c1d0cb01e23dda4550981db8db17afcaa0e`. It measures the source snapshot, independently of later invalid-input-only compatibility checks and documentation commits.
+
+| Operation | p50 ms | p95 ms | Full Board.list calls | Fresh signal projections | Projection ms (total) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| review_approved | 247.64 | 301.97 | 140 | 40 | 7.28 |
+| proposal_backlog | 60.86 | 75.6 | 40 | 0 | 0 |
+| proposal_claim | 473.43 | 529.83 | 260 | 60 | 9.21 |
+| delivery_complete | 8.89 | 26.97 | 0 | 0 | 0 |
+
+Claim full scans returned from 320 in the first guarded version to 260, with all 60 new privacy projections still executed. Those projections took 9.21 ms total across 20 claims; they are fresh reads rather than cached decisions. Review full scans fell from 180 to 140. Shared-host timing variation prevents a general speedup claim; the measured p95 values and scan counts are reported without discarding the intermediate run. The reported live 35-45 second delay remains unverified.
+
 ## Implementation and verification
 
 Replay applies to `hub_task_propose`, `hub_review` and `hub_delivery_done`. The control message carries `requestId` separately from transport `rid`; duplicate calls keep their own transport correlation while joining one pending write or returning its first retained result. A changed actor/role/launch/execution scope or changed arguments cannot reuse that ID. Current authority/privacy gates still run before results leave the daemon. Invocation retains its existing admission/cancellation protocol.
@@ -41,4 +54,4 @@ The daemon retains up to 512 keys and 64 KiB per result within a 15-minute repla
 
 The channel retains 512 live MCP-to-wire mappings and at most 65,536 hash-only seen-ID tombstones per plugin process, so an expired MCP ID does not become a fresh write. Changing the arguments for one typed MCP request ID reuses its token and reaches the server's conflict refusal. A full identity history fails closed; a durable outcome ledger is the upgrade path for higher sustained volume.
 
-Helper/client focused verification at `bd7f723444595b94e7f2b8176417c6a5f0a87871` passed 27 tests and typecheck on dgx02. Integrated exact-head, bundle, changed gate and post-change measurement evidence is still pending and will be recorded before review submission.
+Helper/client focused verification at `bd7f723444595b94e7f2b8176417c6a5f0a87871` passed 27 tests and typecheck on dgx02. Integrated focused verification at `7615b065fcc5a6c0f9e0fd78fa4daed1531b4f5a` passed 65 tests and typecheck; projection verification at `2adfd6bd0e108baec09b9c75e937b162ff6e316c` passed 66 tests across eight files, typecheck and a byte-identical pinned bundle rebuild. Final changed-gate results and hosted CI state are recorded against the exact reviewed head in the PR and task #631.

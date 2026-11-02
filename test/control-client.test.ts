@@ -215,3 +215,15 @@ test("an explicit replay is never resubmitted to a legacy daemon that would igno
   expect(reply).toMatchObject({ outcome: "unknown", requestId: "old-daemon-request" });
   expect(reply.error).toContain("nothing was resubmitted"); expect(f.seen).toHaveLength(0);
 });
+
+test("cancelling a sent write reports unknown without issuing invocation cancellation", async () => {
+  const f = await writeOutcomeServer(), abort = new AbortController();
+  const pending = f.client.request({ t: "task", op: "hub_task_propose", args: { title: "synthetic cancellable write" } }, 30_000, abort.signal);
+  await f.untilSeen(1); abort.abort();
+  const reply = await pending;
+  expect(reply).toMatchObject({ outcome: "unknown", requestId: f.seen[0]!.requestId });
+  expect(reply.error).toContain("hub_task_list"); expect(f.seen.some(msg => msg.t === "request_cancel")).toBe(false);
+  const unsent = await f.client.request({ t: "task", op: "hub_review", args: { id: 7, verdict: "approved" } }, 30_000, abort.signal);
+  expect(unsent).toMatchObject({ ok: false, error: "hub request cancelled before sending" });
+  expect(unsent).not.toHaveProperty("outcome"); expect(f.seen).toHaveLength(1);
+});

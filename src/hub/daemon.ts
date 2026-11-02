@@ -3314,10 +3314,16 @@ export async function startDaemon(opts: DaemonOptions) {
         : result?.ok === true && typeof result.text === "string" ? Number(/task #(\d+):/.exec(result.text)?.[1]) : undefined;
       if (taskId !== undefined) {
         const task = Number.isSafeInteger(taskId) && taskId > 0 ? board.get(taskId) : undefined;
-        const safePiiProposalReceipt = operation === "hub_task_propose" && actor !== USER && result?.ok === true && typeof result.text === "string"
-          && /^task #[1-9]\d*: (?:backlog|proposed|in_progress|in_review|approved|changes_requested|cancelled), owner (?:none|[a-z][a-z0-9-]{0,31}), reviewer (?:none|[a-z][a-z0-9-]{0,31})$/.test(result.text);
-        if (!task || actor !== USER && tasks.isPii(task) && !safePiiProposalReceipt || operation === "hub_review" && actor !== USER && task.reviewer !== actor
-          || actor !== USER && result?.ok === true && typeof result.text === "string" && !tasks.publicMetadataText(result.text) && !safePiiProposalReceipt) return false;
+        if (!task) {
+          // Let the original Tasks.review validation return its specific pre-effect refusal for a new/bad target.
+          // A successful cached verdict without its task row is no longer safe to replay.
+          if (operation !== "hub_review" || result?.ok === true) return false;
+        } else {
+          const safePiiProposalReceipt = operation === "hub_task_propose" && actor !== USER && result?.ok === true && typeof result.text === "string"
+            && /^task #[1-9]\d*: (?:backlog|proposed|in_progress|in_review|approved|changes_requested|cancelled), owner (?:none|[a-z][a-z0-9-]{0,31}), reviewer (?:none|[a-z][a-z0-9-]{0,31})$/.test(result.text);
+          if (actor !== USER && tasks.isPii(task) && !safePiiProposalReceipt || operation === "hub_review" && actor !== USER && task.reviewer !== actor
+            || actor !== USER && result?.ok === true && typeof result.text === "string" && !tasks.publicMetadataText(result.text) && !safePiiProposalReceipt) return false;
+        }
       }
       if (actor !== USER && typeof result?.error === "string" && result.outcome !== "unknown" && !tasks.publicMetadataText(result.error)) return false;
       return true;

@@ -98,6 +98,24 @@ test("selected task writes replay one result by request ID while unrelated opera
   } finally { f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
 });
 
+test("invalid or missing review task ids keep Tasks' known refusal and replay without a board write", async () => {
+  const f = await fixture();
+  try {
+    const revision = f.board.statusRevision();
+    for (const id of ["not-a-task-id", 999_999]) {
+      const requestId = newToolRequestId(f.person.instanceId!);
+      const request = { t: "task", op: "hub_review", requestId, args: { id, verdict: "approved" } };
+      const first = await f.person.request(request);
+      const replay = await f.person.request(request);
+      expect(first).toEqual(replay);
+      expect(first).toMatchObject({ ok: false, requestId });
+      expect(first.outcome).toBeUndefined();
+      expect(String(first.error)).toMatch(/id|task/i);
+    }
+    expect(f.board.statusRevision()).toBe(revision);
+  } finally { f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
+});
+
 test("self owner normalization and empty owner do not acquire assignment capability", async () => {
   const f = await fixture({ capabilities: { codex: ["propose"] } });
   try {
