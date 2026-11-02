@@ -14,6 +14,8 @@ const MAX_STAMPS_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_COMMITTED_SPEC_BYTES = 4 * 1024 * 1024;
 const MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 2000;
+const MAX_PARSED_BLOB_CACHE_BYTES = 16 * 1024 * 1024;
+const MAX_BLOB_BATCH_BYTES = 8 * 1024 * 1024;
 const MAX_TRACKED_PATHS_PER_SCOPE = 4096;
 const MAX_REPORT_ITEMS = 500;
 const GIT_SAFE_OPTIONS = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.pager=cat", "-c", "credential.helper=", "-c", "core.askpass="];
@@ -101,6 +103,30 @@ interface CachedFile {
   truncated: boolean;
   node?: SpecNode;
   items: SpecsDiagnostic[];
+}
+
+// Immutable object ids allow unchanged Markdown (including non-specs) to survive
+// submitted-head/engine rotation. Bound retained parsed data, never whole bodies.
+const committedCandidates = new Map<string, { path: string; read: CachedFile; weight: number }>();
+let committedCandidateBytes = 0;
+function cachedCandidate(oid: string, path: string): CachedFile | undefined {
+  const cached = committedCandidates.get(oid);
+  if (!cached) return undefined;
+  committedCandidates.delete(oid); committedCandidates.set(oid, cached);
+  return { ...cached.read, node: cached.read.node ? { ...cached.read.node, path } : undefined,
+    items: cached.read.items.map(diagnostic => ({ ...diagnostic, path,
+      message: diagnostic.message.startsWith(`${cached.path}:`) ? `${path}:${diagnostic.message.slice(cached.path.length + 1)}` : diagnostic.message })) };
+}
+function cacheCandidate(oid: string, path: string, read: CachedFile): void {
+  const weight = Math.max(512, Buffer.byteLength(JSON.stringify(read)));
+  if (weight > MAX_PARSED_BLOB_CACHE_BYTES) return;
+  const previous = committedCandidates.get(oid);
+  if (previous) { committedCandidateBytes -= previous.weight; committedCandidates.delete(oid); }
+  committedCandidates.set(oid, { path, read, weight }); committedCandidateBytes += weight;
+  while (committedCandidateBytes > MAX_PARSED_BLOB_CACHE_BYTES) {
+    const oldest = committedCandidates.keys().next().value!;
+    committedCandidateBytes -= committedCandidates.get(oldest)!.weight; committedCandidates.delete(oldest);
+  }
 }
 
 interface ScanResult {
@@ -395,12 +421,15 @@ export class SpecsEngine {
     const entry = this.snapshotTree()?.get(path);
     if (!entry || !["100644", "100755"].includes(entry.mode) || !isSafeRepoPath(path)) return undefined;
     const cached = this.cache.get(path); if (cached) return cached;
-    // ponytail: committed bodies are capped at 4 MiB; stream cat-file when larger design documents are needed.
-    const result = this.git(["cat-file", "blob", entry.oid], MAX_COMMITTED_SPEC_BYTES);
-    const bytes = Buffer.from(result.stdout);
+    const shared = cachedCandidate(entry.oid, path);
+    if (shared) { this.cache.set(path, shared); return shared; }
+    // A batch failure stays unknown; never fall back to one process per file.
+    return this.parseCommittedCandidate(path, Buffer.alloc(0), true);
+  }
+
+  private parseCommittedCandidate(path: string, bytes: Buffer, incomplete: boolean): CachedFile {
     const parsed = parseHeader(bytes.subarray(0, MAX_FRONTMATTER_BYTES + 16).toString("utf8"), path);
     const candidate = Object.hasOwn(parsed.fields, "id") && Object.hasOwn(parsed.fields, "type");
-    const incomplete = result.status !== 0;
     const items = candidate ? [...parsed.items] : [];
     if (incomplete && (!bytes.length || candidate)) items.push(item("error", "snapshot-unavailable", `${path}: committed spec read is incomplete`, "the Git blob exceeded the 4 MiB body cap or could not be read", "shorten the spec or narrow specs.roots and retry", { path }));
     let node: SpecNode | undefined;
@@ -408,12 +437,73 @@ export class SpecsEngine {
       if (!parsed.closing && !parsed.tooLarge) items.push(item("error", "frontmatter-unterminated", `${path}: spec frontmatter is incomplete`, "the opening delimiter has no closing delimiter", "close the frontmatter delimiter within 8 KiB", { path }));
       const scalar = (key: string) => typeof parsed.fields[key] === "string" ? parsed.fields[key] as string : undefined;
       const list = (key: string) => Array.isArray(parsed.fields[key]) ? parsed.fields[key] as string[] : [];
-      const bodyLinks = parsed.closing && !incomplete ? [...new Set([...bytes.subarray(parsed.bodyOffset).toString("utf8").matchAll(/\[\[([^\]\r\n]{1,256})\]\]/g)].map(match => match[1]!.trim()).filter(Boolean))] : [];
+      const bodyLinks = parsed.closing && !incomplete ? [...new Set([...bytes.subarray(parsed.bodyOffset).toString("utf8").matchAll(/\[\[([^\]\r\n]{1,256})\]\]/g)].map(match => Buffer.from(match[1]!.trim()).toString("utf8")).filter(Boolean))] : [];
       node = { path, id: scalar("id"), type: scalar("type"), title: scalar("title"), status: scalar("status"), parent: scalar("parent"), dependsOn: list("depends-on"), references: list("references"), implements: list("implements"), supersededBy: scalar("superseded-by"), covers: list("covers"), tags: list("tags"), paths: list("paths"), verifiedAgainst: scalar("verified-against"), bodyLinks, ...(!parsed.closing ? { frontmatterIncomplete: true } : {}) };
     }
     const read = { size: bytes.length, mtimeMs: 0, dev: 0, ino: 0, node, items, truncated: candidate && (incomplete || parsed.tooLarge) || incomplete && !bytes.length };
-    if (!incomplete) this.cache.set(path, read);
     return read;
+  }
+
+  private gitBatch(args: string[], oids: readonly string[]): Buffer | undefined {
+    try {
+      const result = hubGitSync(["-C", this.root, ...GIT_SAFE_OPTIONS, "cat-file", ...args], {
+        input: `${oids.join("\n")}\n`, encoding: "latin1", timeout: GIT_TIMEOUT_MS, maxBuffer: MAX_GIT_OUTPUT_BYTES,
+      });
+      return result.status === 0 ? Buffer.from(result.stdout ?? "", "latin1") : undefined;
+    } catch { return undefined; }
+  }
+
+  private warmCommittedCandidates(files: readonly string[]): void {
+    const tree = this.snapshotTree();
+    const cold = new Map<string, string[]>();
+    for (const path of files) {
+      const entry = tree?.get(path);
+      if (!entry || !isSafeRepoPath(path) || !["100644", "100755"].includes(entry.mode) || this.cache.has(path)) continue;
+      const cached = cachedCandidate(entry.oid, path);
+      if (cached) { this.cache.set(path, cached); continue; }
+      const paths = cold.get(entry.oid) ?? []; paths.push(path); cold.set(entry.oid, paths);
+    }
+    if (!cold.size) return;
+    // Obtain sizes first so each binary batch fits the output bound, even when a
+    // repository has thousands of large Markdown files or adversarial blobs.
+    const sizes = this.gitBatch(["--batch-check"], [...cold.keys()]);
+    if (!sizes) return;
+    const lines = sizes.toString("ascii").trimEnd().split("\n");
+    if (lines.length !== cold.size) return;
+    const rows: { oid: string; size: number }[] = [];
+    let index = 0;
+    for (const oid of cold.keys()) {
+      const match = /^([0-9a-f]{40}) blob ([0-9]+)$/.exec(lines[index++]!);
+      if (!match || match[1] !== oid) return;
+      const size = Number(match[2]);
+      if (!Number.isSafeInteger(size)) return;
+      if (size > MAX_COMMITTED_SPEC_BYTES) continue; // Unknown, without loading an oversized object.
+      rows.push({ oid, size });
+    }
+    let offset = 0;
+    while (offset < rows.length) {
+      const batch: typeof rows = []; let bytes = 0;
+      while (offset < rows.length && bytes + rows[offset]!.size + 128 <= MAX_BLOB_BATCH_BYTES) {
+        const row = rows[offset++]!; batch.push(row); bytes += row.size + 128;
+      }
+      const output = this.gitBatch(["--batch"], batch.map(row => row.oid));
+      if (!output) continue;
+      let cursor = 0;
+      for (const row of batch) {
+        const end = output.indexOf(10, cursor);
+        if (end < 0 || output.subarray(cursor, end).toString("ascii") !== `${row.oid} blob ${row.size}`) break;
+        const start = end + 1, next = start + row.size;
+        if (next >= output.length || output[next] !== 10) break;
+        const paths = cold.get(row.oid)!;
+        const parsed = this.parseCommittedCandidate(paths[0]!, output.subarray(start, next), false);
+        cacheCandidate(row.oid, paths[0]!, parsed);
+        for (const path of paths) this.cache.set(path, path === paths[0] ? parsed : { ...parsed,
+          node: parsed.node ? { ...parsed.node, path } : undefined,
+          items: parsed.items.map(diagnostic => ({ ...diagnostic, path,
+            message: diagnostic.message.startsWith(`${paths[0]}:`) ? `${path}:${diagnostic.message.slice(paths[0]!.length + 1)}` : diagnostic.message })) });
+        cursor = next + 1;
+      }
+    }
   }
 
   private git(args: string[], maxBuffer = MAX_GIT_OUTPUT_BYTES): { status: number | null; stdout: string; stderr?: string; error?: { code?: string; message?: string } } {
@@ -491,6 +581,7 @@ export class SpecsEngine {
     let truncated = discovered.length > MAX_FILES;
     const files = discovered.slice(0, MAX_FILES);
     const nodes: SpecNode[] = [], items: SpecsDiagnostic[] = [];
+    if (this.commit) this.warmCommittedCandidates(files);
     const seen = new Set(files);
     for (const old of this.cache.keys()) if (!seen.has(old)) this.cache.delete(old);
     for (const file of files) {

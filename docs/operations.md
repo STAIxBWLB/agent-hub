@@ -2528,9 +2528,16 @@ Acknowledgements are screened, recorded at the exact head, and shown to the
 reviewer. A new head invalidates the old report. Unknown or truncated coverage
 cannot satisfy `require`; a refusal names the next step. A call accepts up to
 20 acknowledgements; larger changes can update the specs or split the task.
+Tasks without a submitted commit or with no changed files have no coverage
+obligation. Existing spec errors are reported on tasks touching covered paths
+or spec documents. A privacy change during a check suppresses its spec report
+without discarding the check result.
 
 `hub_specs` offers read-only `check` and `covers` actions with at most 20 report
-items. PII tasks and private turns do not publish spec paths through task
+items. These explicit reads and status inspect the daemon checkout; task notices
+inspect the owner's execution root and completion reports inspect its submitted
+commit. Immutable Markdown blobs are read in bounded batches and parsed results
+are cached by object id across submitted heads. PII tasks and private turns do not publish spec paths through task
 notices. Completion snapshots skip Git symlinks and cap each committed spec
 body at 4 MiB; an incomplete read stays unknown. Status shows a specs count,
 error count and stale count only when specs or stamped documents exist, with

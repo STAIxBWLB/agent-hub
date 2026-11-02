@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -62,8 +63,8 @@ test("unknown changed-file evidence cannot produce an acknowledged complete repo
   const head = git("rev-parse", "HEAD"), inspector = new SpecTaskInspector(root, () => parseSpecsConfig(undefined));
   const report = inspector.inspect(head, undefined, { complete: false, acks: [{ id: "bus", reason: "public reason" }] });
   expect(report).toMatchObject({ head, complete: false, unchanged: [], changed: [] });
-  expect(inspector.inspect("", [], { complete: true })?.complete).toBe(false);
-  expect(inspector.inspect("a".repeat(40), [], { complete: true })?.complete).toBe(false);
+  expect(inspector.inspect("", undefined, { complete: false })).toBeUndefined();
+  expect(inspector.inspect("a".repeat(40), undefined, { complete: false })?.complete).toBe(false);
 });
 
 test("empty projects and effective off switches are quiet while explicit reads still work", () => {
@@ -114,4 +115,70 @@ test("missing-block hints distinguish absence from unsafe instruction files", ()
   expect(inspector.missingBlock()).toBeUndefined();
   rmSync(join(root, "AGENTS.md")); symlinkSync(join(root, "src/bus.ts"), join(root, "AGENTS.md"));
   expect(inspector.missingBlock()).toBeUndefined();
+});
+
+
+test("commitless and known empty changes stay quiet in report and require, even with stamps configured", () => {
+  const { root, git, spec } = repo();
+  writeFileSync(join(root, "bus.md"), spec()); git("add", "."); git("commit", "-qm", "design");
+  for (const review of ["report", "require"] as const) {
+    const inspector = new SpecTaskInspector(root, () => parseSpecsConfig({ review, stamps_file: "missing-stamps.json" }));
+    for (const head of ["", "main", "not-a-sha"]) expect(inspector.inspect(head, undefined, { complete: false })).toBeUndefined();
+    expect(inspector.inspect(git("rev-parse", "HEAD"), [], { complete: true })).toBeUndefined();
+    expect(inspector.inspect(git("rev-parse", "HEAD"), undefined, { complete: false })?.complete).toBe(false);
+  }
+});
+
+test("pre-existing graph errors are reported only when the task touches covered source or a spec", () => {
+  const { root, git, spec } = repo();
+  writeFileSync(join(root, "bus.md"), spec().replace("title: Bus\n", "")); git("add", "."); git("commit", "-qm", "invalid design");
+  const head = git("rev-parse", "HEAD"), inspector = new SpecTaskInspector(root, () => parseSpecsConfig(undefined));
+  expect(inspector.inspect(head, [{ path: "src/other.ts", status: "M" }], { complete: true })).toBeUndefined();
+  expect(inspector.inspect(head, [{ path: "src/bus.ts", status: "M" }], { complete: true })?.errors).toBeGreaterThan(0);
+  expect(inspector.inspect(head, [{ path: "bus.md", status: "M" }], { complete: true })?.errors).toBeGreaterThan(0);
+});
+
+test("committed Markdown reads are batched and unchanged blobs are reused across heads", () => {
+  const { root, git } = repo();
+  // Unique fixture bodies keep the process-wide cache cold regardless of test order.
+  for (let index = 0; index < 200; index++) writeFileSync(join(root, `note-${index}.md`), `# Note ${index} ${root}\n일반 문서 ${index}\n`);
+  git("add", "."); git("commit", "-qm", "ordinary Markdown");
+  const first = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "src/bus.ts"), "export const bus = 2;\n"); git("add", "."); git("commit", "-qm", "source only");
+  const second = git("rev-parse", "HEAD");
+  const bin = join(root, "bin"), calls = join(root, "git-calls"), original = process.env.PATH, actual = Bun.which("git")!;
+  mkdirSync(bin);
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  const shim = join(bin, "git");
+  writeFileSync(shim, ["#!/bin/sh", `printf '%s ' \"$@\" >> ${quote(calls)}`, `printf '\\n' >> ${quote(calls)}`, `exec ${quote(actual)} \"$@\"`, ""].join("\n"));
+  chmodSync(shim, 0o755);
+  spawnSync(shim, ["--version"], { stdio: "ignore" }); writeFileSync(calls, "");
+  process.env.PATH = `${bin}:${original}`;
+  try {
+    const config = parseSpecsConfig(undefined);
+    expect(new SpecsEngine(root, config, { commit: first }).check()).toMatchObject({ specCount: 0, errors: 0, truncated: false });
+    const initialCalls = readFileSync(calls, "utf8").trim().split("\n");
+    expect(initialCalls.filter(line => line.includes("cat-file --batch "))).toHaveLength(1);
+    expect(initialCalls.filter(line => line.includes("cat-file --batch-check "))).toHaveLength(1);
+    expect(initialCalls.some(line => line.includes("cat-file blob "))).toBe(false);
+    writeFileSync(calls, "");
+    expect(new SpecsEngine(root, config, { commit: second }).check()).toMatchObject({ specCount: 0, errors: 0, truncated: false });
+    const nextCalls = readFileSync(calls, "utf8");
+    expect(nextCalls).not.toContain("cat-file --batch");
+    expect(nextCalls).not.toContain("cat-file blob ");
+  } finally { process.env.PATH = original; }
+});
+
+test("batched binary boundaries preserve non-ASCII spec text and cached diagnostic paths after rename", () => {
+  const { root, git, spec } = repo();
+  writeFileSync(join(root, "old.md"), spec().replace("title: Bus", "title: 버스 설계").replace("Bus design.", "설계 본문 [[없는대상]]"));
+  // An invalid header diagnostic includes its source path and must follow an object-id cache hit.
+  writeFileSync(join(root, "invalid.md"), spec().replace("title: Bus", "title: 버스 설계\n  nested: invalid"));
+  git("add", "."); git("commit", "-qm", "non-ASCII design");
+  const first = git("rev-parse", "HEAD"), config = parseSpecsConfig(undefined);
+  expect(new SpecsEngine(root, config, { commit: first }).list().specs.some(row => row.title === "버스 설계")).toBe(true);
+  git("mv", "invalid.md", "renamed.md"); git("commit", "-qm", "rename invalid design");
+  const report = new SpecsEngine(root, config, { commit: git("rev-parse", "HEAD") }).check();
+  expect(report.items.some(row => row.code === "invalid-frontmatter" && row.path === "renamed.md" && row.message.startsWith("renamed.md:"))).toBe(true);
+  expect(report.items.some(row => row.path === "invalid.md" || row.message.startsWith("invalid.md:"))).toBe(false);
 });

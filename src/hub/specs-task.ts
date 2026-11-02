@@ -83,11 +83,8 @@ export class SpecTaskInspector {
   inspect(head: string, changedFiles: readonly BriefFile[] | undefined, options: { complete: boolean; acks?: readonly SpecAck[] }): SpecTaskReport | undefined {
     const config = this.config();
     if (!config.enabled || config.review === "off") return undefined;
-    if (!/^[0-9a-f]{40}$/.test(head)) {
-      const live = this.engine().list();
-      if (!live.specs.length && !config.stamps_file) return undefined;
-      return { head, complete: false, errors: 0, unchanged: [], changed: [], reason: "submitted full head is unavailable" };
-    }
+    // Commitless and explicitly empty changes carry no coverage obligation.
+    if (!/^[0-9a-f]{40}$/.test(head) || changedFiles?.length === 0 && options.complete) return undefined;
     let engine: SpecsEngine, check: SpecsCheckReport;
     try { engine = this.engine(head); check = engine.check(); }
     catch { return { head, complete: false, errors: 0, unchanged: [], changed: [], reason: "submitted spec tree is unavailable" }; }
@@ -104,7 +101,8 @@ export class SpecTaskInspector {
       const row: SpecRef = { ...spec, ...(acks.has(spec.id) ? { reason: acks.get(spec.id)! } : {}) };
       (changedPaths.has(spec.path) ? changed : unchanged).push(row);
     }
-    if (!changed.length && !unchanged.length && !check.errors && !covers.truncated) return undefined;
+    const touchedSpec = coverage.specs.some(spec => changedPaths.has(spec.path));
+    if (!changed.length && !unchanged.length && !touchedSpec && !covers.truncated) return undefined;
     return { head, complete: !covers.truncated, errors: check.errors, changed, unchanged, truncated: covers.truncated };
   }
 }
