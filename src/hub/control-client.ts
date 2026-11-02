@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { projectContext } from "./project.ts";
-import { newToolRequestId, TOOL_WRITE_FEATURE, toolWriteOperation, toolWriteUnknownReply } from "./tool-request.ts";
+import { newToolRequestId, TOOL_WRITE_FEATURE, toolWriteOperation, toolWriteUnknownReply, toolWriteRefusedReply } from "./tool-request.ts";
 import { externalAdapterMetadata, externalInstanceCatalog, type ExternalInstanceCatalog, type ExternalAdapterMetadata } from "../adapters/external-metadata.ts";
 import { negotiateProtocol, protocolWindow, type ProtocolWindow } from "./protocol-window.ts";
 
@@ -224,13 +224,22 @@ export class ControlClient {
   request(msg: Record<string, unknown>, timeoutMs = 30_000, signal?: AbortSignal): Promise<any> {
     if (this.ws.readyState !== WebSocket.OPEN || this.closing && msg.t !== "request_cancel") return Promise.resolve({ ok: false, error: "hub connection is not open" });
     const invocation = msg.t === "task" && msg.op === "hub_invoke";
-    const write = toolWriteOperation(msg) !== undefined;
-    if (write && msg.requestId !== undefined && !this.features.includes(TOOL_WRITE_FEATURE)) {
-      return Promise.resolve(toolWriteUnknownReply(msg, typeof msg.requestId === "string" ? msg.requestId : undefined,
+    const operation = toolWriteOperation(msg), write = operation !== undefined;
+    const keyedWrite = write && operation !== "hub_delivery_done";
+    if (keyedWrite && msg.args && typeof msg.args === "object" && !Array.isArray(msg.args) && Object.hasOwn(msg.args, "request_id")) {
+      const { request_id: key, ...args } = msg.args as Record<string, unknown>;
+      if (typeof key !== "string" || !key || key.length > 256 || /[\p{Cc}\p{Cf}]/u.test(key)
+        || msg.requestId !== undefined && msg.requestId !== key) {
+        return Promise.resolve(toolWriteRefusedReply(msg, undefined, "request_id must be a non-empty echoed request key and agree with requestId"));
+      }
+      msg = { ...msg, args, requestId: key };
+    }
+    if (keyedWrite && msg.requestId !== undefined && !this.features.includes(TOOL_WRITE_FEATURE)) {
+      return Promise.resolve(toolWriteRefusedReply(msg, typeof msg.requestId === "string" ? msg.requestId : undefined,
         "this daemon does not advertise replay protection; nothing was resubmitted"));
     }
     let wire = msg;
-    if (write && this.features.includes(TOOL_WRITE_FEATURE) && msg.requestId === undefined) {
+    if (keyedWrite && this.features.includes(TOOL_WRITE_FEATURE) && msg.requestId === undefined) {
       try { wire = { ...msg, requestId: newToolRequestId(this.instanceId ?? "") }; }
       catch { return Promise.resolve({ ok: false, error: "write request identity is unavailable; inspect ahub status before retrying" }); }
     }

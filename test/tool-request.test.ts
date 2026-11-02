@@ -32,8 +32,8 @@ test("same id with changed authority or payload is refused, while JSON key order
   const work = async () => ({ ok: true, text: String(++applied) });
   await registry.run(request(id), work);
   expect(await registry.run(request(id, { args: { class: "implement", title: "synthetic task" }, op: "hub_task_propose", t: "task" }), work)).toMatchObject({ ok: true, text: "1" });
-  expect(await registry.run(request(id, { ...message, args: { title: "other" } }), work)).toMatchObject({ ok: false, outcome: "unknown" });
-  expect(await registry.run(request(id, message, "tools:kimi:other-launch"), work)).toMatchObject({ ok: false, outcome: "unknown" });
+  expect(await registry.run(request(id, { ...message, args: { title: "other" } }), work)).toMatchObject({ ok: false, outcome: "refused" });
+  expect(await registry.run(request(id, message, "tools:kimi:other-launch"), work)).toMatchObject({ ok: false, outcome: "refused" });
   expect(applied).toBe(1);
 });
 
@@ -43,11 +43,11 @@ test("old daemon ids, future ids and expired ids cannot apply, including after c
   const work = async () => ({ ok: true, text: String(++applied) });
   await registry.run(request(id), work);
   now += 1000;
-  expect(await registry.run(request(id), work)).toMatchObject({ outcome: "unknown" });
+  expect(await registry.run(request(id), work)).toMatchObject({ outcome: "refused" });
   now = start;
-  expect(await registry.run(request(id), work)).toMatchObject({ outcome: "unknown" });
-  expect(await registry.run(request(newToolRequestId("old-instance", now)), work)).toMatchObject({ outcome: "unknown" });
-  expect(await registry.run(request(newToolRequestId(epoch, now + 60_000)), work)).toMatchObject({ outcome: "unknown" });
+  expect(await registry.run(request(id), work)).toMatchObject({ outcome: "refused" });
+  expect(await registry.run(request(newToolRequestId("old-instance", now)), work)).toMatchObject({ outcome: "refused" });
+  expect(await registry.run(request(newToolRequestId(epoch, now + 60_000)), work)).toMatchObject({ outcome: "refused" });
   expect(applied).toBe(1);
 });
 
@@ -56,7 +56,7 @@ test("a full cache refuses new writes without evicting an unexpired result", asy
   const id = newToolRequestId(epoch, start); let applied = 0;
   const work = async () => ({ ok: true, text: String(++applied) });
   await registry.run(request(id), work);
-  expect(await registry.run(request(newToolRequestId(epoch, start)), work)).toMatchObject({ outcome: "unknown" });
+  expect(await registry.run(request(newToolRequestId(epoch, start)), work)).toMatchObject({ outcome: "refused" });
   expect(await registry.run(request(id), work)).toMatchObject({ ok: true, text: "1" }); expect(applied).toBe(1);
 });
 
@@ -78,7 +78,7 @@ test("current authority is rechecked after a blocked write and before replay", a
   const work = async () => { applied++; await gate; return { ok: true, text: "public result" }; };
   const pending = registry.run(req, work); await Promise.resolve(); current = false; release();
   expect(await pending).toMatchObject({ outcome: "unknown" });
-  expect(await registry.run(req, work)).toMatchObject({ outcome: "unknown" }); expect(applied).toBe(1);
+  expect(await registry.run(req, work)).toMatchObject({ outcome: "refused" }); expect(applied).toBe(1);
 });
 
 test("an unexpected post-effect throw or oversized reply stays unknown without another effect", async () => {
@@ -111,4 +111,30 @@ test("unknown write outcomes name a real settling read, with no untrusted delive
   const delivery = toolWriteUnknownReply({ t: "delivery_complete", deliveryId: "forged\nheader" });
   expect(delivery.error).toContain("ahub queue show <delivery-id>"); expect(delivery.error).not.toContain("forged");
   expect(toolWriteUnknownReply({ t: "delivery_complete", deliveryId: "--deadbeef" }).error).toContain("ahub queue show <delivery-id>");
+});
+
+
+test("one actor cannot consume another actor's replay capacity, even across its own scopes", async () => {
+  const registry = new ToolWriteRegistry(epoch, { now: () => start, maxEntries: 1 });
+  let applied = 0;
+  const work = async () => ({ ok: true, text: String(++applied) });
+  const firstId = newToolRequestId(epoch, start);
+  expect(await registry.run({ ...request(firstId), bucket: "codex" }, work)).toMatchObject({ ok: true, text: "1" });
+  expect(await registry.run({ ...request(newToolRequestId(epoch, start), message, "codex:new-generation"), bucket: "codex" }, work)).toMatchObject({ outcome: "refused" });
+  expect(await registry.run({ ...request(newToolRequestId(epoch, start), message, "kimi:launch"), bucket: "kimi" }, work)).toMatchObject({ ok: true, text: "2" });
+  expect(await registry.run({ ...request(firstId), bucket: "codex" }, work)).toMatchObject({ ok: true, text: "1" });
+  expect(applied).toBe(2);
+});
+
+test("pre-admission refusal is definite and never calls the action", async () => {
+  const registry = new ToolWriteRegistry(epoch, { now: () => start }); let applied = 0;
+  const work = async () => { applied++; return { ok: true }; };
+  for (const req of [request("invalid"), { ...request(newToolRequestId(epoch, start)), current: () => false },
+    request(newToolRequestId(epoch, start), { ...message, data: "x".repeat(1024 * 1024 + 1) })]) {
+    const reply = await registry.run(req, work);
+    expect(reply).toMatchObject({ ok: false, outcome: "refused" });
+    expect(reply.error).toContain("This attempt did not run");
+    expect(reply.error).not.toContain("outcome unknown");
+  }
+  expect(applied).toBe(0);
 });

@@ -173,7 +173,7 @@ test("write timeout reports unknown, keeps the request id, and a replay gets a n
     await f.untilSeen(1); expect(typeof expire).toBe("function");
     expire(); const unknown = await pending;
     expect(unknown).toMatchObject({ ok: false, outcome: "unknown", requestId: f.seen[0]!.requestId });
-    expect(unknown.error).toContain("hub_task_list"); expect(unknown.error).toContain("do not resubmit with a new request ID");
+    expect(unknown.error).toContain("hub_task_list"); expect(unknown.error).toContain("call again only if the task is absent"); expect(unknown.error).toContain("request_id");
     expect(f.seen[0]!.requestId).toMatch(/^v1\/i1\//);
     const replay = f.client.request({ t: "task", op: "hub_task_propose", args: { title: "synthetic task" }, requestId: unknown.requestId });
     await f.untilSeen(2);
@@ -188,7 +188,7 @@ test("lost review and delivery connections are unknown and name the right read",
     const f = await writeOutcomeServer();
     const pending = f.client.request(msg); await f.untilSeen(1); f.close();
     const reply = await pending;
-    expect(reply).toMatchObject({ outcome: "unknown", requestId: f.seen[0]!.requestId });
+    expect(reply).toMatchObject({ outcome: "unknown", ...(msg.t === "task" ? { requestId: f.seen[0]!.requestId } : {}) });
     expect(reply.error).toContain(msg.t === "task" ? "hub_task_show {id: 7}" : "ahub queue show");
   }
 });
@@ -215,7 +215,7 @@ test("legacy write timeout remains unknown without pretending the old daemon sup
 test("an explicit replay is never resubmitted to a legacy daemon that would ignore its request id", async () => {
   const f = await writeOutcomeServer(false);
   const reply = await f.client.request({ t: "task", op: "hub_task_propose", args: { title: "synthetic task" }, requestId: "old-daemon-request" });
-  expect(reply).toMatchObject({ outcome: "unknown", requestId: "old-daemon-request" });
+  expect(reply).toMatchObject({ outcome: "refused", requestId: "old-daemon-request" });
   expect(reply.error).toContain("nothing was resubmitted"); expect(f.seen).toHaveLength(0);
 });
 
@@ -235,4 +235,25 @@ test("cancelling a sent write reports unknown without issuing invocation cancell
 test("the release feature declaration stays readable without evaluating target code", () => {
   expect(readRecoveryTargetFeatures(join(import.meta.dir, ".."))).toEqual([...DAEMON_FEATURES]);
   expect(DAEMON_FEATURES).toContain(TOOL_WRITE_FEATURE);
+});
+
+
+test("a tool argument replay key survives a fresh control request and is excluded from business arguments", async () => {
+  const f = await writeOutcomeServer();
+  const key = "v1/i1/1790000000000/11111111-1111-4111-8111-111111111111";
+  const pending = f.client.request({ t: "task", op: "hub_task_propose", args: { title: "synthetic retry", request_id: key } });
+  await f.untilSeen(1);
+  expect(f.seen[0]).toMatchObject({ requestId: key, args: { title: "synthetic retry" } });
+  expect(f.seen[0]!.args).not.toHaveProperty("request_id");
+  f.respond(f.seen[0]!.rid, { ok: true, text: "task #1" }); await pending;
+  const again = f.client.request({ t: "task", op: "hub_task_propose", args: { title: "synthetic retry", request_id: key } });
+  await f.untilSeen(2); expect(f.seen[1]!.requestId).toBe(key); expect(f.seen[1]!.rid).not.toBe(f.seen[0]!.rid);
+  f.respond(f.seen[1]!.rid, { ok: true, text: "task #1" }); await again;
+});
+
+test("delivery acknowledgement does not allocate a replay-window key", async () => {
+  const f = await writeOutcomeServer();
+  const pending = f.client.request({ t: "delivery_complete", deliveryId: "a".repeat(32), generation: "fixture" });
+  await f.untilSeen(1); expect(f.seen[0]).not.toHaveProperty("requestId");
+  f.respond(f.seen[0]!.rid, { ok: true }); expect(await pending).toMatchObject({ ok: true });
 });
