@@ -107,7 +107,8 @@ test("invalid or missing review task ids keep Tasks' known refusal and replay wi
       const request = { t: "task", op: "hub_review", requestId, args: { id, verdict: "approved" } };
       const first = await f.person.request(request);
       const replay = await f.person.request(request);
-      expect(first).toEqual(replay);
+      expect(resultBody(first)).toEqual(resultBody(replay));
+      expect(first.rid).not.toBe(replay.rid);
       expect(first).toMatchObject({ ok: false, requestId });
       expect(first.outcome).toBeUndefined();
       expect(String(first.error)).toMatch(/id|task/i);
