@@ -752,6 +752,9 @@ const RESOLUTION_CAUSES: [RegExp, string][] = [
   [/active delivery/i, "active delivery: it was handed to the peer and is not settled yet; wait for it, or resolve it once it is needs_review"],
   [/peer busy/i, "peer busy: the peer is working, and only a queued delivery can be discarded meanwhile"],
   [/stale delivery revision/i, "stale revision: the delivery changed since you read it; run ahub queue show again"],
+  // #1096: a row that already carries a resolution is settled history, not a stale read. `retry` leaves its parent in `failed` for good because the redelivery is a separate row.
+  [/already resolved by retry/i, "already resolved by retry: this failed row is settled history, its redelivery is a separate delivery (ahub queue list shows it); nothing is left to do for this row"],
+  [/already resolved by (completed|discard)/i, "already resolved: this delivery was already settled by a person or the conductor; nothing is left to do for this row"],
   [/unknown delivery|delivery not found/i, "unknown delivery: no such delivery id"],
   [/already terminal|already resolved/i, "already resolved: the delivery is settled"],
   [/already scheduled/i, "queued delivery is already scheduled: discard it, or wait for its turn"],
@@ -6437,6 +6440,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return {
       id: row.id, peer: row.peer, state: row.state, revision: row.revision,
       ...roomChat.evidence(row.peer, row.id),
+      ...(detail && bus.deliveryResolution(row.id) ? { resolvedBy: bus.deliveryResolution(row.id) } : {}),
       ...(!membershipAllowed(row.peer) ? { rostered: false, holdReason: "off roster" } : {}),
       createdAt: row.createdAt, updatedAt: row.updatedAt,
       envelopeIds: originals.map((env) => env.id),

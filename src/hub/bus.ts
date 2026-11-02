@@ -2,7 +2,7 @@ import { remoteEnvelope, appendNote, DIGEST, frame, HUB, isInvocationKind, keepN
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
 import type { DoingKind } from "./peer-doing.ts";
 import type { QueuePressure } from "./queue-backpressure.ts";
-import { DeliveryJournal, MAX_ENVELOPE_BODY, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
+import { DeliveryJournal, MAX_ENVELOPE_BODY, type JournalDelivery, type JournalDeliveryState, type JournalResolution } from "./delivery-journal.ts";
 import { DELIVERY_RETRY_WARNING } from "./delivery-hints.ts";
 import { MAX_DEFERRED_HUB, RecoveryDeferredHubError, validateDeferredHub } from "./deferred-hub.ts";
 import { parseRemotePeerId } from "../rooms/application.ts";
@@ -631,6 +631,9 @@ export class Bus {
     });
   }
 
+  /** #1096: the operator action that settled this delivery, when one did (`queue show` reads it to say what is left to do). */
+  deliveryResolution(id: string): JournalResolution | undefined { return this.journal && !this.storageError ? this.journal.resolution(id)?.action : undefined; }
+
   resolveDelivery(id: string, revision: number, action: "completed" | "retry" | "discard", reason: string, actor: string = "user"): void {
     if (!this.journal || this.storageError) throw new Error("delivery journal unavailable");
     this.trackingQueuePressure();
@@ -638,7 +641,13 @@ export class Bus {
     if (!record) throw new Error("unknown delivery");
     const previous = this.journal.resolution(id);
     if (previous) {
-      this.journal.resolve(id, revision, action, reason, revision, actor); // verifies identical request; no second enqueue
+      // #1096: a row that already carries a resolution is settled. The same request again is idempotent (the journal verifies it); any other request is not a
+      // stale read, and `retry` in particular leaves its parent in `failed` for good, because the redelivery is a new row. Say so instead of "stale revision".
+      try { this.journal.resolve(id, revision, action, reason, revision, actor); }
+      catch (error) {
+        if (/stale delivery revision or conflicting operator resolution/.test(error instanceof Error ? error.message : "")) throw new Error(`delivery already resolved by ${previous.action}`);
+        throw error;
+      }
       return;
     }
     if (action === "retry" && remoteId(record.peer)) {

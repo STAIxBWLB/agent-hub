@@ -532,6 +532,11 @@ function fields(value: unknown, columns: number | undefined, now: number, prefix
 export function renderQueueShow(delivery: any, columns?: number, now = Date.now()): Span[][] {
   const out = [...lines("Delivery", columns, "strong"), ...fields(delivery, columns, now)];
   if (delivery?.state === "needs_review" && delivery.id) out.push([], ...detail("resolve", `ahub queue resolve ${delivery.id} --action completed|retry|discard --reason <text>`, columns, "failure"));
+  // #1096: a failed row that no one has settled can be cleared by the person or the conductor; one a resolution already settled says what is left (nothing).
+  else if (delivery?.state === "failed" && delivery.id) {
+    if (delivery.resolvedBy) out.push([], ...detail("resolve", `already resolved by ${delivery.resolvedBy}; nothing is left to do for this row${delivery.resolvedBy === "retry" ? " (its redelivery is a separate delivery: ahub queue list)" : ""}`, columns, "muted"));
+    else out.push([], ...detail("resolve", `ahub queue resolve ${delivery.id} --action discard|completed --reason <text>  (discard to drop it, completed to acknowledge it as handled; the person or the conductor)`, columns, "failure"));
+  }
   return out;
 }
 export function renderModelsStatus(status: unknown, columns?: number, now = Date.now()): Span[][] {

@@ -134,6 +134,7 @@ test("the refusal names its cause from a closed list and never echoes free text 
   const cases: [string, RegExp][] = [
     ["active delivery cannot be resolved", /^active delivery:/], ["peer busy: its delivery cannot be resolved while it works", /^peer busy:/],
     ["stale delivery revision", /^stale revision:/], ["stale delivery revision for q:agy:abc", /^stale revision:/], ["unknown delivery", /^unknown delivery:/],
+    ["delivery already resolved by retry", /^already resolved by retry: .*nothing is left to do/], ["delivery already resolved by discard", /^already resolved: .*nothing is left to do/],
     ["delivery d1 is already terminal", /^already resolved:/], ["queued delivery is already scheduled", /^queued delivery is already scheduled/],
     ["recipient queue is full", /^recipient queue is full/], ["delivery journal unavailable", /^delivery journal unavailable/],
   ];

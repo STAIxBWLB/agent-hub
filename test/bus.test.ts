@@ -1216,6 +1216,7 @@ test("re-resolving a row that a retry already settled is refused by naming that,
     expect(parent.state).toBe("failed");
     // The same request again is idempotent. A different action at the revision `queue show` now prints is the case #1096 reports.
     bus.resolveDelivery(deliveryId, held.revision, "retry", "redeliver once");
+    expect(bus.deliveryResolution(deliveryId)).toBe("retry");
     expect(() => bus.resolveDelivery(deliveryId, parent.revision, "discard", "clear the failed row")).toThrow("delivery already resolved by retry");
     expect(() => bus.resolveDelivery(deliveryId, parent.revision, "discard", "clear the failed row")).not.toThrow(/stale/);
   } finally { await done(); }
