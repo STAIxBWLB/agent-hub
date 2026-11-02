@@ -327,13 +327,29 @@ test("against a hub without queue_discard_states the CLI never sends the new wir
   expect(current.requests.find(r => r.op === "discard")).toMatchObject({ states: ["queued", "failed"] });
 });
 
-test("the daemon advertises queue_discard_states, and the console's D command names the one kind its count shows (#1096)", async () => {
+test("the daemon advertises queue_discard_states, and the console's D command counts what the CLI will clear (#1096)", async () => {
   const f = await rig();
   expect(f.person.features).toContain("queue_discard_states");
-  const s = initialConsoleState();
-  s.queue = [{ id: "q1", peer: "codex", state: "queued", revision: 1 }, { id: "q2", peer: "codex", state: "failed", revision: 1 }] as never;
-  s.input = "queue discard --peer codex --reason cleaning up"; s.editing = true;
-  const next = reduceConsole(s, "enter", 1).state;
-  expect(next.confirm).toMatchObject({ type: "command", args: ["queue", "discard", "--peer", "codex", "--state", "queued", "--reason", "cleaning up", "--yes"] });
-  expect(String((next.confirm as { prompt: string }).prompt)).toContain("discard all 1 queued delivery of codex");
+  const typed = (features: readonly string[] | undefined, input: string) => {
+    const s = initialConsoleState();
+    if (features) s.features = features;
+    s.queue = [{ id: "q1", peer: "codex", state: "queued", revision: 1 }, { id: "q2", peer: "codex", state: "failed", revision: 1 }, { id: "q3", peer: "codex", state: "failed", revision: 1 }, { id: "q4", peer: "kimi", state: "failed", revision: 1 }] as never;
+    s.input = input; s.editing = true;
+    return reduceConsole(s, "enter", 1).state.confirm as { type: string; args: string[]; prompt: string };
+  };
+  const base = "queue discard --peer codex --reason cleaning up";
+  // a hub that has the feature: the default clears queued and failed rows, the command leaves --state off, and the count names both kinds
+  const current = typed(["queue_discard_states"], base);
+  expect(current.args).toEqual(["queue", "discard", "--peer", "codex", "--reason", "cleaning up", "--yes"]);
+  expect(current.prompt).toContain("discard all 1 queued and 2 failed deliveries of codex");
+  // a hub that predates it: the command names queued, so the old hub clears exactly what the count shows
+  const old = typed(["schema_guard"], base);
+  expect(old.args).toEqual(["queue", "discard", "--peer", "codex", "--state", "queued", "--reason", "cleaning up", "--yes"]);
+  expect(old.prompt).toContain("discard all 1 queued delivery of codex");
+  // an explicit kind is kept as typed, and its count follows it
+  const failed = typed(["queue_discard_states"], `${base} --state failed`);
+  expect(failed.args).toEqual(["queue", "discard", "--peer", "codex", "--state", "failed", "--reason", "cleaning up", "--yes"]);
+  expect(failed.prompt).toContain("discard all 2 failed deliveries of codex");
+  // features not yet known: the command is unchanged from before
+  expect(typed(undefined, base).args).toEqual(["queue", "discard", "--peer", "codex", "--reason", "cleaning up", "--yes"]);
 });
