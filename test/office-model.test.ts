@@ -259,6 +259,17 @@ test("MARKER: no body, detail, approval title or PII text enters the serialized 
   expect(model.rooms[0]!.cards[0]!.label).toBe("#2 public title");
 });
 
+test("attributedCards holds the public card of a bubble's task past the rendering cut, and nothing already drawn (#1038)", () => {
+  const tasks = Array.from({ length: 10 }, (_, i) => ({ id: i + 1, title: `task ${i}`, class: "implement", state: "in_review", owner: "codex", reviewer: "pi" }));
+  const snap = (task: number): OfficeSnapshotInput => ({ status: { peers: { pi: { state: "busy", turn: { task } } } }, tasks });
+  const past = officeModel(snap(10), null, { cols: 4 });
+  expect(past.rooms.find((room) => room.id === "review")!.cards.map((card) => card.id)).not.toContain(10);
+  expect(past.attributedCards).toHaveLength(1);
+  expect(past.attributedCards[0]).toMatchObject({ id: 10, taskClass: "implement", state: "in_review", owner: "codex", label: "#10 task 9", w: 0, h: 0 });
+  expect(officeModel(snap(3), null, { cols: 4 }).attributedCards).toEqual([]);
+  expect(officeModel(snap(77), null, { cols: 4 }).attributedCards).toEqual([]);
+});
+
 test("room cards fit one padded column at the fixed pixel scale, with space for overflow", () => {
   const tasks = Array.from({ length: 12 }, (_, index) => ({ id: index + 1, title: `Readable public title ${index + 1}`, class: "implement", state: "proposed" }));
   const model = officeModel({ status: { peers: {} }, tasks }, null, { cols: 1, now: 1000 });

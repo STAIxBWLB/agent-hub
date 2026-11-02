@@ -70,7 +70,7 @@ export function officeSpace(model: OfficeScene, project: { id: string; label?: s
   };
   const cards: SpaceScene["cards"] = [];
   const seen = new Set<number>();
-  for (const card of [...model.desks.flatMap((d) => d.cards), ...model.rooms.flatMap((r) => r.cards)]) {
+  for (const card of [...model.desks.flatMap((d) => d.cards), ...model.rooms.flatMap((r) => r.cards), ...(model.attributedCards ?? [])]) {
     if (seen.has(card.id)) continue;
     seen.add(card.id);
     const zone = zoneOf(model.placed[String(card.id)]);
