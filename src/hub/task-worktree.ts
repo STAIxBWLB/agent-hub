@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { isDenied } from "../local/deny.ts";
 import { childEnv } from "./child-process.ts";
@@ -42,6 +43,16 @@ export interface TaskWorktreePort {
   remove(input: { peer: PeerId; task: number }): TaskWorktreeRemoval;
 }
 
+/**
+ * Whether the hub may push for this project, from the GitHub repository it learned at startup (`expected`) and the URLs `origin` has now. `undefined` means the project has no GitHub
+ * origin the hub trusts, so the hub commits and does not push; `false` means an origin that is not this project's repository (changed since startup), which refuses the push.
+ */
+export function originVerdict(expected: string | undefined, urls: string[], repositoryOf: (url: string) => string | undefined): boolean | undefined {
+  if (!expected) return undefined;
+  const wanted = expected.toLowerCase();
+  return urls.length > 0 && urls.length <= 16 && urls.every(url => repositoryOf(url)?.toLowerCase() === wanted);
+}
+
 export interface TaskWorktreeOptions {
   /** The project root: the repository's top level, and the sandbox root of every hub-sandboxed peer. */
   root: string;
@@ -50,9 +61,11 @@ export interface TaskWorktreeOptions {
   applies: (peer: PeerId) => boolean;
   deny: () => string[];
   protectInstructions: () => boolean;
-  /** Whether every URL of `origin` is this project's repository. Without it the hub commits but never pushes. */
-  pushAllowed?: (urls: string[]) => boolean;
+  /** `originVerdict`: true pushes, false refuses, undefined (or no callback) commits without pushing. */
+  pushAllowed?: (urls: string[]) => boolean | undefined;
   now?: () => number;
+  /** Test seam: runs after the staged change was validated and before the hub commits it, where a sandboxed peer could race the worktree's own index. */
+  beforeCommit?: () => void;
 }
 
 interface Run { status: number | null; stdout: string; stderr: string }
@@ -68,14 +81,15 @@ export class TaskWorktrees implements TaskWorktreePort {
 
   applies = (peer: PeerId): boolean => this.o.applies(peer);
 
-  private git(args: string[], cwd = this.root, timeout = GIT_TIMEOUT_MS): Run {
-    const run = hubGitSync(["-C", cwd, "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], { encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024, env: hubGitEnv(childEnv(), { repositoryIsolation: true }) });
+  /** `extra` is merged after the isolation, which strips GIT_INDEX_FILE: only the hub's own private index passes through it. */
+  private git(args: string[], cwd = this.root, timeout = GIT_TIMEOUT_MS, extra: Record<string, string> = {}): Run {
+    const run = hubGitSync(["-C", cwd, "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], { encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024, env: { ...hubGitEnv(childEnv(), { repositoryIsolation: true }), ...extra } });
     return { status: run.error ? null : run.status, stdout: String(run.stdout ?? ""), stderr: String(run.stderr ?? "") };
   }
-  private gitAsync(args: string[], cwd: string, timeoutMs: number): Promise<Run> {
+  private gitAsync(args: string[], cwd: string, timeoutMs: number, extra: Record<string, string> = {}): Promise<Run> {
     return new Promise(resolve => {
       const argv = hubGitArgv(["-C", cwd, "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args]);
-      const child = spawn(argv[0]!, argv.slice(1), { env: hubGitEnv(childEnv(), { repositoryIsolation: true }), stdio: ["ignore", "pipe", "pipe"], detached: true });
+      const child = spawn(argv[0]!, argv.slice(1), { env: { ...hubGitEnv(childEnv(), { repositoryIsolation: true }), ...extra }, stdio: ["ignore", "pipe", "pipe"], detached: true });
       let stdout = "", stderr = "", done = false;
       const finish = (status: number | null) => { if (done) return; done = true; clearTimeout(timer); resolve({ status, stdout, stderr }); };
       const timer = setTimeout(() => { try { process.kill(-child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); } finish(null); }, timeoutMs);
@@ -104,6 +118,16 @@ export class TaskWorktrees implements TaskWorktreePort {
     const temporary = `${this.o.stateFile}.${process.pid}.tmp`;
     writeFileSync(temporary, JSON.stringify(records), { mode: 0o600 });
     renameSync(temporary, this.o.stateFile);
+  }
+  /**
+   * Every record change reads the file fresh and writes it back in one synchronous step, so a change made while another call awaits git is never overwritten by an older
+   * snapshot of the file (create, commit and remove all go through it).
+   */
+  private mutate<T>(change: (records: Record<string, TaskWorktreeEntry>) => T): T {
+    const records = this.readRecords();
+    const result = change(records);
+    this.writeRecords(records);
+    return result;
   }
   private key = (peer: PeerId, task: number) => `${peer}-${task}`;
 
@@ -191,7 +215,7 @@ export class TaskWorktrees implements TaskWorktreePort {
     if (added.status !== 0) { undo(); return fail(`git worktree add failed: ${shown(added.stderr)}`); }
     const head = this.git(["rev-parse", "HEAD"], path).stdout.trim(), symbolic = this.git(["symbolic-ref", "-q", "HEAD"], path).stdout.trim();
     if (head !== base || symbolic !== `refs/heads/${branch}` || this.tip(branch) !== base) { undo(); return fail("the new worktree did not come up on the expected base; nothing was kept"); }
-    try { records[this.key(peer, task)] = { peer, task, path, branch, base }; this.writeRecords(records); } catch { undo(); return fail("the worktree record could not be written; nothing was kept"); }
+    try { this.mutate(current => { current[this.key(peer, task)] = { peer, task, path, branch, base }; }); } catch { undo(); return fail("the worktree record could not be written; nothing was kept"); }
     return { ok: true, path, branch, base, created: true };
   }
 
@@ -223,40 +247,52 @@ export class TaskWorktrees implements TaskWorktreePort {
     if (tip !== expectedTip) return fail(`${branch} is at ${tip?.slice(0, 12) ?? "nothing"}, not at the commit the hub recorded (${expectedTip.slice(0, 12)}); the peer must not move the branch. The hub will not commit or push it. Decline the task so the hub clears it`);
     const problem = this.configProblem(path);
     if (problem) return fail(problem);
-    // 2. Stage from a clean index: the peer can write the worktree's index too, so it is rebuilt from the recorded tip, then the working tree is added.
-    if (this.git(["read-tree", expectedTip], path).status !== 0) return fail("the worktree index could not be reset from the recorded commit");
-    const added = await this.gitAsync(["add", "-A", "--", "."], path, GIT_TIMEOUT_MS);
-    if (added.status !== 0) return fail(`staging the worktree failed: ${shown(added.stderr)}`);
-    const unstage = () => { this.git(["read-tree", expectedTip], path); };
-    const raw = this.git(["diff", "--cached", "--raw", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", expectedTip], path);
-    if (raw.status !== 0) { unstage(); return fail("the staged change could not be listed"); }
-    const parts = raw.stdout.split("\0").filter(Boolean), changed: { mode: string; path: string }[] = [];
-    for (let i = 0; i + 1 < parts.length; i += 2) { const meta = /^:(\d{6}) (\d{6}) /.exec(parts[i]!); if (!meta) { unstage(); return fail("the staged change has an unreadable entry"); } changed.push({ mode: meta[2]!, path: parts[i + 1]! }); }
-    // Nothing new since the hub's own commit: this is a retry after a failed push, so push the commit it already made.
-    if (!changed.length && entry.head) { unstage(); return this.push(path, branch, entry.head, peer); }
-    if (!changed.length) { unstage(); return fail(`no changes under ${path}: edit files there, then call hub_task_done again`); }
-    if (changed.length > MAX_PATHS) { unstage(); return fail(`${changed.length} paths changed, more than the ${MAX_PATHS} the hub commits for a sandboxed peer; split the work into smaller tasks`); }
-    // 3. The same path policy a person's grant uses: the denylist, the agent and hub write names, and (when the policy is on) the instruction files.
-    const deny = this.o.deny(), protect = this.o.protectInstructions();
-    const refused = changed.filter(c => c.mode === "160000" || isDenied(c.path, deny) || !grantablePath(path, join(path, c.path), c.path, protect));
-    if (refused.length) { unstage(); return fail(`the hub will not commit ${refused.length} changed path${refused.length === 1 ? "" : "s"} (${refused.slice(0, 3).map(c => shown(c.path, 60)).join(", ")}): a secret, a git or hub or agent configuration name, a protected instruction file or a submodule. Revert ${refused.length === 1 ? "it" : "them"} in the worktree and call hub_task_done again`); }
-    // 4. The commit is the hub's, in the peer's name, with no hook and no signing.
-    const title = shown(input.title, 200) || `task ${task}`;
-    const committed = await this.gitAsync(["-c", `user.name=${peer}`, "-c", `user.email=${peer}@agent-hub.invalid`, "-c", "commit.gpgSign=false", "commit", "-q", "--no-verify", "--no-gpg-sign", "-m", title, "-m", `Task #${task} by ${peer}. Committed by the hub for a sandboxed peer.`], path, GIT_TIMEOUT_MS);
-    if (committed.status !== 0) { unstage(); return fail(`git commit failed: ${shown(committed.stderr)}`); }
-    const commit = this.git(["rev-parse", "HEAD"], path).stdout.trim();
-    if (!SHA.test(commit) || this.git(["rev-parse", "HEAD^"], path).stdout.trim() !== expectedTip || this.tip(branch) !== commit) return fail("the commit did not land on the task branch as expected; the hub will not push it");
-    try { records[this.key(peer, task)] = { ...entry, head: commit }; this.writeRecords(records); } catch { return fail("the commit was made but the hub could not record it; call hub_task_done again", commit); }
-    return this.push(path, branch, commit, peer);
+    // 2. The peer can write the worktree's own index (#864), so the hub never reads it: it builds a PRIVATE index in its state dir (outside every sandbox root) from the recorded tip,
+    // adds the working tree to that, hashes it with write-tree, and validates and commits that exact tree. Swapping the worktree's index after the check cannot change what is committed.
+    const index = join(dirname(this.o.stateFile), `task-index-${randomUUID()}`), own = { GIT_INDEX_FILE: index };
+    try {
+      if (this.git(["read-tree", expectedTip], path, GIT_TIMEOUT_MS, own).status !== 0) return fail("the hub's private index could not be built from the recorded commit");
+      const added = await this.gitAsync(["add", "-A", "--", "."], path, GIT_TIMEOUT_MS, own);
+      if (added.status !== 0) return fail(`staging the worktree failed: ${shown(added.stderr)}`);
+      const written = this.git(["write-tree"], path, GIT_TIMEOUT_MS, own), tree = written.stdout.trim();
+      if (written.status !== 0 || !SHA.test(tree)) return fail("the staged tree could not be written");
+      const raw = this.git(["diff-tree", "-r", "--raw", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", expectedTip, tree], path);
+      if (raw.status !== 0) return fail("the staged change could not be listed");
+      const parts = raw.stdout.split("\0").filter(Boolean), changed: { mode: string; path: string }[] = [];
+      for (let i = 0; i + 1 < parts.length; i += 2) { const meta = /^:(\d{6}) (\d{6}) /.exec(parts[i]!); if (!meta) return fail("the staged change has an unreadable entry"); changed.push({ mode: meta[2]!, path: parts[i + 1]! }); }
+      // Nothing new since the hub's own commit: this is a retry after a failed push, so push the commit it already made.
+      if (!changed.length && entry.head) return this.push(path, branch, entry.head, peer);
+      if (!changed.length) return fail(`no changes under ${path}: edit files there, then call hub_task_done again`);
+      if (changed.length > MAX_PATHS) return fail(`${changed.length} paths changed, more than the ${MAX_PATHS} the hub commits for a sandboxed peer; split the work into smaller tasks`);
+      // 3. The same path policy a person's grant uses: the denylist, the agent and hub write names, and (when the policy is on) the instruction files.
+      const deny = this.o.deny(), protect = this.o.protectInstructions();
+      const refused = changed.filter(c => c.mode === "160000" || isDenied(c.path, deny) || !grantablePath(path, join(path, c.path), c.path, protect));
+      if (refused.length) return fail(`the hub will not commit ${refused.length} changed path${refused.length === 1 ? "" : "s"} (${refused.slice(0, 3).map(c => shown(c.path, 60)).join(", ")}): a secret, a git or hub or agent configuration name, a protected instruction file or a submodule. Revert ${refused.length === 1 ? "it" : "them"} in the worktree and call hub_task_done again`);
+      this.o.beforeCommit?.();
+      // 4. The commit object is made from the validated tree by the hub (no hook, no signing, no index read), and the branch moves to it only if it still sits at the recorded tip.
+      const title = shown(input.title, 200) || `task ${task}`;
+      const made = this.git(["-c", `user.name=${peer}`, "-c", `user.email=${peer}@agent-hub.invalid`, "-c", "commit.gpgSign=false", "commit-tree", tree, "-p", expectedTip, "-m", title, "-m", `Task #${task} by ${peer}. Committed by the hub for a sandboxed peer.`], path), commit = made.stdout.trim();
+      if (made.status !== 0 || !SHA.test(commit)) return fail(`git commit-tree failed: ${shown(made.stderr)}`);
+      if (this.git(["update-ref", `refs/heads/${branch}`, commit, expectedTip], path).status !== 0) return fail(`${branch} moved while the hub was committing; nothing was kept. Decline the task so the hub clears it`);
+      if (this.tip(branch) !== commit || this.git(["rev-parse", `${commit}^{tree}`], path).stdout.trim() !== tree) return fail("the commit did not land on the task branch as expected; the hub will not push it");
+      // The worktree's own index (peer-writable) is brought in line with the new HEAD, and refreshed (read-tree leaves no stat data, so diff-index would call every file modified), so `git status`
+      // there is clean and `remove` can tell finished work from uncommitted work. Nothing is ever committed from it.
+      this.git(["read-tree", commit], path); this.git(["update-index", "-q", "--refresh"], path);
+      try { this.mutate(current => { current[this.key(peer, task)] = { ...(current[this.key(peer, task)] ?? entry), head: commit }; }); } catch { return fail("the commit was made but the hub could not record it; call hub_task_done again", commit); }
+      return this.push(path, branch, commit, peer);
+    } finally { rmSync(index, { force: true }); }
   }
 
   /** 5. One explicit refspec for this branch, only to an origin that is this project's repository. */
   private async push(path: string, branch: string, commit: string, _peer: PeerId): Promise<TaskWorktreeCommit> {
     const fail = (reason: string, sha?: string): TaskWorktreeCommit => ({ ok: false, reason, ...(sha ? { commit: sha } : {}) });
     if (this.tip(branch) !== commit) return fail(`${branch} no longer points at the hub's commit ${commit.slice(0, 12)}; the hub will not push it. Decline the task so the hub clears it`);
-    if (!this.o.pushAllowed) return { ok: true, commit, branch, pushed: false, note: "the project has no GitHub origin the hub trusts, so the branch was committed but not pushed" };
     const urls = [...this.git(["remote", "get-url", "--push", "--all", "origin"], path).stdout.trim().split("\n"), ...this.git(["remote", "get-url", "--all", "origin"], path).stdout.trim().split("\n")].filter(Boolean);
-    if (!urls.length || urls.length > 16 || !this.o.pushAllowed(urls)) return fail(`committed ${commit.slice(0, 12)} on ${branch} but origin is not this project's repository, so nothing was pushed; ask the person to check the origin URL, then call hub_task_done again`, commit);
+    const verdict = this.o.pushAllowed?.(urls);
+    // No GitHub origin was configured when the hub started (a local repository, or another host): the commit is the result, and `hub_task_done` carries it without a push.
+    // An origin that is not this project's repository (changed since startup, or two URLs that disagree) is refused with the commit kept.
+    if (verdict === undefined) return { ok: true, commit, branch, pushed: false, note: "the project has no GitHub origin the hub trusts, so the branch was committed but not pushed" };
+    if (verdict !== true) return fail(`committed ${commit.slice(0, 12)} on ${branch} but origin is not this project's repository, so nothing was pushed; ask the person to check the origin URL, then call hub_task_done again`, commit);
     const pushed = await this.gitAsync(["-c", "push.followTags=false", "-c", "remote.origin.mirror=false", "-c", "push.recurseSubmodules=no", "-c", "push.gpgSign=false", "push", "--no-verify", "origin", `refs/heads/${branch}:refs/heads/${branch}`], path, PUSH_TIMEOUT_MS);
     if (pushed.status !== 0) return fail(`committed ${commit.slice(0, 12)} on ${branch} but the push failed (${shown(pushed.stderr, 120) || "no output"}); the commit is kept, call hub_task_done again to retry the push`, commit);
     return { ok: true, commit, branch, pushed: true };
@@ -289,8 +325,7 @@ export class TaskWorktrees implements TaskWorktreePort {
     const tip = this.tip(branch);
     if (tip === undefined) branchDeleted = true;
     else if (tip === base && entry.head === undefined) branchDeleted = this.git(["branch", "-D", branch]).status === 0;
-    delete records[this.key(peer, task)];
-    try { this.writeRecords(records); } catch { return { removed: true, branchDeleted, kept: "the worktree record could not be updated" }; }
+    try { this.mutate(current => { delete current[this.key(peer, task)]; }); } catch { return { removed: true, branchDeleted, kept: "the worktree record could not be updated" }; }
     return { removed: true, branchDeleted, ...(branchDeleted ? {} : { kept: `branch ${branch} has the hub's commit and was kept` }) };
   }
 }

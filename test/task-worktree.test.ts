@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
-import { TaskWorktrees, taskWorktreeBranch, taskWorktreePath } from "../src/hub/task-worktree.ts";
+import { TaskWorktrees, originVerdict, taskWorktreeBranch, taskWorktreePath } from "../src/hub/task-worktree.ts";
 
 // #1115: the hub makes the task worktree for a hub-sandboxed peer, commits and pushes it at hub_task_done, and clears it on decline or cancel. Real git, no mocks.
 const cleanup: (() => void)[] = [];
@@ -297,4 +297,81 @@ test("a filter in a worktree's own config.worktree refuses when extensions.workt
   expect(f.git(f.root, "rev-parse", "refs/heads/task/7-pi")).toBe(f.base);
   f.git(made.path, "config", "--worktree", "--unset", "filter.wt.clean");
   expect((await f.worktrees.commitAndPush({ peer: "pi", task: 7, title: "t" })).ok).toBe(true);
+});
+
+// Review P1: a sandboxed process that replaces the worktree's own index AFTER the path check but before the commit must not change what is committed.
+test("an index swapped into the worktree after the path check cannot make the commit take a forbidden path", async () => {
+  const f = fixture();
+  let race: (() => void) | undefined;
+  const raced = new TaskWorktrees({ root: f.root, stateFile: join(f.state, "task-worktrees.json"), applies: () => true, deny: () => [], protectInstructions: () => false, beforeCommit: () => race?.() });
+  const made = raced.create({ peer: "pi", task: 7 }); if (!made.ok) throw new Error(made.reason);
+  writeFileSync(join(made.path, "a.txt"), "the real edit\n");
+  const admin = f.git(made.path, "rev-parse", "--absolute-git-dir");
+  race = () => { // what a concurrent sandboxed command can do: write .git/worktrees/<name>/index (#864)
+    mkdirSync(join(made.path, ".claude"), { recursive: true }); writeFileSync(join(made.path, ".claude/settings.json"), "{\"hooks\":\"evil\"}\n");
+    f.git(made.path, "add", "-f", ".claude/settings.json");
+    expect(existsSync(join(admin, "index"))).toBe(true);
+  };
+  const done = await raced.commitAndPush({ peer: "pi", task: 7, title: "t" });
+  // The hub hashed and validated its OWN tree before the race, so the commit is that tree: it succeeds and the late, forbidden file is not in it.
+  expect(done.ok).toBe(true); if (!done.ok) throw new Error(done.reason);
+  expect(f.git(f.root, "diff", "--name-status", f.base, done.commit)).toBe("M\ta.txt");
+  expect(f.git(f.root, "ls-tree", "-r", "--name-only", done.commit)).not.toContain(".claude");
+  // The planted file is still in the working tree, so the next look at it refuses; it never reaches a commit.
+  race = undefined; writeFileSync(join(made.path, "a.txt"), "second edit\n");
+  const next = await raced.commitAndPush({ peer: "pi", task: 7, title: "t" });
+  expect(next.ok).toBe(false); expect(next.ok ? "" : next.reason).toContain("will not commit 1 changed path");
+  rmSync(join(made.path, ".claude"), { recursive: true, force: true });
+  const clean = await raced.commitAndPush({ peer: "pi", task: 7, title: "t" }); if (!clean.ok) throw new Error(clean.reason);
+  expect(f.git(f.root, "ls-tree", "-r", "--name-only", clean.commit)).not.toContain(".claude");
+});
+
+test("the commit is exactly the tree the hub validated: files added to the worktree's own index during the race are not in it", async () => {
+  const f = fixture();
+  let race: (() => void) | undefined;
+  const raced = new TaskWorktrees({ root: f.root, stateFile: join(f.state, "task-worktrees.json"), applies: () => true, deny: () => [], protectInstructions: () => false, beforeCommit: () => race?.() });
+  const made = raced.create({ peer: "pi", task: 7 }); if (!made.ok) throw new Error(made.reason);
+  writeFileSync(join(made.path, "a.txt"), "the real edit\n");
+  race = () => { writeFileSync(join(made.path, "late.txt"), "added after the check\n"); f.git(made.path, "add", "late.txt"); rmSync(join(made.path, "late.txt")); };
+  const done = await raced.commitAndPush({ peer: "pi", task: 7, title: "t" }); if (!done.ok) throw new Error(done.reason);
+  expect(f.git(f.root, "diff", "--name-status", f.base, done.commit)).toBe("M\ta.txt");
+  expect(f.git(f.root, "status", "--porcelain", "--untracked-files=no")).toBe("");
+});
+
+// Review P2: record changes made while another call awaits git must survive.
+test("a task accepted while another task's commit is awaiting git keeps its record", async () => {
+  const f = fixture();
+  let race: (() => void) | undefined;
+  const raced = new TaskWorktrees({ root: f.root, stateFile: join(f.state, "task-worktrees.json"), applies: () => true, deny: () => [], protectInstructions: () => false, beforeCommit: () => race?.() });
+  const one = raced.create({ peer: "pi", task: 1 }); if (!one.ok) throw new Error(one.reason);
+  writeFileSync(join(one.path, "a.txt"), "edit\n");
+  race = () => { race = undefined; const two = raced.create({ peer: "pi", task: 2 }); expect(two.ok).toBe(true); };
+  const done = await raced.commitAndPush({ peer: "pi", task: 1, title: "t" }); if (!done.ok) throw new Error(done.reason);
+  expect(raced.describe("pi", 2)).toMatchObject({ branch: "task/2-pi" }); // the old snapshot write would have dropped it
+  expect(raced.describe("pi", 1)).toBeDefined();
+  expect(raced.remove({ peer: "pi", task: 2 })).toEqual({ removed: true, branchDeleted: true });
+  expect(raced.describe("pi", 1)).toBeDefined(); // and removing one task does not drop another
+});
+
+// Review P2: no GitHub origin means commit without a push, not a refusal of every hub_task_done.
+test("originVerdict: no configured GitHub origin commits without pushing, an unexpected origin refuses, the expected one pushes", () => {
+  const of = (url: string) => { const m = /github\.com[/:]([^/]+\/[^/.]+)/.exec(url); return m?.[1]; };
+  expect(originVerdict(undefined, ["git@github.com:acme/app.git"], of)).toBeUndefined();
+  expect(originVerdict("acme/app", ["git@github.com:acme/app.git", "https://github.com/acme/app"], of)).toBe(true);
+  expect(originVerdict("Acme/App", ["https://github.com/acme/app.git"], of)).toBe(true);
+  expect(originVerdict("acme/app", ["https://github.com/other/app.git"], of)).toBe(false);
+  expect(originVerdict("acme/app", ["git@github.com:acme/app.git", "https://github.com/other/app.git"], of)).toBe(false);
+  expect(originVerdict("acme/app", ["https://example.org/acme/app.git"], of)).toBe(false);
+  expect(originVerdict("acme/app", [], of)).toBe(false);
+});
+
+test("a repository with no GitHub origin: the hub commits, reports it was not pushed, and a later done succeeds", async () => {
+  const f = fixture({ origin: false });
+  const local = new TaskWorktrees({ root: f.root, stateFile: join(f.state, "task-worktrees.json"), applies: () => true, deny: () => [], protectInstructions: () => false, pushAllowed: urls => originVerdict(undefined, urls, () => undefined) });
+  const made = local.create({ peer: "pi", task: 7 }); if (!made.ok) throw new Error(made.reason);
+  writeFileSync(join(made.path, "a.txt"), "edit\n");
+  const done = await local.commitAndPush({ peer: "pi", task: 7, title: "t" });
+  expect(done.ok).toBe(true); if (!done.ok) throw new Error(done.reason);
+  expect(done.pushed).toBe(false); expect(done.note).toContain("committed but not pushed");
+  expect(f.git(f.root, "rev-parse", "refs/heads/task/7-pi")).toBe(done.commit);
 });

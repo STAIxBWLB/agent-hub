@@ -174,7 +174,7 @@ import { autonomyPreset, autonomyEnvironment, planAutonomy, autonomyRemovalKeys,
 import { readAutonomyDefaults } from "./autonomy-defaults.ts";
 import { AUTONOMY_UNDO, autonomyOwnershipDigest, autonomyUndoKeys, writeAutonomyPreset, LEARN_CHECKLIST, NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { githubOriginRepository, githubRemoteRepository } from "./task-repository.ts";
-import { TaskWorktrees } from "./task-worktree.ts";
+import { TaskWorktrees, originVerdict } from "./task-worktree.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -2053,7 +2053,7 @@ export async function startDaemon(opts: DaemonOptions) {
     root: opts.cwd, stateFile: join(opts.stateDir, "task-worktrees.json"),
     applies: peer => definitionOf(peer)?.trust.hubSandboxed === true,
     deny: () => config.local.deny, protectInstructions: () => config.protect_instruction_files,
-    pushAllowed: urls => { const expected = shellProjectRepository?.toLowerCase(); return !!expected && urls.every(url => githubRemoteRepository(url)?.toLowerCase() === expected); },
+    pushAllowed: urls => originVerdict(shellProjectRepository, urls, url => githubRemoteRepository(url)),
   });
   const peerCapabilities = () => {
     // Keep the last confirmed capability during a bounded, single-flight refresh; replace it only on a result.
