@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.28.0
+
 - `ahub init` sets the main project settings by flag (#1100, #1065 T1): `--agents`, `--sdlc`, `--coordination`, `--memory`/`--no-memory`, `--snapshots`/`--no-snapshots`, `--pi`/`--no-pi` and, for a new project, `--autonomy inherit|off`. On an existing project only a named flag changes anything, `--dry-run` shows each change as old -> new, and an invalid value is refused with the allowed values.
 - `ahub init` asks each setting in turn when a person runs it at a terminal on a new project with no setting flag and no `--yes` (#1110, #1065 T2). Enter keeps the default, the plan is shown before anything is written, and N, Ctrl-C or Ctrl-D write nothing. A peer, a live test, a pipe and `--dry-run` are never asked.
 - Design specs (#1064 T1-T3: #1097, #1102, #1107). `ahub specs list|check|covers` and the read-only `hub_specs` tool inspect Markdown specs with `id`/`type` frontmatter, their links and their freshness. `hub_task_done` reports the specs covering a task and takes head-bound `spec_ack` acknowledgements. `ahub init --specs|--no-specs|--spec-review` manages the `AGENT_HUB_SPECS` block, and `ahub specs stamp` is a person-only record that a spec was reviewed against HEAD. Specs are on by default, so the next `ahub init` in an existing project adds the block unless `specs.enabled` is false.
