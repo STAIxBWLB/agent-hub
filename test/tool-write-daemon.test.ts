@@ -265,8 +265,8 @@ test("a PII proposal still replays the exact fixed public task receipt", async (
     expect(String(first.text)).not.toContain(args.title);
     expect(String(first.text)).not.toContain("private/fixture.md");
 
-    const privateContext = f.board.propose(USER, { title: "synthetic codex private context", class: "implement", signals: ["pii_path"] });
-    f.board.update(privateContext.id, "codex", "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });
+    const piiTask = f.board.propose(USER, { title: "synthetic codex PII task", class: "implement", signals: ["pii_path"] });
+    f.board.update(piiTask.id, "codex", "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });
     const replay = await f.codex.request(request);
     expect(resultBody(replay)).toEqual(resultBody(first));
     expect(replay.rid).not.toBe(first.rid);
@@ -274,16 +274,33 @@ test("a PII proposal still replays the exact fixed public task receipt", async (
   } finally { f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
 });
 
-test("a new proposal remains refused if the actor's private context starts before execution", async () => {
+test("a confirmed public proposal receipt survives another open PII task without rerunning the write", async () => {
+  const f = await fixture();
+  try {
+    const requestId = newToolRequestId(f.codex.instanceId!);
+    const args = { title: "synthetic public task receipt", class: "implement" };
+    const request = { t: "task", op: "hub_task_propose", requestId, args };
+    const first = await f.codex.request(request);
+    expect(first.ok).toBe(true);
+    expect(f.board.list().filter(task => task.title === args.title)).toHaveLength(1);
+
+    const piiTask = f.board.propose(USER, { title: "synthetic codex PII task", class: "implement", signals: ["pii_path"] });
+    f.board.update(piiTask.id, "codex", "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });
+    const replay = await f.codex.request(request);
+    expect(resultBody(replay)).toEqual(resultBody(first));
+    expect(f.board.list().filter(task => task.title === args.title)).toHaveLength(1);
+  } finally { f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
+});
+
+test("an open PII task without a private turn does not block an ordinary proposal", async () => {
   const f = await fixture();
   try {
     const privateContext = f.board.propose(USER, { title: "synthetic codex private context", class: "implement", signals: ["pii_path"] });
     f.board.update(privateContext.id, "codex", "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });
     const args = { title: "synthetic proposal during private context", class: "implement" };
     const result = await f.codex.request({ t: "task", op: "hub_task_propose", args, requestId: newToolRequestId(f.codex.instanceId!) });
-    expect(result).toMatchObject({ ok: false });
-    expect(String(result.error)).toContain("not available while working on a PII task");
-    expect(f.board.list().some(task => task.title === args.title)).toBe(false);
+    expect(result.ok).toBe(true);
+    expect(f.board.list().some(task => task.title === args.title)).toBe(true);
   } finally { f.person.close(); f.codex.close(); f.board.close(); await f.daemon.stop(); }
 });
 

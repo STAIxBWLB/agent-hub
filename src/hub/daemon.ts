@@ -3629,7 +3629,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (op === "hub_specs" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("spec inspection unavailable during a private turn");
     if (MEMORY_READ_TOOLS.has(op)) validateMemoryRead(op, a);
     if (op === "hub_memory_correct") correctionInput(a);
-    if (op === "hub_task_propose" && by !== USER && (piiTurn || turns.get(by)?.private || contextPii(by))) {
+    if (op === "hub_task_propose" && by !== USER && (piiTurn || turns.get(by)?.private)) {
       throw new PreEffectToolRefusal("hub_task_propose is not available while working on a PII task: its text must not leave this machine");
     }
     if (CONDUCTOR_TOOL_NAMES.has(op)) {
