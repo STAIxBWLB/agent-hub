@@ -3606,7 +3606,7 @@ export class Tasks {
   /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
   private async assignOwner(task: Task, by: PeerId, opts: { current?: () => void; conductorManual?: true; queueOverride?: "owner"; candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number; refuseNamed?: "pre" | "plain"; plannerPull?: { revision: number; note: string; withheld: boolean; guard: () => void } } = {}): Promise<Task> {
     opts.current?.();
-    if (by === HUB && !task.owner && !taskHasStarted(task) && plannedStartPending(task, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("planned start is in the future");
+    if (by === HUB && !task.owner && ["backlog", "proposed"].includes(task.state) && plannedStartPending(task, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("planned start is in the future");
     if (task.state === "backlog" && !opts.plannerPull) throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
     const studyReason = this.studyDispatchReason(task, opts.namedOwner);
     if (studyReason) {
@@ -3624,7 +3624,7 @@ export class Tasks {
         if (opts.plannerPull) throw new PreEffectToolRefusal("planner pull changed during admission");
         return current ?? task;
       }
-      if (by === HUB && !current.owner && !taskHasStarted(current) && plannedStartPending(current, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("planned start is in the future");
+      if (by === HUB && !current.owner && ["backlog", "proposed"].includes(current.state) && plannedStartPending(current, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("planned start is in the future");
       task = current; // Reviewer-only and quiet bookkeeping updates do not supersede ownership authority.
       if (gap) {
         this.requestIndependentPlanReview(current);
@@ -3683,7 +3683,7 @@ export class Tasks {
     const assignmentExtra = { ...this.reviewMetadata(a, task), ...(binding ? { plannerReason: binding.plannerReason } : {}), ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}), ...(opts.conductorManual ? { conductorManual: true as const } : {}) };
     opts.current?.();
     const current = this.d.board.get(task.id) ?? task;
-    if (by === HUB && !current.owner && !taskHasStarted(current) && plannedStartPending(current, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("planned start is in the future");
+    if (by === HUB && !current.owner && ["backlog", "proposed"].includes(current.state) && plannedStartPending(current, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("planned start is in the future");
     this.studyDispatchCheck(current, a.owner);
     const next = opts.plannerPull
       ? this.d.board.pullAssigned(task.id, by, a.owner, opts.plannerPull.revision, opts.plannerPull.note, opts.plannerPull.withheld, a.reviewer ?? null, assignmentNote, assignmentExtra, task.history.length, binding)
