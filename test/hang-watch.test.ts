@@ -185,7 +185,7 @@ test("through the real fifo, filter and watchdog with the shipped quiet bound's 
   expect(out.stderr).not.toContain("cause=total");
   expect(out.stdout).toMatch(/GATE exit=143 progress=2/);
   expect(Date.now() - started).toBeLessThan(total * 1000 - 2000); // stopped on the quiet rule, well before the backstop
-}, 30_000);
+}, 15_000); // runs in about 2 s; docs/agent-notes/tests.md keeps a process-spawning test at 20 s or less, so it never overrides the gate's --timeout 20000 upward
 
 test("a healthy run that keeps passing tests for longer than the old 960 s default is not cut by the shipped default (#1086 AC1)", async () => {
   // Scaled by the old-default ratio: results keep arriving past 960/300 quiet bounds' worth of time (3.2 bounds) and the run ends on its own under the shipped total.
@@ -195,4 +195,4 @@ test("a healthy run that keeps passing tests for longer than the old 960 s defau
   const out = await gate(`for i in $(seq 1 ${seconds * 2}); do echo "(pass) t$i" >&2; sleep 0.5; done; exit 0`, quiet, total);
   expect(out.stdout).toContain(`GATE exit=0 progress=${seconds * 2}`);
   expect(out.stderr).not.toContain("cause=");
-}, 30_000);
+}, 15_000); // the scenario is 8 s of results (just past the old default's equivalent, 6.4 s) and ends on its own; same 20 s ceiling rule as above
