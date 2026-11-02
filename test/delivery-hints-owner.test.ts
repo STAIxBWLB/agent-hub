@@ -6,7 +6,7 @@ test("held hint includes the observed revision and owner-only disposition guidan
   const hint = renderHeldHint(held, 2_000, true);
   expect(hint).toContain("held-synthetic revision 7");
   expect(hint).toContain("hub_delivery_resolve");
-  expect(hint).toContain("completed or discard your own held row");
+  expect(hint).toContain("confirm completion or discard your own held row");
 });
 
 test("old hints without an observed revision remain display-only for owner disposition", () => {
