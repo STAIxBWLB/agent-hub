@@ -3606,6 +3606,7 @@ export class Tasks {
   /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
   private async assignOwner(task: Task, by: PeerId, opts: { current?: () => void; conductorManual?: true; queueOverride?: "owner"; candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number; refuseNamed?: "pre" | "plain"; plannerPull?: { revision: number; note: string; withheld: boolean; guard: () => void } } = {}): Promise<Task> {
     opts.current?.();
+    if (by === HUB && !task.owner && !taskHasStarted(task) && plannedStartPending(task, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("planned start is in the future");
     if (task.state === "backlog" && !opts.plannerPull) throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
     const studyReason = this.studyDispatchReason(task, opts.namedOwner);
     if (studyReason) {
@@ -3623,6 +3624,7 @@ export class Tasks {
         if (opts.plannerPull) throw new PreEffectToolRefusal("planner pull changed during admission");
         return current ?? task;
       }
+      if (by === HUB && !current.owner && !taskHasStarted(current) && plannedStartPending(current, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("planned start is in the future");
       task = current; // Reviewer-only and quiet bookkeeping updates do not supersede ownership authority.
       if (gap) {
         this.requestIndependentPlanReview(current);
@@ -3680,7 +3682,9 @@ export class Tasks {
     const binding = this.plannerBinding(task, a, !!opts.plannerPull);
     const assignmentExtra = { ...this.reviewMetadata(a, task), ...(binding ? { plannerReason: binding.plannerReason } : {}), ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}), ...(opts.conductorManual ? { conductorManual: true as const } : {}) };
     opts.current?.();
-    this.studyDispatchCheck(this.d.board.get(task.id) ?? task, a.owner);
+    const current = this.d.board.get(task.id) ?? task;
+    if (by === HUB && !current.owner && !taskHasStarted(current) && plannedStartPending(current, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("planned start is in the future");
+    this.studyDispatchCheck(current, a.owner);
     const next = opts.plannerPull
       ? this.d.board.pullAssigned(task.id, by, a.owner, opts.plannerPull.revision, opts.plannerPull.note, opts.plannerPull.withheld, a.reviewer ?? null, assignmentNote, assignmentExtra, task.history.length, binding)
       : this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(binding ? { planner: binding.planner } : {}), ...(opts.roster && task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, assignmentNote, assignmentExtra, opts.expectedFlowRevision);
@@ -4056,11 +4060,7 @@ export class Tasks {
         const retry = namedOwner ? { candidates: [namedOwner], namedOwner } : {};
         const choice = assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), waitsFor: this.waitsFor(task), ...this.weights(task.class, task), ...retry });
         if (choice.owner) {
-          const current = () => {
-            if (!this.queuePressureAdmitted()) throw new PreEffectToolRefusal("queue-pressure retry is no longer admitted");
-            const latest = this.d.board.get(task.id);
-            if (latest && plannedStartPending(latest, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("queue-pressure retry is waiting for the planned start");
-          };
+          const current = () => { if (!this.queuePressureAdmitted()) throw new PreEffectToolRefusal("queue-pressure retry is no longer admitted"); };
           try {
             // Reserved ready work shares the existing WIP, in-flight slot and offered fences.
             if (task.reserved) await this.offerReady(task, "queue pressure cleared", current);
@@ -4267,12 +4267,7 @@ export class Tasks {
       offering = true;
       const ready = t.history.at(-1)?.event === "ready" ? t : this.d.board.update(t.id, HUB, "ready", {}, why);
       this.releaseNotice(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
-      const currentOffer = () => {
-        current?.();
-        const latest = this.d.board.get(ready.id);
-        if (latest && plannedStartPending(latest, this.d.now?.() ?? Date.now())) throw new PreEffectToolRefusal("planned start is in the future");
-      };
-      await this.assignOwner(ready, HUB, { current: currentOffer, ...(planned ? { candidates: [selected!], namedOwner: selected!, planner: true } : {}) });
+      await this.assignOwner(ready, HUB, { current, ...(planned ? { candidates: [selected!], namedOwner: selected!, planner: true } : {}) });
     } catch (e) {
       // A saved move whose delivery failed is not "could not be assigned" (#297); the console notice was printed
       // where the error was thrown. The offer stays consumed by the error's own evidence, without the readback.
