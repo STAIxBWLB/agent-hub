@@ -964,7 +964,13 @@ export class Tasks {
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
-  resultLine(task: Task): string {
+  specReportText(task: Task, by?: PeerId): string {
+    if (by && this.d.privateTurn?.(by)) return "";
+    const report = this.currentSpecReport(task);
+    return report ? renderSpecTaskReport(report) : "";
+  }
+
+  resultLine(task: Task, by?: PeerId): string {
     const base = `task #${task.id}: ${task.state}, owner ${task.owner ?? "none"}, reviewer ${task.reviewer ?? "none"}`;
     const noReview = task.class !== "review" && !task.reviewer && OPEN.includes(task.state) && !this.waitsFor(task).length
       ? this.noReviewer(assign(task, this.states(), this.d.routing(), { candidates: task.owner ? [task.owner] : [], notReviewer: task.owner ?? undefined, ...this.weights(task.class, task) }))
@@ -973,8 +979,7 @@ export class Tasks {
     const holdText = held ? `${task.owner}'s queue is held (${held}); it receives the task once the hold is resolved` : undefined;
     const request = task.history.findLast(entry => ["done", "reviewer changed", "reviewer unavailable"].includes(entry.event));
     const poolBlocked = task.state === "in_review" && task.reviewer === USER && request?.reviewBlocked ? "blocked: no reviewer can run" : undefined;
-    const specReport = this.currentSpecReport(task);
-    const specText = specReport ? renderSpecTaskReport(specReport) : undefined;
+    const specText = this.specReportText(task, by) || undefined;
     return [base, noReview, poolBlocked, holdText, specText].filter(Boolean).join("; ");
   }
 

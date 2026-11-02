@@ -3848,8 +3848,10 @@ export async function startDaemon(opts: DaemonOptions) {
         const last = t.history.at(-1);
         if (last?.event === "integration requested" && last.by === HUB) return last.note ?? "";
         const extra = [tasks.takeDoneNote(t.id), tasks.checkoutNote()].filter(Boolean).join("\n"); // held silence notices, then the #572 checkout advisory
-        const result = tasks.isChecking(t.id) ? `${line(t)}; its check is queued or running, and the result comes as a task message` : line(t);
-        return extra ? `${result}\n${extra}` : result;
+        const doneLine = by === USER ? tasks.resultLine(t, by) : line(t);
+        const result = tasks.isChecking(t.id) ? `${doneLine}; its check is queued or running, and the result comes as a task message` : doneLine;
+        const specReport = by === USER ? "" : tasks.specReportText(t, by);
+        return [result, specReport, extra].filter(Boolean).join("\n");
       }
       case "hub_sdlc_record":
         await tasks.specStageGate(by, a.id, a.receipt); // #481 S1: a live spec edit-time check before a build stage
