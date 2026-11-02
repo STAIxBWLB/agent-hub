@@ -619,20 +619,26 @@ export class Bus {
 
   /** Settle only this peer's own uncertain receipt; this never replays its originals or changes task state. */
   resolveOwnDelivery(peer: string, id: string, revision: number, action: "completed" | "discard", reason: string): void {
-    const refuse = (message = "owner resolution unavailable; inspect the held delivery or ask the person") => { throw new PreEffectToolRefusal(message); };
-    if (this.closed || this.recoveryHeld || this.storageError || this.paused.has(peer) || this.opts.deliveryHeld?.(peer) === true || peer === USER || peer === HUB || remoteId(peer) || !this.journal) return refuse();
-    if (!Number.isSafeInteger(revision) || revision < 0 || (action !== "completed" && action !== "discard") || typeof reason !== "string" || !reason.trim() || reason.trim().length > 1000) return refuse();
+    const refuse = (message: string): never => { throw new PreEffectToolRefusal(message); };
+    // One message per cause class, each naming its next step. An unknown id, another peer's row and a row that is not needs_review share one message so a refusal never confirms another peer's row.
+    if (peer === USER || peer === HUB || remoteId(peer)) return refuse("hub_delivery_resolve settles a local agent's own held delivery; the person settles any other row with ahub queue resolve <delivery-id>");
+    if (this.closed || this.recoveryHeld || this.storageError || !this.journal) return refuse("the hub is not accepting delivery changes now (recovery, shutdown or delivery storage); run ahub status, then call hub_delivery_resolve again after it recovers");
+    if (this.paused.has(peer) || this.opts.deliveryHeld?.(peer) === true) return refuse("your deliveries are paused or held, so this row cannot be settled now; run ahub status to see which, and call hub_delivery_resolve again once it is released");
+    if (!Number.isSafeInteger(revision) || revision < 0 || (action !== "completed" && action !== "discard") || typeof reason !== "string" || !reason.trim() || reason.trim().length > 1000) return refuse("hub_delivery_resolve needs the revision hub_inbox showed (a whole number), action completed or discard, and a reason of 1 to 1000 characters");
     const row = this.queueShow(id), actor = `peer:${peer}`, cleanReason = reason.trim();
-    if (!row || row.peer !== peer) return refuse();
+    const notYours = "no needs_review delivery with this id is held for you; call hub_inbox to list your held deliveries and their revisions";
+    if (!row || row.peer !== peer) return refuse(notYours);
+    // An uncertain invocation may still be running: a peer claiming it completed would make the caller wait for a result that may never come. Only the person settles it.
+    if (row.originals.some(env => isInvocationKind(env))) return refuse(`delivery ${id} carries an invocation whose outcome is uncertain; only the person settles it (ahub queue show ${id}, then ahub queue resolve ${id})`);
     const previous = this.journal.resolution(id);
     if (previous) {
-      if (previous.actor !== actor || previous.action !== action || previous.reason !== cleanReason) return refuse();
+      if (previous.actor !== actor || previous.action !== action || previous.reason !== cleanReason) return refuse(`delivery ${id} was already settled with a different action or reason; the person can inspect it with ahub queue show ${id}`);
       if (revision !== previous.observedRevision && revision !== row.revision) return refuse("held delivery revision changed; read hub_inbox again for the current revision");
       this.resolveDelivery(id, revision, action, cleanReason, actor);
       return;
     }
+    if (row.state !== "needs_review") return refuse(notYours);
     if (row.revision !== revision) return refuse("held delivery revision changed; read hub_inbox again for the current revision");
-    if (row.state !== "needs_review") return refuse();
     this.resolveDelivery(id, revision, action, cleanReason, actor);
   }
 

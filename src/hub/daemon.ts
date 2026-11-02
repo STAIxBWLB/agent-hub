@@ -3825,8 +3825,8 @@ export async function startDaemon(opts: DaemonOptions) {
           || typeof a.delivery_id !== "string" || !a.delivery_id.trim() || a.delivery_id.length > 256
           || !Number.isSafeInteger(a.revision) || a.revision < 0 || !["completed", "discard"].includes(a.action)
           || typeof a.reason !== "string" || !a.reason.trim() || a.reason.trim().length > 1000 || a.reason.length > 1000
-          || !tasks.publicMetadataText(a.reason.trim()) || !boundedSafe(a.reason.trim())) throw new PreEffectToolRefusal("hub_delivery_resolve needs your delivery_id, observed revision, completed or discard action, and a public reason");
-        if (stopping || recoveryActive()) throw new PreEffectToolRefusal("recovery or shutdown is holding delivery mutations");
+          || !tasks.publicMetadataText(a.reason.trim()) || !boundedSafe(a.reason.trim())) throw new PreEffectToolRefusal("hub_delivery_resolve needs only delivery_id, revision (the whole number hub_inbox showed), action completed or discard, and a public reason of 1 to 1000 characters; call hub_inbox for the revision and keep private or sensitive text out of the reason");
+        if (stopping || recoveryActive()) throw new PreEffectToolRefusal("the hub is not accepting delivery changes now (recovery or shutdown); run ahub status, then call hub_delivery_resolve again after it recovers");
         bus.resolveOwnDelivery(by, a.delivery_id, a.revision, a.action, a.reason.trim());
         return `your held delivery was marked ${a.action}`;
       }
@@ -8471,7 +8471,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return void reply({ ok: true });
       }
       case "inbox": {
-        if (stopping || recoveryActive()) return void reply({ ok: false, error: "recovery or shutdown is holding inbox reads" });
+        if (stopping || recoveryActive()) return void reply({ ok: false, error: "the hub is not serving inbox reads now (recovery or shutdown); run ahub status, then call hub_inbox again after it recovers" });
         if (c.toolsOwner) {
           const peer = c.peer!, current = captureImplementerTools(c), launch = currentImplementerTools(c);
           try {

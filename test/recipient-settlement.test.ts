@@ -10,6 +10,7 @@ import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { newEnvelope, USER, type Envelope } from "../src/hub/envelope.ts";
 import { TASK_TOOLS, TASK_TOOL_NAMES } from "../src/hub/hub-tools.ts";
 import { BasePeer } from "../src/hub/peers.ts";
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import { WsPeer } from "../src/adapters/channel-peer.ts";
 
 const roots: string[] = [];
@@ -67,6 +68,59 @@ test("journal owner disposition is revision-bound, audited, and limited to needs
       expect(journal.get(active.id)?.state).toBe(state);
     }
   } finally { journal.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("owner resolution refusals name their cause and next step, never confirm another peer's row, and keep invocations person-only (#1079)", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-owner-refusals-")); roots.push(root);
+  const journal = new DeliveryJournal({ file: join(root, "hub.db"), projectRoot: root, projectId: "owner-refusals", instanceId: "fixture" });
+  let held = false;
+  const bus = new Bus({ journal, batchMs: 0, deliveryHeld: peer => held && peer === "claude" });
+  const hold = (id: string, peer: string, kind: "task" | "invocation" = "task", state: "needs_review" | "queued" = "needs_review") => {
+    const env = newEnvelope(USER, `synthetic ${id}`, { to: [peer], kind });
+    return journal.createDelivery({ id, peer, state, createdAt: env.ts, originals: [env], out: [env] });
+  };
+  const refusal = (run: () => void): string => { try { run(); } catch (error) { expect(error).toBeInstanceOf(PreEffectToolRefusal); return (error as Error).message; } throw new Error("expected a refusal"); };
+  try {
+    const mine = hold("mine", "claude"), theirs = hold("theirs", "codex"), queued = hold("queued", "claude", "task", "queued"), invocation = hold("invoked", "claude", "invocation");
+    const resolve = (id: string, revision: number, action: "completed" | "discard" = "completed", reason = "synthetic reason", peer = "claude") => () => bus.resolveOwnDelivery(peer, id, revision, action, reason);
+
+    // Invocation: the person settles it; the row stays needs_review and never calls the invocation receipt path.
+    const invoked = refusal(resolve("invoked", invocation.revision));
+    expect(invoked).toContain("invocation"); expect(invoked).toContain("only the person"); expect(invoked).toContain("ahub queue resolve invoked");
+    expect(bus.queueShow("invoked")?.state).toBe("needs_review");
+
+    // Not yours: an unknown id, another peer's row and a row that is not needs_review say the same thing, pointing at hub_inbox.
+    const unknown = refusal(resolve("nope", 0)), foreign = refusal(resolve("theirs", theirs.revision)), notHeld = refusal(resolve("queued", queued.revision));
+    expect(unknown).toBe(foreign); expect(foreign).toBe(notHeld);
+    expect(foreign).toContain("hub_inbox"); expect(foreign).not.toContain("codex"); expect(foreign).not.toContain("theirs");
+    expect(bus.queueShow("theirs")?.state).toBe("needs_review"); expect(bus.queueShow("queued")?.state).toBe("queued");
+
+    // Invalid arguments, stale revision.
+    expect(refusal(resolve("mine", -1))).toContain("revision");
+    expect(refusal(resolve("mine", mine.revision, "retry" as never))).toContain("completed or discard");
+    expect(refusal(resolve("mine", mine.revision, "completed", "   "))).toContain("reason");
+    expect(refusal(resolve("mine", mine.revision + 5))).toContain("read hub_inbox again");
+
+    // Not a local agent.
+    expect(refusal(resolve("mine", mine.revision, "completed", "r", USER))).toContain("ahub queue resolve");
+
+    // Paused, held, recovery: each names ahub status.
+    bus.pause("claude");
+    const paused = refusal(resolve("mine", mine.revision));
+    expect(paused).toContain("paused or held"); expect(paused).toContain("ahub status");
+    bus.resume("claude"); held = true;
+    expect(refusal(resolve("mine", mine.revision))).toContain("ahub status");
+    held = false; bus.setRecoveryHold(true);
+    const recovering = refusal(resolve("mine", mine.revision));
+    expect(recovering).toContain("not accepting delivery changes"); expect(recovering).toContain("ahub status");
+    bus.setRecoveryHold(false);
+
+    // Already settled with another action: names the person's inspection command.
+    bus.resolveOwnDelivery("claude", "mine", mine.revision, "completed", "first reason");
+    const changed = refusal(resolve("mine", mine.revision, "discard", "first reason"));
+    expect(changed).toContain("already settled"); expect(changed).toContain("ahub queue show mine");
+    expect(bus.queueShow("mine")?.state).toBe("completed");
+  } finally { bus.closeJournal(); }
 });
 
 test("explicit inbox pull passes only a needs_review hold, never pause or lifecycle fences", () => {
