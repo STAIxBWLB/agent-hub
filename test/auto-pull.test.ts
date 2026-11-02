@@ -24,11 +24,12 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 80));
 async function rig(autoPull: boolean | (() => boolean) = true) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-auto-pull-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 }), notices: string[] = [];
   const roles: Record<string, string[]> = { claude: ["planner"], pi: ["planner"], codex: ["implementer"], kimi: ["implementer"] };
+  const clock = { now: Date.parse("2026-11-02T00:00:00Z") };
   const flag = { on: typeof autoPull === "function" ? autoPull : () => autoPull };
   // A PII screen the test can hold open: the pull's reason text is screened (a model call in production), and that await is where the setting or a hold can change.
   const screen: { hold?: Promise<void>; entered: number; held: boolean } = { entered: 0, held: false };
   const hold = { sweepHeld: false };
-  const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", notify: line => notices.push(line), autoPull: () => flag.on(), sweepHeld: () => hold.sweepHeld,
+  const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", notify: line => notices.push(line), autoPull: () => flag.on(), sweepHeld: () => hold.sweepHeld, now: () => clock.now,
     routing: () => { const routing = loadRouting(cwd); return screen.held ? { ...routing, signals: { ...routing.signals, pii_screen: "local" as const } } : routing; },
     piiScreen: async () => { screen.entered++; await screen.hold; return { label: "clear" as const, ms: 0 }; } });
   const peers = new Map<string, Quiet>();
@@ -37,8 +38,8 @@ async function rig(autoPull: boolean | (() => boolean) = true) {
   const card = (fields: Partial<Task> & { reserved?: string } = {}) => {
     const made = board.propose(USER, { title: "PRIVATE_TASK_TITLE", detail: "PRIVATE_TASK_DETAIL", class: "implement", backlog: true,
       planner: fields.planner ?? "claude", deps: fields.deps, reserved: fields.reserved, signals: fields.signals });
-    const { priority, rank, pinned, release } = fields;
-    const patch = Object.fromEntries(Object.entries({ priority, rank, pinned, release }).filter(([, value]) => value !== undefined));
+    const { priority, rank, pinned, release, plannedStart } = fields;
+    const patch = Object.fromEntries(Object.entries({ priority, rank, pinned, release, plannedStart }).filter(([, value]) => value !== undefined));
     return Object.keys(patch).length ? board.plan(made.id, USER, patch, 0) : made;
   };
   /** A task codex is in review on: approving it frees codex's only planner slot. */
@@ -51,7 +52,7 @@ async function rig(autoPull: boolean | (() => boolean) = true) {
   const release = async () => { const task = inReview(); await tasks.review(USER, task.id, "approved"); return task; };
   /** Hold the PII screen open until `open()` is called; it holds only while `screen.held`. */
   const holdScreen = () => { let open!: () => void; screen.hold = new Promise<void>(resolve => { open = resolve; }); screen.held = true; return open; };
-  return { cwd, board, bus, tasks, flag, hold, screen, holdScreen, peers, notices, card, inReview, release };
+  return { cwd, board, bus, tasks, flag, hold, screen, holdScreen, peers, notices, clock, card, inReview, release };
 }
 const pulled = (task: Task | undefined) => !!task && task.state !== "backlog";
 const pullEntry = (task: Task) => task.history.find(entry => entry.event === "backlog pulled");
@@ -66,6 +67,25 @@ test("on: a freed slot pulls the top card reserved for that peer, as the hub for
   expect(pullEntry(after)).toMatchObject({ by: "hub", planner: "claude", event: "backlog pulled", note: expect.stringContaining("auto_pull: capacity released for codex; hub acted for planner claude") });
   expect(r.board.get(lower.id)!.state).toBe("backlog"); // one card per release: the second waits for the next freed slot
   expect(r.tasks.wip("codex")).toBe(1); // the pull took the slot it was freed for, so nothing else can follow
+});
+
+for (const scenario of [
+  { name: "before", offset: -1 },
+  { name: "at the boundary", offset: 0 },
+  { name: "after", offset: 1 },
+] as const) test(`a future plannedStart blocks auto-pull until ${scenario.name}`, async () => {
+  const r = await rig(true), plannedStart = r.clock.now + 10_000;
+  r.clock.now = plannedStart + scenario.offset;
+  const reserved = r.card({ reserved: "codex", priority: 1, plannedStart });
+  await r.release();
+  if (scenario.name === "before") {
+    expect(await until(() => r.tasks.autoPullsPending() === 0)).toBe(true);
+    expect(r.board.get(reserved.id)!.state).toBe("backlog");
+    r.clock.now = plannedStart;
+    await r.release();
+  }
+  expect(await until(() => pulled(r.board.get(reserved.id)))).toBe(true);
+  if (scenario.name === "before") expect(r.board.get(reserved.id)!.history.filter(entry => entry.event === "backlog pulled")).toHaveLength(1);
 });
 
 test("off (the default): the same release pulls nothing and still sends the notice", async () => {

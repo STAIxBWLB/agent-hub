@@ -242,6 +242,40 @@ test("ready-unassigned planner sweep keeps its reserved worker and WIP admission
   expect(f.notices.at(-1)).toContain("Owner reassignment suggestion: no eligible peer.");
 });
 
+for (const scenario of [
+  { name: "before", offset: -1, offered: false },
+  { name: "at the boundary", offset: 0, offered: true },
+  { name: "after", offset: 1, offered: true },
+] as const) test(`ready-unassigned offer respects plannedStart ${scenario.name}`, async () => {
+  const plannedStart = Date.parse("2026-11-05T10:12:00Z"), clock = { now: plannedStart + scenario.offset };
+  const f = await fixture({ now: () => clock.now });
+  f.peers.local!.set("offline"); f.peers.kimi!.set("offline");
+  const backlog = await f.tasks.propose("user", { title: "scheduled ready work", class: "implement", backlog: true });
+  const planned = f.board.plan(backlog.id, "user", { plannedStart }, backlog.planningRevision ?? 0);
+  const pulled = await f.tasks.pullPlanned("claude", { id: backlog.id, revision: planned.planningRevision ?? 1, reason: "planner stages the card" });
+  expect(pulled).toMatchObject({ state: "proposed", owner: null, reserved: "codex", plannedStart });
+
+  await f.tasks.releaseReady();
+
+  if (scenario.offered) expect(f.board.get(backlog.id)?.owner).toBe("codex");
+  else {
+    expect(f.board.get(backlog.id)?.owner).toBeNull();
+    expect(f.board.get(backlog.id)?.history.some(entry => entry.event === "assigned" || entry.event === "ready")).toBe(false);
+  }
+});
+
+test("ready-unassigned sweep starts its ladder only at plannedStart", async () => {
+  const f = await fixture({ sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, ready_min: 1 } });
+  const backlog = await f.tasks.propose("user", { title: "scheduled sweep work", class: "implement", backlog: true });
+  const staged = await f.tasks.pullPlanned("claude", { id: backlog.id, revision: 0, reason: "planner stages the card" });
+  const plannedStart = staged.history.at(-1)!.at + 120_000;
+  f.board.plan(staged.id, "user", { plannedStart }, staged.planningRevision ?? 1);
+
+  expect(await f.tasks.sweep(plannedStart - 1)).toEqual([]);
+  expect(f.board.get(staged.id)!.history.some(entry => entry.sweep)).toBe(false);
+  expect(await f.tasks.sweep(plannedStart)).toMatchObject([{ task: staged.id, finding: { kind: "ready-unassigned", step: 1 } }]);
+});
+
 for (const unavailable of ["offline", "paused"] as const) test(`ready-unassigned planner sweep does not replace its ${unavailable} reservation with another eligible worker`, async () => {
   const f = await fixture({ sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, ready_min: 1, ladder_min: 1, auto_reassign: true } });
   f.peers.local!.set("offline"); f.peers.kimi!.set("offline");
