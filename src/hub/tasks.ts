@@ -76,7 +76,8 @@ import { TaskRepositories } from "./task-repository.ts";
 import { mainCheckoutWarning } from "./main-checkout.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { coverageGap, renderReviewBrief, renderSpecTaskReport, type BriefFile, type ReviewBrief } from "./review-brief.ts";
-import { DEFAULT_SPECS_CONFIG, type SpecsCheckReport, type SpecsConfig, type SpecsCoverReport } from "./specs.ts";
+import { DEFAULT_SPECS_CONFIG, type SpecsConfig } from "./specs-config.ts";
+import type { SpecsCheckReport, SpecsCoverReport } from "./specs.ts";
 import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, plannedStartPending, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
@@ -925,7 +926,7 @@ export class Tasks {
       const { redFirst: _withheld, ...receipt } = rest.sdlc; rest.sdlc = receipt;
     }
     const currentSpecReport = this.currentSpecReport(task);
-    const currentSpecEntry = currentSpecReport ? history.findLast(entry => (entry.event === "done" || entry.event === "done (checking)") && entry.specReport?.head === currentSpecReport.head && entry.specRefBinding === this.specRefBinding(task)) : undefined;
+    const currentSpecEntry = currentSpecReport ? history.findLast(entry => entry.event === "done" || entry.event === "done (checking)") : undefined;
     const screenHistoryText = (text: string, field: string, withheld = false): string => !withheld && this.nameable(text) ? text : `[history ${field} withheld: ${this.whyWithheld(text)}; ahub task show ${task.id}]`;
     const publicHistory = (fullHistory ? history : history.slice(-5)).map(h => ({
       at: h.at, by: h.by, event: h.event,
@@ -982,10 +983,10 @@ export class Tasks {
     if (this.isPii(task) || !config.enabled || config.review === "off") return;
     const head = task.refs.commit && /^[0-9a-f]{40}$/.test(task.refs.commit) ? task.refs.commit : "";
     const binding = this.specRefBinding(task);
-    const entry = task.history.findLast(row => (row.event === "done" || row.event === "done (checking)")
-      && (row.specReport?.head === head || row.specReport?.head === "" && !row.specReport.complete) && row.specRefBinding === binding);
-    const report = entry?.specReport;
-    return report ? this.publicSpecReport(report) : undefined;
+    const latest = task.history.findLast(row => row.event === "done" || row.event === "done (checking)");
+    const report = latest?.specReport;
+    if (!latest || !report || !(report.head === head || report.head === "" && !report.complete) || latest.specRefBinding !== binding) return;
+    return this.publicSpecReport(report);
   }
 
   private specRefBinding(task: Pick<Task, "refs">): string {
@@ -1125,9 +1126,10 @@ export class Tasks {
     if (!this.d.specsRead) throw new PreEffectToolRefusal("spec inspection unavailable");
     if (action !== "check" && action !== "covers") throw new PreEffectToolRefusal('hub_specs action must be "check" or "covers"');
     if (!Array.isArray(rawPaths) || rawPaths.length > 32 || rawPaths.some(path => typeof path !== "string" || !path.trim() || path.length > 2000 || /[\p{Cc}\p{Cf}]/u.test(path)
-      || path.startsWith("/") || path.startsWith("\\") || path.split(/[\\/]/).includes("..") || !this.publicMetadataText(path))) throw new PreEffectToolRefusal("hub_specs paths must be bounded, public repository-relative paths");
+      || path.startsWith("/") || path.includes("\\") || path.split("/").includes("..") || !this.publicMetadataText(path))) throw new PreEffectToolRefusal("hub_specs paths must be bounded, public repository-relative paths using forward slashes");
     const paths = rawPaths as string[];
     if (action === "check" && paths.length) throw new PreEffectToolRefusal('hub_specs "check" takes no paths');
+    if (action === "covers" && paths.length === 0) throw new PreEffectToolRefusal('hub_specs "covers" needs at least one repository-relative path');
     const safe = (value: string) => sanitize(value);
     const diagnostic = (raw: SpecsCheckReport["items"][number]): Record<string, unknown> | undefined => {
       const fields = [raw.code, raw.message, raw.cause, raw.nextSteps, ...(raw.path ? [raw.path] : []), ...(raw.id ? [raw.id] : []), ...(raw.field ? [raw.field] : []), ...(raw.relatedId ? [raw.relatedId] : [])];

@@ -77,6 +77,20 @@ test("machine-local disable suppresses a stored report without changing task con
   expect(f.tasks.briefText(done)).not.toContain("spec not updated");
 });
 
+test("an off-mode same-head re-review does not resurrect an older report when reporting returns", async () => {
+  const f = fixture();
+  const source = f.task();
+  const firstDone = await f.tasks.done("codex", source.id, "updated the bus", { commit: HEAD, paths: ["src/hub/bus.ts"] });
+  f.board.update(source.id, USER, "changes_requested", { state: "changes_requested", rejections: 1 }, "review requests one change");
+  f.config.review = "off";
+  const refiled = await f.tasks.done("codex", source.id, "updated the bus again", { commit: HEAD, paths: ["src/hub/bus.ts"] });
+  expect(refiled.history.findLast(entry => entry.event === "done")?.specReport).toBeUndefined();
+  f.config.review = "report";
+  expect(f.tasks.resultLine(refiled)).not.toContain("spec not updated");
+  expect(f.tasks.publicView(refiled).specReport).toBeUndefined();
+  expect(firstDone.history.findLast(entry => entry.event === "done")?.specReport).toBeDefined();
+});
+
 test("require refuses before a board write until every unchanged covering spec has a screened acknowledgement", async () => {
   const f = fixture("require");
   const source = f.task(), before = source.history.length;
@@ -180,6 +194,8 @@ test("hub_specs caps the combined diagnostic and summary projection at 20 items"
   expect((covered.items as unknown[]).length + (covered.specs as unknown[]).length).toBe(20);
   expect(covered.truncated).toBe(true);
   expect(() => f.tasks.specsRead("codex", "covers", ["../outside.md"])).toThrow(/repository-relative/);
+  expect(() => f.tasks.specsRead("codex", "covers", ["src\\hub\\bus.ts"])).toThrow(/forward slashes/);
+  expect(() => f.tasks.specsRead("codex", "covers")).toThrow(/needs at least one/);
 });
 
 test("filtered private spec metadata makes a report incomplete instead of implying no coverage", async () => {
