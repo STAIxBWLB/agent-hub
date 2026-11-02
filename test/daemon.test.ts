@@ -335,8 +335,13 @@ test("hub_inbox is held by a needs_review delivery and reads the operator's retr
   const plain = await fakeClaude(stateDir, null);
   await until(() => (daemon.bus.peers.get("claude") as any)?.pullOnly === true, "plain attach");
   const inbox = async () => ((await plain.client.callTool({ name: "hub_inbox", arguments: {} })) as any).content[0].text as string;
-  expect(await inbox()).toStartWith("not read: held by needs_review");
+  // #1079: the read is no longer refused by a needs_review hold. It returns nothing new, does not return or settle the held original, and names the hold.
+  const heldRead = (await plain.client.callTool({ name: "hub_inbox", arguments: {} })) as any;
+  expect(heldRead.content[0].text).toStartWith("(no queued hub messages)");
+  expect(heldRead.content[0].text).not.toContain("pushed then lost");
+  expect(heldRead.content.map((c: { text: string }) => c.text).join("\n")).toContain("Held hub deliveries: 1");
   const row = daemon.bus.queueList("claude").find((r) => r.state === "needs_review")!;
+  expect(row.state).toBe("needs_review");
   expect((await console_.request({ t: "queue", op: "resolve", id: row.id, revision: row.revision, action: "retry", reason: "not shown" })).ok).toBe(true);
   expect(await inbox()).toContain("pushed then lost");
   expect(daemon.bus.queueList("claude").filter((r) => ["queued", "dispatching", "accepted", "needs_review"].includes(r.state))).toEqual([]);
