@@ -3840,6 +3840,20 @@ crash of one is not reported this way.
 - Codex's app-server died with the hub; run `ahub codex` again. Claude Code's
   plugin reconnects by itself while that session is open.
 
+The report in `ahub status` shows only what still stands (#1082), worked out when
+status is asked and not frozen at startup. A line that asks something of a peer
+(`run ahub codex again`, `reconnects by itself`, a Pi that is still down) goes as
+soon as that peer is attached again, whoever attached it. The headline's count of
+deliveries still in `needs_review` counts only the ones this crash left, read
+live, so it equals what `ahub queue list` shows for them and falls as each is
+resolved. At zero the count and its pointer to the queue are gone and the headline
+(`the previous hub run stopped without shutting down`) stays as the record that a
+crash was found. Lines that say what recovery found or did (`kimi resumed`,
+`pi not resumed`, `pi.auto_start started a fresh session`) are history and stay for
+the run. The hub log keeps every line as it was written. A row that becomes
+`needs_review` later in the run is in `ahub queue list` and is not part of this
+count.
+
 ## Evidence and limits
 
 The 0.6.4 release has real measurements in [the smoke checklist](smoke.md):

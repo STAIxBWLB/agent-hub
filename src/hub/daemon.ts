@@ -4983,8 +4983,8 @@ export async function startDaemon(opts: DaemonOptions) {
         if (step.resume) {
           const r = await start(step.peer, step.resume as Parameters<typeof startPeer>[1]);
           if (r.ok) { report(`pi resumed (pi.auto_start): ${step.how}`); continue; }
-          report(`pi not resumed (${String(r.error)}); ${step.how}`, { peer: step.peer });
-        } else report(step.how, { peer: step.peer });
+          report(`pi not resumed (${String(r.error)}); ${step.how}`); // what happened, true after a fresh start too: history. Whether Pi is back is the last line of this branch.
+        } else report(step.how);
         // #269: a Pi that ran in a terminal is not replaced by a headless one unless headless is its start mode.
         if (step.tui && startMode(step.peer) === "tui") { report("pi.auto_start starts no headless Pi in place of a terminal one: run the command above, or set peers.pi.start_mode to headless", { peer: step.peer }); continue; }
         const fresh = await start(step.peer, { ...(step.fresh as Parameters<typeof startPeer>[1]), fresh: true });

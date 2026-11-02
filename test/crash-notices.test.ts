@@ -121,3 +121,17 @@ test("the Jcode headless hint still follows a crash report even after every noti
   expect(source).toContain("afterCrash: crashReported");
   expect(source).not.toContain("afterCrash: crashNotices.length");
 });
+
+test("a Pi whose resume failed and whose fresh start worked leaves history only, but one that never comes back keeps its action line until it attaches (#1082)", async () => {
+  const history = (await Bun.file(join(import.meta.dir, "../src/hub/daemon.ts")).text());
+  const branch = history.slice(history.indexOf("if (!declarations[step.peer] && definitionOf(step.peer)?.session.restoreOnStart && piAutoStart()) {"), history.indexOf("if (!step.resume || !autoResume()) {"));
+  // the lines about what happened carry no peer; each way Pi stays down carries it, and the success line is history
+  expect(branch).toContain("report(`pi not resumed (${String(r.error)}); ${step.how}`);");
+  expect(branch).toContain("} else report(step.how);");
+  expect(branch).toContain('or set peers.pi.start_mode to headless", { peer: step.peer }); continue; }');
+  expect(branch).toContain("fresh.ok ? {} : { peer: step.peer }");
+  // the pure rule those two tags rely on: an action line follows its peer, a history line does not
+  const notices: CrashNotice[] = [{ text: "pi not resumed (gone); pi: its session file can be resumed" }, { text: "pi.auto_start could not start Pi either (boom)", peer: "pi" }];
+  expect(openCrashNotices(notices, { attached: new Set(["pi"]), inFlight: 0 })).toEqual([notices[0]!.text]);
+  expect(openCrashNotices(notices, { attached: new Set(), inFlight: 0 })).toEqual([notices[0]!.text, notices[1]!.text]);
+});
