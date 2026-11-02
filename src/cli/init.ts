@@ -58,6 +58,36 @@ function releaseBlock(existing: string): string {
   if (start >= 0 || existing.includes(RELEASE_END)) throw new Error("release guard instruction markers are incomplete");
   return `${existing.trimEnd()}\n\n${block}\n`;
 }
+const SPECS_BEGIN = "<!-- AGENT_HUB_SPECS:BEGIN (managed by `ahub init`, edits inside are overwritten; `ahub init --no-specs` removes it) -->";
+const SPECS_END = "<!-- AGENT_HUB_SPECS:END -->";
+/**
+ * #1064 T3: the design-specs instruction block, placed the way the release guard's is. On: insert it (at the end of the file) or replace it in place. Off: drop it and the blank
+ * lines around it. Text outside the markers is never touched, and incomplete markers are refused (nothing is guessed about where a half block ends).
+ */
+export function specsBlock(existing: string, enabled: boolean): string {
+  const start = existing.indexOf("<!-- AGENT_HUB_SPECS:BEGIN"), end = existing.indexOf(SPECS_END, Math.max(start, 0));
+  if (start >= 0 !== end > start || start < 0 && existing.includes(SPECS_END)) throw new Error("the AGENT_HUB_SPECS markers in AGENTS.md are incomplete; fix or remove the half block in your editor, then run ahub init again; nothing was written");
+  if (!enabled) {
+    if (start < 0) return existing;
+    const rest = [existing.slice(0, start).trimEnd(), existing.slice(end + SPECS_END.length).trim()].filter(Boolean).join("\n\n");
+    return rest && `${rest}\n`;
+  }
+  const block = `${SPECS_BEGIN}\n${readFileSync(join(TEMPLATES, "specs.block.md"), "utf8").trim()}\n${SPECS_END}`;
+  if (start >= 0) return existing.slice(0, start) + block + existing.slice(end + SPECS_END.length);
+  return `${existing.trimEnd()}${existing.trim() ? "\n\n" : ""}${block}\n`;
+}
+/** Whether the specs feature is on for what init is about to leave behind: the flag when given, else the project's own layers (config.local.json over config.json), else the shipped default (on). */
+function specsEnabled(cwd: string, settings: InitSettingsRequest | undefined): boolean {
+  const asked = settings?.values["specs.enabled"];
+  if (typeof asked === "boolean") return asked;
+  let enabled = true;
+  for (const name of ["config.json", "config.local.json"]) {
+    const path = join(cwd, ".agenthub", name);
+    if (!existsSync(path)) continue;
+    try { const value = (JSON.parse(readFileSync(path, "utf8")) as { specs?: { enabled?: unknown } }).specs?.enabled; if (typeof value === "boolean") enabled = value; } catch { /* an unreadable layer is refused elsewhere, with its own message */ }
+  }
+  return enabled;
+}
 function regularHook(file: string): Stats | undefined {
   const info = lstatSync(file, { throwIfNoEntry: false });
   if (info && (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)) throw new Error("release guard hook must be an unlinked regular file");
@@ -175,7 +205,8 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
   }
   const agents = join(cwd, "AGENTS.md");
   const existing = existsSync(agents) ? readFileSync(agents, "utf8") : "";
-  const instructions = upsertBlock(existing, overrides && Object.hasOwn(overrides as object, "agents") ? profile.agents : profile.agents || readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8"));
+  const hubBlock = upsertBlock(existing, overrides && Object.hasOwn(overrides as object, "agents") ? profile.agents : profile.agents || readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8"));
+  const instructions = specsBlock(hubBlock, specsEnabled(cwd, settings)); // #1064 T3: a project that turned specs off keeps no block
   write(agents, guarded ? releaseBlock(instructions) : instructions, "refresh hub instructions; preserve surrounding text", existing.includes("<!-- AGENT_HUB:BEGIN") ? "replace" : "insert");
   const claude = join(cwd, "CLAUDE.md");
   const own = lstatSync(claude, { throwIfNoEntry: false });

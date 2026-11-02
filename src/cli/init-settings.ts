@@ -14,6 +14,7 @@ export type InitSettingFile = "config.json" | "config.local.json" | "sdlc.toml";
 export const SDLC_MODES = ["off", "advise", "enforce"] as const;
 export const COORDINATION_MODES = ["advisory", "turn-free"] as const;
 export const AUTONOMY_CHOICES = ["inherit", "off"] as const;
+export const SPEC_REVIEW_MODES = ["off", "report", "require"] as const;
 
 /** One changed key, as `ahub init --dry-run --json` shows it. `from` is `undefined` (absent in JSON) when the key was not set before. */
 export interface InitSettingRow { key: string; file: InitSettingFile; from: unknown; to: unknown }
@@ -50,6 +51,9 @@ export const INIT_SETTINGS: readonly InitSettingDef[] = [
   { id: "coordination", flags: [{ flag: "--coordination" }], file: "config.json", path: ["coordination"], allowed: COORDINATION_MODES.join("|"), describe: "coordination mode", parse: choice("coordination", "--coordination", COORDINATION_MODES) },
   { id: "memory.enabled", flags: [{ flag: "--memory", value: true }, { flag: "--no-memory", value: false }], file: "config.json", path: ["memory", "enabled"], allowed: "on|off", describe: "shared memory", parse: () => { throw new Error("unreachable"); } },
   { id: "snapshots.enabled", flags: [{ flag: "--snapshots", value: true }, { flag: "--no-snapshots", value: false }], file: "config.json", path: ["snapshots", "enabled"], allowed: "on|off", describe: "per-turn snapshots", parse: () => { throw new Error("unreachable"); } },
+  // #1064 T3: the design-specs feature. `--no-specs` also removes the AGENT_HUB_SPECS block from AGENTS.md and `--specs` restores it (init.ts reads the planned `specs.enabled`); the key is shared, so a team commits the choice.
+  { id: "specs.enabled", flags: [{ flag: "--specs", value: true }, { flag: "--no-specs", value: false }], file: "config.json", path: ["specs", "enabled"], allowed: "on|off", describe: "design specs and their freshness checks", parse: () => { throw new Error("unreachable"); } },
+  { id: "specs.review", flags: [{ flag: "--spec-review" }], file: "config.json", path: ["specs", "review"], allowed: SPEC_REVIEW_MODES.join("|"), describe: "how a task's covering specs are reviewed", parse: choice("specs.review", "--spec-review", SPEC_REVIEW_MODES) },
   // One row per adapter that still has a legacy `<kind>.enabled` switch in config.json (its definition says so with `enabledSwitchStartOnly`): no peer is named here, so a second
   // such adapter gets its `--<kind>` / `--no-<kind>` flags and its row from its own definition (#451: peer policy lives in the registry, not in generic code).
   ...ADAPTERS.filter(definition => definition.enabledSwitchStartOnly === true).map((definition): InitSettingDef => ({
@@ -66,7 +70,7 @@ export interface InitSettingsRequest {
 }
 
 /** The usage line `ahub init` prints for a bad argument; help.ts shows the same flags. */
-export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--coordination advisory|turn-free] [--memory|--no-memory] [--snapshots|--no-snapshots] [--pi|--no-pi] [--autonomy inherit|off] [--shadow] [--release-guard] [--dry-run --json]";
+export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--coordination advisory|turn-free] [--memory|--no-memory] [--snapshots|--no-snapshots] [--pi|--no-pi] [--specs|--no-specs] [--spec-review off|report|require] [--autonomy inherit|off] [--shadow] [--release-guard] [--dry-run --json]";
 
 /** Every flag the table and the two non-key choices own, for the caller's own argument loop and for help. */
 export const INIT_SETTING_FLAGS: readonly string[] = [...INIT_SETTINGS.flatMap(row => row.flags.map(flag => flag.flag)), "--autonomy"];

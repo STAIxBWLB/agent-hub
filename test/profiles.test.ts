@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { init, planInit, upsertBlock } from "../src/cli/init.ts";
+import { init, planInit, specsBlock, upsertBlock } from "../src/cli/init.ts";
 import { profileClass, projectProfile, PROFILE_NAMES, type ProfileName } from "../src/hub/profiles.ts";
 import { DEFAULT_ROLES, roleContract, TASK_TOOLS, profileTaskTools } from "../src/hub/hub-tools.ts";
 import { loadRoleCatalog, selectedRoles } from "../src/hub/roles.ts";
@@ -33,7 +33,10 @@ async function rig(profile?: ProfileName, check?: { resolve: boolean }, profileD
 test("profile init preserves dev bytes and surrounding instructions; explicit conflicts are pre-write (#259)", () => {
   const dir = root(); init(dir);
   expect(readFileSync(join(dir, ".agenthub/config.json"), "utf8")).toBe(readFileSync(join(import.meta.dir, "../templates/config.json"), "utf8"));
-  expect(readFileSync(join(dir, "AGENTS.md"), "utf8")).toBe(upsertBlock("", readFileSync(join(import.meta.dir, "../templates/AGENTS.block.md"), "utf8")));
+  // The hub block is byte for byte what it was; the design-specs block (#1064 T3, on by default) follows it and nothing else is added.
+  const hubBlock = upsertBlock("", readFileSync(join(import.meta.dir, "../templates/AGENTS.block.md"), "utf8"));
+  expect(readFileSync(join(dir, "AGENTS.md"), "utf8")).toBe(specsBlock(hubBlock, true));
+  expect(readFileSync(join(dir, "AGENTS.md"), "utf8")).toStartWith(hubBlock);
   expect(planInit(dir, "dev")).toEqual([]);
   const before = readFileSync(join(dir, ".agenthub/config.json"), "utf8"); expect(() => init(dir, "research")).toThrow("differs"); expect(readFileSync(join(dir, ".agenthub/config.json"), "utf8")).toBe(before);
   for (const name of PROFILE_NAMES.filter(v => v !== "dev")) {
