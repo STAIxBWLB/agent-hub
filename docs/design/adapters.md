@@ -1,0 +1,76 @@
+---
+id: adapters
+type: module
+title: Native Adapters and Spawned Agents
+status: draft
+parent: agent-hub-architecture
+paths:
+  - src/adapters/**
+  - src/pi/**
+  - src/hub/peers.ts
+  - src/hub/permission-mode.ts
+  - src/hub/tool-refusal.ts
+  - src/hub/child-process.ts
+  - src/hub/lifecycle.ts
+  - src/hub/start-mode.ts
+  - src/hub/terminal-open.ts
+  - src/memory/capture.ts
+  - src/hub/native-hook-launch.ts
+  - src/hub/peer-catalog.ts
+  - src/cli/configured-acp-entry.ts
+  - src/cli/agy-mcp.ts
+  - src/cli/kimi-mcp.ts
+  - src/cli/jcode-mcp.ts
+  - scripts/benchmarks/teardown.ts
+  - src/hub/action-enforce.ts
+  - src/hub/read-only-shell.ts
+  - src/hub/read-only-shell-proof.ts
+  - src/hub/operational-authority.ts
+  - src/hub/permission-payload.ts
+  - src/hub/claude-shell-wrapper.ts
+  - src/hub/task-shell-command.ts
+  - src/hub/task-shell-default.ts
+  - src/hub/task-shell-proof.ts
+  - src/hub/task-shell-sandbox.ts
+  - src/cli/claude-shell-wrapper.ts
+covers: [adapters]
+tags: [agent-hub, dogfood]
+---
+
+# Native Adapters and Spawned Agents
+
+This module records how vendor protocols meet the hub. For operational rules see the [adapter](../agent-notes/adapters.md), [daemon](../agent-notes/daemon.md), [local-worker](../agent-notes/local-worker.md), and [model](../agent-notes/models.md) notes, and the [new-adapter guide](../adding-an-ai-tool.md).
+
+## Registry and host boundary
+
+Each peer kind is described by an `AdapterDefinition` in the registry. Per-kind launch, protocol, and permission details stay with that definition; the daemon consumes registry fields rather than spreading vendor-name branches through policy. `PeerAdapter` is the runtime interface for delivery, turn state, permission acknowledgement, lifecycle, and optional host evidence. The host owns identity, admission, audits, task role checks, and effects; an adapter reports facts but cannot certify its own authority. This keeps a new transport from changing common policy accidentally ([#451](https://github.com/STAIxBWLB/agent-hub/issues/451), [#625](https://github.com/STAIxBWLB/agent-hub/issues/625)).
+
+Optional ports have explicit meaning: absent keeps the generic path, while present-but-unknown refuses where the port gates a safety decision. Native evidence stays with the party that can observe it: the daemon retains host launch and socket-generation records, while a protocol adapter retains in-protocol evidence such as a thread's native sandbox or approval state. This prevents a configured adapter from asserting proof it does not possess ([#625](https://github.com/STAIxBWLB/agent-hub/issues/625)).
+
+Adapters translate different interaction surfaces without changing the peer's task identity. Claude's plugin channel connects through MCP and the hub control service; Codex is proxied through app-server; ACP peers share an ACP transport; Pi uses its extension bridge. Kimi defaults to a pull-only TUI, with headless ACP as a separate selected form under the same peer id. The TUI does not inherit headless push, session, or recovery behavior. Keeping forms distinct lets the hub preserve the native user interaction model while enforcing one role and delivery policy ([#316](https://github.com/STAIxBWLB/agent-hub/issues/316), [#625](https://github.com/STAIxBWLB/agent-hub/issues/625)).
+
+## Permissions, execution, and process ownership
+
+Permission modes control whether native actions prompt; they do not widen a sandbox or path grant. The local worker's file tools use path guards, and its command tools run through the host's OS sandbox. Vendor-native tools use their vendor/runtime permission and isolation boundaries; the hub does not claim to confine every ACP or TUI tool. This distinction prevents an approval-mode setting from being mistaken for filesystem or network confinement ([#242](https://github.com/STAIxBWLB/agent-hub/issues/242), [#39](https://github.com/STAIxBWLB/agent-hub/issues/39), [#270](https://github.com/STAIxBWLB/agent-hub/issues/270)).
+
+When the hub starts a child, the host constructs its environment, binds its launch and generation, and owns its process-group lifecycle. Stop and recovery require current evidence for the process actually started; a PID, adapter label, successful start call, or stale session record is not enough. This keeps teardown from signaling a person's unrelated process and prevents a late native callback from acquiring a replaced session's authority ([#115](https://github.com/STAIxBWLB/agent-hub/issues/115), [#625](https://github.com/STAIxBWLB/agent-hub/issues/625)).
+
+Permission decisions are bound to the authenticated caller and current session. A hub CLI call inside an agent session acts as that peer, not as the person; role and task checks still apply at each tool boundary. Permission modes are person-controlled, and a conductor role does not grant them. This avoids turning a received message into user consent ([#193](https://github.com/STAIxBWLB/agent-hub/issues/193), [#242](https://github.com/STAIxBWLB/agent-hub/issues/242)).
+
+## Model, account, and memory boundaries
+
+Subscription-based native CLIs keep their own account authentication; those credentials are not pooled through the hub. Hub-owned inference, including internal summaries and local-worker model calls, uses the in-process model route and OmniRoute provider boundary. Prompt text may inform configured routing, but it cannot grant credential access or replace host routing policy. This separates native subscription identity from hub service credentials ([#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
+
+The PII screen is distinct from ordinary optional inference. It may use an on-device model; a gateway screen requires positive on-campus admission and `onCampusOnly`. If no allowed path returns a closed `clear` or PII verdict before the deadline, the result is unknown and handled as private. This keeps network and model uncertainty from becoming a disclosure ([#198](https://github.com/STAIxBWLB/agent-hub/issues/198)).
+
+Runtime memory capture and recall use the in-process `@staix/agent-mem` package, screened and invoked by host integration. claude-mem is off by default and import-only; there is no worker HTTP or model-summary path in the runtime. This avoids a parallel capture route with different privacy checks ([#752](https://github.com/STAIxBWLB/agent-hub/issues/752), [agent-mem#13](https://github.com/STAIxBWLB/agent-mem/issues/13)).
+
+## Compatibility and external modules
+
+Native CLI compatibility is centralized in `compat.ts`. Each gated operation asks that policy for a verified, in-contract, person-trusted, or refused result; person trust for one exact version does not skip a separate isolation or runtime proof. This lets upstream versions change without turning an untested protocol assumption into support ([#691](https://github.com/STAIxBWLB/agent-hub/issues/691)).
+
+External adapter modules are an explicit, person-owned, machine-local opt-in. The daemon verifies and pins the captured bundle at startup, then admits only the bounded headless ACP instance contract through host-managed launch and current-owner checks. Module code runs in the daemon trust domain; pinning is integrity evidence, not a sandbox. Modules cannot supply native reviewer engines, proof ports, permission callbacks, provider selectors, or arbitrary recovery authority. This ceiling limits what imported code can claim and prevents live reload from replacing the executable catalog ([#754](https://github.com/STAIxBWLB/agent-hub/issues/754)).
+
+## Evidence boundary
+
+Compatibility probes and fake transports verify source contracts, not an account login, live model turn, native permission prompt, or operating-system isolation. Those receipts remain separate because protocol inventory alone cannot prove runtime behavior ([#625](https://github.com/STAIxBWLB/agent-hub/issues/625), [#754](https://github.com/STAIxBWLB/agent-hub/issues/754)).
