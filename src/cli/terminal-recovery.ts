@@ -225,7 +225,7 @@ function runnerFailure(argv: readonly string[], result: CommandResult): Recovery
 async function run(runner: CommandRunner, argv: readonly string[]): Promise<unknown> {
   const result = await runner(argv);
   if (commandStatus(result) !== 0) {
-    // Orca 1.4.223 answers a handle whose terminal was removed with `{"ok":false,"error":{"code":"terminal_handle_stale"}}`.
+    // Orca 1.4.223 and, rechecked read-only, 1.4.245 (docs/verification/2026-11-02-orca-1.4.245-cli-contract.md) answer a handle whose terminal was removed with `{"ok":false,"error":{"code":"terminal_handle_stale"}}`.
     if (errorCode(result) === "terminal_handle_stale") {
       const handle = argv.includes("--terminal") ? argv[argv.indexOf("--terminal") + 1] : undefined;
       throw new OrcaCommandError({ code: "terminal-gone", message: `the Orca terminal${handle ? ` ${handle}` : ""} no longer exists` });
@@ -791,7 +791,7 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
 }
 
 /**
- * One bounded Orca wait. Orca 1.4.223 answers a wait that timed out with exit 1 and `{"ok":false,"error":{"code":"timeout"}}`:
+ * One bounded Orca wait. Orca 1.4.223 and, rechecked read-only, 1.4.245 (docs/verification/2026-11-02-orca-1.4.245-cli-contract.md) answer a wait that timed out with exit 1 and `{"ok":false,"error":{"code":"timeout"}}`:
  * that is "not satisfied", not a failure. Any other failure still throws.
  */
 async function waitSatisfied(runner: CommandRunner, handle: string, timeoutMs: number): Promise<boolean> {
