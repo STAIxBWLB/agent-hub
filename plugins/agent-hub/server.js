@@ -10066,7 +10066,6 @@ class ControlWriteTelemetry {
   maxActiveRequests;
   maxActiveSpans;
   maxRecentSpans;
-  maxRequestSpans;
   rateLimitMs;
   requests = new Map;
   spans = new Map;
@@ -10094,9 +10093,8 @@ class ControlWriteTelemetry {
     this.maxActiveRequests = options.maxActiveRequests ?? MAX_ACTIVE_REQUESTS;
     this.maxActiveSpans = options.maxActiveSpans ?? MAX_ACTIVE_SPANS;
     this.maxRecentSpans = options.maxRecentSpans ?? MAX_RECENT_SPANS;
-    this.maxRequestSpans = options.maxRequestSpans ?? MAX_REQUEST_SPANS;
     this.rateLimitMs = options.rateLimitMs ?? RATE_LIMIT_MS;
-    if (![this.maxActiveRequests, this.maxActiveSpans, this.maxRecentSpans].every((value) => Number.isSafeInteger(value) && value > 0) || !Number.isSafeInteger(this.maxRequestSpans) || this.maxRequestSpans < 1 || this.maxRequestSpans > MAX_REQUEST_SPANS || !Number.isSafeInteger(this.rateLimitMs) || this.rateLimitMs < 0 || this.rateLimitMs > RATE_LIMIT_MS || this.maxActiveRequests > MAX_ACTIVE_REQUESTS || this.maxActiveSpans > MAX_ACTIVE_SPANS || this.maxRecentSpans > MAX_RECENT_SPANS)
+    if (![this.maxActiveRequests, this.maxActiveSpans, this.maxRecentSpans].every((value) => Number.isSafeInteger(value) && value > 0) || !Number.isSafeInteger(this.rateLimitMs) || this.rateLimitMs < 0 || this.rateLimitMs > RATE_LIMIT_MS || this.maxActiveRequests > MAX_ACTIVE_REQUESTS || this.maxActiveSpans > MAX_ACTIVE_SPANS || this.maxRecentSpans > MAX_RECENT_SPANS)
       throw new Error("invalid control write trace bounds");
   }
   run(metadata, privacyCurrent, fn) {
@@ -10121,7 +10119,6 @@ class ControlWriteTelemetry {
       startedAt: now,
       phases: new Map,
       phaseOrder: [],
-      spanCount: 0,
       settled: false,
       privacySuppressed: false,
       logPrivacy: () => false
@@ -10158,9 +10155,7 @@ class ControlWriteTelemetry {
     return this.run({ kind: "background" }, privacyCurrent, () => controlWriteSpan(phase, fn));
   }
   start() {
-    if (this.stopped)
-      this.stopped = false;
-    if (this.timer)
+    if (this.stopped || this.timer)
       return;
     this.nextSampleAt = this.readNow() + CONTROL_WRITE_SAMPLE_MS;
     this.timer = setInterval(() => this.sample(), CONTROL_WRITE_SAMPLE_MS);
@@ -10235,41 +10230,43 @@ class ControlWriteTelemetry {
     };
   }
   beginSpan(request, phase) {
-    const span = { request, phase, startedAt: this.readNow(), async: false };
-    if (this.spans.size >= this.maxActiveSpans || request.spanCount >= this.maxRequestSpans) {
+    const span = { request, phase, startedAt: this.readNow(), async: false, finished: false, prefixRecorded: false };
+    if (this.spans.size >= this.maxActiveSpans) {
       this.droppedSpans++;
       return span;
     }
-    request.spanCount++;
     span.id = this.nextSpanId++;
     this.spans.set(span.id, span);
     return span;
   }
   finishSpan(span) {
-    if (span.id === undefined || this.spans.get(span.id) !== span || span.request.settled)
+    if (span.finished)
+      return;
+    span.finished = true;
+    if (span.request.settled)
       return;
     const endedAt = this.readNow();
-    this.spans.delete(span.id);
+    if (span.id !== undefined && this.spans.get(span.id) === span)
+      this.spans.delete(span.id);
     const durationMs = Math.max(0, endedAt - span.startedAt);
     const request = span.request;
     const prior = request.phases.get(span.phase) ?? 0;
     if (!request.phaseOrder.includes(span.phase))
       request.phaseOrder.push(span.phase);
     request.phases.set(span.phase, prior + durationMs);
-    if (!span.async) {
-      this.recent.push({ kind: request.metadata.kind, ...request.metadata.task === undefined ? {} : { task: request.metadata.task }, phase: span.phase, startedAt: span.startedAt, endedAt, async: false, privacyCurrent: request.logPrivacy });
-      while (this.recent.length > this.maxRecentSpans) {
-        this.recent.shift();
-        this.droppedRecent++;
-      }
-    }
+    if (!span.async && !span.prefixRecorded)
+      this.rememberSyncInterval(span, endedAt);
   }
   recordSyncPrefix(span) {
-    if (span.id === undefined)
+    if (span.finished || span.prefixRecorded || span.request.settled)
       return;
     const endedAt = this.readNow();
     if (endedAt - span.startedAt < MIN_SYNC_PREFIX_MS)
       return;
+    span.prefixRecorded = true;
+    this.rememberSyncInterval(span, endedAt);
+  }
+  rememberSyncInterval(span, endedAt) {
     const request = span.request;
     this.recent.push({ kind: request.metadata.kind, ...request.metadata.task === undefined ? {} : { task: request.metadata.task }, phase: span.phase, startedAt: span.startedAt, endedAt, async: false, privacyCurrent: request.logPrivacy });
     while (this.recent.length > this.maxRecentSpans) {
@@ -10282,10 +10279,8 @@ class ControlWriteTelemetry {
       return;
     request.settled = true;
     for (const [spanId, span] of this.spans)
-      if (span.request === request) {
+      if (span.request === request)
         this.spans.delete(spanId);
-        this.droppedSpans++;
-      }
     this.completedRequests++;
     const durationMs = this.roundMs(this.readNow() - request.startedAt);
     if (durationMs < CONTROL_WRITE_SLOW_MS)
@@ -10378,7 +10373,7 @@ class ControlWriteTelemetry {
     return Math.round(bounded * 10) / 10;
   }
 }
-var CONTROL_WRITE_KINDS, CONTROL_WRITE_PHASES, CONTROL_WRITE_SLOW_MS = 1000, CONTROL_WRITE_LOOP_DELAY_MS = 250, CONTROL_WRITE_SAMPLE_MS = 100, CONTROL_WRITE_MAX_LINE_BYTES = 2048, CONTROL_WRITE_MAX_DURATION_MS = 86400000, MAX_ACTIVE_REQUESTS = 128, MAX_ACTIVE_SPANS = 256, MAX_RECENT_SPANS = 512, MAX_REQUEST_SPANS = 32, MAX_LOOP_SPANS = 8, MIN_SYNC_PREFIX_MS = 10, MAX_EMITS_PER_MINUTE = 60, RATE_LIMIT_MS = 1000, currentTrace, OPERATIONS;
+var CONTROL_WRITE_KINDS, CONTROL_WRITE_PHASES, CONTROL_WRITE_SLOW_MS = 1000, CONTROL_WRITE_LOOP_DELAY_MS = 250, CONTROL_WRITE_SAMPLE_MS = 100, CONTROL_WRITE_MAX_LINE_BYTES = 2048, CONTROL_WRITE_MAX_DURATION_MS = 86400000, MAX_ACTIVE_REQUESTS = 128, MAX_ACTIVE_SPANS = 256, MAX_RECENT_SPANS = 512, MAX_LOOP_SPANS = 8, MIN_SYNC_PREFIX_MS = 10, MAX_EMITS_PER_MINUTE = 60, RATE_LIMIT_MS = 1000, currentTrace, OPERATIONS;
 var init_control_write_trace = __esm(() => {
   CONTROL_WRITE_KINDS = [
     "hub_task_propose",
@@ -10397,8 +10392,6 @@ var init_control_write_trace = __esm(() => {
   CONTROL_WRITE_PHASES = [
     "client-send",
     "client-wait",
-    "client-receive",
-    "daemon-receive",
     "daemon-dispatch",
     "daemon-reply",
     "board-write",
@@ -23805,7 +23798,10 @@ function negotiateProtocol(local, remote) {
 
 // src/hub/control-client.ts
 init_control_write_trace();
-var clientWriteTelemetry = new ControlWriteTelemetry({ emit: (line) => console.error(`[agent-hub] ${line}`) });
+var clientWriteTelemetry = new ControlWriteTelemetry({ emit: (line) => {
+  if (process.env.AHUB_CONTROL_WRITE_TIMING === "1")
+    console.error(`[agent-hub] ${line}`);
+} });
 var publicClientTiming = () => true;
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
@@ -23972,10 +23968,12 @@ class ControlClient {
     return catalog;
   }
   request(msg, timeoutMs = 30000, signal) {
+    if (process.env.AHUB_CONTROL_WRITE_TIMING !== "1")
+      return this.requestBody(msg, timeoutMs, signal);
     const metadata = controlWriteMetadata(msg);
     if (!metadata)
       return this.requestBody(msg, timeoutMs, signal);
-    return clientWriteTelemetry.run({ kind: metadata.kind }, publicClientTiming, () => controlWriteSpan("client-wait", () => this.requestBody(msg, timeoutMs, signal).then((reply) => controlWriteSpan("client-receive", () => reply))));
+    return clientWriteTelemetry.run({ kind: metadata.kind }, publicClientTiming, () => controlWriteSpan("client-wait", () => this.requestBody(msg, timeoutMs, signal)));
   }
   requestBody(msg, timeoutMs, signal) {
     if (this.ws.readyState !== WebSocket.OPEN || this.closing && msg.t !== "request_cancel")

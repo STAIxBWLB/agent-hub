@@ -1278,7 +1278,7 @@ is only a concurrent wait, not proof that it occupied the CPU; untracked occupan
 is reported as unknown. Background snapshot, queue/status and memory boundaries
 use the fixed `background` kind rather than inventing a tool request.
 
-Per observer, retained work is capped at 128 operations, 256 active spans, 512
+Per observer, retained work is capped at 128 operations, 256 active span registrations, 512
 recent intervals and 8 emitted phase/span items. Phase totals use only the closed
 phase set; a full active-registration map never discards a finished phase or recent
 synchronous interval. There is no per-request cutoff that can hide a late block.
