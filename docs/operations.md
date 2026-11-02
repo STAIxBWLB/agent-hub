@@ -2513,8 +2513,38 @@ The Switches settings `specs.enabled` and `specs.review` are machine-local
 settings, and the specs config fields are tier 2 structural settings. Setting
 `specs.enabled` to false suppresses this machine's notices and status summary,
 leaving the shared config unchanged. Explicit CLI and `hub_specs` inspection
-still work when notices are disabled. Init instruction blocks and stamp
-commands ship in later phases of issue #1064.
+still work when notices are disabled.
+
+`ahub init --specs` (the default) and `--no-specs` set the shared key
+`specs.enabled` and add or remove the `AGENT_HUB_SPECS` instruction block in
+`AGENTS.md` (the text is `templates/specs.block.md`). `--spec-review
+off|report|require` sets `specs.review`. Both are rows of the init settings
+table: on an existing project an explicit flag shows as one old -> new row in
+`--dry-run`, a flag equal to the current value is a no-op, and a plain `ahub
+init` keeps the project's own choice and leaves the block as it is. Text outside
+the markers is never touched. A block with only one of its two markers is
+refused, naming the cause, and nothing is written.
+
+`ahub specs stamp <id-or-document...> [--yes]` is a person's record that they
+reviewed a spec or a stamped document against HEAD. It is person only: an agent
+identity is refused before the command runs (it is a console command, and
+`--live-test` delegation refuses it too), and a run with no terminal is refused
+even with `--yes`. It shows `old -> new` per document, asks, and then changes
+only the spec's `verified-against` line (adding it before the closing `---` when
+absent) or the document's `verifiedAgainst` value in the stamps file, keeping
+every other byte, the line endings, a byte order mark and the file mode. The new
+stamp is the full HEAD SHA. It is refused, writing nothing for any target, while
+a document's covered paths have uncommitted changes, when the document has no
+paths, or when a name matches no or several documents; all refusals are listed
+together. Stamping changes a working-tree file: review the diff and commit it.
+Agents never edit `verified-against`. `docs/verified.json` is still restamped
+only in a release PR (AGENTS.md "Verified stamps").
+
+`scripts/check-docs.mjs` stays a self-contained Node script, because the release
+workflow runs it on Node without Bun or an install and `src/hub/specs.ts` is
+TypeScript that depends on repository packages. `test/check-docs-parity.test.ts`
+holds it to the same state, commit count and dirty flag as the shared engine on
+the same stamps.
 
 Task proposal and acceptance replies name the specs covering the task's refs
 paths. At completion the hub reads spec metadata from the submitted commit,
