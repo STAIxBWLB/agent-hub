@@ -207,3 +207,49 @@ test("#507 AC1 review_checklist from profile_overrides customizes the review req
   expect(body).toContain("Confirm dataset licensing and citations.");
   expect(body).not.toContain("Assess scope, provenance and unsupported claims");
 });
+
+// #1095: every shipped profile asks the reviewer to name each new or changed error, refusal or failure message that lacks its cause or next step, so review requests in every ahub project carry it.
+const ERROR_MESSAGE_ITEM = "Name each new or changed error, refusal or failure message that lacks its cause (what failed and why) or its next step (the command, setting or target that fixes it); where secrets, ids or paths must stay out, it names the cause class and how to check it.";
+
+test("#1095 AC2 each shipped profile's review_checklist carries the error-message item, between {check} and the unmet line, and the existing items stay", async () => {
+  const { resolveProfile } = await import("../src/hub/profiles.ts");
+  for (const name of PROFILE_NAMES) {
+    const checklist = resolveProfile(name).review_checklist!;
+    expect(checklist, name).toHaveLength(4);
+    expect(checklist.filter(line => line === ERROR_MESSAGE_ITEM), name).toHaveLength(1);
+    expect(checklist[1], name).toBe("{check}");                                                    // the existing items and their placeholders are kept
+    expect(checklist[2], name).toBe(ERROR_MESSAGE_ITEM);
+    expect(checklist[3], name).toBe("List what is unmet in hub_review's unmet, one item each.");
+    expect(checklist[0], name).toContain("{target}");
+    expect(checklist.every(line => line.length <= 500), name).toBe(true);                         // the profile loader's own bound for a checklist line
+  }
+});
+
+test("#1095 AC2 a review request for a dev-profile project renders the error-message item", async () => {
+  const { tasks, bus } = await rig("dev");
+  const published: any[] = [];
+  const origPublish = bus.publish.bind(bus);
+  bus.publish = (env: any) => { published.push(env); return origPublish(env); };
+  const task = await tasks.propose("codex", { title: "Name the cause in a refusal", class: "implement", owner: "codex", plan: { paths: ["src/x.ts"], symbols: ["refuse"], signatures: ["refuse(): void"] } });
+  await tasks.done("codex", task.id, "Added a refusal", { branch: "main", paths: ["src/x.ts"] });
+  const review = published.find(e => e.kind === "review");
+  expect(review).toBeDefined();
+  expect(review.body).toContain(`- ${ERROR_MESSAGE_ITEM}`);
+  // it sits inside the Checklist block, after the first existing item and before the unmet line, which keep their place
+  const block = review.body.slice(review.body.indexOf("Checklist:"));
+  const first = block.indexOf("- Map the changed signatures and call sites to"), item = block.indexOf(`- ${ERROR_MESSAGE_ITEM}`), unmet = block.indexOf("- List what is unmet in hub_review's unmet, one item each.");
+  expect(first).toBeGreaterThan(-1);
+  expect(first).toBeLessThan(item);
+  expect(item).toBeLessThan(unmet);
+});
+
+test("#1095 AC1 and AC3 REVIEW.md's Bugs pass and docs/sdlc.md name the check, and REVIEW.md carries the workspace template's sentence", () => {
+  const review = readFileSync(join(import.meta.dir, "../REVIEW.md"), "utf8");
+  const bugs = review.split("\n").find(line => line.startsWith("- Bugs:"))!;
+  expect(bugs).toContain("Error messages: a new or changed error, refusal or failure message a person or agent sees names the cause (what failed and why) and the next step (the command, setting or target that fixes it).");
+  expect(bugs).toContain("When secrets, ids or paths must stay out, it names the cause class and how to check it.");
+  expect(bugs).toContain("A message missing either is a finding; Important when it is the only signal of a blocked action (a CLI exit, a refused tool call), otherwise a nit.");
+  expect(bugs).toContain("lost or duplicated messages");                                           // the repository's own Bugs-pass focus is kept
+  const sdlc = readFileSync(join(import.meta.dir, "../docs/sdlc.md"), "utf8");
+  expect(sdlc).toContain("each new or changed error, refusal or failure message names its cause and next step (Bugs pass, #1095)");
+});
