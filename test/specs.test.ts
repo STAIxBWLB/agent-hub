@@ -64,6 +64,26 @@ test("ordinary Markdown with an unrelated type is not treated as a spec candidat
   expect(new SpecsEngine(root, parseSpecsConfig(undefined)).check()).toMatchObject({ specCount: 0, errors: 0, warnings: 0, stale: 0, truncated: false, freshness: [], items: [] });
 });
 
+test("discovery ignores a file missing either identity key even when it contains malformed unrelated fields", () => {
+  const root = tempRoot("missing-identity-key"); git(root, "init", "-q");
+  writeFileSync(join(root, "article.md"), "---\nid: article-1\ntitle: Article\n---\nText.\n");
+  writeFileSync(join(root, "typed.md"), "---\ntype: goal\ntitle: Typed document\npaths: not-a-list\n---\nText.\n");
+  git(root, "add", "-A"); git(root, "commit", "-qm", "non-spec identity metadata");
+  expect(new SpecsEngine(root, parseSpecsConfig(undefined)).check()).toMatchObject({ specCount: 0, errors: 0, warnings: 0, items: [] });
+});
+
+test("both identity keys retain validation for empty and malformed values", () => {
+  const root = tempRoot("invalid-identity-values"); git(root, "init", "-q");
+  writeFileSync(join(root, "empty.md"), "---\nid: ''\ntype: ''\ntitle: Empty identity\n---\n");
+  writeFileSync(join(root, "malformed.md"), "---\nid: [invalid]\ntype: goal\ntitle: Malformed identity\n---\n");
+  git(root, "add", "-A"); git(root, "commit", "-qm", "invalid identity values");
+  const report = new SpecsEngine(root, parseSpecsConfig(undefined)).check();
+  expect(report.specCount).toBe(2);
+  expect(report.items.some(item => item.path === "empty.md" && item.field === "id" && item.severity === "error")).toBe(true);
+  expect(report.items.some(item => item.path === "empty.md" && item.field === "type" && item.severity === "error")).toBe(true);
+  expect(report.items.some(item => item.path === "malformed.md" && item.field === "id" && item.severity === "error")).toBe(true);
+});
+
 test("the schema fixture diagnoses every listed graph error and warning class", () => {
   const { engine } = repository("invalid");
   const report = engine.check();
@@ -73,6 +93,7 @@ test("the schema fixture diagnoses every listed graph error and warning class", 
   for (const code of ["orphan", "deprecated-without-replacement", "multiple-goals", "duplicate-covers", "unknown-body-link", "active-without-paths", "deprecated-replacement"]) expect(warnings, code).toContain(code);
   expect(report.errors).toBeGreaterThanOrEqual(errors.size);
   expect(report.warnings).toBeGreaterThanOrEqual(warnings.size);
+  expect(report.items.some(item => item.path === "missing-id.md" || item.path === "missing-type.md")).toBe(false);
 });
 
 test("warnings alone do not make validation fail", () => {

@@ -305,6 +305,8 @@ function parseHeader(text: string, path: string): { fields: Record<string, strin
     const key = match[1]!, rawValue = match[2]!.trim();
     currentList = undefined;
     if (Object.hasOwn(fields, key)) { items.push(item("error", "duplicate-field", `${path}: duplicate frontmatter field ${key}`, "the field appears more than once", "keep one value for each field", { path, field: key })); continue; }
+    // Presence identifies a spec even when a declared value fails flat-schema parsing.
+    fields[key] = "";
     if (LIST_KEYS.has(key)) {
       if (!rawValue) { fields[key] = []; currentList = key; continue; }
       const list = splitInlineList(rawValue);
@@ -404,7 +406,7 @@ export class SpecsEngine {
       let got = 0;
       while (got < prefix.length) { const count = readSync(fd, prefix, got, prefix.length - got, got); if (!count) break; got += count; }
       const parsed = parseHeader(prefix.subarray(0, got).toString("utf8"), path);
-      const candidate = typeof parsed.fields.id === "string" || typeof parsed.fields.type === "string" && TYPES.has(parsed.fields.type);
+      const candidate = Object.hasOwn(parsed.fields, "id") && Object.hasOwn(parsed.fields, "type");
       let node: SpecNode | undefined;
       const diagnostics = candidate ? [...parsed.items] : [];
       if (candidate) {
@@ -463,7 +465,7 @@ export class SpecsEngine {
     const ids = new Map<string, SpecNode[]>();
     for (const node of scan.nodes) {
       if (node.frontmatterIncomplete) continue;
-      if (!node.id) items.push(item("error", "required-field", `${node.path}: spec is missing id`, "the frontmatter has a type but no id", "add a unique id to the frontmatter", { path: node.path, field: "id" }));
+      if (!node.id?.trim()) items.push(item("error", "required-field", `${node.path}: spec id is empty or invalid`, "the declared id has no non-empty scalar value", "set id to a unique non-empty value", { path: node.path, field: "id" }));
       if (!node.type) items.push(item("error", "required-field", `${node.path}: spec is missing type`, "the frontmatter has an id but no type", "set type to goal, architecture, module or submodule", { path: node.path, id: node.id, field: "type" }));
       if (!node.title?.trim()) items.push(item("error", "required-field", `${node.path}: spec is missing title`, "the frontmatter has no title", "add a non-empty title", { path: node.path, id: node.id, field: "title" }));
       if (node.id) {
@@ -479,7 +481,7 @@ export class SpecsEngine {
     for (const node of scan.nodes) {
       if (node.frontmatterIncomplete) continue;
       if (node.type && !TYPES.has(node.type)) items.push(item("error", "unknown-type", `${node.path}: unknown spec type ${node.type}`, "type is outside the fixed spec vocabulary", "use goal, architecture, module or submodule", { path: node.path, id: node.id, field: "type" }));
-      if (node.status && !STATUS.has(node.status)) items.push(item("error", "unknown-status", `${node.path}: unknown spec status ${node.status}`, "status is outside the fixed spec vocabulary", "use draft, active or deprecated", { path: node.path, id: node.id, field: "status" }));
+      if (node.status !== undefined && !STATUS.has(node.status)) items.push(item("error", "unknown-status", `${node.path}: unknown spec status ${node.status}`, "status is outside the fixed spec vocabulary", "use draft, active or deprecated", { path: node.path, id: node.id, field: "status" }));
       if (node.type === "goal") goals++;
       if (node.type && node.type !== "goal" && !node.parent) items.push(item("warning", "orphan", `${node.path}: ${node.type} spec has no parent`, "non-goal specs form the design tree through parent links", "add a parent link if this spec belongs under another design decision", { path: node.path, id: node.id, field: "parent" }));
       if (node.status === "active" && !node.paths.length) items.push(item("warning", "active-without-paths", `${node.path}: active spec has no paths`, "freshness cannot be calculated without paths", "add one or more repository-relative paths", { path: node.path, id: node.id, field: "paths" }));
