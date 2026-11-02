@@ -125,8 +125,9 @@ for (const pending of ["owner", "reviewer"] as const) {
   test(`#1047 a delayed ${pending} reopen cannot overwrite a newer transition`, async () => {
     let entered!: () => void, release!: () => void, reads = 0;
     const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
-    const r = rig({ sdlc: { config: () => sdlcConfig({ mode: "off" }), gh: async () => {
-      if (++reads === 1) { entered(); await gate; }
+    const r = rig({ sdlc: { config: () => sdlcConfig({ mode: "off" }), gh: async args => {
+      // Delay the reopening's merge-state read, not an earlier approval head read.
+      if (args[0] === "pr" && args[1] === "view" && args.includes("state") && ++reads === 1) { entered(); await gate; }
       return { code: 0, stdout: JSON.stringify({ state: "OPEN" }) };
     } } });
     const task = await r.create(true);

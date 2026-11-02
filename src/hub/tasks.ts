@@ -82,7 +82,7 @@ import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, plannedStartPending, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { CiWatchers, pollCi, type CiOutcome, type CiWatch } from "./ci-watch.ts";
-import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
+import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSdlcPrHead, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
 
 function requireLocalTaskPeer(peer: unknown): void {
   if (isRemotePeerId(peer)) throw new PreEffectToolRefusal("remote peers have no local task authority");
@@ -429,6 +429,7 @@ export interface ExperimentView { attempts: ExperimentAttemptView[]; counts: { a
   comparison?: { planHash: string; baselineAttemptId: string; variantAttemptId: string; approved: boolean; private: boolean; projection: ReturnType<typeof comparisonProjection> | "[pii]" } }
 interface ExperimentContext { task: Task; campaign: ResearchCampaignRecord; private: boolean; key: string; fence: ExperimentWriteFence }
 interface CompletionRefresh { revision: number; commit: string; state: "in_review" | "approved" }
+interface RefileHeadGuard { recorded?: string }
 interface IdentityLink { repo: string; pr: number; basis: { commit?: string; branch?: string } }
 
 /** What one live check of a task's files says as a whole (#317): `unchanged` only when EVERY file measured unchanged. A change outranks a missing file, which outranks one the hub could not read. */
@@ -1334,6 +1335,38 @@ export class Tasks {
   }
 
   private reviewHead(task: Task): string | undefined { return task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead; }
+
+  private recordedReviewHead(task: Task): string | undefined {
+    const isFullHead = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+    const historyHead = task.history.findLast(entry => (entry.event === "approved" || entry.event === "changes_requested") && isFullHead(entry.reviewedHead))?.reviewedHead;
+    return [task.sdlc?.reviewedHead, historyHead].find(isFullHead);
+  }
+
+  /** An owner ref, when present, outranks host-derived receipt.head values for review identity. */
+  private ownerReviewHead(task: Task): string | undefined {
+    return /^[a-f0-9]{40}$/.test(task.refs.commit ?? "") ? task.refs.commit : this.recordedReviewHead(task);
+  }
+
+  private hasReviewHistory(task: Task): boolean {
+    return task.state === "changes_requested" || !!task.sdlc?.reviewedHead || task.history.some(entry => entry.event === "approved" || entry.event === "changes_requested");
+  }
+
+  private reviewHeadMoveRefusal(taskId: number, recorded: string | undefined, current?: string): PreEffectToolRefusal {
+    const known = recorded ? `recorded review head ${recorded}` : "a recorded full review head";
+    const cause = current ? `${known} differs from current head of PR ${current}`
+      : `current PR head could not be verified against ${known}`;
+    const next = current ? `refs.commit set to ${current}` : "refs.commit set to the current full SHA";
+    return new PreEffectToolRefusal(`task #${taskId}: ${cause}; owner must re-file hub_task_done with ${next} before review`);
+  }
+
+  private async currentPrHeadForReview(task: Task, validate: () => Task): Promise<string | undefined> {
+    const receipt = task.sdlc, gh = this.d.sdlc?.gh;
+    if (this.isPii(task) || !receipt?.repo || !receipt.pr || !gh) return undefined;
+    const identity = (value: Task) => JSON.stringify([value.id, value.state, value.owner, value.reviewer, value.history.length, this.isPii(value), value.refs, value.sdlc]);
+    const before = identity(task), head = await readSdlcPrHead(receipt, gh), current = validate();
+    if (identity(current) !== before) throw new PreEffectToolRefusal(`task #${task.id}: task or review head changed during PR readback; reload and retry`);
+    return head;
+  }
 
   private reviewPoolOptions(task: Task) {
     const head = this.reviewHead(task);
@@ -5648,10 +5681,18 @@ export class Tasks {
 
   /** The eval record the last approval-time lifecycle read produced for a task; consumed by the verdict that follows it. */
   private readonly evalRecords = new Map<number, string>();
-  private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string, findings?: readonly ReviewFindingSet[]): Promise<PrEvidence | undefined> {
+  private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string, findings?: readonly ReviewFindingSet[], refileHead?: RefileHeadGuard): Promise<PrEvidence | undefined> {
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off") return;
     const receipt = task.sdlc && { ...task.sdlc, ...(reviewedHead ? { reviewedHead } : {}) };
+    const approvalHead = transition === "approval" ? reviewedHead ?? this.ownerReviewHead(task) ?? this.findingHead(task) : undefined;
+    const guardedHead = !!refileHead || !!approvalHead && !!receipt?.repo && !!receipt.pr && !this.isPii(task);
+    // Compare raw head identity on both sides; `task` may carry an uncommitted identityLink.
+    // Completion state/history races stay with completionCurrent's existing post-readback fence.
+    const identity = (value: Task) => JSON.stringify([value.id, value.owner, value.reviewer, this.isPii(value),
+      value.refs.repo, value.refs.commit, value.refs.branch, value.sdlc?.repo, value.sdlc?.pr,
+      value.sdlc?.head, value.sdlc?.localHead, value.sdlc?.reviewedHead]);
+    const beforeHeadRead = guardedHead ? identity(this.need(task.id, false, true)) : undefined;
     const deadline = performance.now() + 20_000;
     const read: SdlcGh = (args, timeout, cwd, cap) => {
       const current = this.need(task.id, false, true);
@@ -5660,6 +5701,16 @@ export class Tasks {
       return remaining > 0 ? (this.d.sdlc?.gh ?? sdlcGh)(args, Math.min(timeout ?? 10_000, remaining), cwd, cap) : Promise.resolve({ code: 1, stdout: "" });
     };
     const evidence = receipt && !this.isPii(task) ? await readSdlcPr(receipt, read, true) : undefined;
+    const currentHead = receipt && !this.isPii(task) && (refileHead || approvalHead) && !evidence?.head
+      ? await readSdlcPrHead(receipt, read) : evidence?.head;
+    if (beforeHeadRead !== undefined) {
+      const current = this.need(task.id, false, true);
+      if (identity(current) !== beforeHeadRead) throw new PreEffectToolRefusal(`task #${task.id}: task or review head changed during PR readback; reload and retry`);
+    }
+    if (refileHead) {
+      if (!refileHead.recorded || !currentHead) throw this.reviewHeadMoveRefusal(task.id, refileHead.recorded);
+      if (currentHead !== refileHead.recorded) throw this.reviewHeadMoveRefusal(task.id, refileHead.recorded, currentHead);
+    } else if (approvalHead && currentHead && currentHead !== approvalHead) throw this.reviewHeadMoveRefusal(task.id, approvalHead, currentHead);
     const integrity = publicTestIntegrity(receipt && evidence && !this.isPii(task) ? await readTestIntegrity(receipt, evidence, read) : this.unknownTestIntegrity(this.isPii(task)), this.publicMetadataText);
     const evalResult = receipt && !this.isPii(task) ? await readEvalFor(config, evidence, receipt.repo, read) : undefined;
     const current = this.need(task.id, false, true);
@@ -6122,11 +6173,20 @@ export class Tasks {
     let refresh: CompletionRefresh | undefined;
     if (initial.state === "in_review" || initial.state === "approved") {
       const commit = cleanRefs(refs).commit;
-      if (!commit || !/^[a-f0-9]{40}$/.test(commit) || commit === this.reviewHead(initial))
-        throw new PreEffectToolRefusal(`task #${initial.id} is already ${initial.state}; re-file requires a different full head SHA`);
+      const recorded = this.ownerReviewHead(initial) ?? this.findingHead(initial);
+      const currentReviewHead = this.ownerReviewHead(initial) ?? this.reviewHead(initial);
+      if (!commit || !/^[a-f0-9]{40}$/.test(commit) || commit === currentReviewHead) {
+        throw new PreEffectToolRefusal(`task #${initial.id} is already ${initial.state}${recorded ? ` with recorded review head ${recorded}` : ""}; re-file requires a different full head SHA. Owner must re-file hub_task_done with refs.commit set to the new full SHA`);
+      }
       refresh = { revision: initial.history.length, commit, state: initial.state };
     }
     const submittedCommit = cleanRefs(refs).commit;
+    if (submittedCommit && this.hasReviewHistory(initial) && !/^[a-f0-9]{40}$/.test(submittedCommit)) {
+      const recorded = this.ownerReviewHead(initial);
+      throw new PreEffectToolRefusal(`task #${initial.id}: re-file after review needs refs.commit to be a full lowercase SHA${recorded ? ` (recorded review head ${recorded})` : ""}; owner must re-file hub_task_done with the new full SHA in refs.commit`);
+    }
+    const refileHead: RefileHeadGuard | undefined = !submittedCommit && initial.sdlc?.repo && initial.sdlc.pr && this.hasReviewHistory(initial) && !this.isPii(initial)
+      ? { recorded: this.ownerReviewHead(initial) } : undefined;
     const draft = refresh ?? (submittedCommit && /^[a-f0-9]{40}$/.test(submittedCommit) ? { commit: submittedCommit } : undefined);
     const valid = () => { requestCheck(); return this.completionDraft(this.completionCurrent(id, by, true, refresh), draft); };
     if (initial.state === "approved") { await this.unmergedForReopen(initial, valid); valid(); }
@@ -6150,9 +6210,15 @@ export class Tasks {
     const current = () => this.withLink(valid(), link, refs);
     task = current();
     let reviewEvidence: PrEvidence | undefined;
-    if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review"); task = current(); }
-    const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, draft), link, refs), !task.reviewer) : undefined;
+    if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review", undefined, undefined, refileHead); task = current(); }
+    const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, draft), link, refs), !task.reviewer, refileHead) : undefined;
     task = current();
+    if (refileHead && (this.d.sdlc?.config().mode ?? "off") === "off") {
+      const currentHead = await this.currentPrHeadForReview(task, current);
+      task = current();
+      if (!refileHead.recorded || !currentHead) throw this.reviewHeadMoveRefusal(task.id, refileHead.recorded);
+      if (currentHead !== refileHead.recorded) throw this.reviewHeadMoveRefusal(task.id, refileHead.recorded, currentHead);
+    }
     const currentSpecTask = () => { const fresh = current(); return { ...fresh, refs: { ...fresh.refs, ...cleanRefs(refs) } }; };
     const specInspection = await this.inspectTaskSpecs(currentSpecTask(), by, specAck, currentSpecTask);
     task = current(); // the host head and task authority are revalidated after spec inspection
@@ -6507,7 +6573,7 @@ export class Tasks {
 
   /** The one place a review request is written: the first reviewer and a replacement get the same text, refs and privacy. */
   /** Review admission is separate from brief construction (#228). All refusals precede the requesting done's writes. */
-  private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER, previous?: PrEvidence, sameRequest?: () => boolean, stage: (task: Task) => Task = task => task, prepareOnly = false): Promise<ReviewReadiness | undefined> {
+  private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER, previous?: PrEvidence, sameRequest?: () => boolean, stage: (task: Task) => Task = task => task, prepareOnly = false, refileHead?: RefileHeadGuard): Promise<ReviewReadiness | undefined> {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     if (mode === "off" && !this.d.prepareReviewBrief) return undefined;
     let quietDrift = false;
@@ -6544,8 +6610,13 @@ export class Tasks {
     const evidence: ReviewReadiness = this.isPii(task)
       ? { ready: false, blockers: ["private review readiness unavailable"] }
       : task.sdlc ? reviewReadinessFromEvidence(previous, expected, this.d.sdlc?.config().requiredChecks ?? []) ?? await readReviewReadiness(task.sdlc, expected, read, this.d.sdlc?.config().requiredChecks ?? []) : { ready: false, blockers: ["review PR identity missing"] };
+    const currentHead = refileHead && !evidence.head && task.sdlc ? await readSdlcPrHead(task.sdlc, read) : evidence.head;
     const current = guard();
     const admitted: ReviewReadiness = quietDrift ? { ready: false, blockers: ["review readiness unknown: task changed during readback"] } : evidence;
+    if (refileHead) {
+      if (!refileHead.recorded || !currentHead) throw this.reviewHeadMoveRefusal(task.id, refileHead.recorded);
+      if (currentHead !== refileHead.recorded) throw this.reviewHeadMoveRefusal(task.id, refileHead.recorded, currentHead);
+    }
     if (!admitted.ready) {
       const message = `task ${this.publicTitle(current)}: premature review: ${admitted.blockers.join("; ")}`;
       if (mode === "enforce") throw new (preEffect ? PreEffectToolRefusal : Error)(message);
@@ -6879,7 +6950,7 @@ export class Tasks {
     // notice. The rule is structural (a finding with disposition open), never a reading of the unmet text.
     const codeScope = by !== USER && this.d.reviewScope?.(by) === "code";
     const evidenceOnly = codeScope && verdict === "changes_requested" && !parsed.some(finding => finding.disposition === "open");
-    const resolvedHead = this.findingHead(initial);
+    const resolvedHead = this.ownerReviewHead(initial) ?? this.findingHead(initial);
     let findingHead = resolvedHead;
     if (head !== undefined) {
       try { findingHead = sdlcReceipt({ reviewedHead: head }, initial.sdlc, this.d.sdlc?.config() ?? sdlcConfig(undefined)).reviewedHead; }
@@ -6926,7 +6997,7 @@ export class Tasks {
         if (gap.length) note = `${note ?? ""}\nCoverage gap (${gap.length}): ${list(gap)}`.trim();
       }
     }
-    if (head !== undefined && resolvedHead && findingHead !== resolvedHead) throw new PreEffectToolRefusal("supplied review head differs from the task resolved head");
+    if (head !== undefined && resolvedHead && findingHead !== resolvedHead) throw new PreEffectToolRefusal(`task #${initial.id}: supplied review head ${findingHead} differs from recorded task head ${resolvedHead}; owner must re-file hub_task_done with refs.commit set to the supplied full SHA before review`);
     // The PII screen reads the note of a review that passes these checks (issue #198); they run again after it.
     const withheld = await this.withholds("review note", parsed.length ? JSON.stringify({ note, findings: parsed }) : note, valid())
       || parsed.length > 0 && !this.findingTextAllowed(initial, parsed);
@@ -6963,6 +7034,12 @@ export class Tasks {
       await this.lifecycleGate(task, "approval", reviewedHead, proposedSets(task)); task = valid();
       const record = this.evalRecords.get(task.id); this.evalRecords.delete(task.id);
       if (record) note = `${note ?? ""}\n${record}`.trim();
+    } else if (verdict === "approved" && this.d.sdlc?.config().mode === "off" && this.d.sdlc?.gh && task.sdlc?.repo && task.sdlc.pr
+      && this.ownerReviewHead(task) && !this.isPii(task)) {
+      const expected = reviewedHead ?? this.ownerReviewHead(task) ?? this.findingHead(task);
+      const currentHead = await this.currentPrHeadForReview(task, valid);
+      task = valid();
+      if (expected && currentHead && currentHead !== expected) throw this.reviewHeadMoveRefusal(task.id, expected, currentHead);
     }
     let candidate: Extract<CandidateInput, { kind: "fail" }> | undefined;
     if (verdict === "changes_requested" && !evidenceOnly && items.length && this.d.candidates && !withheld && !this.isPii(task) && !this.d.privateTurn?.(by)) {

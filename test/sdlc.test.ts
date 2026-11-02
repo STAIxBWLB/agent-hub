@@ -8,7 +8,7 @@ import { Bus } from "../src/hub/bus.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { USER } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
-import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcConfig, sdlcReceipt, sdlcStatus, touchingPrs, type SdlcGh, type SdlcMode } from "../src/hub/sdlc.ts";
+import { parsePrEvidence, readSdlcPr, readSdlcPrHead, sdlcGh, sdlcConfig, sdlcReceipt, sdlcStatus, touchingPrs, type SdlcGh, type SdlcMode } from "../src/hub/sdlc.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40), cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
@@ -240,4 +240,32 @@ test("#197 R1 typed view file metadata remains bound to the existing thread head
     ? { ...raw(), files: [{ path: "src/file.ts", changeType: "MODIFIED" }] }
     : { data: { repository: { pullRequest: { headRefOid: B, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) });
   expect(await readSdlcPr(receipt, gh)).toBeUndefined();
+});
+
+
+test("PR head-only read is bounded and independent of CI and file inventory", async () => {
+  const receipt = sdlcReceipt({ repo: "owner/repo", pr: 7 });
+  const calls: string[][] = [];
+  const gh: SdlcGh = async (args, timeout, _cwd, cap) => {
+    calls.push(args);
+    expect(timeout).toBeGreaterThan(0); expect(timeout).toBeLessThanOrEqual(20_000);
+    expect(cap).toBeGreaterThan(0); expect(cap).toBeLessThanOrEqual(16 * 1024);
+    return { code: 0, stdout: JSON.stringify({ headRefOid: B }) };
+  };
+  expect(await readSdlcPrHead(receipt, gh)).toBe(B);
+  expect(calls).toEqual([["pr", "view", "7", "--repo", "owner/repo", "--json", "headRefOid"]]);
+});
+
+test("PR head-only read treats invalid, unavailable and oversized replies as unknown", async () => {
+  const receipt = sdlcReceipt({ repo: "owner/repo", pr: 7 });
+  for (const stdout of ["not JSON", "{}", JSON.stringify({ headRefOid: "short" }), JSON.stringify({ headRefOid: 1 }), " ".repeat(1024 * 1024) + JSON.stringify({ headRefOid: B })]) {
+    expect(await readSdlcPrHead(receipt, async () => ({ code: 0, stdout }))).toBeUndefined();
+  }
+  expect(await readSdlcPrHead(receipt, async () => ({ code: 1, stdout: "" }))).toBeUndefined();
+  expect(await readSdlcPrHead(receipt, async () => { throw new Error("fixture unavailable"); })).toBeUndefined();
+  let calls = 0;
+  const read: SdlcGh = async () => { calls++; return { code: 0, stdout: JSON.stringify({ headRefOid: B }) }; };
+  expect(await readSdlcPrHead({ ...receipt, repo: "--bad/repo" }, read)).toBeUndefined();
+  expect(await readSdlcPrHead({ ...receipt, pr: 0 }, read)).toBeUndefined();
+  expect(calls).toBe(0);
 });
