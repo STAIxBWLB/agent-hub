@@ -2050,8 +2050,11 @@ export async function startDaemon(opts: DaemonOptions) {
     // Keep the last confirmed capability during a bounded, single-flight refresh; replace it only on a result.
     if (Date.now() - runnerStateAt >= 60_000) void refreshRunner();
     return Object.fromEntries([...new Set([...SUPPORTED_PEERS, ...bus.peers.keys()])].map(peer => {
-    if (!definitionOf(peer)?.trust.hubSandboxed) return [peer, { tests: true, spec: true }];
-    return [peer, { tests: runnerState.available && may(peer, "check_run"), spec: specState.available && may(peer, "spec_read"),
+    if (!definitionOf(peer)?.trust.hubSandboxed) return [peer, { tests: true, spec: true, network: true }];
+    // #1081: Pi and the local worker run their shell under one sandbox network setting (`local.bash_network`): false is no network at all, an egress proxy or "direct" is some.
+    const network = sandboxNetwork !== false;
+    return [peer, { tests: runnerState.available && may(peer, "check_run"), spec: specState.available && may(peer, "spec_read"), network,
+      ...(network ? {} : { networkReason: "local.bash_network is off, so its shell has no network (ahub settings local.bash_network)" }),
       testsReason: !may(peer, "check_run") ? `capabilities.${peer}` : `runner unavailable: ${runnerState.reason ?? "unknown"}`,
       specReason: !may(peer, "spec_read") ? `capabilities.${peer}` : specState.reason ?? "gh unauthenticated" }];
     }));
