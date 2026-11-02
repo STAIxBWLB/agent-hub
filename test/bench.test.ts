@@ -164,7 +164,7 @@ test("a run records pass, fail and timeout with measures, resets the tree betwee
   // The worker solves what its title says; the reviewer approves what reaches review.
   const handled = new Set<number>();
   const work = async () => {
-    const board = JSON.parse((await worker.request({ t: "task", op: "hub_task_list", args: {} })).text) as { id: number; title: string; state: string; owner: string | null }[];
+    const board = (JSON.parse((await worker.request({ t: "task", op: "hub_task_list", args: {} })).text) as { tasks: { id: number; title: string; state: string; owner: string | null }[] }).tasks;
     for (const t of board) {
       if (t.owner !== "worker" || handled.has(t.id) || t.title.startsWith("stall")) continue;
       if (t.state === "proposed") await worker.request({ t: "task", op: "hub_task_accept", args: { id: t.id } });

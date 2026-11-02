@@ -284,9 +284,11 @@ async function runAttempt(task: SuiteTask, commit: string, repeat: number, run: 
   for (;;) {
     let state: string | undefined;
     try {
-      const list = await hub.request({ t: "task", op: "hub_task_list", args: {} }, 15_000);
+      const list = await hub.request({ t: "task", op: "hub_task_list", args: { ids: [id] } }, 15_000);
       if (!list.ok) return done("error", { error: "hub stopped", hubTask: id, open: true });
-      state = (JSON.parse(String(list.text)) as { id: number; state: string }[]).find((t) => t.id === id)?.state;
+      // #1083: a current hub answers {tasks, total}; one from before the change ignores `ids` and answers the whole board as an array.
+      const parsed = JSON.parse(String(list.text)) as { id: number; state: string }[] | { tasks: { id: number; state: string }[] };
+      state = (Array.isArray(parsed) ? parsed : parsed.tasks).find((t) => t.id === id)?.state;
     } catch { return done("error", { error: "hub stopped", hubTask: id, open: true }); }
     if (state === "approved") break;
     if (opts.stopped?.()) return done("error", { error: "interrupted", hubTask: id, open: true });

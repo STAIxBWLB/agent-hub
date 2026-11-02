@@ -28,6 +28,6 @@ test("board release filters and columns are readonly and retain agent backlog fl
   expect(await request(person,"backlog_pull",{id})).toMatchObject({ok:true});
   const pending=await cli(root,["board","--columns","--release-id",String(release.id),"--json"]);expect(pending.code).toBe(0);const pendingView=JSON.parse(pending.stdout),todo=pendingView.columns.find((column:{id:string})=>column.id==="todo");expect([...todo.ready,...todo.waiting].find((card:{id:number})=>card.id===id)).toMatchObject({returnable:true});
   expect(await request(person,"backlog_return",{id})).toMatchObject({ok:true});
-  const denied=await request(peer,"hub_task_list",{release:"first"});expect(denied.ok).toBe(true);expect(JSON.parse(denied.text)).toEqual([]);
+  const denied=await request(peer,"hub_task_list",{release:"first"});expect(denied.ok).toBe(true);expect(JSON.parse(denied.text)).toEqual({tasks:[],total:0});
  }finally{peer.close();person.close();await daemon.stop();rmSync(root,{recursive:true,force:true});}
 },20_000);
