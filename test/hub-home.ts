@@ -8,6 +8,9 @@ import { isOrcaEnvName } from "../src/hub/orca-env.ts";
 // the person's ~/.agenthub. ponytail: the directory stays in TMPDIR after an ad-hoc run; the gate's TMPDIR is removed.
 // AMEM_HOME otherwise overrides this isolated hub home; scoped tests may set their own after preload.
 delete process.env.AMEM_HOME;
+// #1077: Orca's account-scoped homes are ambient too; individual tests set isolated selectors after preload when needed.
+delete process.env.CLAUDE_CONFIG_DIR;
+delete process.env.CODEX_HOME;
 // #613 (agent-hub#1048): a run started from an Orca pane inherits ORCA_*, which the ahub launcher and the hub's terminal opener read to open real tabs and
 // agents in the person's running Orca. Every test process and every child it spawns from process.env starts without them; a test that needs one sets it itself.
 for (const name of Object.keys(process.env)) if (isOrcaEnvName(name)) delete process.env[name];

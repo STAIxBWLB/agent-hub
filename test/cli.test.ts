@@ -135,12 +135,14 @@ test("default launches keep permission prompts; --unattended opts out and warns"
   expect(buildLaunch("codex", [], { unattended: true, proxyUrl: "ws://x" }).args).toContain("--dangerously-bypass-approvals-and-sandbox");
 });
 
-test("native launcher environment drops recovery authority but keeps profile and state paths", () => {
-  const env = childEnv({ AGENTHUB_RECOVERY_OPERATION: "operation-secret", CODEX_HOME: "/account/codex", CLAUDE_CONFIG_DIR: "/account/claude", AGENTHUB_STATE_DIR: "/project/state" });
+test("native launcher environment drops recovery and Orca authority but keeps profile and state paths", () => {
+  const env = childEnv({ AGENTHUB_RECOVERY_OPERATION: "operation-secret", CODEX_HOME: "/account/codex", CLAUDE_CONFIG_DIR: "/account/claude", AGENTHUB_STATE_DIR: "/project/state",
+    ORCA_CLI_COMMAND: "/fake/orca", ORCA_TERMINAL_HANDLE: "stale-terminal", ORCA_AGENT_PANE: "fake-pane", ORCA_AGENT_HOOK_PORT: "1234", ORCA_AGENT_HOOK_TOKEN: "fake-token" });
   expect(env.AGENTHUB_RECOVERY_OPERATION).toBeUndefined();
   expect(env.CODEX_HOME).toBe("/account/codex");
   expect(env.CLAUDE_CONFIG_DIR).toBe("/account/claude");
   expect(env.AGENTHUB_STATE_DIR).toBe("/project/state");
+  expect(Object.keys(env).filter(name => name.startsWith("ORCA_"))).toEqual([]);
 });
 
 test("launchers refuse user-supplied copies of hub-owned flags", () => {

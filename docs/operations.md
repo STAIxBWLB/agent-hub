@@ -2502,6 +2502,18 @@ A peer that has a TUI the hub attaches to starts in it by default (issue #269).
 | jcode (optional) | `tui` on the hub-owned ACP session (`ahub jcode`) | `ahub jcode --mode headless`, or `peers.jcode.start_mode: headless` |
 | local | headless (hub-native) | not applicable |
 
+Daemon-owned peer launches and native version-helper probes drop every inherited
+`ORCA_*` variable. They pass `CLAUDE_CONFIG_DIR` and `CODEX_HOME` through
+unchanged; Claude uses the former and Codex the latter, while other peers ignore
+selectors they do not own. The hub does not choose a different account,
+synthesize a home, or copy native credentials. A person launching `ahub claude`
+or `ahub codex` keeps the selectors from that terminal. Manager and person
+console wrappers keep their existing environment, routing and recovery rules;
+this peer policy does not change those wrappers. Adapter-owned fresh homes take
+precedence; Pi's fixed environment carries `CODEX_HOME` but not
+`CLAUDE_CONFIG_DIR`, and the local worker's fixed shell environment carries
+neither.
+
 - **You type the command:** `ahub pi` opens Pi's TUI in that terminal.
   `--headless` and the start mode setting are the two ways to ask for the
   background peer. `ahub settings set peers.pi.start_mode headless` writes the

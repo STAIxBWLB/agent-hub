@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ORCA_LAUNCHER_ENV, isOrcaEnvName, withoutOrcaEnv } from "../src/hub/orca-env.ts";
+import { childEnv, peerChildEnv, personEnv } from "../src/hub/child-process.ts";
 import { realPath } from "../src/hub/project.ts";
 
 // #613 (agent-hub#1048): a run started from an Orca pane inherits ORCA_*, which the ahub launcher and the hub's terminal opener read to open
@@ -35,15 +36,39 @@ test("withoutOrcaEnv removes the whole ORCA_ prefix and nothing else, and does n
   expect(input.ORCA_CLI_COMMAND).toBe("orca");
 });
 
-test("the test preload removes every ORCA_ variable the parent carried, from the process and from the children it spawns", async () => {
-  const code = `console.log(JSON.stringify(Object.keys(process.env).filter(name => name.startsWith("ORCA_"))))`;
+test("peer and person child environments remove Orca state and preserve explicit native home selectors", () => {
+  const input = { PATH: "/fixture/bin", CLAUDE_CONFIG_DIR: "/fixture/claude", CODEX_HOME: "/fixture/codex", ORCA_CLI_COMMAND: "/fake/orca", ORCA_AGENT_PANE: "pane-fake", ORCA_AGENT_HOOK_PORT: "4321", ORCA_AGENT_HOOK_TOKEN: "token-fake", CLAUDECODE: "agent", CODEX_THREAD_ID: "thread" };
+  const homes = { PATH: "/fixture/bin", CLAUDE_CONFIG_DIR: "/fixture/claude", CODEX_HOME: "/fixture/codex" };
+  expect(childEnv(input)).toEqual({ ...homes, CLAUDECODE: "agent", CODEX_THREAD_ID: "thread" });
+  expect(personEnv(input)).toEqual(homes);
+  for (const peer of ["claude", "codex", "jcode", "kimi", "qwen", "pi", "local", "instance-17"]) {
+    expect(peerChildEnv(peer, input)).toEqual({ ...homes, AGENTHUB_PEER_ID: peer });
+  }
+  expect(input).toEqual({ PATH: "/fixture/bin", CLAUDE_CONFIG_DIR: "/fixture/claude", CODEX_HOME: "/fixture/codex", ORCA_CLI_COMMAND: "/fake/orca", ORCA_AGENT_PANE: "pane-fake", ORCA_AGENT_HOOK_PORT: "4321", ORCA_AGENT_HOOK_TOKEN: "token-fake", CLAUDECODE: "agent", CODEX_THREAD_ID: "thread" });
+});
+
+test("the test preload clears ambient Orca and config-home selectors from the process and descendants", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-home-preload-"));
+  const home = join(root, "home"), claudeHome = join(root, "claude-config"), codexHome = join(root, "codex-config");
+  mkdirSync(home); mkdirSync(claudeHome); mkdirSync(codexHome);
+  const canaries = [join(claudeHome, "settings.fixture"), join(codexHome, "auth.fixture")];
+  writeFileSync(canaries[0]!, "claude fixture bytes\n"); writeFileSync(canaries[1]!, "codex fixture bytes\n");
+  const before = canaries.map(path => readFileSync(path));
+  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  const report = `{orcaNames:Object.keys(process.env).filter(name=>name.startsWith("ORCA_")).sort(),claude:process.env.CLAUDE_CONFIG_DIR??null,codex:process.env.CODEX_HOME??null}`;
+  const code = `const own=${report};const child=Bun.spawnSync([process.execPath,"-e",${JSON.stringify(`console.log(JSON.stringify(${report}))`)}],{env:{...process.env},stdout:"pipe",stderr:"pipe"});console.log(JSON.stringify({own,descendant:JSON.parse(child.stdout.toString())}))`;
   const run = async (preload: boolean) => {
-    const proc = Bun.spawn([process.execPath, ...(preload ? ["--preload", PRELOAD] : []), "-e", code], { env: { ...process.env, ...FAKE, ORCA_CLI_COMMAND: "/nonexistent/orca-stub" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawn([process.execPath, ...(preload ? ["--preload", PRELOAD] : []), "-e", code], { env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claudeHome, CODEX_HOME: codexHome, ...FAKE, ORCA_CLI_COMMAND: "/nonexistent/orca-stub" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const timer = setTimeout(() => proc.kill("SIGKILL"), 8_000);
-    try { const [out] = await Promise.all([new Response(proc.stdout).text(), proc.exited]); return JSON.parse(out) as string[]; } finally { clearTimeout(timer); }
+    try { const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]); expect(code).toBe(0); return JSON.parse(out) as { own: { orcaNames: string[]; claude: string | null; codex: string | null }; descendant: { orcaNames: string[]; claude: string | null; codex: string | null } }; } finally { clearTimeout(timer); }
   };
-  expect((await run(false)).sort()).toEqual(["ORCA_CLI_COMMAND", ...Object.keys(FAKE)].sort());   // the hazard is real without the preload
-  expect(await run(true)).toEqual([]);                                                            // and gone with it
+  const exposed = await run(false);
+  expect(exposed.own).toEqual({ orcaNames: ["ORCA_CLI_COMMAND", ...Object.keys(FAKE)].sort(), claude: claudeHome, codex: codexHome });
+  expect(exposed.descendant).toEqual(exposed.own);
+  const scrubbed = await run(true);
+  expect(scrubbed.own).toEqual({ orcaNames: [], claude: null, codex: null });
+  expect(scrubbed.descendant).toEqual(scrubbed.own);
+  canaries.forEach((path, index) => expect(readFileSync(path)).toEqual(before[index]));
 }, 20_000);
 
 /** One bounded child: killed at `ms`, never a blocking spawn, so a test timeout cannot fire inside it (docs/agent-notes/tests.md). */

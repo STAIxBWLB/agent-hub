@@ -206,6 +206,31 @@ test("the daemon's async probe and `ahub agents` share one probe target: same ro
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("sync and async native version probes scrub Orca variables and preserve explicit home selectors", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-drift-env-"));
+  try {
+    const trace = join(dir, "probe-env.jsonl"), qwen = join(dir, "fake-qwen");
+    writeFileSync(qwen, `#!${process.execPath}\nconst { appendFileSync } = await import("node:fs");const env={orcaNames:Object.keys(process.env).filter(name=>name.startsWith("ORCA_")).sort(),claude:process.env.CLAUDE_CONFIG_DIR,codex:process.env.CODEX_HOME,probeFlags:{telemetry:process.env.JCODE_NO_TELEMETRY,mcp:process.env.JCODE_DISABLE_CLAUDE_MCP}};appendFileSync(process.env.AGENT_DRIFT_TEST_TRACE,JSON.stringify(env)+"\\n");console.log("7.7.7");\n`, { mode: 0o700 });
+    const names = ["PATH", "ORCA_CLI_COMMAND", "ORCA_TERMINAL_HANDLE", "ORCA_AGENT_PANE", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "AGENT_DRIFT_TEST_TRACE"];
+    const saved = new Map(names.map(name => [name, process.env[name]]));
+    Object.assign(process.env, { PATH: dir, ORCA_CLI_COMMAND: "/fake/orca", ORCA_TERMINAL_HANDLE: "term-fake", ORCA_AGENT_PANE: "pane-fake", ORCA_AGENT_HOOK_PORT: "4321", ORCA_AGENT_HOOK_TOKEN: "hook-fake", CLAUDE_CONFIG_DIR: join(dir, "claude-home"), CODEX_HOME: join(dir, "codex-home"), AGENT_DRIFT_TEST_TRACE: trace });
+    try {
+      expect(agentVersions({ qwen: [qwen] }).find(row => row.id === "qwen")!.verdict.version).toBe("7.7.7");
+      expect((await agentVersionsAsync({ qwen: [qwen] }, 2000)).find(row => row.id === "qwen")!.verdict.version).toBe("7.7.7");
+    } finally {
+      for (const [name, value] of saved) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+    const probes = readFileSync(trace, "utf8").trim().split("\n").map(line => JSON.parse(line) as { orcaNames: string[]; claude: string; codex: string; probeFlags: { telemetry: string; mcp: string } });
+    expect(probes).toHaveLength(2);
+    for (const env of probes) {
+      expect(env.orcaNames).toEqual([]);
+      expect(env.claude).toBe(join(dir, "claude-home"));
+      expect(env.codex).toBe(join(dir, "codex-home"));
+      expect(env.probeFlags).toEqual({ telemetry: "1", mcp: "1" });
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("excessive output is cut at the cap while streaming: the probe is killed and reads unknown, never buffered whole (#843 AC3)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-drift-flood-"));
   try {
