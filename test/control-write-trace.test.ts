@@ -131,7 +131,7 @@ describe("control write telemetry", () => {
     expect(throwing.status().droppedLogs).toBe(1);
   });
 
-  test("bounds active requests, active spans, per-request spans and recent intervals", async () => {
+  test("bounds active requests, active registrations and recent intervals", async () => {
     let release!: () => void;
     let clock = 0;
     const telemetry = new ControlWriteTelemetry({ emit: () => {}, now: () => clock, maxActiveRequests: 1, maxRecentSpans: 1 });
@@ -144,15 +144,48 @@ describe("control write telemetry", () => {
     });
     expect(telemetry.status()).toMatchObject({ active: 0, droppedActive: 1, recentSpans: 1, droppedRecent: 1 });
 
-    const activeCap = new ControlWriteTelemetry({ emit: () => {}, now: () => clock, maxActiveSpans: 1, maxRequestSpans: 4 });
+    const activeCap = new ControlWriteTelemetry({ emit: () => {}, now: () => clock, maxActiveSpans: 1 });
     activeCap.run({ kind: "hub_task_done" }, () => true, () => controlWriteSpan("board-write", () => controlWriteSpan("status-hook", () => {})));
-    expect(activeCap.status()).toMatchObject({ activeSpans: 0, droppedSpans: 1, recentSpans: 1 });
+    expect(activeCap.status()).toMatchObject({ activeSpans: 0, droppedSpans: 1, recentSpans: 2 });
+  });
 
-    const perRequestCap = new ControlWriteTelemetry({ emit: () => {}, now: () => clock, maxRequestSpans: 2 });
-    perRequestCap.run({ kind: "hub_task_done" }, () => true, () => {
-      controlWriteSpan("board-write", () => {}); controlWriteSpan("status-hook", () => {}); controlWriteSpan("queue-hook", () => {});
-    });
-    expect(perRequestCap.status()).toMatchObject({ droppedSpans: 1, recentSpans: 2 });
+  test("more than 32 completed phases do not blind the delayed probe", () => {
+    let clock = 0;
+    const lines: string[] = [];
+    const telemetry = new ControlWriteTelemetry({ emit: line => lines.push(line), now: () => clock });
+    telemetry.start();
+    try {
+      telemetry.run({ kind: "hub_task_propose" }, () => true, () => {
+        for (let index = 0; index < 40; index++) controlWriteSpan("memory", () => {});
+        controlWriteSpan("board-write", () => { clock += 1600; });
+      });
+      telemetry.sample();
+      const rows = lines.map(record);
+      expect(rows.find(row => row.type === "control_write_slow")?.phases).toContainEqual({ phase: "board-write", durationMs: 1600 });
+      expect((rows.find(row => row.type === "control_write_loop_delay")?.spans as unknown[]).some((span: any) => span.phase === "board-write")).toBe(true);
+      expect(telemetry.status().droppedSpans).toBe(0);
+    } finally { telemetry.stop(); }
+  });
+
+  test("a span dropped at the active-registration cap still records its completed block", async () => {
+    let clock = 0, release!: () => void;
+    const lines: string[] = [];
+    const telemetry = new ControlWriteTelemetry({ emit: line => lines.push(line), now: () => clock, maxActiveSpans: 1 });
+    telemetry.start();
+    try {
+      const pending = telemetry.run({ kind: "hub_review", task: 6 }, () => true, async () => {
+        const outer = controlWriteSpan("external", () => new Promise<void>(resolve => { release = resolve; }));
+        await Promise.resolve();
+        await controlWriteSpan("board-write", () => { clock += 1600; return Promise.resolve(); });
+        release(); await outer;
+      });
+      await pending;
+      telemetry.sample();
+      const rows = lines.map(record);
+      expect(telemetry.status().droppedSpans).toBe(1);
+      expect(rows.find(row => row.type === "control_write_slow")?.phases).toContainEqual({ phase: "board-write", durationMs: 1600 });
+      expect((rows.find(row => row.type === "control_write_loop_delay")?.spans as unknown[]).some((span: any) => span.phase === "board-write")).toBe(true);
+    } finally { telemetry.stop(); }
   });
 
   test("rate caps allow one loop record beside a slow write and cap combined output at 60 per minute", async () => {
@@ -187,6 +220,18 @@ describe("control write telemetry", () => {
       expect(minuteLines).toHaveLength(60);
       expect(limited.status().droppedLogs).toBe(1);
     } finally { limited.stop(); }
+  });
+
+  test("a stopped probe cannot be revived and does not interfere with later work", () => {
+    let clock = 0;
+    const lines: string[] = [];
+    const telemetry = new ControlWriteTelemetry({ emit: line => lines.push(line), now: () => clock });
+    telemetry.start(); telemetry.stop(); telemetry.start();
+    clock = 1600; telemetry.sample();
+    expect(telemetry.run({ kind: "hub_review" }, () => true, () => "still works")).toBe("still works");
+    expect(lines).toHaveLength(0);
+    expect(telemetry.status()).toMatchObject({ active: 0, blockedLoopSamples: 0, completedRequests: 0 });
+    telemetry.stop();
   });
 
   test("a regressing or non-finite clock fails closed and never serializes a non-finite duration", () => {

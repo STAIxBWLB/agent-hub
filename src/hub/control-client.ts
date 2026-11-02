@@ -7,7 +7,9 @@ import { negotiateProtocol, protocolWindow, type ProtocolWindow } from "./protoc
 import { ControlWriteTelemetry, controlWriteMetadata, controlWriteSpan } from "./control-write-trace.ts";
 
 // The client has no authoritative task privacy view. Keep kind/timing only, never its args or task id.
-const clientWriteTelemetry = new ControlWriteTelemetry({ emit: line => console.error(`[agent-hub] ${line}`) });
+const clientWriteTelemetry = new ControlWriteTelemetry({ emit: line => {
+  if (process.env.AHUB_CONTROL_WRITE_TIMING === "1") console.error(`[agent-hub] ${line}`);
+} });
 const publicClientTiming = () => true;
 
 export function stateDirFor(cwd: string): string {
@@ -226,10 +228,11 @@ export class ControlClient {
 
   /** `timeoutMs`: for calls a person waits on. The hub has its own budget; this one only makes sure the CLI never hangs. */
   request(msg: Record<string, unknown>, timeoutMs = 30_000, signal?: AbortSignal): Promise<any> {
+    if (process.env.AHUB_CONTROL_WRITE_TIMING !== "1") return this.requestBody(msg, timeoutMs, signal);
     const metadata = controlWriteMetadata(msg);
     if (!metadata) return this.requestBody(msg, timeoutMs, signal);
     return clientWriteTelemetry.run({ kind: metadata.kind }, publicClientTiming, () => controlWriteSpan("client-wait", () =>
-      this.requestBody(msg, timeoutMs, signal).then(reply => controlWriteSpan("client-receive", () => reply))));
+      this.requestBody(msg, timeoutMs, signal)));
   }
 
   private requestBody(msg: Record<string, unknown>, timeoutMs: number, signal?: AbortSignal): Promise<any> {

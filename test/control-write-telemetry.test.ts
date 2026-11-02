@@ -12,8 +12,9 @@ import { renderStatus } from "../src/cli/output.ts";
 import { paint } from "../src/cli/console-state.ts";
 
 // The real SQL callback and control transport are used; the only injected fault is a blocked loop.
-for (const mode of ["public", "private", "private-string"] as const) test(mode === "public" ? "a blocked board write keeps its result and logs bounded phase metadata after the loop resumes" : `a blocked ${mode} review suppresses daemon phase metadata after the task closes`, async () => {
-  const privateTask = mode !== "public";
+for (const mode of ["public", "public-quiet", "private", "private-string"] as const) test(mode === "public" ? "a blocked board write keeps its result and logs bounded phase metadata after the loop resumes" : mode === "public-quiet" ? "client timing is quiet by default while daemon spans still name a late block" : `a blocked ${mode} review suppresses daemon phase metadata after the task closes`, async () => {
+  const privateTask = mode === "private" || mode === "private-string";
+  const timingEnabled = mode !== "public-quiet";
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-control-timing-"))), stateDir = join(root, "state");
   const config = { ...DEFAULT_CONFIG,
     memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
@@ -28,9 +29,12 @@ for (const mode of ["public", "private", "private-string"] as const) test(mode =
   const prototype = Board.prototype as unknown as { taskWrite<T extends { changes: number }>(write: () => T): T };
   const original = prototype.taskWrite;
   const stderr = console.error, clientLines: string[] = [];
+  const timingEnv = process.env.AHUB_CONTROL_WRITE_TIMING;
   let blocked = false;
   try {
     client = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
+    if (timingEnabled) process.env.AHUB_CONTROL_WRITE_TIMING = "1";
+    else delete process.env.AHUB_CONTROL_WRITE_TIMING;
     const marker = "timing-private-input-not-for-logs";
     let privateId: number | undefined;
     if (privateTask) {
@@ -81,17 +85,20 @@ for (const mode of ["public", "private", "private-string"] as const) test(mode =
     expect(JSON.stringify(records)).not.toContain(marker);
     expect(JSON.stringify(records)).not.toContain(root);
     expect(JSON.stringify(records)).not.toContain("requestId");
-    expect(clientLines.join("\n")).toContain("client-wait");
+    if (timingEnabled) expect(clientLines.join("\n")).toContain("client-wait");
+    else expect(clientLines.some(line => line.includes('"type":"control_write_slow"'))).toBe(false);
     expect(clientLines.join("\n")).not.toContain(marker);
     expect(clientLines.join("\n")).not.toContain('"task":');
   } finally {
     prototype.taskWrite = original; console.error = stderr;
+    if (timingEnv === undefined) delete process.env.AHUB_CONTROL_WRITE_TIMING;
+    else process.env.AHUB_CONTROL_WRITE_TIMING = timingEnv;
     client?.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true });
   }
 });
 
 test("full status shows aggregate timing counters while ordinary and older status stay quiet", () => {
-  const counters = { active: 0, slowRequests: 2, blockedLoopSamples: 1, droppedActive: 0, droppedRecent: 0, droppedLogs: 3 };
+  const counters = { active: 0, slowRequests: 2, blockedLoopSamples: 1, droppedActive: 0, droppedRecent: 1000, droppedLogs: 3 };
   const text = (full: boolean, timing = true) => renderStatus({ peers: {}, ...(timing ? { controlWriteTiming: counters } : {}) }, 140, 0, full).map(line => paint(line, false)).join("\n");
   expect(text(true)).toContain("control writes: active 0, slow 2, loop delays 1, dropped 3");
   expect(text(false)).not.toContain("control writes:");

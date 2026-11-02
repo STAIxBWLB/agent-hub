@@ -216,7 +216,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (data.cwd) out.push(...lines(data.cwd, columns));
   const timing = data.controlWriteTiming;
   if (full && timing && Object.values(timing).every(value => Number.isSafeInteger(value) && value >= 0)) {
-    out.push(...lines(`control writes: active ${timing.active}, slow ${timing.slowRequests}, loop delays ${timing.blockedLoopSamples}, dropped ${timing.droppedActive + timing.droppedRecent + timing.droppedLogs + (timing.droppedSpans ?? 0) + (timing.droppedMetadata ?? 0)}; timings in hub.log`, columns, timing.slowRequests || timing.blockedLoopSamples ? "attention" : undefined));
+    out.push(...lines(`control writes: active ${timing.active}, slow ${timing.slowRequests}, loop delays ${timing.blockedLoopSamples}, dropped ${timing.droppedActive + timing.droppedLogs + (timing.droppedSpans ?? 0) + (timing.droppedMetadata ?? 0)}; timings in hub.log`, columns, timing.slowRequests || timing.blockedLoopSamples ? "attention" : undefined));
   }
   const specs = data.specs;
   if (specs && [specs.specCount, specs.documents, specs.errors, specs.stale].every(value => Number.isSafeInteger(value) && value >= 0)

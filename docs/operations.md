@@ -1262,7 +1262,8 @@ A slow tracked operation (at least 1,000 ms on a monotonic clock) writes a
 `control_write_slow` JSON record to hub.log. The record contains a closed request
 kind, an optional public task number, elapsed time, outcome and phase durations.
 `returned`/`threw` describes the handler, not business success or whether a write applied.
-Client-side slow records go to stderr, never the MCP stdout stream, and omit task
+Client-side timing is opt-in with `AHUB_CONTROL_WRITE_TIMING=1` in the client or
+MCP server environment. Its slow records go to stderr, never stdout, and omit task
 numbers because the client has no authoritative privacy view. No request/rid,
 actor/session identifier, path, task text, argument, external output or error
 message enters a timing record. Host privacy is checked again before logging.
@@ -1278,10 +1279,13 @@ is reported as unknown. Background snapshot, queue/status and memory boundaries
 use the fixed `background` kind rather than inventing a tool request.
 
 Per observer, retained work is capped at 128 operations, 256 active spans, 512
-recent intervals, 32 recorded spans per operation and 8 emitted phase/span items.
+recent intervals and 8 emitted phase/span items. Phase totals use only the closed
+phase set; a full active-registration map never discards a finished phase or recent
+synchronous interval. There is no per-request cutoff that can hide a late block.
 The slow and loop categories each allow at most one line per second, with a shared
 60-line/minute ceiling; each JSON record is at most 2,048 UTF-8 bytes. Dropped work
-and logs are counted. Nested durations are not additive. Status counters include
+and logs are counted. Normal ring rotation and settle-time cleanup are excluded
+from the full-status dropped total. A stopped probe cannot be started again. Nested durations are not additive. Status counters include
 background observations and do not identify a blocking cause on their own.
 
 Board-write, queue/status, memory and external-call phases locate an observed

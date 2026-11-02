@@ -1210,7 +1210,7 @@ export async function startDaemon(opts: DaemonOptions) {
         let parsed: any;
         try {
           parsed = JSON.parse(String(data));
-          onMessage(sock, parsed);
+          onControlMessage(sock, parsed);
         } catch (e) {
           if (isDatabaseBusy(e) && sock.data.authed && Number.isSafeInteger(parsed?.rid)) {
             const busy = new RecoveryDatabaseBusy();
@@ -4905,7 +4905,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const noticedHolds = new Set<string>();
   let reportingQueues = false;
   let queuePressureStatusQueued = false;
-  bus.onQueues = () => controlWriteTelemetry?.observe("queue-hook", () => true, () => {
+  bus.onQueues = () => {
+    const changed = () => {
     if (stopping || settlingSuperseded || reportingQueues) return;
     remoteQueueChanged();
     reportingQueues = true;
@@ -4931,7 +4932,10 @@ export async function startDaemon(opts: DaemonOptions) {
         });
       }
     }
-  });
+    };
+    if (controlWriteTelemetry) controlWriteTelemetry.observe("queue-hook", () => true, changed);
+    else changed();
+  };
   // Opening the journal/restoring the snapshot preceded callbacks; classify those holds too.
   settleSupersededDeliveries();
 
@@ -8193,7 +8197,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!result.ok) throw new Error(String(result.error));
   }
 
-  function onMessage(sock: Sock, msg: any): void {
+  function onControlMessage(sock: Sock, msg: any): void {
     const metadata = controlWriteMetadata(msg);
     if (!metadata || !controlWriteTelemetry) return onMessageBody(sock, msg);
     const client = sock.data;
@@ -8236,15 +8240,14 @@ export async function startDaemon(opts: DaemonOptions) {
       void controlWriteTelemetry.run(metadata, privacyCurrent, () => {
         const completed = new Promise<void>(resolve => { finishControlWrite = resolve; });
         try {
-          controlWriteSpan("daemon-receive", () => {});
-          controlWriteSpan("daemon-dispatch", () => onMessageBody(sock, msg, finish));
+          controlWriteSpan("daemon-dispatch", () => onMessage(sock, msg, finish));
         } catch (error) { finish(); throw error; }
         return completed;
       });
     } catch (error) { finish(); throw error; }
   }
 
-  function onMessageBody(sock: Sock, msg: any, finishControlWrite: () => void = () => {}): void {
+  function onMessage(sock: Sock, msg: any, finishControlWrite: () => void = () => {}): void {
     const c = sock.data;
     let refusalRecorded=false;
     const reply = (body: Record<string, unknown>) => {

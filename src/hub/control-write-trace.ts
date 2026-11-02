@@ -7,7 +7,7 @@ export const CONTROL_WRITE_KINDS = [
 export type ControlWriteKind = typeof CONTROL_WRITE_KINDS[number];
 
 export const CONTROL_WRITE_PHASES = [
-  "client-send", "client-wait", "client-receive", "daemon-receive", "daemon-dispatch", "daemon-reply",
+  "client-send", "client-wait", "daemon-dispatch", "daemon-reply",
   "board-write", "queue-hook", "status-hook", "memory", "external", "snapshot",
 ] as const;
 export type ControlWritePhase = typeof CONTROL_WRITE_PHASES[number];
@@ -21,7 +21,6 @@ export const CONTROL_WRITE_MAX_DURATION_MS = 86_400_000;
 const MAX_ACTIVE_REQUESTS = 128;
 const MAX_ACTIVE_SPANS = 256;
 const MAX_RECENT_SPANS = 512;
-const MAX_REQUEST_SPANS = 32;
 const MAX_LOOP_SPANS = 8;
 const MIN_SYNC_PREFIX_MS = 10;
 const MAX_EMITS_PER_MINUTE = 60;
@@ -37,7 +36,6 @@ export interface ControlWriteTelemetryOptions {
   maxActiveRequests?: number;
   maxActiveSpans?: number;
   maxRecentSpans?: number;
-  maxRequestSpans?: number;
   rateLimitMs?: number;
 }
 
@@ -50,7 +48,6 @@ interface RequestTrace {
   startedAt: number;
   phases: Map<ControlWritePhase, number>;
   phaseOrder: ControlWritePhase[];
-  spanCount: number;
   settled: boolean;
   privacySuppressed: boolean;
 }
@@ -60,6 +57,8 @@ interface SpanTrace {
   phase: ControlWritePhase;
   startedAt: number;
   async: boolean;
+  finished: boolean;
+  prefixRecorded: boolean;
 }
 interface SpanInterval {
   kind: ControlWriteKind;
@@ -147,7 +146,6 @@ export class ControlWriteTelemetry {
   private readonly maxActiveRequests: number;
   private readonly maxActiveSpans: number;
   private readonly maxRecentSpans: number;
-  private readonly maxRequestSpans: number;
   private readonly rateLimitMs: number;
   private readonly requests = new Map<number, RequestTrace>();
   private readonly spans = new Map<number, SpanTrace>();
@@ -175,10 +173,8 @@ export class ControlWriteTelemetry {
     this.maxActiveRequests = options.maxActiveRequests ?? MAX_ACTIVE_REQUESTS;
     this.maxActiveSpans = options.maxActiveSpans ?? MAX_ACTIVE_SPANS;
     this.maxRecentSpans = options.maxRecentSpans ?? MAX_RECENT_SPANS;
-    this.maxRequestSpans = options.maxRequestSpans ?? MAX_REQUEST_SPANS;
     this.rateLimitMs = options.rateLimitMs ?? RATE_LIMIT_MS;
     if (![this.maxActiveRequests, this.maxActiveSpans, this.maxRecentSpans].every(value => Number.isSafeInteger(value) && value > 0)
-      || !Number.isSafeInteger(this.maxRequestSpans) || this.maxRequestSpans < 1 || this.maxRequestSpans > MAX_REQUEST_SPANS
       || !Number.isSafeInteger(this.rateLimitMs) || this.rateLimitMs < 0 || this.rateLimitMs > RATE_LIMIT_MS
       || this.maxActiveRequests > MAX_ACTIVE_REQUESTS || this.maxActiveSpans > MAX_ACTIVE_SPANS || this.maxRecentSpans > MAX_RECENT_SPANS) throw new Error("invalid control write trace bounds");
   }
@@ -196,7 +192,7 @@ export class ControlWriteTelemetry {
     const now = this.readNow();
     const request: RequestTrace = {
       telemetry: this, metadata: safeMetadata, privacyCurrent,
-      startedAt: now, phases: new Map(), phaseOrder: [], spanCount: 0, settled: false, privacySuppressed: false,
+      startedAt: now, phases: new Map(), phaseOrder: [], settled: false, privacySuppressed: false,
       logPrivacy: () => false,
     };
     request.logPrivacy = () => !request.privacySuppressed && this.privateNow(request.privacyCurrent);
@@ -224,8 +220,7 @@ export class ControlWriteTelemetry {
 
   /** Start one unref'd event-loop delay probe for the daemon. */
   start(): void {
-    if (this.stopped) this.stopped = false;
-    if (this.timer) return;
+    if (this.stopped || this.timer) return;
     this.nextSampleAt = this.readNow() + CONTROL_WRITE_SAMPLE_MS;
     this.timer = setInterval(() => this.sample(), CONTROL_WRITE_SAMPLE_MS);
     this.timer.unref?.();
@@ -291,34 +286,37 @@ export class ControlWriteTelemetry {
   }
 
   beginSpan(request: RequestTrace, phase: ControlWritePhase): SpanTrace {
-    const span: SpanTrace = { request, phase, startedAt: this.readNow(), async: false };
-    if (this.spans.size >= this.maxActiveSpans || request.spanCount >= this.maxRequestSpans) { this.droppedSpans++; return span; }
-    request.spanCount++;
+    const span: SpanTrace = { request, phase, startedAt: this.readNow(), async: false, finished: false, prefixRecorded: false };
+    if (this.spans.size >= this.maxActiveSpans) { this.droppedSpans++; return span; }
     span.id = this.nextSpanId++;
     this.spans.set(span.id, span);
     return span;
   }
 
   finishSpan(span: SpanTrace): void {
-    if (span.id === undefined || this.spans.get(span.id) !== span || span.request.settled) return;
+    if (span.finished) return;
+    span.finished = true;
+    if (span.request.settled) return;
     const endedAt = this.readNow();
-    this.spans.delete(span.id);
+    if (span.id !== undefined && this.spans.get(span.id) === span) this.spans.delete(span.id);
     const durationMs = Math.max(0, endedAt - span.startedAt);
     const request = span.request;
     const prior = request.phases.get(span.phase) ?? 0;
     if (!request.phaseOrder.includes(span.phase)) request.phaseOrder.push(span.phase);
     request.phases.set(span.phase, prior + durationMs);
-    if (!span.async) {
-      this.recent.push({ kind: request.metadata.kind, ...(request.metadata.task === undefined ? {} : { task: request.metadata.task }), phase: span.phase, startedAt: span.startedAt, endedAt, async: false, privacyCurrent: request.logPrivacy });
-      while (this.recent.length > this.maxRecentSpans) { this.recent.shift(); this.droppedRecent++; }
-    }
+    if (!span.async && !span.prefixRecorded) this.rememberSyncInterval(span, endedAt);
   }
 
   /** Preserve a long synchronous prelude inside an async function for the delayed loop probe. */
   recordSyncPrefix(span: SpanTrace): void {
-    if (span.id === undefined) return;
+    if (span.finished || span.prefixRecorded || span.request.settled) return;
     const endedAt = this.readNow();
     if (endedAt - span.startedAt < MIN_SYNC_PREFIX_MS) return;
+    span.prefixRecorded = true;
+    this.rememberSyncInterval(span, endedAt);
+  }
+
+  private rememberSyncInterval(span: SpanTrace, endedAt: number): void {
     const request = span.request;
     this.recent.push({ kind: request.metadata.kind, ...(request.metadata.task === undefined ? {} : { task: request.metadata.task }), phase: span.phase, startedAt: span.startedAt, endedAt, async: false, privacyCurrent: request.logPrivacy });
     while (this.recent.length > this.maxRecentSpans) { this.recent.shift(); this.droppedRecent++; }
@@ -327,7 +325,7 @@ export class ControlWriteTelemetry {
   private finishRequest(id: number, request: RequestTrace, outcome: "returned" | "threw"): void {
     if (!this.requests.delete(id)) return;
     request.settled = true;
-    for (const [spanId, span] of this.spans) if (span.request === request) { this.spans.delete(spanId); this.droppedSpans++; }
+    for (const [spanId, span] of this.spans) if (span.request === request) this.spans.delete(spanId);
     this.completedRequests++;
     const durationMs = this.roundMs(this.readNow() - request.startedAt);
     if (durationMs < CONTROL_WRITE_SLOW_MS) return;
