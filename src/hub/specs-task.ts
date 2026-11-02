@@ -72,6 +72,7 @@ export class SpecTaskInspector {
     if (!options.complete || !changedFiles || coverage.truncated || unavailable) return { head, complete: false, errors: check.errors, unchanged: [], changed: [], truncated: coverage.truncated, reason: "spec coverage or submitted changed-file evidence is incomplete" };
     const changedPaths = new Set(changedFiles.flatMap(file => [file.path, ...(file.oldPath ? [file.oldPath] : [])]));
     const covers = engine.covers([...changedPaths]);
+    if (covers.items.some(item => UNAVAILABLE.has(item.code) || item.code === "invalid-cover-path")) return { head, complete: false, errors: check.errors, unchanged: [], changed: [], reason: "changed-file path coverage is unavailable" };
     const acks = new Map((options.acks ?? []).map(ack => [ack.id, ack.reason]));
     const changed: SpecRef[] = [], unchanged: SpecRef[] = [];
     for (const spec of covers.specs) {
