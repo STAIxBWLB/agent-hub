@@ -4,6 +4,11 @@ import { projectContext } from "./project.ts";
 import { newToolRequestId, TOOL_WRITE_FEATURE, toolWriteOperation, toolWriteUnknownReply, toolWriteRefusedReply } from "./tool-request.ts";
 import { externalAdapterMetadata, externalInstanceCatalog, type ExternalInstanceCatalog, type ExternalAdapterMetadata } from "../adapters/external-metadata.ts";
 import { negotiateProtocol, protocolWindow, type ProtocolWindow } from "./protocol-window.ts";
+import { ControlWriteTelemetry, controlWriteMetadata, controlWriteSpan } from "./control-write-trace.ts";
+
+// The client has no authoritative task privacy view. Keep kind/timing only, never its args or task id.
+const clientWriteTelemetry = new ControlWriteTelemetry({ emit: line => console.error(`[agent-hub] ${line}`) });
+const publicClientTiming = () => true;
 
 export function stateDirFor(cwd: string): string {
   return projectContext(cwd).stateDir;
@@ -221,6 +226,13 @@ export class ControlClient {
 
   /** `timeoutMs`: for calls a person waits on. The hub has its own budget; this one only makes sure the CLI never hangs. */
   request(msg: Record<string, unknown>, timeoutMs = 30_000, signal?: AbortSignal): Promise<any> {
+    const metadata = controlWriteMetadata(msg);
+    if (!metadata) return this.requestBody(msg, timeoutMs, signal);
+    return clientWriteTelemetry.run({ kind: metadata.kind }, publicClientTiming, () => controlWriteSpan("client-wait", () =>
+      this.requestBody(msg, timeoutMs, signal).then(reply => controlWriteSpan("client-receive", () => reply))));
+  }
+
+  private requestBody(msg: Record<string, unknown>, timeoutMs: number, signal?: AbortSignal): Promise<any> {
     if (this.ws.readyState !== WebSocket.OPEN || this.closing && msg.t !== "request_cancel") return Promise.resolve({ ok: false, error: "hub connection is not open" });
     const invocation = msg.t === "task" && msg.op === "hub_invoke";
     const operation = toolWriteOperation(msg), write = operation !== undefined;
@@ -266,7 +278,7 @@ export class ControlClient {
       signal?.addEventListener("abort", aborted, { once: true });
       if (signal?.aborted) { aborted(); return; }
       timer = timeoutMs ? setTimeout(() => abandon(`no answer from the hub within ${Math.round(timeoutMs / 1000)} s`), timeoutMs) : undefined;
-      try { this.ws.send(JSON.stringify({ ...wire, rid })); }
+      try { controlWriteSpan("client-send", () => this.ws.send(JSON.stringify({ ...wire, rid }))); }
       catch { abandon("hub request could not be sent"); }
     });
   }

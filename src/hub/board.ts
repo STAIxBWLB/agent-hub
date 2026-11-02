@@ -11,6 +11,7 @@ import type { ReviewerPoolReason } from "./reviewer-pool.ts";
 import type { GitHubSource } from "./github-import.ts";
 import type { Database } from "./db-schema.ts";
 import { openHubDatabase, advanceHubDbSchema } from "./db-schema.ts";
+import { controlWriteSpan } from "./control-write-trace.ts";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { HUB, USER, type PeerId } from "./envelope.ts";
 import type { SweepRecord } from "./task-sweep.ts";
@@ -431,11 +432,11 @@ export class Board {
 
   /** Keep the generation and business write atomic without changing Bun's reported row count. */
   private taskWrite<T extends { changes: number }>(write: () => T): T {
-    return this.db.transaction(() => {
+    return controlWriteSpan("board-write", () => this.db.transaction(() => {
       const result = { ...write() };
       if (result.changes) this.db.run("UPDATE board_status_revision SET revision=revision+1 WHERE id=1");
       return result;
-    })();
+    })());
   }
 
   statusRevision(): number {

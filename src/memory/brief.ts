@@ -1,4 +1,5 @@
 import { buildIntentBrief, type IntentBriefOptions, type IntentBriefSource } from "@staix/agent-mem";
+import { controlWriteSpan } from "../hub/control-write-trace.ts";
 import type { PeerId } from "../hub/envelope.ts";
 import type { MemoryClient } from "./client.ts";
 
@@ -70,6 +71,10 @@ export class Briefs {
   ) {}
 
   async forTask(peer: PeerId, task: BriefTask, priority: readonly NativeItem[] = []): Promise<string | undefined> {
+    return controlWriteSpan("memory", () => this.forTaskBody(peer, task, priority));
+  }
+
+  private async forTaskBody(peer: PeerId, task: BriefTask, priority: readonly NativeItem[]): Promise<string | undefined> {
     // A brief snapshots its configured cap once, before either optional source is selected.
     const maximum = typeof this.maxItems === "function" ? this.maxItems() : this.maxItems;
     let corpusRevision: string | undefined;
