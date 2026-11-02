@@ -70,8 +70,10 @@ import { inspectProject, startProject, stopProject, runProjectDaemon } from "../
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import { OmniRoute } from "../omniroute/client.ts";
-import { init, initSettingRows, planInit } from "./init.ts";
+import { autonomyInheritanceChange, init, initSettingRows, planInit } from "./init.ts";
 import { INIT_USAGE, parseInitSettings } from "./init-settings.ts";
+import { promptGate, runInitPrompt, settingLines, shadowOffered, type InitAnswers } from "./init-prompt.ts";
+import { loadPacks } from "../hub/packs.ts";
 import { launcherPreview } from "./preview.ts";
 import { instanceLaunchArguments, requirePeerInstances, requireActiveInstance, cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, buildKimiTuiLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
 import { configureKimiMcp } from "./kimi-mcp.ts";
@@ -1072,20 +1074,47 @@ const commands: Record<string, () => Promise<void> | void> = {
     // #1065 T1: the settings flags come out first (a value flag takes the next word), then the older flags as before.
     let settings: ReturnType<typeof parseInitSettings>;
     try { settings = parseInitSettings(args); } catch (error) { return fail((error as Error).message); }
-    const flags = takeFlags(settings.rest.filter(arg => arg !== "--dry-run" && arg !== "--json" && arg !== "--shadow" && arg !== "--release-guard"), ["--profile"], []);
+    const flags = takeFlags(settings.rest.filter(arg => arg !== "--dry-run" && arg !== "--json" && arg !== "--shadow" && arg !== "--release-guard" && arg !== "--yes"), ["--profile"], []);
     if (flags.rest.length) fail(INIT_USAGE);
     // A pack is a project file in .agenthub/roles/<name>.pack.json (#513a); init resolves the name and refuses an unknown one with the profiles and packs it knows.
-    const requestedProfile = flags.one["--profile"];
+    let requestedProfile = flags.one["--profile"];
     const newProject = !existsSync(join(cwd, ".agenthub/config.json"));
-    const request = settings.request, asked = Object.keys(request.values).length > 0;
+    let request = settings.request, asked = Object.keys(request.values).length > 0;
+    let shadow = args.includes("--shadow"), releaseGuard = args.includes("--release-guard");
+    // #1065 T2: a person at a terminal on a new project, with no flag that sets anything and no --yes, is asked each setting (init-prompt.ts). Every other run, including a delegated peer, a live test and any run
+    // without a terminal, is never asked and gets defaults plus its flags. The gate is checked here, before any file is read or written, and --dry-run never prompts.
+    const flagGiven = asked || settings.request.autonomy !== undefined || requestedProfile !== undefined || shadow || releaseGuard;
+    if (promptGate({ newProject, flagGiven, yes: args.includes("--yes"), dryRun: args.includes("--dry-run"), stdinIsTTY: !!process.stdin.isTTY, stdoutIsTTY: !!process.stdout.isTTY, role: identity.role, delegated: !!delegatedPeer, liveTest })) {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      // Ctrl-C closes the readline interface, which settles a pending question as null: the prompt ends with nothing written.
+      const interrupted = new Promise<null>(done => rl.once("close", () => done(null)));
+      const ask = (question: string): Promise<string | null> => Promise.race([rl.question(question).catch(() => null), interrupted]);
+      const machine = readAutonomyDefaults(hubHome(), [cwd]);
+      const preview = (answers: InitAnswers): string[] => {
+        const rows = initSettingRows(cwd, answers.profile, answers.shadow, answers.releaseGuard, answers.request);
+        const plan = planInit(cwd, answers.profile, answers.shadow, answers.releaseGuard, answers.request);
+        // The same autonomy-inheritance row `--dry-run` shows, from the one helper: a new project inherits the trusted machine preset after the writes unless the answer was off.
+        const inherit = autonomyInheritanceChange(cwd, machine.enabled, answers.request.autonomy);
+        if (inherit) plan.push(inherit);
+        return [...plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`), ...settingLines(rows)];
+      };
+      let result: Awaited<ReturnType<typeof runInitPrompt>>;
+      try {
+        result = await runInitPrompt({ ask, print: line => console.log(terminalText(line)) },
+          { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), packs: [...loadPacks(cwd).packs.keys()], shadowAvailable: shadowOffered(repoOf(cwd)) }, preview);
+      } finally { rl.close(); }
+      if (!result.ok) { console.error(`ahub init: ${result.reason === "refused" ? result.message : result.reason === "interrupted" ? `interrupted; ${result.message}` : result.message}`); process.exitCode = result.reason === "refused" ? 1 : 0; return; }
+      requestedProfile = result.answers.profile; request = result.answers.request; asked = Object.keys(request.values).length > 0; shadow = result.answers.shadow; releaseGuard = result.answers.releaseGuard;
+    }
     // `--autonomy off` skips the machine inheritance on a new project; `inherit` is today's behaviour. Neither changes an existing project.
     const inheritAutonomy = newProject && request.autonomy !== "off";
     if (!newProject && request.autonomy !== undefined) console.error("note: --autonomy applies to a new project only; this project already exists, so its autonomy settings are unchanged");
     if (args.includes("--dry-run")) {
-      const plan = planInit(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"), request);
-      const rows = initSettingRows(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"), request);
+      const plan = planInit(cwd, requestedProfile, shadow, releaseGuard, request);
+      const rows = initSettingRows(cwd, requestedProfile, shadow, releaseGuard, request);
       const defaults = readAutonomyDefaults(hubHome(), [cwd]);
-      if (inheritAutonomy && defaults.enabled) plan.push({ action: existsSync(join(cwd, ".agenthub/config.local.json")) ? "modify" : "create", path: join(cwd, ".agenthub/config.local.json"), reason: "inherit the trusted machine autonomy preset; consent is checked at daemon startup" });
+      const inherit = inheritAutonomy ? autonomyInheritanceChange(cwd, defaults.enabled, request.autonomy) : undefined;
+      if (inherit) plan.push(inherit);
       if (defaults.notice) console.error(defaults.notice);
       // Without a settings flag the preview is the bare list of file rows, as it always was; with one it is { changes, settings }.
       if (args.includes("--json")) return console.log(JSON.stringify(asked ? { changes: plan, settings: rows } : plan, null, 2));
@@ -1095,7 +1124,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     assertLifecycleAvailable(cwd);
     if (inheritAutonomy && delegatedPeer && readAutonomyDefaults(hubHome(), [cwd]).enabled) fail("machine autonomy inheritance is person-only; delegated live tests cannot apply it (ahub init --autonomy off skips it)");
     let changed: string[];
-    try { changed = init(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"), request); } catch (error) { return fail((error as Error).message); }
+    try { changed = init(cwd, requestedProfile, shadow, releaseGuard, request); } catch (error) { return fail((error as Error).message); }
     const project = registeredProject();
     console.log(changed.length ? changed.map((p) => `${existsSync(p) ? "wrote" : "removed"} ${p}`).join("\n") : "already up to date");
     if (newProject) {

@@ -277,6 +277,14 @@ function checkCandidate(cwd: string, plan: readonly PlannedWrite[]): void {
     catch (error) { throw new Error(`the resulting .agenthub/sdlc.toml does not pass the hub's check: ${(error as Error).message}; fix it in your editor, then run ahub init again; nothing was written`); }
   }
 }
+/**
+ * The plan row for the machine autonomy preset a new project inherits after the writes (`inheritMachineAutonomy`, run by `ahub init` once the files exist): `--dry-run` and the guided prompt's
+ * confirmation both take it from here, so the plan a person approves cannot omit it. `undefined` when nothing is inherited (the machine default is off, or the person chose `--autonomy off`).
+ */
+export function autonomyInheritanceChange(cwd: string, machineEnabled: boolean, autonomy: "inherit" | "off" | undefined): InitChange | undefined {
+  if (!machineEnabled || autonomy === "off") return undefined;
+  return { action: existsSync(join(cwd, ".agenthub/config.local.json")) ? "modify" : "create", path: join(cwd, ".agenthub/config.local.json"), reason: "inherit the trusted machine autonomy preset; consent is checked at daemon startup" };
+}
 /** What a pack adds, by id only: the preview names the criteria and checks, never their text. */
 const packReason = (pack: DomainPack, how: string) =>
   `${how} pack ${pack.name} (profile ${pack.profile}): rubric ${pack.rubric.map(item => item.id).join(", ")}; checks ${pack.checks.map(check => check.id).join(", ") || "none"}; expects roles ${pack.roles.join(", ") || "none"} from the catalog`;
