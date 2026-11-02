@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { CLASSES, type Task, type TaskClass } from "./board.ts";
 import { isGitHubRepository, specRefs } from "./spec-read.ts";
 
-export interface PeerCapabilities { tests: boolean; spec: boolean; testsReason?: string; specReason?: string; /** #1081: the peer's shell can reach the network (through the egress proxy or directly). Absent means unknown, never refused. */ network?: boolean; networkReason?: string; }
+export interface PeerCapabilities { tests: boolean; spec: boolean; testsReason?: string; specReason?: string; /** #1081: the peer's shell can reach the network (through the egress proxy or directly). Absent means unknown, never refused. */ network?: boolean; networkReason?: string; /** #1081: the peer can create the task worktree (`git worktree add` runs outside a hub sandbox, #270). Absent means unknown, never refused. */ worktree?: boolean; worktreeReason?: string; }
 import type { PeerId, PeerState } from "./envelope.ts";
 
 import { parseHubRoutes, type HubRoute } from "../models/route/config.ts";
@@ -289,7 +289,7 @@ export function currentRouting(cwd: string, log: (line: string) => void = () => 
   }
 }
 
-export type Signal = "pii" | "pii_path" | "long_context" | "urgent" | "needs_network";
+export type Signal = "pii" | "pii_path" | "long_context" | "urgent" | "needs_network" | "needs_worktree";
 
 /** What the policy can see in a task. Context length is estimated from the referenced files, 3 characters per token as elsewhere. */
 export function detectSignals(task: Pick<Task, "title" | "detail" | "refs">, routing: Routing, cwd: string): Signal[] {
@@ -310,7 +310,7 @@ export function detectSignals(task: Pick<Task, "title" | "detail" | "refs">, rou
 /** A peer's entry in a peer-indexed map: own keys only, so a peer named `constructor` is never an inherited Object member. */
 export const peerEntry = <T>(map: Readonly<Record<string, T>> | undefined, peer: string): T | undefined => (map && Object.hasOwn(map, peer) ? map[peer] : undefined);
 
-export type RoutingRefusalCode = QueueBackpressureCode | "context-headroom" | "instance" | "family" | "tests" | "spec" | "network" | "roster" | "pull-only" | "not-attached" | "excluded" | "owner-admission" | "offline" | "paused" | "failing" | "pii" | "policy";
+export type RoutingRefusalCode = QueueBackpressureCode | "context-headroom" | "instance" | "family" | "tests" | "spec" | "network" | "worktree" | "roster" | "pull-only" | "not-attached" | "excluded" | "owner-admission" | "offline" | "paused" | "failing" | "pii" | "policy";
 export interface RoutingRefusal { peer: PeerId; role: "owner" | "reviewer"; code: RoutingRefusalCode; reason: string }
 export interface Assignment {
   reviewSelection?: ReviewerPoolSelection;
@@ -492,6 +492,8 @@ export function assign(
       if (needsSpec && !caps?.spec) return deny("spec", `missing spec: ${caps?.specReason ?? "capability unavailable"}`);
       // #1081: work that declares it needs the network is never offered to a peer whose shell has none. Unknown (no `network` entry) is not a refusal.
       if (task.signals.includes("needs_network") && caps?.network === false) return deny("network", `no network: ${caps.networkReason ?? "its shell cannot reach the network"}`);
+      // #1081: work that declares it needs a task worktree is never offered to a peer that cannot create one, so no branch ref is left behind by a refused accept.
+      if (task.signals.includes("needs_worktree") && caps?.worktree === false) return deny("worktree", `no worktree: ${caps.worktreeReason ?? "it cannot create the task worktree"}`);
     }
     if (opts.offRoster?.includes(peer)) return deny("roster", "off roster");
     const named = role === "owner" ? opts.namedOwner ?? reserved : opts.namedReviewer;

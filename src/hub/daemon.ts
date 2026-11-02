@@ -2050,10 +2050,12 @@ export async function startDaemon(opts: DaemonOptions) {
     // Keep the last confirmed capability during a bounded, single-flight refresh; replace it only on a result.
     if (Date.now() - runnerStateAt >= 60_000) void refreshRunner();
     return Object.fromEntries([...new Set([...SUPPORTED_PEERS, ...bus.peers.keys()])].map(peer => {
-    if (!definitionOf(peer)?.trust.hubSandboxed) return [peer, { tests: true, spec: true, network: true }];
+    if (!definitionOf(peer)?.trust.hubSandboxed) return [peer, { tests: true, spec: true, network: true, worktree: true }];
     // #1081: Pi and the local worker run their shell under one sandbox network setting (`local.bash_network`): false is no network at all, an egress proxy or "direct" is some.
     const network = sandboxNetwork !== false;
-    return [peer, { tests: runnerState.available && may(peer, "check_run"), spec: specState.available && may(peer, "spec_read"), network,
+    // A hub sandbox never lets its shell run `git worktree add` (#270: it writes under the git common dir), so such a peer cannot create the task worktree. The hub-made writable worktree is #1115.
+    return [peer, { tests: runnerState.available && may(peer, "check_run"), spec: specState.available && may(peer, "spec_read"), network, worktree: false,
+      worktreeReason: "git worktree add runs outside the sandbox; this peer cannot create the task worktree (#270; a hub-made worktree is #1115)",
       ...(network ? {} : { networkReason: "local.bash_network is off, so its shell has no network (ahub settings local.bash_network)" }),
       testsReason: !may(peer, "check_run") ? `capabilities.${peer}` : `runner unavailable: ${runnerState.reason ?? "unknown"}`,
       specReason: !may(peer, "spec_read") ? `capabilities.${peer}` : specState.reason ?? "gh unauthenticated" }];
