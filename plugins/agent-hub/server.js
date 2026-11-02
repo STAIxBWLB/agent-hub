@@ -23265,8 +23265,16 @@ var MAX_PAYLOAD_BYTES = 1024 * 1024;
 function toolWriteOperation(msg) {
   if (msg.t === "delivery_complete")
     return "hub_delivery_done";
-  if (msg.t === "task" && (msg.op === "hub_task_propose" || msg.op === "hub_review"))
-    return msg.op;
+  if (msg.t === "task") {
+    let operation;
+    try {
+      operation = String(msg.op);
+    } catch {
+      return;
+    }
+    if (operation === "hub_task_propose" || operation === "hub_review")
+      return operation;
+  }
   return;
 }
 function newToolRequestId(instanceId, now = Date.now()) {
