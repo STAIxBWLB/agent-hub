@@ -11,6 +11,7 @@ export { DEFAULT_SPECS_CONFIG, parseSpecsConfig, type SpecsConfig, type SpecsRev
 const MAX_FILES = 2000;
 const MAX_FRONTMATTER_BYTES = 8 * 1024;
 const MAX_STAMPS_FILE_BYTES = 4 * 1024 * 1024;
+// ponytail: committed bodies stop at 4 MiB; stream bounded headers/body links when larger specs are needed.
 const MAX_COMMITTED_SPEC_BYTES = 4 * 1024 * 1024;
 const MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 2000;
