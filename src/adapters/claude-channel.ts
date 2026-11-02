@@ -11,8 +11,10 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS } from "../hub/control-client.ts";
+import { newToolRequestId, TOOL_WRITE_FEATURE, toolWriteOperation } from "../hub/tool-request.ts";
 import { channelProject } from "../hub/channel-project.ts";
 import { VERSION } from "../version.ts";
 import { IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION, projectConductorTools, projectToolList, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
@@ -182,6 +184,44 @@ const server = new Server(
 const inbox: string[] = []; // pushes that failed; drained by hub_inbox
 let hub: ControlClient | undefined;
 let detached: string | undefined; // why this server stopped reconnecting; tool calls report it
+const MCP_WRITE_ID_TTL_MS = 15 * 60_000;
+const MCP_WRITE_ID_CAP = 512;
+// ponytail: 65,536 hash-only MCP request-id tombstones per channel process; a durable session ledger is the upgrade path.
+const MCP_WRITE_ID_TOMBSTONE_CAP = 65_536;
+const mcpWriteIds = new Map<string, { requestId: string; at: number; expired?: true }>();
+const mcpWriteIdTombstones = new Set<string>();
+function mcpToolWriteId(name: string, mcpId: unknown, client: ControlClient): { requestId?: string; refused?: string } {
+  const operation = toolWriteOperation(name === "hub_delivery_done" ? { t: "delivery_complete" } : { t: "task", op: name });
+  if (!operation) return {};
+  const instanceId = client.instanceId;
+  const now = Date.now();
+  for (const [key, entry] of mcpWriteIds) if (!entry.expired && now - entry.at >= MCP_WRITE_ID_TTL_MS) {
+    if (mcpWriteIdTombstones.size < MCP_WRITE_ID_TOMBSTONE_CAP) { mcpWriteIdTombstones.add(key); mcpWriteIds.delete(key); }
+    else entry.expired = true;
+  }
+  const validMcpId = mcpId === undefined || typeof mcpId === "string" || typeof mcpId === "number" && Number.isSafeInteger(mcpId);
+  if (!validMcpId) return client.features.includes(TOOL_WRITE_FEATURE)
+    ? { refused: "Write request identity is unavailable; inspect the task or delivery before another write." } : {};
+  const key = mcpId === undefined ? undefined : createHash("sha256").update(JSON.stringify([typeof mcpId, String(mcpId)])).digest("hex");
+  if (key) {
+    const existing = mcpWriteIds.get(key);
+    if (existing) return existing.expired ? { refused: "This MCP request ID expired; inspect the task or delivery before another write." } : { requestId: existing.requestId };
+    if (mcpWriteIdTombstones.has(key)) return { refused: "This MCP request ID expired; inspect the task or delivery before another write." };
+  }
+  if (!client.features.includes(TOOL_WRITE_FEATURE)) return {};
+  if (!instanceId) return { refused: "Write request identity is unavailable; inspect the task or delivery before another write." };
+  let requestId: string;
+  if (mcpId === undefined) {
+    try { requestId = newToolRequestId(instanceId, now); }
+    catch { return { refused: "Write request identity is unavailable; inspect the task or delivery before another write." }; }
+    return { requestId };
+  }
+  if (mcpWriteIds.size >= MCP_WRITE_ID_CAP || mcpWriteIdTombstones.size >= MCP_WRITE_ID_TOMBSTONE_CAP) return { refused: "Write request identity window is full; inspect the task or delivery before another write." };
+  try { requestId = newToolRequestId(instanceId, now); }
+  catch { return { refused: "Write request identity is unavailable; inspect the task or delivery before another write." }; }
+  mcpWriteIds.set(key!, { requestId, at: now });
+  return { requestId };
+}
 const offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
 /**
  * The hub's advisory `queued` nudge (issue #398): important work waiting in this pull-only session's queue.
@@ -412,7 +452,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return list;
 });
 
-async function callTool(req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal) {
+async function callTool(req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, mcpRequestId?: unknown) {
   const { name, arguments: args } = req.params;
   if (unidentified) return { ...text(UNIDENTIFIED), isError: true };
   if (!own) return { ...text(NO_PROJECT), isError: true };
@@ -442,7 +482,10 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
   if (name === "hub_delivery_done" && channel) {
     if (!hub) return text(offline());
     const a = args ?? {};
-    const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation });
+    const identity = mcpToolWriteId(name, mcpRequestId, hub);
+    if (identity.refused) return text(identity.refused);
+    const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation, ...(identity.requestId ? { requestId: identity.requestId } : {}) });
+    if (result.outcome === "unknown") return text(typeof result.error === "string" ? result.error : "Write outcome unknown. Inspect the delivery before another write; do not resubmit with a new request ID.");
     return text(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && (!toolsMode || permissionTool)) {
@@ -483,14 +526,17 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     if (!hub) return text(offline());
     // #445 C2: a daemon that predates invocations would answer with a generic unknown-operation error; say what is missing instead.
     if (name === "hub_invoke" && !hub.features.includes("invocation")) return { ...text("error: this hub does not support invocations; restart it with the current agent-hub release (ahub restart)"), isError: true };
-    const res = await hub.request({ t: "task", op: name, args: args ?? {} }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" ? signal : undefined);
+    const identity = mcpToolWriteId(name, mcpRequestId, hub);
+    if (identity.refused) return text(identity.refused);
+    const res = await hub.request({ t: "task", op: name, args: args ?? {}, ...(identity.requestId ? { requestId: identity.requestId } : {}) }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" ? signal : undefined);
+    if (res.outcome === "unknown") return text(typeof res.error === "string" ? res.error : "Write outcome unknown. Inspect the task before another write; do not resubmit with a new request ID.");
     return { ...text(res.ok ? res.text : `error: ${res.error}`), ...(res.ok ? {} : { isError: true }) };
   }
   return text(`unknown tool ${name}`);
 }
 
 // Inbox results still show fresh counts, without telling a held or refused reader to retry in a loop.
-server.setRequestHandler(CallToolRequestSchema, async (req, extra) => withPendingHint(await callTool(req, extra.signal), req.params.name !== "hub_inbox" && req.params.name !== "hub_source_read"));
+server.setRequestHandler(CallToolRequestSchema, async (req, extra) => withPendingHint(await callTool(req, extra.signal, extra.requestId), req.params.name !== "hub_inbox" && req.params.name !== "hub_source_read"));
 
 await server.connect(new StdioServerTransport());
 // The host (Claude Code, Codex, Kimi) talks over stdin; once it is gone nothing can use this server, and a leftover would keep reconnecting.

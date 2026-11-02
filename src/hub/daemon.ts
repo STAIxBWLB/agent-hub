@@ -43,6 +43,7 @@ import { MemoryObservations } from "./memory-observations.ts";
 import { createStalenessProbe } from "./memory-staleness.ts";
 import { matchingPlanFails, planGuardNodes, taskMemoryQueryNodes } from "./memory-plan-guard.ts";
 import { planningWipLimits } from "./planning.ts";
+import { ToolWriteRegistry, toolWriteOperation, toolWriteUnknownReply } from "./tool-request.ts";
 import { projectedDiff } from "./projected-diff.ts";
 import { listenWithoutPortCollision } from "./listen.ts";
 import { needs, type NeedsInput } from "../ui/needs.ts";
@@ -3288,6 +3289,39 @@ export async function startDaemon(opts: DaemonOptions) {
   // commit waits for those in flight, or its integrity digest misses their later writes. Completion checks outlive
   // their op, so recoveryReady() also waits for `tasks.checksPending()`: a check the commit's stop kills would write.
   let taskOpsInFlight = 0;
+  const toolWriteRegistry = new ToolWriteRegistry(instanceId);
+  const toolWriteScope = (c: Client, operation: string): string => {
+    const actor = c.peer ?? USER, peer = c.peer ? bus.peers.get(c.peer) : undefined;
+    const binding = c.toolsOwner ?? c.externalOwner;
+    return JSON.stringify({ actor, role: c.role ?? "", operation, session: c.session === true, launchId: c.launchId ?? null,
+      generation: binding?.generation ?? (isWsPeer(peer) ? peer.sessionGeneration : c.peer ? connectionGeneration(c.peer) ?? null : null), owner: binding?.owner.id ?? peer?.id ?? null,
+      executionRoot: c.peer ? executionRoots.get(c.peer) ?? null : null });
+  };
+  const toolWriteCurrent = (c: Client, sock: Sock, operation: string, payload: Record<string, unknown>, scope: string, result?: Record<string, unknown>): boolean => {
+    try {
+      const actor = c.peer ?? USER;
+      if (!c.authed || c.closed || sock.readyState !== WebSocket.OPEN || !c.role || stopping || recoveryActive() && recoveryPhase !== "preparing"
+        || c.peer && !membershipAllowed(c.peer) || c.externalOwner && !currentExternalTools(c, true) || c.toolsOwner && !currentImplementerTools(c)) return false;
+      if (c.session && sessionGate(actor, payload)) return false;
+      if (toolWriteScope(c, operation) !== scope || readOnlyPeer(actor) && !READ_ONLY_HUB_TOOLS.has(operation)
+        || c.toolsOwner && !IMPLEMENTER_HUB_TOOL_NAMES.includes(operation)) return false;
+      if (actor !== USER && (turns.get(actor)?.private || contextPii(actor))) return false;
+      const args = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args) ? payload.args as Record<string, unknown> : {};
+      const requestedOwner = typeof args.owner === "string" ? args.owner.trim().toLowerCase() : "";
+      if (operation === "hub_task_propose" && (!may(actor, "propose") || requestedOwner && PEER_ID.test(requestedOwner)
+        && ![actor, USER, HUB, "digest"].includes(requestedOwner) && !may(actor, "assign"))) return false;
+      const taskId = operation === "hub_review" ? Number(args.id)
+        : result?.ok === true && typeof result.text === "string" ? Number(/task #(\d+):/.exec(result.text)?.[1]) : undefined;
+      if (taskId !== undefined) {
+        const task = Number.isSafeInteger(taskId) && taskId > 0 ? board.get(taskId) : undefined;
+        const safePiiProposalReceipt = operation === "hub_task_propose" && actor !== USER && result?.ok === true && typeof result.text === "string"
+          && /^task #[1-9]\d*: (?:backlog|proposed|in_progress|in_review|approved|changes_requested|cancelled), owner (?:none|[a-z][a-z0-9-]{0,31}), reviewer (?:none|[a-z][a-z0-9-]{0,31})$/.test(result.text);
+        if (!task || actor !== USER && tasks.isPii(task) && !safePiiProposalReceipt || operation === "hub_review" && actor !== USER && task.reviewer !== actor
+          || actor !== USER && result?.ok === true && typeof result.text === "string" && !tasks.publicMetadataText(result.text) && !safePiiProposalReceipt) return false;
+      }
+      return true;
+    } catch { return false; }
+  };
   /**
    * #604 ORIGIN side. Order matters: the caller's authority and the PII gates run first (nothing has left this project), then the target is resolved from the machine registry and its own
    * status descriptor is read, and only then is the request sent. The target answers with the task id it created, which is recorded here. A refusal at any step leaves no row in either board.
@@ -8031,6 +8065,24 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ rid: msg.rid, ...body }));
     };
+    const runTaskRequest = (run: () => Promise<string>, extraCurrent: () => void = () => {}, formatError: (error: unknown) => Record<string, unknown> = error => ({ t: "task", ok: false, error: error instanceof Error ? error.message : "task write refused" })): void => {
+      const operation = toolWriteOperation(msg);
+      const payload = { t: "task", op: msg.op, args: msg.args ?? {} };
+      if (!operation || msg.requestId === undefined) {
+        void run().then(text => reply({ t: "task", ok: true, text }), error => reply(formatError(error)));
+        return;
+      }
+      const scope = toolWriteScope(c, operation);
+      void toolWriteRegistry.run({ id: msg.requestId, scope, payload,
+        current: result => toolWriteCurrent(c, sock, operation, payload, scope, result) && (() => { try { extraCurrent(); return true; } catch { return false; } })(),
+      }, async () => {
+        try { return { t: "task", ok: true, text: await run() }; }
+        catch (error) {
+          if (error instanceof PreEffectToolRefusal || error instanceof OperationalAuthorityError) return formatError(error);
+          throw error;
+        }
+      }).then(result => reply(result), () => reply(toolWriteUnknownReply(payload, typeof msg.requestId === "string" ? msg.requestId : undefined)));
+    };
     if (!c.authed) {
       if (msg.t !== "hello" || msg.token !== token) return sock.close(4401, "bad token");
       if (typeof msg.peer === "string" && msg.peer.includes("@")) return sock.close(4403, "remote identities have no control connection");
@@ -8358,7 +8410,17 @@ export async function startDaemon(opts: DaemonOptions) {
       case "delivery_complete": {
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;
         if (c.role !== "peer" || !isWsPeer(peer) || typeof msg.deliveryId !== "string" || !peer.ownsDelivery(sock, msg.generation, msg.deliveryId)) return void reply({ ok: false, error: "delivery does not belong to this connection generation" });
-        return void reply(bus.completeDelivery(peer.id, msg.deliveryId) ? { ok: true } : { ok: false, error: "delivery is not live and accepted; inspect ahub queue show before resolving" });
+        const operation = toolWriteOperation(msg);
+        if (!operation || msg.requestId === undefined) return void reply(bus.completeDelivery(peer.id, msg.deliveryId) ? { ok: true } : { ok: false, error: "delivery is not live and accepted; inspect ahub queue show before resolving" });
+        const payload = { t: "delivery_complete", deliveryId: msg.deliveryId, generation: msg.generation };
+        const scope = toolWriteScope(c, operation);
+        const current = () => !stopping && c.authed && !c.closed && sock.readyState === WebSocket.OPEN && c.role === "peer"
+          && c.peer === peer.id && bus.peers.get(peer.id) === peer && peer.ownsDelivery(sock, msg.generation, msg.deliveryId) && toolWriteScope(c, operation) === scope;
+        void toolWriteRegistry.run({ id: msg.requestId, scope, payload, current }, async () => {
+          const completed = bus.completeDelivery(peer.id, msg.deliveryId);
+          return completed ? { t: "delivery_complete", ok: true } : { t: "delivery_complete", ok: false, error: "delivery is not live and accepted; inspect ahub queue show before resolving" };
+        }).then(result => reply(result), () => reply(toolWriteUnknownReply(payload, typeof msg.requestId === "string" ? msg.requestId : undefined)));
+        return;
       }
       case "execution_budget": {
         if (c.role !== "console") return void reply({ ok: false, error: "execution budgets are console-only" });
@@ -9183,10 +9245,8 @@ export async function startDaemon(opts: DaemonOptions) {
           // #933: a console task op the conductor may run: admitted (role recheck and one audit row) before Tasks sees it; Tasks asks `operational` again.
           let current: () => void;
           try { current = admitOperational(sock, CONDUCTOR_TASK_OPS[String(msg.op)]!); } catch (error) { return void reply({ t: "task", ...operationalFailure(error) }); }
-          void operationalContext.run({ actor: c.peer, current }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})).then(
-            (text) => reply({ t: "task", ok: true, text }),
-            (e: Error) => reply({ t: "task", ...operationalFailure(e) }),
-          );
+          runTaskRequest(() => operationalContext.run({ actor: c.peer!, current }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})), current,
+            error => ({ t: "task", ...operationalFailure(error) }));
           return;
         }
         let invocation: AbortController | undefined;
@@ -9199,14 +9259,14 @@ export async function startDaemon(opts: DaemonOptions) {
           invocation = new AbortController(); c.invocationRequests.set(msg.rid, invocation);
         }
         const run = async () => c.externalOwner ? childToolAuthority.run({ by: c.peer!, current: () => currentExternalTools(c, true) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : c.toolsOwner ? childToolAuthority.run({ by: c.peer!, current: captureImplementerTools(c) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {});
-        (invocation ? invocationRequestSignal.run({ signal: invocation.signal, current: () => {
+        const execute = () => (invocation ? invocationRequestSignal.run({ signal: invocation.signal, current: () => {
           const live = !c.closed && sock.readyState === WebSocket.OPEN && c.invocationRequests?.get(msg.rid) === invocation;
           if (!live) invocation?.abort();
           return live;
-        } }, run) : run()).then(
-          (text) => reply({ t: "task", ok: true, text }),
-          (e: Error) => reply({ t: "task", ok: false, error: e.message }),
-        ).finally(() => { if (invocation && c.invocationRequests?.get(msg.rid) === invocation) c.invocationRequests.delete(msg.rid); });
+        } }, run) : run());
+        if (invocation) void execute().then(text => reply({ t: "task", ok: true, text }), (error: Error) => reply({ t: "task", ok: false, error: error.message }))
+          .finally(() => { if (c.invocationRequests?.get(msg.rid) === invocation) c.invocationRequests.delete(msg.rid); });
+        else runTaskRequest(execute);
         return;
       case "pause":
       case "resume": {

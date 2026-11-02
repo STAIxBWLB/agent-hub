@@ -19,6 +19,8 @@ The isolated fixture seeded 600 tasks, 12 history notes of 4096 bytes per task, 
 
 Measurements are actual ControlClient request round trips through production startDaemon/Tasks/Bus, not the MCP stdio wrapper. Board timings observe nested synchronous methods, so their durations must not be added to write durations. The completed-delivery phase uses an accepted journaled delivery from a synthetic peer. HOME and agent homes are private fixtures; inference, memory and MLX are disabled, PII screening is scripted clear, and no native agent, account or model is called. No real hub board or person configuration is modified.
 
+Aggregate machine receipt: [baseline JSON](2026-11-02-control-write-baseline.json), SHA-256 `d967281b6d5e28bb42dc7a6dae0edd986834763fab151842f960db21def6906b`. It contains counts and timing metadata only.
+
 ## What the measurement establishes
 
 The 35-45 second production symptom is not reproduced by this database/log-size fixture: all four measured p95 values are below 0.5 seconds before behavior changes. Repeated full Board.list decoding is a measurable cost (9 scans per review and 13 per claimed proposal), but this does not establish it as the cause of the reported production stalls. The measured completed-delivery path performs no Board.list calls. External/model-screen waits and the channel MCP wrapper are not measured here; no timeout is widened and no speculative Board cache is added on this evidence.
