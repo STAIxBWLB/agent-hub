@@ -5413,7 +5413,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!isStartablePeer(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, qwen (when on roster), pi (when enabled) and local" };
     if (!membershipAllowed(peer)) return { ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` };
     if (!startable(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, pi (when enabled) and local" };
-    if (recoveryActive()) return { ok: false, error: "recovery is holding mutations" };
+    if (recoveryActive()) return { ok: false, error: startHeldByRecovery(peer) };
     const continuity = definitionOf(peer)?.start.autoStart === by
       ? piContinuity.state === "ready" ? (piContinuity = readRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd })) : piContinuity
       : undefined;
@@ -5474,6 +5474,15 @@ export async function startDaemon(opts: DaemonOptions) {
 
   /** The CLI command that starts a peer: `ahub <kind> --as <id>` for a declared instance. */
   const startCommand = (peer: string): string => { const kind = definitionOf(peer)?.kind; return kind && kind !== peer ? `ahub ${kind} --as ${peer}` : `ahub ${peer}`; };
+
+  /** The refusal of a start request while recovery holds mutations (#1088): the old sentence first, then whether the peer already runs and the step that works. */
+  const startHeldByRecovery = (peer: unknown): string => {
+    const held = "recovery is holding mutations";
+    if (typeof peer !== "string" || !PEER_ID.test(peer)) return `${held}; no peer was started. Wait for the recovery to finish (ahub recovery status shows where it is), then start the peer again`;
+    const owner = bus.peers.get(peer);
+    if (owner && owner.state !== "offline") return `${held}, and ${peer} is already running, so there is nothing to start. Wait for the recovery to finish (ahub recovery status shows where it is), then check ${peer} with ahub status. If the recovery names ${peer} as blocked, a person repairs it with ahub recovery reattach <operation-id> ${peer}, or ends the hold with ahub recovery resume or abort`;
+    return `${held}, so ${peer} was not started. Wait for the recovery to finish (ahub recovery status shows where it is), then start it with ${startCommand(peer)}`;
+  };
 
   async function stopPeer(peer: unknown, rosterRemoval = false, operational?: {actor:string;current:()=>void}): Promise<Record<string, unknown>> {
     operational?.current();
@@ -9129,7 +9138,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       case "start":
         if (c.role !== "console") return void reply({ t: "started", ok: false, error: "start is a console command; use hub_peer_start with the conductor role" });
-        if (recoveryActive() && !(recoveryPhase === "restored" && msg.operationId === recoveryOperationId)) return void reply({ t: "started", ok: false, error: "recovery is holding mutations" });
+        if (recoveryActive() && !(recoveryPhase === "restored" && msg.operationId === recoveryOperationId)) return void reply({ t: "started", ok: false, error: startHeldByRecovery(msg.peer) });
         if (recoveryActive() && !recoveryPeerAllowed(String(msg.peer))) return void reply({ t: "started", ok: false, error: "peer is not part of the recovery roster" });
         startPeer(String(msg.peer), msg.args ?? {}, msg.args?.replaceSession === true ? piReplacementAuthority : undefined)
           .catch((e: Error) => ({ ok: false, error: e.message }))
