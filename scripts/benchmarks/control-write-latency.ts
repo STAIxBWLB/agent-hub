@@ -13,6 +13,7 @@ import { realPath } from "../../src/hub/project.ts";
 const OUTPUT_SCHEMA = "agent-hub.control-write-latency/v1";
 const MIB = 1024 * 1024;
 let fixtureStage = "setup";
+let fixtureFailure: Record<string, unknown> | undefined;
 
 /** A local, scripted delivery target, never a native Codex process or model. */
 class SyntheticTaskPeer extends BasePeer {
@@ -233,7 +234,10 @@ async function main(options: Options): Promise<void> {
       await run("proposal_backlog", () => person.request({ t: "task", op: "hub_task_propose", args: { title: `synthetic backlog ${index}`, class: "implement", backlog: true, refs: { paths: ["src/hub/bus.ts"] } } }), reply => observeTask(reply));
       const claimed = await run("proposal_claim", () => codex.request({ t: "task", op: "hub_task_propose", args: { title: `synthetic claim ${index}`, class: "implement", owner: "codex", plan: { paths: ["src/hub/bus.ts"] }, refs: { paths: ["src/hub/bus.ts"] } } }), reply => observeTask(reply));
       const observed = queryTask(claimed);
-      if (claimed.ok !== true || observed?.owner !== "codex" || observed.state !== "in_progress") throw new Error("synthetic claim did not acquire its task");
+      if (claimed.ok !== true || observed?.owner !== "codex" || observed.state !== "in_progress") {
+        fixtureFailure = { ok: claimed.ok, state: observed?.state, owner: observed?.owner, reason: String(claimed.error ?? claimed.text ?? "").replaceAll(home, "<fixture>").slice(0, 1000) };
+        throw new Error("synthetic claim did not acquire its task");
+      }
     }
     codex.close(); clients.splice(clients.indexOf(codex), 1);
     fixtureStage = "reviews";
@@ -305,4 +309,4 @@ async function main(options: Options): Promise<void> {
 }
 
 try { await main(parseArgs(process.argv.slice(2))); }
-catch { process.stdout.write(`${JSON.stringify({ schema: OUTPUT_SCHEMA, ok: false, error: "synthetic benchmark fixture failed", stage: fixtureStage, nextStep: "inspect this synthetic fixture stage before collecting latency evidence" })}\n`); process.exitCode = 2; }
+catch { process.stdout.write(`${JSON.stringify({ schema: OUTPUT_SCHEMA, ok: false, error: "synthetic benchmark fixture failed", stage: fixtureStage, ...(fixtureFailure ? { detail: fixtureFailure } : {}), nextStep: "inspect this synthetic fixture stage before collecting latency evidence" })}\n`); process.exitCode = 2; }
