@@ -910,7 +910,9 @@ test("task tools from every surface: Claude plugin, a tools-role client acting f
   expect(shown.reviews).toEqual([expect.objectContaining({ implementer: "kimi", reviewer: "claude", class: "test", kind: "approved", task: 1 })]); // #35
   expect((await first.console_.request({ t: "status" })).status.tasks).toEqual({ approved: 1 });
   const peerOnly: any = await client.callTool({ name: "hub_task_list", arguments: {} });
-  expect(JSON.parse(peerOnly.content[0].text)).toEqual([expect.objectContaining({ id: 1, flowRevision: shown.history.length })]);
+  expect(JSON.parse(peerOnly.content[0].text).tasks).toEqual([expect.objectContaining({ id: 1, state: "approved" })]);
+  const peerFull: any = await client.callTool({ name: "hub_task_list", arguments: { ids: [1] } });
+  expect(JSON.parse(peerFull.content[0].text).tasks).toEqual([expect.objectContaining({ id: 1, flowRevision: shown.history.length })]);
   const denied = await ControlClient.connect(first.stateDir, { role: "tools", peer: "kimi" });
   expect(await denied.request({ t: "task", op: "task_assign", args: { id: 1, peer: "kimi" } })).toMatchObject({ ok: false, error: "task_assign is a console command" });
   expect(await denied.request({ t: "task", op: "task_assign_checked", args: { id: 1, peer: "kimi", revision: shown.flowRevision } })).toMatchObject({ ok: false, error: "task_assign_checked is a console command" });
@@ -1717,7 +1719,7 @@ test("backlog tools hide staged rows and refuse peer promotion while console can
   expect(await op(tools, "hub_task_propose", { title: "future marker 263", class: "implement", owner: "claude", backlog: true })).toMatchObject({ ok: true, text: "task #1: backlog, owner none, reviewer none" });
   for (const args of [{}, { state: "backlog" }, { ready: true }]) {
     const reply = await op(tools, "hub_task_list", args);
-    expect(reply.ok).toBe(true); expect(JSON.parse(reply.text)).toEqual([]);
+    expect(reply.ok).toBe(true); expect(JSON.parse(reply.text)).toEqual({ tasks: [], total: 0 });
   }
   for (const name of ["task_show", "hub_task_show", "route_explain", "backlog_pull", "backlog_return", "hub_task_assign", "hub_task_escalate"]) {
     const reply = await op(tools, name, { id: 1, peer: "claude" });
@@ -1801,7 +1803,7 @@ test("hub_task_propose: an owner that is not a peer id is refused and creates no
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
   const call = async (name: string, args: Record<string, unknown>) => ((await client.callTool({ name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
   expect(await call("hub_task_propose", { title: "x", class: "implement", owner: ["codex"] })).toContain('owner must be a peer id, not ["codex"]');
-  expect(JSON.parse(await call("hub_task_list", {}))).toHaveLength(0); // nothing reached the board
+  expect(JSON.parse(await call("hub_task_list", {})).tasks).toHaveLength(0); // nothing reached the board
   expect(await call("hub_task_propose", { title: "y", class: "implement", owner: " kimi " })).toContain('claude may not hand tasks to other peers'); // checked on the trimmed owner
   expect(await call("hub_task_propose", { title: "z", class: "implement", owner: null })).toMatch(/^task #1: proposed/);
   expect(await call("hub_task_propose", { title: "w", class: "implement", owner: "" })).toMatch(/^task #2: proposed/);

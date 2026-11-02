@@ -19,7 +19,7 @@ import { parseConfiguredAcpArguments, runConfiguredAcpEntry, requireActiveConfig
 import type { NativeCliEntryContext } from "../adapters/definitions/native-cli-entry-types.ts";
 import { BUILTIN_CLI_ENTRIES, createProjectAdapterCatalog, definitionOf, DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeMemoryCaptureRow, type MemorySetupReading, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "../adapters/registry.ts";
 import { parsePiFlags } from "../adapters/definitions/native-cli-pi.ts";
-import { supportsBoardReleaseFilter, supportsBoardColumnMetadata } from "./board-read.ts";
+import { supportsBoardReleaseFilter, supportsBoardColumnMetadata, readAllTasks } from "./board-read.ts";
 import { matchesPolicy } from "../hub/path-policy.ts";
 import { projectedDiff } from "../hub/projected-diff.ts";
 import { TextProjections } from "../hub/text-projection.ts";
@@ -1691,11 +1691,11 @@ const commands: Record<string, () => Promise<void> | void> = {
     const state = rest.find((a) => !a.startsWith("--"));
     if (byColumn && !boardStatus) boardStatus = (await boardHub.request({ t: "status" })).status;
     if (byColumn && !supportsBoardColumnMetadata(boardStatus)) fail("running hub does not support accurate board column metadata; use a compatible daemon");
-    const tasks = JSON.parse(await taskOp("hub_task_list", { ...(ready ? { ready: true } : state ? { state } : {}), ...(release ? { release } : {}), ...(byColumn ? { columnMetadata: true } : {}) }, false, boardHub)) as any[];
+    const tasks = await readAllTasks(args => taskOp("hub_task_list", args, false, boardHub), { ...(ready ? { ready: true } : state ? { state } : {}), ...(release ? { release } : {}), ...(byColumn ? { columnMetadata: true } : {}) }, identity.role === "tools");
     if (options.json && !byColumn) return console.log(JSON.stringify(tasks, null, 2));
     let allTasks: any[] | null = tasks;
     if (ready || state || release) {
-      try { allTasks = JSON.parse(await taskOp("hub_task_list", byColumn ? { columnMetadata: true } : {}, true, boardHub)) as any[]; }
+      try { allTasks = await readAllTasks(args => taskOp("hub_task_list", args, true, boardHub), byColumn ? { columnMetadata: true } : {}, identity.role === "tools"); }
       catch (error) {
         if (byColumn) fail("board column dependency context unavailable; retry with a complete snapshot");
         allTasks = null;

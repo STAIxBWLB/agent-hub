@@ -38,6 +38,7 @@ import { isDenied, sbplString } from "../local/deny.ts";
 import { hostShellPath } from "./host-executable.ts";
 import { supersededDeliveryReason, deliveryTaskContext } from "./delivery-superseded.ts";
 import { renderHeldHint } from "./delivery-hints.ts";
+import { compactRow, pageTasks, parseListQuery } from "./task-list-page.ts";
 import { correctionInput, MemoryTelemetry } from "./memory-candidates.ts";
 import { MemoryObservations } from "./memory-observations.ts";
 import { createStalenessProbe } from "./memory-staleness.ts";
@@ -3989,7 +3990,13 @@ export async function startDaemon(opts: DaemonOptions) {
           if (!release) throw new PreEffectToolRefusal("no such release");
           releaseId = release.id;
         }
-        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (releaseId === undefined || t.release === releaseId) && (a.ready !== true || !tasks.waitsFor(t).length)).map((t) => { const publicTask = tasks.publicView(t); const view: Record<string, unknown> = onPrem ? { ...t, ...holderReasons(publicTask) } : publicTask; const { history: _h, ...rest } = view; return { ...rest, flowRevision: t.history.length, ...(a.columnMetadata === true ? { started: taskHasStarted(t) } : {}) }; }));
+        // #1083: an agent always pages (default 50 compact rows) because the whole board is over every tool-output limit; the person's console keeps the full array unless it names a paging argument.
+        const listQuery = parseListQuery(a, by !== USER);
+        const shown = board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (releaseId === undefined || t.release === releaseId) && (a.ready !== true || !tasks.waitsFor(t).length));
+        const listRow = (t: Task) => { const publicTask = tasks.publicView(t); const view: Record<string, unknown> = onPrem ? { ...t, ...holderReasons(publicTask) } : publicTask; const { history: _h, ...rest } = view; return { ...rest, flowRevision: t.history.length, ...(a.columnMetadata === true ? { started: taskHasStarted(t) } : {}) }; };
+        if (!listQuery) return JSON.stringify(shown.map(listRow));
+        const page = pageTasks(shown, listQuery);
+        return JSON.stringify({ tasks: page.rows.map(t => listQuery.detail ? listRow(t) : compactRow(listRow(t))), total: page.total, ...(page.next ? { next: page.next } : {}) });
       }
     }
     if (op === "task_show" && by !== USER) {

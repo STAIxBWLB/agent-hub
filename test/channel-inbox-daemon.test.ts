@@ -65,7 +65,7 @@ test("channel pull preserves the public PII task projection without the private 
     // Use the real task-flow projection rather than exposing the private console row to a cloud peer.
     const projected = await f.peer.request({ t: "task", op: "hub_task_list", args: {} });
     expect(projected.ok).toBe(true);
-    expect(JSON.parse(projected.text)[0].title).toBe("[pii]");
+    expect(JSON.parse(projected.text).tasks[0].title).toBe("[pii]");
     f.daemon.bus.publish(newEnvelope("hub", projected.text, { to: ["claude"], kind: "task" }));
     const read = await f.peer.request({ t: "inbox" });
     expect(read.ok).toBe(true);

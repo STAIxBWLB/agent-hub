@@ -1408,6 +1408,18 @@ take it.
 for. Dependencies are fixed when a task is proposed and can only name tasks that
 already exist, so they cannot form a cycle.
 
+`hub_task_list` pages (#1083), because a 628-task board was 2.4 MB and over every agent tool-output limit.
+An agent's reply is `{tasks, total, next?}`: newest updated first (ties by id, descending), at most `limit`
+rows (default 50, 1 to 200), each compact (`id`, `state`, `owner`, `reviewer`, `title`). Pass `next` back as
+`cursor` for the following page; the cursor is the last row's `updated.id`, so a task that changes between
+calls neither repeats nor skips an older row, and the last page has no `next`. `ids` (1 to 200 distinct task
+numbers) returns the full public row of exactly those tasks, in the order given, and cannot be combined with
+`limit` or `cursor`; `detail: true` returns full rows for a page. `state`, `ready` and `release` filter before
+paging. PII tasks stay `[pii]` stubs in every form. Every refusal names its cause and what to pass instead.
+The person's console keeps the full bare array unless it names `limit`, `cursor`, `ids` or `detail`, so
+`ahub board`, `ahub tasks` and their `--json` output are unchanged. A peer that read the whole board as a
+bare array (the benchmark runner did) reads `tasks` instead, or asks for its task by `ids`.
+
 An owner named for a task that waits (`owner` with `after`, `--owner` with
 `--after`) is its reserved owner: the task still waits, and when it is ready
 routing offers it to that peer first, not to the first idle peer of the class.

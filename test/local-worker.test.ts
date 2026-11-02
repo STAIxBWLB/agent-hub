@@ -434,7 +434,7 @@ test("daemon local board lists expose PII rows only in a PII turn, never ordinar
   const mem = startFakeMemWorker();
   const model = startFakeModelServer({ key: "k", script: (body) => {
     if (body.messages.at(-1)?.role === "tool") return { content: String(body.messages.at(-1)?.content) };
-    return { tool_calls: [toolCall("hub_task_list", {})] };
+    return { tool_calls: [toolCall("hub_task_list", { detail: true })] };
   } });
   cleanup.push(mem.stop, model.stop);
   process.env.OMNIROUTE_API_KEY = "k";
