@@ -194,7 +194,7 @@ import { projectChain } from "@staix/agent-mem";
 import { recallFor } from "../memory/recall.ts";
 import { conflictsOf } from "./conflicts.ts";
 import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
-import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions, type SessionsFile } from "./crash.ts";
+import { crashPlan, lossNotice, openCrashNotices, readSessions, removeSessions, writeSessions, type CrashNotice, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
 import { soleWorktree, branchHeads, changedPaths, dirtySubmodules, submodulePaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, budgetNow, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
@@ -1277,8 +1277,12 @@ export async function startDaemon(opts: DaemonOptions) {
   const continuityKind = ADAPTERS.find(adapter => adapter.start.daemonPort === "pi-rpc")!.kind;
   const piAutoStart = () => !!autoStartAdapter && onRoster(autoStartAdapter.kind) && config.pi.auto_start;
   const startedAt = Date.now();
-  /** What crash recovery did or asks the user to do, for `ahub status`. */
-  const crashReport: string[] = [];
+  /** What crash recovery did or asks the user to do, for `ahub status` (#1082: `crashView` shows the lines that still stand). */
+  const crashNotices: CrashNotice[] = [];
+  /** A crash was reported this run. It never clears: the Jcode headless hint (#1085) has its own end (`tuiServed`), not the notices'. */
+  let crashReported = false;
+  /** The deliveries the crash left in needs_review, by id; filled below once the journal is open. */
+  const crashLostIds = new Set<string>();
 
   // The hub's own model calls (digest condensation, task triage) are wired below, once the gateway client exists.
   let inference: Inference | undefined;
@@ -1288,7 +1292,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const journal = new DeliveryJournal({ file: join(opts.stateDir, "hub.db"), projectRoot: opts.cwd, projectId, instanceId, operationId: recoveryOperation, terminalHistoryLimit });
   // What the crash left in flight, per recipient: opening the journal just marked these needs_review.
   const lost = new Map<PeerId, JournalDelivery[]>();
-  if (crashed) for (const d of journal.list()) if (d.state === "needs_review" && d.reason === "daemon stopped during delivery" && d.updatedAt >= startedAt) lost.set(d.peer, [...(lost.get(d.peer) ?? []), d]);
+  if (crashed) for (const d of journal.list()) if (d.state === "needs_review" && d.reason === "daemon stopped during delivery" && d.updatedAt >= startedAt) { lost.set(d.peer, [...(lost.get(d.peer) ?? []), d]); crashLostIds.add(d.id); }
   // Capabilities (issue #39): enforced here and in taskOp, never by role text alone. Unlisted peers keep everything.
   // A listed peer whose value is not a list gets nothing: whoever listed it meant to narrow it.
   const may = (peer: PeerId, cap: "propose" | "assign" | "remember" | "memory_correct" | "memory_read" | "important" | "spec_read" | "check_run" | "invoke"): boolean => {
@@ -4585,6 +4589,18 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return checkoutInTick.branch;
   };
+  /**
+   * The crash-recovery lines that still stand (#1082), read when status is asked: a line about a peer goes once that peer is attached, and the headline's count is the crash's own deliveries that are
+   * still in needs_review, so it matches `ahub queue list` and reaches zero when the operator has resolved them.
+   */
+  const crashView = (): string[] => {
+    if (!crashNotices.length) return [];
+    const attached = new Set<string>();
+    for (const notice of crashNotices) if (notice.peer !== undefined && bus.peers.has(notice.peer) && bus.peers.get(notice.peer)!.state !== "offline") attached.add(notice.peer);
+    let inFlight = 0;
+    if (crashLostIds.size) { try { for (const row of bus.queueList(undefined, true)) if (row.state === "needs_review" && crashLostIds.has(row.id)) inFlight++; } catch { inFlight = crashLostIds.size; } }
+    return openCrashNotices(crashNotices, { attached, inFlight });
+  };
   const status = (includeAttentionItems = false, includeAttentionInput = false, includeDoing = false) => {
     const taskNeeds = board.statusTasks();
     const ownerIsolation = ownerIsolationProjection();
@@ -4592,9 +4608,10 @@ export async function startDaemon(opts: DaemonOptions) {
     const pendingTaskOffers = tasks.pendingOffers().filter(offer => offer.pullOnly === true);
     const peerIds = byKind(statusPeerIds(taskNeeds));
     const queueBackpressure = tasks.queuePressureStatus(peerIds);
+    const crashLines = crashView();
     const view = {
     ...(queueBackpressure ? { queueBackpressure } : {}),
-    ...(crashReport.length ? { crash: crashReport } : {}),
+    ...(crashLines.length ? { crash: crashLines } : {}),
     projectId,
     instanceId,
     rooms: roomCommands.statusView(),
@@ -4952,34 +4969,35 @@ export async function startDaemon(opts: DaemonOptions) {
     } catch (error) { log(`session record not written: ${(error as Error).message}`); }
   };
   const recoverAfterCrash = async (prev: SessionsFile) => {
-    const report = (line: string) => (crashReport.push(line), notify(`crash recovery: ${line}`));
+    // `peer` marks a line that asks something of that peer's owner (it clears when the peer attaches); a line with neither is what recovery found or did and stays (#1082).
+    const report = (line: string, notice: { peer?: string; inFlight?: true } = {}, shown = line) => { crashNotices.push({ text: line, ...notice }); crashReported = true; notify(`crash recovery: ${shown}`); };
     const lostCount = [...lost.values()].reduce((n, l) => n + l.length, 0);
-    report(`the previous hub run stopped without shutting down${lostCount ? `; ${lostCount} deliveries it had in flight are in needs_review (ahub queue list)` : ""}`);
+    report("the previous hub run stopped without shutting down", { inFlight: true }, `the previous hub run stopped without shutting down${lostCount ? `; ${lostCount} deliveries it had in flight are in needs_review (ahub queue list)` : ""}`);
     const start = (peer: string, args: Parameters<typeof startPeer>[1]) => startPeer(peer, args).catch((e: Error) => ({ ok: false, error: e.message }));
     for (const step of crashPlan(prev.peers, declarations, adapterCatalog)) {
-      if (isExternalInstance(step.peer)) { report(`${step.peer}: external module instance stays stopped; use an explicit same-binding start`); continue; }
-      if (!declarations[step.peer] && definitionOf(step.peer)?.session.restoreOnStart && archivedPiContinuity) { report("pi: archived continuity evidence holds crash-session resume and fresh fallback; pi.auto_start uses only the recorded archived session"); continue; }
+      if (isExternalInstance(step.peer)) { report(`${step.peer}: external module instance stays stopped; use an explicit same-binding start`, { peer: step.peer }); continue; }
+      if (!declarations[step.peer] && definitionOf(step.peer)?.session.restoreOnStart && archivedPiContinuity) { report("pi: archived continuity evidence holds crash-session resume and fresh fallback; pi.auto_start uses only the recorded archived session", { peer: step.peer }); continue; }
       // `pi.auto_start` already asks for Pi (#66): its recorded headless session comes back, auto-resume or not, and a
       // fresh one starts when that fails or there is nothing headless to resume. Pi runs on-prem: no cloud quota.
       if (!declarations[step.peer] && definitionOf(step.peer)?.session.restoreOnStart && piAutoStart()) {
         if (step.resume) {
           const r = await start(step.peer, step.resume as Parameters<typeof startPeer>[1]);
           if (r.ok) { report(`pi resumed (pi.auto_start): ${step.how}`); continue; }
-          report(`pi not resumed (${String(r.error)}); ${step.how}`);
-        } else report(step.how);
+          report(`pi not resumed (${String(r.error)}); ${step.how}`, { peer: step.peer });
+        } else report(step.how, { peer: step.peer });
         // #269: a Pi that ran in a terminal is not replaced by a headless one unless headless is its start mode.
-        if (step.tui && startMode(step.peer) === "tui") { report("pi.auto_start starts no headless Pi in place of a terminal one: run the command above, or set peers.pi.start_mode to headless"); continue; }
+        if (step.tui && startMode(step.peer) === "tui") { report("pi.auto_start starts no headless Pi in place of a terminal one: run the command above, or set peers.pi.start_mode to headless", { peer: step.peer }); continue; }
         const fresh = await start(step.peer, { ...(step.fresh as Parameters<typeof startPeer>[1]), fresh: true });
         const back = step.tui ? `; to go back to the recorded session, run ahub kill, start the hub without pi.auto_start, then the command above` : "";
-        report(fresh.ok ? `pi.auto_start started a fresh session${back}` : `pi.auto_start could not start Pi either (${String(fresh.error)})`);
+        report(fresh.ok ? `pi.auto_start started a fresh session${back}` : `pi.auto_start could not start Pi either (${String(fresh.error)})`, fresh.ok ? {} : { peer: step.peer });
         continue;
       }
       if (!step.resume || !autoResume()) {
-        report(`${step.how}${step.resume ? " (recovery.auto_resume_after_crash is off)" : ""}`);
+        report(`${step.how}${step.resume ? " (recovery.auto_resume_after_crash is off)" : ""}`, { peer: step.peer });
         continue;
       }
       const r = await start(step.peer, step.resume as Parameters<typeof startPeer>[1]);
-      report(r.ok ? `${step.peer} resumed: ${step.how}` : `${step.peer} not resumed (${String(r.error)}); ${step.how}`);
+      report(r.ok ? `${step.peer} resumed: ${step.how}` : `${step.peer} not resumed (${String(r.error)}); ${step.how}`, r.ok ? {} : { peer: step.peer });
     }
     writeStatus();
   };
@@ -5718,7 +5736,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ...(instance?.provider ? { provider: instance.provider } : {}),
         ...(args.model ?? instance?.model ? { launchModel: (args.model ?? instance?.model)! } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}), cwd: executionCwd, watchdogMs: config.watchdog_ms,
         toolCeilingMs: adapterTiming.acpToolCeilingMs(), activityBatchMs: adapterTiming.acpActivityBatchMs(), steerTimeoutMs: adapterTiming.jcodeSteerTimeoutMs(),
-        tuiHintContext: () => ({ tui: startMode(peer) === "tui", afterCrash: crashReport.length > 0 }),
+        tuiHintContext: () => ({ tui: startMode(peer) === "tui", afterCrash: crashReported }),
         preamble: sessionRoleContract(peer), log: () => log("Jcode native diagnostic: details withheld"),
         // #801: Jcode 0.99.1's usage_update is `{ used, size }`, the live session's context occupancy: a context reading bound to the adapter's own session id, never a tokens event
         // or a quota window. An invalid shape reports a null reading (unknown, not the previous value).
