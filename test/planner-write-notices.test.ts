@@ -16,19 +16,19 @@ class Quiet extends BasePeer {
 }
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
-async function rig() {
+async function rig(now?: () => number) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-write-notices-")), board = new Board(join(cwd, "hub.db"));
   const bus = new Bus({ batchMs: 0 }), notices: string[] = [];
   const roles: Record<string, string[]> = { claude: ["planner"], pi: ["planner"], codex: ["implementer"] };
-  const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", routing: () => loadRouting(cwd), notify: line => notices.push(line) });
+  const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", routing: () => loadRouting(cwd), notify: line => notices.push(line), ...(now ? { now } : {}) });
   const peers = new Map<string, Quiet>();
   for (const id of Object.keys(roles)) { const peer = new Quiet(id); peers.set(id, peer); bus.add(peer); await peer.start(); }
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
   const card = (fields: Partial<Task> = {}) => {
     const made = board.propose(USER, { title: "PRIVATE_TASK_TITLE", detail: "PRIVATE_TASK_DETAIL", class: "implement", backlog: true,
       planner: fields.planner ?? "claude", deps: fields.deps, reserved: fields.reserved ?? undefined, signals: fields.signals });
-    const { priority, rank, pinned, release } = fields;
-    const patch = Object.fromEntries(Object.entries({ priority, rank, pinned, release }).filter(([, value]) => value !== undefined));
+    const { priority, rank, pinned, release, plannedStart } = fields;
+    const patch = Object.fromEntries(Object.entries({ priority, rank, pinned, release, plannedStart }).filter(([, value]) => value !== undefined));
     return Object.keys(patch).length ? board.plan(made.id, USER, patch, 0) : made;
   };
   const owned = (state: Task["state"] = "in_review") => {
@@ -71,6 +71,21 @@ test("AC2: only the final dependency approval wakes the backlog card's planner, 
   expect(r.pending("pi")[0]).toMatchObject({ kind: "task", priority: "status" });
   r.tasks.flushPlannerNotices(); r.tasks.flushPlannerNotices();
   expect(r.pending("pi")).toHaveLength(1);
+});
+
+for (const scenario of [
+  { name: "before", offset: -1, ready: false },
+  { name: "at the boundary", offset: 0, ready: true },
+  { name: "after", offset: 1, ready: true },
+] as const) test(`dependency approval lists planned work as ready ${scenario.name}`, async () => {
+  const plannedStart = 2_000_000_010_000, clock = { now: plannedStart - 1 }, r = await rig(() => clock.now);
+  const first = r.owned(), last = r.owned(), dependent = r.card({ deps: [first.id, last.id], planner: "pi", plannedStart });
+  await r.tasks.review(USER, first.id, "approved");
+  clock.now = plannedStart + scenario.offset;
+  await r.tasks.review(USER, last.id, "approved");
+  const notice = r.pending("pi")[0]?.body ?? "";
+  if (scenario.ready) expect(notice).toContain(`backlog_ready: #${dependent.id}`);
+  else expect(notice).not.toContain(`backlog_ready: #${dependent.id}`);
 });
 
 for (const operation of ["cancel", "return", "decline", "done"] as const) test(`${operation} emits capacity_released only when WIP falls`, async () => {

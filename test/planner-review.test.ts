@@ -43,11 +43,11 @@ import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 const close: (() => void)[] = [];
 afterEach(() => { for (const fn of close.splice(0)) fn(); });
-function reviewRig(gh: SdlcGh, mode: "off" | "advise" | "enforce" = "advise") {
+function reviewRig(gh: SdlcGh, mode: "off" | "advise" | "enforce" = "advise", now?: () => number) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-plan-review-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   const roles = { claude: ["planner"], codex: ["implementer"] };
   const notices: string[] = [];
-  const deps: TasksDeps = { cwd, board, bus, roles, project: "fixture", routing: () => loadRouting(cwd), notify: text => { notices.push(text); }, sdlc: { config: () => lifecycle.sdlcConfig({ mode }), gh } };
+  const deps: TasksDeps = { cwd, board, bus, roles, project: "fixture", routing: () => loadRouting(cwd), notify: text => { notices.push(text); }, ...(now ? { now } : {}), sdlc: { config: () => lifecycle.sdlcConfig({ mode }), gh } };
   const tasks = new Tasks(deps);
   const task = board.propose("user", { title: "ordinary implementation", class: "implement", backlog: true });
   board.update(task.id, "user", "lifecycle", { sdlc: { stage: "build", repo: "STAIxBWLB/agent-hub", issue: 481 } });
@@ -193,6 +193,18 @@ test("grooming withholds private task evidence and does not fetch its issue (#48
   expect(digest.privateTasks).toBe("withheld");
   expect(reads).toBe(0);
   expect(JSON.stringify(r.board.list())).toBe(before);
+});
+
+test("planner digest marks a future planned start as scheduled until its exact boundary", async () => {
+  const plannedStart = Date.parse("2026-11-05T10:12:00Z"), clock = { now: plannedStart - 1 };
+  const r = reviewRig(async () => metadata(), "advise", () => clock.now);
+  r.board.plan(r.task.id, "user", { plannedStart }, r.task.planningRevision ?? 0);
+
+  expect((await r.tasks.groomingDigest("claude")).items).toContainEqual({ kind: "scheduled", task: r.task.id });
+  clock.now = plannedStart;
+  expect((await r.tasks.groomingDigest("claude")).items).not.toContainEqual({ kind: "scheduled", task: r.task.id });
+  clock.now++;
+  expect((await r.tasks.groomingDigest("claude")).items).not.toContainEqual({ kind: "scheduled", task: r.task.id });
 });
 
 import { mkdirSync, writeFileSync } from "node:fs";
