@@ -82,10 +82,7 @@ function validTaskId(value: unknown): value is number {
 }
 
 function numericTaskId(value: unknown): number | undefined {
-  if (validTaskId(value)) return value;
-  if (typeof value !== "string" || !/^\s*\d+\s*$/.test(value)) return undefined;
-  const parsed = Number(value);
-  return validTaskId(parsed) ? parsed : undefined;
+  return validTaskId(value) ? value : undefined;
 }
 
 function ownValue(value: Record<string, unknown>, key: string): unknown {
@@ -108,7 +105,7 @@ export function controlWriteMetadata(message: unknown): ControlWriteMetadata | u
     const type = ownValue(message, "t"), operation = ownValue(message, "op");
     if (type === "delivery_complete") kind = "hub_delivery_done";
     else if (type === "task" && typeof operation === "string") {
-      kind = OPERATIONS[operation];
+      kind = Object.hasOwn(OPERATIONS, operation) ? OPERATIONS[operation] : undefined;
       const rawArgs = ownValue(message, "args");
       args = isObject(rawArgs) ? rawArgs : undefined;
     }
