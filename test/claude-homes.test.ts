@@ -142,8 +142,8 @@ test("a foreign plugin's git-SHA version does not make the inventory unknown (#1
   const run = (rows: unknown[]) => checkClaudeHome(home, f.root, f.env, argv => ({ status: 0, stdout: JSON.stringify(argv.includes("marketplace") ? [] : rows) }));
   const sha = { id: "frontend-design@claude-plugins-official", version: "b8e53f1c05df", installPath: "/abs/path" };
   expect((await run([sha])).plugin.state).toBe("missing");
-  expect((await run([sha, { id: "agent-hub@agent-hub", version: "0.0.1" }])).plugin.state).toBe("stale");
-  expect((await run([sha, { id: "agent-hub@agent-hub", version: VERSION }])).plugin.state).toBe("current");
+  expect((await run([sha, { id: "agent-hub@agent-hub", scope: "user", version: "0.0.1" }])).plugin.state).toBe("stale");
+  expect((await run([sha, { id: "agent-hub@agent-hub", scope: "user", version: VERSION }])).plugin.state).toBe("current");
   expect((await run([{ id: "other@x" }])).plugin.state).toBe("missing");
 });
 
