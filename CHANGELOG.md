@@ -24,6 +24,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Refusals and audit lines name autonomy, usage, deliverables and cost-scope causes with their allowed values (#1084, #1091, #1101).
 - Reviewers check that every new or changed error message states its cause and its next step: REVIEW.md and the shipped profiles' review checklists (#1095, #1109).
 - acon Space keeps an attributed task's card past the office rendering cut (#1038, #1075).
+- Design specs dogfood in this repository (#1064 T4, T5: #1117, #1119): five draft specs in `docs/design/` (goal, architecture, bus, task board, adapters), a successor line on the historical design ledger, and the `AGENT_HUB_SPECS` block in AGENTS.md. All stay draft until the person reviews them; enabling `specs.stamps_file` is a local step for the person.
 - Codex 0.166.0 is a verified reviewer version (#1071). Pin `@staix/agent-mem` 0.19.0 (was 0.18.0, #1072); it shares its index and hook records with 0.18.0.
 
 ## 0.27.0
