@@ -55,7 +55,9 @@ export function requirePeerInstances(features: unknown): void {
 
 /** Launch identity belongs to the native child, never to the agent that invoked the wrapper. */
 export function nativeLaunchEnv(tool: string, source: NodeJS.ProcessEnv, instances?: InstancesConfig): NodeJS.ProcessEnv {
-  const env = peerChildEnv(tool, source);
+  // This native runs in the person's own terminal and keeps that pane's Orca integration.
+  // Daemon-owned peers use peerChildEnv's default scrubbed environment.
+  const env = peerChildEnv(tool, source, { preserveOrca: true });
   delete env.AGENTHUB_UNATTENDED;
   // Channel evidence for the plugin (issue #205): set beside the development-channel flag `buildLaunch` always passes.
   const definition = definitionOf(tool, instances);

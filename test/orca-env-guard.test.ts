@@ -36,10 +36,10 @@ test("withoutOrcaEnv removes the whole ORCA_ prefix and nothing else, and does n
   expect(input.ORCA_CLI_COMMAND).toBe("orca");
 });
 
-test("peer and person child environments remove Orca state and preserve explicit native home selectors", () => {
+test("only peer and person child environments scrub Orca state; explicit native home selectors pass through", () => {
   const input = { PATH: "/fixture/bin", CLAUDE_CONFIG_DIR: "/fixture/claude", CODEX_HOME: "/fixture/codex", ORCA_CLI_COMMAND: "/fake/orca", ORCA_AGENT_PANE: "pane-fake", ORCA_AGENT_HOOK_PORT: "4321", ORCA_AGENT_HOOK_TOKEN: "token-fake", CLAUDECODE: "agent", CODEX_THREAD_ID: "thread" };
   const homes = { PATH: "/fixture/bin", CLAUDE_CONFIG_DIR: "/fixture/claude", CODEX_HOME: "/fixture/codex" };
-  expect(childEnv(input)).toEqual({ ...homes, CLAUDECODE: "agent", CODEX_THREAD_ID: "thread" });
+  expect(childEnv(input)).toEqual({ ...homes, ORCA_CLI_COMMAND: "/fake/orca", ORCA_AGENT_PANE: "pane-fake", ORCA_AGENT_HOOK_PORT: "4321", ORCA_AGENT_HOOK_TOKEN: "token-fake", CLAUDECODE: "agent", CODEX_THREAD_ID: "thread" });
   expect(personEnv(input)).toEqual(homes);
   for (const peer of ["claude", "codex", "jcode", "kimi", "qwen", "pi", "local", "instance-17"]) {
     expect(peerChildEnv(peer, input)).toEqual({ ...homes, AGENTHUB_PEER_ID: peer });

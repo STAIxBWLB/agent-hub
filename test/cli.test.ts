@@ -3,11 +3,11 @@ import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { init, removeBlock, upsertBlock } from "../src/cli/init.ts";
-import { buildLaunch, CLAUDE_CHANNEL, sessionSettings, statusLineSettings, UNATTENDED_WARNING } from "../src/cli/launch.ts";
+import { buildLaunch, CLAUDE_CHANNEL, nativeLaunchEnv, sessionSettings, statusLineSettings, UNATTENDED_WARNING } from "../src/cli/launch.ts";
 import { allocatePorts } from "../src/hub/ports.ts";
 import { nextStep, parseList, pluginState } from "../src/adapters/definitions/native-cli-claude-setup.ts";
 import { VERSION } from "../src/version.ts";
-import { childEnv } from "../src/hub/child-process.ts";
+import { childEnv, peerChildEnv } from "../src/hub/child-process.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { freeText } from "../src/cli/free-text.ts";
 
@@ -135,14 +135,19 @@ test("default launches keep permission prompts; --unattended opts out and warns"
   expect(buildLaunch("codex", [], { unattended: true, proxyUrl: "ws://x" }).args).toContain("--dangerously-bypass-approvals-and-sandbox");
 });
 
-test("native launcher environment drops recovery and Orca authority but keeps profile and state paths", () => {
-  const env = childEnv({ AGENTHUB_RECOVERY_OPERATION: "operation-secret", CODEX_HOME: "/account/codex", CLAUDE_CONFIG_DIR: "/account/claude", AGENTHUB_STATE_DIR: "/project/state",
-    ORCA_CLI_COMMAND: "/fake/orca", ORCA_TERMINAL_HANDLE: "stale-terminal", ORCA_AGENT_PANE: "fake-pane", ORCA_AGENT_HOOK_PORT: "1234", ORCA_AGENT_HOOK_TOKEN: "fake-token" });
+test("a person native launch keeps its own pane Orca context while peer children scrub it", () => {
+  const source = { AGENTHUB_RECOVERY_OPERATION: "operation-secret", CODEX_HOME: "/fixture/codex", CLAUDE_CONFIG_DIR: "/fixture/claude", AGENTHUB_STATE_DIR: "/project/state",
+    ORCA_CLI_COMMAND: "/fixture/orca", ORCA_TERMINAL_HANDLE: "term-own-pane", ORCA_WORKTREE_ID: "wt-own-pane", ORCA_DEV_REPO_ROOT: "/fixture/repo", ORCA_AGENT_PANE: "pane-own", ORCA_AGENT_HOOK_PORT: "1234", ORCA_AGENT_HOOK_TOKEN: "fake-token" };
+  const env = childEnv(source);
   expect(env.AGENTHUB_RECOVERY_OPERATION).toBeUndefined();
-  expect(env.CODEX_HOME).toBe("/account/codex");
-  expect(env.CLAUDE_CONFIG_DIR).toBe("/account/claude");
+  expect(env.CODEX_HOME).toBe("/fixture/codex");
+  expect(env.CLAUDE_CONFIG_DIR).toBe("/fixture/claude");
   expect(env.AGENTHUB_STATE_DIR).toBe("/project/state");
-  expect(Object.keys(env).filter(name => name.startsWith("ORCA_"))).toEqual([]);
+  const orcaNames = Object.keys(source).filter(name => name.startsWith("ORCA_"));
+  const launch = nativeLaunchEnv("claude", env);
+  for (const name of orcaNames) expect(launch[name]).toBe(source[name as keyof typeof source]);
+  expect(launch.AGENTHUB_PEER_ID).toBe("claude");
+  expect(Object.keys(peerChildEnv("claude", env)).filter(name => name.startsWith("ORCA_"))).toEqual([]);
 });
 
 test("launchers refuse user-supplied copies of hub-owned flags", () => {

@@ -558,9 +558,12 @@ test("the CLI entry runs the daemon's launch in the person's own environment, wi
   const { runQwenEntry } = await import("../src/adapters/definitions/native-cli-entry-qwen.ts");
   const { definitionOf } = await import("../src/adapters/registry.ts");
   const requests: Record<string, unknown>[] = [], launched: { bin?: string; argv?: string[]; env?: NodeJS.ProcessEnv } = {};
+  const ownPaneOrca = { ORCA_CLI_COMMAND: "/fixture/orca", ORCA_TERMINAL_HANDLE: "term-own-pane", ORCA_WORKTREE_ID: "wt-own-pane", ORCA_DEV_REPO_ROOT: "/fixture/repo", ORCA_AGENT_PANE: "pane-own", ORCA_AGENT_HOOK_PORT: "4321", ORCA_AGENT_HOOK_TOKEN: "token-own" };
   const saved = { PATH: process.env.PATH, FAKE_PROVIDER_KEY: process.env.FAKE_PROVIDER_KEY, AGENTHUB_RECOVERY_OPERATION: process.env.AGENTHUB_RECOVERY_OPERATION, AGENTHUB_HOME: process.env.AGENTHUB_HOME,
-    AGENTHUB_CHANNEL: process.env.AGENTHUB_CHANNEL, AGENTHUB_LAUNCH_ID: process.env.AGENTHUB_LAUNCH_ID, AGENTHUB_MODE: process.env.AGENTHUB_MODE, CLAUDECODE: process.env.CLAUDECODE };
+    AGENTHUB_CHANNEL: process.env.AGENTHUB_CHANNEL, AGENTHUB_LAUNCH_ID: process.env.AGENTHUB_LAUNCH_ID, AGENTHUB_MODE: process.env.AGENTHUB_MODE, CLAUDECODE: process.env.CLAUDECODE,
+    ORCA_CLI_COMMAND: process.env.ORCA_CLI_COMMAND, ORCA_TERMINAL_HANDLE: process.env.ORCA_TERMINAL_HANDLE, ORCA_WORKTREE_ID: process.env.ORCA_WORKTREE_ID, ORCA_DEV_REPO_ROOT: process.env.ORCA_DEV_REPO_ROOT, ORCA_AGENT_PANE: process.env.ORCA_AGENT_PANE, ORCA_AGENT_HOOK_PORT: process.env.ORCA_AGENT_HOOK_PORT, ORCA_AGENT_HOOK_TOKEN: process.env.ORCA_AGENT_HOOK_TOKEN };
   process.env.FAKE_PROVIDER_KEY = "person-key"; process.env.AGENTHUB_RECOVERY_OPERATION = "op-1"; process.env.AGENTHUB_HOME = "/person-hub";
+  Object.assign(process.env, ownPaneOrca);
   // the person ran it from a shell inside an `ahub claude` session
   process.env.AGENTHUB_CHANNEL = "1"; process.env.AGENTHUB_LAUNCH_ID = "claude-launch"; process.env.AGENTHUB_MODE = "tools"; process.env.CLAUDECODE = "1";
   const tty = { in: process.stdin.isTTY, out: process.stdout.isTTY };
@@ -586,6 +589,7 @@ test("the CLI entry runs the daemon's launch in the person's own environment, wi
   expect(launched.env!.AGENTHUB_RECOVERY_OPERATION).toBeUndefined(); // recovery and unattended authority never reach the native child
   expect(launched.env!.AGENTHUB_UNATTENDED).toBeUndefined();
   expect(launched.env!.AGENTHUB_HOME).toBe("/person-hub");           // the person's hub home is theirs to keep
+  for (const [name, value] of Object.entries(ownPaneOrca)) expect(launched.env![name]).toBe(value);
   for (const name of ["AGENTHUB_CHANNEL", "AGENTHUB_LAUNCH_ID", "AGENTHUB_MODE", "CLAUDECODE"]) expect(launched.env![name]).toBeUndefined(); // another agent's identity never reaches Qwen
 });
 
