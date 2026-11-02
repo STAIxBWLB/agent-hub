@@ -157,6 +157,22 @@ test("the real ahub init under a pty: answering each question writes the files t
   expect(done.text).toContain("specs.enabled");
 }, 60_000);
 
+test("the real ahub init under a pty: yes to the release guard and a chosen profile reach the written files, as --release-guard and --profile do (#1065 AC4)", async () => {
+  const p = fixture(), guided = p.repo("guided"), flagged = p.repo("flagged");
+  // profile research, release guard on, everything else Enter; the release-guard question is the one before the optional shadow question
+  const questions = initQuestions({ shadowAvailable: false }).map(q => q.id);
+  const answers = questions.map(id => id === "profile" ? "research" : id === "release-guard" ? "yes" : "");
+  const done = await p.session(guided, ["init"], [...answers, "y"]);
+  expect(done.code, done.text).toBe(0);
+  expect(p.run(flagged, ["init", "--profile", "research", "--release-guard"]).exitCode).toBe(0);
+  expect(tree(guided)).toEqual(tree(flagged));
+  const agents = readFileSync(join(guided, "AGENTS.md"), "utf8");
+  expect(agents).toContain("AGENT_HUB_RELEASE_GUARD:BEGIN");                                  // the answer reached the writer
+  expect(agents).toEqual(readFileSync(join(flagged, "AGENTS.md"), "utf8"));
+  expect(existsSync(join(guided, ".git/hooks/pre-push"))).toBe(true);
+  expect(JSON.parse(readFileSync(join(guided, ".agenthub/config.json"), "utf8")).profile).toBe("research");
+}, 60_000);
+
 test("the real ahub init under a pty: N and Ctrl-C write nothing, not even a .agenthub directory's config (#1065 AC4)", async () => {
   const p = fixture(), declined = p.repo("declined"), interrupted = p.repo("interrupted");
   const no = await p.session(declined, ["init"], [...blank(ALL), "n"]);

@@ -976,7 +976,27 @@ ahub up
 ```
 
 `ahub init` writes the project configuration and managed instruction blocks.
-Run it after an upgrade when those blocks need refreshing. `ahub setup`
+Run it after an upgrade when those blocks need refreshing.
+
+A person at a terminal who runs `ahub init` on a new project with no flag that
+sets anything and no `--yes` is asked each setting in turn (#1065 T2): profile,
+the agents `ahub up` starts, design specs and their review mode, SDLC mode,
+coordination, shared memory, snapshots, the Pi peer, the machine autonomy
+preset, the release guard, and shadow history in a folder with no Git work
+tree. Each question is one line, the label, the choices and the default in
+brackets. Enter keeps the default and sets nothing; an answer is an explicit
+choice, exactly as the equivalent flag is, so the files written are the files
+the same flags write. A wrong answer asks again and is never guessed, and three
+wrong answers refuse the prompt. The plan follows, in the words `--dry-run`
+prints, and `Write this? [y/N]` decides: N, an empty answer, Ctrl-C and Ctrl-D
+write nothing. Only the console role at a terminal (stdin and stdout) is asked:
+an agent identity is refused before `init` runs, a `--live-test` delegation, a
+pipe and `--dry-run` are never asked, and `--yes` takes the defaults. A flag of
+any kind (`--agents`, `--coordination`, `--profile`, `--shadow` and the rest)
+means the person has chosen, so nothing is asked and the flags apply alone. An
+existing project is never asked. The questions are built from the init settings
+table (`INIT_SETTINGS`), so a setting added there is asked without another
+change, and `test/init-prompt.test.ts` fails when the two disagree. `ahub setup`
 installs or updates the Claude plugin and a project-neutral PreToolUse hook in each
 Claude configuration home in use (see "Machine autonomy and Claude homes"), and
 registers the acon console plugin (see "acon console plugin"). Keep `ahub console` open when a local worker
