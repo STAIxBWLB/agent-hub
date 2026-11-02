@@ -15,8 +15,12 @@ afterEach(() => { for (const dispose of cleanup.splice(0).reverse()) dispose(); 
 
 const HEAD = "a".repeat(40);
 const baseReport = (head = HEAD) => ({ head, complete: true, errors: 0, unchanged: [{ id: "bus", path: "docs/design/bus.md", title: "Bus" }], changed: [] });
+const until = async (condition: () => boolean) => {
+  for (let i = 0; i < 200 && !condition(); i++) await new Promise<void>(resolve => setImmediate(resolve));
+  expect(condition()).toBe(true);
+};
 
-function fixture(review: "report" | "require" | "off" = "report", options: { complete?: boolean; privateTurn?: (peer: string) => boolean; specsRead?: TasksDeps["specsRead"]; specNotice?: TasksDeps["specNotice"] } = {}) {
+function fixture(review: "report" | "require" | "off" = "report", options: { complete?: boolean; hasHead?: boolean; privateTurn?: (peer: string) => boolean; specsRead?: TasksDeps["specsRead"]; specNotice?: TasksDeps["specNotice"]; inspectSpecs?: TasksDeps["inspectSpecs"]; check?: TasksDeps["check"]; runCheck?: TasksDeps["runCheck"] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-specs-tasks-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const board = new Board(join(dir, "hub.db"));
@@ -31,12 +35,14 @@ function fixture(review: "report" | "require" | "off" = "report", options: { com
     ...(options.privateTurn ? { privateTurn: options.privateTurn } : {}),
     ...(options.specNotice ? { specNotice: options.specNotice } : {}),
     reviewBrief: task => ({ head: task.refs.commit ?? "", base: "origin/main", mergeBase: "b".repeat(40), reviewable: [{ path: "src/hub/bus.ts", status: "M" }], excluded: [], withheld: 0, rules: [], rulesMissing: [], ruleGroups: [], unlisted: [] }),
-    inspectSpecs: async (_task, head, changed, acks) => { inspected.push({ head, changed, acks }); return { ...report, head }; },
+    inspectSpecs: options.inspectSpecs ?? (async (_task, head, changed, acks) => { inspected.push({ head, changed, acks }); return { ...report, head }; }),
+    ...(options.check ? { check: options.check } : {}),
+    ...(options.runCheck ? { runCheck: options.runCheck } : {}),
     ...(options.specsRead ? { specsRead: options.specsRead } : {}),
   });
   const task = () => {
     const proposed = board.propose(USER, { title: "change bus", class: "implement", refs: { paths: ["src/hub/bus.ts"] } });
-    return board.update(proposed.id, "codex", "accepted", { owner: "codex", reviewer: USER, state: "in_progress", refs: { paths: ["src/hub/bus.ts"], commit: HEAD } });
+    return board.update(proposed.id, "codex", "accepted", { owner: "codex", reviewer: USER, state: "in_progress", refs: { repo: "fixture/project", branch: "feature/specs", paths: ["src/hub/bus.ts"], ...(options.hasHead === false ? {} : { commit: HEAD }) } });
   };
   return { dir, board, bus, tasks, task, config, inspected: () => inspected };
 }
@@ -46,15 +52,18 @@ test("report mode returns the unchanged covering spec and includes it in the rev
   const source = f.task();
   const done = await f.tasks.done("codex", source.id, "updated the bus", { commit: HEAD, paths: ["src/hub/bus.ts"] });
   expect(f.inspected()[0]).toMatchObject({ head: HEAD, changed: [{ path: "src/hub/bus.ts" }] });
+  expect(done.refs).toMatchObject({ repo: "fixture/project", branch: "feature/specs", commit: HEAD });
   expect(f.tasks.resultLine(done)).toContain("spec not updated: bus (docs/design/bus.md)");
   expect(f.tasks.briefText(done)).toContain("spec not updated: bus (docs/design/bus.md)");
-  expect(f.tasks.publicView(done).specReport).toMatchObject({ head: HEAD, unchanged: [{ id: "bus" }] });
+  const publicTask = f.tasks.publicView(done) as { specReport: { head: string; unchanged: unknown[] }; history: Record<string, unknown>[] };
+  expect(publicTask.specReport).toMatchObject({ head: HEAD, unchanged: [{ id: "bus" }] });
+  expect(publicTask.history.at(-1)).not.toHaveProperty("specRefBinding");
 });
 
 test("proposal and acceptance notice lists only covering specs, and off suppresses it", () => {
   const notice = { specs: [{ id: "bus", path: "docs/design/bus.md", title: "Bus" }], errors: 0, truncated: false, items: [] };
   const f = fixture("report", { specNotice: () => notice });
-  expect(f.tasks.specNotice(f.task(), "codex")).toContain("Spec: bus (docs/design/bus.md) - Bus");
+  expect(f.tasks.specNotice(f.task(), "codex")).toBe("Specs covering these paths: bus (docs/design/bus.md)");
   const disabled = fixture("off", { specNotice: () => notice });
   expect(disabled.tasks.specNotice(disabled.task(), "codex")).toBe("");
 });
@@ -80,11 +89,52 @@ test("require refuses before a board write until every unchanged covering spec h
 });
 
 test("require fails closed when the task head or changed-file inventory is not verified", async () => {
-  const f = fixture("require", { complete: false });
+  const f = fixture("require", { complete: false, hasHead: false });
   const source = f.task();
   await expect(f.tasks.done("codex", source.id, "updated the bus", { paths: ["src/hub/bus.ts"] })).rejects.toThrow(/spec coverage is unknown/);
   expect(f.board.get(source.id)?.state).toBe("in_progress");
   expect(f.inspected()[0]).toMatchObject({ head: "", changed: undefined });
+});
+
+test("an asynchronous class check carries the verified spec report into the final done entry", async () => {
+  let release!: (result: { code: number; timedOut: boolean; interrupted: boolean; tail: string }) => void;
+  const gate = new Promise<{ code: number; timedOut: boolean; interrupted: boolean; tail: string }>(resolve => { release = resolve; });
+  const f = fixture("report", { check: () => "fixture check", runCheck: async () => gate });
+  const source = f.task();
+  const pending = await f.tasks.done("codex", source.id, "updated the bus", { commit: HEAD, paths: ["src/hub/bus.ts"] });
+  expect(pending.history.at(-1)).toMatchObject({ event: "done (checking)", specReport: { head: HEAD } });
+  release({ code: 0, timedOut: false, interrupted: false, tail: "fixture ok" });
+  await until(() => f.tasks.checksPending() === 0);
+  const completed = f.board.get(source.id)!;
+  expect(completed.history.findLast(entry => entry.event === "done")?.specReport).toMatchObject({ head: HEAD, unchanged: [{ id: "bus" }] });
+});
+
+test("a privacy-context change during spec inspection refuses before the done write", async () => {
+  let privateTurn = false, started!: () => void, release!: (report: ReturnType<typeof baseReport>) => void;
+  const waiting = new Promise<void>(resolve => { started = resolve; });
+  const result = new Promise<ReturnType<typeof baseReport>>(resolve => { release = resolve; });
+  const f = fixture("report", { privateTurn: () => privateTurn, inspectSpecs: async (_task, head) => { started(); return { ...await result, head }; } });
+  const source = f.task();
+  const pending = f.tasks.done("codex", source.id, "updated the bus", { commit: HEAD, paths: ["src/hub/bus.ts"] });
+  await waiting;
+  privateTurn = true;
+  release(baseReport());
+  await expect(pending).rejects.toThrow(/privacy context changed/);
+  expect(f.board.get(source.id)?.state).toBe("in_progress");
+});
+
+test("a policy change during spec inspection cannot admit under the new review mode", async () => {
+  let started!: () => void, release!: (report: ReturnType<typeof baseReport>) => void;
+  const waiting = new Promise<void>(resolve => { started = resolve; });
+  const result = new Promise<ReturnType<typeof baseReport>>(resolve => { release = resolve; });
+  const f = fixture("report", { inspectSpecs: async (_task, head) => { started(); return { ...await result, head }; } });
+  const source = f.task();
+  const pending = f.tasks.done("codex", source.id, "updated the bus", { commit: HEAD, paths: ["src/hub/bus.ts"] });
+  await waiting;
+  f.config.review = "require";
+  release(baseReport());
+  await expect(pending).rejects.toThrow(/specs policy, task head or privacy context changed/);
+  expect(f.board.get(source.id)?.state).toBe("in_progress");
 });
 
 test("a new task head invalidates a previous spec report", async () => {
@@ -94,6 +144,17 @@ test("a new task head invalidates a previous spec report", async () => {
   const refilled = f.board.update(done.id, USER, "head changed", { refs: { commit: "c".repeat(40) } });
   expect(f.tasks.resultLine(refilled)).not.toContain("spec not updated: bus");
   expect(f.tasks.publicView(refilled).specReport).toBeUndefined();
+});
+
+test("a mismatched host report cannot replace the task head or display foreign-head paths", async () => {
+  const foreign = "b".repeat(40);
+  const f = fixture("report", { inspectSpecs: async () => ({ ...baseReport(foreign) }) });
+  const source = f.task();
+  const done = await f.tasks.done("codex", source.id, "updated the bus");
+  expect(done.refs).toMatchObject({ repo: "fixture/project", branch: "feature/specs", commit: HEAD });
+  expect(f.tasks.resultLine(done)).toContain("Design specs at unknown:");
+  expect(f.tasks.resultLine(done)).not.toContain(foreign);
+  expect(f.tasks.resultLine(done)).not.toContain("docs/design/bus.md");
 });
 
 test("spec notices and read tools skip private context before calling the host", () => {
@@ -144,4 +205,22 @@ test("tool schemas expose spec_ack and the read-only hub_specs operation", () =>
   const specs = TASK_TOOLS.find(tool => tool.name === "hub_specs")!;
   expect(specs.inputSchema.required ?? []).toContain("action");
   expect((specs.inputSchema.properties.action as { enum?: string[] }).enum).toEqual(["check", "covers"]);
+});
+
+test("Board persists the head-bound spec report and internal ref binding across reopen", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-specs-board-")), file = join(dir, "hub.db");
+  let board = new Board(file);
+  const proposed = board.propose(USER, { title: "change bus", class: "implement" });
+  const accepted = board.update(proposed.id, "codex", "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });
+  const report = { ...baseReport(), unchanged: [{ id: "bus", path: "docs/design/bus.md", title: "Bus", reason: "The contract is unchanged." }] };
+  const binding = "d".repeat(64);
+  board.update(accepted.id, "codex", "done", { state: "in_review" }, "done", { specReport: report, specRefBinding: binding });
+  board.close();
+  board = new Board(file);
+  try {
+    expect(board.get(accepted.id)?.history.at(-1)).toMatchObject({ specReport: report, specRefBinding: binding });
+  } finally {
+    board.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

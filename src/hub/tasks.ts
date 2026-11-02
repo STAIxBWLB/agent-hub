@@ -1114,7 +1114,7 @@ export class Tasks {
     try { report = this.d.specNotice?.(task); } catch { return ""; }
     if (!report) return "";
     const refs = report.specs.slice(0, 20).filter(spec => [spec.id, spec.path, spec.title].every(value => this.publicMetadataText(value)));
-    const lines = refs.map(spec => `Spec: ${spec.id} (${spec.path}) - ${spec.title}`);
+    const lines = refs.length ? [`Specs covering these paths: ${refs.map(spec => `${spec.id} (${spec.path})`).join(", ")}`] : [];
     if (report.errors) lines.push(`Spec coverage check reports ${report.errors} error${report.errors === 1 ? "" : "s"}; run ahub specs check.`);
     if (report.truncated || report.specs.length > 20 || refs.length < Math.min(report.specs.length, 20)) lines.push("Spec coverage list truncated; run ahub specs covers for the full list.");
     return sanitize(lines.join("\n"));
@@ -5995,9 +5995,10 @@ export class Tasks {
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review"); task = current(); }
     const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, draft), link, refs), !task.reviewer) : undefined;
     task = current();
-    const specInspection = await this.inspectTaskSpecs(task, by, specAck, current);
+    const currentSpecTask = () => { const fresh = current(); return { ...fresh, refs: { ...fresh.refs, ...cleanRefs(refs) } }; };
+    const specInspection = await this.inspectTaskSpecs(currentSpecTask(), by, specAck, currentSpecTask);
     task = current(); // the host head and task authority are revalidated after spec inspection
-    this.assertSpecInspection(specInspection, task, by);
+    this.assertSpecInspection(specInspection, { ...task, refs: { ...task.refs, ...cleanRefs(refs) } }, by);
     // A member of a silent cohort (issue #107): its done is an intent, and the last of them integrates first.
     const cohort = this.cohorts.of(task.id);
     const silentMember = !!cohort?.silent && this.turnFree() && !!task.owner && !this.isPii(task);
@@ -6035,9 +6036,10 @@ export class Tasks {
     const checkedRefs = cleanRefs(refs);
     if (specInspection.report?.head && !checkedRefs.commit) checkedRefs.commit = specInspection.report.head;
     if (specInspection.report && specInspection.repo && !checkedRefs.repo) checkedRefs.repo = specInspection.repo;
+    const storedRefs = { ...task.refs, ...checkedRefs };
     this.warmRepository({ ...task, refs: { ...task.refs, ...checkedRefs } });
-    this.assertSpecInspection(specInspection, task, by);
-    const pending = this.d.board.update(task.id, by, "done (checking)", { ...(refresh ? { state: "in_progress" as const } : {}), ...(refresh?.state === "approved" && !task.reviewer ? { reviewer: USER } : {}), codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...checkedRefs } }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}), ...(specInspection.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: checkedRefs }) } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    this.assertSpecInspection(specInspection, { ...task, refs: storedRefs }, by);
+    const pending = this.d.board.update(task.id, by, "done (checking)", { ...(refresh ? { state: "in_progress" as const } : {}), ...(refresh?.state === "approved" && !task.reviewer ? { reviewer: USER } : {}), codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}), ...(specInspection.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     if (refresh) { this.ciWatchers.cancel(pending.id); this.heldReviews.delete(pending.id); }
     this.releaseNotice(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
@@ -6218,11 +6220,12 @@ export class Tasks {
     const completedRefs = cleanRefs(refs);
     if (specInspection?.report?.head && !completedRefs.commit) completedRefs.commit = specInspection.report.head;
     if (specInspection?.report && specInspection.repo && !completedRefs.repo) completedRefs.repo = specInspection.repo;
-    if (specInspection) this.assertSpecInspection(specInspection, task, by);
-    this.warmRepository({ ...task, refs: { ...task.refs, ...completedRefs } });
-    const noWrites = this.noWritesRecorded({ ...task, refs: { ...task.refs, ...completedRefs } });
+    const storedRefs = { ...task.refs, ...completedRefs };
+    if (specInspection) this.assertSpecInspection(specInspection, { ...task, refs: storedRefs }, by);
+    this.warmRepository({ ...task, refs: storedRefs });
+    const noWrites = this.noWritesRecorded({ ...task, refs: storedRefs });
     const capacity = this.capacityBefore(task);
-    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...completedRefs } }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: completedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, refs: { ...task.refs, ...completedRefs } }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, refs: storedRefs }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.queueReviewWritten(next);
     this.writePlannerNotices(next, capacity, next.state === "approved");
     this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id); // a newer head or a move ends the old head's watcher (#785 P1b)
