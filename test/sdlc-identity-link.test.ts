@@ -180,3 +180,24 @@ test("an assigned reviewer's done admits the staged link and persists it with th
   expect(done.state).toBe("in_review");
   expect(done.sdlc).toMatchObject({ repo: REPO, issue: 691, pr: 692 });
 });
+
+
+test("a first completion with a full board ref and no reviewer admits its identityLink-discovered PR", async () => {
+  let listReads = 0;
+  const gh: SdlcGh = async args => {
+    if (args[0] === "pr" && args[1] === "list") {
+      listReads++;
+      return { code: 0, stdout: JSON.stringify([{ number: 692, headRefOid: HEAD, headRefName: "feat/691" }]) };
+    }
+    return { code: 1, stdout: "" }; // Optional readiness evidence is unknown in this advise fixture.
+  };
+  const { board, tasks } = rig(gh);
+  const task = board.propose("claude", { title: "#691 first completion", class: "implement", refs: { commit: HEAD } });
+  board.update(task.id, "codex", "accepted", { state: "in_progress", owner: "codex", reviewer: null });
+  const done = await tasks.done("codex", task.id, "PR up");
+  expect(done.state).toBe("approved");
+  expect(done.refs.commit).toBe(HEAD);
+  expect(done.sdlc).toMatchObject({ repo: REPO, pr: 692 });
+  expect(done.history.filter(entry => entry.event === "done")).toHaveLength(1);
+  expect(listReads).toBe(1);
+});
