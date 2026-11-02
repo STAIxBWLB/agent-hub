@@ -97,3 +97,23 @@ export function lossNotice(lost: JournalDelivery[], taskTitle: (id: number) => s
     "Check your work against them before you go on.",
   ].join("\n");
 }
+
+/**
+ * One line of the crash-recovery report in `ahub status` (#1082). The report is a list of these, kept for the whole run, and what `ahub status` shows is `openCrashNotices` of it, computed when
+ * status is asked, so a line whose condition is gone is gone.
+ *  - `peer` set: the line asks something of that peer's owner ("run ahub codex again", "reconnects by itself if its client is still running"). It stands while that peer is not attached, and clears
+ *    when it is, whoever started it.
+ *  - `inFlight` set: the headline. Its count of deliveries the crash left in needs_review is read live, and the clause disappears at zero.
+ *  - neither: what recovery found or did ("kimi resumed", "pi not resumed (...)"). It is history, not an open action, and stays.
+ */
+export interface CrashNotice { text: string; peer?: string; inFlight?: true }
+
+/** The lines `ahub status` shows now: `attached` are the peers that are not offline, `inFlight` is how many of the crash's own deliveries are still in needs_review. */
+export function openCrashNotices(notices: readonly CrashNotice[], live: { attached: ReadonlySet<string>; inFlight: number }): string[] {
+  const lines: string[] = [];
+  for (const notice of notices) {
+    if (notice.peer !== undefined && live.attached.has(notice.peer)) continue;
+    lines.push(notice.inFlight ? `${notice.text}${live.inFlight ? `; ${live.inFlight} deliveries it had in flight are in needs_review (ahub queue list)` : ""}` : notice.text);
+  }
+  return lines;
+}
