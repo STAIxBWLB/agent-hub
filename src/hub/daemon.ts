@@ -3294,7 +3294,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const actor = c.peer ?? USER, peer = c.peer ? bus.peers.get(c.peer) : undefined;
     const binding = c.toolsOwner ?? c.externalOwner;
     return JSON.stringify({ actor, role: c.role ?? "", operation, session: c.session === true, launchId: c.launchId ?? null,
-      generation: binding?.generation ?? (isWsPeer(peer) ? peer.sessionGeneration : c.peer ? connectionGeneration(c.peer) ?? null : null), owner: binding?.owner.id ?? peer?.id ?? null,
+      generation: binding?.generation ?? (c.peer ? connectionGeneration(c.peer) ?? null : null), owner: binding?.owner.id ?? peer?.id ?? null,
       executionRoot: c.peer ? executionRoots.get(c.peer) ?? null : null });
   };
   const taskWriteId = (value: unknown): number | undefined => {
