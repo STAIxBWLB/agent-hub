@@ -2,7 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS, controlRequestTimeout, PROTOCOL, readControl, RECOVERY_SOURCE_PROTOCOLS } from "../src/hub/control-client.ts";
+import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS, controlRequestTimeout, DAEMON_FEATURES, PROTOCOL, readControl, RECOVERY_SOURCE_PROTOCOLS } from "../src/hub/control-client.ts";
+
+import { TOOL_WRITE_FEATURE } from "../src/hub/tool-request.ts";
+import { readRecoveryTargetFeatures } from "../src/hub/recovery-policy.ts";
 
 const ROOT = "/tmp/agent-hub-control-test";
 const cleanup: (() => void)[] = [];
@@ -226,4 +229,10 @@ test("cancelling a sent write reports unknown without issuing invocation cancell
   const unsent = await f.client.request({ t: "task", op: "hub_review", args: { id: 7, verdict: "approved" } }, 30_000, abort.signal);
   expect(unsent).toMatchObject({ ok: false, error: "hub request cancelled before sending" });
   expect(unsent).not.toHaveProperty("outcome"); expect(f.seen).toHaveLength(1);
+});
+
+
+test("the release feature declaration stays readable without evaluating target code", () => {
+  expect(readRecoveryTargetFeatures(join(import.meta.dir, ".."))).toEqual([...DAEMON_FEATURES]);
+  expect(DAEMON_FEATURES).toContain(TOOL_WRITE_FEATURE);
 });

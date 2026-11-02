@@ -101,6 +101,9 @@ test("the replay authority callback cannot mutate the cached result", async () =
 
 test("unknown write outcomes name a real settling read, with no untrusted delivery interpolation", () => {
   expect(toolWriteOperation(message)).toBe("hub_task_propose");
+  expect(toolWriteOperation({ t: "task", op: ["hub_task_propose"] })).toBe("hub_task_propose");
+  expect(toolWriteOperation({ t: "task", op: [["hub_review"]] })).toBe("hub_review");
+  expect(toolWriteOperation({ t: "task", op: { toString: "not callable" } })).toBeUndefined();
   expect(toolWriteOperation({ t: "task", op: "hub_invoke" })).toBeUndefined();
   expect(toolWriteOperation({ t: "task", op: "hub_task_list" })).toBeUndefined();
   expect(toolWriteUnknownReply(message).error).toContain("hub_task_list");

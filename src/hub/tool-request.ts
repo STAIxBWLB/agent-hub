@@ -12,7 +12,12 @@ type Reply = Record<string, unknown>;
 /** These three writes have per-call replay semantics; invocation keeps its own admission protocol. */
 export function toolWriteOperation(msg: Record<string, unknown>): "hub_task_propose" | "hub_review" | "hub_delivery_done" | undefined {
   if (msg.t === "delivery_complete") return "hub_delivery_done";
-  if (msg.t === "task" && (msg.op === "hub_task_propose" || msg.op === "hub_review")) return msg.op;
+  if (msg.t === "task") {
+    // Match the control dispatcher's legacy operation coercion, so accepted writes cannot bypass replay protection.
+    let operation: string;
+    try { operation = String(msg.op); } catch { return undefined; }
+    if (operation === "hub_task_propose" || operation === "hub_review") return operation;
+  }
   return undefined;
 }
 
