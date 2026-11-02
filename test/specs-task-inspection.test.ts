@@ -158,8 +158,8 @@ test("committed Markdown reads are batched and unchanged blobs are reused across
     const config = parseSpecsConfig(undefined);
     expect(new SpecsEngine(root, config, { commit: first }).check()).toMatchObject({ specCount: 0, errors: 0, truncated: false });
     const initialCalls = readFileSync(calls, "utf8").trim().split("\n");
-    expect(initialCalls.filter(line => line.includes("cat-file --batch "))).toHaveLength(1);
-    expect(initialCalls.filter(line => line.includes("cat-file --batch-check "))).toHaveLength(1);
+    expect(initialCalls.filter(line => /cat-file --batch(?: |$)/.test(line))).toHaveLength(1);
+    expect(initialCalls.filter(line => /cat-file --batch-check(?: |$)/.test(line))).toHaveLength(1);
     expect(initialCalls.some(line => line.includes("cat-file blob "))).toBe(false);
     writeFileSync(calls, "");
     expect(new SpecsEngine(root, config, { commit: second }).check()).toMatchObject({ specCount: 0, errors: 0, truncated: false });
