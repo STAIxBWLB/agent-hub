@@ -6606,9 +6606,9 @@ export class Tasks {
     const evidence: ReviewReadiness = this.isPii(task)
       ? { ready: false, blockers: ["private review readiness unavailable"] }
       : task.sdlc ? reviewReadinessFromEvidence(previous, expected, this.d.sdlc?.config().requiredChecks ?? []) ?? await readReviewReadiness(task.sdlc, expected, read, this.d.sdlc?.config().requiredChecks ?? []) : { ready: false, blockers: ["review PR identity missing"] };
-    const admitted: ReviewReadiness = quietDrift ? { ready: false, blockers: ["review readiness unknown: task changed during readback"] } : evidence;
-    const currentHead = refileHead && !admitted.head && task.sdlc ? await readSdlcPrHead(task.sdlc, read) : admitted.head;
+    const currentHead = refileHead && !evidence.head && task.sdlc ? await readSdlcPrHead(task.sdlc, read) : evidence.head;
     const current = guard();
+    const admitted: ReviewReadiness = quietDrift ? { ready: false, blockers: ["review readiness unknown: task changed during readback"] } : evidence;
     if (refileHead) {
       if (!refileHead.recorded || !currentHead) throw this.reviewHeadMoveRefusal(task.id, refileHead.recorded);
       if (currentHead !== refileHead.recorded) throw this.reviewHeadMoveRefusal(task.id, refileHead.recorded, currentHead);
