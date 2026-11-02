@@ -563,7 +563,7 @@ test("Jcode PII routing withholds confidential tasks from jcode and applies publ
   const ownedLaunch = native.launches().find(row => row.args.includes("acp"));
   expect(ownedLaunch).toBeDefined();
   const jcodeClient = await ControlClient.connect(stateDir, { role: "tools", peer: "jcode", ...(ownedLaunch?.launchId ? { launchId: ownedLaunch.launchId } : {}) }); cleanups.push(() => jcodeClient.close());
-  const jcodeList = await jcodeClient.request({ t: "task", op: "hub_task_list", args: {} });
+  const jcodeList = await jcodeClient.request({ t: "task", op: "hub_task_list", args: { detail: true } });
   expect(jcodeList.ok).toBe(true);
   const rows = JSON.parse(jcodeList.text).tasks;
   expect(rows).toHaveLength(1);
