@@ -35,7 +35,7 @@ function rig(mode: "advise" | "enforce", watch = { deadlineMs: 5000, pollMs: 10 
       state.polls++;
       return { code: 0, stdout: JSON.stringify({ headRefOid: state.prHead, state: state.prState, statusCheckRollup: NAMES.map(name => ({ name, status: state.conclusion === "IN_PROGRESS" ? "IN_PROGRESS" : "COMPLETED", conclusion: state.conclusion === "IN_PROGRESS" ? "" : state.conclusion })) }) };
     }
-    if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ headRefOid: head, state: "OPEN", statusCheckRollup: [], reviewRequests: [], files: [], changedFiles: 0 }) };
+    if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ headRefOid: state.prHead, state: state.prState, statusCheckRollup: [], reviewRequests: [], files: [], changedFiles: 0 }) };
     return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: state.prHead, state: "OPEN",
       commits: { nodes: [{ commit: { oid: state.prHead, tree: { oid: "c".repeat(40) }, statusCheckRollup: { contexts: { nodes: NAMES.map(name => ({ name, status: state.conclusion === "IN_PROGRESS" ? "IN_PROGRESS" : "COMPLETED", conclusion: state.conclusion })), pageInfo: { hasNextPage: false } } } } }] },
       reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) };
