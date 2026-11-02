@@ -73,6 +73,16 @@ function savedSession(home: string, id: string): boolean {
 export class JcodeOptionMismatch extends Error {
   constructor(readonly option: "--session-id" | "--model" | "--provider-profile") { super("Jcode launch options differ from its running session"); }
 }
+/**
+ * #1085: why an owned Jcode refused a TUI launch. A closed set of causes, never a path, session id or launch id:
+ * the daemon logs the code and returns it, and the launcher turns it into a message with a next step.
+ */
+export type JcodeTuiRefusalCode = "launch_changed" | "server_not_running" | "socket_changed" | "session_unknown" | "session_proof_refused";
+export class JcodeTuiRefusal extends Error {
+  constructor(readonly code: JcodeTuiRefusalCode) { super(`owned Jcode TUI launch refused: ${code}`); }
+}
+/** #1085: said by `ahub status` while a recovered headless Jcode has not yet opened its TUI, and by the launcher when `ahub jcode` finds it running headless. */
+export const JCODE_HEADLESS_AFTER_RECOVERY = "jcode is running headless after recovery; run ahub stop jcode, then ahub jcode to get its TUI back";
 const JCODE_OWNED_ENV = { JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" } as const;
 /** #691: the verdict lives in `src/adapters/compat.ts` (line, verified versions, the person's trust); never pin here. */
 export const jcodeVersionSupported = (version: unknown): boolean => assessVersion("jcode", version).ok;
@@ -215,6 +225,9 @@ export class JcodePeer extends AcpPeer {
 
   ownsLaunch(launchId: unknown): boolean { return !this.ending && typeof launchId === "string" && launchId === this.launchId; }
 
+  /** #1085: this owned launch loaded a recorded session id (crash or controlled recovery, or the person's --session-id) instead of making a new one. A boolean only, never the id. */
+  get resumedSession(): boolean { return typeof this.jcode.resumeSessionId === "string" && this.jcode.resumeSessionId.length > 0; }
+
   override async start(): Promise<void> {
     // The native loader otherwise imports Codex MCP into the user's store on first use.
     if (!existsSync(join(this.jcode.home, "mcp.json"))) throw new Error("initialize Jcode's global MCP store with its native client before enabling this peer; the hub never initializes or copies it");
@@ -315,16 +328,20 @@ export class JcodePeer extends AcpPeer {
   tuiLaunch(expected?: JcodeTuiBinding, options: { model?: string; providerProfile?: string; sessionId?: string } = {}): JcodeTuiState {
     const sessionId = super.recoveryMetadata().sessionId;
     const socket = lstatSync(this.socket, { throwIfNoEntry: false });
-    if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || this.state === "offline" ||
-      !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string") throw new Error("owned Jcode launch is unavailable");
+    // One cause per check, in the order the checks ran before #1085, so the same states are refused as before.
+    if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || this.state === "offline") throw new JcodeTuiRefusal("server_not_running");
+    if (!socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino) throw new JcodeTuiRefusal("socket_changed");
+    if (typeof sessionId !== "string") throw new JcodeTuiRefusal("session_unknown");
     const binding = { launchId: this.launchId, sessionId };
-    if (expected && (expected.launchId !== binding.launchId || expected.sessionId !== binding.sessionId)) throw new Error("Jcode launch changed");
+    if (expected && (expected.launchId !== binding.launchId || expected.sessionId !== binding.sessionId)) throw new JcodeTuiRefusal("launch_changed");
     // Names the option, never its value: the flag is the person's own and carries nothing private (#559).
     const differs = options.sessionId !== undefined && options.sessionId !== sessionId ? "--session-id"
       : options.model !== undefined && options.model !== this.jcode.launchModel ? "--model"
       : options.providerProfile !== undefined && options.providerProfile !== this.jcode.providerProfile ? "--provider-profile" : undefined;
     if (differs) throw new JcodeOptionMismatch(differs);
-    if (!savedSession(this.jcode.home, sessionId)) return { state: "waiting", binding };
+    let saved: boolean;
+    try { saved = savedSession(this.jcode.home, sessionId); } catch { throw new JcodeTuiRefusal("session_proof_refused"); }
+    if (!saved) return { state: "waiting", binding };
     const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile, this.jcode.provider);
     // The TUI is the person's own client of this peer's server. The shared project MCP entry names no peer (#685), so every launch
     // path supplies its own id: the base Jcode's too, or its MCP child would fall back to the channel default.

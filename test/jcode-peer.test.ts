@@ -668,3 +668,95 @@ test("no raw native payload or credential from Jcode reaches hub.log or events (
   expect(log).not.toContain(SECRET_PII);
   expect(events).not.toContain(SECRET_PII);
 });
+
+// #1085: a refused TUI launch names its cause class (a code, never an id or path) in the reply and as one hub.log line, and a recovered headless Jcode is told how to get its TUI back.
+function tuiRig(startArgs: Record<string, unknown> = { mode: "headless" }) {
+  const dir = root(), stateDir = join(dir, "state"), home = join(dir, "home"), record = join(dir, "launch.jsonl");
+  mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
+  configureJcodeMcp(dir, stateDir, join(import.meta.dir, "../plugins/agent-hub/server.js"));
+  const start = async () => {
+    const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+      config: { ...DEFAULT_CONFIG, jcode_cmd: [process.execPath, join(import.meta.dir, "fakes/jcode-instance-agent.ts"), "--record", record, "--save-native-session"], jcode_home: home, roster: { jcode: true },
+        memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+    cleanups.push(() => daemon.stop());
+    const consoleClient = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => consoleClient.close());
+    expect((await consoleClient.request({ t: "start", peer: "jcode", args: startArgs })).ok).toBe(true);
+    return { daemon, consoleClient };
+  };
+  const log = () => existsSync(join(stateDir, "hub.log")) ? readFileSync(join(stateDir, "hub.log"), "utf8") : "";
+  const rows = () => readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  return { dir, stateDir, home, start, log, rows };
+}
+
+test("each TUI launch refusal names its cause class in the reply and in hub.log, with no id or path (#1085 AC1, AC3)", async () => {
+  const rig = tuiRig(), { daemon, consoleClient } = await rig.start();
+  const waiting = await consoleClient.request({ t: "native_tui_launch", peer: "jcode" });
+  expect(waiting.state).toBe("waiting");
+  const sessionId = (waiting.binding as { sessionId: string }).sessionId;
+  const launchId = rig.rows().find(row => row.kind === "launch" && row.role === "acp").launch as string;
+  const socketPath = rig.rows().find(row => row.kind === "serve").socket as string;
+  const refused = async (binding: unknown = waiting.binding) => consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding });
+  // launch changed: a binding from another launch of this peer.
+  const changed = await refused({ launchId: "another-launch", sessionId });
+  expect(changed).toMatchObject({ ok: false, code: "launch_changed" }); expect(changed.resumed).toBeUndefined();
+  // session proof refused: the native file names another session, is too large, is not a regular file, or is a link.
+  const file = join(rig.home, "sessions", `${sessionId}.json`);
+  mkdirSync(join(rig.home, "sessions"), { recursive: true });
+  writeFileSync(file, JSON.stringify({ id: "another", messages: [] }));
+  expect(await refused()).toMatchObject({ ok: false, code: "session_proof_refused" });
+  writeFileSync(file, "{}"); truncateSync(file, 32 * 1024 * 1024 + 1);
+  expect(await refused()).toMatchObject({ ok: false, code: "session_proof_refused" });
+  rmSync(file); mkdirSync(file);
+  expect(await refused()).toMatchObject({ ok: false, code: "session_proof_refused" });
+  rmSync(file, { recursive: true });
+  // session unknown: the adapter has no session id to bind a launch to (the id is only ever read from the live adapter).
+  const peer = daemon.bus.peers.get("jcode") as unknown as { sessionId: string };
+  const held = peer.sessionId; peer.sessionId = "";
+  expect(await refused()).toMatchObject({ ok: false, code: "session_unknown" });
+  peer.sessionId = held;
+  // socket changed: another process now owns the private socket path.
+  rmSync(socketPath);
+  const replacement = createServer(); await new Promise<void>(resolve => replacement.listen(socketPath, resolve)); cleanups.push(() => new Promise<void>(resolve => replacement.close(() => resolve())));
+  expect(await refused()).toMatchObject({ ok: false, code: "socket_changed" });
+  // server not running: the owned launch ended.
+  await daemon.bus.peers.get("jcode")!.stop();
+  expect(await refused()).toMatchObject({ ok: false, code: "server_not_running" });
+  // The hub.log line for each class is the class alone: no session id, launch id, socket or directory. Only this change's own lines are checked: the daemon's startup line names the project directory by design.
+  const refusals = rig.log().split("\n").filter(line => line.includes("native_tui_launch"));
+  expect(refusals.length).toBe(7);
+  const log = refusals.join("\n");
+  for (const code of ["launch_changed", "session_proof_refused", "session_unknown", "socket_changed", "server_not_running"]) expect(log).toContain(`native_tui_launch jcode refused: ${code}`);
+  for (const line of refusals) expect(line).toMatch(/^\S+ native_tui_launch jcode refused: [a-z_]+$/);
+  for (const secret of [sessionId, launchId, socketPath, rig.dir, rig.home, "another-launch"]) expect(log).not.toContain(secret);
+  // Neither does any reply carry them: the error text stays the generic one and the code is a closed word.
+  for (const reply of [changed, await refused()]) for (const secret of [sessionId, launchId, socketPath, rig.dir, rig.home]) expect(JSON.stringify(reply)).not.toContain(secret);
+});
+
+test("a session the hub loaded from a record is flagged resumed, and its TUI refusal and status say stop, then start (#1085 AC2)", async () => {
+  const rig = tuiRig({ mode: "headless", sessionId: "jcode-s1" }), { daemon, consoleClient } = await rig.start();
+  const status = async () => (await consoleClient.request({ t: "status" })).status;
+  // Recovered and headless, with the person's start mode tui: status says how to get the TUI back.
+  expect((await status()).jcodeTuiHint).toBe("jcode is running headless after recovery; run ahub stop jcode, then ahub jcode to get its TUI back");
+  const waiting = await consoleClient.request({ t: "native_tui_launch", peer: "jcode" });
+  expect(waiting.state).toBe("waiting");
+  // A refusal for this launch says it was resumed, so the launcher can give the stop-and-start step.
+  const file = join(rig.home, "sessions", "jcode-s1.json");
+  mkdirSync(join(rig.home, "sessions"), { recursive: true });
+  writeFileSync(file, JSON.stringify({ id: "another", messages: [] }));
+  const refused = await consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding: waiting.binding });
+  expect(refused).toMatchObject({ ok: false, code: "session_proof_refused", resumed: true });
+  expect(rig.log()).toContain("native_tui_launch jcode refused: session_proof_refused (resumed session)");
+  expect(rig.log()).not.toContain("jcode-s1");
+  // Once a ready launch is served the TUI is on its way and the hint stops.
+  rmSync(file);
+  await daemon.bus.peers.get("jcode")!.deliver([newEnvelope("user", "fixture", { to: ["jcode"] })]);
+  await until(() => existsSync(file));
+  await until(() => daemon.bus.peers.get("jcode")!.state === "idle");
+  expect((await consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding: waiting.binding })).state).toBe("ready");
+  expect((await status()).jcodeTuiHint).toBeUndefined();
+});
+
+test("a fresh headless Jcode that was not recovered gets no TUI hint (#1085)", async () => {
+  const rig = tuiRig(), { consoleClient } = await rig.start();
+  expect((await consoleClient.request({ t: "status" })).status.jcodeTuiHint).toBeUndefined();
+});

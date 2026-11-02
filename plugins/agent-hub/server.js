@@ -4960,7 +4960,7 @@ function nativeSteer(socket, cwd, sessionId, text, clientId, timeoutMs = STEER_T
     });
   });
 }
-var JcodeOptionMismatch, JCODE_OWNED_ENV, jcodeVersionSupported = (version) => assessVersion("jcode", version).ok, SteerRefused, SteerUncertain, STEER_TIMEOUT_MS = 5000, JcodePeer;
+var JcodeOptionMismatch, JcodeTuiRefusal, JCODE_HEADLESS_AFTER_RECOVERY = "jcode is running headless after recovery; run ahub stop jcode, then ahub jcode to get its TUI back", JCODE_OWNED_ENV, jcodeVersionSupported = (version) => assessVersion("jcode", version).ok, SteerRefused, SteerUncertain, STEER_TIMEOUT_MS = 5000, JcodePeer;
 var init_jcode = __esm(() => {
   init_compat();
   init_envelope();
@@ -4971,6 +4971,13 @@ var init_jcode = __esm(() => {
     constructor(option) {
       super("Jcode launch options differ from its running session");
       this.option = option;
+    }
+  };
+  JcodeTuiRefusal = class JcodeTuiRefusal extends Error {
+    code;
+    constructor(code) {
+      super(`owned Jcode TUI launch refused: ${code}`);
+      this.code = code;
     }
   };
   JCODE_OWNED_ENV = { JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" };
@@ -5007,6 +5014,9 @@ var init_jcode = __esm(() => {
     }
     ownsLaunch(launchId) {
       return !this.ending && typeof launchId === "string" && launchId === this.launchId;
+    }
+    get resumedSession() {
+      return typeof this.jcode.resumeSessionId === "string" && this.jcode.resumeSessionId.length > 0;
     }
     async start() {
       if (!existsSync4(join7(this.jcode.home, "mcp.json")))
@@ -5156,15 +5166,25 @@ var init_jcode = __esm(() => {
     tuiLaunch(expected, options = {}) {
       const sessionId = super.recoveryMetadata().sessionId;
       const socket = lstatSync6(this.socket, { throwIfNoEntry: false });
-      if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || this.state === "offline" || !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string")
-        throw new Error("owned Jcode launch is unavailable");
+      if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || this.state === "offline")
+        throw new JcodeTuiRefusal("server_not_running");
+      if (!socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino)
+        throw new JcodeTuiRefusal("socket_changed");
+      if (typeof sessionId !== "string")
+        throw new JcodeTuiRefusal("session_unknown");
       const binding = { launchId: this.launchId, sessionId };
       if (expected && (expected.launchId !== binding.launchId || expected.sessionId !== binding.sessionId))
-        throw new Error("Jcode launch changed");
+        throw new JcodeTuiRefusal("launch_changed");
       const differs = options.sessionId !== undefined && options.sessionId !== sessionId ? "--session-id" : options.model !== undefined && options.model !== this.jcode.launchModel ? "--model" : options.providerProfile !== undefined && options.providerProfile !== this.jcode.providerProfile ? "--provider-profile" : undefined;
       if (differs)
         throw new JcodeOptionMismatch(differs);
-      if (!savedSession(this.jcode.home, sessionId))
+      let saved;
+      try {
+        saved = savedSession(this.jcode.home, sessionId);
+      } catch {
+        throw new JcodeTuiRefusal("session_proof_refused");
+      }
+      if (!saved)
         return { state: "waiting", binding };
       const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile, this.jcode.provider);
       return { state: "ready", binding, launch: { cmd, args, env: { JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, AGENTHUB_PEER_ID: this.id, AGENTHUB_LAUNCH_ID: this.launchId, ...JCODE_OWNED_ENV } } };
@@ -14286,6 +14306,37 @@ var init_native_cli_entry_local = () => {};
 
 // src/adapters/definitions/native-cli-entry-jcode.ts
 import { resolve as resolve14 } from "path";
+function jcodeTuiCauseMessage(code, resumed = false) {
+  const recoveredStep = `${JCODE_HEADLESS_AFTER_RECOVERY}`;
+  const step = (own) => resumed ? recoveredStep : own;
+  switch (code) {
+    case "launch_changed":
+      return `Jcode was restarted while ahub jcode was starting its TUI; ${step("run ahub jcode again")}`;
+    case "server_not_running":
+      return `Jcode's owned server is not running; ${step("run ahub stop jcode, then ahub jcode")}`;
+    case "socket_changed":
+      return `Jcode's private socket was replaced by another process; ${step("run ahub stop jcode, then ahub jcode")}`;
+    case "session_unknown":
+      return `Jcode has not reported a session yet; ${step("wait for it to attach, then run ahub jcode again")}`;
+    case "session_proof_refused":
+      return `Jcode's saved session failed the hub's safety check (not a plain file, too large, or another session); ${step("run ahub stop jcode, then ahub jcode for a new session")}`;
+    case "hub_busy":
+      return "the hub is stopping, recovering or changing its roster; wait for ahub status to settle, then run ahub jcode again";
+    case "not_running":
+      return "Jcode is not running under this hub; run ahub jcode again";
+    case "mcp_stale":
+      return "the project's Jcode MCP entry is missing or stale; run ahub jcode again to rewrite it";
+    default:
+      return;
+  }
+}
+function refuseTuiCause(reply, fail) {
+  if (reply.ok)
+    return;
+  const message = jcodeTuiCauseMessage(reply.code, reply.resumed === true);
+  if (message)
+    fail(message);
+}
 function refuseNamedOption(reply, fail) {
   if (!reply.ok && typeof reply.option === "string" && ["--session-id", "--model", "--provider-profile"].includes(reply.option))
     fail(`Jcode is already running with a different ${reply.option}; run ahub jcode without it, or stop jcode first`);
@@ -14298,6 +14349,7 @@ async function waitForJcodeTui(hub, fail, signal, options, first) {
       if (signal.aborted)
         return;
       refuseNamedOption(reply, fail);
+      refuseTuiCause(reply, fail);
       if (!reply.ok || !reply.binding || !["waiting", "ready"].includes(reply.state))
         fail("Jcode launch changed or its native saved session is unavailable; retry from a terminal");
       current = reply;
@@ -14393,6 +14445,7 @@ async function runJcodeEntry(ctx) {
         return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
       const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", args: options });
       refuseNamedOption(reply, fail);
+      refuseTuiCause(reply, fail);
       if (!reply.ok || reply.state !== "ready")
         fail("Jcode's selected native session is not saved and ready; run ahub jcode to wait for its first hub turn");
       return console.log(JSON.stringify(reply.launch, null, 2));
@@ -14428,6 +14481,7 @@ async function runJcodeEntry(ctx) {
     const confirmed = await hub.request({ t: "native_tui_launch", peer: "jcode", binding: ready.binding, args: options });
     if (interruptedWait())
       return;
+    refuseTuiCause(confirmed, fail);
     if (!confirmed.ok || confirmed.state !== "ready")
       fail("Jcode launch changed before its terminal opened");
     ctx.execWithEnv(confirmed.launch.cmd, confirmed.launch.args, { ...ctx.helpers.childEnv(), ...confirmed.launch.env });
@@ -14438,7 +14492,9 @@ async function runJcodeEntry(ctx) {
   }
 }
 var WAITING = "jcode's TUI opens after its first hub turn; send it work, or Ctrl-C";
-var init_native_cli_entry_jcode = () => {};
+var init_native_cli_entry_jcode = __esm(() => {
+  init_jcode();
+});
 
 // src/adapters/definitions/native-cli-preview-claude.ts
 import { readFileSync as readFileSync10 } from "fs";
