@@ -204,3 +204,67 @@ test("the real CLI refuses a stamp from an agent shell and from a pipe, and writ
   expect(piped.stderr.toString()).toContain("needs a terminal, even with --yes");
   expect(readFileSync(join(root, "docs/core.md"))).toEqual(before);
 });
+
+// What the person approved is what is written: the answer may take minutes, so the plan is revalidated after it and any change refuses the whole run (#1064 AC7 review).
+const answeringWith = (change: () => void): ReturnType<typeof terminal> => { const asked: string[] = []; return { asked, term: { isTTY: true, ask: async (question: string) => { asked.push(question); change(); return true; } } satisfies SpecsStampTerminal }; };
+
+test("a covered file edited while the question is open refuses the stamp and writes nothing (#1064 AC7 review)", async () => {
+  const { root, git } = fixture(), old = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "docs/core.md"), specText(old)); git("add", "."); git("commit", "-qm", "spec");
+  writeFileSync(join(root, "src/core.ts"), "export const value = 2;\n"); git("add", "."); git("commit", "-qm", "change");
+  const before = readFileSync(join(root, "docs/core.md"));
+  const result = await stamp(root, ["core"], parseSpecsConfig(undefined), answeringWith(() => writeFileSync(join(root, "src/core.ts"), "export const value = 99; // edited while asking\n")));
+  expect(result.code).toBe(1);
+  expect(result.err.join("\n")).toContain("its covered paths have uncommitted changes");
+  expect(result.err.join("\n")).toContain("nothing was written; review the current state and run ahub specs stamp again");
+  expect(readFileSync(join(root, "docs/core.md"))).toEqual(before);
+});
+
+test("the document itself edited while the question is open refuses the stamp, so what was approved is what is written (#1064 AC7 review)", async () => {
+  const { root, git } = fixture(), old = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "docs/core.md"), specText(old)); git("add", "."); git("commit", "-qm", "spec");
+  writeFileSync(join(root, "src/core.ts"), "export const value = 2;\n"); git("add", "."); git("commit", "-qm", "change");
+  const edited = specText(old).replace("Body line one.", "Body line one, rewritten by someone else.");
+  const result = await stamp(root, ["core"], parseSpecsConfig(undefined), answeringWith(() => writeFileSync(join(root, "docs/core.md"), edited)));
+  expect(result.code).toBe(1);
+  expect(result.err.join("\n")).toContain("docs/core.md changed while you were deciding");
+  expect(readFileSync(join(root, "docs/core.md"), "utf8")).toBe(edited); // the other person's edit is intact, not overwritten with a stamp made from the old bytes
+});
+
+test("a new commit while the question is open refuses the stamp: the person approved a different HEAD (#1064 AC7 review)", async () => {
+  const { root, git } = fixture(), old = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "docs/core.md"), specText(old)); git("add", "."); git("commit", "-qm", "spec");
+  writeFileSync(join(root, "src/core.ts"), "export const value = 2;\n"); git("add", "."); git("commit", "-qm", "change");
+  const before = readFileSync(join(root, "docs/core.md"));
+  const result = await stamp(root, ["core"], parseSpecsConfig(undefined), answeringWith(() => { writeFileSync(join(root, "src/other.ts"), "export const other = 2;\n"); git("add", "."); git("commit", "-qm", "moved HEAD"); }));
+  expect(result.code).toBe(1);
+  expect(result.err.join("\n")).toContain("HEAD or a document's covered paths changed while you were deciding");
+  expect(readFileSync(join(root, "docs/core.md"))).toEqual(before);
+});
+
+test("a stamps file edited while the question is open refuses the run, and nothing about it is written (#1064 AC7 review)", async () => {
+  const { root, git } = fixture(), old = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "README.md"), "Project.\n");
+  const manifest = `{\n  "schemaVersion": 1,\n  "documents": {\n    "README.md": { "verifiedAgainst": "${old}", "paths": ["src/core.ts"] }\n  }\n}\n`;
+  writeFileSync(join(root, "stamps.json"), manifest); git("add", "."); git("commit", "-qm", "stamps");
+  writeFileSync(join(root, "src/core.ts"), "export const value = 3;\n"); git("add", "."); git("commit", "-qm", "change");
+  const config = parseSpecsConfig({ stamps_file: "stamps.json" }), changedManifest = manifest.replace('"paths": ["src/core.ts"]', '"paths": ["src/core.ts", "src/other.ts"]');
+  const result = await stamp(root, ["README.md"], config, answeringWith(() => writeFileSync(join(root, "stamps.json"), changedManifest)));
+  expect(result.code).toBe(1);
+  expect(result.err.join("\n")).toContain("nothing was written; review the current state");
+  expect(readFileSync(join(root, "stamps.json"), "utf8")).toBe(changedManifest);
+});
+
+test("a document that cannot be stamped is refused before the question is asked, so the person is never asked about something that cannot be written (#1064 AC7 review)", async () => {
+  const { root, git } = fixture();
+  writeFileSync(join(root, "docs/dup.md"), ["---", "id: dup", "type: module", "title: D", "paths: [src/core.ts]", "verified-against: " + "a".repeat(40), "verified-against: " + "b".repeat(40), "---", "Body", ""].join("\n"));
+  git("add", "."); git("commit", "-qm", "duplicate field");
+  const before = readFileSync(join(root, "docs/dup.md"));
+  const term = terminal();
+  const result = await stamp(root, ["docs/dup.md"], parseSpecsConfig(undefined), term);
+  expect(result.code).toBe(1);
+  expect(result.err.join("\n")).toContain("verified-against appears more than once");
+  expect(result.err.join("\n")).toContain("nothing was written");
+  expect(term.asked).toEqual([]); // the question never came up
+  expect(readFileSync(join(root, "docs/dup.md"))).toEqual(before);
+});

@@ -2535,8 +2535,14 @@ absent) or the document's `verifiedAgainst` value in the stamps file, keeping
 every other byte, the line endings, a byte order mark and the file mode. The new
 stamp is the full HEAD SHA. It is refused, writing nothing for any target, while
 a document's covered paths have uncommitted changes, when the document has no
-paths, or when a name matches no or several documents; all refusals are listed
-together. Stamping changes a working-tree file: review the diff and commit it.
+paths, when a document's frontmatter cannot take a stamp, or when a name matches
+no or several documents; all refusals are listed together, and a document that
+cannot be stamped is refused before the question is asked. The answer may take
+minutes, so after it HEAD, each covered path's state and every target file's
+bytes are checked again, and any change refuses the whole run: what you approved
+is what is written. Removing the instruction block with `--no-specs` takes out
+only the block and one separating blank line, so the whitespace of the text
+around it is kept. Stamping changes a working-tree file: review the diff and commit it.
 Agents never edit `verified-against`. `docs/verified.json` is still restamped
 only in a release PR (AGENTS.md "Verified stamps").
 

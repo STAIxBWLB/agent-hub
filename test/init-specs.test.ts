@@ -145,3 +145,40 @@ test("the hub block's own markers and the specs block do not interfere, and a re
   expect(() => initSettingRows(cwd)).toThrow("incomplete");
   expect(() => init(cwd)).toThrow("incomplete");
 });
+
+test("removing the specs block keeps the whitespace of the text around it: an indented code block after it, trailing spaces and the end of the file (#1064 AC6 review)", () => {
+  const on = specsBlock("", true);
+  // text after the block that starts with an indented code block: its indentation is meaning, so it stays indented
+  const after = "\n\n    literal instruction\n\nBack to prose.  \n\n";
+  const text = `# Top\n\nBody.\n\n${on.trimEnd()}${after}`;
+  expect(specsBlock(text, false)).toBe("# Top\n\nBody.\n\n    literal instruction\n\nBack to prose.  \n\n");
+  // trailing blank lines and spaces at the very end of the remaining document survive
+  expect(specsBlock(`# Top\n\n${on.trimEnd()}\n\nEnd.   \n\n\n`, false)).toBe("# Top\n\nEnd.   \n\n\n");
+  // nothing before the block: the blank lines after it go, the first real line is untouched, and an indented first line stays indented
+  expect(specsBlock(`${on.trimEnd()}\n\n    code first\n`, false)).toBe("    code first\n");
+  expect(specsBlock(`${on.trimEnd()}\n\nText.\n`, false)).toBe("Text.\n");
+  // CRLF files: the block and its separator go, and no stray LF is left behind
+  const crlf = `# Top\r\n\r\nBody.\r\n\r\n${on.trimEnd().replace(/\n/g, "\r\n")}\r\n\r\nAfter.\r\n`;
+  expect(specsBlock(crlf, false)).toBe("# Top\r\n\r\nBody.\r\n\r\nAfter.\r\n");
+  // only the block: nothing is left
+  expect(specsBlock(on, false)).toBe("");
+  expect(specsBlock(`${on.trimEnd()}\n\n\n`, false)).toBe("");
+  // a block with no blank line before it keeps that text's last line break
+  expect(specsBlock(`Line.\n${on.trimEnd()}\nNext.\n`, false)).toBe("Line.\nNext.\n");
+});
+
+test("turning specs off and on again returns the file to the same bytes when the block sat at the end, and removal never edits text outside the markers (#1064 AC6 review)", () => {
+  for (const original of ["# Mine\n\nText.\n", "# Mine\n\n    indented\n", "Only a line", "# Mine\n\nTrailing spaces  \n\n"]) {
+    const withBlock = specsBlock(original, true);
+    const without = specsBlock(withBlock, false);
+    expect(withBlock).toStartWith(original.trimEnd());
+    // everything the user wrote, minus trailing whitespace the insert itself normalises, is still there in order
+    expect(without.replace(/\s+$/, "")).toBe(original.replace(/\s+$/, ""));
+    expect(specsBlock(without, true)).toBe(withBlock);
+  }
+  // a block in the middle: both sides come back exactly
+  const middle = `# A\n\nBefore.\n\n${specsBlock("", true).trimEnd()}\n\n    after code\n`;
+  const removed = specsBlock(middle, false);
+  expect(removed).toBe("# A\n\nBefore.\n\n    after code\n");
+  expect(removed.includes("AGENT_HUB_SPECS")).toBe(false);
+});

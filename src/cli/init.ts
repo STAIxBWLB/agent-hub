@@ -62,15 +62,20 @@ const SPECS_BEGIN = "<!-- AGENT_HUB_SPECS:BEGIN (managed by `ahub init`, edits i
 const SPECS_END = "<!-- AGENT_HUB_SPECS:END -->";
 /**
  * #1064 T3: the design-specs instruction block, placed the way the release guard's is. On: insert it (at the end of the file) or replace it in place. Off: drop it and the blank
- * lines around it. Text outside the markers is never touched, and incomplete markers are refused (nothing is guessed about where a half block ends).
+ * lines around it, and nothing else. Text outside the markers is never touched, and incomplete markers are refused (nothing is guessed about where a half block ends).
  */
 export function specsBlock(existing: string, enabled: boolean): string {
   const start = existing.indexOf("<!-- AGENT_HUB_SPECS:BEGIN"), end = existing.indexOf(SPECS_END, Math.max(start, 0));
   if (start >= 0 !== end > start || start < 0 && existing.includes(SPECS_END)) throw new Error("the AGENT_HUB_SPECS markers in AGENTS.md are incomplete; fix or remove the half block in your editor, then run ahub init again; nothing was written");
   if (!enabled) {
     if (start < 0) return existing;
-    const rest = [existing.slice(0, start).trimEnd(), existing.slice(end + SPECS_END.length).trim()].filter(Boolean).join("\n\n");
-    return rest && `${rest}\n`;
+    // Take out the block, the line break that ends its closing marker and one separating blank line, and nothing else: whitespace belonging to the text around it
+    // (an indented code block right after the block, trailing spaces, the end of the file) is left byte for byte. With nothing before the block, the blank lines after it go instead.
+    let before = existing.slice(0, start), after = existing.slice(end + SPECS_END.length);
+    if (before === "") after = after.replace(/^(?:[ \t]*\r?\n)+/, "");
+    else { after = after.replace(/^\r?\n/, ""); if (/\r?\n\r?\n$/.test(before)) before = before.replace(/\r?\n$/, ""); }
+    const rest = before + after;
+    return rest.trim() === "" ? "" : rest;
   }
   const block = `${SPECS_BEGIN}\n${readFileSync(join(TEMPLATES, "specs.block.md"), "utf8").trim()}\n${SPECS_END}`;
   if (start >= 0) return existing.slice(0, start) + block + existing.slice(end + SPECS_END.length);
