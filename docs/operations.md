@@ -1067,6 +1067,26 @@ the sandbox either. `git add`, `commit`, `stash` and `checkout` work, and
 signs with a key under `~/.ssh` or `~/.gnupg` fails, because the sandbox cannot
 read those directories. Run a refused command yourself, in a terminal.
 
+A task can declare what it needs (#1081): `hub_task_propose {needs_network: true}` or `{needs_worktree: true}`, and
+`ahub task propose --needs-network` or `--needs-worktree`. Only an explicit `true` sets either, and the hub never
+infers a need from the title. A declared need keeps the task away from a peer that cannot meet it: automatic
+routing, a reservation, `ahub task assign` and `hub_task_accept` all refuse it before any write, and
+`ahub route explain <id>` prints the cause for that peer. It is offered to a peer that can meet the need.
+
+- `needs_network` is for work that fetches from a package registry, runs `git fetch` or `git push`, or calls an API.
+  A hub-sandboxed peer (Pi, the local worker) has none while `local.bash_network` is off: `no network: local.bash_network
+  is off ...`.
+- `needs_worktree` is for work that must run in its own git worktree on a task branch (the repository rule). A
+  hub-sandboxed peer cannot create one, because `git worktree add` writes under the git common directory and runs
+  outside the sandbox by design (#270): `no worktree: git worktree add runs outside the sandbox; ...`. A refused
+  accept creates nothing, so no empty branch ref is left behind (the Pi accepts of #621 and #565 left two). Having
+  the hub create the worktree and add it to a sandboxed peer's writable roots would move the sandbox write
+  boundary (a commit writes under `.git/worktrees` and `.git/objects`), so it is the separate spec issue #1115.
+
+A peer whose capability the hub cannot tell is never refused on this ground, and work that declares no need is
+routed as before. The flags are a person's or a planner's statement about the work, so an unflagged task can still
+reach a peer that cannot do it.
+
 Network is off unless `local.bash_network` says otherwise. With `true` it goes
 only through the hub's egress proxy on a loopback port (0.11): commands get
 `HTTPS_PROXY` and the other proxy variables, the proxy opens HTTPS (`CONNECT`,

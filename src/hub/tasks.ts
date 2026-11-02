@@ -1371,6 +1371,25 @@ export class Tasks {
     return { ...(family ? { reviewerFamily: family } : {}), ...(reason ? { reviewerReason: reason } : {}), ...(assignment?.reviewBlocked ? { reviewBlocked: true } : {}), ...(queueReviewHeld ? { queueReviewHeld: true as const, ...(queueReviewBinding !== undefined ? { queueReviewBinding } : {}) } : {}) };
   }
 
+  /**
+   * #1081: a task that declares `needs_network` or `needs_worktree` is refused at accept when its owner cannot meet the need, before any write. Routing
+   * already keeps such a task away from that peer; this covers an offer made before the sandbox network was switched off, and it is what stops a
+   * sandboxed peer from accepting work, failing at `git worktree add` (#270) and leaving an empty branch ref behind (#621, #565). Unknown capability is
+   * not a refusal, and a PII task skips the check as `requireCapabilities` does.
+   */
+  private declaredNeedCheck(task: Pick<Task, "signals" | "id"> & Partial<Pick<Task, "signals">>, peer: PeerId): void {
+    if (!this.d.capabilities || this.isPii(task as Task)) return;
+    const wantsNetwork = task.signals?.includes("needs_network") === true, wantsWorktree = task.signals?.includes("needs_worktree") === true;
+    if (!wantsNetwork && !wantsWorktree) return;
+    const caps = peerEntry(this.d.capabilities(), peer);
+    if (wantsNetwork && caps?.network === false) {
+      throw new PreEffectToolRefusal(`task #${task.id} needs the network and ${peer} has none: ${caps.networkReason ?? "its shell cannot reach the network"}; decline it so the hub offers it to a peer with network, or ask the person to enable it`);
+    }
+    if (wantsWorktree && caps?.worktree === false) {
+      throw new PreEffectToolRefusal(`task #${task.id} needs its own git worktree and ${peer} cannot create one: ${caps.worktreeReason ?? "it cannot create the task worktree"}; nothing was created, so no branch ref is left behind; decline it so the hub offers it to a peer that can, this will not change by waiting`);
+    }
+  }
+
   /** Capability admission precedes explicit assignments/reservations, independent of readiness or transient peer health. */
   private requireCapabilities(task: Parameters<typeof assign>[0], peer: PeerId, role: Exclude<TaskAssignmentRole, "planner"> = "owner", preEffect = true): void {
     requireLocalTaskPeer(peer);
@@ -1379,7 +1398,7 @@ export class Tasks {
     if ((!this.d.capabilities || this.isPii(task)) && !declaredExtra) return;
     const { state: _state, ...draft } = task; // backlog/readiness must not bypass an explicit reservation's admission
     const admission = assign(draft, this.states(), this.d.routing(), { candidates: role === "owner" ? [peer] : [], ...(role === "owner" ? { namedOwner: peer } : { namedReviewer: peer }), ...this.weights(task.class) });
-    const missing = (admission.refusals ?? []).filter(row => row.peer === peer && row.role === role && (row.code === "tests" || row.code === "spec" || declaredExtra && role === "owner" && row.code === "owner-admission")).map(row => `  ${role} candidate ${peer}: skipped, ${row.reason}`);
+    const missing = (admission.refusals ?? []).filter(row => row.peer === peer && row.role === role && (row.code === "tests" || row.code === "spec" || row.code === "network" || row.code === "worktree" || declaredExtra && role === "owner" && row.code === "owner-admission")).map(row => `  ${role} candidate ${peer}: skipped, ${row.reason}`);
     if (missing.length) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot assign ${peer}: ${missing.join("; ")}`);
   }
 
@@ -3260,7 +3279,7 @@ export class Tasks {
     return updated; // a failed readback may follow a durable release write
   }
 
-  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown; draft?: unknown; goal?: unknown }, external?: GitHubSource, created?: () => void, fence?: () => string | undefined): Promise<Task> {
+  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; needs_network?: unknown; needs_worktree?: unknown; backlog?: unknown; draft?: unknown; goal?: unknown }, external?: GitHubSource, created?: () => void, fence?: () => string | undefined): Promise<Task> {
     const requestCheck = this.requestCheck(by, fence);
     requireLocalTaskPeer(input.owner);
     external = external ? { ...external } : undefined;
@@ -3304,6 +3323,12 @@ export class Tasks {
     const signals = this.signalsFor({ ...text, detail: [screenDetail, planText(plan)].join("\n"), plan });
     // Urgent work is handed over even when its paused owner's window resets soon (issue #36).
     if (input.urgent === true && !signals.includes("urgent")) signals.push("urgent");
+    // #1081: a declared need is a signal like urgent, so routing and every later capability check read the same field. Only an explicit true sets it.
+    if (input.needs_network !== undefined && typeof input.needs_network !== "boolean") throw new PreEffectToolRefusal("needs_network must be true or false; omit it when the work needs no network");
+    if (input.needs_network === true && !signals.includes("needs_network")) signals.push("needs_network");
+    // #1081 (amended AC1): the same for a task worktree. Only an explicit true sets it.
+    if (input.needs_worktree !== undefined && typeof input.needs_worktree !== "boolean") throw new PreEffectToolRefusal("needs_worktree must be true or false; omit it when the work needs no task worktree");
+    if (input.needs_worktree === true && !signals.includes("needs_worktree")) signals.push("needs_worktree");
     // The PII screen (issue #198) reads the same text before anything else does: until its verdict the task is on no
     // board, in no envelope and before no other model. A pattern match is PII without a call; no verdict is PII too.
     const screening = this.screenOn();
@@ -5809,6 +5834,7 @@ export class Tasks {
     this.ready(task, true);
     if (task.state !== "proposed" && task.state !== "changes_requested" && task.state !== "in_progress") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}: cannot move to in_progress`);
     this.studyDispatchCheck(task, task.owner ?? undefined);
+    this.declaredNeedCheck(task, task.owner ?? by); // the owner's capability, also when the console user accepts on its behalf (`mine` admits USER)
     this.acceptanceCapacity(task, 0, "check");
     // S1 spec acceptance and S9 plan review are independent prerequisites; retain S1's missing-spec refusal first.
     if (this.specGated(task) && this.d.sdlc?.config().mode === "enforce" && specState(task.sdlc, undefined) === "missing") throw new PreEffectToolRefusal(this.specText(task, "missing", "blocked"));
