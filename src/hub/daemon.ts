@@ -54,7 +54,7 @@ import { buildReviewBrief, withCodeSymbols } from "./review-brief.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
-import { JcodeOptionMismatch, isJcodePeer, jcodeVersionAsync, type JcodePeer } from "../adapters/jcode.ts";
+import { JcodeOptionMismatch, JcodeTuiRefusal, isJcodePeer, jcodeVersionAsync, type JcodePeer } from "../adapters/jcode.ts";
 import { VERSION_REFUSAL, configuredCommands, describe, isCompatId } from "../adapters/compat.ts";
 import { agentVersionsAsync, type AgentVersionRow } from "../cli/agents.ts";
 import { driftedAgents, noticeDrift, type DriftedAgent } from "./agent-drift.ts";
@@ -5665,6 +5665,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ...(instance?.provider ? { provider: instance.provider } : {}),
         ...(args.model ?? instance?.model ? { launchModel: (args.model ?? instance?.model)! } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}), cwd: executionCwd, watchdogMs: config.watchdog_ms,
         toolCeilingMs: adapterTiming.acpToolCeilingMs(), activityBatchMs: adapterTiming.acpActivityBatchMs(), steerTimeoutMs: adapterTiming.jcodeSteerTimeoutMs(),
+        tuiHintContext: () => ({ tui: startMode(peer) === "tui", afterCrash: crashReport.length > 0 }),
         preamble: sessionRoleContract(peer), log: () => log("Jcode native diagnostic: details withheld"),
         // #801: Jcode 0.99.1's usage_update is `{ used, size }`, the live session's context occupancy: a context reading bound to the adapter's own session id, never a tokens event
         // or a quota window. An invalid shape reports a null reading (unknown, not the previous value).
@@ -9045,8 +9046,11 @@ export async function startDaemon(opts: DaemonOptions) {
       case "native_tui_launch": {
         if (c.role !== "console") return void reply({ ok: false, error: "native TUI launch is console only" });
         const peer = String(msg.peer), owner = bus.peers.get(peer);
-        if (stopping || recoveryActive() || !membershipAllowed(peer) || rosterChanging === peer || requestedPeerStops.has(peer) ||
-          peer !== definitionOf(peer)?.kind || !isJcodePeer(owner) || !jcodeMcpReady(opts.cwd, opts.stateDir, SERVER_JS)) return void reply({ ok: false, error: "owned native TUI launch is unavailable" });
+        // #1085: every refusal names its cause class, in the reply and as one hub.log line. The class is a closed word: never a session id, launch id, socket or path.
+        const refuseTui = (code: string, error: string, resumed?: boolean) => { log(`native_tui_launch jcode refused: ${code}${resumed ? " (resumed session)" : ""}`); return void reply({ ok: false, code, ...(resumed ? { resumed: true } : {}), error }); };
+        if (stopping || recoveryActive() || !membershipAllowed(peer) || rosterChanging === peer || requestedPeerStops.has(peer)) return refuseTui("hub_busy", "owned native TUI launch is unavailable");
+        if (peer !== definitionOf(peer)?.kind || !isJcodePeer(owner)) return refuseTui("not_running", "owned native TUI launch is unavailable");
+        if (!jcodeMcpReady(opts.cwd, opts.stateDir, SERVER_JS)) return refuseTui("mcp_stale", "owned native TUI launch is unavailable");
         try {
           if (msg.binding !== undefined && (!msg.binding || typeof msg.binding.launchId !== "string" || typeof msg.binding.sessionId !== "string")) throw new Error("invalid binding");
           const options = msg.args ?? {};
@@ -9054,7 +9058,8 @@ export async function startDaemon(opts: DaemonOptions) {
           return void reply({ ok: true, ...owner.tuiLaunch(msg.binding, options) });
         } catch (error) {
           if (error instanceof JcodeOptionMismatch) return void reply({ ok: false, option: error.option, error: `owned Jcode launch differs from its running session in ${error.option}; start without it or stop jcode first` });
-          return void reply({ ok: false, error: "owned Jcode launch or saved session could not be verified; details withheld" });
+          if (error instanceof JcodeTuiRefusal) return refuseTui(error.code, "owned Jcode launch or saved session could not be verified; details withheld", owner.resumedSession);
+          return refuseTui("bad_request", "owned Jcode launch or saved session could not be verified; details withheld");
         }
       }
       case "peer_start":
