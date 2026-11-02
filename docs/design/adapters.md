@@ -59,7 +59,7 @@ Permission decisions are bound to the authenticated caller and current session. 
 
 ## Model, account, and memory boundaries
 
-Subscription-based native CLIs keep their own account authentication; those credentials are not pooled through the hub. Hub-owned inference, including internal summaries and local-worker model calls, uses the in-process model route and OmniRoute provider boundary. A task or adapter cannot select a credential or route by supplying prompt text. This separates native subscription identity from hub service credentials ([#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
+Subscription-based native CLIs keep their own account authentication; those credentials are not pooled through the hub. Hub-owned inference, including internal summaries and local-worker model calls, uses the in-process model route and OmniRoute provider boundary. Prompt text may inform configured routing, but it cannot grant credential access or replace host routing policy. This separates native subscription identity from hub service credentials ([#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
 
 The PII screen is distinct from ordinary optional inference. It may use an on-device model; a gateway screen requires positive on-campus admission and `onCampusOnly`. If no allowed path returns a closed `clear` or PII verdict before the deadline, the result is unknown and handled as private. This keeps network and model uncertainty from becoming a disclosure ([#198](https://github.com/STAIxBWLB/agent-hub/issues/198)).
 
