@@ -17,7 +17,7 @@ ahub setup                                # installs the channel plugin and a pr
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.27.0
+bun add -g github:STAIxBWLB/agent-hub#v0.28.0
 ahub setup
 ```
 
@@ -30,6 +30,12 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move a running project to a newer release later, run `ahub upgrade` in a
 terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version.
+
+## Upgrading to 0.28.0
+
+`ahub init` now takes flags for the main project settings (#1100, #1107): `--agents <a,b,...|none>`, `--sdlc off|advise|enforce`, `--coordination advisory|turn-free`, `--memory`/`--no-memory`, `--snapshots`/`--no-snapshots`, `--pi`/`--no-pi`, `--specs`/`--no-specs`, `--spec-review off|report|require` and, for a new project only, `--autonomy inherit|off`. On an existing project only a flag you give changes anything, `--dry-run` shows each change as old -> new, and an invalid value is refused with the allowed values. Run at a terminal on a new project with none of these flags and no `--yes`, `ahub init` asks each setting with its default in brackets and shows the plan before it writes anything; `--yes` takes the defaults, and a pipe, a peer or `--dry-run` is never asked (#1110). Design specs are new and on by default (#1097, #1102, #1107). A design spec is a Markdown file with `id` and `type` frontmatter. `ahub specs list|check|covers` reads the specs and checks their links and freshness without a daemon, agents get the read-only `hub_specs`, and `ahub status` adds a specs line when the project has specs. `ahub specs stamp` is your own record, made at a terminal, that you reviewed a spec against HEAD (see [design spec inspection](operations.md#design-spec-inspection)). The next `ahub init` in an existing project adds an `AGENT_HUB_SPECS` block to `AGENTS.md` unless the project set `specs.enabled` to false; `ahub init --no-specs` turns specs off and removes the block.
+
+Agents now read the task board in pages: `hub_task_list` returns 50 compact rows by default with a `next` cursor, and `ids` or `detail: true` give full rows (#1083); `ahub board` from your terminal is unchanged. A task can declare `needs_network` or `needs_worktree` (`ahub task propose --needs-network|--needs-worktree`), and such work is no longer offered to a peer that cannot meet the need, such as a sandboxed Pi or local worker (#1081). An urgent task can take back offers its owner never accepted when they are all that fill its WIP limit (#1080). When the reply to a `hub_task_propose` or `hub_review` is lost, the call reports `outcome: unknown` with a `request_id` to reuse, so a retry does not file a duplicate (#1078). A busy agent can settle its own `needs_review` delivery with `hub_delivery_resolve`, and `hub_inbox` reads new messages queued behind a held one (#1079). `ahub queue discard --peer <id>` without `--state` now also clears the peer's unsettled failed deliveries, `--state failed` names failed deliveries alone, and `ahub queue list` hides rows a resolution already settled unless `--all` (#1103). Crash-recovery notices in `ahub status` clear once their condition is gone (#1082), and a start refused during a recovery hold says why and what to run (#1104). A backlog card with a planned start is not offered before that date (#1092). Agents the hub starts no longer inherit the Orca pane's routing (#1094), and their Orca terminals open in the project root's worktree (#1105). A Jcode session that recovery restarted headless gets its TUI back with `ahub stop jcode`, then `ahub jcode` (#1093). `ahub setup` keeps plugin rows it did not install (#1073, #1074). The reviewer checklist in the shipped profiles now asks that error messages state the cause and the next step; a profile override or a pack replaces that checklist and does not get the new item (#1109). Codex 0.166.0 is now a verified reviewer version (#1071), and the hub exact-pins `@staix/agent-mem` 0.19.0, which shares its index and hook records with 0.18.0 (#1072). As for 0.27.0, update the global CLI and the plugin yourself afterwards with `bun add -g @staix/agent-hub@0.28.0`, then `ahub setup`, and restart Claude sessions so they load the 0.28.0 plugin, which adds `hub_specs` and `hub_delivery_resolve`.
 
 ## Upgrading to 0.27.0
 
@@ -157,7 +163,7 @@ The restarted Claude planner gets the release-train tools (`hub_release_new`, `h
 
 Jcode must be 0.98.0 or later, below 1.0.0; 0.94.0 is no longer accepted, so `ahub doctor` fails its Jcode row for an older install and the peer does not start (#529). Every owned jcode process runs with `JCODE_NO_TELEMETRY=1`.
 
-Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.18.0. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
+Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.19.0. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
 
 From 0.12.30 or earlier, existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
 
@@ -180,6 +186,8 @@ ahub up            # starts the daemon, opens claude and codex in terminals (see
 ahub console       # use in another terminal if up used --no-console; Tab opens panels
 ahub kimi          # Kimi in its own pull-only TUI; --mode headless for the hub-driven peer
 ```
+
+On a new project at a terminal, `ahub init` first asks each main setting (profile, agents, specs, SDLC mode, coordination, memory, snapshots and the rest) with its default in brackets. Enter keeps a default, and nothing is written until you answer y to the plan. `ahub init --yes` takes every default without asking.
 
 `ahub up` also starts a default set of agents, `claude` and `codex` unless you choose others, each in a terminal the hub opens (`terminal.open`, or Orca). It prints one line per agent, and an agent it cannot open is named with the command to run yourself (`ahub claude`, `ahub codex`). Choose the set once with `ahub setup --agents kimi,codex` (or answer the question in `ahub setup`), change one project with `ahub settings set start.agents <a,b>`, and skip it for a run with `ahub up --no-agents`. Without a terminal provider nothing is opened and the hub keeps running; start them by hand:
 
@@ -230,7 +238,7 @@ More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-de
 
 ## Shared memory
 
-The hub exact-pins the first-party `@staix/agent-mem` 0.18.0 core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
+The hub exact-pins the first-party `@staix/agent-mem` 0.19.0 core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
 
 Before any real generation migration, upgrade every hub sharing that memory home to 0.12.30 or later and check its authenticated binding with `ahub memory profile-check` in each custom registry. Ready bindings prove compatibility, not an atomic live cutover: quiesce consumers and close their handles before migrating, then reopen through the supported session-preserving lifecycle. Invalid or changed profiles disable native memory without falling back to legacy writes; the bus and board continue. See [memory operations](operations.md#hub-memory) for the remaining rollout gates.
 
