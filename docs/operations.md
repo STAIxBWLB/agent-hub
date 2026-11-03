@@ -5033,7 +5033,24 @@ reserved peer that cannot take it (offline, paused, excluded, at its WIP limit)
 refuses the pull before any change, naming the peer and its reason; it is not
 passed over to another peer. `ahub route explain` previews the same reserved-only
 choice. An unreserved pull keeps reserving a slot as above. A reserved offer that
-was never started can return untouched and keeps its reservation.
+was never started can return untouched. Omitting planning fields retains its
+reservation, so `tasks.auto_pull` can offer it again as soon as the slot is free.
+
+To park untouched work in one operation, the planner's
+`hub_backlog_return_untouched` accepts optional `fields` containing only
+`reserved` (a peer ID or `null`). For example:
+
+```json
+{"id":138,"revision":6,"reason":"wait for the person","fields":{"reserved":null}}
+```
+
+The return, reservation change, planning revision and previous reservation are
+saved together before capacity notices or auto-pull run. Read the returned
+`planningRevision` for a later planning change. Without `fields`, the planning
+revision and reservation are retained. Reservation updates use the existing
+person/planner, roster, exclusion and capability checks; a planner cannot clear
+or replace a person's reservation. The ordinary `ahub backlog return` form keeps
+its existing reservation-preserving behavior.
 
 Capacity defaults to one per peer. Each declared instance has its own `tasks.wip_limits.<instance>` key. `ahub settings set tasks.wip_limits.codex 2`
 uses the existing machine-local registry path; integers 0..32 apply live (the next

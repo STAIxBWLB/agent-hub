@@ -69,6 +69,8 @@ Automatic offer and backlog paths respect `plannedStart`; a future card becomes 
 
 Urgent acceptance can reclaim only enough unaccepted, unstarted, non-pinned and non-urgent offers to fit the limit. It does so after other admission checks and immediately before the accept write; if insufficient, it reclaims none. Accepted work is never displaced merely to satisfy a new urgent request, because an offer and an active commitment have different costs ([#1080](https://github.com/STAIxBWLB/agent-hub/issues/1080)).
 
+Untouched returns may atomically update `reserved` while moving eligible proposed or accepted work back to Backlog. `Tasks` retains the existing authority, execution-evidence, pin, release and reservation gates, including post-screen rechecks. An explicit reservation patch advances planning revision and records its prior value in the same state/history write, before capacity publication can trigger auto-pull. Clearing it therefore parks the card; omitting fields preserves its planning. Assignment and auto-pull selection remain the existing rules, with no time-based suppression ([#1154](https://github.com/STAIxBWLB/agent-hub/issues/1154)).
+
 ## Source-backed plans and request intake
 
 For a profile that supports `plan.sources`, `Tasks` validates every retained source ID against the source registry at proposal and acceptance, before board writes, admission effects or peer notices. Unknown IDs are refused with the ID and `ahub source list` guidance. Overlap notices compare the registry IDs; private task plans remain withheld by the shared public view.
