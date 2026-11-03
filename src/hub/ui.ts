@@ -145,8 +145,6 @@ export function startDashboard(options: DashboardOptions) {
         }
       }
       try {
-        // Intake creates person-attributed drafts; only the server-issued ticket determines this fence.
-        if (sessionOf(cookie).liveTest && input.action === "intake") return reject(403, "live-test dashboard cannot write person-attributed content; use peer tools");
         if (sessionOf(cookie).liveTest && !["start", "stop", "pause", "resume", "permit", "start_peer", "setting", "setting_undo", "setting_preview", "setting_reload", "sdlc_queue", "sdlc_release"].includes(String(input.action))) {
           return reject(403, "live-test dashboard cannot write person-attributed content; use peer tools");
         }

@@ -13,6 +13,7 @@ async function rig() {
   const cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-ui-intake-"))), stateDir = join(cwd, "state");
   mkdirSync(join(cwd, ".agenthub"));
   const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8")
+    .replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"')
     .replace(/^pii_patterns = .*$/m, 'pii_patterns = ["INTAKE-PRIVATE"]')
     .replace('pii_screen = "local"', 'pii_screen = "off"');
   writeFileSync(join(cwd, ".agenthub/routing.toml"), routing);
@@ -93,8 +94,10 @@ test("daemon intake callback refuses a live-test session before task dispatch ev
   const start = source.indexOf("  async function uiAction("), end = source.indexOf("  const recoverySessionDigest", start);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
   let calls = 0;
-  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${source.slice(start, end)}\nuiAction;`);
-  const action = runInNewContext(script, { taskOp: () => { calls++; throw new Error("effect reached"); } });
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${source.slice(start, end)}\nglobalThis.extracted = uiAction;`);
+  const context = { extracted: undefined as undefined | ((input: Record<string, unknown>, session: Record<string, unknown>) => Promise<unknown>), taskOp: () => { calls++; throw new Error("effect reached"); } };
+  runInNewContext(script, context);
+  const action = context.extracted!;
   expect(await action({ action: "intake", text: "forged", liveTest: false }, { settings: true, liveTest: true })).toMatchObject({ ok: false, error: expect.stringContaining("live-test") });
   expect(calls).toBe(0);
 });
