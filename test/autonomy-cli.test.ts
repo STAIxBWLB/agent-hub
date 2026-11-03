@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { autonomyPreset } from "../src/hub/autonomy.ts";
-import { autonomyEnvironment, runAutonomy } from "../src/cli/autonomy.ts";
+import { autonomyEnvironment, renderAutonomyStatus, runAutonomy } from "../src/cli/autonomy.ts";
 
 test("one person confirmation follows the concrete preview; refusal writes nothing", async () => {
   const calls: string[] = [], printed: string[] = [];
@@ -50,12 +50,59 @@ test("status JSON and current environment are explicit; default output is readab
   const printed: string[] = [];
   const ports = { environment: "orca", print: (line: string) => printed.push(line), ask: async () => null, request: async () => ({ ok: true, status: { environment: "orca", peers: [] }, lines: ["Project autonomy, environment: orca"] }) };
   await runAutonomy(["status"], ports);
-  expect(printed).toEqual(["Project autonomy, environment: orca"]);
+  expect(printed).toEqual(["Project autonomy · environment orca", "", "PEER  NOW  NEXT START", "", "Guarded actions (0 classes; 0 enforced for at least one peer)"]);
+  printed.length = 0;
   await runAutonomy(["status", "--json"], ports);
-  expect(JSON.parse(printed[1]!)).toEqual({ environment: "orca", peers: [] });
+  expect(printed).toEqual([JSON.stringify({ environment: "orca", peers: [] })]);
   expect(autonomyEnvironment({ ORCA_WORKTREE_ID: "x", CI: "1" }, true)).toBe("orca");
   expect(autonomyEnvironment({ CI: "1" }, false)).toBe("ci");
   expect(autonomyEnvironment({}, false)).toBe("headless");
+});
+
+test("status groups identical floor verdicts and unknowns, preserves differences and falls back for older hubs", async () => {
+  const shared = { class: "future-class", status: "not-enforced", reason: "Future guard has not been verified; keep this exact text." };
+  const structural = { class: "structural", status: "structural-guard", reason: "Verified structural guard." };
+  const peer = (id: string, effectiveMode: string, nextMode: string | null, floor = [shared, structural]) => ({
+    id, effectiveMode, nextMode, floor,
+    missing: ["future-class: duplicate floor reason", "structural: duplicate guard reason", "Unknown native tool confirmation?", "future-classification: retain this unknown."],
+  });
+  const status = { environment: "orca", machineDefault: { enabled: false, notice: "Machine evidence is unsafe." },
+    peers: [peer("alpha", "never-ask", "never-ask"), peer("beta-long", "ask-when-needed", "ask-when-needed"), peer("gamma", "unmanaged", null),
+      peer("delta", "ask", "ask", [{ ...shared, status: "hub-enforced", reason: "The hub asks before running." }, structural])],
+    claudeHomes: [{ home: { path: "/fixture/home/profile" }, plugin: { state: "current" }, hook: { state: "missing", reason: "The project-neutral profile hook is not configured." } },
+      { home: { path: "/fixture/home-other/profile" }, plugin: { state: "unknown" }, hook: { state: "refused", reason: "Unsafe home." } }],
+    claudeHomeNotices: ["Profile discovery is incomplete."],
+  };
+  const lines = renderAutonomyStatus(status, "/fixture/home")!;
+  expect(lines.slice(0, 7)).toEqual([
+    "Project autonomy · environment orca · machine default off", "", "PEER       NOW              NEXT START",
+    "alpha      never-ask        never-ask", "beta-long  ask-when-needed  ask-when-needed", "gamma      unmanaged        unmanaged", "delta      ask              ask",
+  ]);
+  expect(lines).toContain("Guarded actions (2 classes; 2 enforced for at least one peer)");
+  expect(lines).toContain("  future-class · not-enforced · alpha, beta-long, gamma");
+  expect(lines).toContain("  future-class · hub-enforced · delta");
+  expect(lines).toContain("  structural · structural-guard · all peers");
+  expect(lines.filter(line => line.includes(shared.reason))).toEqual([`    ${shared.reason}`]);
+  expect(lines.filter(line => line.includes("Unknown native tool confirmation?"))).toEqual(["  alpha, beta-long, gamma, delta: Unknown native tool confirmation?"]);
+  expect(lines).toContain("  alpha, beta-long, gamma, delta: future-classification: retain this unknown.");
+  expect(lines.join("\n")).not.toContain("duplicate");
+  expect(lines).toContain("Machine evidence is unsafe.");
+  expect(lines).toContain("  Profile discovery is incomplete.");
+  expect(lines).toContain("  ~/profile: plugin current; hook missing. The project-neutral profile hook is not configured.");
+  expect(lines).toContain("  /fixture/home-other/profile: plugin unknown; hook refused. Unsafe home.");
+  const printed: string[] = [];
+  const reply = { ok: true, status, lines: ["legacy output", "  retained spacing", ""] };
+  const ports = { environment: "orca", print: (line: string) => printed.push(line), ask: async () => null, request: async () => reply };
+  await runAutonomy(["status"], ports);
+  expect(printed).toEqual(renderAutonomyStatus(status)!);
+  printed.length = 0;
+  await runAutonomy(["status", "--json"], ports);
+  expect(printed).toEqual([JSON.stringify(status)]);
+  for (const oldStatus of [{ environment: "orca" }, { peers: null }, { peers: {} }]) {
+    printed.length = 0;
+    await runAutonomy(["status"], { ...ports, request: async () => ({ ...reply, status: oldStatus }) });
+    expect(printed).toEqual(reply.lines);
+  }
 });
 
 test("new environment detection is preset data rather than a native-name branch", () => {
