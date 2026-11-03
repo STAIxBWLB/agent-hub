@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hubGitEnv, hubGitSync } from "../src/hub/git.ts";
@@ -35,8 +35,8 @@ test("the real git port runs a removal only through assertRemovalArgv, and every
   const seen: string[][] = [];
   const git = realTidyGit(argv => { seen.push(argv); return { status: 0, stdout: "" }; });
   git.run("/r", ["worktree", "remove", "/r/w"]); git.run("/r", ["branch", "-d", "b"]); git.run("/r", ["status", "--porcelain"]);
-  expect(seen.map(argv => argv.slice(0, 6))).toEqual(Array(3).fill(["-C", "/r", "-c", "gc.auto=0", "-c", "maintenance.auto=false"]));
-  expect(seen.map(argv => argv.slice(6))).toEqual([["worktree", "remove", "/r/w"], ["branch", "-d", "b"], ["status", "--porcelain"]]);
+  expect(seen.map(argv => argv.slice(0, 7))).toEqual(Array(3).fill(["--no-optional-locks", "-C", "/r", "-c", "gc.auto=0", "-c", "maintenance.auto=false"]));
+  expect(seen.map(argv => argv.slice(7))).toEqual([["worktree", "remove", "/r/w"], ["branch", "-d", "b"], ["status", "--porcelain"]]);
   for (const args of [["worktree", "remove", "--force", "/r/w"], ["branch", "-d", "-D", "b"], ["worktree", "remove", "-f", "/r/w"]]) expect(() => git.run("/r", args), args.join(" ")).toThrow("refused");
   expect(seen).toHaveLength(3);   // a refused argv never reaches the spawner
 });
@@ -230,6 +230,25 @@ test("rows come from git's own list: a path the daemon names that git does not l
   ], root, git);
   expect(rows.map(r => r.shown)).toEqual([".worktrees/real"]);
   expect(rows[0]!.head).toMatch(/^[0-9a-f]{40}$/);
+});
+
+// ---- found by running the real CLI against a real hub: the preview must not change what the shelf measures.
+test("a tidy preview leaves every worktree's index untouched, so previewing never makes a settled worktree look active", () => {
+  const { root, add } = repo(); const git = gitPort();
+  add("idle");
+  const idle = join(root, ".worktrees", "idle");
+  const indexFile = join(g(idle, "rev-parse", "--absolute-git-dir"), "index");
+  // a tracked file whose stat data no longer matches the index (a copy, a checkout or a touch does this): `git status` then wants to refresh the index
+  const tracked = join(idle, "a.txt"); writeFileSync(join(idle, "tracked.txt"), "t"); g(idle, "add", "tracked.txt"); g(idle, "commit", "-q", "-m", "t");
+  utimesSync(join(idle, "tracked.txt"), new Date(), new Date(Date.now() + 5000)); void tracked;
+  const old = new Date("2026-10-01T00:00:00Z"); utimesSync(indexFile, old, old);
+  const before = statSync(indexFile).mtimeMs;
+  const plan = planTidy(rowsFromReply([reply("idle")], root, git), root, git);     // runs `git status` inside the worktree, among other reads
+  expect(plan.entries).toHaveLength(1);
+  expect(statSync(indexFile).mtimeMs).toBe(before);
+  // and the same check fails for a plain `git status`, so this test can tell the difference
+  utimesSync(indexFile, old, old); utimesSync(join(idle, "tracked.txt"), new Date(), new Date(Date.now() + 9000)); g(idle, "status", "--porcelain", "--untracked-files=all");
+  expect(statSync(indexFile).mtimeMs).toBeGreaterThan(before);
 });
 
 // ---- the two review findings: a PII-bound row, and a branch that changed between the daemon's read and the confirm.
