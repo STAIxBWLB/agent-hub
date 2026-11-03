@@ -474,6 +474,8 @@ export class Board {
     this.db.run("CREATE TABLE IF NOT EXISTS security_scans (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, repo TEXT NOT NULL, sources TEXT NOT NULL, counts TEXT NOT NULL, total INTEGER)");
     // #843 AC3: one row per (agent id, installed version, planner) already queued, so a restart never repeats it.
     this.db.run("CREATE TABLE IF NOT EXISTS agent_drift_notices (marker TEXT PRIMARY KEY, at INTEGER NOT NULL)");
+    // #1057 D2: the person's park or pin of one worktree. Facts only: whether a worktree is settled is derived at read time and never stored here.
+    this.db.run("CREATE TABLE IF NOT EXISTS worktree_override (path TEXT PRIMARY KEY, value TEXT NOT NULL CHECK(value IN ('settled','active')), at INTEGER NOT NULL)");
     // Derived status-cache generation: only Board task/stall writes advance it, never journal writes.
     this.db.run("CREATE TABLE IF NOT EXISTS board_status_revision (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)");
     this.db.run("INSERT OR IGNORE INTO board_status_revision VALUES (1,0)");
@@ -1474,6 +1476,26 @@ export class Board {
     return this.db.query("INSERT OR IGNORE INTO agent_drift_notices(marker, at) VALUES(?, ?)").run(marker, Date.now()).changes > 0;
   }
   forgetAgentDriftNotice(marker: string): void { this.db.query("DELETE FROM agent_drift_notices WHERE marker=?").run(marker); }
+  /** #1057 D2: every override, newest first, bounded. Rows made inert by later activity are removed lazily by the next write (`setWorktreeOverride`). */
+  worktreeOverrides(): { path: string; value: "settled" | "active"; at: number }[] {
+    return this.db.query("SELECT path, value, at FROM worktree_override ORDER BY at DESC LIMIT 1024").all() as { path: string; value: "settled" | "active"; at: number }[];
+  }
+  /** One override per path; a new write replaces the old. `path` is the absolute host path the shelf listed, never a name a request invented. */
+  setWorktreeOverride(path: string, value: "settled" | "active", at: number): void {
+    if (typeof path !== "string" || !path.startsWith("/") || path.length > 4096 || path.includes("\0")) throw new Error("invalid worktree path");
+    if (value !== "settled" && value !== "active") throw new Error("invalid worktree override");
+    if (!Number.isFinite(at) || at <= 0) throw new Error("invalid worktree override time");
+    this.db.query("INSERT INTO worktree_override(path, value, at) VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET value=excluded.value, at=excluded.at").run(path, value, at);
+  }
+  clearWorktreeOverride(path: string): boolean {
+    return this.db.query("DELETE FROM worktree_override WHERE path=?").run(path).changes > 0;
+  }
+  /** The lazy removal D2 names: an override whose worktree has newer activity is inert, so a write deletes it. `active` maps path to its lastActiveAt. */
+  pruneInertWorktreeOverrides(activity: ReadonlyMap<string, number>): number {
+    let removed = 0;
+    for (const row of this.worktreeOverrides()) { const last = activity.get(row.path); if (last !== undefined && last > row.at) removed += this.clearWorktreeOverride(row.path) ? 1 : 0; }
+    return removed;
+  }
   clearStall(task: number): void { this.taskWrite(() => this.db.query("DELETE FROM task_stalls WHERE task=?").run(task)); }
   /** One bounded primary-key metadata read for a retry's saved replacement cause. */
   stall(task: number): TaskStall | undefined {

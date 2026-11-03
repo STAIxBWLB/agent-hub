@@ -227,6 +227,7 @@ const schema: Record<string, Check> = {
     else if (/^[a-z][a-z0-9_]{0,47}$/.test(key)) text(value, `${k}.${key}`); else fail(`${k}.${key}`, "unknown key");
   } },
   snapshots: block({ enabled: bool, keep: number(1, 1_000_000, true) }), research: block({ enabled: bool, runners: researchRunners }), bench: block({ enabled: bool }),
+  worktrees: block({ quiet_days: number(0, 3650, true), alert_over: number(0, 100_000, true) }),
   peers: (v, k) => { map(block({ start_mode: words(["tui", "headless"]) }), START_MODE_PEERS)(v, k); peerStartConfig(v); },
   terminal: (v, k) => { block({ open: strings })(v, k); terminalTemplate(object(v, k).open); },
   start: (v, k) => { block({ agents: strings })(v, k); if (object(v, k).agents !== undefined) checkStartAgents(object(v, k).agents, `${k}.agents`); },
