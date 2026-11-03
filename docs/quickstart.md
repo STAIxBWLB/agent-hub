@@ -17,7 +17,7 @@ ahub setup                                # installs the channel plugin and a pr
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.28.0
+bun add -g github:STAIxBWLB/agent-hub#v0.29.0
 ahub setup
 ```
 
@@ -30,6 +30,14 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move a running project to a newer release later, run `ahub upgrade` in a
 terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version.
+
+## Upgrading to 0.29.0
+
+Upgrade every `amem` that shares your memory home together with the hub: the hub now exact-pins `@staix/agent-mem` 0.20.0, and an `amem` 0.19.0 hook or CLI cannot drain 0.20.0's new hook spool records and can retire them after seven days (#1131). Formats, shards, candidates and indexes are unchanged.
+
+A hub-sandboxed peer (Pi, the local worker) can no longer commit, branch, tag, stash, switch, merge, rebase or reset, nor `git add` in a linked worktree: the sandbox refuses writes to refs, HEAD, packed-refs and worktree admin files (#1123). Instead the hub makes a task worktree for its write work (`implement`, `bulk_edit`) at accept and commits and pushes it at `hub_task_done` (#1115, #1129). Where the hub cannot make one (no git repository, no first commit, or a repository config that names a helper, filter or include), that work is not offered to Pi or the local worker, and an assignment to them is refused with the cause; run `git init` and make a first commit, or give the work to Claude, Codex or Kimi.
+
+`ahub status --full` shows control-write timing counters, and a slow control write or a blocked event loop leaves a metadata-only record in `hub.log` (#1126). Set `AHUB_CONTROL_WRITE_TIMING=1` for client-side timing on stderr.
 
 ## Upgrading to 0.28.0
 
@@ -163,7 +171,7 @@ The restarted Claude planner gets the release-train tools (`hub_release_new`, `h
 
 Jcode must be 0.98.0 or later, below 1.0.0; 0.94.0 is no longer accepted, so `ahub doctor` fails its Jcode row for an older install and the peer does not start (#529). Every owned jcode process runs with `JCODE_NO_TELEMETRY=1`.
 
-Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.19.0. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
+Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.20.0. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
 
 From 0.12.30 or earlier, existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
 
@@ -238,7 +246,7 @@ More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-de
 
 ## Shared memory
 
-The hub exact-pins the first-party `@staix/agent-mem` 0.19.0 core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
+The hub exact-pins the first-party `@staix/agent-mem` 0.20.0 core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
 
 Before any real generation migration, upgrade every hub sharing that memory home to 0.12.30 or later and check its authenticated binding with `ahub memory profile-check` in each custom registry. Ready bindings prove compatibility, not an atomic live cutover: quiesce consumers and close their handles before migrating, then reopen through the supported session-preserving lifecycle. Invalid or changed profiles disable native memory without falling back to legacy writes; the bus and board continue. See [memory operations](operations.md#hub-memory) for the remaining rollout gates.
 
