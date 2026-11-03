@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.30.0
+
 - Worktree shelf (#1057: #1156, #1158, #1159, #1160). The hub derives at read time which worktrees are live and which are settled (quiet for `worktrees.quiet_days`, default 7, or their task approved or cancelled), and the person can Park or Pin a row. `ahub worktrees [--json]` lists both; `ahub worktrees tidy` previews what is safe to remove, with every refused row's reasons, and `ahub worktrees tidy --confirm <fingerprint>` removes only those, in the person's own CLI process, with `git worktree remove` and `git branch -d` and never a force flag. Dirty, locked, unpushed, unmerged, bound-to-open-task, main and instance worktrees are refused. The dashboard's Agents panel gets a Worktrees section with Park, Pin and an explicit "Refresh PR states" (at most 8 PRs); no read makes a GitHub call, and an inbox alert fires above `worktrees.alert_over` (default 10). The daemon never removes a worktree or a branch.
 - Pi and the local worker name their own session with `hub_set_title` (#1157, #1055). The first name is final; the person replaces it with `ahub title <peer> <text...>` or the console's `t` editor. An unnamed session shows a screened label from its first incoming message to the console and the conductor only, `unnamed` to everyone else. Claude, Codex, Kimi and ACP tool schemas are unchanged.
 - Office view phase 5 (#264: #1142, #1152): a Backlog wall before To do (rank order, at most 8 cards, reserved, pinned and waiting marks), up to three release docks with approved/scope and cut date, and the unplanned count on each planner's desk. Everything comes from the existing snapshot; no daemon change.
