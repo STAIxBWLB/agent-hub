@@ -3436,9 +3436,10 @@ export class Tasks {
     this.plannerWriteAuthority(by);
     if (!Number.isSafeInteger(input.id) || input.id < 1 || !Number.isSafeInteger(input.revision) || input.revision < 0
       || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("untouched return needs an id, revision and bounded reason");
-    let patch: PlanningFields;
-    try { patch = planningPatch(input.fields); } catch (error) { throw new PreEffectToolRefusal(`${(error as Error).message}; use fields.reserved with an agent peer id or null, or omit fields`); }
-    if (Object.keys(patch).some(key => key !== "reserved")) throw new PreEffectToolRefusal("untouched return fields may contain only reserved; remove every other field, or omit fields");
+    let parsed: PlanningFields;
+    try { parsed = planningPatch(input.fields); } catch (error) { throw new PreEffectToolRefusal(`${(error as Error).message}; use fields.reserved with an agent peer id or null, or omit fields`); }
+    if (Object.keys(parsed).some(key => key !== "reserved")) throw new PreEffectToolRefusal("untouched return fields may contain only reserved; remove every other field, or omit fields");
+    const patch: Pick<PlanningFields, "reserved"> = Object.hasOwn(parsed, "reserved") ? { reserved: parsed.reserved } : {};
     const validate = () => {
       const task = this.need(input.id, false, true);
       this.plannerWriteAuthority(by, task);

@@ -1514,7 +1514,7 @@ export class Board {
       && ["proposed", "in_progress"].includes(task.state) && expectedFlowRevision !== undefined && !!note?.trim() && !taskHasWorkEvidence(task);
     const returnPlanning: HistoryEntry["planning"] = untouchedReturn && Object.hasOwn(patch, "reserved")
       ? { revision: (task.planningRevision ?? 0) + 1, fields: ["reserved"], previous: { reserved: task.reserved ?? null } } : undefined;
-    if (returnPlanning) patch = { ...patch, ...planningPatch({ reserved: patch.reserved }) };
+    if (returnPlanning) patch = { ...patch, reserved: planningPatch({ reserved: patch.reserved }).reserved };
     // A new delivered head with a configured check is owner work again until that check finishes.
     const reviewCheck = task.sdlc?.merge?.state !== "merged" && event === "done (checking)" && ["in_review", "approved"].includes(task.state) && patch.state === "in_progress"
       && expectedFlowRevision !== undefined && (by === task.owner || by === "user") && patch.owner === undefined && (patch.reviewer === undefined || task.state === "approved" && !task.reviewer && patch.reviewer === "user")
