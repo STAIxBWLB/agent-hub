@@ -339,15 +339,17 @@ test("every COMPAT entry names a receipt that exists and has a watcher source, s
   // The receipt to repeat is the newest one for each of the three #843 AC5 CLIs.
   expect(COMPAT.jcode.receipt).toBe("docs/verification/2026-10-26-jcode-0.99.1.md");
   expect(COMPAT.agy.receipt).toBe("docs/verification/2026-11-03-agy-1.4.12-launcher-nonce.md");
-  expect(COMPAT.pi.receipt).toBe("docs/verification/2026-10-26-pi-140-compat.md");
+  expect(COMPAT.pi.receipt).toBe("docs/verification/2026-11-03-pi-150-compat.md");
 });
 
-test("Pi 1.4.0 has an exact receipt gate; other versions need the person's trust (#843 AC2)", () => {
+test("Pi 1.4.0 and 1.5.0 have exact receipt gates; other versions need the person's trust (#843 AC2, #888)", () => {
+  expect(COMPAT.pi.verified).toEqual(["1.4.0", "1.5.0"]);
   expect(assessVersion("pi", "1.4.0", [])).toEqual({ ok: true, state: "verified", version: "1.4.0" });
+  expect(assessVersion("pi", "1.5.0", [])).toEqual({ ok: true, state: "verified", version: "1.5.0" });
   expect(COMPAT.pi.gate).toBe("contract");
   expect(COMPAT.pi).not.toHaveProperty("line");
   expect(COMPAT.pi.parse("1.4.0\n")).toBe("1.4.0");
-  for (const version of ["1.4.1", "1.5.0", "1.4.0-rc.1"]) {
+  for (const version of ["1.4.1", "1.5.1", "1.4.0-rc.1"]) {
     const verdict = assessVersion("pi", version, []);
     expect(verdict).toMatchObject({ ok: false, state: "refused" });
     if (!verdict.ok) expect(verdict.reason).toContain(`ahub agents trust pi ${version}`);
@@ -371,4 +373,10 @@ test("the Qwen ACP 0.26.4 receipt never admits the unqualified dual-output contr
   expect(assessVersion("qwen", "0.26.4", []).ok).toBe(true);
   expect(assessVersion("qwen-dual", "0.26.4", [])).toMatchObject({ ok: false, state: "refused", version: "0.26.4" });
   expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1"]);
+});
+
+test("the Pi 1.5.0 receipt names the exact package, isolation and every repeated leg (#888)", () => {
+  const receipt = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-03-pi-150-compat.md"), "utf8");
+  expect(receipt).toMatch(/[0-9a-f]{64}/);
+  for (const leg of ["sha512-", "Native identity", "Real CLI extension load", "Installed SDK extension registration", "Managed tool callback", "Failed tool result", "Host permission modes", "Provider requests", "PASS", "Not verified"]) expect(receipt, leg).toContain(leg);
 });

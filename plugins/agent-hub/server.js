@@ -305,13 +305,13 @@ var init_compat = __esm(() => {
   COMPAT = {
     pi: {
       label: "Pi",
-      verified: ["1.4.0"],
+      verified: ["1.4.0", "1.5.0"],
       gate: "contract",
       probe: ["pi", "--version"],
       config: "pi.cmd",
       parse: (out) => plain(out.trim()),
-      trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified.",
-      receipt: "docs/verification/2026-10-26-pi-140-compat.md"
+      trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0 and 1.5.0. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified.",
+      receipt: "docs/verification/2026-11-03-pi-150-compat.md"
     },
     "claude-implementer": {
       label: "Claude headless implementer",
