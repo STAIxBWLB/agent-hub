@@ -7290,6 +7290,8 @@ var init_pi = __esm(() => {
     sessionFile = "";
     observedTitle;
     titleRevision = -1;
+    titleEpoch = 0;
+    nativeTitleEpoch;
     get sessionTitle() {
       return this.acceptingTools && this.verifiedOwner() ? this.observedTitle : undefined;
     }
@@ -7297,23 +7299,64 @@ var init_pi = __esm(() => {
       return this.nativeSession;
     }
     async setSessionTitle(title, onlyIfUnnamed, current) {
-      const session = this.sessionId, generation = this.budgetGeneration, owner = this.sessionGeneration;
-      const valid = () => this.acceptingTools && !!owner && this.sessionGeneration === owner && this.sessionId === session && this.budgetGeneration === generation && current?.() !== false;
-      if (!title.trim() || [...title].length > 80 || !valid())
-        return { ok: false, reason: "invalid" };
+      const invalid = (error, mayHaveApplied = false) => ({ ok: false, reason: "invalid", error, ...mayHaveApplied ? { mayHaveApplied: true } : {} });
+      if (typeof title !== "string" || !title.trim() || [...title].length > 80 || typeof onlyIfUnnamed !== "boolean")
+        return invalid("Session title must contain 1-80 normalized characters and use a conditional-write flag; correct the title request and try again.");
+      if (this.stopping || this.state === "offline")
+        return invalid("Pi session is offline or stopped; start or reconnect Pi and check ahub status before naming it.");
+      const session = this.sessionId, generation = this.budgetGeneration, owner = this.sessionGeneration, epoch = this.titleEpoch;
+      if (!owner || !this.verifiedOwner())
+        return invalid("Pi native session owner is unverified; reconnect the retained Pi session and check ahub status before naming it.");
+      if (!this.acceptingTools)
+        return invalid("Pi session is detached or running a personal turn; reconnect its current hub session and check ahub status before naming it.");
+      const valid = () => {
+        try {
+          return this.acceptingTools && this.verifiedOwner() && this.sessionGeneration === owner && this.sessionId === session && this.budgetGeneration === generation && this.titleEpoch === epoch && current?.() !== false;
+        } catch {
+          return false;
+        }
+      };
+      if (!valid())
+        return invalid("Pi session, turn or title admission changed before dispatch; check ahub status before retrying in the current public session.");
+      let dispatched = false;
       try {
-        const result = await this.sendTui({ type: "set_session_title", title, onlyIfUnnamed, sessionId: session, generation }, valid);
-        if (!valid() || result?.sessionId !== session || typeof result.sessionName !== "string")
-          return { ok: false, reason: "invalid" };
-        this.observeTitle(result.sessionName, result.titleRevision);
+        const result = await this.sendTui({ type: "set_session_title", title, onlyIfUnnamed, sessionId: session, generation, ...this.nativeTitleEpoch ? { titleEpoch: this.nativeTitleEpoch } : {} }, valid, () => {
+          dispatched = true;
+        });
+        if (!valid())
+          return invalid("Pi session, turn or title admission changed after dispatch; the title may have been applied; check ahub status before retrying.", true);
+        if (result?.ok === false && result.reason === "invalid") {
+          if (result.cause === "session")
+            return invalid("Pi native session changed before the title write; check ahub status and reconnect the current session before retrying.");
+          if (result.cause === "generation")
+            return invalid("Pi native turn changed before the title write; wait for the current turn and check ahub status before retrying.");
+          if (result.cause === "arguments")
+            return invalid("Pi rejected invalid title command arguments; use a 1-80 character normalized title and retry in the current session.");
+          if (result.cause === "native_unavailable")
+            return invalid("Pi native title API is unavailable; restart Pi with the supported hub extension and check ahub status before retrying.");
+          if (result.cause === "native_failed")
+            return invalid("Pi native title API failed without confirming the write; the title may have been applied; check ahub status before retrying.", true);
+          if (result.cause === "native_readback")
+            return invalid("Pi native title readback did not confirm the write; the title may have been applied; check ahub status before retrying.", true);
+        }
+        if (result?.sessionId !== session || typeof result.sessionName !== "string" || this.nativeTitleEpoch !== undefined && result.titleEpoch !== this.nativeTitleEpoch)
+          return invalid("Pi title acknowledgement did not confirm the current native slot; the title may have been applied; check ahub status before retrying.", true);
+        this.observeTitle(result.sessionName, result.titleRevision, result.titleEpoch);
         if (result.ok === false && result.reason === "already_named")
-          return { ok: false, reason: "already_named" };
-        return result.ok === true && result.sessionName === title ? { ok: true } : { ok: false, reason: "invalid" };
-      } catch {
-        return { ok: false, reason: "invalid" };
+          return { ok: false, reason: "already_named", error: "This session already has a title; keep it or ask the person to rename it with ahub title." };
+        if (result.ok === true && result.sessionName === title)
+          return { ok: true };
+        return invalid("Pi native title write or readback was not confirmed; the title may have been applied; check ahub status before retrying.", true);
+      } catch (error) {
+        const timeout = error instanceof Error && error.message.includes("acknowledgement timed out");
+        if (dispatched)
+          return invalid(`Pi title ${timeout ? "acknowledgement timed out" : "bridge command failed after dispatch"}; the title may have been applied; check ahub status before retrying.`, true);
+        return invalid(`Pi title ${timeout ? "command expired" : "admission changed or bridge failed"} before dispatch; check ahub status before retrying in the current session.`);
       }
     }
-    observeTitle(value, revision) {
+    observeTitle(value, revision, epoch) {
+      if (this.nativeTitleEpoch !== undefined && epoch !== this.nativeTitleEpoch)
+        return;
       if (typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0) {
         if (revision < this.titleRevision)
           return;
@@ -7330,12 +7373,14 @@ var init_pi = __esm(() => {
         this.onDoing?.("title", value);
       }
     }
-    observeSnapshotTitle(snapshot, before) {
+    observeSnapshotTitle(snapshot, before, beforeEpoch) {
+      if (this.titleEpoch !== beforeEpoch || snapshot.titleEpoch !== undefined && snapshot.titleEpoch !== this.nativeTitleEpoch)
+        return false;
       if (snapshot.titleRevision === undefined && this.titleRevision !== before)
         return false;
       if (typeof snapshot.titleRevision === "number" && snapshot.titleRevision < this.titleRevision)
         return false;
-      this.observeTitle(snapshot.sessionName, snapshot.titleRevision);
+      this.observeTitle(snapshot.sessionName, snapshot.titleRevision, snapshot.titleEpoch ?? this.nativeTitleEpoch);
       return true;
     }
     executionBudgetTimer;
@@ -7456,15 +7501,15 @@ var init_pi = __esm(() => {
         throw new Error("Pi must settle before session capture");
       if (this.sessionFile && existsSync7(this.sessionFile))
         return this.recoveryMetadata();
-      const titleRevisionBefore = this.titleRevision;
+      const titleRevisionBefore = this.titleRevision, titleEpochBefore = this.titleEpoch;
       const snapshot = this.opts.mode === "headless" ? (await this.waitRpc("get_state", 15000)).data : await this.sendTui({ type: "get_session_state" });
       if (this.state !== "idle" || this.activeTools || snapshot?.sessionId !== this.sessionId || snapshot?.sessionFile !== this.sessionFile)
         throw new Error("Pi source session changed during capture");
-      if (!this.observeSnapshotTitle(snapshot, titleRevisionBefore))
+      if (!this.observeSnapshotTitle(snapshot, titleRevisionBefore, titleEpochBefore))
         throw new Error("Pi source session title changed during capture; retry with a fresh native session snapshot");
       const empty = this.opts.mode === "headless" ? snapshot.messageCount === 0 && snapshot.pendingMessageCount === 0 && snapshot.isStreaming === false && snapshot.isCompacting !== true && !snapshot.sessionName : snapshot.empty === true && snapshot.idle === true;
       if (!empty || this.activityObserved || this.persistedOnce)
-        throw new Error("Pi session history is not persisted; refusing to recreate it");
+        throw new Error("Pi session history is not persisted; refusing to recreate it. Exchange one message or start a new session, then retry");
       this.emptyResumeVerified = true;
       const captured = this.recoveryMetadata();
       if (typeof captured.sessionId === "string" && !captured.sessionFile)
@@ -7653,6 +7698,7 @@ var init_pi = __esm(() => {
       this.stopping = false;
       this.observedTitle = undefined;
       this.titleRevision = -1;
+      this.nativeTitleEpoch = undefined;
       this.onDoing?.("reset");
       this.rosterDetached = false;
       this.rosterUnownedRun = false;
@@ -7754,7 +7800,7 @@ var init_pi = __esm(() => {
         this.fail(new Error(`pi exited with ${signal ? `signal ${signal}` : `code ${code}`}`));
         this.reportExit(exit);
       });
-      const titleRevisionBefore = this.titleRevision;
+      const titleRevisionBefore = this.titleRevision, titleEpochBefore = this.titleEpoch;
       const state = await this.waitRpc("get_state", 15000);
       if (state.success !== true || typeof state.data?.sessionId !== "string" || typeof state.data?.sessionFile !== "string" || !state.data.sessionId || !state.data.sessionFile)
         throw new Error("Pi get_state did not prove session identity");
@@ -7775,7 +7821,7 @@ var init_pi = __esm(() => {
       this.persistedOnce = existsSync7(this.sessionFile);
       if (this.opts.sessionId && this.sessionId !== this.opts.sessionId || this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)
         throw new Error("Pi startup session identity mismatch");
-      this.observeSnapshotTitle(state.data, titleRevisionBefore);
+      this.observeSnapshotTitle(state.data, titleRevisionBefore, titleEpochBefore);
       this.started = true;
       this.setState("idle");
     }
@@ -7865,13 +7911,13 @@ var init_pi = __esm(() => {
       if (this.pendingPromptId)
         throw new Error("Pi prompt admission is still pending; wait before reverifying the retained terminal");
       const epoch = this.rosterEpoch, lifecycle = this.rosterLifecycleRevision, session = this.sessionId, file = this.sessionFile;
-      const titleRevisionBefore = this.titleRevision;
+      const titleRevisionBefore = this.titleRevision, titleEpochBefore = this.titleEpoch;
       const snapshot = await this.sendTui({ type: "get_session_state" });
       if (epoch !== this.rosterEpoch || this.stopping || !this.verifiedOwner() || this.activeTools || snapshot?.sessionId !== session || snapshot?.sessionFile !== file || typeof snapshot?.idle !== "boolean")
         throw new Error("Pi roster return could not verify the current native session");
       if (lifecycle !== this.rosterLifecycleRevision)
         throw new Error("Pi native activity changed during roster return; retry with a fresh session snapshot");
-      this.observeSnapshotTitle(snapshot, titleRevisionBefore);
+      this.observeSnapshotTitle(snapshot, titleRevisionBefore, titleEpochBefore);
       this.rosterDetached = false;
       this.hubPromptId = undefined;
       this.hubPromptGeneration = undefined;
@@ -8206,7 +8252,10 @@ var init_pi = __esm(() => {
           this.opts.log?.(`[${this.id}] Pi session identity mismatch`);
           return;
         }
-        this.observeTitle(event.sessionName, event.titleRevision);
+        this.titleRevision = -1;
+        this.titleEpoch++;
+        this.nativeTitleEpoch = typeof event.titleEpoch === "string" && event.titleEpoch ? event.titleEpoch : undefined;
+        this.observeTitle(event.sessionName, event.titleRevision, event.titleEpoch);
         this.rememberTerminalOwner();
         this.startOwnerMonitor();
         if (this.opts.mode === "tui") {
@@ -8215,10 +8264,11 @@ var init_pi = __esm(() => {
         }
       }
       if ((event.type === "session_title" || event.type === "agent_start" && Object.hasOwn(event, "sessionName")) && event.sessionId === this.sessionId && this.verifiedOwner())
-        this.observeTitle(event.sessionName, event.titleRevision);
+        this.observeTitle(event.sessionName, event.titleRevision, event.titleEpoch);
       if (event.type === "session_shutdown") {
         this.observedTitle = undefined;
         this.titleRevision = -1;
+        this.nativeTitleEpoch = undefined;
         this.onDoing?.("reset");
         const exit = this.exitMetadata("session_shutdown");
         this.shutdownExit ??= exit;
@@ -8362,8 +8412,10 @@ var init_pi = __esm(() => {
       let next = this.tuiQueue.shift();
       while (next) {
         const pending = this.tuiCommands.get(String(next.id));
-        if (pending && pending.current?.() !== false)
+        if (pending && pending.current?.() !== false) {
+          pending.onDispatch?.();
           return Promise.resolve(next);
+        }
         if (pending) {
           this.tuiCommands.delete(String(next.id));
           pending.reject(new Error("Pi session title admission changed before dispatch"));
@@ -8380,7 +8432,7 @@ var init_pi = __esm(() => {
         this.tuiWaiters.push(entry);
       });
     }
-    sendTui(command, current) {
+    sendTui(command, current, onDispatch) {
       if (current?.() === false)
         return Promise.reject(new Error("Pi session title admission changed before dispatch"));
       const id = `ahub-${++this.seq}`;
@@ -8397,7 +8449,7 @@ var init_pi = __esm(() => {
           this.tuiQueue = this.tuiQueue.filter((queued) => queued.id !== id);
           reject(new Error(`Pi TUI ${String(command.type)} acknowledgement timed out`));
         }, 30000);
-        this.tuiCommands.set(id, { command: wire, current, resolve: (value) => {
+        this.tuiCommands.set(id, { command: wire, current, onDispatch, resolve: (value) => {
           clearTimeout(timer);
           resolvePromise(value);
         }, reject: (error) => {
@@ -8407,6 +8459,7 @@ var init_pi = __esm(() => {
         const waiter = this.tuiWaiters.shift();
         if (waiter) {
           clearTimeout(waiter.timer);
+          onDispatch?.();
           waiter.resolve(wire);
         } else
           this.tuiQueue.push(wire);
@@ -13117,12 +13170,22 @@ var init_local_worker = __esm(() => {
       return this.sessionId;
     }
     async setSessionTitle(title, onlyIfUnnamed, current) {
-      if (this.state === "offline" || !title.trim() || [...title].length > 80 || current?.() === false)
-        return { ok: false, reason: "invalid" };
+      if (typeof title !== "string" || !title.trim() || [...title].length > 80 || typeof onlyIfUnnamed !== "boolean")
+        return { ok: false, reason: "invalid", error: "Session title must contain 1-80 normalized characters and use a conditional-write flag; correct the title request and try again." };
+      if (this.state === "offline")
+        return { ok: false, reason: "invalid", error: "Local worker session is offline; start the peer and check ahub status before naming it." };
+      let admitted = false;
+      try {
+        admitted = current?.() !== false;
+      } catch {}
+      if (!admitted)
+        return { ok: false, reason: "invalid", error: "Session title admission changed before the write; check ahub status and retry only in the current public session." };
       if (onlyIfUnnamed && this.title)
-        return { ok: false, reason: "already_named" };
+        return { ok: false, reason: "already_named", error: "This session already has a title; keep it or ask the person to rename it with ahub title." };
       this.title = title;
-      this.onDoing?.("title", title);
+      try {
+        this.onDoing?.("title", title);
+      } catch {}
       return { ok: true };
     }
     sessionId = `agent-hub-local-${randomUUID7()}`;
@@ -16009,6 +16072,7 @@ var init_builtin_metadata = __esm(() => {
       api: 1,
       kind: "pi",
       title: "hub",
+      titlePersistence: "native",
       enabledSwitchStartOnly: true,
       displayName: "Pi",
       family: "pi",
@@ -16642,6 +16706,7 @@ function assertNativeCapabilityScope(definition) {
   const declared = (block, key) => block !== undefined && (key in block);
   const restricted = [
     ["title", definition.title !== undefined],
+    ["titlePersistence", definition.titlePersistence !== undefined],
     ["start.acpCommand", declared(definition.start, "acpCommand")],
     ["attach.admission", declared(definition.attach, "admission")],
     ["budget.resetSoftTokensOnResume", declared(definition.budget, "resetSoftTokensOnResume")],
