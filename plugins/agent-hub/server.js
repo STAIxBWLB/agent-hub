@@ -12519,7 +12519,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.2"
     },
     dependencies: {
-      "@staix/agent-mem": "0.20.0"
+      "@staix/agent-mem": "0.20.1"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
