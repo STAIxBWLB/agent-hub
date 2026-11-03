@@ -3912,7 +3912,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify(tasks.publicView(await tasks.recordPlanReview(by, id, review)));
       }
       case "hub_backlog_return_untouched":
-        return JSON.stringify(tasks.publicView(await tasks.returnUntouchedToBacklog(by, { id: a.id, revision: a.revision, reason: a.reason })));
+        return JSON.stringify(tasks.publicView(await tasks.returnUntouchedToBacklog(by, { id: a.id, revision: a.revision, reason: a.reason, fields: a.fields })));
       case "hub_backlog_plan":
         return JSON.stringify(tasks.publicView(await tasks.planBacklog(by, { id: a.id, revision: a.revision, fields: a.fields, reason: a.reason })));
       case "hub_backlog_pull":

@@ -3432,10 +3432,14 @@ export class Tasks {
     }
   }
 
-  async returnUntouchedToBacklog(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {
+  async returnUntouchedToBacklog(by: PeerId, input: { id: number; revision: number; reason: string; fields?: unknown }): Promise<Task> {
     this.plannerWriteAuthority(by);
     if (!Number.isSafeInteger(input.id) || input.id < 1 || !Number.isSafeInteger(input.revision) || input.revision < 0
       || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("untouched return needs an id, revision and bounded reason");
+    let parsed: PlanningFields;
+    try { parsed = planningPatch(input.fields); } catch (error) { throw new PreEffectToolRefusal(`${(error as Error).message}; use fields.reserved with an agent peer id or null, or omit fields`); }
+    if (Object.keys(parsed).some(key => key !== "reserved")) throw new PreEffectToolRefusal("untouched return fields may contain only reserved; remove every other field, or omit fields");
+    const patch: Pick<PlanningFields, "reserved"> = Object.hasOwn(parsed, "reserved") ? { reserved: parsed.reserved } : {};
     const validate = () => {
       const task = this.need(input.id, false, true);
       this.plannerWriteAuthority(by, task);
@@ -3443,6 +3447,14 @@ export class Tasks {
       if (by !== USER && task.pinned) throw new PreEffectToolRefusal("pinned work requires the person");
       const release = task.release == null ? undefined : this.d.board.release(task.release);
       if (release && (["shipped", "dropped"].includes(release.state) || by !== USER && release.state === "frozen")) throw new PreEffectToolRefusal("settled or frozen release scope cannot return");
+      if (Object.hasOwn(patch, "reserved")) {
+        if (by !== USER && this.hasPersonReservation(task)) throw new PreEffectToolRefusal("a person's reservation is retained; ask the person to change it");
+        const reserved = patch.reserved, definitionOf = this.d.adapterCatalog?.definitionOf ?? builtinDefinitionOf;
+        if (reserved && !definitionOf(reserved, this.d.instances?.()) && !this.d.bus.knownPeers().includes(reserved) && !this.d.routing().classes[task.class]?.peers.includes(reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer; choose a peer from ahub status");
+        if (reserved && !this.d.bus.isRostered(reserved)) throw new PreEffectToolRefusal("reserved owner is off roster; choose a rostered peer from ahub status or ask the person to update the roster");
+        if (reserved && this.excluded(task).includes(reserved)) throw new PreEffectToolRefusal(`${reserved} is excluded from this task (it declined it or was escalated away from it for good); a reservation for it can never be honoured. Only a person's ahub task assign lifts the exclusion`);
+        if (reserved) this.requireCapabilities(task, reserved);
+      }
       return task;
     };
     const task = validate(), flow = task.history.length;
@@ -3451,14 +3463,14 @@ export class Tasks {
     const confirmed = validate();
     if (confirmed.history.length !== flow) throw new PreEffectToolRefusal("task changed during untouched return");
     const capacity = this.capacityBefore(confirmed);
-    const returned = this.d.board.update(confirmed.id, by, "backlog returned untouched", { state: "backlog", owner: null, reviewer: null }, input.reason.trim(), { ...(withheld ? { withheld: true } : {}) }, flow);
+    const returned = this.d.board.update(confirmed.id, by, "backlog returned untouched", { state: "backlog", owner: null, reviewer: null, ...patch }, input.reason.trim(), { ...(withheld ? { withheld: true } : {}) }, flow);
     this.writePlannerNotices(returned, capacity);
     this.offered.delete(confirmed.id);
     this.cohorts.leave(confirmed.id);
     this.withdrawRoleRequest(confirmed, returned, "owner");
     this.withdrawRoleRequest(confirmed, returned, "reviewer");
     this.incomingBacklog.add(confirmed.id);
-    this.planningRecorded({ by, task: confirmed.id, fields: ["return"], revision: confirmed.planningRevision ?? 0 });
+    this.planningRecorded({ by, task: confirmed.id, fields: ["return", ...Object.keys(patch)], revision: returned.planningRevision ?? 0 });
     await this.releaseHeld(confirmed.owner); // its owner's slot is free (#655)
     return returned;
   }
