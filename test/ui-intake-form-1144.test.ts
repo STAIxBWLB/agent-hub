@@ -6,11 +6,13 @@ import { INTAKE_MAX_SOURCES, INTAKE_MAX_TEXT } from "../src/hub/intake.ts";
 const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
 const start = html.indexOf("function renderSources("), end = html.indexOf("function render(snapshot)", start);
 const code = html.slice(start, end);
+const updateCode = html.slice(html.indexOf("function update("), html.indexOf("function empty("));
 class Node {
   value = ""; textContent = ""; focused = false; children: Node[] = []; attrs: Record<string, string> = {};
   classList = { toggle: (_key: string, _value: boolean) => {} };
   constructor(readonly tag = "div") {}
   append(...nodes: Node[]) { this.children.push(...nodes); }
+  replaceChildren(...nodes: Node[]) { this.children = nodes; }
   setAttribute(key: string, value: string) { this.attrs[key] = value; }
   focus() { this.focused = true; }
   text(): string { return [this.textContent, ...this.children.map(child => child.text())].join(" "); }
@@ -19,9 +21,9 @@ function rig() {
   const nodes = new Map<string, Node>(), get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   const calls: unknown[] = [], pendingButtons = new WeakSet<Node>();
   let current = { projectId: "one", instanceId: "instance", generation: 1 }, reply: (payload: unknown) => Promise<boolean> = async () => true;
-  const api = runInNewContext(`${code}; ({renderSources, submitIntake});`, {
+  const api = runInNewContext(`${updateCode} ${code}; ({renderSources, submitIntake});`, {
     $: get, el: (tag: string, text?: string) => { const node = new Node(tag); node.textContent = text === undefined ? "" : String(text); return node; },
-    update: (id: string, _data: unknown, render: (target: Node) => void) => { const node = get(id); node.children = []; render(node); },
+    signatures: new Map(), document: { activeElement: null },
     empty: (target: Node, text: string) => { const node = new Node("p"); node.textContent = text; target.append(node); },
     context: () => ({ ...current }), stopped: false, pendingButtons,
     action: async (payload: unknown, button: Node) => { calls.push(payload); pendingButtons.add(button); try { return await reply(payload); } finally { pendingButtons.delete(button); } },
