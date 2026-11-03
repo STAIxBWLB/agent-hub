@@ -12,7 +12,8 @@ import type { ProfileName } from "./profiles.ts";
 import type { StampedEvent } from "./events.ts";
 
 export const DOGFOOD_BYTE_CAP = 16 * 1024 * 1024;
-const MAX_TASKS = 500, MAX_PRS = 16, MAX_CI_HEADS = 8, MAX_CI_READS = 32;
+/** MAX_PII bounds the PII inventory (ids and PR refs only), separately from the windowed task rows (#1147). */
+const MAX_TASKS = 500, MAX_PII = 2000, MAX_PRS = 16, MAX_CI_HEADS = 8, MAX_CI_READS = 32;
 const date = (value: unknown): number | undefined => typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : undefined;
 const id = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
 const repoName = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.startsWith("-");
@@ -51,13 +52,51 @@ export function dogfoodEvents(lines: Source<string[]>, since: number, until: num
   }
   return { data: out, available: lines.available, complete };
 }
-/** Bounded read-only board snapshot. Select no task title/detail or history note into the result. */
-export function dogfoodTasks(file: string): Source<DogfoodTask[]> {
+/** One PII task as the privacy inventory knows it: an id and its PR ref, never any text. */
+export interface PiiRef { id: number; repo?: string; pr?: number }
+/**
+ * #1147: every PII task of the board, read completely and independently of the scorecard window. Privacy depends only on a task's
+ * signals and its sdlc receipt, so only those are read. A row whose signals cannot be read (null, oversized, not a JSON array)
+ * could be a PII task, and a PII receipt that cannot be parsed hides its PR: both make the inventory incomplete, as does overflowing MAX_PII.
+ */
+export function dogfoodPiiInventory(file: string): Source<PiiRef[]> {
+  let db: Database | undefined;
+  try {
+    db = new Database(file, { readonly: true });
+    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
+    const rows = db.query(`SELECT id, unreadable, receipt_cut, sdlc FROM (
+      SELECT id,
+        CASE WHEN signals IS NULL OR length(signals) > 65536 THEN 1 WHEN NOT json_valid(signals) THEN 1 WHEN json_type(signals) <> 'array' THEN 1 ELSE 0 END AS unreadable,
+        CASE WHEN signals IS NOT NULL AND length(signals) <= 65536 AND json_valid(signals) AND json_type(signals) = 'array'
+          THEN EXISTS (SELECT 1 FROM json_each(signals) WHERE value IN ('pii','pii_path')) ELSE 0 END AS pii,
+        (sdlc IS NOT NULL AND length(sdlc) > 65536) AS receipt_cut,
+        CASE WHEN length(sdlc) <= 65536 THEN sdlc END AS sdlc FROM tasks)
+      WHERE unreadable = 1 OR pii = 1 ORDER BY id DESC LIMIT ?`).all(MAX_PII + 1) as { id: number; unreadable: number; receipt_cut: number; sdlc: string | null }[];
+    let complete = rows.length <= MAX_PII;
+    const refs: PiiRef[] = [];
+    for (const row of rows.slice(0, MAX_PII)) {
+      if (row.unreadable || row.receipt_cut || !id(row.id)) { complete = false; continue; }
+      try {
+        const receipt = JSON.parse(row.sdlc ?? "{}");
+        refs.push({ id: row.id, ...(repoName(receipt?.repo) ? { repo: receipt.repo } : {}), ...(id(receipt?.pr) ? { pr: receipt.pr } : {}) });
+      } catch { complete = false; }
+    }
+    return source(refs, complete);
+  } catch { return missing([]); }
+  finally { db?.close(); }
+}
+/**
+ * Bounded read-only board snapshot. Select no task title/detail or history note into the result.
+ * With a window (#1147) only tasks that overlap [since, until] are read (updated >= since and created <= until), so a board over
+ * MAX_TASKS rows still reads completely when the window holds few of them. A board without those columns reads its newest MAX_TASKS rows.
+ */
+export function dogfoodTasks(file: string, window?: { since: number; until: number }): Source<DogfoodTask[]> {
   let db: Database | undefined;
   try {
     db = new Database(file, { readonly: true });
     db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     const columns = new Set((db.query("PRAGMA table_info(tasks)").all() as {name:string}[]).map(c=>c.name));
+    const windowed = window !== undefined && Number.isFinite(window.since) && Number.isFinite(window.until) && columns.has("created") && columns.has("updated");
     const metadata = columns.has("class") ? "CASE WHEN length(class) <= 48 THEN class END" : "NULL";
     const profile = columns.has("project_profile") ? "CASE WHEN length(project_profile) <= 65536 THEN project_profile END" : "NULL";
     const plan = columns.has("plan") ? "CASE WHEN length(plan) <= 65536 THEN plan END" : "NULL";
@@ -67,7 +106,7 @@ export function dogfoodTasks(file: string): Source<DogfoodTask[]> {
     const profileCut = columns.has("project_profile") ? "(project_profile IS NOT NULL AND length(project_profile) > 65536)" : "0";
     const rows = db.query(`SELECT (${planCut}) AS plan_cut, ${plan} AS plan, (${metadataCut}) AS metadata_cut, ${state} AS current_state, ${metadata} AS base_class, ${profileCut} AS profile_cut, ${profile} AS project_profile, id, (sdlc IS NOT NULL AND length(sdlc) > 65536) AS receipt_cut, CASE WHEN length(sdlc) <= 65536 THEN sdlc END AS sdlc,
       CASE WHEN length(signals) <= 65536 THEN signals END AS signals,
-      CASE WHEN length(history) <= 131072 THEN history END AS history FROM tasks ORDER BY id DESC LIMIT ?`).all(MAX_TASKS + 1) as { plan_cut: number; plan: string | null; metadata_cut: number; current_state: string | null; profile_cut: number; base_class: string | null; project_profile: string | null; id: number; receipt_cut: number; sdlc: string | null; signals: string | null; history: string | null }[];
+      CASE WHEN length(history) <= 131072 THEN history END AS history FROM tasks ${windowed ? "WHERE updated >= ? AND created <= ?" : ""} ORDER BY id DESC LIMIT ?`).all(...(windowed ? [window!.since, window!.until] : []), MAX_TASKS + 1) as { plan_cut: number; plan: string | null; metadata_cut: number; current_state: string | null; profile_cut: number; base_class: string | null; project_profile: string | null; id: number; receipt_cut: number; sdlc: string | null; signals: string | null; history: string | null }[];
     let complete = rows.length <= MAX_TASKS, bytes = 0;
     const tasks: DogfoodTask[] = [];
     for (const row of rows.slice(0,MAX_TASKS)) {
@@ -144,15 +183,18 @@ export function dogfoodJournal(file: string, since: number, until: number): Sour
 }
 const connection = (value: any): any[] | undefined => value?.pageInfo?.hasNextPage === false && Array.isArray(value.nodes) && value.nodes.length <= 100 ? value.nodes : undefined;
 /** Reuse S10 cost readback; supplementary reads carry timestamps/ids only, never comment or issue bodies. */
-export async function dogfoodPrs(repo: string, tasks: Source<DogfoodTask[]>, since: number, until: number, run: SdlcGh = sdlcGh): Promise<Source<DogfoodPr[]>> {
-  if (!repoName(repo) || !tasks.available || !tasks.complete) return missing([]); // unknown privacy inventory forbids remote per-PR reads
+export async function dogfoodPrs(repo: string, tasks: Source<DogfoodTask[]>, since: number, until: number, run: SdlcGh = sdlcGh, pii?: Source<PiiRef[]>): Promise<Source<DogfoodPr[]>> {
+  // An unknown privacy inventory forbids remote per-PR reads. With the PII inventory (#1147) only it decides privacy, so an incomplete
+  // windowed task list no longer blocks them (its links stay unknown elsewhere); without it the task list is the inventory, as before.
+  const inventory: Source<PiiRef[]> = pii ?? { ...tasks, data: tasks.data.filter(t => t.pii).map(t => ({ id: t.id, ...(t.repo ? { repo: t.repo } : {}), ...(t.pr ? { pr: t.pr } : {}) })) };
+  if (!repoName(repo) || !inventory.available || !inventory.complete) return missing([]);
   const deadline = performance.now() + 20000;
   const gh: SdlcGh = (args, timeout, cwd, cap) => performance.now() < deadline
     ? run(args, Math.max(1,Math.min(timeout ?? 5000,deadline-performance.now())),cwd,Math.min(cap ?? 128*1024,128*1024)) : Promise.resolve({code:1,stdout:""});
   const parse = async (args: string[]) => { try { const r = await gh(args); return r.code === 0 ? JSON.parse(r.stdout) : undefined; } catch { return undefined; } };
   const list = await parse(["pr","list","--repo",repo,"--state","merged","--search",`merged:>=${new Date(since).toISOString()}`,"--limit","100","--json","number,mergedAt,createdAt"]);
   if (!Array.isArray(list)) return missing([]);
-  const hidden = new Set(tasks.data.filter(t => t.pii && (!t.repo || t.repo.toLowerCase() === repo.toLowerCase())).map(t => t.pr));
+  const hidden = new Set(inventory.data.filter(t => !t.repo || t.repo.toLowerCase() === repo.toLowerCase()).map(t => t.pr));
   const visible = list.filter(p => id(p?.number) && date(p.mergedAt) !== undefined && date(p.mergedAt)! <= until && !hidden.has(p.number));
   let complete = list.length < 100 && list.every(p => id(p?.number) && date(p.mergedAt) !== undefined) && visible.length <= MAX_PRS;
   // Read recent PRs first: their complete recorded head sets usually fit before
@@ -252,7 +294,7 @@ export function dogfoodProjectProfile(root: string): Source<ProfileName | null> 
   return source(selected);
 }
 export async function readDogfood(root: string, stateDir: string, since: number, until = Date.now(), run: SdlcGh = sdlcGh) {
-  const tasks = dogfoodTasks(join(stateDir,"hub.db"));
+  const tasks = dogfoodTasks(join(stateDir,"hub.db"),{since,until}), pii = dogfoodPiiInventory(join(stateDir,"hub.db"));
   let repo = "";
   try { const r = await run(["repo","view","--json","nameWithOwner"],5000,root,8192); if (r.code === 0) repo = JSON.parse(r.stdout).nameWithOwner; } catch { /* unknown */ }
   const events = dogfoodEvents(dogfoodLines(join(stateDir,"events.jsonl")),since,until);
@@ -262,5 +304,5 @@ export async function readDogfood(root: string, stateDir: string, since: number,
     if (at === undefined) { log.complete = false; return false; }
     return at >= since && at <= until;
   });
-  return dogfoodScorecard({since,until,tasks,events,log,projectProfile:dogfoodProjectProfile(root),journal:dogfoodJournal(join(stateDir,"hub.db"),since,until),prs:await dogfoodPrs(repo,tasks,since,until,run),features:dogfoodFeatures(join(root,"docs/dogfood.md"))});
+  return dogfoodScorecard({since,until,tasks,events,log,projectProfile:dogfoodProjectProfile(root),journal:dogfoodJournal(join(stateDir,"hub.db"),since,until),prs:await dogfoodPrs(repo,tasks,since,until,run,pii),features:dogfoodFeatures(join(root,"docs/dogfood.md"))});
 }
