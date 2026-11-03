@@ -653,3 +653,22 @@ test("local hub_send preserves FYI recording and a genuine empty audience (#550)
     expect(ctx.model.requests[1]!.body.messages.find((message: { role: string; content?: string }) => message.role === "tool")?.content).toBe("sent");
   }
 });
+
+test("#1055 local tool publication and dispatch name its session without tool capture or progress text", async () => {
+  let target: LocalPeer | undefined;
+  const observations: unknown[] = [];
+  const title = "LOCAL_TITLE_PRIVATE_CAPTURE_CANARY", hint = "UNNAMED_SESSION_HINT";
+  const f = await setup(body => {
+    expect(JSON.stringify(body.tools)).toContain('"name":"hub_set_title"');
+    return body.messages.some(message => message.role === "tool") ? { content: "named" } : { tool_calls: [toolCall("hub_set_title", { title })] };
+  }, { titlePreface: () => target?.sessionTitle === "" ? hint : undefined,
+    taskTool: async (name, args) => { expect(name).toBe("hub_set_title"); return JSON.stringify(await target!.setSessionTitle(String(args.title), true)); },
+    onTool: observation => { observations.push(observation); } });
+  target = f.peer;
+  f.bus.publish(newEnvelope("claude", "A clear task to name"));
+  await until(() => f.said.length === 1, "title tool turn");
+  expect(f.peer.sessionTitle).toBe(title);
+  expect(observations).toEqual([]);
+  expect(f.lines.join("\n")).not.toContain(title);
+  expect(JSON.stringify(f.model.requests[0]?.body.messages)).toContain(hint);
+});

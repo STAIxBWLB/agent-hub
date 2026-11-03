@@ -239,6 +239,8 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
   if (isFixedBuiltinDefinition(definition)) return;
   const declared = (block: object | undefined, key: string): boolean => block !== undefined && key in block;
   const restricted: [string, boolean][] = [
+    ["title", definition.title !== undefined],
+    ["titlePersistence", definition.titlePersistence !== undefined],
     ["start.acpCommand", declared(definition.start, "acpCommand")],
     ["attach.admission", declared(definition.attach, "admission")],
     ["budget.resetSoftTokensOnResume", declared(definition.budget, "resetSoftTokensOnResume")],

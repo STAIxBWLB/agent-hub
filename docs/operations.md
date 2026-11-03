@@ -278,6 +278,42 @@ dashboard's peer rows and the conductor's `hub_status` show the same value; it
 lives in the daemon's memory only, never in `status.json`, a log, an event or
 memory capture. Board WIP is unchanged.
 
+Pi and the local worker can name an unnamed session with `hub_set_title`
+(#1055). A normalized title is 1-80 characters; the first agent name is final.
+The person replaces it with `ahub title <peer> <text...>`, or selects the peer
+in the console and presses `t`. The rename input starts empty after the command
+prefix, even when an unnamed label is visible. Other peers rename in their
+native UI. No helper model is called, and task, branch and instance names are
+independent. A private turn, an open PII owner/reviewer assignment, a sensitive
+title or a failed metadata screen refuses the write.
+
+Every refused title call includes its reason code plus a public cause and next
+step. An unconfirmed write can have landed: check `ahub status` before retrying
+when the error says it may have been applied. A person rename on an idle Pi
+session that has never exchanged a message creates native title metadata but
+may not create a session file yet. Recovery preserves that state by refusing
+ID-only recreation; exchange one message or explicitly start a new session,
+then retry recovery.
+
+An unnamed session displays a muted label from the first acknowledged hub
+delivery, at most 60 normalized characters. Queued or unaccepted messages do not
+supply it. The console and configured conductor can see this incoming-message
+label; other agent status readers see `unnamed`. Its source note distinguishes
+the incoming message from text written by the recipient peer. The label is
+computed only for live status and dashboard reads;
+`status.json`, events, logs and memory receive no derived label. The daemon
+stores only the peer's title-session ID and acknowledged delivery/envelope IDs
+for native-session peers in `session-title-inputs.json`. The
+[storage contract](design/adapters.md#session-title-slots) defines its bounds
+and lifetime. Removed instances are pruned when their removal applies, and
+Local bindings are discarded because the worker starts a new memory session.
+After restart it recomputes the label only when
+the same session and retained journal original match; a new session or pruned
+original shows no inherited label. Pi's real name stays in Pi's native session;
+the local worker's name lives only with that worker's in-memory session. The
+native setter/readback probe is separate from the still-pending live restart
+receipt tracked in #1143 and `docs/smoke.md`.
+
 In Peers, select a row and press `w` to edit `tasks.wip_limits.<peer>`, prefilled
 with its current limit. The editor stays on Peers and uses the existing Settings
 value, daemon preview, nonempty reason and `y` confirmation flow; Esc cancels without writing. The

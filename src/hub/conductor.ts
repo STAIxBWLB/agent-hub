@@ -9,7 +9,7 @@ import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import type { StartMode } from "./start-mode.ts";
 import type { HubEvent } from "./events.ts";
 import type { SupervisionFeed } from "./supervision.ts";
-import { DOING_STUB, type PeerDoing } from "./peer-doing.ts";
+import { DOING_STUB, INCOMING_LABEL_NOTE, type PeerDoing } from "./peer-doing.ts";
 import type { Budget } from "./budget.ts";
 import { windowKind, type WindowKind } from "./window-kind.ts";
 import { supportsHeadlessInstances } from "./instances.ts";
@@ -144,11 +144,12 @@ export function publicConductorStatus(input: ConductorStatusInput, now = Date.no
       conductorHold: p.hold ? { actor: p.hold.actor, since: numberOrNull(p.hold.since) } : null,
       budgetPause: p.budgetPause ? { since: numberOrNull(p.budgetPause.since), resetsAt: numberOrNull(p.budgetPause.resetsAt) } : null,
       windows: p.windows === undefined ? null : p.windows.map((w) => ({ id: w.id, used: numberOrNull(w.used), resetsAt: numberOrNull(w.resetsAt), at: numberOrNull(w.at), source: w.source ?? null })),
-      // #878: screened by the daemon, but written by the peer itself: framed as untrusted for the conductor agent.
+      // Native reports retain peer authorship; incoming message labels carry their own display provenance.
       doing: !p.doing ? null : p.doing.text === DOING_STUB ? { text: DOING_STUB, source: p.doing.source, at: numberOrNull(p.doing.at) }
+        : p.doing.source === "label" ? { text: sanitize(p.doing.text), source: "label", at: numberOrNull(p.doing.at), note: INCOMING_LABEL_NOTE, untrusted: true }
         : { text: sanitize(p.doing.text), source: p.doing.source, at: numberOrNull(p.doing.at), from: p.peer, untrusted: true },
     })),
-    ...(input.peers.some(p => p.doing && p.doing.text !== DOING_STUB) ? { doingNote: DOING_NOTE } : {}),
+    ...(input.peers.some(p => p.doing && p.doing.source !== "label" && p.doing.text !== DOING_STUB) ? { doingNote: DOING_NOTE } : {}),
     taskCounts: Object.fromEntries(Object.entries(input.taskCounts).map(([state, count]) => [state, numberOrNull(count)])),
     approvals: input.approvals.map((a) => ({ peer: a.peer, tool: a.tool ?? null, ageMs: a.at === undefined || !Number.isFinite(a.at) ? null : Math.max(0, now - a.at) })),
   };

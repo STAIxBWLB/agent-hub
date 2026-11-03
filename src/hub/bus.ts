@@ -218,7 +218,7 @@ export class Bus {
   }
 
   /** Actual transport admission, using originals even when a digest was condensed. Never an enqueue metric. */
-  onDelivered?: (peer: PeerId, originals: Envelope[]) => void;
+  onDelivered?: (peer: PeerId, originals: Envelope[], deliveryId?: string) => void;
   /** Before deliver's synchronous busy transition, with originals rather than a condensed digest. */
   onDeliver?: (peer: PeerId, originals: Envelope[]) => void;
   /** Final rendered journal payload, and its first positive acknowledgement. Observation cannot alter settlement. */
@@ -777,7 +777,7 @@ export class Bus {
     else this.journal.transition(id, state, receipt.reason);
     if (before?.state === "dispatching" && (state === "accepted" || state === "completed")) {
       this.memoryDelivery(peer, id, before.out, "delivered", before.originals);
-      this.delivered(peer, before.originals);
+      this.delivered(peer, before.originals, id);
     }
     if (state === "failed") {
       if (before) this.failed(peer, before.originals, before.originals.some((e) => e.private) ? "private delivery failed" : receipt.reason, receipt.quota === true && before.state === "dispatching");
@@ -1258,8 +1258,8 @@ export class Bus {
     try { this.onMemoryDelivery?.(peer, id, out, field); } catch { /* optional telemetry never alters delivery */ }
   }
 
-  private delivered(peer: PeerId, originals: Envelope[]): void {
-    try { this.onDelivered?.(peer, originals); } catch { /* observation must never affect delivery settlement */ }
+  private delivered(peer: PeerId, originals: Envelope[], deliveryId?: string): void {
+    try { this.onDelivered?.(peer, originals, deliveryId); } catch { /* observation must never affect delivery settlement */ }
   }
 
   private deliveryFailed(peer: PeerId): void {

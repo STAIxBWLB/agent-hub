@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
-import { BasePeer } from "../hub/peers.ts";
+import { renderDigest, remoteEnvelope, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
+import { BasePeer, type SessionTitleResult } from "../hub/peers.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { assessVersion, COMPAT, type CompatVerdict } from "./compat.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
@@ -41,6 +41,8 @@ export interface PiOptions {
   model?: string;
   relay: PiRelay; executeTool: (name: string, args: unknown, toolCallId: string, sessionId?: string, signal?: AbortSignal, context?: PiToolContext) => Promise<string | PiToolResult>; tools: PiToolSchema[];
   preamble?: string;
+  /** Host-owned conditional instruction, sampled once per delivered turn. */
+  titlePreface?: () => string | undefined;
   selectModel?: (envs: Envelope[]) => Promise<string | undefined>; maxSteps?: number;
   /** Atomic task/run admission immediately before provider requests or tool execution. */
   admitBudget?: (envs: Envelope[], unit: ExecutionUnit) => Promise<ExecutionBudgetDecision[]>;
@@ -113,6 +115,66 @@ export class PiPeer extends BasePeer {
   private currentReply?: Envelope;
   private sessionId = "";
   private sessionFile = "";
+  /** A read-only observation of Pi's native slot, never a second writable title store. */
+  private observedTitle: string | undefined;
+  private titleRevision = -1;
+  private titleEpoch = 0;
+  private nativeTitleEpoch: string | undefined;
+  get sessionTitle(): string | undefined { return this.acceptingTools && this.verifiedOwner() ? this.observedTitle : undefined; }
+  get titleSession(): string | undefined { return this.nativeSession; }
+  async setSessionTitle(title: string, onlyIfUnnamed: boolean, current?: () => boolean): Promise<SessionTitleResult> {
+    const invalid = (error: string, mayHaveApplied = false): SessionTitleResult => ({ ok: false, reason: "invalid", error, ...(mayHaveApplied ? { mayHaveApplied: true as const } : {}) });
+    if (typeof title !== "string" || !title.trim() || [...title].length > 80 || typeof onlyIfUnnamed !== "boolean") return invalid("Session title must contain 1-80 normalized characters and use a conditional-write flag; correct the title request and try again.");
+    if (this.stopping || this.state === "offline") return invalid("Pi session is offline or stopped; start or reconnect Pi and check ahub status before naming it.");
+    const session = this.sessionId, generation = this.budgetGeneration, owner = this.sessionGeneration, epoch = this.titleEpoch;
+    if (!owner || !this.verifiedOwner()) return invalid("Pi native session owner is unverified; reconnect the retained Pi session and check ahub status before naming it.");
+    if (!this.acceptingTools) return invalid("Pi session is detached or running a personal turn; reconnect its current hub session and check ahub status before naming it.");
+    const valid = () => {
+      try { return this.acceptingTools && this.verifiedOwner() && this.sessionGeneration === owner && this.sessionId === session && this.budgetGeneration === generation && this.titleEpoch === epoch && current?.() !== false; }
+      catch { return false; }
+    };
+    if (!valid()) return invalid("Pi session, turn or title admission changed before dispatch; check ahub status before retrying in the current public session.");
+    let dispatched = false;
+    try {
+      const result = await this.sendTui({ type: "set_session_title", title, onlyIfUnnamed, sessionId: session, generation, ...(this.nativeTitleEpoch ? { titleEpoch: this.nativeTitleEpoch } : {}) }, valid, () => { dispatched = true; });
+      if (!valid()) return invalid("Pi session, turn or title admission changed after dispatch; the title may have been applied; check ahub status before retrying.", true);
+      if (result?.ok === false && result.reason === "invalid") {
+        if (result.cause === "session") return invalid("Pi native session changed before the title write; check ahub status and reconnect the current session before retrying.");
+        if (result.cause === "generation") return invalid("Pi native turn changed before the title write; wait for the current turn and check ahub status before retrying.");
+        if (result.cause === "arguments") return invalid("Pi rejected invalid title command arguments; use a 1-80 character normalized title and retry in the current session.");
+        if (result.cause === "native_unavailable") return invalid("Pi native title API is unavailable; restart Pi with the supported hub extension and check ahub status before retrying.");
+        if (result.cause === "native_failed") return invalid("Pi native title API failed without confirming the write; the title may have been applied; check ahub status before retrying.", true);
+        if (result.cause === "native_readback") return invalid("Pi native title readback did not confirm the write; the title may have been applied; check ahub status before retrying.", true);
+      }
+      if (result?.sessionId !== session || typeof result.sessionName !== "string" || this.nativeTitleEpoch !== undefined && result.titleEpoch !== this.nativeTitleEpoch) return invalid("Pi title acknowledgement did not confirm the current native slot; the title may have been applied; check ahub status before retrying.", true);
+      this.observeTitle(result.sessionName, result.titleRevision, result.titleEpoch);
+      if (result.ok === false && result.reason === "already_named") return { ok: false, reason: "already_named", error: "This session already has a title; keep it or ask the person to rename it with ahub title." };
+      if (result.ok === true && result.sessionName === title) return { ok: true };
+      return invalid("Pi native title write or readback was not confirmed; the title may have been applied; check ahub status before retrying.", true);
+    } catch (error) {
+      const timeout = error instanceof Error && error.message.includes("acknowledgement timed out");
+      if (dispatched) return invalid(`Pi title ${timeout ? "acknowledgement timed out" : "bridge command failed after dispatch"}; the title may have been applied; check ahub status before retrying.`, true);
+      return invalid(`Pi title ${timeout ? "command expired" : "admission changed or bridge failed"} before dispatch; check ahub status before retrying in the current session.`);
+    }
+  }
+  private observeTitle(value: unknown, revision?: unknown, epoch?: unknown): void {
+    if (this.nativeTitleEpoch !== undefined && epoch !== this.nativeTitleEpoch) return;
+    if (typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0) {
+      if (revision < this.titleRevision) return;
+      this.titleRevision = revision;
+    }
+    if (value === undefined) value = ""; // A verified native session omits its name while unnamed.
+    if (typeof value !== "string") return;
+    if (value) this.noteActivity(); // Native session_info is history even before Pi creates its session file.
+    if (this.observedTitle !== value) { this.observedTitle = value; this.onDoing?.("title", value); }
+  }
+  private observeSnapshotTitle(snapshot: { sessionName?: unknown; titleRevision?: unknown; titleEpoch?: unknown }, before: number, beforeEpoch: number): boolean {
+    if (this.titleEpoch !== beforeEpoch || snapshot.titleEpoch !== undefined && snapshot.titleEpoch !== this.nativeTitleEpoch) return false;
+    if (snapshot.titleRevision === undefined && this.titleRevision !== before) return false;
+    if (typeof snapshot.titleRevision === "number" && snapshot.titleRevision < this.titleRevision) return false;
+    this.observeTitle(snapshot.sessionName, snapshot.titleRevision, snapshot.titleEpoch ?? this.nativeTitleEpoch);
+    return true;
+  }
   private executionBudgetTimer?: ReturnType<typeof setTimeout>;
   private executionAbort?: AbortController;
   private readonly budgetStops = new Map<number, string>();
@@ -164,7 +226,7 @@ export class PiPeer extends BasePeer {
   private terminalOwnerObservation?: TerminalOwnerObservation;
   private tuiExit?: Promise<void>;
   private resolveTuiExit?: () => void;
-  private tuiCommands = new Map<string, { command: Record<string, unknown>; resolve: (value: any) => void; reject: (error: Error) => void }>();
+  private tuiCommands = new Map<string, { command: Record<string, unknown>; current?: () => boolean; onDispatch?: () => void; resolve: (value: any) => void; reject: (error: Error) => void }>();
   private tuiQueue: Record<string, unknown>[] = [];
   private tuiWaiters: Array<{ resolve: (command: Record<string, unknown> | undefined) => void; timer: ReturnType<typeof setTimeout> }> = [];
 
@@ -219,14 +281,16 @@ export class PiPeer extends BasePeer {
     this.emptyResumeVerified = false;
     if (this.state !== "idle" || this.stopping || this.activeTools) throw new Error("Pi must settle before session capture");
     if (this.sessionFile && existsSync(this.sessionFile)) return this.recoveryMetadata();
+    const titleRevisionBefore = this.titleRevision, titleEpochBefore = this.titleEpoch;
     const snapshot = this.opts.mode === "headless"
       ? (await this.waitRpc("get_state", 15_000)).data
       : await this.sendTui({ type: "get_session_state" });
     if (this.state !== "idle" || this.activeTools || snapshot?.sessionId !== this.sessionId || snapshot?.sessionFile !== this.sessionFile) throw new Error("Pi source session changed during capture");
+    if (!this.observeSnapshotTitle(snapshot, titleRevisionBefore, titleEpochBefore)) throw new Error("Pi source session title changed during capture; retry with a fresh native session snapshot");
     const empty = this.opts.mode === "headless"
       ? snapshot.messageCount === 0 && snapshot.pendingMessageCount === 0 && snapshot.isStreaming === false && snapshot.isCompacting !== true && !snapshot.sessionName
       : snapshot.empty === true && snapshot.idle === true;
-    if (!empty || this.activityObserved || this.persistedOnce) throw new Error("Pi session history is not persisted; refusing to recreate it");
+    if (!empty || this.activityObserved || this.persistedOnce) throw new Error("Pi session history is not persisted; refusing to recreate it. Exchange one message or start a new session, then retry");
     this.emptyResumeVerified = true;
     const captured = this.recoveryMetadata();
     if (typeof captured.sessionId === "string" && !captured.sessionFile) this.verifiedEmptyResume = { sessionId: captured.sessionId };
@@ -388,6 +452,7 @@ export class PiPeer extends BasePeer {
     if (this.preflight) await this.preflight();
     this.terminalOwnerObservation = undefined;
     this.stopping = false;
+    this.observedTitle = undefined; this.titleRevision = -1; this.nativeTitleEpoch = undefined; this.onDoing?.("reset");
     this.rosterDetached = false; this.rosterUnownedRun = false;
     this.requestedStopReason = undefined;
     this.approvalTurnAbort = false;
@@ -456,6 +521,7 @@ export class PiPeer extends BasePeer {
       this.fail(new Error(`pi exited with ${signal ? `signal ${signal}` : `code ${code}`}`));
       this.reportExit(exit);
     });
+    const titleRevisionBefore = this.titleRevision, titleEpochBefore = this.titleEpoch;
     const state = await this.waitRpc("get_state", 15_000);
     if (state.success !== true || typeof state.data?.sessionId !== "string" || typeof state.data?.sessionFile !== "string" || !state.data.sessionId || !state.data.sessionFile) throw new Error("Pi get_state did not prove session identity");
     if ((this.opts.sessionId && state.data.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && state.data.sessionFile !== this.opts.sessionFile)) {
@@ -472,6 +538,7 @@ export class PiPeer extends BasePeer {
     }
     this.persistedOnce = existsSync(this.sessionFile);
     if ((this.opts.sessionId && this.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)) throw new Error("Pi startup session identity mismatch");
+    this.observeSnapshotTitle(state.data, titleRevisionBefore, titleEpochBefore);
     this.started = true;
     this.setState("idle");
   }
@@ -542,9 +609,11 @@ export class PiPeer extends BasePeer {
     if (!this.fencedPrompt) throw new Error("Pi roster return needs a fenced-prompt extension; restart the retained terminal with the current hub extension");
     if (this.pendingPromptId) throw new Error("Pi prompt admission is still pending; wait before reverifying the retained terminal");
     const epoch = this.rosterEpoch, lifecycle = this.rosterLifecycleRevision, session = this.sessionId, file = this.sessionFile;
+    const titleRevisionBefore = this.titleRevision, titleEpochBefore = this.titleEpoch;
     const snapshot = await this.sendTui({ type: "get_session_state" });
     if (epoch !== this.rosterEpoch || this.stopping || !this.verifiedOwner() || this.activeTools || snapshot?.sessionId !== session || snapshot?.sessionFile !== file || typeof snapshot?.idle !== "boolean") throw new Error("Pi roster return could not verify the current native session");
     if (lifecycle !== this.rosterLifecycleRevision) throw new Error("Pi native activity changed during roster return; retry with a fresh session snapshot");
+    this.observeSnapshotTitle(snapshot, titleRevisionBefore, titleEpochBefore);
     this.rosterDetached = false;
     this.hubPromptId = undefined; this.hubPromptGeneration = undefined;
     this.rosterUnownedRun = !snapshot.idle; this.agentRunning = !snapshot.idle;
@@ -650,8 +719,9 @@ export class PiPeer extends BasePeer {
       this.noteActivity();
       attempted = true;
       if (deliveryId) this.activeDeliveryIds.add(deliveryId);
-      if (this.opts.mode === "tui") { const pending = this.sendTui({ type: "prompt", message: renderDigest(envs, true) }); promptId = this.pendingPromptId; await pending; }
-      else await this.sendRpc({ type: "prompt", message: renderDigest(envs, true) });
+      const message = [envs.some(env => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join("\n");
+      if (this.opts.mode === "tui") { const pending = this.sendTui({ type: "prompt", message }); promptId = this.pendingPromptId; await pending; }
+      else await this.sendRpc({ type: "prompt", message });
       if (promptId !== undefined && promptId !== this.pendingPromptId) return;
       if (this.fencedPrompt && this.rosterDetached) {
         if (deliveryId && this.activeDeliveryIds.delete(deliveryId)) this.delivery({ id: deliveryId, state: "needs_review", reason: "Pi native activity changed before prompt acceptance was confirmed" });
@@ -780,10 +850,15 @@ export class PiPeer extends BasePeer {
       this.sessionId = String(event.sessionId ?? ""); this.sessionFile = String(event.sessionFile ?? "");
       this.ownerPid = Number.isInteger(event.pid) ? event.pid : undefined; this.ownerSignature = typeof event.signature === "string" ? event.signature : undefined;
       if ((this.opts.sessionId && this.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)) { this.opts.log?.(`[${this.id}] Pi session identity mismatch`); return; }
+      this.titleRevision = -1; this.titleEpoch++;
+      this.nativeTitleEpoch = typeof event.titleEpoch === "string" && event.titleEpoch ? event.titleEpoch : undefined;
+      this.observeTitle(event.sessionName, event.titleRevision, event.titleEpoch);
       this.rememberTerminalOwner();
       this.startOwnerMonitor(); if (this.opts.mode === "tui") { this.started = true; this.setState("idle"); }
     }
+    if ((event.type === "session_title" || event.type === "agent_start" && Object.hasOwn(event, "sessionName")) && event.sessionId === this.sessionId && this.verifiedOwner()) this.observeTitle(event.sessionName, event.titleRevision, event.titleEpoch);
     if (event.type === "session_shutdown") {
+      this.observedTitle = undefined; this.titleRevision = -1; this.nativeTitleEpoch = undefined; this.onDoing?.("reset");
       const exit = this.exitMetadata("session_shutdown");
       this.shutdownExit ??= exit; // headless waits for the OS exit, retaining the pre-cleanup turn and stop facts
       this.stopping = true; this.ownerClaimed = false; this.clearOwnerMonitor(); this.resolveTuiExit?.(); this.resolveTuiExit = undefined;
@@ -872,10 +947,17 @@ export class PiPeer extends BasePeer {
     while ((index = this.buffer.indexOf("\n")) >= 0) { const line = this.buffer.slice(0, index).replace(/\r$/, ""); this.buffer = this.buffer.slice(index + 1); if (!line) continue; try { this.handleRpc(JSON.parse(line) as RpcMessage); } catch (error) { this.opts.log?.(`[${this.id}] invalid Pi RPC output: ${(error as Error).message}`); } }
   }
   private nextTuiCommand(timeout: number): Promise<Record<string, unknown> | undefined> {
-    const next = this.tuiQueue.shift(); if (next) return Promise.resolve(next);
+    let next = this.tuiQueue.shift();
+    while (next) {
+      const pending = this.tuiCommands.get(String(next.id));
+      if (pending && pending.current?.() !== false) { pending.onDispatch?.(); return Promise.resolve(next); }
+      if (pending) { this.tuiCommands.delete(String(next.id)); pending.reject(new Error("Pi session title admission changed before dispatch")); }
+      next = this.tuiQueue.shift();
+    }
     return new Promise((resolvePromise) => { const entry = { resolve: resolvePromise, timer: setTimeout(() => { const i = this.tuiWaiters.indexOf(entry); if (i >= 0) this.tuiWaiters.splice(i, 1); resolvePromise(undefined); }, timeout) }; this.tuiWaiters.push(entry); });
   }
-  private sendTui(command: Record<string, unknown>): Promise<any> {
+  private sendTui(command: Record<string, unknown>, current?: () => boolean, onDispatch?: () => void): Promise<any> {
+    if (current?.() === false) return Promise.reject(new Error("Pi session title admission changed before dispatch"));
     const id = `ahub-${++this.seq}`;
     const fenced = this.fencedPrompt && command.type === "prompt";
     if (fenced) { this.pendingPromptId = id; this.hubPromptId = id; this.hubPromptGeneration = undefined; }
@@ -886,9 +968,9 @@ export class PiPeer extends BasePeer {
         this.tuiQueue = this.tuiQueue.filter((queued) => queued.id !== id);
         reject(new Error(`Pi TUI ${String(command.type)} acknowledgement timed out`));
       }, 30_000);
-      this.tuiCommands.set(id, { command: wire, resolve: (value) => { clearTimeout(timer); resolvePromise(value); }, reject: (error) => { clearTimeout(timer); reject(error); } });
+      this.tuiCommands.set(id, { command: wire, current, onDispatch, resolve: (value) => { clearTimeout(timer); resolvePromise(value); }, reject: (error) => { clearTimeout(timer); reject(error); } });
       const waiter = this.tuiWaiters.shift();
-      if (waiter) { clearTimeout(waiter.timer); waiter.resolve(wire); } else this.tuiQueue.push(wire);
+      if (waiter) { clearTimeout(waiter.timer); onDispatch?.(); waiter.resolve(wire); } else this.tuiQueue.push(wire);
     });
   }
   private handleRpc(message: RpcMessage): void { if (this.acceptingTools && ["message_update", "tool_execution_update"].includes(message.type ?? "") && this.state === "busy") this.touch();  if (message.type === "agent_settled") return; // The authenticated extension is the single lifecycle source.
