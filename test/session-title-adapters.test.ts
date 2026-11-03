@@ -138,3 +138,42 @@ test("#1055 a delayed unversioned native get_state cannot undo a newer manual ti
   expect(peer.sessionTitle).toBe("newer native manual title");
   expect(observed.at(-1)).toEqual(["title", "newer native manual title"]);
 });
+
+for (const naming of ["person", "native", "unnamed"] as const) test(`#1055 cached empty-session recovery proof follows subsequent ${naming} title activity`, async () => {
+  const f = await rosterPiFixture(); cleanup.push(f.cleanup);
+  const reading = f.peer.captureResume(), snapshot = await f.next();
+  expect(snapshot.type).toBe("get_session_state");
+  await f.ack(snapshot, { sessionId: f.sessionId, sessionFile: f.sessionFile, idle: true, empty: true, sessionName: "", titleRevision: 0 });
+  const empty = await reading;
+  expect(empty).toMatchObject({ sessionId: f.sessionId });
+  expect(empty).not.toHaveProperty("sessionFile");
+  expect(f.peer.pendingResume).toEqual({ sessionId: f.sessionId });
+  if (naming === "person") {
+    const writing = f.peer.setSessionTitle("person title before the first prompt", false), command = await f.next();
+    await f.ack(command, { ok: true, sessionId: f.sessionId, sessionName: "person title before the first prompt", titleRevision: 1 });
+    expect(await writing).toEqual({ ok: true });
+  } else if (naming === "native") {
+    await f.post("/event", { type: "session_title", sessionId: f.sessionId, sessionName: "native manual title before the first prompt", titleRevision: 1 });
+    expect(f.peer.sessionTitle).toBe("native manual title before the first prompt");
+  }
+  if (naming !== "unnamed") expect(f.peer.pendingResume.sessionId).not.toBe(f.sessionId);
+  f.owner.kill(); await f.owner.exited; await f.post("/event", { type: "session_shutdown" });
+  if (naming === "unnamed") {
+    await expect(f.peer.captureResume()).resolves.toMatchObject({ sessionId: f.sessionId });
+    expect(await f.peer.captureResume()).not.toHaveProperty("sessionFile");
+  } else {
+    await expect(f.peer.captureResume()).rejects.toThrow("no verified persisted resume state");
+  }
+});
+
+test("#1055 a versioned empty TUI snapshot older than a new native title cannot certify empty recovery", async () => {
+  const f = await rosterPiFixture(); cleanup.push(f.cleanup);
+  const reading = f.peer.captureResume(), command = await f.next();
+  await f.post("/event", { type: "session_title", sessionId: f.sessionId, sessionName: "native title newer than the snapshot", titleRevision: 1 });
+  await f.ack(command, { sessionId: f.sessionId, sessionFile: f.sessionFile, idle: true, empty: true, sessionName: "", titleRevision: 0 });
+  await expect(reading).rejects.toThrow("title changed during capture");
+  expect(f.peer.sessionTitle).toBe("native title newer than the snapshot");
+  expect(f.peer.pendingResume.sessionId).not.toBe(f.sessionId);
+  f.owner.kill(); await f.owner.exited; await f.post("/event", { type: "session_shutdown" });
+  await expect(f.peer.captureResume()).rejects.toThrow("no verified persisted resume state");
+});
