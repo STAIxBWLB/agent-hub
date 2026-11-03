@@ -2873,7 +2873,7 @@ export async function startDaemon(opts: DaemonOptions) {
         firstTitleMessages.set(peer, { owner, session: owner.titleSession, env });
         if (deliveryId && owner.titleSession && (Object.hasOwn(titleBindings, peer) || Object.keys(titleBindings).length < 128)) {
           const candidate = sessionTitleBindings({ ...titleBindings, [peer]: { session: owner.titleSession, delivery: deliveryId, envelope: env.id } });
-          if (Buffer.byteLength(JSON.stringify(candidate)) <= 64 * 1024) {
+          if (Buffer.byteLength(JSON.stringify(candidate, null, 2) + "\n") <= 64 * 1024) {
             titleBindings = candidate;
             try { atomicPrivateJSON(titleBindingFile, titleBindings); } catch { /* restart fallback unavailable; delivery itself succeeded */ }
           }

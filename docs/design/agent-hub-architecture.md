@@ -64,7 +64,9 @@ Session titles for the two hub-owned title slots (#1055) are conditional writes
 to the current adapter session, under the same open-PII-task/private-turn and
 public-metadata screens as DOING. Person rename remains console-only. Live
 unnamed labels are computed from acknowledged source messages; only opaque
-session/delivery/envelope bindings persist, never copied labels. Native title,
+session/delivery/envelope bindings persist in `session-title-inputs.json`, never
+copied labels. Its fields, bounds and lifetime are defined by the
+[session-title storage contract](adapters.md#session-title-slots). Native title,
 task title, Git branch and instance identity remain independent.
 
 Privacy decisions are made at hub boundaries, not delegated to model routing. A private task or turn is represented by a private envelope and a restricted public view; task text is screened before it enters memory, shared notices, or model calls. The PII screen can run on-device; its gateway path requires positive campus admission, so an unknown network result is not treated as safe. This makes each downstream observer consume the same host decision rather than infer privacy from a label or vendor ([#198](https://github.com/STAIxBWLB/agent-hub/issues/198), [#752](https://github.com/STAIxBWLB/agent-hub/issues/752)).

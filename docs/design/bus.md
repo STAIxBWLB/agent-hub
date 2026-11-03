@@ -33,6 +33,14 @@ The bus applies limits to a sender, sender-recipient pair, important messages, a
 
 The in-memory bus schedules messages; `DeliveryJournal` durably records an individual transport attempt and the original envelopes behind any rendered output. A peer receipt such as `accepted` or `completed` describes transport, not the corresponding task's acceptance, completion, or approval. That separation lets a timeout or restart remain explicitly uncertain without inventing a task outcome ([#37](https://github.com/STAIxBWLB/agent-hub/issues/37)).
 
+For #1055, `Bus.onDelivered(peer, originals, deliveryId?)` exposes the existing
+journal delivery ID to the observer at the first positive transport ACK. The
+optional argument accompanies the original envelopes, including when the
+rendered delivery was condensed. Queueing supplies no positive-ACK evidence,
+and an observer exception cannot alter delivery settlement. This supports the
+[ID-only session-title restart binding](adapters.md#session-title-slots) without
+changing dispatch, retry, task acceptance or task-completion authority.
+
 Push peers receive bounded batches. Condensation is optional, excludes important, remote, and invocation messages, and keeps `originals` separate from `out` so replies, safe failures, and recovery still refer to what the peer was actually given. On an eligible safe retry, a failed batch falls back to individual envelopes, and a previously failed envelope goes alone so a poison item cannot block its neighbors. These bounds preserve queue progress when summarization or one recipient fails ([#713](https://github.com/STAIxBWLB/agent-hub/issues/713), [#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
 
 Pull-only peers catch up oldest-first under a byte budget, but the first envelope always goes even when it exceeds that budget so one oversized item cannot starve the queue; push peers use the digest batch limit. Pull records returned envelopes as completed at handout because the tool result is the readback, not a later native receipt. A busy Claude channel can also pull its own messages through `hub_inbox`; that avoids making a long-running turn an unbounded queue lock ([#493](https://github.com/STAIxBWLB/agent-hub/issues/493), [#713](https://github.com/STAIxBWLB/agent-hub/issues/713)).

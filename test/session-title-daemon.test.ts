@@ -105,6 +105,60 @@ test("unnamed labels come only from acknowledged deliveries and restart from mat
   } finally { await f.stop(); }
 });
 
+test("the restart binding file contains only IDs across delivery, naming and session replacement", async () => {
+  let f = await rig(); const cwd = f.cwd;
+  const body = "BODY_CANARY_1055\nA first message whose normalized display label is separate from its stored source";
+  const title = "TITLE_CANARY_1055";
+  const canaries = [body, "BODY_CANARY_1055", title];
+  const bindingText = (session: string): string => {
+    const text = readFileSync(join(f.stateDir, "session-title-inputs.json"), "utf8"), value = JSON.parse(text);
+    expect(Object.keys(value)).toEqual(["local"]);
+    expect(value.local).toEqual({ session, delivery: expect.any(String), envelope: expect.any(String) });
+    for (const canary of canaries) expect(text).not.toContain(canary);
+    return text;
+  };
+  try {
+    await f.send(body);
+    const label = (await f.status()).peers.local.doing.text;
+    expect(label).toContain("BODY_CANARY_1055"); canaries.push(label);
+    const firstSession = f.peer.titleSession, beforeNaming = bindingText(firstSession);
+    expect(await f.title(title)).toEqual({ ok: true }); expect(f.peer.sessionTitle).toBe(title);
+    expect(bindingText(firstSession)).toBe(beforeNaming);
+    await f.stop(false); f = await rig(cwd, "replacement-title-session");
+    expect(bindingText(firstSession)).toBe(beforeNaming);
+    expect((await f.status()).peers.local.doing).toBeUndefined();
+    const nextBody = "REPLACEMENT_BODY_CANARY_1055\nA later session must receive its own acknowledged source";
+    canaries.push(nextBody, "REPLACEMENT_BODY_CANARY_1055");
+    await f.send(nextBody);
+    const nextLabel = (await f.status()).peers.local.doing.text;
+    expect(nextLabel).toContain("REPLACEMENT_BODY_CANARY_1055"); canaries.push(nextLabel);
+    expect(bindingText(f.peer.titleSession)).not.toBe(beforeNaming);
+  } finally { await f.stop(); }
+});
+
+test("the binding byte ceiling measures its actual formatted representation", async () => {
+  const cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-title-bound-"))), stateDir = join(cwd, ".agenthub/state");
+  mkdirSync(stateDir, { recursive: true });
+  const bindings = Object.fromEntries(Array.from({ length: 41 }, (_, i) => [`p${i}`, { session: "s".repeat(512), delivery: "d".repeat(512), envelope: "e".repeat(512) }]));
+  const serialize = () => JSON.stringify(bindings, null, 2) + "\n";
+  // Leave less room than one new binding needs. Compact JSON still fits, but the actual writer's representation does not.
+  const excess = Buffer.byteLength(serialize()) - (64 * 1024 - 32);
+  expect(excess).toBeGreaterThan(0); expect(excess).toBeLessThan(512);
+  bindings.p40!.envelope = bindings.p40!.envelope.slice(excess);
+  const before = serialize(), file = join(stateDir, "session-title-inputs.json");
+  expect(Buffer.byteLength(before)).toBe(64 * 1024 - 32);
+  writeFileSync(file, before, { mode: 0o600 });
+  const f = await rig(cwd);
+  try {
+    await f.send("A public delivery still succeeds when restart binding capacity is full");
+    expect((await f.status()).peers.local.doing.source).toBe("label");
+    const after = readFileSync(file, "utf8");
+    expect(Buffer.byteLength(after)).toBeLessThanOrEqual(64 * 1024);
+    expect(after).toBe(before);
+    expect(JSON.parse(after)).not.toHaveProperty("local");
+  } finally { await f.stop(); }
+});
+
 test("PII owner and reviewer contexts refuse title writes and show a stub even when no title exists", async () => {
   for (const role of ["owner", "reviewer"] as const) {
     const f = await rig();
