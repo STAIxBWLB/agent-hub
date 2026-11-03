@@ -7288,6 +7288,51 @@ var init_pi = __esm(() => {
     currentReply;
     sessionId = "";
     sessionFile = "";
+    observedTitle;
+    titleRevision = -1;
+    get sessionTitle() {
+      return this.acceptingTools && this.verifiedOwner() ? this.observedTitle : undefined;
+    }
+    get titleSession() {
+      return this.nativeSession;
+    }
+    async setSessionTitle(title, onlyIfUnnamed, current) {
+      const session = this.sessionId, generation = this.budgetGeneration, owner = this.sessionGeneration;
+      const valid = () => this.acceptingTools && !!owner && this.sessionGeneration === owner && this.sessionId === session && this.budgetGeneration === generation && current?.() !== false;
+      if (!title.trim() || [...title].length > 80 || !valid())
+        return { ok: false, reason: "invalid" };
+      try {
+        const result = await this.sendTui({ type: "set_session_title", title, onlyIfUnnamed, sessionId: session, generation }, valid);
+        if (!valid() || result?.sessionId !== session || typeof result.sessionName !== "string")
+          return { ok: false, reason: "invalid" };
+        this.observeTitle(result.sessionName, result.titleRevision);
+        if (result.ok === false && result.reason === "already_named")
+          return { ok: false, reason: "already_named" };
+        return result.ok === true && result.sessionName === title ? { ok: true } : { ok: false, reason: "invalid" };
+      } catch {
+        return { ok: false, reason: "invalid" };
+      }
+    }
+    observeTitle(value, revision) {
+      if (typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0) {
+        if (revision < this.titleRevision)
+          return;
+        this.titleRevision = revision;
+      }
+      if (value === undefined)
+        value = "";
+      if (typeof value !== "string")
+        return;
+      if (this.observedTitle !== value) {
+        this.observedTitle = value;
+        this.onDoing?.("title", value);
+      }
+    }
+    observeSnapshotTitle(snapshot, before) {
+      if (snapshot.titleRevision === undefined && this.titleRevision !== before)
+        return;
+      this.observeTitle(snapshot.sessionName, snapshot.titleRevision);
+    }
     executionBudgetTimer;
     executionAbort;
     budgetStops = new Map;
@@ -7406,9 +7451,13 @@ var init_pi = __esm(() => {
         throw new Error("Pi must settle before session capture");
       if (this.sessionFile && existsSync7(this.sessionFile))
         return this.recoveryMetadata();
+      const titleRevisionBefore = this.titleRevision;
       const snapshot = this.opts.mode === "headless" ? (await this.waitRpc("get_state", 15000)).data : await this.sendTui({ type: "get_session_state" });
       if (this.state !== "idle" || this.activeTools || snapshot?.sessionId !== this.sessionId || snapshot?.sessionFile !== this.sessionFile)
         throw new Error("Pi source session changed during capture");
+      this.observeSnapshotTitle(snapshot, titleRevisionBefore);
+      if (snapshot.titleRevision === undefined && this.titleRevision !== titleRevisionBefore)
+        throw new Error("Pi source session title changed during capture; retry with a fresh native session snapshot");
       const empty = this.opts.mode === "headless" ? snapshot.messageCount === 0 && snapshot.pendingMessageCount === 0 && snapshot.isStreaming === false && snapshot.isCompacting !== true && !snapshot.sessionName : snapshot.empty === true && snapshot.idle === true;
       if (!empty || this.activityObserved || this.persistedOnce)
         throw new Error("Pi session history is not persisted; refusing to recreate it");
@@ -7598,6 +7647,9 @@ var init_pi = __esm(() => {
         await this.preflight();
       this.terminalOwnerObservation = undefined;
       this.stopping = false;
+      this.observedTitle = undefined;
+      this.titleRevision = -1;
+      this.onDoing?.("reset");
       this.rosterDetached = false;
       this.rosterUnownedRun = false;
       this.requestedStopReason = undefined;
@@ -7698,6 +7750,7 @@ var init_pi = __esm(() => {
         this.fail(new Error(`pi exited with ${signal ? `signal ${signal}` : `code ${code}`}`));
         this.reportExit(exit);
       });
+      const titleRevisionBefore = this.titleRevision;
       const state = await this.waitRpc("get_state", 15000);
       if (state.success !== true || typeof state.data?.sessionId !== "string" || typeof state.data?.sessionFile !== "string" || !state.data.sessionId || !state.data.sessionFile)
         throw new Error("Pi get_state did not prove session identity");
@@ -7718,6 +7771,7 @@ var init_pi = __esm(() => {
       this.persistedOnce = existsSync7(this.sessionFile);
       if (this.opts.sessionId && this.sessionId !== this.opts.sessionId || this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)
         throw new Error("Pi startup session identity mismatch");
+      this.observeSnapshotTitle(state.data, titleRevisionBefore);
       this.started = true;
       this.setState("idle");
     }
@@ -7807,11 +7861,13 @@ var init_pi = __esm(() => {
       if (this.pendingPromptId)
         throw new Error("Pi prompt admission is still pending; wait before reverifying the retained terminal");
       const epoch = this.rosterEpoch, lifecycle = this.rosterLifecycleRevision, session = this.sessionId, file = this.sessionFile;
+      const titleRevisionBefore = this.titleRevision;
       const snapshot = await this.sendTui({ type: "get_session_state" });
       if (epoch !== this.rosterEpoch || this.stopping || !this.verifiedOwner() || this.activeTools || snapshot?.sessionId !== session || snapshot?.sessionFile !== file || typeof snapshot?.idle !== "boolean")
         throw new Error("Pi roster return could not verify the current native session");
       if (lifecycle !== this.rosterLifecycleRevision)
         throw new Error("Pi native activity changed during roster return; retry with a fresh session snapshot");
+      this.observeSnapshotTitle(snapshot, titleRevisionBefore);
       this.rosterDetached = false;
       this.hubPromptId = undefined;
       this.hubPromptGeneration = undefined;
@@ -7962,12 +8018,14 @@ var init_pi = __esm(() => {
         attempted = true;
         if (deliveryId)
           this.activeDeliveryIds.add(deliveryId);
+        const message = [envs.some((env) => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join(`
+`);
         if (this.opts.mode === "tui") {
-          const pending = this.sendTui({ type: "prompt", message: renderDigest(envs, true) });
+          const pending = this.sendTui({ type: "prompt", message });
           promptId = this.pendingPromptId;
           await pending;
         } else
-          await this.sendRpc({ type: "prompt", message: renderDigest(envs, true) });
+          await this.sendRpc({ type: "prompt", message });
         if (promptId !== undefined && promptId !== this.pendingPromptId)
           return;
         if (this.fencedPrompt && this.rosterDetached) {
@@ -8144,6 +8202,7 @@ var init_pi = __esm(() => {
           this.opts.log?.(`[${this.id}] Pi session identity mismatch`);
           return;
         }
+        this.observeTitle(event.sessionName, event.titleRevision);
         this.rememberTerminalOwner();
         this.startOwnerMonitor();
         if (this.opts.mode === "tui") {
@@ -8151,7 +8210,12 @@ var init_pi = __esm(() => {
           this.setState("idle");
         }
       }
+      if ((event.type === "session_title" || event.type === "agent_start" && Object.hasOwn(event, "sessionName")) && event.sessionId === this.sessionId && this.verifiedOwner())
+        this.observeTitle(event.sessionName, event.titleRevision);
       if (event.type === "session_shutdown") {
+        this.observedTitle = undefined;
+        this.titleRevision = -1;
+        this.onDoing?.("reset");
         const exit = this.exitMetadata("session_shutdown");
         this.shutdownExit ??= exit;
         this.stopping = true;
@@ -8291,9 +8355,17 @@ var init_pi = __esm(() => {
       }
     }
     nextTuiCommand(timeout) {
-      const next = this.tuiQueue.shift();
-      if (next)
-        return Promise.resolve(next);
+      let next = this.tuiQueue.shift();
+      while (next) {
+        const pending = this.tuiCommands.get(String(next.id));
+        if (pending && pending.current?.() !== false)
+          return Promise.resolve(next);
+        if (pending) {
+          this.tuiCommands.delete(String(next.id));
+          pending.reject(new Error("Pi session title admission changed before dispatch"));
+        }
+        next = this.tuiQueue.shift();
+      }
       return new Promise((resolvePromise) => {
         const entry = { resolve: resolvePromise, timer: setTimeout(() => {
           const i = this.tuiWaiters.indexOf(entry);
@@ -8304,7 +8376,9 @@ var init_pi = __esm(() => {
         this.tuiWaiters.push(entry);
       });
     }
-    sendTui(command) {
+    sendTui(command, current) {
+      if (current?.() === false)
+        return Promise.reject(new Error("Pi session title admission changed before dispatch"));
       const id = `ahub-${++this.seq}`;
       const fenced = this.fencedPrompt && command.type === "prompt";
       if (fenced) {
@@ -8319,7 +8393,7 @@ var init_pi = __esm(() => {
           this.tuiQueue = this.tuiQueue.filter((queued) => queued.id !== id);
           reject(new Error(`Pi TUI ${String(command.type)} acknowledgement timed out`));
         }, 30000);
-        this.tuiCommands.set(id, { command: wire, resolve: (value) => {
+        this.tuiCommands.set(id, { command: wire, current, resolve: (value) => {
           clearTimeout(timer);
           resolvePromise(value);
         }, reject: (error) => {
@@ -12784,7 +12858,7 @@ var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_
   name,
   description,
   inputSchema: { type: "object", properties: name === "hub_review" || name === "hub_task_propose" ? { ...properties, request_id: toolWriteRequestId } : properties, required, additionalProperties: false }
-}), STUDY_TOOLS, HANDOFF_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
+}), STUDY_TOOLS, HANDOFF_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, SESSION_TITLE_TOOL, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
 var init_hub_tools = __esm(() => {
   init_test_integrity();
   init_sdlc();
@@ -12919,7 +12993,8 @@ var init_hub_tools = __esm(() => {
     tool2("hub_backlog_return_untouched", "Return accepted but untouched work to the backlog with its history and planning retained. Optional fields.reserved changes the reservation atomically before capacity is released; null clears it. Refuses execution/branch/commit evidence; planner or person only, and a person's reservation requires the person.", { id: id2, revision: { type: "integer", minimum: 0 }, reason: { ...str2, maxLength: 1000 }, fields: { type: "object", properties: { reserved: { type: ["string", "null"], minLength: 1, maxLength: 32 } }, additionalProperties: false } }, ["id", "revision", "reason"])
   ];
   TASK_TOOLS.push(...PLANNER_REVIEW_TOOLS);
-  TASK_TOOL_NAMES = new Set(TASK_TOOLS.map((t) => t.name));
+  SESSION_TITLE_TOOL = tool2("hub_set_title", "Name your own session once the task is clear. Only an unnamed session accepts the first agent name; the person may replace it. Private contexts refuse the write. No task, branch or instance is renamed.", { title: { type: "string", description: "1-80 characters after doingText normalization (one line, controls removed, surrounding whitespace trimmed)" } }, ["title"]);
+  TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name]);
   CONDUCTOR_TOOLS = [
     tool2("hub_status", "Inspect public team state, holds, quota windows, task counts and pending approval peer/tool/age. Only the configured conductor may use this tool.", {}),
     tool2("hub_task_show", "Read a task's public view and history, its done summary and check result included. PII tasks remain stubs. Only the conductor, the configured planner and the task's current owner and reviewer may use this tool.", { id: id2 }, ["id"]),
@@ -13030,6 +13105,22 @@ var init_local_worker = __esm(() => {
     deliveryOnly = true;
     hubOwned = true;
     history = [];
+    title = "";
+    get sessionTitle() {
+      return this.title;
+    }
+    get titleSession() {
+      return this.sessionId;
+    }
+    async setSessionTitle(title, onlyIfUnnamed, current) {
+      if (this.state === "offline" || !title.trim() || [...title].length > 80 || current?.() === false)
+        return { ok: false, reason: "invalid" };
+      if (onlyIfUnnamed && this.title)
+        return { ok: false, reason: "already_named" };
+      this.title = title;
+      this.onDoing?.("title", title);
+      return { ok: true };
+    }
     sessionId = `agent-hub-local-${randomUUID7()}`;
     routes;
     warnedLegacyRoutes = new Set;
@@ -13060,7 +13151,7 @@ var init_local_worker = __esm(() => {
             throw new Error("route belongs to an ended turn");
           if (signal.aborted)
             throw new Error("turn cancelled before model request");
-          const tools = judge ? undefined : [...this.toolSchemas(), ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
+          const tools = judge ? undefined : [...this.toolSchemas(), ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : []];
           const result = await this.opts.omni.chat({ model, messages, ...tools ? { tools } : {}, ...judge ? { max_tokens: maxTokens ?? 2048 } : {} }, { signal, ...pii ? { onCampusOnly: true } : {} });
           this.recordUsage(result, model, task);
           if (generation !== this.turn)
@@ -13113,7 +13204,8 @@ var init_local_worker = __esm(() => {
       this.setState("busy");
       if (deliveryId)
         this.delivery({ id: deliveryId, state: "accepted" });
-      const msgs = [{ role: "user", content: renderDigest(envs, true) }];
+      const msgs = [{ role: "user", content: [envs.some((env) => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join(`
+`) }];
       const progress = { sideEffects: 0, last: "" };
       const requestedPolicy = this.opts.turnPolicy?.(envs);
       const policy = envs.some((env) => env.private) ? { ...requestedPolicy, pii: true } : requestedPolicy;
@@ -13250,7 +13342,7 @@ var init_local_worker = __esm(() => {
               this.abort?.abort();
               throw new ApprovalWaitStop(this.approvalStopReason);
             }
-            if (!remoteTurn)
+            if (!remoteTurn && name !== "hub_set_title")
               this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
             if (name !== "hub_send" && name !== "doc_read" && name !== "web_fetch" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name))
               capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
@@ -13385,7 +13477,7 @@ var init_local_worker = __esm(() => {
       }
       const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
       const task = policy?.task === undefined ? undefined : Number(policy.task);
-      const tools = [...this.toolSchemas(), ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
+      const tools = [...this.toolSchemas(), ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : []];
       const signal = this.abort.signal;
       const messages = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
       const routed = await this.hubCall(route, messages, policy, signal);
@@ -15912,6 +16004,7 @@ var init_builtin_metadata = __esm(() => {
       projection: { roleRank: 4, startRank: 0, helpRank: 6, plannerEligible: false },
       api: 1,
       kind: "pi",
+      title: "hub",
       enabledSwitchStartOnly: true,
       displayName: "Pi",
       family: "pi",
@@ -15936,6 +16029,7 @@ var init_builtin_metadata = __esm(() => {
       projection: { roleRank: 3, helpRank: 7, plannerEligible: false },
       api: 1,
       kind: "local",
+      title: "hub",
       displayName: "Local worker",
       family: "local",
       transport: "hub-native",
@@ -16543,6 +16637,7 @@ function assertNativeCapabilityScope(definition) {
     return;
   const declared = (block, key) => block !== undefined && (key in block);
   const restricted = [
+    ["title", definition.title !== undefined],
     ["start.acpCommand", declared(definition.start, "acpCommand")],
     ["attach.admission", declared(definition.attach, "admission")],
     ["budget.resetSoftTokensOnResume", declared(definition.budget, "resetSoftTokensOnResume")],
