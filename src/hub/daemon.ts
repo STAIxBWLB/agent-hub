@@ -6956,21 +6956,6 @@ export async function startDaemon(opts: DaemonOptions) {
         entries: rows.map((v) => shape(v)), ...(node ? { node, graph: memoryStore.graph(memoryProject, node, hops, 200), ...(selected ? { detail: shape(selected, true) } : {}) } : {}) } };
     } catch (e) { log(`hub memory view failed: ${(e as Error).message}`); return {}; } // an unreadable store never breaks the dashboard
   }
-  async function uiMemorySnapshot(after: number, input?: Record<string, unknown>, session?: DashboardSession) {
-    const query = input?.memory as Record<string, unknown> | undefined;
-    const start = input?.view === "memory" && query && query.codeNeighbours === true && typeof query.node === "string" && query.node.startsWith("symbol:") && Buffer.byteLength(query.node) <= 512 ? query.node : undefined;
-    const code = start ? await memoryCode([start]).catch(() => unavailableMemoryCodeOverlay()) : undefined;
-    const snapshot = uiSnapshot(after, input, session);
-    if (code && "memory" in snapshot && snapshot.memory && typeof snapshot.memory === "object") {
-      const published = currentMemoryCode(code), tier = query?.tier === "goals" ? "goals" : query?.tier === "short" ? "short" : "long";
-      const search = typeof query?.q === "string" ? query.q.toLowerCase() : undefined;
-      published.notes = published.notes.filter(note => note.tier === tier && (!query?.kind || note.kind === query.kind) && (!query?.peer || note.peer === query.peer) && (!query?.machine || note.machine === query.machine)
-        && (!query?.since || typeof query.since !== "string" || !note.at || note.at >= query.since)
-        && (!search || (() => { const row = memoryStore?.get(note.id.slice(4), memoryProject); return !!row && `${row.title ?? ""} ${row.text}`.toLowerCase().includes(search); })()));
-      Object.assign(snapshot.memory, { code: published });
-    }
-    return snapshot;
-  }
   // #1057: the worktree shelf, shared by the control ops, the dashboard actions and the snapshot's cached read. Git reads are asynchronous and budgeted (D1), so the
   // event loop is never held; everything after them runs in one synchronous segment where the fence is asked again and the board is read and written with nothing
   // awaited in between. A GitHub call happens only in `worktrees_refresh_prs`: neither a snapshot, nor `ahub worktrees`, nor the inbox alert can reach it (AC5).
@@ -7042,6 +7027,21 @@ export async function startDaemon(opts: DaemonOptions) {
     return view;
   }
 
+  async function uiMemorySnapshot(after: number, input?: Record<string, unknown>, session?: DashboardSession) {
+    const query = input?.memory as Record<string, unknown> | undefined;
+    const start = input?.view === "memory" && query && query.codeNeighbours === true && typeof query.node === "string" && query.node.startsWith("symbol:") && Buffer.byteLength(query.node) <= 512 ? query.node : undefined;
+    const code = start ? await memoryCode([start]).catch(() => unavailableMemoryCodeOverlay()) : undefined;
+    const snapshot = uiSnapshot(after, input, session);
+    if (code && "memory" in snapshot && snapshot.memory && typeof snapshot.memory === "object") {
+      const published = currentMemoryCode(code), tier = query?.tier === "goals" ? "goals" : query?.tier === "short" ? "short" : "long";
+      const search = typeof query?.q === "string" ? query.q.toLowerCase() : undefined;
+      published.notes = published.notes.filter(note => note.tier === tier && (!query?.kind || note.kind === query.kind) && (!query?.peer || note.peer === query.peer) && (!query?.machine || note.machine === query.machine)
+        && (!query?.since || typeof query.since !== "string" || !note.at || note.at >= query.since)
+        && (!search || (() => { const row = memoryStore?.get(note.id.slice(4), memoryProject); return !!row && `${row.title ?? ""} ${row.text}`.toLowerCase().includes(search); })()));
+      Object.assign(snapshot.memory, { code: published });
+    }
+    return snapshot;
+  }
   function uiSnapshot(after: number, _input?: Record<string, unknown>, session?: DashboardSession) {
     const quota = budget.status();
     const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];

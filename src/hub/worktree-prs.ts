@@ -12,6 +12,24 @@ import type { PrObserver, WorktreeFact } from "./worktree-shelf.ts";
  */
 export const REFRESH_MAX_PRS = 8, REFRESH_CALL_MS = 8_000, REFRESH_TOTAL_MS = 25_000, OBSERVATIONS_MAX = 512;
 
+/**
+ * When GitHub says a PR that is no longer open was merged or closed, in ms. A second, narrow read (`pr view <n> --json mergedAt,closedAt`) that only a refresh makes and
+ * only for a PR `readSdlcPr` found merged or closed, so the shared readback the guarded merge and the queue use is unchanged. A missing, malformed or non-finite time is undefined,
+ * never 0: a merged PR with no change time is `unknown` to the partition, not settled.
+ */
+export async function readPrChangeTime(repo: string, pr: number, state: "merged" | "closed", gh: SdlcGh): Promise<number | undefined> {
+  // An owner and a name, each starting with a letter or digit: `..`, `.x` and `-x` are never a repository, so a hostile slug cannot reach gh as a path or a flag.
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9_.][A-Za-z0-9_.-]*$/.test(repo) || repo.split("/").some(part => part === "." || part === "..") || !Number.isSafeInteger(pr) || pr < 1) return undefined;
+  try {
+    const view = await gh(["pr", "view", String(pr), "--repo", repo, "--json", "mergedAt,closedAt"], 8_000, undefined, 4096);
+    if (view.code !== 0) return undefined;
+    const value = JSON.parse(view.stdout) as { mergedAt?: unknown; closedAt?: unknown } | null;
+    const text = state === "merged" ? value?.mergedAt ?? value?.closedAt : value?.closedAt;
+    const at = typeof text === "string" && text.length <= 40 ? Date.parse(text) : NaN;
+    return Number.isFinite(at) && at > 0 ? at : undefined;
+  } catch { return undefined; }
+}
+
 export interface PrObservation { state: "open" | "merged" | "closed"; changedAt?: number; at: number }
 export interface RefreshResult {
   /** PRs read and stored. */
@@ -74,7 +92,8 @@ export async function refreshPrStates(
     const evidence = await readSdlcPr({ stage: "pr", repo: target.repo, pr: target.pr }, bounded).catch(() => undefined);
     if (!evidence) { failed++; continue; }
     const state = evidence.state === "MERGED" ? "merged" : evidence.state === "CLOSED" ? "closed" : "open";
-    store.record(target.repo, target.pr, { state, ...(state !== "open" && evidence.changedAt !== undefined ? { changedAt: evidence.changedAt } : {}), at: now() });
+    const changedAt = state === "open" ? undefined : await readPrChangeTime(target.repo, target.pr, state, bounded);
+    store.record(target.repo, target.pr, { state, ...(changedAt !== undefined ? { changedAt } : {}), at: now() });
     read++;
   }
   return { read, failed, skipped: targets.length - done };

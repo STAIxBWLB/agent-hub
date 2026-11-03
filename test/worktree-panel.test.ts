@@ -6,8 +6,8 @@ import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { Board } from "../src/hub/board.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { hubGitSync } from "../src/hub/git.ts";
-import { parsePrEvidence, type SdlcGh } from "../src/hub/sdlc.ts";
-import { PrObservations, REFRESH_MAX_PRS, refreshPrStates, refreshTargets } from "../src/hub/worktree-prs.ts";
+import type { SdlcGh } from "../src/hub/sdlc.ts";
+import { PrObservations, REFRESH_MAX_PRS, readPrChangeTime, refreshPrStates, refreshTargets } from "../src/hub/worktree-prs.ts";
 import { partition, prFromTask, type WorktreeFact } from "../src/hub/worktree-shelf.ts";
 import { createProvider } from "../src/ui/plugin.ts";
 import { gitProject } from "./fakes/git-project.ts";
@@ -21,14 +21,34 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 
 const SHA = "a".repeat(40);
 const prJson = (state: "OPEN" | "MERGED" | "CLOSED", extra: Record<string, unknown> = {}) => JSON.stringify({ headRefOid: SHA, state, statusCheckRollup: [], files: [], changedFiles: 0, reviewDecision: "", reviewRequests: [], ...extra });
+/** A fake `gh` for PRs: the full readback (`readSdlcPr`) and the narrow `mergedAt,closedAt` read, answered from one description. `table` maps a PR number to its state and time. */
+const fakePrs = (table: Record<string, { state: "OPEN" | "MERGED" | "CLOSED"; at?: string }>): SdlcGh => async (args) => {
+  if (args[0] === "api") return { code: 1, stdout: "" };                       // the thread query: unknown, never required here
+  const entry = table[args[2] ?? ""];
+  if (!entry) return { code: 1, stdout: "" };
+  if (args[args.indexOf("--json") + 1] === "mergedAt,closedAt") return { code: 0, stdout: JSON.stringify(entry.state === "MERGED" ? { mergedAt: entry.at ?? null, closedAt: null } : entry.state === "CLOSED" ? { mergedAt: null, closedAt: entry.at ?? null } : { mergedAt: null, closedAt: null }) };
+  return { code: 0, stdout: prJson(entry.state) };
+};
 const fact = (over: Partial<WorktreeFact> = {}): WorktreeFact => ({ path: "/p/.worktrees/a", branch: "task/1", head: SHA, locked: false, prunable: false, main: false, instance: false, lastActiveAt: 1000, activityKnown: true, task: { id: 1, state: "approved", pr: 7, repo: "o/r" }, pr: { state: "unknown" }, ...over });
 
-// The readback change.
-test("readSdlcPr's parser keeps a merged or closed time and nothing for an open PR, a missing field or a malformed one", () => {
-  expect(parsePrEvidence(JSON.parse(prJson("MERGED", { mergedAt: "2026-10-01T00:00:00Z" }))).changedAt).toBe(Date.parse("2026-10-01T00:00:00Z"));
-  expect(parsePrEvidence(JSON.parse(prJson("CLOSED", { closedAt: "2026-10-02T00:00:00Z" }))).changedAt).toBe(Date.parse("2026-10-02T00:00:00Z"));
-  expect(parsePrEvidence(JSON.parse(prJson("OPEN", { mergedAt: "2026-10-01T00:00:00Z", closedAt: "2026-10-02T00:00:00Z" }))).changedAt).toBeUndefined();
-  for (const bad of [{}, { mergedAt: null }, { mergedAt: "not a date" }, { mergedAt: 5 }, { mergedAt: "x".repeat(100) }]) expect(parsePrEvidence(JSON.parse(prJson("MERGED", bad))).changedAt, JSON.stringify(bad)).toBeUndefined();
+// The change-time read: a second, narrow read that only a refresh makes, so the shared readback is untouched.
+test("readPrChangeTime reads only mergedAt/closedAt, takes the merge time for a merged PR and the close time for a closed one, and is undefined for anything malformed", async () => {
+  const calls: string[][] = [];
+  const reply = (body: unknown, code = 0): SdlcGh => async args => { calls.push(args); return { code, stdout: typeof body === "string" ? body : JSON.stringify(body) }; };
+  expect(await readPrChangeTime("o/r", 7, "merged", reply({ mergedAt: "2026-10-01T00:00:00Z", closedAt: "2026-10-01T00:00:01Z" }))).toBe(Date.parse("2026-10-01T00:00:00Z"));
+  expect(await readPrChangeTime("o/r", 7, "closed", reply({ mergedAt: null, closedAt: "2026-10-02T00:00:00Z" }))).toBe(Date.parse("2026-10-02T00:00:00Z"));
+  expect(calls[0]).toEqual(["pr", "view", "7", "--repo", "o/r", "--json", "mergedAt,closedAt"]);
+  for (const bad of [{}, { mergedAt: null }, { mergedAt: "not a date" }, { mergedAt: 5 }, { mergedAt: "x".repeat(100) }, "not json", null]) expect(await readPrChangeTime("o/r", 7, "merged", reply(bad as never)), JSON.stringify(bad)).toBeUndefined();
+  expect(await readPrChangeTime("o/r", 7, "merged", reply({ mergedAt: "2026-10-01T00:00:00Z" }, 1))).toBeUndefined();
+  const before = calls.length;
+  for (const [repo, pr] of [["-x/y", 1], ["a b/c", 1], ["o/r", 0], ["o/r", 1.5], ["../etc", 1]] as const) expect(await readPrChangeTime(repo, pr, "merged", reply({ mergedAt: "2026-10-01T00:00:00Z" })), `${repo}#${pr}`).toBeUndefined();
+  expect(calls.length).toBe(before);                                              // a hostile repository or number never reaches gh
+});
+
+test("the shared readback is untouched: readSdlcPr's argv names neither mergedAt nor closedAt, so the guarded merge's cost-query count is unaffected", () => {
+  const src = readFileSync(join(import.meta.dir, "../src/hub/sdlc.ts"), "utf8");
+  const start = src.indexOf("export async function readSdlcPr("), end = src.indexOf("export async function readSdlcPrHead(");
+  expect(src.slice(start, end)).not.toMatch(/mergedAt|closedAt/);
 });
 
 // The pure refresh logic.
@@ -50,15 +70,8 @@ test("refreshTargets asks only about bound tasks with a repository and PR that a
 
 test("refreshPrStates reads each PR through readSdlcPr's fixed read-only argv, stores the result and counts a failure without keeping a guess", async () => {
   const calls: string[][] = [];
-  const gh: SdlcGh = async (args) => {
-    calls.push(args);
-    if (args[0] === "api") return { code: 1, stdout: "" };                      // the thread query: unknown, never required here
-    const pr = args[2];
-    if (pr === "8") return { code: 0, stdout: prJson("MERGED", { mergedAt: "2026-10-01T00:00:00Z" }) };
-    if (pr === "9") return { code: 0, stdout: prJson("OPEN") };
-    if (pr === "10") return { code: 0, stdout: prJson("CLOSED", { closedAt: "2026-10-03T00:00:00Z" }) };
-    return { code: 1, stdout: "" };                                              // 11: gh failed
-  };
+  const inner = fakePrs({ "8": { state: "MERGED", at: "2026-10-01T00:00:00Z" }, "9": { state: "OPEN" }, "10": { state: "CLOSED", at: "2026-10-03T00:00:00Z" } });   // 11: gh failed
+  const gh: SdlcGh = async (args, ...rest) => { calls.push(args); return inner(args, ...rest); };
   const store = new PrObservations();
   const result = await refreshPrStates([{ repo: "o/r", pr: 8 }, { repo: "o/r", pr: 9 }, { repo: "o/r", pr: 10 }, { repo: "o/r", pr: 11 }], gh, store);
   expect(result).toEqual({ read: 3, failed: 1, skipped: 0 });
@@ -66,8 +79,19 @@ test("refreshPrStates reads each PR through readSdlcPr's fixed read-only argv, s
   expect(store.observer("o/r", 9)).toEqual({ state: "open" });
   expect(store.observer("o/r", 10)).toEqual({ state: "closed", changedAt: Date.parse("2026-10-03T00:00:00Z") });
   expect(store.observer("o/r", 11)).toBeUndefined();                             // a failed read keeps no guess
+  // the narrow time read is made only for a PR found merged or closed, never for an open one
+  expect(calls.filter(args => args.includes("mergedAt,closedAt")).map(args => args[2]).sort()).toEqual(["10", "8"]);
   // every argv is a read: `pr view` or `api graphql`, never a write
   for (const args of calls) { expect(["pr", "api"]).toContain(args[0] ?? ""); if (args[0] === "pr") expect(args.slice(0, 2)).toEqual(["pr", "view"]); expect(args.filter(word => !word.startsWith("--json") && !/^[A-Za-z]+(,[A-Za-z]+)+$/.test(word) && !word.startsWith("query=")).join(" ")).not.toMatch(/\b(merge|close|edit|comment|review|delete)\b|--method|-X/); }
+});
+
+test("a merged PR whose change time cannot be read is stored as merged with no time, so it stays unknown to the partition and never settles a worktree", async () => {
+  const gh: SdlcGh = async (args) => args.includes("mergedAt,closedAt") ? { code: 1, stdout: "" } : fakePrs({ "7": { state: "MERGED" } })(args);
+  const store = new PrObservations();
+  expect(await refreshPrStates([{ repo: "o/r", pr: 7 }], gh, store)).toEqual({ read: 1, failed: 0, skipped: 0 });
+  expect(store.observer("o/r", 7)).toEqual({ state: "merged" });
+  const pr = prFromTask({ state: "approved", history: [], sdlc: { stage: "build", repo: "o/r", pr: 7 } }, store.observer);
+  expect(partition([fact({ lastActiveAt: 1, pr })], [], 100 * DAY, 0).settled).toEqual([]);   // rule 3 needs a change time
 });
 
 test("refreshPrStates stops at its total budget, counts the rest as skipped, and bounds each call by what is left", async () => {
@@ -137,7 +161,7 @@ const seedOpenPr = (board: Board) => {
   const old = Date.now() - 25 * DAY;
   (board as any).db.query("UPDATE tasks SET created = ?, updated = ?, history = ? WHERE id = ?").run(old, old, JSON.stringify([{ at: old, by: "claude", event: "proposed" }, { at: old + 1, by: "hub", event: "pr" }]), task.id);
 };
-const ghMerged: SdlcGh = async (args) => args[0] === "api" ? { code: 1, stdout: "" } : { code: 0, stdout: prJson("MERGED", { mergedAt: new Date(Date.now() - 19 * DAY).toISOString() }) };
+const ghMerged: SdlcGh = fakePrs({ "7": { state: "MERGED", at: new Date(Date.now() - 19 * DAY).toISOString() } });
 
 // AC5.
 test("AC5: reading the shelf (a worktrees read, a dashboard snapshot, an agent's preview) makes no GitHub call, and the explicit refresh makes only read-only ones", async () => {
@@ -162,12 +186,12 @@ test("AC5: reading the shelf (a worktrees read, a dashboard snapshot, an agent's
 });
 
 test("a merged PR with work newer than its merge stays live after the refresh", async () => {
-  const f = await rig({ seed: seedOpenPr, gh: async (args) => args[0] === "api" ? { code: 1, stdout: "" } : { code: 0, stdout: prJson("MERGED", { mergedAt: new Date(Date.now() - 40 * DAY).toISOString() }) } });
+  const f = await rig({ seed: seedOpenPr, gh: fakePrs({ "7": { state: "MERGED", at: new Date(Date.now() - 40 * DAY).toISOString() } }) });
   const out = await f.person.request({ t: "worktrees_refresh_prs" });
   expect(out.ok).toBe(true);
   // merged 40 days ago, the quiet worktree's last commit is 20 days ago: newer work, so the merge does not settle it (the quiet rule does, at 7 days)
   expect(Object.fromEntries(out.settled.map((r: { path: string; reason: string }) => [r.path, r.reason]))[".worktrees/quiet"]).toBe("quiet");
-  const strict = await rig({ seed: seedOpenPr, config: { worktrees: { quiet_days: 0, alert_over: 10 } }, gh: async (args) => args[0] === "api" ? { code: 1, stdout: "" } : { code: 0, stdout: prJson("MERGED", { mergedAt: new Date(Date.now() - 40 * DAY).toISOString() }) } });
+  const strict = await rig({ seed: seedOpenPr, config: { worktrees: { quiet_days: 0, alert_over: 10 } }, gh: fakePrs({ "7": { state: "MERGED", at: new Date(Date.now() - 40 * DAY).toISOString() } }) });
   const out2 = await strict.person.request({ t: "worktrees_refresh_prs" });
   expect(names(out2.live)).toContain(".worktrees/quiet");                         // with quiet_days 0 only the merge could settle it, and the newer work stops that
 });
@@ -302,7 +326,7 @@ test("the page's Worktrees section is in the Agents view, draws removal as a com
 test("the daemon's shelf function removes nothing, spawns nothing and reaches GitHub only through the one refresh call", () => {
   const src = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
   const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-  const start = src.indexOf("async function worktreeShelf("), end = src.indexOf("function uiSnapshot(", start);
+  const start = src.indexOf("async function worktreeShelf("), end = src.indexOf("async function uiMemorySnapshot(", start);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
   const body = code(src.slice(start, end));
   for (const word of ["spawn", "exec(", "execFile", "rmSync", "unlinkSync", "worktree remove", "branch -d", "hubGitSync", "readSdlcPr", ".kill("]) expect(body, word).not.toContain(word);
@@ -311,7 +335,7 @@ test("the daemon's shelf function removes nothing, spawns nothing and reaches Gi
   expect(body.match(/refreshPrStates\(/g)).toHaveLength(1);
   expect(body.indexOf("refreshPrStates(")).toBeGreaterThan(body.indexOf("if (refresh) {"));
   // the snapshot view only calls the shelf function with the read request, never the refresh
-  const view = code(src.slice(src.indexOf("function worktreesView("), src.indexOf("function uiSnapshot(")));
+  const view = code(src.slice(src.indexOf("function worktreesView("), src.indexOf("async function uiMemorySnapshot(")));
   expect(view).toContain('worktreeShelf({ t: "worktrees" })'); expect(view).not.toContain("refresh");
   // the shelf modules: the PR refresh module is the only one that names a GitHub reader, and the shelf module imports neither it nor the sdlc module
   const shelf = readFileSync(join(import.meta.dir, "../src/hub/worktree-shelf.ts"), "utf8");
