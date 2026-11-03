@@ -89,14 +89,22 @@ export function dogfoodPiiInventory(file: string): Source<PiiRef[]> {
  * Bounded read-only board snapshot. Select no task title/detail or history note into the result.
  * With a window (#1147) only tasks that overlap [since, until] are read (updated >= since and created <= until), so a board over
  * MAX_TASKS rows still reads completely when the window holds few of them. A board without those columns reads its newest MAX_TASKS rows.
+ * `linkedPrs` adds every task whose receipt links one of those PR numbers, window or not: a PR's lead time, review rounds and findings
+ * need all its tasks, so a sibling last updated before `since` must not be dropped. Their overflow shares the MAX_TASKS bound and
+ * makes the source incomplete, which turns every board-derived PR metric unknown.
  */
-export function dogfoodTasks(file: string, window?: { since: number; until: number }): Source<DogfoodTask[]> {
+export function dogfoodTasks(file: string, window?: { since: number; until: number }, linkedPrs: number[] = []): Source<DogfoodTask[]> {
   let db: Database | undefined;
   try {
     db = new Database(file, { readonly: true });
     db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     const columns = new Set((db.query("PRAGMA table_info(tasks)").all() as {name:string}[]).map(c=>c.name));
     const windowed = window !== undefined && Number.isFinite(window.since) && Number.isFinite(window.until) && columns.has("created") && columns.has("updated");
+    const linked = windowed && columns.has("sdlc") ? [...new Set(linkedPrs.filter(n => Number.isSafeInteger(n) && n > 0))].slice(0, MAX_PRS) : [];
+    // json_extract raises on malformed JSON, so a row is only asked when its receipt is valid JSON.
+    const where = !windowed ? "" : linked.length
+      ? `WHERE (updated >= ? AND created <= ?) OR (CASE WHEN json_valid(sdlc) THEN json_extract(sdlc,'$.pr') END) IN (${linked.map(() => "?").join(",")})`
+      : "WHERE updated >= ? AND created <= ?";
     const metadata = columns.has("class") ? "CASE WHEN length(class) <= 48 THEN class END" : "NULL";
     const profile = columns.has("project_profile") ? "CASE WHEN length(project_profile) <= 65536 THEN project_profile END" : "NULL";
     const plan = columns.has("plan") ? "CASE WHEN length(plan) <= 65536 THEN plan END" : "NULL";
@@ -106,7 +114,7 @@ export function dogfoodTasks(file: string, window?: { since: number; until: numb
     const profileCut = columns.has("project_profile") ? "(project_profile IS NOT NULL AND length(project_profile) > 65536)" : "0";
     const rows = db.query(`SELECT (${planCut}) AS plan_cut, ${plan} AS plan, (${metadataCut}) AS metadata_cut, ${state} AS current_state, ${metadata} AS base_class, ${profileCut} AS profile_cut, ${profile} AS project_profile, id, (sdlc IS NOT NULL AND length(sdlc) > 65536) AS receipt_cut, CASE WHEN length(sdlc) <= 65536 THEN sdlc END AS sdlc,
       CASE WHEN length(signals) <= 65536 THEN signals END AS signals,
-      CASE WHEN length(history) <= 131072 THEN history END AS history FROM tasks ${windowed ? "WHERE updated >= ? AND created <= ?" : ""} ORDER BY id DESC LIMIT ?`).all(...(windowed ? [window!.since, window!.until] : []), MAX_TASKS + 1) as { plan_cut: number; plan: string | null; metadata_cut: number; current_state: string | null; profile_cut: number; base_class: string | null; project_profile: string | null; id: number; receipt_cut: number; sdlc: string | null; signals: string | null; history: string | null }[];
+      CASE WHEN length(history) <= 131072 THEN history END AS history FROM tasks ${where} ORDER BY id DESC LIMIT ?`).all(...(windowed ? [window!.since, window!.until, ...linked] : []), MAX_TASKS + 1) as { plan_cut: number; plan: string | null; metadata_cut: number; current_state: string | null; profile_cut: number; base_class: string | null; project_profile: string | null; id: number; receipt_cut: number; sdlc: string | null; signals: string | null; history: string | null }[];
     let complete = rows.length <= MAX_TASKS, bytes = 0;
     const tasks: DogfoodTask[] = [];
     for (const row of rows.slice(0,MAX_TASKS)) {
@@ -299,10 +307,13 @@ export async function readDogfood(root: string, stateDir: string, since: number,
   try { const r = await run(["repo","view","--json","nameWithOwner"],5000,root,8192); if (r.code === 0) repo = JSON.parse(r.stdout).nameWithOwner; } catch { /* unknown */ }
   const events = dogfoodEvents(dogfoodLines(join(stateDir,"events.jsonl")),since,until);
   const log = dogfoodLines(join(stateDir,"hub.log"));
+  const prs = await dogfoodPrs(repo,tasks,since,until,run,pii);
   log.data = log.data.filter(line => {
     const at=date(line.slice(0,24));
     if (at === undefined) { log.complete = false; return false; }
     return at >= since && at <= until;
   });
-  return dogfoodScorecard({since,until,tasks,events,log,projectProfile:dogfoodProjectProfile(root),journal:dogfoodJournal(join(stateDir,"hub.db"),since,until),prs:await dogfoodPrs(repo,tasks,since,until,run,pii),features:dogfoodFeatures(join(root,"docs/dogfood.md"))});
+  const merged = prs.available ? prs.data.map(p => p.pr) : [];
+  const board = merged.length ? dogfoodTasks(join(stateDir,"hub.db"),{since,until},merged) : tasks;
+  return dogfoodScorecard({since,until,tasks:board,events,log,projectProfile:dogfoodProjectProfile(root),journal:dogfoodJournal(join(stateDir,"hub.db"),since,until),prs,features:dogfoodFeatures(join(root,"docs/dogfood.md"))});
 }

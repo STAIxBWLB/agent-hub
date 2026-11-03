@@ -110,3 +110,58 @@ test("without a PII inventory dogfoodPrs still treats an incomplete task list as
     expect(prs.available).toBe(false); expect(calls).toHaveLength(0);
   } finally { f.close(); }
 });
+
+// #1147 review (connector P2): a PR merged in the window keeps every linked task, even one last updated before `since`.
+const siblingGh = (mergedAt: number): SdlcGh => async args => {
+  if (args[0] === "repo") return { code: 0, stdout: '{"nameWithOwner":"o/r"}' };
+  if (args[0] === "pr") return { code: 0, stdout: JSON.stringify([{ number: 12, mergedAt: at(mergedAt), createdAt: at(100) }]) };
+  return { code: 1, stdout: "" };
+};
+const link = JSON.stringify({ repo: "o/r", pr: 12 });
+const siblings = (): Row[] => [
+  // proposed at 100, rejected once at 500, approved at 900: last updated before the window (since = 1000)
+  { id: 1, created: 100, updated: 900, sdlc: link, history: '[{"at":100,"by":"x","event":"proposed"},{"at":500,"by":"x","event":"changes_requested"},{"at":900,"by":"x","event":"approved"}]' },
+  // proposed at 2000, approved at 4000: inside the window
+  { id: 2, created: 2000, updated: 4000, sdlc: link, history: '[{"at":2000,"by":"x","event":"proposed"},{"at":4000,"by":"x","event":"approved"}]' },
+];
+
+test("a PR merged in the window keeps its out-of-window sibling task, so lead time and first-pass approval are not computed from a partial set", async () => {
+  const f = fixture(); try {
+    board(join(f.root, "hub.db"), siblings());
+    const card = await readDogfood(f.root, f.root, 1000, 10000, siblingGh(5000));
+    const row = card.flow.prs.find(p => p.pr === 12)!;
+    expect(row.tasks).toEqual([1, 2]);
+    expect(row.proposeToApproveMs).toBe(3900); // approval 4000 minus the earliest proposal 100, not 4000 - 2000
+    expect(row.firstPassApproval).toBe(0);     // the dropped task's earlier rejection still counts
+    expect(card.sources.tasks).toMatchObject({ available: true, complete: true });
+  } finally { f.close(); }
+});
+
+test("when the PR's linked tasks overflow their bound the PR evidence is unknown, never a value from a partial set", async () => {
+  const f = fixture(); try {
+    const many = Array.from({ length: 501 }, (_, i) => ({ id: i + 1, created: 100, updated: 200, sdlc: link, history: '[{"at":100,"by":"x","event":"proposed"},{"at":150,"by":"x","event":"approved"}]' }));
+    board(join(f.root, "hub.db"), [...many, { id: 600, created: 2000, updated: 4000, sdlc: link, history: '[{"at":2000,"by":"x","event":"proposed"},{"at":4000,"by":"x","event":"approved"}]' }]);
+    const card = await readDogfood(f.root, f.root, 1000, 10000, siblingGh(5000));
+    const row = card.flow.prs.find(p => p.pr === 12)!;
+    expect(card.sources.tasks!.complete).toBe(false);
+    expect([row.proposeToApproveMs, row.firstPassApproval, row.reviewRounds, row.importantFindings]).toEqual([null, null, null, null]);
+  } finally { f.close(); }
+});
+
+test("a task linked to the same PR number in another repository is read but never joins this repository's PR", async () => {
+  const f = fixture(); try {
+    board(join(f.root, "hub.db"), [...siblings(), { id: 3, created: 100, updated: 200, sdlc: JSON.stringify({ repo: "other/repo", pr: 12 }), history: '[{"at":100,"by":"x","event":"proposed"},{"at":150,"by":"x","event":"changes_requested"}]' }]);
+    const row = (await readDogfood(f.root, f.root, 1000, 10000, siblingGh(5000))).flow.prs.find(p => p.pr === 12)!;
+    expect(row.tasks).toEqual([1, 2]);
+    expect(row.proposeToApproveMs).toBe(3900);
+  } finally { f.close(); }
+});
+
+test("a malformed receipt on an out-of-window row cannot break the linked-task read", () => {
+  const f = fixture(); try {
+    const file = join(f.root, "hub.db");
+    board(file, [...siblings(), { id: 4, created: 100, updated: 200, sdlc: "not json" }]);
+    const r = dogfoodTasks(file, { since: 1000, until: 10000 }, [12]);
+    expect(r.available).toBe(true); expect(r.data.map(t => t.id).sort()).toEqual([1, 2]);
+  } finally { f.close(); }
+});
