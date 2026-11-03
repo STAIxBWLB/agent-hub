@@ -365,9 +365,26 @@ test("Kimi reviewer 2.4.1 is exact-receipt verified; nearby untested versions st
 
 test("Qwen ACP 0.26.4 is exact-receipt verified; intermediate and nearby versions stay refused (#888)", () => {
   expect(assessVersion("qwen", "0.26.4", [])).toEqual({ ok: true, state: "verified", version: "0.26.4" });
-  for (const near of ["0.26.2", "0.26.3", "0.26.5", "0.27.0", "0.26.4-rc.1", "qwen 0.26.4"]) expect(assessVersion("qwen", near, []).ok).toBe(false);
+  for (const near of ["0.26.2", "0.26.3", "0.26.6", "0.27.0", "0.26.4-rc.1", "qwen 0.26.4"]) expect(assessVersion("qwen", near, []).ok).toBe(false);
 });
 
+
+test("Qwen ACP 0.26.5 is exact-receipt verified next to 0.26.4; 0.26.6 stays refused (#888)", () => {
+  expect(COMPAT.qwen.verified).toEqual(["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5"]);
+  expect(COMPAT.qwen.receipt).toBe("docs/verification/2026-11-03-qwen-0265-acp.md");
+  for (const version of ["0.26.4", "0.26.5"]) expect(assessVersion("qwen", version, []), version).toEqual({ ok: true, state: "verified", version });
+  for (const near of ["0.26.6", "0.26.5-rc.1", "qwen 0.26.5"]) expect(assessVersion("qwen", near, []).ok, near).toBe(false);
+  const acp = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-03-qwen-0265-acp.md"), "utf8");
+  for (const leg of ["sha512-", "Native ACP, no prompts", "Actual published permission handler", "default -> auto-edit -> yolo -> default", "proceed_once", "Not verified"]) expect(acp, leg).toContain(leg);
+  expect(acp).toMatch(/[0-9a-f]{64}/);
+});
+
+test("the Qwen ACP 0.26.5 dual-output attempt did not pass Q2, so qwen-dual stays at 0.26.1 (#888)", () => {
+  expect(assessVersion("qwen-dual", "0.26.5", [])).toMatchObject({ ok: false, state: "refused", version: "0.26.5" });
+  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1"]);
+  const receipt = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-03-qwen-0265-dual-output.md"), "utf8");
+  for (const text of ["Q2 fewer than two user events", "Matched 0.26.1 control", "do not add 0.26.5"]) expect(receipt, text).toContain(text);
+});
 
 test("the Qwen ACP 0.26.4 receipt never admits the unqualified dual-output contract (#888)", () => {
   expect(assessVersion("qwen", "0.26.4", []).ok).toBe(true);

@@ -673,7 +673,7 @@ withholds the scoped mode on these writes so an older hook grants nothing too.
 
 Agent CLI versions (#691). One policy gates the Codex and Kimi fresh reviewers, the headless Claude implementer, Jcode, agy, Qwen (ACP and the dual-output TUI) and Pi (#843): a receipt-verified version passes, Jcode and agy also start an untested version inside their compatible line with a note, and any other version is refused unless the person trusts that exact version on this machine with `ahub agents trust <id> <version>`. The record is `agent-compat.json` in the hub home (`~/.agenthub`), written atomically with mode 600 and at most 64 entries; an unreadable, linked, oversized or invalid record trusts nothing. Agent shells and `--live-test` may read `ahub agents` but cannot trust or revoke. Trust lifts only the version pin: the fresh reviewers' runtime proofs still run before every child, and an untested version's native contract stays unverified.
 
-Qwen Code's optional production ACP peer requires the qwen-code native identity, a compat-admitted version (receipt-verified 0.25.0, 0.26.0, 0.26.1 and 0.26.4)
+Qwen Code's optional production ACP peer requires the qwen-code native identity, a compat-admitted version (receipt-verified 0.25.0, 0.26.0, 0.26.1, 0.26.4 and 0.26.5)
 and advertised mode ids before setting a policy or starting work. Its own tools
 have no hub sandbox; auto-edit approves file edits, yolo every tool. Configured
 never-ask still requires the person's confirmation. qwen_cmd is machine-local and
