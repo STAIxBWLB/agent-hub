@@ -319,17 +319,35 @@ test("D1: recovery or shutdown beginning while the git reads run refuses the ans
   expect(out.ok).toBe(false);
 });
 
-test("a PII task never binds a worktree in the reply: no task id, state or PR, and the worktree settles by quiet time only", async () => {
+// #1057 / AGENTS.md: a PII task still binds its worktree ON THE HOST, so the partition and tidy's refusals see its real state; the reply row (built in one place) redacts it.
+test("a PII-bound worktree: an open PII task keeps it live (never quiet-settled), a merged one settles, and neither reply carries a task id, state, PR or merge reason", async () => {
   const f = await rig(board => {
-    const task = board.propose("claude", { title: "private work", class: "implement", refs: { branch: "task/merged" }, signals: ["pii_path"] });
-    board.update(task.id, "hub", "merge result", { sdlc: { stage: "merge", pr: 5, repo: "o/r", merge: { repo: "o/r", pr: 5, head: "h", at: Date.now() + 1000, state: "merged", exit: 0, cleanup: "deleted", ownerNotice: "sent" } } as never });
+    // `quiet` is old by commit time and its task is OPEN and private: before the fix it settled as `quiet` and tidy could remove open work
+    board.propose("claude", { title: "private open work", class: "implement", refs: { branch: "task/quiet" }, signals: ["pii_path"] });
+    // `merged` has a private task whose guarded merge is recorded after the work
+    const merged = board.propose("claude", { title: "private merged work", class: "implement", refs: { branch: "task/merged" }, signals: ["pii_path"] });
+    board.update(merged.id, "hub", "merge result", { sdlc: { stage: "merge", pr: 5, repo: "o/r", merge: { repo: "o/r", pr: 5, head: "h", at: Date.now() + 1000, state: "merged", exit: 0, cleanup: "deleted", ownerNotice: "sent" } } as never });
   });
   for (const client of [f.person, await ControlClient.connect(f.stateDir, { role: "tools", peer: "claude" })]) {
     const out = await client.request({ t: "worktrees" } as never);
     expect(out.ok).toBe(true);
-    expect(JSON.stringify(out)).not.toMatch(/"task"|"taskState"|"pr"/);
-    expect(shown([...out.live, ...out.settled])[".worktrees/merged"]).toBe("quiet"); // old by commit time; the PII task's merge never settled it as `merged`
+    // the open PII task keeps `quiet` live: its host-side state ("in_progress"-like, not approved or cancelled) is not dropped, but a reply never shows it
+    expect(shown(out.live)[".worktrees/quiet"]).toBe("live");
+    expect(shown(out.settled)[".worktrees/merged"]).toBe("settled");           // the merge settled it on the host; the reply says only `settled`
+    const text = JSON.stringify(out);
+    expect(text).not.toMatch(/"task":|"pr":|"merged"|"closed"|"proposed"|"in_progress"|"approved"|"backlog"/);
+    const quiet = out.live.find((r: { path: string }) => r.path === ".worktrees/quiet");
+    expect(quiet).toMatchObject({ private: true, taskState: "private" });
+    expect(quiet.task).toBeUndefined(); expect(quiet.pr).toBeUndefined();
   }
+});
+
+test("an ordinary open task binds its worktree the same way, and its reply row names the task: only a PII task is redacted", async () => {
+  const f = await rig(board => { board.propose("claude", { title: "ordinary open work", class: "implement", refs: { branch: "task/quiet" } }); });
+  const out = await f.person.request({ t: "worktrees" } as never);
+  expect(shown(out.live)[".worktrees/quiet"]).toBe("live");                   // the open task's own recent activity keeps it live
+  expect(out.live.find((r: { path: string }) => r.path === ".worktrees/quiet")).toMatchObject({ task: expect.any(Number), taskState: expect.any(String) });
+  expect(JSON.stringify(out)).not.toContain('"private"');
 });
 
 test("AC5: reading the shelf runs no gh and changes no worktree, branch or index", async () => {

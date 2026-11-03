@@ -14,8 +14,10 @@ import { join, resolve } from "node:path";
  */
 
 /** One settled row from the hub's `worktrees` reply, resolved against the project root by `rowFromReply`; `head` and `locked` come from git here, never from the daemon. */
-export interface TidyRow { path: string; shown: string; branch: string | null; head: string; locked: boolean; reason: string; instance: boolean; taskState?: string }
-export type RefusalReason = "main checkout" | "instance worktree" | "dirty" | "locked" | "no branch" | "unpushed commits" | "no upstream" | "branch not merged into the default branch" | "task not approved or cancelled" | "path missing" | "outside the project" | "git could not tell";
+export interface TidyRow { path: string; shown: string; branch: string | null; head: string; locked: boolean; reason: string; instance: boolean; taskState?: string;
+  /** The branch THIS process read from git's own list (`null` when detached), as opposed to `branch`, which is the daemon's word. They must agree or the row is refused. */
+  liveBranch?: string | null }
+export type RefusalReason = "branch changed since preview; run tidy again" | "main checkout" | "instance worktree" | "dirty" | "locked" | "no branch" | "unpushed commits" | "no upstream" | "branch not merged into the default branch" | "task not approved or cancelled" | "path missing" | "outside the project" | "git could not tell";
 export interface TidyEntry { path: string; shown: string; branch: string | null; reason: string; refused: RefusalReason[] }
 export interface TidyPlan { entries: TidyEntry[]; removable: TidyEntry[]; fingerprint: string }
 
@@ -49,6 +51,8 @@ export function refusals(row: TidyRow, root: string, git: TidyGit, defaultBranch
   if (!row.path.startsWith(root + "/")) why.push("outside the project");
   if (row.locked) why.push("locked");
   if (!row.branch || !branchOk(row.branch)) why.push("no branch");
+  // The daemon named a branch and git, read here and now, says another (or none): the checks below would inspect the wrong branch and `branch -d` would target a stale name.
+  if (row.liveBranch !== undefined && row.liveBranch !== row.branch) why.push("branch changed since preview; run tidy again");
   if (row.taskState !== undefined && row.taskState !== "approved" && row.taskState !== "cancelled") why.push("task not approved or cancelled");
   if (!exists(row.path)) { why.push("path missing"); return why; }
   const status = git.run(row.path, ["status", "--porcelain", "--untracked-files=all"]);
@@ -79,9 +83,9 @@ export function defaultBranchOf(root: string, git: TidyGit): string | undefined 
 }
 
 /** The fingerprint covers every row's path, branch, HEAD and refusals, in path order: any change to the set or to a row changes it. */
-export function fingerprintOf(entries: readonly { path: string; branch: string | null; head: string; refused: readonly string[] }[]): string {
+export function fingerprintOf(entries: readonly { path: string; branch: string | null; head: string; refused: readonly string[]; liveBranch?: string | null }[]): string {
   const hash = createHash("sha256");
-  for (const e of [...entries].sort((a, b) => a.path.localeCompare(b.path))) hash.update(JSON.stringify([e.path, e.branch, e.head, [...e.refused].sort()])).update("\n");
+  for (const e of [...entries].sort((a, b) => a.path.localeCompare(b.path))) hash.update(JSON.stringify([e.path, e.branch, e.liveBranch ?? null, e.head, [...e.refused].sort()])).update("\n");
   return hash.digest("hex").slice(0, 16);
 }
 
@@ -91,12 +95,13 @@ export function fingerprintOf(entries: readonly { path: string; branch: string |
  */
 export function rowsFromReply(settled: readonly { path?: unknown; branch?: unknown; reason?: unknown; outside?: unknown; taskState?: unknown }[], root: string, git: TidyGit): TidyRow[] {
   const inventory = raw(git.run(root, ["worktree", "list", "--porcelain", "-z"]));
-  const listed = new Map<string, { head: string; locked: boolean }>();
-  let current: { path: string; head: string; locked: boolean } | undefined;
+  const listed = new Map<string, { head: string; locked: boolean; branch: string | null }>();
+  let current: { path: string; head: string; locked: boolean; branch: string | null } | undefined;
   for (const field of (inventory ?? "").split("\0")) {
     if (field === "") { if (current) listed.set(current.path, current); current = undefined; continue; }
-    if (field.startsWith("worktree ")) { if (current) listed.set(current.path, current); current = { path: field.slice(9), head: "", locked: false }; }
+    if (field.startsWith("worktree ")) { if (current) listed.set(current.path, current); current = { path: field.slice(9), head: "", locked: false, branch: null }; }
     else if (current && field.startsWith("HEAD ")) current.head = field.slice(5);
+    else if (current && field.startsWith("branch refs/heads/")) current.branch = field.slice(18);   // `detached` has no branch field: it stays null
     else if (current && (field === "locked" || field.startsWith("locked "))) current.locked = true;
   }
   if (current) listed.set(current.path, current);
@@ -106,7 +111,7 @@ export function rowsFromReply(settled: readonly { path?: unknown; branch?: unkno
     const fact = listed.get(absolute);
     // Only a path git itself lists is operated on: the daemon's word alone never names a directory to remove.
     if (!fact) return [];
-    return [{ path: absolute, shown: row.path, branch: typeof row.branch === "string" ? row.branch : null, head: fact.head, locked: fact.locked, reason: String(row.reason ?? ""), instance: false, ...(typeof row.taskState === "string" ? { taskState: row.taskState } : {}) }];
+    return [{ path: absolute, shown: row.path, branch: typeof row.branch === "string" ? row.branch : null, head: fact.head, locked: fact.locked, liveBranch: fact.branch, reason: String(row.reason ?? ""), instance: false, ...(typeof row.taskState === "string" ? { taskState: row.taskState } : {}) }];
   });
 }
 
@@ -114,7 +119,7 @@ export function planTidy(rows: readonly TidyRow[], root: string, git: TidyGit): 
   const defaultBranch = defaultBranchOf(root, git);
   const detailed = rows.map(row => ({ row, refused: refusals(row, root, git, defaultBranch) }));
   const entries: TidyEntry[] = detailed.map(({ row, refused }) => ({ path: row.path, shown: row.shown, branch: row.branch, reason: row.reason, refused }));
-  return { entries, removable: entries.filter(e => e.refused.length === 0), fingerprint: fingerprintOf(detailed.map(({ row, refused }) => ({ path: row.path, branch: row.branch, head: row.head, refused }))) };
+  return { entries, removable: entries.filter(e => e.refused.length === 0), fingerprint: fingerprintOf(detailed.map(({ row, refused }) => ({ path: row.path, branch: row.branch, ...(row.liveBranch !== undefined ? { liveBranch: row.liveBranch } : {}), head: row.head, refused }))) };
 }
 
 export interface TidyOutcome { path: string; shown: string; branch: string; worktreeRemoved: boolean; branchDeleted: boolean; note?: string }

@@ -9659,8 +9659,8 @@ export async function startDaemon(opts: DaemonOptions) {
         // them runs in one synchronous segment: the fence is asked again, and the board is read and written with nothing awaited in between.
         void (async () => {
           const instancePaths = Object.values(config.instances ?? {}).flatMap(instance => instance.worktree ? [resolve(opts.cwd, instance.worktree)] : []);
-          // A PII task never binds a worktree: its id, PR and state stay out of the reply, so that worktree settles by quiet time only.
-          const facts = await readWorktreeFacts({ root: opts.cwd, tasks: () => board.list().filter(task => !tasks.isPii(task)), instancePaths, ...(opts.worktreeShelfGit ? { git: opts.worktreeShelfGit } : {}) });
+          // A PII task still binds its worktree on the host, so its state keeps the worktree live and tidy refuses it; the reply row built by the shelf redacts its id, PR and state (AGENTS.md: redact where the view is built).
+          const facts = await readWorktreeFacts({ root: opts.cwd, tasks: () => board.list(), isPrivate: id => { const task = board.get(id); return !task || tasks.isPii(task); }, instancePaths, ...(opts.worktreeShelfGit ? { git: opts.worktreeShelfGit } : {}) });
           if (recoveryActive() || stopping) return reply({ t: request.t, ok: false, error: "recovery or shutdown began while the worktrees were read; retry once the hub is running" });
           if (!facts.available) return reply({ t: request.t, ok: false, error: "git could not list this project's worktrees; check that the project is a git repository and git is on PATH" });
           if (request.t !== "worktrees") {

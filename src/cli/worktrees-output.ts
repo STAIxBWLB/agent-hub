@@ -4,8 +4,8 @@ import { moment } from "./sdlc-output.ts";
 import type { Span } from "./console-state.ts";
 
 const list = (value: unknown): any[] => Array.isArray(value) ? value : [];
-const reasonLabel = (row: any): string => row?.reason === "merged" ? "PR merged" : row?.reason === "closed" ? "PR closed" : row?.reason === "quiet" ? "quiet" : row?.reason === "parked" ? "parked" : "";
-const taskLabel = (row: any): string => typeof row?.task === "number" ? `#${row.task}${typeof row.pr === "number" ? ` PR ${row.pr}` : ""}` : "";
+const reasonLabel = (row: any): string => row?.reason === "merged" ? "PR merged" : row?.reason === "closed" ? "PR closed" : row?.reason === "quiet" ? "quiet" : row?.reason === "parked" ? "parked" : row?.reason === "settled" ? "settled" : "";
+const taskLabel = (row: any): string => row?.private === true ? "task: private" : typeof row?.task === "number" ? `#${row.task}${typeof row.pr === "number" ? ` PR ${row.pr}` : ""}` : "";
 
 /** `ahub worktrees`: live rows, then the shelf with each settled row's reason. */
 export function renderWorktrees(reply: unknown, columns?: number, now = Date.now()): Span[][] {

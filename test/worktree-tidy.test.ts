@@ -232,6 +232,70 @@ test("rows come from git's own list: a path the daemon names that git does not l
   expect(rows[0]!.head).toMatch(/^[0-9a-f]{40}$/);
 });
 
+// ---- the two review findings: a PII-bound row, and a branch that changed between the daemon's read and the confirm.
+/** A hub reply row for a worktree, in the shape `worktrees` answers: what `rowsFromReply` is fed. */
+const reply = (name: string, over: Record<string, unknown> = {}) => ({ path: `.worktrees/${name}`, branch: name, reason: "quiet", lastActiveAt: 1, ...over });
+
+test("an open PII-bound worktree is refused as `task not approved or cancelled` even though its reply row carries no task id, PR or state", () => {
+  const { root, add } = repo(); const git = gitPort();
+  add("pii");
+  // the daemon's redacted row for a PII task: `private: true`, `taskState: "private"`, nothing else about the task
+  const rows = rowsFromReply([reply("pii", { private: true, taskState: "private" })], root, git);
+  expect(rows).toHaveLength(1);
+  expect(refusals(rows[0]!, root, git, "origin/main")).toEqual(["task not approved or cancelled"]);
+  const plan = planTidy(rows, root, git);
+  expect(plan.removable).toEqual([]);
+  expect(JSON.stringify(plan)).not.toMatch(/"task":|"pr":/);
+  // with the same row and no task at all, the identical worktree is safe, so the refusal comes from the private binding alone
+  expect(planTidy(rowsFromReply([reply("pii")], root, git), root, git).removable.map(e => e.shown)).toEqual([".worktrees/pii"]);
+  // a confirm cannot remove it either
+  const out = confirmTidy(plan, plan.fingerprint, root, git);
+  expect(out.ok).toBe(false);
+  expect(g(root, "worktree", "list", "--porcelain")).toContain(".worktrees/pii");
+});
+
+test("a branch that switched between the daemon's read and the confirm refuses the row and, when it changes between preview and confirm, the whole run", () => {
+  const { root, add } = repo(); const git = gitPort();
+  add("a"); add("b");
+  const preview = planTidy(rowsFromReply([reply("a"), reply("b")], root, git), root, git);
+  expect(preview.removable).toHaveLength(2);
+  // `a` is switched to branch `other` at the SAME commit: HEAD, the path and the dirty state are all unchanged
+  g(root, "branch", "other"); g(join(root, ".worktrees", "a"), "checkout", "-q", "other");
+  const after = rowsFromReply([reply("a"), reply("b")], root, git);                       // the daemon still says `a`
+  expect(after.find(r => r.shown === ".worktrees/a")).toMatchObject({ branch: "a", liveBranch: "other" });
+  const fresh = planTidy(after, root, git);
+  expect(fresh.entries.find(e => e.shown === ".worktrees/a")!.refused).toContain("branch changed since preview; run tidy again");
+  expect(fresh.fingerprint).not.toBe(preview.fingerprint);                                  // the live branch is in the fingerprint
+  const out = confirmTidy(fresh, preview.fingerprint, root, git);
+  expect(out.ok).toBe(false); expect(out.ok === false && out.error).toContain("changed since the preview");
+  expect(g(root, "worktree", "list", "--porcelain")).toContain(".worktrees/a");           // nothing was removed
+  expect(g(root, "worktree", "list", "--porcelain")).toContain(".worktrees/b");
+  expect(g(root, "branch", "--list", "a")).toContain("a");
+  // even if the person previews again and confirms the new fingerprint, `a` stays refused and only `b` goes, with `branch -d b`, never the stale name
+  const again = confirmTidy(fresh, fresh.fingerprint, root, git);
+  expect(again.ok).toBe(true);
+  if (again.ok) expect(again.outcomes.map(o => o.shown)).toEqual([".worktrees/b"]);
+  expect(g(root, "worktree", "list", "--porcelain")).toContain(".worktrees/a");
+  expect(g(root, "branch", "--list", "a")).toContain("a");
+});
+
+test("a detached or renamed checkout never matches the daemon's branch, and the live branch is part of the fingerprint", () => {
+  const { root, add } = repo(); const git = gitPort();
+  add("d");
+  g(join(root, ".worktrees", "d"), "checkout", "-q", "--detach");
+  const rows = rowsFromReply([reply("d")], root, git);
+  expect(rows[0]).toMatchObject({ branch: "d", liveBranch: null });
+  expect(refusals(rows[0]!, root, git, "origin/main")).toContain("branch changed since preview; run tidy again");
+  expect(fingerprintOf([{ path: "/p", branch: "b", liveBranch: "b", head: "1", refused: [] }])).not.toBe(fingerprintOf([{ path: "/p", branch: "b", liveBranch: "other", head: "1", refused: [] }]));
+  expect(fingerprintOf([{ path: "/p", branch: "b", liveBranch: "b", head: "1", refused: [] }])).not.toBe(fingerprintOf([{ path: "/p", branch: "b", liveBranch: null, head: "1", refused: [] }]));
+});
+
+test("a private row prints as a stub in the list and the preview, never a task id", () => {
+  const live = [{ path: ".worktrees/p", branch: "p", private: true, taskState: "private", lastActiveAt: 1 }];
+  const text = renderWorktrees({ live, settled: [{ path: ".worktrees/q", branch: "q", private: true, taskState: "private", reason: "settled", lastActiveAt: 1 }], complete: true }, 120).map(line => line.map(span => span.text).join("")).join("\n");
+  expect(text).toContain("task: private"); expect(text).toContain("settled"); expect(text).not.toMatch(/#\d/);
+});
+
 // ---- renderers are pure and cover every state; --json is the caller's branch.
 test("the renderers print live and settled rows, refusals, the fingerprint line and the result", () => {
   const text = (lines: { text: string }[][]) => lines.map(l => l.map(s => s.text).join("")).join("\n");
