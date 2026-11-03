@@ -39,7 +39,9 @@ async function rig(cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-title-"))), s
   const configFile = join(cwd, ".agenthub/config.local.json");
   if (!readdirSync(join(cwd, ".agenthub")).includes("config.local.json")) writeFileSync(configFile, '{"instances":{}}\n');
   writeFileSync(join(cwd, ".agenthub/routing.toml"), readFileSync(new URL("../templates/routing.toml", import.meta.url), "utf8").replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"'));
-  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
+  // Production lifecycle supplies the Registry's stable project id. Omitting it makes startDaemon generate a new randomUUID;
+  // journal.get filters by project_id, so reusing the state directory alone would hide every previous delivery on restart.
+  const daemon = await startDaemon({ cwd, stateDir, projectId: "session-title-fixture", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false },
       mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false },
@@ -87,12 +89,14 @@ test("unnamed labels come only from acknowledged deliveries and restart from mat
     expect((await f.status()).peers.local.doing).toBeUndefined();
     await f.send(body);
     const doing = (await f.status()).peers.local.doing;
+    const projectId = (await f.status()).projectId;
     expect(doing).toMatchObject({ source: "label", text: "Investigate bytecode semantics and complete a carefully boun" });
     const binding = JSON.parse(readFileSync(join(f.stateDir, "session-title-inputs.json"), "utf8"));
     expect(Object.keys(binding.local).sort()).toEqual(["delivery", "envelope", "session"]);
     expect(JSON.stringify(binding)).not.toContain("Investigate");
     expect(readFileSync(join(f.stateDir, "status.json"), "utf8")).not.toContain(doing.text);
     await f.stop(false); f = await rig(cwd);
+    expect((await f.status()).projectId).toBe(projectId);
     expect((await f.status()).peers.local.doing).toMatchObject({ source: "label", text: doing.text });
     await f.send("Second acknowledged message must not replace the first");
     expect((await f.status()).peers.local.doing.text).toBe(doing.text);
@@ -143,10 +147,12 @@ test("a positive-ACK fallback binding survives later turn uncertainty without tr
     f.peer.completion = "needs_review";
     await f.send("First acknowledged request remains the session label after a failed turn");
     const first = (await f.status()).peers.local.doing;
+    const projectId = (await f.status()).projectId;
     expect(first.source).toBe("label");
     const binding = JSON.parse(readFileSync(join(f.stateDir, "session-title-inputs.json"), "utf8"));
     expect(f.daemon.bus.queueList("local").find(row => row.id === binding.local.delivery)?.state).toBe("needs_review");
     await f.stop(false); f = await rig(cwd);
+    expect((await f.status()).projectId).toBe(projectId);
     expect((await f.status()).peers.local.doing).toMatchObject({ text: first.text, source: "label" });
   } finally { await f.stop(); }
 });
