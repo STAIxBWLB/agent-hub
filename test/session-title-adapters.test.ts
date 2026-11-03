@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ADAPTERS, definitionOf } from "../src/adapters/registry.ts";
 import { LocalPeer } from "../src/adapters/local-worker.ts";
 import { OmniRoute } from "../src/omniroute/client.ts";
-import { TASK_TOOLS, TASK_TOOL_NAMES, profileTaskTools, sessionTitleTools } from "../src/hub/hub-tools.ts";
+import { TASK_TOOLS, TASK_TOOL_NAMES, profileTaskTools, sessionTitleTools, SESSION_TITLE_TOOL } from "../src/hub/hub-tools.ts";
 import { PROFILE_NAMES } from "../src/hub/profiles.ts";
 import { Capture } from "../src/memory/capture.ts";
 import type { MemoryClient } from "../src/memory/client.ts";
@@ -18,6 +18,9 @@ test("#1055 only hub-title definitions explicitly receive the title tool; global
   expect(ADAPTERS.filter(definition => definition.title === "hub").map(definition => definition.kind).sort()).toEqual(["local", "pi"]);
   expect(TASK_TOOLS.some(tool => tool.name === "hub_set_title")).toBe(false);
   expect(TASK_TOOL_NAMES.has("hub_set_title")).toBe(true);
+  expect(SESSION_TITLE_TOOL.inputSchema.properties.title).toMatchObject({ type: "string", description: expect.stringContaining("1-80 characters after doingText normalization") });
+  expect(SESSION_TITLE_TOOL.inputSchema.properties.title).not.toHaveProperty("maxLength");
+  expect(SESSION_TITLE_TOOL.inputSchema.properties.title).not.toHaveProperty("minLength");
   for (const profile of PROFILE_NAMES) for (const definition of ADAPTERS) {
     const global = profileTaskTools(profile);
     expect(global.some(tool => tool.name === "hub_set_title")).toBe(false);

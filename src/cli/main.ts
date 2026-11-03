@@ -2003,6 +2003,17 @@ const commands: Record<string, () => Promise<void> | void> = {
     } finally { hub.close(); }
   },
 
+  title: async () => {
+    const [peer, ...words] = args;
+    if (!peer || !words.length) fail("usage: ahub title <peer> <text...>");
+    const hub = await connect();
+    try {
+      const reply = await hub.request({ t: "title", peer, title: words.join(" ") }, 35_000);
+      if (reply.ok !== true) fail(String(reply.error ?? `session title refused: ${String(reply.reason ?? "invalid")}; refresh ahub status, then retry`));
+      console.log(`${peer}: session title updated`);
+    } finally { hub.close(); }
+  },
+
   permission: async () => {
     const positional = args.filter(arg => arg !== "--yes");
     const [peer, mode] = positional;

@@ -399,7 +399,7 @@ const KEYS: [string, string[]][] = [
   ["Command", ["Enter run", "Esc cancel", "Up/Down history", "Ctrl-U clear"]],
   ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Home/< first, End/> last", "Enter view", "j/k scroll a view", "w web UI (outside Peers)", "o pet window"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
-  ["Peers", ["p pause", "r resume", "m permission mode", "w WIP limit", "l make planner (then y)"]],
+  ["Peers", ["p pause", "r resume", "m permission mode", "w WIP limit", "l make planner (then y)", "t rename Pi/local session"]],
   ["Tasks", ["b backlog/open", "n add backlog", "a assign/reserve (then y)", "u unassign (then y)", "r approve or request changes (in review; a or c, then a note)", "p pull, e plan (backlog)", "R return to backlog", "c cancel (then y)"]],
   ["Queue", ["r resolve (reason, then y)", "queued=discard, needs_review=retry", "D discard the peer's whole queued backlog (reason, then y)"]],
   ["Events", ["f peer filter", "g kind filter"]],
@@ -857,6 +857,10 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       if (choice) s.reviewChoice = choice;
       return done();
     }
+    if (s.panel === 1 && key === "t") {
+      if (definitionOf(String(item))?.title !== "hub") { notify(s, "Rename this session in its native UI", now); return done(); }
+      s.input = `title ${item} `; s.editing = true; return done();
+    }
     const prefill = s.panel === 1 && key === "p" ? `pause ${item}` : s.panel === 1 && key === "r" ? `resume ${item}` : undefined;
     if (prefill) { s.input = prefill; s.editing = true; return done(); }
     if (s.panel === 3 && key === "c") {
@@ -945,7 +949,7 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
       span(count(row.needsReview), row.needsReview ? "failure" : undefined), span(paused, paused === "-" ? undefined : "attention"),
       span(b?.windows?.length ? b.windows.map((w: any) => `${w.id} ${Math.round(w.used * 100)}%${typeof w.resetsAt === "number" ? ` ${relative(w.resetsAt, now)}` : ""}`).join(", ") : "-"),
       span(row.servedBy ?? row.requestedModel ?? "-"),
-      span(typeof row.doing?.text === "string" && row.doing.text ? row.doing.text : "-", row.doing?.text === DOING_STUB ? "muted" : undefined)]; // #878: screened by the hub
+      span(typeof row.doing?.text === "string" && row.doing.text ? row.doing.text : "-", row.doing?.text === DOING_STUB || row.doing?.source === "label" ? "muted" : undefined)]; // #878: screened by the hub
   }
   if (s.panel === 7) {
     const text = usageCells(s.usage, row.id, s.budget[row.id], at => relative(at, now));

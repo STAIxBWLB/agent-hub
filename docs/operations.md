@@ -278,6 +278,27 @@ dashboard's peer rows and the conductor's `hub_status` show the same value; it
 lives in the daemon's memory only, never in `status.json`, a log, an event or
 memory capture. Board WIP is unchanged.
 
+Pi and the local worker can name an unnamed session with `hub_set_title`
+(#1055). A normalized title is 1-80 characters; the first agent name is final.
+The person replaces it with `ahub title <peer> <text...>`, or selects the peer
+in the console and presses `t`. The rename input starts empty after the command
+prefix, even when an unnamed label is visible. Other peers rename in their
+native UI. No helper model is called, and task, branch and instance names are
+independent. A private turn, an open PII owner/reviewer assignment, a sensitive
+title or a failed metadata screen refuses the write.
+
+An unnamed session displays a muted label from the first acknowledged hub
+delivery, at most 60 normalized characters. Queued or unaccepted messages do not
+supply it. The label is computed only for live status and dashboard reads;
+`status.json`, events, logs and memory receive no derived label. The daemon
+stores only the peer's title-session ID and acknowledged delivery/envelope IDs
+in `session-title-inputs.json`. After restart it recomputes the label only when
+the same session and retained journal original match; a new session or pruned
+original shows no inherited label. Pi's real name stays in Pi's native session;
+the local worker's name lives only with that worker's in-memory session. The
+native setter/readback probe is separate from the still-pending live restart
+receipt tracked in #1143 and `docs/smoke.md`.
+
 In Peers, select a row and press `w` to edit `tasks.wip_limits.<peer>`, prefilled
 with its current limit. The editor stays on Peers and uses the existing Settings
 value, daemon preview, nonempty reason and `y` confirmation flow; Esc cancels without writing. The

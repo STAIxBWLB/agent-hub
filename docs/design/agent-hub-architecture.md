@@ -60,6 +60,13 @@ The hub's portable memory storage, sync, indexing, and project helpers come from
 
 ## Privacy and recovery
 
+Session titles for the two hub-owned title slots (#1055) are conditional writes
+to the current adapter session, under the same open-PII-task/private-turn and
+public-metadata screens as DOING. Person rename remains console-only. Live
+unnamed labels are computed from acknowledged source messages; only opaque
+session/delivery/envelope bindings persist, never copied labels. Native title,
+task title, Git branch and instance identity remain independent.
+
 Privacy decisions are made at hub boundaries, not delegated to model routing. A private task or turn is represented by a private envelope and a restricted public view; task text is screened before it enters memory, shared notices, or model calls. The PII screen can run on-device; its gateway path requires positive campus admission, so an unknown network result is not treated as safe. This makes each downstream observer consume the same host decision rather than infer privacy from a label or vendor ([#198](https://github.com/STAIxBWLB/agent-hub/issues/198), [#752](https://github.com/STAIxBWLB/agent-hub/issues/752)).
 
 Recovery is a coordinated daemon operation over separately persisted board, delivery, and native-session evidence. A restart or upgrade can continue only with compatible feature evidence from the verified target and host-held proofs that still match the project and actor. Adapters report native evidence; they do not certify their own recovery authority. This avoids treating a stale status file or an unverified receipt as proof that a native process is safe to resume ([#37](https://github.com/STAIxBWLB/agent-hub/issues/37), [#625](https://github.com/STAIxBWLB/agent-hub/issues/625), [#900](https://github.com/STAIxBWLB/agent-hub/issues/900)).

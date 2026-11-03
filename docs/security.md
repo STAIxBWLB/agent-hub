@@ -1176,3 +1176,23 @@ path and no polling when no real cleanup occurred.
 Done/discard acknowledgement precedes the background room retry. A network retry
 failure or socket loss during that later work cannot report a committed local
 disposition as failed.
+
+## Hub-owned session titles
+
+`hub_set_title` (#1055) is offered only to fixed Pi/local definitions with a
+hub-owned title slot. Publication grants no authority: the daemon checks the
+current adapter/session, private turn, open PII ownership or review and public
+metadata policy. An agent may write only while the native/current slot remains
+unnamed. A person's console rename may replace it, but cannot bypass privacy.
+The title and any unnamed display label are screened again when shown; unknown
+screening is `[private]`. Title tool inputs/results are excluded from capture
+and progress observations. No title crosses rooms, changes task/Git/instance
+records, or causes an extra model call.
+
+A fallback label is never persisted. Its original message has the existing
+journal retention; the separate `session-title-inputs.json` stores only peer,
+title-session, delivery and envelope IDs written by positive delivery
+acknowledgement, never by a title tool. Restart resolves a still-retained
+original only for the same title-session ID. A missing or different session,
+invalid binding or pruned original yields no inherited label. Live status may
+show it; `status.json`, events, logs and memory never receive a derived copy.

@@ -2164,3 +2164,13 @@ account fixture needs the person's account setup. Ask the planner before any
 quota-heavy run. Never publish prompts, tokens, credentials, endpoints, native
 transcripts or session ids as evidence. This slice implements no task `exec`,
 routing policy or matrix runner.
+
+## Pi session title restart receipt (#1055, #1143)
+
+- [ ] Unverified: in a real managed Pi session, call `hub_set_title`, verify its
+  native name and DOING, restart into that same saved session and verify the
+  name survives. A second agent call must return `already_named`; a person
+  rename must replace the name and remain final against the agent.
+- The fake-free Pi 1.5.0 setter/readback/reopen API probe is recorded separately
+  in `docs/verification/2026-11-03-pi-title-api.md`; it does not complete this
+  model-backed managed-session restart receipt. Track the live leg in #1143.

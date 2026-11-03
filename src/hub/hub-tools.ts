@@ -158,7 +158,7 @@ export const PLANNER_REVIEW_TOOLS: HubTool[] = [
 ];
 TASK_TOOLS.push(...PLANNER_REVIEW_TOOLS);
 /** Only definitions declaring a hub-owned title slot publish this tool. It is absent from global schema lists; native approval names must exclude it too. */
-export const SESSION_TITLE_TOOL: HubTool = tool("hub_set_title", "Name your own session once the task is clear. Only an unnamed session accepts the first agent name; the person may replace it. Private contexts refuse the write. No task, branch or instance is renamed.", { title: { type: "string", minLength: 1, maxLength: 80 } }, ["title"]);
+export const SESSION_TITLE_TOOL: HubTool = tool("hub_set_title", "Name your own session once the task is clear. Only an unnamed session accepts the first agent name; the person may replace it. Private contexts refuse the write. No task, branch or instance is renamed.", { title: { type: "string", description: "1-80 characters after doingText normalization (one line, controls removed, surrounding whitespace trimmed)" } }, ["title"]);
 export function sessionTitleTools(tools: HubTool[], allowed = false): HubTool[] {
   const filtered = tools.filter(tool => tool.name !== SESSION_TITLE_TOOL.name);
   return allowed ? [...filtered, SESSION_TITLE_TOOL] : filtered;

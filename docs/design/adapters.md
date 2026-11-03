@@ -71,6 +71,25 @@ Native CLI compatibility is centralized in `compat.ts`. Each gated operation ask
 
 External adapter modules are an explicit, person-owned, machine-local opt-in. The daemon verifies and pins the captured bundle at startup, then admits only the bounded headless ACP instance contract through host-managed launch and current-owner checks. Module code runs in the daemon trust domain; pinning is integrity evidence, not a sandbox. Modules cannot supply native reviewer engines, proof ports, permission callbacks, provider selectors, or arbitrary recovery authority. This ceiling limits what imported code can claim and prevents live reload from replacing the executable catalog ([#754](https://github.com/STAIxBWLB/agent-hub/issues/754)).
 
+## Session title slots
+
+Only fixed Pi and local definitions opt into `title: "hub"` (#1055). Their
+standalone `hub_set_title` schema is excluded from native-peer tool lists, and
+the daemon independently checks the resolved definition and current owner.
+An agent fills only an unnamed slot; a person's console rename replaces it.
+Pi's native session name is canonical and its bridge rechecks the native name,
+owner, session and generation before writing. Local keeps its name in the
+worker's existing in-memory session. Both expose a separate `titleSession`
+identity for display continuity; Local's native-session/provenance authority
+does not change. Titles pass the current metadata/privacy screen at write and
+display. No helper inference or task/Git/instance naming path is involved.
+
+An unnamed label is derived from the first positively acknowledged original,
+never stored as a name. Delivery lifecycle may persist only its title-session,
+delivery and envelope IDs. Restore needs the same session and retained journal
+original; it never carries a prior session's label into a new session. The
+derived label remains absent from disk status, events, logs, capture and rooms.
+
 ## Evidence boundary
 
 Compatibility probes and fake transports verify source contracts, not an account login, live model turn, native permission prompt, or operating-system isolation. Those receipts remain separate because protocol inventory alone cannot prove runtime behavior ([#625](https://github.com/STAIxBWLB/agent-hub/issues/625), [#754](https://github.com/STAIxBWLB/agent-hub/issues/754)).
