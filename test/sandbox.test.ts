@@ -133,31 +133,40 @@ test.skipIf(!sandboxAvailable())("a worktree project: the common dir's config, h
     `(echo x > '${main}/.git/commondir') 2>/dev/null && echo WROTE-MAIN-COMMONDIR || echo blocked-main-commondir`,
     `(echo x > '${gitDir}/commondir') 2>/dev/null && echo WROTE-WT-COMMONDIR || echo blocked-wt-commondir`,
     `(echo x > '${gitDir}/config') 2>/dev/null && echo WROTE-WT-CONFIG || echo blocked-wt-config`,
-    "git branch fix/config && echo branched-config",
-    "git tag config && echo tagged-config",
-    "git checkout -qb feature/hooks/x && echo branched-hooks",
+    "git branch fix/config && echo branched-config || echo blocked-branch-config",
+    "git tag config && echo tagged-config || echo blocked-tag-config",
+    "git checkout -qb feature/hooks/x && echo branched-hooks || echo blocked-branch-hooks",
   ].join("; "));
-  for (const expected of ["blocked-main-config", "blocked-main-hook", "blocked-main-commondir", "blocked-wt-commondir", "blocked-wt-config", "branched-config", "tagged-config", "branched-hooks"]) expect(out.output).toContain(expected);
+  // #1123: a branch, tag or checkout -b writes under refs/, which the profile now refuses (the person's decision), whatever the ref is named.
+  for (const expected of ["blocked-main-config", "blocked-main-hook", "blocked-main-commondir", "blocked-wt-commondir", "blocked-wt-config", "blocked-branch-config", "blocked-tag-config", "blocked-branch-hooks"]) expect(out.output).toContain(expected);
+  for (const forbidden of ["branched-config", "tagged-config", "branched-hooks"]) expect(out.output).not.toContain(forbidden);
   expect(existsSync(join(main, ".git", "commondir"))).toBe(false);
   expect(readFileSync(join(gitDir, "commondir"), "utf8")).toBe(commondir);
   expect(existsSync(join(gitDir, "config"))).toBe(false);
 });
 
-test.skipIf(!sandboxAvailable())("git add, commit, stash and checkout still work inside the sandbox; gc runs outside it (#270, #864)", async () => {
+test.skipIf(!sandboxAvailable())("git add, restore and checkout -- file still work inside the sandbox; commit and stash are refused because they move a ref (#1123); gc runs outside it (#270, #864)", async () => {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-gitops-")));
-  Bun.spawnSync(["git", "init", "-q"], { cwd });
+  Bun.spawnSync(["git", "init", "-q", "-b", "main"], { cwd });
   writeFileSync(join(cwd, "a.txt"), "one\n");
+  Bun.spawnSync(["git", "-C", cwd, "add", "a.txt"]);
+  Bun.spawnSync(["git", "-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "one"]); // outside the sandbox: the hub's own git
+  const head = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "HEAD"]).stdout.toString().trim();
+  const ident = "-c user.email=t@t -c user.name=t -c commit.gpgsign=false";
   const out = await sandboxedExec(["/bin/sh", "-c", [
-    "git add a.txt",
-    "git -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm one",
-    "echo two >> a.txt",
-    "git -c user.email=t@t -c user.name=t -c commit.gpgsign=false stash -q",
-    "git checkout -q -- a.txt",
-    "echo git-ops-ok",
-  ].join(" && ")], { cwd, profile: profile(cwd, false) });
-  expect(out.output).toContain("git-ops-ok");
-  expect(Bun.spawnSync(["git", "-C", cwd, "log", "--oneline"]).stdout.toString()).toContain("one");
-  expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("one\n"); // stash and checkout really ran
+    "echo two >> a.txt", "git add a.txt && echo added-ok",
+    "echo three >> a.txt", "git checkout -q -- a.txt && echo checkout-file-ok",
+    "echo four >> a.txt", "git restore a.txt && echo restore-ok",
+    "git status --short >/dev/null && git diff --stat >/dev/null && git log --oneline >/dev/null && echo reads-ok",
+    `git ${ident} commit -qm two --allow-empty && echo COMMITTED || echo blocked-commit`,
+    `git ${ident} stash -q && echo STASHED || echo blocked-stash`,
+    "git branch zz && echo BRANCHED || echo blocked-branch",
+    "git switch -q -c yy && echo SWITCHED || echo blocked-switch",
+  ].join("; ")], { cwd, profile: profile(cwd, false) });
+  for (const expected of ["added-ok", "checkout-file-ok", "restore-ok", "reads-ok", "blocked-commit", "blocked-stash", "blocked-branch", "blocked-switch"]) expect(out.output, out.output).toContain(expected);
+  for (const forbidden of ["COMMITTED", "STASHED", "BRANCHED", "SWITCHED"]) expect(out.output).not.toContain(forbidden);
+  expect(Bun.spawnSync(["git", "-C", cwd, "rev-parse", "HEAD"]).stdout.toString().trim()).toBe(head); // no ref moved
+  expect(Bun.spawnSync(["git", "-C", cwd, "for-each-ref", "--format=%(refname)"]).stdout.toString().trim()).toBe("refs/heads/main");
   // gc writes packs, which the shared object store refuses inside the sandbox (#864); it runs outside, where the hub and the person run git.
   expect((await sandboxedExec(["/bin/sh", "-c", "git gc -q"], { cwd, profile: profile(cwd, false) })).code).not.toBe(0);
   expect(Bun.spawnSync(["git", "-C", cwd, "gc", "-q"]).exitCode).toBe(0);
@@ -334,7 +343,9 @@ test.skipIf(!sandboxAvailable())("a submodule's git dir under .git/modules: conf
     "(echo x > .git/modules/webhooks/FETCH_HEAD) 2>/dev/null && echo wrote-webhooks-fetch-head || echo blocked-webhooks-fetch-head",
     "(echo x > .git/modules/webhooks/hooks/pre-commit) 2>/dev/null && echo WROTE-WEBHOOKS-HOOK || echo blocked-webhooks-hook",
   ].join("; ")], { cwd, profile: profile(cwd, false) });
-  for (const expected of ["blocked-sub-config", "blocked-sub-hook", "blocked-deep-config", "blocked-deep-hook", "blocked-rename", "blocked-root-rename", "blocked-nested-rename", "blocked-hardlink", "entry-intact", "branched-config-in-sub", "tagged-config-in-sub", "branched-hooks-in-sub", "tagged-hooks-in-deep", "committed-in-sub", "blocked-catalogs-config", "blocked-catalogs-hook", "branched-config-in-catalogs", "committed-in-webhooks", "wrote-webhooks-fetch-head", "blocked-webhooks-hook"]) expect(out.output).toContain(expected);
+  for (const expected of ["blocked-sub-config", "blocked-sub-hook", "blocked-deep-config", "blocked-deep-hook", "blocked-rename", "blocked-root-rename", "blocked-nested-rename", "blocked-hardlink", "entry-intact", "blocked-catalogs-config", "blocked-catalogs-hook", "wrote-webhooks-fetch-head", "blocked-webhooks-hook"]) expect(out.output).toContain(expected);
+  // #1123: a submodule's own refs and HEAD are refused like the project's, so none of these branch, tag, checkout and commit commands lands (test/sandbox-git-refs.test.ts asserts it with no ref moved).
+  for (const forbidden of ["branched-config-in-sub", "tagged-config-in-sub", "branched-hooks-in-sub", "tagged-hooks-in-deep", "committed-in-sub", "branched-config-in-catalogs", "committed-in-webhooks"]) expect(out.output).not.toContain(forbidden);
   expect(readFileSync(join(subGit, "config"), "utf8")).toBe(subConfig);
   expect(readFileSync(join(deepGit, "config"), "utf8")).toBe(deepConfig);
   expect(existsSync(join(subGit, "hooks"))).toBe(false);
@@ -384,12 +395,13 @@ test.skipIf(!sandboxAvailable())("a linked worktree's submodule git dir (<common
     `(mv '${wtGit}/modules' '${wtGit}/m2') 2>/dev/null && echo WROTE-WTMODULES-RENAME || echo blocked-wtmodules-rename`,
     // Ordinary work still runs: the worktree, its submodule's refs and a commit in the main project.
     `(echo hi > new.txt) && echo wrote-worktree-file`,
-    "git branch fix/config && echo branched-config",
+    "git branch fix/config && echo branched-config || echo blocked-branch-config", // #1123: the project's own refs are refused
     "git -C sub branch fix/hooks && echo branched-in-sub",
     "git -C sub tag config && echo tagged-config-in-sub",
     `git -C sub ${ident.join(" ")} commit -qm in-sub --allow-empty && echo committed-in-sub`,
   ].join("; ")], { cwd, profile: profile(cwd, false) });
-  for (const expected of ["blocked-wtsub-config", "blocked-wtsub-hook", "blocked-config-worktree", "blocked-common-config-worktree", "blocked-sibling-config", "blocked-sibling-hook", "blocked-sibling-rename", "blocked-wtsub-rename", "blocked-wtmodules-rename", "wrote-worktree-file", "branched-config", "branched-in-sub", "tagged-config-in-sub", "committed-in-sub"]) expect(out.output).toContain(expected);
+  for (const expected of ["blocked-wtsub-config", "blocked-wtsub-hook", "blocked-config-worktree", "blocked-common-config-worktree", "blocked-sibling-config", "blocked-sibling-hook", "blocked-sibling-rename", "blocked-wtsub-rename", "blocked-wtmodules-rename", "wrote-worktree-file", "blocked-branch-config"]) expect(out.output).toContain(expected);
+  for (const forbidden of ["branched-config", "branched-in-sub", "tagged-config-in-sub", "committed-in-sub"]) expect(out.output).not.toContain(forbidden); // #1123: a submodule's own refs are refused like the project's (docs/security.md)
   for (const forbidden of ["WROTE-WTSUB-CONFIG", "WROTE-WTSUB-HOOK", "WROTE-CONFIG-WORKTREE", "WROTE-COMMON-CONFIG-WORKTREE", "WROTE-SIBLING-CONFIG", "WROTE-SIBLING-HOOK", "WROTE-SIBLING-RENAME", "WROTE-WTSUB-RENAME", "WROTE-WTMODULES-RENAME"]) expect(out.output).not.toContain(forbidden);
   expect(readFileSync(join(subGit, "config"), "utf8")).toBe(subConfig);
   expect(existsSync(join(subGit, "hooks"))).toBe(false);
@@ -426,11 +438,11 @@ test.skipIf(!sandboxAvailable())("every linked worktree's git dir is protected b
     `(mkdir -p '${common}/worktrees/later/modules/z' && echo x > '${common}/worktrees/later/modules/z/config') 2>/dev/null && echo WROTE-LATER-WORKTREE || echo blocked-later-worktree`,
     // Ordinary work: the worktree, branches and tags named like the protected files, a commit.
     `(echo hi > new.txt) && echo wrote-worktree-file`,
-    "git branch fix/config && echo branched-config",
-    "git tag config && echo tagged-config",
-    `git ${ident.join(" ")} commit -qm two --allow-empty && echo committed`,
+    "git branch fix/config && echo branched-config || echo blocked-branch", // #1123: refs, HEAD and the worktree's admin dir are refused
+    "git tag config && echo tagged-config || echo blocked-tag",
+    `git ${ident.join(" ")} commit -qm two --allow-empty && echo committed || echo blocked-commit`,
   ].join("; ")], { cwd, profile: profile(cwd, false) });
-  for (const expected of ["blocked-sib-modules", "blocked-sib-planted-config", "blocked-own-planted-config", "blocked-sib-config-worktree", "blocked-sib-config", "blocked-sib-hook", "blocked-later-worktree", "wrote-worktree-file", "branched-config", "tagged-config", "committed"]) expect(out.output).toContain(expected);
+  for (const expected of ["blocked-sib-modules", "blocked-sib-planted-config", "blocked-own-planted-config", "blocked-sib-config-worktree", "blocked-sib-config", "blocked-sib-hook", "blocked-later-worktree", "wrote-worktree-file", "blocked-branch", "blocked-tag", "blocked-commit"]) expect(out.output).toContain(expected);
   for (const forbidden of ["WROTE-SIB-MODULES", "WROTE-SIB-PLANTED-CONFIG", "WROTE-OWN-PLANTED-CONFIG", "WROTE-SIB-CONFIG-WORKTREE", "WROTE-SIB-CONFIG", "WROTE-SIB-HOOK", "WROTE-LATER-WORKTREE"]) expect(out.output).not.toContain(forbidden);
   expect(existsSync(join(sib, "modules"))).toBe(false);
   expect(existsSync(join(own, "modules"))).toBe(false);
@@ -451,9 +463,16 @@ test.skipIf(!sandboxAvailable())("the shared object store only takes new loose o
   const blob = git(main, "rev-parse", "HEAD:b.txt").stdout.toString().trim(), loose = join(objects, blob.slice(0, 2), blob.slice(2));
   const before = readFileSync(loose);
   const commit = "git -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm";
+  // #1123: a commit moves a ref and is refused in the sandbox, so the loose-object legs use `git add` (which writes the new blob) from the main checkout, and the hub's own git commits afterwards.
+  const added = await sandboxedExec(["/bin/sh", "-c", [
+    `printf new > c.txt && git add c.txt && echo added-new`,
+    `printf 'loose\\n' > d.txt && git add d.txt && echo added-existing-blob`,   // git only freshens an object that exists
+    `${commit} nope --allow-empty && echo COMMITTED || echo blocked-commit`,
+  ].join("; ")], { cwd: main, profile: profile(main, false) });
+  for (const expected of ["added-new", "added-existing-blob", "blocked-commit"]) expect(added.output, added.output).toContain(expected);
+  expect(added.output).not.toContain("COMMITTED");
+  expect(git(main, "commit", "-qm", "c").exitCode).toBe(0); // outside the sandbox: the hub's own git reads what the sandbox added
   const out = await sandboxedExec(["/bin/sh", "-c", [
-    `printf new > c.txt && git add c.txt && ${commit} c && echo committed-new`,
-    `printf 'loose\\n' > d.txt && git add d.txt && ${commit} d && echo committed-existing-blob`,   // git only freshens an object that exists
     `(printf /tmp > '${objects}/info/alternates') 2>/dev/null && echo WROTE-ALTERNATES || echo blocked-alternates`,
     `(printf /tmp > '${objects}/info/ALTERNATES') 2>/dev/null && echo WROTE-ALTERNATES-CASE || echo blocked-alternates-case`,
     `(printf x > '${objects}/info/http-alternates') 2>/dev/null && echo WROTE-HTTP-ALTERNATES || echo blocked-http-alternates`,
@@ -470,11 +489,11 @@ test.skipIf(!sandboxAvailable())("the shared object store only takes new loose o
     `mv '${objects}/info' '${objects}/info-moved' 2>/dev/null && echo MOVED-INFO-DIR || echo blocked-info-dir`,
     `mv '${objects}' '${objects}-moved' 2>/dev/null && echo MOVED-OBJECTS || echo blocked-objects`,
   ].join("; ")], { cwd, profile: profile(cwd, false) });
-  for (const expected of ["committed-new", "committed-existing-blob", "blocked-alternates", "blocked-alternates-case", "blocked-http-alternates", "blocked-commit-graph", "blocked-pack", "blocked-chmod", "blocked-remove", "blocked-replace", "blocked-link-project", "blocked-link-tmp", "blocked-fanout", "blocked-pack-dir", "blocked-info-dir", "blocked-objects"]) expect(out.output, out.output).toContain(expected);
+  for (const expected of ["blocked-alternates", "blocked-alternates-case", "blocked-http-alternates", "blocked-commit-graph", "blocked-pack", "blocked-chmod", "blocked-remove", "blocked-replace", "blocked-link-project", "blocked-link-tmp", "blocked-fanout", "blocked-pack-dir", "blocked-info-dir", "blocked-objects"]) expect(out.output, out.output).toContain(expected);
   for (const name of ["alternates", "ALTERNATES", "http-alternates"]) expect(existsSync(join(objects, "info", name)), name).toBe(false);
   expect(readFileSync(loose)).toEqual(before);
   expect(git(main, "fsck", "--connectivity-only").exitCode).toBe(0);
-  expect(git(cwd, "log", "--format=%s", "-2").stdout.toString().trim().split("\n")).toEqual(["d", "c"]);
+  expect(git(main, "log", "--format=%s", "-1").stdout.toString().trim()).toBe("c");
   const gc = await sandboxedExec(["/bin/sh", "-c", "git gc -q"], { cwd, profile: profile(cwd, false) });
   expect(gc.code).not.toBe(0);   // the documented cost: gc, repack, fetch and maintenance run outside the sandbox
   rmSync(main, { recursive: true, force: true }); rmSync(dirname(cwd), { recursive: true, force: true });
@@ -517,8 +536,10 @@ test.skipIf(!sandboxAvailable())("config.worktree is refused with ignorable code
   }
   expect(worktree.output).not.toMatch(/WROTE-/); expect(project.output).not.toMatch(/WROTE-/);
   // Names that only look similar are not over-matched: ordinary git files in those directories stay writable where they were before.
-  const unrelated = await run(cwd, [`(echo x > '${own}/ORIG_HEAD') && echo wrote-orig-head`, `(echo x > '${own}/worktree') 2>/dev/null && echo wrote-worktree-name || echo blocked-worktree-name`, "git branch fix/config.worktree && echo branched-dotted-name", "git tag config.worktree && echo tagged-dotted-name"]);
-  expect(unrelated.output).toContain("wrote-orig-head"); expect(unrelated.output).toContain("branched-dotted-name"); expect(unrelated.output).toContain("tagged-dotted-name");
+  // #1123: a worktree's admin dir is refused as a whole, so even ORIG_HEAD there is; the main checkout's ORIG_HEAD and `config.worktree`-looking ref names are judged by the ref rule.
+  const unrelated = await run(cwd, [`(echo x > '${own}/ORIG_HEAD') 2>/dev/null && echo wrote-orig-head || echo blocked-orig-head`, `(echo x > '${join(main, ".git", "ORIG_HEAD")}') && echo wrote-main-orig-head`, `(echo x > '${own}/worktree') 2>/dev/null && echo wrote-worktree-name || echo blocked-worktree-name`, "git branch fix/config.worktree && echo branched-dotted-name || echo blocked-dotted-branch", "git tag config.worktree && echo tagged-dotted-name || echo blocked-dotted-tag"]);
+  for (const expected of ["blocked-orig-head", "wrote-main-orig-head", "blocked-dotted-branch", "blocked-dotted-tag"]) expect(unrelated.output).toContain(expected);
+  expect(unrelated.output).not.toContain("branched-dotted-name"); expect(unrelated.output).not.toContain("tagged-dotted-name");
 });
 
 test.skipIf(!sandboxAvailable())("the ancestors of a protected git dir cannot be moved out and back: not the worktrees container, a worktree git dir, the common dir's modules tree or the .git directory (#518 review)", async () => {
@@ -553,8 +574,8 @@ test.skipIf(!sandboxAvailable())("the ancestors of a protected git dir cannot be
     expect(existsSync(join(common, "worktrees")) && existsSync(sibGit) && existsSync(join(common, "modules")), `the layout is intact after: ${attack}`).toBe(true);
   }
   // Ordinary work still runs after all of that: the worktree, a branch and a commit.
-  const ok = await sandboxedExec(["/bin/sh", "-c", ["echo hi > ok.txt && echo wrote-file", "git branch fix/config && echo branched", `git ${ident.join(" ")} commit -qm two --allow-empty && echo committed`].join("; ")], { cwd, profile: profile(cwd, false) });
-  for (const expected of ["wrote-file", "branched", "committed"]) expect(ok.output).toContain(expected);
+  const ok = await sandboxedExec(["/bin/sh", "-c", ["echo hi > ok.txt && echo wrote-file", "git branch fix/config && echo branched || echo blocked-branch", `git ${ident.join(" ")} commit -qm two --allow-empty && echo committed || echo blocked-commit`].join("; ")], { cwd, profile: profile(cwd, false) });
+  for (const expected of ["wrote-file", "blocked-branch", "blocked-commit"]) expect(ok.output).toContain(expected); // #1123
 });
 
 test.skipIf(!sandboxAvailable())("every directory entry on the path to a protected git file refuses rename, replace, symlink, removal and being renamed over, in the main checkout and a sibling worktree (#518 review round 3)", async () => {
@@ -628,12 +649,13 @@ test.skipIf(!sandboxAvailable())("sandboxed code cannot plant a fake submodule g
   }
   expect(planted).toEqual([]);
   for (const name of ["refs", "logs", "fresh"]) expect(existsSync(join(common, "modules", name))).toBe(false);
-  // The real submodules keep working: commit, branch, tag and a branch named like the protected files, in the main checkout's and the worktree's submodule.
+  // The real submodules are not planted over, and since #1123 their refs are refused: commit, branch, tag and a branch named like the protected files all fail with the cause in the output.
   const ok = await sandboxedExec(["/bin/sh", "-c", [
     `git -C s ${ident.join(" ")} commit -qm in-sub --allow-empty && echo committed-in-sub`, "git -C s branch fix/config && echo branched-config-in-sub", "git -C s tag hooks && echo tagged-hooks-in-sub",
-    "git -C s checkout -qb feature/logs/x && echo checkout-logs-in-sub", "git branch fix/refs && echo branched-refs",
+    "git -C s checkout -qb feature/logs/x && echo checkout-logs-in-sub", "git branch fix/refs && echo branched-refs || echo blocked-branch-refs",
   ].join("; ")], { cwd, profile: profile(cwd, false) });
-  for (const expected of ["committed-in-sub", "branched-config-in-sub", "tagged-hooks-in-sub", "checkout-logs-in-sub", "branched-refs"]) expect(ok.output).toContain(expected);
+  expect(ok.output).toContain("blocked-branch-refs");
+  for (const forbidden of ["committed-in-sub", "branched-config-in-sub", "tagged-hooks-in-sub", "checkout-logs-in-sub", "branched-refs"]) expect(ok.output).not.toContain(forbidden); // #1123: a submodule's refs are refused like the project's
 });
 
 test.skipIf(!sandboxAvailable())("a submodule whose own name is refs or logs is a real git dir: it is protected and still works (#520)", async () => {
@@ -655,7 +677,9 @@ test.skipIf(!sandboxAvailable())("a submodule whose own name is refs or logs is 
     `git -C refs ${ident.join(" ")} commit -qm in-refs --allow-empty && echo committed-in-refs`, `git -C logs ${ident.join(" ")} commit -qm in-logs --allow-empty && echo committed-in-logs`,
     "git -C refs branch fix/x && echo branched-in-refs",
   ].join("; ")], { cwd: main, profile: profile(main, false) });
-  for (const expected of ["blocked-refs-config", "blocked-logs-hook", "committed-in-refs", "committed-in-logs", "branched-in-refs"]) expect(out.output).toContain(expected);
+  for (const expected of ["blocked-refs-config", "blocked-logs-hook"]) expect(out.output).toContain(expected);
+  // #1123: a submodule really named refs or logs is a real git dir, and its own refs are refused like any other's.
+  for (const forbidden of ["committed-in-refs", "committed-in-logs", "branched-in-refs"]) expect(out.output).not.toContain(forbidden);
   expect(out.output).not.toMatch(/WROTE-/);
 });
 
@@ -674,13 +698,14 @@ test.skipIf(!sandboxAvailable())("a checkout under a directory named hooks keeps
   expect(git(["-C", cwd, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
   const own = join(main, ".git", "worktrees", "wt");
   const out = await sandboxedExec(["/bin/sh", "-c", [
-    `git -C s ${ident.join(" ")} commit -qm in-sub --allow-empty && echo committed-in-sub`, "git -C s branch fix/x && echo branched-in-sub", `git ${ident.join(" ")} commit -qm in-wt --allow-empty && echo committed-in-wt`,
+    `git -C s ${ident.join(" ")} commit -qm in-sub --allow-empty && echo committed-in-sub`, "git -C s branch fix/x && echo branched-in-sub", `git ${ident.join(" ")} commit -qm in-wt --allow-empty && echo committed-in-wt || echo blocked-commit-in-wt`,
     // Its own hooks and the submodule's config are still refused.
     `(mkdir -p '${own}/hooks' && echo x > '${own}/hooks/pre-commit') 2>/dev/null && echo WROTE-WT-HOOK || echo blocked-wt-hook`,
     `(echo x >> '${own}/modules/s/config') 2>/dev/null && echo WROTE-SUB-CONFIG || echo blocked-sub-config`,
     `(mkdir -p '${own}/modules/s/hooks' && echo x > '${own}/modules/s/hooks/pre-commit') 2>/dev/null && echo WROTE-SUB-HOOK || echo blocked-sub-hook`,
   ].join("; ")], { cwd, profile: profile(cwd, false) });
-  for (const expected of ["committed-in-sub", "branched-in-sub", "committed-in-wt", "blocked-wt-hook", "blocked-sub-config", "blocked-sub-hook"]) expect(out.output).toContain(expected);
+  for (const expected of ["blocked-commit-in-wt", "blocked-wt-hook", "blocked-sub-config", "blocked-sub-hook"]) expect(out.output).toContain(expected); // #1123: the worktree's own commit needs its admin dir and refs
+  for (const forbidden of ["committed-in-sub", "branched-in-sub"]) expect(out.output).not.toContain(forbidden); // and its submodule's refs are refused too
   expect(out.output).not.toMatch(/WROTE-/);
 });
 
@@ -707,7 +732,8 @@ test.skipIf(!sandboxAvailable())("a submodule of a submodule: its git dir is pro
     `(echo x >> '${deepGit}/config') 2>/dev/null && echo WROTE-NESTED-CONFIG || echo blocked-nested-config`,
     `(mkdir -p '${deepGit}/hooks' && echo x > '${deepGit}/hooks/pre-commit') 2>/dev/null && echo WROTE-NESTED-HOOK || echo blocked-nested-hook`,
   ].join("; ")], { cwd: main, profile: profile(main, false) });
-  for (const expected of ["committed-nested", "branched-nested", "gc-nested", "status-recursive", "blocked-nested-plant", "blocked-nested-config", "blocked-nested-hook"]) expect(out.output).toContain(expected);
+  for (const expected of ["gc-nested", "status-recursive", "blocked-nested-plant", "blocked-nested-config", "blocked-nested-hook"]) expect(out.output).toContain(expected);
+  for (const forbidden of ["committed-nested", "branched-nested"]) expect(out.output).not.toContain(forbidden); // #1123: a nested submodule's refs are refused too
   expect(out.output).not.toMatch(/WROTE-/);
   expect(readFileSync(join(deepGit, "config"), "utf8")).toBe(before);
   expect(existsSync(join(common, "modules", "sub", "modules", "refs"))).toBe(false);
@@ -756,9 +782,10 @@ test.skipIf(!sandboxAvailable())("inside a discovered submodule git dir, every d
     await sandboxedExec(["/bin/sh", "-c", `(${command(target)}) 2>/dev/null; echo done`], { cwd: main, profile: profile(main, false) });
     if (!existsSync(target) || lstatSync(target).ino !== inode || lstatSync(target).isSymbolicLink()) return expect(`${entry}: ${label}`).toBe("nothing slipped");
   }
-  // Ordinary work in the submodule and its linked worktree still runs.
-  const ok = await sandboxedExec(["/bin/sh", "-c", [`git -C s ${ident.join(" ")} commit -qm in-sub --allow-empty && echo committed-in-sub`, `git -C '${linked}' ${ident.join(" ")} commit -qm in-linked --allow-empty && echo committed-in-linked`, "git -C s branch fix/x && echo branched"].join("; ")], { cwd: main, profile: profile(main, false) });
-  for (const expected of ["committed-in-sub", "branched"]) expect(ok.output).toContain(expected);
+  // #1123: an ordinary read still works in the submodule, and a commit or branch in it or in its linked worktree is refused. The linked worktree sits beside the project, outside the sandbox's read roots ("Unable to read current working directory"), so only the submodule's read is asserted.
+  const ok = await sandboxedExec(["/bin/sh", "-c", [`git -C s ${ident.join(" ")} commit -qm in-sub --allow-empty && echo committed-in-sub`, `git -C '${linked}' ${ident.join(" ")} commit -qm in-linked --allow-empty && echo committed-in-linked`, "git -C s branch fix/x && echo branched", "git -C s status --short >/dev/null && echo sub-status-ok"].join("; ")], { cwd: main, profile: profile(main, false) });
+  expect(ok.output).toContain("sub-status-ok");
+  for (const forbidden of ["committed-in-sub", "committed-in-linked", "branched"]) expect(ok.output).not.toContain(forbidden);
 }, 60_000);
 
 test.skipIf(!sandboxAvailable())("a submodule's linked worktree has its own modules tree: it is protected like any other, present or not yet created, and ordinary work in it runs (#520 review)", async () => {
@@ -797,12 +824,13 @@ test.skipIf(!sandboxAvailable())("a submodule's linked worktree has its own modu
       || existsSync(join(dir, "worktrees", "later", "modules")) || !existsSync(join(wtGit, "modules")) || existsSync(join(wtGit, "m-away")) || existsSync(join(wtGit, "away"))) { slipped.push(label); break; }
   }
   expect(slipped).toEqual([]);
-  // The real thing keeps working: commit, branch and tag in the linked worktree's own submodule, and in the linked worktree.
+  // #1123: a commit or branch in the linked worktree's own submodule, or in the linked worktree, is refused; a read still works.
   const ok = await sandboxedExec(["/bin/sh", "-c", [
     `git -C '${linked}/in' ${ident.join(" ")} commit -qm in-inner --allow-empty && echo committed-in-inner`, `git -C '${linked}/in' branch fix/config && echo branched-in-inner`, `git -C '${linked}' ${ident.join(" ")} commit -qm in-wt --allow-empty && echo committed-in-wt`,
     `git -C '${linked}' status --short >/dev/null && echo status-ok`,
   ].join("; ")], { cwd: main, profile: profile(main, false) });
-  for (const expected of ["committed-in-inner", "branched-in-inner", "committed-in-wt", "status-ok"]) expect(ok.output).toContain(expected);
+  expect(ok.output).toContain("status-ok");
+  for (const forbidden of ["committed-in-inner", "branched-in-inner", "committed-in-wt"]) expect(ok.output).not.toContain(forbidden);
 }, 60_000);
 
 test("no regex literal that folds a name carries the git path, so a long path cannot push one over SBPL's 1024-byte limit (#518 review)", () => {
@@ -846,9 +874,10 @@ test.skipIf(!sandboxAvailable())("a linked worktree with a submodule under a ~48
     `(echo x > '${own}/config.worktree') 2>/dev/null && echo WROTE-CW || echo blocked-cw`,
     `(mv '${own}/modules/s' '${own}/modules/away') 2>/dev/null && echo WROTE-RENAME || echo blocked-rename`,
     "echo hi > ok.txt && echo wrote-file",
-    "git branch fix/config && echo branched",
+    "git branch fix/config && echo branched || echo blocked-branch",
   ].join("; ")], { cwd, profile: profile(cwd, false) });
-  for (const expected of ["started", "blocked-sub-config", "blocked-cw", "blocked-rename", "wrote-file", "branched"]) expect(out.output).toContain(expected);
+  for (const expected of ["started", "blocked-sub-config", "blocked-cw", "blocked-rename", "wrote-file", "blocked-branch"]) expect(out.output).toContain(expected); // #1123: refused, and the ~480-byte path did not break the profile
+  expect(out.output).not.toContain("branched");
   expect(out.output).not.toContain("Error reading string"); expect(out.output).not.toMatch(/WROTE-/);
 });
 

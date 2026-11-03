@@ -117,7 +117,7 @@ export const TOOL_SCHEMAS = [
   fn("write", "Create or overwrite a file inside the project. Needs the user's approval.", { path: str, content: str }, ["path", "content"]),
   fn("edit", "Replace one exact, unique occurrence of `old` with `new` in a file. Needs the user's approval.", { path: str, old: str, new: str }, ["path", "old", "new"]),
   fn("bash", "Run a shell command in the project directory, sandboxed: no writes outside the project, no credential reads, no network unless the hub enables it. Follows hub permission policy: proven bounded read-only commands may run automatically in ask-when-needed; other commands ask.", { command: str, timeout_s: { type: "integer", minimum: 1, maximum: 600 } }, ["command"]),
-  fn("git", "Run git in the project. status, diff, log, show, ls-files, blame, rev-parse run freely; add, commit, restore, checkout, switch, stash, mv, rm, branch, merge, rebase, cherry-pick, revert, tag need approval; everything else (push, fetch, config, remote ...) is refused.", { args: { type: "array", items: str, minItems: 1 } }, ["args"]),
+  fn("git", "Run git in the project. status, diff, log, show, ls-files, blame, rev-parse run freely; add, commit, restore, checkout, switch, stash, mv, rm, branch, merge, rebase, cherry-pick, revert, tag need approval; everything else (push, fetch, config, remote ...) is refused. The sandbox does not let you move a branch, tag or HEAD anywhere (commit, branch, tag, stash, switch, merge, rebase and reset fail, submodules included), nor stage with add inside a linked worktree: edit files, and the hub commits and pushes them when you call hub_task_done.", { args: { type: "array", items: str, minItems: 1 } }, ["args"]),
   fn("hub_send", "Send a message to the other agents now, before your turn ends. Conclusions only. Your final answer is shared anyway; use this for something that cannot wait.", { text: str, to: { type: "array", items: str } }, ["text"]),
 ];
 
@@ -235,7 +235,9 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         // Sandboxed like bash: flags such as --output or an editor cannot write outside the project or reach the network.
         const res = await sandboxedExec(["git", "--no-pager", ...args], { cwd: ctx.cwd, profile: ctx.sandboxProfile, readOnlyData: !!ctx.readOnly?.length, ...(ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
         try { ctx.onProcessExit?.(res.code); } catch { /* optional status observer never changes a tool result */ }
-        return `${res.output}\n(exit ${res.code})`;
+        // #1123: the profile refuses writes to refs, HEAD, packed-refs and a linked worktree's admin dir, so a commit, branch, tag, stash or switch cannot succeed here. Say so, with the next step.
+        const refused = res.code !== 0 && /(?:\.git\/(?:refs|HEAD|packed-refs|worktrees)\b|cannot lock ref|index\.lock)[^\n]*(?:Operation not permitted|not permitted)/i.test(res.output);
+        return `${res.output}${refused ? "\nnote: the sandbox does not let you move a branch, tag or HEAD, or stage inside a linked worktree (#1123). Leave your edits in the working tree and finish with hub_task_done: the hub stages, commits and pushes them for you." : ""}\n(exit ${res.code})`;
       }
       case "doc_read": {
         if (!ctx.docRead) return "error: doc_read is not enabled for this project (local.doc_read in .agenthub/config.local.json)";

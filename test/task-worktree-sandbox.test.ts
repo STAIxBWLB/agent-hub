@@ -57,15 +57,18 @@ test.skipIf(!sandboxAvailable())("#1115 under the real sandbox profile the peer 
   expect(f.git(f.root, "rev-parse", "main")).toBe(f.base);
 });
 
-test.skipIf(!sandboxAvailable())("#1115 what the profile still lets a sandboxed command write under .git is refused at commit time, never trusted: a moved ref and a moved HEAD", async () => {
+test.skipIf(!sandboxAvailable())("#1115 a moved ref and a moved HEAD are refused at commit time, never trusted, whoever moved them (the profile refuses a sandboxed command from doing it since #1123)", async () => {
   const f = fixture();
   const made = f.worktrees.create({ peer: "pi", task: 7 }); if (!made.ok) throw new Error(made.reason);
   const text = profile(f.root, false), admin = f.git(made.path, "rev-parse", "--absolute-git-dir");
   writeFileSync(join(made.path, "a.txt"), "edit\n");
-  // The real profile allows these writes (it did before this feature: #864 closes config, hooks, commondir and packs, not refs or a worktree's HEAD).
+  // Since #1123 the real profile refuses these writes, so a sandboxed command cannot plant them. The hub's check must still hold without that profile (a same-user process, or a rule loosened later), so the test plants them itself.
   const planted = join(f.root, ".git/refs/heads/planted");
-  expect(await sh(f.root, text, `echo ${"1".repeat(40)} > '${planted}' && echo REF-WRITTEN`)).toBe("REF-WRITTEN");
-  expect(await sh(f.root, text, `echo 'ref: refs/heads/main' > '${join(admin, "HEAD")}' && echo HEAD-WRITTEN`)).toBe("HEAD-WRITTEN");
+  expect(await sh(f.root, text, `echo ${"1".repeat(40)} > '${planted}'; echo done`)).toContain("Operation not permitted");
+  expect(await sh(f.root, text, `echo 'ref: refs/heads/main' > '${join(admin, "HEAD")}'; echo done`)).toContain("Operation not permitted");
+  expect(existsSync(planted)).toBe(false);
+  writeFileSync(planted, `${"1".repeat(40)}\n`);
+  writeFileSync(join(admin, "HEAD"), "ref: refs/heads/main\n");
   const reason = await f.worktrees.commitAndPush({ peer: "pi", task: 7, title: "t" }).then(result => result.ok ? "" : result.reason);
   expect(reason).toContain("no longer on task/7-pi");
   expect(f.git(f.root, "rev-parse", "main")).toBe(f.base);

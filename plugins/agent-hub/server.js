@@ -6258,6 +6258,28 @@ var init_path_policy = __esm(() => {
 
 // src/local/deny.ts
 import { basename as basename4, dirname as dirname8 } from "path";
+function gitRefRules(gitDirs, subDirs = []) {
+  const git = hfsFoldedName(".git");
+  const re = (s) => `(regex ${sbplString(s)})`;
+  const name = (n) => hfsFoldedName(n);
+  const plainSub = `(require-not ${re(`^.*/${git}/worktrees/[^/]+/modules(/|$)`)})`;
+  const plain = [
+    re(`^.*/${git}/${name("HEAD")}(\\.lock)?$`),
+    re(`^.*/${git}/${name("refs")}(/|$)`),
+    re(`^.*/${git}/${name("packed")}`),
+    `(require-all ${re(`^.*/${git}/${name("work")}`)} ${re(`^.*${name("trees")}(/|$)`)} ${plainSub})`
+  ];
+  const external = [...gitDirs, ...subDirs].flatMap((d) => {
+    const own = sbplString(d), direct = re(`^${sbplEscape(d)}/[^/]+$`);
+    return [
+      `(require-all ${direct} ${re(`^.*/${name("HEAD")}(\\.lock)?$`)})`,
+      `(require-all ${direct} ${re(`^.*/${name("packed")}`)})`,
+      `(require-all (subpath ${own}) ${re(refUnder(d, "refs"))})`,
+      `(require-all (subpath ${own}) ${re(refUnder(d, "worktrees"))} (require-not ${re(`^${sbplEscape(d)}/worktrees/[^/]+/modules(/|$)`)}))`
+    ];
+  });
+  return [...plain, ...external];
+}
 function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
   const git = hfsFoldedName(".git");
   const re = (s) => `(regex ${sbplString(s)})`;
@@ -6311,6 +6333,7 @@ function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
     `(require-all ${re(`^.*/${git}/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
     re(`^.*/${git}/${hfsFoldedName("hooks")}(/|$)`),
     `(require-all ${re(`^.*/${git}/.*$`)} ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
+    ...gitRefRules(gitDirs, allDirs),
     ...modules,
     ...siblings,
     ...external
@@ -6339,6 +6362,9 @@ function denyRegexes(root, extra = [], withNames = true) {
 var sbplEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), sbplString = (s) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`, HFS_IGNORABLE_POINTS, HFS_IGNORABLE, hfsFoldedName = (name) => `${HFS_IGNORABLE}*${[...name].map((c) => sbplEscape(c)).join(`${HFS_IGNORABLE}*`)}${HFS_IGNORABLE}*`, CONFIG_WORKTREE_NAME, MAX_ANCHOR_DEPTH = 80, hooksUnder = (parent) => {
   const depth = parent.split("/").filter(Boolean).length;
   return depth > MAX_ANCHOR_DEPTH ? `^.*/${hfsFoldedName("hooks")}(/|$)` : `^${"/[^/]+".repeat(depth)}/${hfsFoldedName("hooks")}(/|$)`;
+}, refDepth = (d) => d.split("/").filter(Boolean).length, refUnder = (d, name) => {
+  const depth = refDepth(d), cost = Buffer.byteLength(hfsFoldedName(name)) + depth * 6 + 8;
+  return cost > 1000 ? `^.*/${hfsFoldedName(name)}(/|$)` : `^${"/[^/]+".repeat(depth)}/${hfsFoldedName(name)}(/|$)`;
 };
 var init_deny = __esm(() => {
   init_platform();
@@ -7073,7 +7099,9 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
         try {
           ctx.onProcessExit?.(res.code);
         } catch {}
-        return `${res.output}
+        const refused = res.code !== 0 && /(?:\.git\/(?:refs|HEAD|packed-refs|worktrees)\b|cannot lock ref|index\.lock)[^\n]*(?:Operation not permitted|not permitted)/i.test(res.output);
+        return `${res.output}${refused ? `
+note: the sandbox does not let you move a branch, tag or HEAD, or stage inside a linked worktree (#1123). Leave your edits in the working tree and finish with hub_task_done: the hub stages, commits and pushes them for you.` : ""}
 (exit ${res.code})`;
       }
       case "doc_read": {
@@ -7126,7 +7154,7 @@ var init_tools = __esm(() => {
     fn("write", "Create or overwrite a file inside the project. Needs the user's approval.", { path: str, content: str }, ["path", "content"]),
     fn("edit", "Replace one exact, unique occurrence of `old` with `new` in a file. Needs the user's approval.", { path: str, old: str, new: str }, ["path", "old", "new"]),
     fn("bash", "Run a shell command in the project directory, sandboxed: no writes outside the project, no credential reads, no network unless the hub enables it. Follows hub permission policy: proven bounded read-only commands may run automatically in ask-when-needed; other commands ask.", { command: str, timeout_s: { type: "integer", minimum: 1, maximum: 600 } }, ["command"]),
-    fn("git", "Run git in the project. status, diff, log, show, ls-files, blame, rev-parse run freely; add, commit, restore, checkout, switch, stash, mv, rm, branch, merge, rebase, cherry-pick, revert, tag need approval; everything else (push, fetch, config, remote ...) is refused.", { args: { type: "array", items: str, minItems: 1 } }, ["args"]),
+    fn("git", "Run git in the project. status, diff, log, show, ls-files, blame, rev-parse run freely; add, commit, restore, checkout, switch, stash, mv, rm, branch, merge, rebase, cherry-pick, revert, tag need approval; everything else (push, fetch, config, remote ...) is refused. The sandbox does not let you move a branch, tag or HEAD anywhere (commit, branch, tag, stash, switch, merge, rebase and reset fail, submodules included), nor stage with add inside a linked worktree: edit files, and the hub commits and pushes them when you call hub_task_done.", { args: { type: "array", items: str, minItems: 1 } }, ["args"]),
     fn("hub_send", "Send a message to the other agents now, before your turn ends. Conclusions only. Your final answer is shared anyway; use this for something that cannot wait.", { text: str, to: { type: "array", items: str } }, ["text"])
   ];
   DOC_READ_SCHEMA = fn("doc_read", "Read a PDF, DOCX or HWPX document inside the project as plain text, through the converters the project configured. Returns numbered lines, bounded; read again with offset for more. Read-only.", { path: str, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } }, ["path"]);

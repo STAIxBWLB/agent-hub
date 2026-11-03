@@ -228,9 +228,12 @@ test.skipIf(!sandboxAvailable())("deny-default: bun, node and git work; outside 
     "node -e 'console.log(\"node-ok\")'",
     "bun -e 'console.log(\"bun-ok\")'",
     "bun test a.test.ts >/dev/null 2>&1 && echo bun-test-ok",
-    "git add a.test.ts && git -c user.name=t -c user.email=t@localhost -c commit.gpgsign=false commit -q -m x && git log --oneline | wc -l | tr -d ' ' && echo git-ok",
+    // #1123: `git add` and the read commands run in the sandbox; a commit moves a ref, which the profile refuses, so it is the hub's to make.
+    "git add a.test.ts && git status --short | wc -l | tr -d ' ' && echo git-ok",
+    "git -c user.name=t -c user.email=t@localhost -c commit.gpgsign=false commit -q -m x >/dev/null 2>&1 && echo COMMITTED || echo blocked-commit",
   ].join("; "));
-  for (const expected of ["node-ok", "bun-ok", "bun-test-ok", "git-ok"]) expect(tools.output).toContain(expected);
+  for (const expected of ["node-ok", "bun-ok", "bun-test-ok", "git-ok", "blocked-commit"]) expect(tools.output).toContain(expected);
+  expect(tools.output).not.toContain("COMMITTED");
   const probe = "(ls /private/var/log >/dev/null 2>&1) && echo READ-VAR-LOG || echo blocked-var-log";
   expect(Bun.spawnSync(["/bin/sh", "-c", probe]).stdout.toString()).toContain("READ-VAR-LOG"); // readable outside, so the block is the profile's
   expect((await run(probe)).output).toContain("blocked-var-log");
