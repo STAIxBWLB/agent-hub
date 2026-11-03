@@ -41,17 +41,49 @@ test("a task that needs a worktree is never routed to a sandboxed peer, and the 
 test("work that does not declare a worktree need, and a peer whose capability is unknown, are not refused (#1081)", () => {
   const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-worktree-")));
   const states = { pi: "idle", codex: "idle" } as any;
-  expect(assign({ ...task(), reserved: "pi" }, states, routing, { capabilities: caps({ worktree: false }), namedOwner: "pi" }).owner).toBe("pi");
   expect(assign({ ...task(["needs_worktree"]), reserved: "pi" }, states, routing, { capabilities: caps({}), namedOwner: "pi" }).owner).toBe("pi");
   expect(assign({ ...task(["needs_worktree"]), reserved: "pi" }, states, routing, { capabilities: caps({ worktree: true }), namedOwner: "pi" }).owner).toBe("pi");
+  // #1129: an unknown capability is still not a refusal for write-class work, and a peer that can make a worktree keeps it.
+  expect(assign({ ...task(), reserved: "pi" }, states, routing, { capabilities: caps({}), namedOwner: "pi" }).owner).toBe("pi");
+  expect(assign({ ...task(), reserved: "pi" }, states, routing, { capabilities: caps({ worktree: true }), namedOwner: "pi" }).owner).toBe("pi");
+});
+
+test("write-class work is never offered where the hub cannot make a worktree, flagged or not, and the trace names the cause (#1129 AC2)", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-worktree-")));
+  const states = { pi: "idle", codex: "idle" } as any;
+  const sandboxed = caps({ worktree: false, worktreeReason: REASON });
+  for (const cls of ["implement", "bulk_edit"] as const) {
+    for (const nomination of [{}, { namedOwner: "pi" }, { candidates: ["pi"] }]) {
+      const result = assign({ class: cls, signals: [] as any, reserved: "pi" }, states, routing, { capabilities: sandboxed, ...nomination });
+      expect(result.owner, `${cls} ${JSON.stringify(nomination)}`).not.toBe("pi");
+      expect(result.refusals?.find(row => row.peer === "pi" && row.role === "owner"), cls).toMatchObject({ code: "worktree" });
+      expect(result.trace.join("\n")).toContain("no worktree: git worktree add runs outside the sandbox");
+    }
+  }
+});
+
+test("read-only classes, and PII work, are not refused for a missing worktree (#1129 AC1, AC2)", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-worktree-")));
+  const states = { pi: "idle", codex: "idle" } as any;
+  const sandboxed = caps({ worktree: false, worktreeReason: REASON });
+  for (const cls of ["test", "summarize", "triage"] as const) {
+    const result = assign({ class: cls, signals: [] as any, reserved: "pi" }, states, routing, { capabilities: sandboxed, namedOwner: "pi" });
+    expect(result.refusals?.find(row => row.peer === "pi" && row.code === "worktree"), cls).toBeUndefined();
+  }
+  // PII work skips the capability gate, as requireCapabilities does: it stays with the on-device handling.
+  const pii = assign({ ...task(["pii_path"]), reserved: "pi" }, states, routing, { capabilities: sandboxed, namedOwner: "pi" });
+  expect(pii.refusals?.find(row => row.peer === "pi" && row.code === "worktree")).toBeUndefined();
 });
 
 test("a network need and a worktree need are independent: each refuses on its own capability (#1081)", () => {
   const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-worktree-")));
   const states = { pi: "idle", codex: "idle" } as any;
   const onlyNetwork = caps({ network: true, worktree: false, worktreeReason: REASON });
-  expect(assign({ ...task(["needs_network"]), reserved: "pi" }, states, routing, { capabilities: onlyNetwork, namedOwner: "pi" }).owner).toBe("pi");
-  expect(assign({ ...task(["needs_worktree"]), reserved: "pi" }, states, routing, { capabilities: onlyNetwork, namedOwner: "pi" }).owner).not.toBe("pi");
+  // #1129: implement work always needs the worktree now, so the network-only leg uses a class that does not write the repository.
+  const readOnly = (signals: string[]) => ({ class: "test" as const, signals: signals as any });
+  expect(assign({ ...readOnly(["needs_network"]), reserved: "pi" }, states, routing, { capabilities: onlyNetwork, namedOwner: "pi" }).owner).toBe("pi");
+  expect(assign({ ...readOnly(["needs_worktree"]), reserved: "pi" }, states, routing, { capabilities: onlyNetwork, namedOwner: "pi" }).owner).not.toBe("pi");
+  expect(assign({ ...task(["needs_network"]), reserved: "pi" }, states, routing, { capabilities: caps({ network: true, worktree: true }), namedOwner: "pi" }).owner).toBe("pi");
   const both = assign({ ...task(["needs_network", "needs_worktree"]), reserved: "pi" }, states, routing, { capabilities: caps({ network: false, networkReason: "n", worktree: false, worktreeReason: REASON }), namedOwner: "pi" });
   expect(both.owner).not.toBe("pi");
 });
@@ -136,10 +168,18 @@ test("the console user accepting on a sandboxed owner's behalf is held to the ow
   expect(failure).toBeInstanceOf(PreEffectToolRefusal);
   expect((failure as Error).message).toContain("pi cannot create one");
   expect(JSON.stringify(board.get(row.id))).toBe(before);
-  // the same console acceptance of ordinary work still goes through
-  const plain = board.propose("user", { title: "console accept ordinary work", class: "implement" });
+  // the same console acceptance of work that does not write the repository still goes through (#1129: an unflagged implement task would be refused too)
+  const plain = board.propose("user", { title: "console accept ordinary work", class: "summarize" });
   board.update(plain.id, "user", "assigned", { owner: "pi" });
   expect(() => tasks.accept("user", plain.id)).not.toThrow();
+  const unflagged = board.propose("user", { title: "console accept unflagged implement work", class: "implement" });
+  board.update(unflagged.id, "user", "assigned", { owner: "pi" });
+  let wrote: unknown;
+  try { tasks.accept("user", unflagged.id); } catch (error) { wrote = error; }
+  expect(wrote).toBeInstanceOf(PreEffectToolRefusal);
+  expect((wrote as Error).message).toContain("changes the repository, so the hub must make its git worktree and commit for it");
+  expect((wrote as Error).message).toContain("pi cannot create one");
+  expect(board.get(unflagged.id)!.state).toBe("proposed");
 });
 
 test("the console user accepting network work for a network-less owner is refused too (#1081)", async () => {
@@ -163,12 +203,16 @@ test("the console user accepting network work for a network-less owner is refuse
   expect(JSON.stringify(board.get(row.id))).toBe(before);
 });
 
-test("accept of ordinary work is unaffected by a sandboxed peer (#1081)", async () => {
+test("accept of work that does not write the repository is unaffected by a sandboxed peer, and write-class work by a peer that cannot get a worktree is refused (#1081, #1129)", async () => {
   const { board, tasks } = await rig(false);
-  const row = board.propose("user", { title: "rename a helper", class: "implement" });
+  const row = board.propose("user", { title: "summarize the log", class: "summarize" });
   board.update(row.id, "user", "assigned", { owner: "pi" });
   expect(() => tasks.accept("pi", row.id)).not.toThrow();
   expect(board.get(row.id)!.state).toBe("in_progress");
+  const write = board.propose("user", { title: "rename a helper", class: "implement" });
+  board.update(write.id, "user", "assigned", { owner: "pi" });
+  expect(() => tasks.accept("pi", write.id)).toThrow("changes the repository");
+  expect(board.get(write.id)!.state).toBe("proposed");
 });
 
 test("route explain for a worktree task names the sandboxed peer and why, and #1115 for the way out (#1081 AC1)", async () => {
@@ -178,6 +222,10 @@ test("route explain for a worktree task names the sandboxed peer and why, and #1
   expect(text).toContain("signals: needs_worktree");
   expect(text).toContain("pi: skipped, no worktree: git worktree add runs outside the sandbox");
   expect(board.get(made.id)!.owner).not.toBe("pi");
-  const plain = await tasks.propose("user", { title: "rename a helper", class: "implement" });
+  const plain = await tasks.propose("user", { title: "summarize the log", class: "summarize" });
   expect(tasks.publicExplain(plain.id).join("\n")).not.toContain("no worktree");
+  // #1129: write-class work is explained the same way without the flag.
+  const unflagged = await tasks.propose("user", { title: "rename a helper", class: "implement" });
+  expect(tasks.publicExplain(unflagged.id).join("\n")).toContain("pi: skipped, no worktree: git worktree add runs outside the sandbox");
+  expect(board.get(unflagged.id)!.owner).not.toBe("pi");
 });

@@ -208,6 +208,9 @@ test.skipIf(!sandboxAvailable())("the local git tool says why a refused commit f
   const ctx = { cwd: f.wt, deny: [] as string[], sandboxProfile: profile(f.wt, false), sandboxEnv: { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t.invalid" }, permit: async () => true as const, send: () => "sent" };
   const commit = await runTool("git", JSON.stringify({ args: ["commit", "-am", "x"] }), ctx);
   expect(commit).toContain("not permitted"); expect(commit).toContain("hub_task_done"); expect(commit).toContain("stages, commits and pushes");
+  // F-ref-hint-overpromises (#1130 review): the hub commits only write-class work, so the hint must not promise a commit for work that changes no files or for a private task.
+  expect(commit).toContain("For implementation work the hub stages, commits and pushes them");
+  expect(commit).toContain("nothing for it to commit"); expect(commit).toContain("do not try to commit it yourself");
   expect(f.git(f.root, "rev-parse", "refs/heads/task/1-pi")).toBe(f.base);
   const unrelated = await runTool("git", JSON.stringify({ args: ["show", "no-such-ref"] }), ctx);
   expect(unrelated).toContain("(exit"); expect(unrelated).not.toContain("hub_task_done");

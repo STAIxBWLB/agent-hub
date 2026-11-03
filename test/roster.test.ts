@@ -584,6 +584,10 @@ test("recovery commit and release preserve an off-roster peer's retained work fo
 test("daemon escalation, idle sweep and digest routing skip an off-roster candidate (#315)", async () => {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-roster-sweep-"))), previous = process.env.AGENTHUB_HOME;
   process.env.AGENTHUB_HOME = join(root, "home"); mkdirSync(join(root, ".agenthub"));
+  // #1129: `local` is hub-sandboxed, so implement work is offered to it only where the hub can make a worktree: a repository with a first commit.
+  for (const args of [["init", "-q"], ["-c", "user.name=f", "-c", "user.email=f@f.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "base"]]) {
+    if (hubGitSync(["-C", root, ...args], { encoding: "utf8" }).status) throw new Error("fixture git failed");
+  }
   const roles = { claude: ["implementer", "reviewer"], codex: ["implementer"], kimi: ["implementer"], local: ["implementer"] };
   writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ roles }));
   writeFileSync(join(root, ".agenthub/routing.toml"), '[local]\nfixed_model = "dgx/coding"\n[classes.implement]\npeers = ["claude", "kimi", "codex", "local"]\nescalate_to = ["kimi", "local"]\nlocal_allowed = true\n');

@@ -55,11 +55,13 @@ function requireFakePiCommand(config: typeof DEFAULT_CONFIG): void {
   }
 }
 
-async function hub(config = DEFAULT_CONFIG, unattended = false, extra: { repo?: string; boundedTools?: DaemonOptions["boundedTools"] } = {}) {
+async function hub(config = DEFAULT_CONFIG, unattended = false, extra: { repo?: string; commit?: boolean; boundedTools?: DaemonOptions["boundedTools"] } = {}) {
   requireFakePiCommand(config);
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-pi-daemon-"));
-  if (extra.repo) {
-    for (const args of [["init", "-q"], ["remote", "add", "origin", `https://github.com/${extra.repo}.git`]]) {
+  // #1129: write-class work for Pi needs the hub's task worktree, so a test that accepts such work as Pi needs a repository with a first commit (`commit: true`).
+  if (extra.repo || extra.commit) {
+    const steps = [["init", "-q"], ...(extra.repo ? [["remote", "add", "origin", `https://github.com/${extra.repo}.git`]] : []), ...(extra.commit ? [["-c", "user.name=f", "-c", "user.email=f@f.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "base"]] : [])];
+    for (const args of steps) {
       if (hubGitSync(["-C", stateDir, ...args], { encoding: "utf8" }).status) throw new Error("fixture git failed");
     }
   }
@@ -517,7 +519,7 @@ test("Pi task authority and state refusals return their exact errors as done rec
 test("a Pi accept failure after its board write remains uncertain and pending, without repeating the effect (#254)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-postwrite-daemon-"));
   const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
-  const { stateDir, daemon, console_ } = await hub(config);
+  const { stateDir, daemon, console_ } = await hub(config, false, { commit: true });
   const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
   const task = board.propose("claude", { title: "Pi implementation", class: "implement" });
   board.update(task.id, "hub", "assigned", { owner: "pi" });

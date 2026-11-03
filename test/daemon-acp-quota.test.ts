@@ -1,4 +1,5 @@
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
+import { gitProject } from "./fakes/git-project.ts";
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -37,6 +38,7 @@ class Implementer extends BasePeer {
 async function fixture(args: string[] = [], recordProtocol = false, routingOptions: { implementPeers?: string[]; roster?: { codex: boolean }; wipLimits?: Record<string, number> } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-acp-quota-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  gitProject(dir); // #1129: implement work is offered to a hub-sandboxed peer only where the hub can make its worktree
   mkdirSync(join(dir, ".agenthub"));
   const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8")
     .replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"')

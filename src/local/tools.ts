@@ -237,7 +237,7 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         try { ctx.onProcessExit?.(res.code); } catch { /* optional status observer never changes a tool result */ }
         // #1123: the profile refuses writes to refs, HEAD, packed-refs and a linked worktree's admin dir, so a commit, branch, tag, stash or switch cannot succeed here. Say so, with the next step.
         const refused = res.code !== 0 && /(?:\.git\/(?:refs|HEAD|packed-refs|worktrees)\b|cannot lock ref|index\.lock)[^\n]*(?:Operation not permitted|not permitted)/i.test(res.output);
-        return `${res.output}${refused ? "\nnote: the sandbox does not let you move a branch, tag or HEAD, or stage inside a linked worktree (#1123). Leave your edits in the working tree and finish with hub_task_done: the hub stages, commits and pushes them for you." : ""}\n(exit ${res.code})`;
+        return `${res.output}${refused ? "\nnote: the sandbox does not let you move a branch, tag or HEAD, or stage inside a linked worktree (#1123). Leave your edits in the working tree and finish with hub_task_done. For implementation work the hub stages, commits and pushes them for you; for work that changes no files, or a private task, there is nothing for it to commit, so do not try to commit it yourself." : ""}\n(exit ${res.code})`;
       }
       case "doc_read": {
         if (!ctx.docRead) return "error: doc_read is not enabled for this project (local.doc_read in .agenthub/config.local.json)";
