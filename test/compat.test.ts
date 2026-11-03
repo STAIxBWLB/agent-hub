@@ -338,7 +338,7 @@ test("every COMPAT entry names a receipt that exists and has a watcher source, s
   }
   // The receipt to repeat is the newest one for each of the three #843 AC5 CLIs.
   expect(COMPAT.jcode.receipt).toBe("docs/verification/2026-10-26-jcode-0.99.1.md");
-  expect(COMPAT.agy.receipt).toBe("docs/verification/2026-10-26-agy-1.4.7.md");
+  expect(COMPAT.agy.receipt).toBe("docs/verification/2026-11-03-agy-1.4.12-launcher-nonce.md");
   expect(COMPAT.pi.receipt).toBe("docs/verification/2026-10-26-pi-140-compat.md");
 });
 
