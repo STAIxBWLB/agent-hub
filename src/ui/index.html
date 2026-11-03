@@ -1935,16 +1935,16 @@ function officeClip(text, max) {
 }
 let officeClipSerial = 0;
 let officeMeasureContext;
-function officeTextWidth(value, monospace) {
+function officeTextWidth(value, monospace, size = OFFICE_SCALE, weight = '') {
   if (officeMeasureContext === undefined) {
     try { officeMeasureContext = document.createElement('canvas').getContext?.('2d') || null; } catch { officeMeasureContext = null; }
   }
   if (officeMeasureContext) {
-    officeMeasureContext.font = OFFICE_SCALE + 'px ' + (monospace ? 'ui-monospace,monospace' : 'system-ui,sans-serif');
+    officeMeasureContext.font = (weight ? weight + ' ' : '') + size + 'px ' + (monospace ? 'ui-monospace,monospace' : 'system-ui,sans-serif');
     return officeMeasureContext.measureText(value).width;
   }
   // Non-browser fixtures or unavailable canvas: conservative glyph widths; clipPath is the hard boundary.
-  return [...value].reduce((width, char) => width + (!/^[ -~]$/.test(char) ? 1 : monospace ? 0.6 : /[MW@#%]/.test(char) ? 0.9 : /[ilI., ']/.test(char) ? 0.3 : 0.55), 0) * OFFICE_SCALE;
+  return [...value].reduce((width, char) => width + (!/^[ -~]$/.test(char) ? 1 : monospace ? 0.6 : /[MW@#%]/.test(char) ? 0.9 : /[ilI., ']/.test(char) ? 0.3 : 0.55), 0) * size;
 }
 function officeCardLabel(card, width) {
   const prefix = '#' + card.id, rest = String(card.label).slice(prefix.length);
@@ -2117,7 +2117,10 @@ function officeRoomPaint(node, room) {
 function officeDockPaint(node,dock) {
   officePlace(node,dock.x,dock.y,true);node.setAttribute('class','office-release-dock');node.setAttribute('aria-label','Release '+dock.ordinal+': '+dock.name+', '+dock.state+', '+dock.approved+' / '+dock.scope+' approved'+(dock.cut?', cut '+dock.cut:''));
   const iso=officeProjection==='iso',at=iso?officeIsoLocal(dock.w/2,7):[1,5],x=at[0],y=at[1],align=iso?'middle':'start';
-  node.replaceChildren(officeTile(dock.w,dock.h,'office-room'),officeNode('text',{x,y,'text-anchor':align,class:'office-room-title'},'R'+dock.ordinal+' '+officeClip(dock.name,24)),officeNode('text',{x,y:y+1.5,'text-anchor':align,class:'office-meta'},dock.state+' · '+dock.approved+' / '+dock.scope),officeNode('rect',{x:iso?x-5:1,y:y+2.3,width:10,height:0.3,class:'office-count-pill'}),officeNode('rect',{x:iso?x-5:1,y:y+2.3,width:10*dock.ratio,height:0.3,class:'office-dock-progress'}));
+  const full='R'+dock.ordinal+' '+dock.name,width=dock.w-2,chars=[...full],measure=value=>officeTextWidth(value,false,13,'600');let title=full;
+  if(measure(title)>width*OFFICE_SCALE){let low=0,high=chars.length;while(low<high){const mid=Math.ceil((low+high)/2);if(measure(chars.slice(0,mid).join('')+'...')<=width*OFFICE_SCALE)low=mid;else high=mid-1;}title=chars.slice(0,low).join('').trimEnd()+'...';}
+  const clipId=node.dataset.officeDockClipId || (node.dataset.officeDockClipId='office-dock-clip-'+(++officeClipSerial)),clip=officeNode('clipPath',{id:clipId,clipPathUnits:'userSpaceOnUse'});clip.append(officeNode('rect',{x:iso?x-width/2:x,y:y-1.15,width,height:1.5}));
+  node.replaceChildren(officeTile(dock.w,dock.h,'office-room'),officeNode('title',{},full),clip,officeNode('text',{x,y,'text-anchor':align,class:'office-room-title office-dock-title','clip-path':'url(#'+clipId+')'},title),officeNode('text',{x,y:y+1.5,'text-anchor':align,class:'office-meta'},dock.state+' · '+dock.approved+' / '+dock.scope),officeNode('rect',{x:iso?x-5:1,y:y+2.3,width:10,height:0.3,class:'office-count-pill'}),officeNode('rect',{x:iso?x-5:1,y:y+2.3,width:10*dock.ratio,height:0.3,class:'office-dock-progress'}));
   if(dock.cut)node.append(officeNode('text',{x,y:y+4,'text-anchor':align,class:'office-meta'},'Cut '+dock.cut));
 }
 let officeScene = null;

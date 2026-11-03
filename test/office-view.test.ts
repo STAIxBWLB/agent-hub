@@ -1049,3 +1049,38 @@ test("phase 5 backlog overflow clears an expanded Work or Done column before sho
     expect(f.get("tasks").text()).toContain("Backlog overflow 11");
   }
 });
+
+test("phase 5 dock titles measure long CJK and wide glyph names inside a hard SVG bound in both projections", () => {
+  const names = ["한국어릴리스이름이매우길어도인접한도크영역을침범하지않아야합니다", "WWWWWWWWWWWWWWWWWWWWWWWWWWWW release"];
+  const width = (text: string, font: string) => {
+    const size = Number(/([0-9.]+)px/.exec(font)![1]);
+    return [...text].reduce((sum, char) => sum + (/^[ -~]$/.test(char) ? char === "W" ? 1.1 : 0.55 : 1), 0) * size;
+  };
+  for (const measured of [true, false]) for (const view of ["flat", "isometric"]) {
+    const f = startOfficeRuntime(() => view, measured ? width : undefined);
+    f.api.draw({ ...snapshot, releases: names.map((name, i) => ({ id: i + 1, name, state: "planning", order: i, tasks: [] })) });
+    const docks = (f.api.scene().layers.rooms as Node).findAll(hasOfficeClass("office-release-dock"));
+    expect(docks).toHaveLength(2);
+    for (const [index, dock] of docks.entries()) {
+      const title = dock.findAll(hasOfficeClass("office-dock-title"))[0]!, full = `R${index + 1} ${names[index]}`;
+      expect(dock.attrs["aria-label"]).toContain(names[index]!);
+      expect(dock.findAll(node => node.tag === "title")[0]!.textContent).toBe(full);
+      expect(title.textContent).toStartWith(`R${index + 1} `); expect(title.textContent).toEndWith("...");
+      expect(title.textContent.length).toBeLessThan(full.length);
+      const clipId = /^url\(#(.+)\)$/.exec(title.attrs["clip-path"]!)![1];
+      const bounds = dock.findAll(node => node.tag === "clipPath" && node.attrs.id === clipId)[0]!.children[0]!;
+      const x = Number(bounds.attrs.x), y = Number(bounds.attrs.y), w = Number(bounds.attrs.width), h = Number(bounds.attrs.height);
+      expect(w).toBe(20);
+      if (measured) expect(width(title.textContent, "600 13px system-ui,sans-serif")).toBeLessThanOrEqual(w * 12);
+      const textX = Number(title.attrs.x);
+      expect(x).toBeCloseTo(view === "isometric" ? textX - w / 2 : textX);
+      for (const [px, py] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) {
+        const gx = view === "isometric" ? (px! / 0.8660254 + py! / 0.5) / 2 : px!;
+        const gy = view === "isometric" ? (py! / 0.5 - px! / 0.8660254) / 2 : py!;
+        expect(gx).toBeGreaterThanOrEqual(0); expect(gx).toBeLessThanOrEqual(22);
+        expect(gy).toBeGreaterThanOrEqual(0); expect(gy).toBeLessThanOrEqual(29);
+      }
+    }
+    if (measured) expect(f.measurements.some(item => item.font === "600 13px system-ui,sans-serif")).toBe(true);
+  }
+});
