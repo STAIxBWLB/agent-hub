@@ -149,6 +149,7 @@ export function startDashboard(options: DashboardOptions) {
           return reject(403, "live-test dashboard cannot write person-attributed content; use peer tools");
         }
         if (input.action === "sdlc_queue" || input.action === "sdlc_release") server.timeout(req, 35);
+        else if (input.action === "worktrees_refresh_prs") server.timeout(req, 45); // #1057: bounded gh reads (25 s) and two git passes
         else if (input.action === "backlog_split") server.timeout(req, Math.ceil((BACKLOG_SPLIT_SCREEN_TIMEOUT_MS + HUB_DB_BUSY_TIMEOUT_MS + 5_000) / 1000) + 5);
         else if (input.action === "intake") server.timeout(req, 95); // the CLI's 90 s intake cap plus the HTTP response margin
         return json(await options.action(input, sessionOf(cookie)));

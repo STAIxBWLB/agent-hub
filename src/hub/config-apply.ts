@@ -274,7 +274,7 @@ const restart: Record<string, string> = {
   profile: "Session tool schemas and profile contracts are bound at startup", profile_overrides: "Session tool schemas and profile contracts are bound at startup",
   text_projection: "Converter and cache ownership are bound at startup", corpus: "The corpus index is bound to its roots at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
 };
-const live = new Set(["action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "pet", "specs"]);
+const live = new Set(["action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "worktrees", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "pet", "specs"]);
 const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges"]);
 /** Closed top-level schema; leaf overrides retain the existing session/runtime boundaries. */
 export function configApply(key: string, scopes: readonly ConfigIdentityScope[] = []): ApplyRule {

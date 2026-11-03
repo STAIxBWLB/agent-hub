@@ -47,6 +47,8 @@ paths:
   - src/cli/handoff-args.ts
   - src/cli/handoff-output.ts
   - src/hub/task-list-page.ts
+  - src/hub/worktree-shelf.ts
+  - src/hub/worktree-prs.ts
 ---
 
 # Task Board
@@ -92,3 +94,11 @@ Agent list reads return bounded, newest-updated compact pages built from public 
 Lifecycle policy can be off, advisory or enforced; this is separate from always-applicable role and privacy invariants. Plans, cost/check scope, review findings and external evidence retain their own typed provenance. Research campaigns and experiments likewise distinguish declared, host-observed and runner-attested facts instead of promoting prose to a signed result ([#481](https://github.com/STAIxBWLB/agent-hub/issues/481), [#932](https://github.com/STAIxBWLB/agent-hub/issues/932), [#1018](https://github.com/STAIxBWLB/agent-hub/issues/1018)). Detailed research contracts remain in the [campaign design](../specs/2026-11-01-research-campaigns-design.md).
 
 When the specs policy is enabled, covering design specs participate in proposal/accept notices and completion/review reports. Report mode informs; require mode needs an updated spec or a recorded acknowledgement for each applicable unchanged spec. Commitless and verified no-change work remains quiet, and private evidence is withheld rather than exposed to satisfy a report. These modes preserve owner choice while making design drift visible ([#1064](https://github.com/STAIxBWLB/agent-hub/issues/1064)).
+
+## Worktree shelf (#1057)
+
+The board stores facts about worktrees and never a verdict. `worktree_override` holds only a person's Park (`settled`) or Pin (`active`) per absolute path and its time; whether a worktree is settled is derived on every read by the pure `partition` from the git facts, the bound task (the open or latest task whose `refs.branch` is the worktree branch, never a PII task), the PR state and those overrides. An override counts only while no newer activity exists, and a later write removes an inert one.
+
+The PR state has two sources and no others. The board's own evidence says `merged` only through the guarded merge's record (`sdlc.merge`); a cancelled task or a task with no record says nothing about its PR and reads `unknown`. The person's explicit refresh (`worktrees_refresh_prs`, `src/hub/worktree-prs.ts`) reads the PR through `readSdlcPr`, bounded and one at a time, and keeps `open`, `merged` or `closed` with GitHub's own change time in the daemon's memory. `worktree-shelf.ts` holds no GitHub access, so a panel read, `ahub worktrees` and the inbox alert make no GitHub call.
+
+A worktree whose activity could not be read is live and never settled. The shelf reads git asynchronously under a total budget and answers `complete: false` when it is cut; the daemon's event loop is never held. The daemon deletes no worktree and no local branch: its git port allows three read argv shapes, and removal exists only in the person's own `ahub worktrees tidy --confirm`, which is console class and issues `git worktree remove` and `git branch -d`, never `--force` or `-D`. Operations: `docs/operations.md`, "The worktree shelf (#1057)".

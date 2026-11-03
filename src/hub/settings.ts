@@ -85,6 +85,9 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "specs.review", group: "Switches", label: "Covering spec review", type: "enum", values: ["off", "report", "require"], store: "config", applies: "live", risk: "safe", path: ["specs", "review"] },
   { key: "approvals.notify", group: "Switches", label: "Desktop notice for a waiting approval", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["approvals", "notify"] },
   { key: "snapshots.enabled", group: "Switches", label: "Per-turn snapshots", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["snapshots", "enabled"] },
+  // #1057: the worktree shelf. Both only choose what the shelf shows and when it raises one inbox alert; neither deletes anything, so they are safe and live.
+  { key: "worktrees.quiet_days", group: "Switches", label: "Worktrees: shelve one idle this many days (0 never)", type: "integer", min: 0, max: 3650, store: "config", applies: "live", risk: "safe", path: ["worktrees", "quiet_days"] },
+  { key: "worktrees.alert_over", group: "Switches", label: "Worktrees: inbox alert above this many settled (0 never)", type: "integer", min: 0, max: 100000, store: "config", applies: "live", risk: "safe", path: ["worktrees", "alert_over"] },
   { key: "coordination", group: "Switches", label: "Coordination of overlapping owners", type: "enum", values: ["advisory", "turn-free"], store: "config", applies: "next use", risk: "safe", path: ["coordination"] },
 ];
 

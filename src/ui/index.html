@@ -499,6 +499,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 </div>
 </div>
 </section>
+<section id="worktrees-section" aria-labelledby="worktrees-title" data-view="agents" hidden><div class="section-head"><h2 id="worktrees-title">Worktrees</h2><span id="worktrees-count" class="meta"></span></div><div id="worktrees"></div></section>
 <section aria-labelledby="bench-title" data-view="agents" hidden><div class="section-head"><h2 id="bench-title">Benchmarks</h2><span id="bench-count" class="meta"></span></div><div id="bench"></div></section>
 </div>
 </main>
@@ -1854,6 +1855,7 @@ function render(snapshot) {
     }
   });
   renderBench(snapshot.bench);
+  renderWorktrees(snapshot.worktrees);
   renderMemory(snapshot.memory);
   renderSettings(snapshot.settings, snapshot.roster);
   renderUsage(snapshot.usage, snapshot.tasks, snapshot.budget);
@@ -2369,6 +2371,49 @@ let streamFilter = '';
 function applyStreamFilter(node) { node.hidden = streamFilter !== '' && node.dataset.kind !== streamFilter; }
 function refreshStreamEmpty() { const has = $('stream').querySelector('.event:not([hidden])') !== null, any = $('stream').querySelector('.event') !== null; $('stream-empty').hidden = has || !any; }
 // #251: benchmark runs on this machine and arm comparisons per suite. Every bar carries its number as text.
+/* #1057: the worktree shelf. A panel refresh reads nothing from GitHub: the rows come from the hub's cached facts, and only the explicit 'Refresh PR states' button asks it to read PR states. Removal is never a button: the panel shows the command to run in a terminal. */
+function renderWorktrees(shelf) {
+  const live = shelf && Array.isArray(shelf.live) ? shelf.live : [], settled = shelf && Array.isArray(shelf.settled) ? shelf.settled : [];
+  const known = Boolean(shelf) && !shelf.unavailable && !shelf.pending;
+  $('worktrees-count').textContent = known ? live.length + ' live, ' + settled.length + ' settled' : '';
+  update('worktrees', shelf === undefined ? null : shelf, (target) => {
+    if (shelf === undefined) return empty(target, 'Worktrees are shown on a current snapshot.');
+    if (shelf.pending) return empty(target, 'Reading worktrees...');
+    if (shelf.unavailable) return empty(target, 'Worktrees unavailable: git could not list this project\'s worktrees, or the hub is restarting.');
+    const reasonText = {merged: 'PR merged', closed: 'PR closed', quiet: 'quiet for ' + (shelf.quietDays || 0) + '+ days', parked: 'parked by you'};
+    const group = (title, rows, isSettled) => {
+      const block = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
+      head.append(el('span', title + ' (' + rows.length + ')', 'label'));
+      block.append(head);
+      if (!rows.length) block.append(el('p', isSettled ? 'Nothing settled.' : 'No live worktrees.', 'meta'));
+      for (const item of rows) {
+        const line = el('div', undefined, 'row-head'), name = el('span', String(item.path), 'label');
+        line.append(name);
+        if (item.branch) line.append(el('span', String(item.branch), 'meta'));
+        if (item.task !== undefined) line.append(badge('#' + item.task + (item.taskState ? ' ' + item.taskState : '')));
+        if (item.pr !== undefined) line.append(badge('PR ' + item.pr));
+        if (isSettled && item.reason) line.append(badge(reasonText[item.reason] || String(item.reason), item.reason === 'parked' ? '' : 'ok'));
+        if (item.outside) line.append(badge('outside project'));
+        const stamp = el('span'); stamp.dataset.ts = new Date(item.lastActiveAt).toISOString(); stamp.title = time(stamp.dataset.ts); stamp.textContent = item.lastActiveAt ? 'active ' + rel(stamp.dataset.ts) : 'activity unknown'; line.append(stamp);
+        // Park moves a live row to the shelf and Pin keeps a settled row live; both are the person's call and the only writes here. 'Unset' returns the row to what the rules derive.
+        line.append(button(isSettled ? 'Pin' : 'Park', {action: 'worktree_override_set', path: String(item.path), value: isSettled ? 'active' : 'settled'}));
+        if (item.reason === 'parked') line.append(button('Unset', {action: 'worktree_override_clear', path: String(item.path)}));
+        block.append(line);
+      }
+      return block;
+    };
+    target.append(group('Live', live, false), group('Settled', settled, true));
+    if (shelf.complete === false) target.append(el('p', 'Some worktrees could not be read in time; they are listed as live. The next refresh tries again.', 'meta'));
+    const tools = el('div', undefined, 'row-head');
+    tools.append(button('Refresh PR states', {action: 'worktrees_refresh_prs'}), el('span', shelf.prsReadAt ? 'PR states read ' + rel(new Date(shelf.prsReadAt).toISOString()) : 'PR states not read yet: merged work shows as merged only after a guarded merge or a refresh.', 'meta'));
+    target.append(tools);
+    if (settled.length) {
+      const tidy = el('p', 'To remove settled worktrees safely, run in a terminal (it previews first and removes only after you confirm): ', 'meta');
+      tidy.append(el('code', 'ahub worktrees tidy'));
+      target.append(tidy);
+    }
+  });
+}
 function renderBench(bench) {
   const pct = (v) => v === null || v === undefined ? '-' : Math.round(v * 100) + '%';
   const num = (v) => v === null || v === undefined ? '-' : String(Math.round(v));
