@@ -157,7 +157,13 @@ export const PLANNER_REVIEW_TOOLS: HubTool[] = [
   tool("hub_backlog_return_untouched", "Return accepted but untouched work to the backlog with its history and planning retained. Optional fields.reserved changes the reservation atomically before capacity is released; null clears it. Refuses execution/branch/commit evidence; planner or person only, and a person's reservation requires the person.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str, maxLength: 1000 }, fields: { type: "object", properties: { reserved: { type: ["string", "null"], minLength: 1, maxLength: 32 } }, additionalProperties: false } }, ["id", "revision", "reason"]),
 ];
 TASK_TOOLS.push(...PLANNER_REVIEW_TOOLS);
-export const TASK_TOOL_NAMES = new Set(TASK_TOOLS.map((t) => t.name));
+/** Only definitions declaring a hub-owned title slot publish this tool. It is absent from global schema lists; native approval names must exclude it too. */
+export const SESSION_TITLE_TOOL: HubTool = tool("hub_set_title", "Name your own session once the task is clear. Only an unnamed session accepts the first agent name; the person may replace it. Private contexts refuse the write. No task, branch or instance is renamed.", { title: { type: "string", minLength: 1, maxLength: 80 } }, ["title"]);
+export function sessionTitleTools(tools: HubTool[], allowed = false): HubTool[] {
+  const filtered = tools.filter(tool => tool.name !== SESSION_TITLE_TOOL.name);
+  return allowed ? [...filtered, SESSION_TITLE_TOOL] : filtered;
+}
+export const TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name]);
 
 /** Separately published: serving a schema grants no authority, only the daemon's explicit role does. */
 export const CONDUCTOR_TOOLS: HubTool[] = [

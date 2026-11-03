@@ -5,7 +5,7 @@ import type { StaySwitchPolicy } from "../models/route/stage.ts";
 import type { ToolObservation } from "../models/route/signals.ts";
 import { randomUUID } from "node:crypto";
 import { MAX_HOP, remoteEnvelope, renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
-import { CONDUCTOR_TOOL_NAMES, CONDUCTOR_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
+import { CONDUCTOR_TOOL_NAMES, CONDUCTOR_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools, SESSION_TITLE_TOOL } from "../hub/hub-tools.ts";
 import { BasePeer } from "../hub/peers.ts";
 import type { PublishResult } from "../hub/bus.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
@@ -22,6 +22,8 @@ export interface LocalOptions {
   profile?: import("../hub/profiles.ts").ProfileSelection;
   sdlcStages?: readonly string[];
   sdlcCriteria?: boolean;
+  /** Host-owned conditional instruction, sampled once per delivered turn. */
+  titlePreface?: () => string | undefined;
   cwd: string;
   omni: OmniRoute;
   /** In-process hub route id; legacy routes use the fixed model. */
@@ -82,6 +84,16 @@ export class LocalPeer extends BasePeer {
   readonly deliveryOnly: boolean = true;
   readonly hubOwned: boolean = true;
   private readonly history: ChatMessage[] = [];
+  private title = "";
+  get sessionTitle(): string { return this.title; }
+  get titleSession(): string { return this.sessionId; }
+  async setSessionTitle(title: string, onlyIfUnnamed: boolean, current?: () => boolean): Promise<{ ok: true } | { ok: false; reason: "already_named" | "invalid" }> {
+    if (this.state === "offline" || !title.trim() || [...title].length > 80 || current?.() === false) return { ok: false, reason: "invalid" };
+    if (onlyIfUnnamed && this.title) return { ok: false, reason: "already_named" };
+    this.title = title;
+    this.onDoing?.("title", title);
+    return { ok: true };
+  }
   private readonly sessionId = `agent-hub-local-${randomUUID()}`;
   private readonly routes: HubRouteRuntime;
   private readonly warnedLegacyRoutes = new Set<string>();
@@ -113,7 +125,7 @@ export class LocalPeer extends BasePeer {
         await this.requireBudget(envs, "model_calls");
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
         if (signal.aborted) throw new Error("turn cancelled before model request");
-        const tools = judge ? undefined : [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : [])];
+        const tools = judge ? undefined : [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : [])];
         const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
         this.recordUsage(result, model, task);
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
@@ -165,7 +177,7 @@ export class LocalPeer extends BasePeer {
     if (deliveryId) this.delivery({ id: deliveryId, state: "accepted" });
     // The turn works on its own message list and joins the history only as a whole, so a failed or aborted turn can
     // never leave a tool call without its result (strict servers reject that history forever after).
-    const msgs: ChatMessage[] = [{ role: "user", content: renderDigest(envs, true) }];
+    const msgs: ChatMessage[] = [{ role: "user", content: [envs.some(env => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join("\n") }];
     const progress = { sideEffects: 0, last: "" };
     const requestedPolicy = this.opts.turnPolicy?.(envs);
     const policy = envs.some(env => env.private) ? { ...requestedPolicy, pii: true } : requestedPolicy;
@@ -288,7 +300,7 @@ export class LocalPeer extends BasePeer {
           const result: ChatMessage = { role: "tool", tool_call_id: call.id, content: output, is_error: toolResultFailed(name, output) };
           msgs.push(result); results.push(result);
           if (this.approvalStopReason) { this.abort?.abort(); throw new ApprovalWaitStop(this.approvalStopReason); }
-          if (!remoteTurn) this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
+          if (!remoteTurn && name !== "hub_set_title") this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
           // Hub tool arguments/results are not capture evidence; Tasks owns its screened memory writes.
           // doc_read text is converted document content (a converter can surface hidden text), never memory evidence: not captured, whatever the turn.
           // web_fetch text is a third party's page and its URL is the model's own request: neither is memory evidence either (#515b).
@@ -401,7 +413,7 @@ export class LocalPeer extends BasePeer {
     }
     const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
     const task = policy?.task === undefined ? undefined : Number(policy.task);
-    const tools = [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : [])];
+    const tools = [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : [])];
     const signal = this.abort!.signal;
     const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
     const routed = await this.hubCall(route, messages, policy, signal);

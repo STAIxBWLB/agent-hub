@@ -61,6 +61,12 @@ export interface PeerAdapter {
   captureResume?(): Promise<Record<string, unknown>>;
   /** Native session binding; absence or undefined is unbound, never inferred from a different reader. */
   readonly nativeSession?: string;
+  /** Verified native name, or the local session's own field. Empty means verified unnamed; undefined is unknown. */
+  readonly sessionTitle?: string;
+  /** Opaque title-session identity, separate from context/provenance's nativeSession authority. */
+  readonly titleSession?: string;
+  /** Native adapters check the live name at the actual write. The host guard is checked immediately before effects. */
+  setSessionTitle?(title: string, onlyIfUnnamed: boolean, current?: () => boolean): Promise<{ ok: true } | { ok: false; reason: "already_named" | "invalid" }>;
   /** Fixed-builtin native proof only; present undefined is unknown, not an absent proxy. */
   readonly frontendProxy?: FrontendProxyPort;
   /** Fixed operator notices from builtin native adapters, never provider text or native ids. */

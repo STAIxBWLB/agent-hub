@@ -119,7 +119,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
   },
   {
     projection: { roleRank: 4, startRank: 0, helpRank: 6, plannerEligible: false },
-    api: 1, kind: "pi", enabledSwitchStartOnly: true, displayName: "Pi", family: "pi", transport: "hub-native",
+    api: 1, kind: "pi", title: "hub", enabledSwitchStartOnly: true, displayName: "Pi", family: "pi", transport: "hub-native",
     roles: implementerRoles, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: true },
     start: { create: createPi, exclusiveStartRefusal: "Pi start is in progress; inspect status before retrying", refreshTools: true, explicitHeadlessMode: true, daemonPort: "pi-rpc", forms: dualForms, defaultForm: "tui", conductorStartable: true, upStart: { allowed: true }, autoStart: "pi.auto_start", conductorStartArgs: piConductorStartArgs, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env" }, instances: { mode: "headless" },
@@ -132,7 +132,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
   },
   {
     projection: { roleRank: 3, helpRank: 7, plannerEligible: false },
-    api: 1, kind: "local", displayName: "Local worker", family: "local", transport: "hub-native",
+    api: 1, kind: "local", title: "hub", displayName: "Local worker", family: "local", transport: "hub-native",
     roles: implementerRoles, defaultOnRoster: true, trust: { onPrem: true, hubSandboxed: true },
     start: { create: createLocal, reconfigureWhileAttached: true, refreshTools: true, daemonPort: "local-worker", forms: headlessForms, defaultForm: "headless", conductorStartable: true, upStart: { allowed: true }, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env" }, instances: { mode: "headless" },
