@@ -3319,6 +3319,8 @@ export class Tasks {
 
   async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; needs_network?: unknown; needs_worktree?: unknown; backlog?: unknown; draft?: unknown; goal?: unknown }, external?: GitHubSource, created?: () => void, fence?: () => string | undefined): Promise<Task> {
     const requestCheck = this.requestCheck(by, fence);
+    const plan = cleanPlan(input.plan, this.d.profileData ?? this.d.profile ?? "dev");
+    this.validatePlanSources(plan);
     requireLocalTaskPeer(input.owner);
     external = external ? { ...external } : undefined;
     if (external && (!this.personOrConductor(by) || input.backlog !== true)) throw new PreEffectToolRefusal("external intake requires person-owned backlog staging");
@@ -3355,7 +3357,6 @@ export class Tasks {
     let baseGiven: TaskClass | undefined;
     try { if (given !== undefined) baseGiven = profileClass(given, this.d.profileData ?? profile); } catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
     const text = { title, detail: String(input.detail ?? "").slice(0, 8000), refs: cleanRefs(input.refs) };
-    const plan = cleanPlan(input.plan, this.d.profileData ?? profile);
     // The plan reaches other owners, so a PII pattern in it makes the task a PII task like one in the detail would.
     const screenDetail = [text.detail, text.refs.repo, external?.repo, external?.url].filter(value => value !== undefined && value !== "").join("\n");
     const signals = this.signalsFor({ ...text, detail: [screenDetail, planText(plan)].join("\n"), plan });
@@ -5776,6 +5777,8 @@ export class Tasks {
     const metadata = acceptRefs(refs);
     const task = this.need(id, false, true);
     this.mine(task, by, "owner", true);
+    const proposedPlan = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev");
+    this.validatePlanSources(proposedPlan && Object.keys(proposedPlan).length ? proposedPlan : task.plan);
     this.acceptanceCapacity(task, 0, "check"); // #1080: an urgent task may still take unaccepted offers; `accept` does that, after its gates
     if (metadata && !this.isPii(task) && (!this.nameable(metadata.repo!) || looksSecret(metadata.repo!) || this.aboutPrivatePath("", metadata.repo!, task))) throw new PreEffectToolRefusal("this repository metadata is private or sensitive and is not kept");
     const draft = metadata ? { ...task, refs: { ...task.refs, ...metadata } } : task;
@@ -5890,6 +5893,12 @@ export class Tasks {
     throw new PreEffectToolRefusal(`planner WIP capacity for ${owner}: limit ${limit}; open tasks ${ids(open)} (${parts.join("; ")})${pending ? `; pending claims ${pending}` : ""}; ${next}`);
   }
 
+  private validatePlanSources(plan: TaskPlan = {}): void {
+    for (const id of plan.sources ?? []) if (!this.d.intake?.sourceKnown(id)) {
+      throw new PreEffectToolRefusal(`unknown source ${id}; list registered ids with ahub source list`);
+    }
+  }
+
   /**
    * With a plan, the owners of overlapping tasks get it as a ride-along line, and an overlap only the plan reveals is
    * announced like one found at assignment (issue #31).
@@ -5901,6 +5910,11 @@ export class Tasks {
     this.mine(task, by, "owner", true);
     this.ready(task, true);
     if (task.state !== "proposed" && task.state !== "changes_requested" && task.state !== "in_progress") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}: cannot move to in_progress`);
+    // Models send null or {} for an optional field they leave empty: neither replaces a plan.
+    const given = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev");
+    // File-list intent still replaces the old lists; omitted budget keys retain the planner-reviewed scope.
+    const cleaned = given && Object.keys(given).length ? { ...cleanCostPlan(task.plan ?? {}), ...given } : undefined;
+    this.validatePlanSources(cleaned ?? task.plan);
     this.studyDispatchCheck(task, task.owner ?? undefined);
     this.declaredNeedCheck(task, task.owner ?? by); // the owner's capability, also when the console user accepts on its behalf (`mine` admits USER)
     this.acceptanceCapacity(task, 0, "check");
@@ -5911,10 +5925,6 @@ export class Tasks {
       this.reviewedAdmissions.delete(task.id);
       if (!readback || readback.flow !== task.history.length || readback.owner !== task.owner) throw new PreEffectToolRefusal("current plan-review readback required before acceptance");
     }
-    // Models send null or {} for an optional field they leave empty: neither replaces a plan.
-    const given = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev");
-    // File-list intent still replaces the old lists; omitted budget keys retain the planner-reviewed scope.
-    const cleaned = given && Object.keys(given).length ? { ...cleanCostPlan(task.plan ?? {}), ...given } : undefined;
     if (this.d.sdlc?.config().mode === "enforce" && task.sdlc?.planReview && !task.sdlc.planReview.scope
       && given && Object.keys(cleanCostPlan(given)).length) throw new PreEffectToolRefusal("legacy plan cost scope is unspecified; record a scoped planner review before acceptance");
     if (this.d.sdlc?.config().mode === "enforce" && task.sdlc?.planReview?.scope

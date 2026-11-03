@@ -237,3 +237,29 @@ test("unified split accepts a confirmed response beyond the generic action deadl
 test("unified split missed reply is unconfirmed and requires task readback before retry",async()=>{
  const f=await scriptedAction();try{const result=await f.action("backlog_split");expect(result.unconfirmed).toBe(true);expect(result).toMatchObject({ok:false,unconfirmed:true});expect(result.text).toContain("Reload the task");}finally{await stopManager({home:f.home});f.hub.stop(true)}
 });
+
+test("unified intake forwards text and sources under the CLI deadline and preserves the draft result (#1144)", async () => {
+  const f = await scriptedAction(undefined, true);
+  try {
+    const pending = f.action("intake", { text: "Prepare report", sources: ["src:0123456789abcdef"] });
+    void pending.catch(() => {});
+    await f.arrived("intake");
+    expect(f.limits).toEqual([["intake", 90_000]]);
+    expect(f.requests.find(row => row.action?.action === "intake")).toMatchObject({ t: "ui_action", instanceId: "i1", action: { text: "Prepare report", sources: ["src:0123456789abcdef"] } });
+    const draft = { id: 3, draft: true, state: "backlog" }, children = [{ id: 4, draft: true, state: "backlog" }];
+    f.reply("intake", { ok: true, draft, children });
+    expect(await pending).toMatchObject({ ok: true, draft, children });
+  } finally { f.restore(); await stopManager({ home: f.home }); f.hub.stop(true); }
+});
+
+test("unified intake timeout is unconfirmed, requires Backlog readback and is never retried (#1144)", async () => {
+  const f = await scriptedAction(undefined, true);
+  try {
+    const pending = f.action("intake", { text: "Prepare report", sources: [] });
+    void pending.catch(() => {});
+    await f.arrived("intake");
+    f.expire("intake");
+    expect(await pending).toMatchObject({ ok: false, unconfirmed: true, error: expect.stringContaining("Check Backlog before retrying") });
+    expect(f.requests.filter(row => row.action?.action === "intake")).toHaveLength(1);
+  } finally { f.restore(); await stopManager({ home: f.home }); f.hub.stop(true); }
+});

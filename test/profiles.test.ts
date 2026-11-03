@@ -11,6 +11,7 @@ import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { Tasks } from "../src/hub/tasks.ts";
+import { SourceRegistry } from "../src/hub/sources.ts";
 import { loadRouting, assign } from "../src/hub/routing.ts";
 import { citationKeys } from "../src/hub/citations.ts";
 import { realPath } from "../src/hub/project.ts";
@@ -25,10 +26,13 @@ class Peer extends BasePeer {
 async function rig(profile?: ProfileName, check?: { resolve: boolean }, profileDataOverride?: any) {
   const dir = root(), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 }), notices: string[] = [];
   cleanup.push(() => board.close());
+  const registry = new SourceRegistry(dir);
+  const registerSource = (text: string, privateSource = false) => registry.add({ bytes: Buffer.from(text), kind: "file", origin: "/notes/evidence.txt", private: privateSource }).id;
   for (const name of ["claude", "codex", "kimi", "local"]) { const peer = new Peer(name); bus.add(peer); await peer.start(); }
   const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture", profile, profileData: profileDataOverride, roles: DEFAULT_ROLES, routing: () => loadRouting(dir), notify: text => notices.push(text),
+    intake: { sourceKnown: id => !!registry.get(id), split: async () => undefined, partsSchema: () => ({}) },
     ...(check ? { check: (_base, task) => task?.profileClass === "fact_check" ? "citations" : undefined, runCheck: async () => ({ code: citationKeys("Claim [@source]", check.resolve ? "@article{source, title={Evidence}}" : "").missing.length ? 1 : 0, timedOut: false, tail: "citation check" }) } : {}) });
-  return { tasks, board, bus, dir, notices };
+  return { tasks, board, bus, dir, notices, registerSource };
 }
 test("profile init preserves dev bytes and surrounding instructions; explicit conflicts are pre-write (#259)", () => {
   const dir = root(); init(dir);
@@ -57,12 +61,13 @@ test("profile aliases route and budget on a persisted base while unknown/prototy
   expect(dev.profile).toBeUndefined(); expect(dev.profileClass).toBeUndefined(); expect(dev.plan).toEqual({ paths: ["a.ts"] }); await expect(legacy.tasks.propose("codex", { title: "Wrong alias", class: "survey" })).rejects.toThrow();
 });
 test("document plans overlap only on declared shared anchors/sources and preserve all keys (#259)", async () => {
-  const { tasks, board, notices } = await rig("research");
-  await tasks.propose("codex", { title: "Methods", class: "draft", owner: "codex", plan: { paths: ["report.md"], sections: ["report.md#methods"], sources: ["doi:first"], claims: ["c1"] } }); notices.length = 0;
-  const other = await tasks.propose("kimi", { title: "Results", class: "draft", owner: "kimi", plan: { paths: ["report.md"], sections: ["report.md#results"], sources: ["doi:other"], claims: ["c2"] } });
-  expect(tasks.overlaps(other)).toBe(""); expect(other.plan).toMatchObject({ sections: ["report.md#results"], sources: ["doi:other"], claims: ["c2"] });
-  tasks.accept("kimi", other.id, { paths: ["report.md"], sections: ["report.md#results"], sources: ["doi:first"] });
-  expect(tasks.overlaps(board.get(other.id)!)).toContain("doi:first");
+  const { tasks, board, notices, registerSource } = await rig("research");
+  const first = registerSource("doi:first"), second = registerSource("doi:other");
+  await tasks.propose("codex", { title: "Methods", class: "draft", owner: "codex", plan: { paths: ["report.md"], sections: ["report.md#methods"], sources: [first], claims: ["c1"] } }); notices.length = 0;
+  const other = await tasks.propose("kimi", { title: "Results", class: "draft", owner: "kimi", plan: { paths: ["report.md"], sections: ["report.md#results"], sources: [second], claims: ["c2"] } });
+  expect(tasks.overlaps(other)).toBe(""); expect(other.plan).toMatchObject({ sections: ["report.md#results"], sources: [second], claims: ["c2"] });
+  tasks.accept("kimi", other.id, { paths: ["report.md"], sections: ["report.md#results"], sources: [first] });
+  expect(tasks.overlaps(board.get(other.id)!)).toContain(first);
 });
 test("profile fact_check runs deterministic citation evidence and cannot pass on an unresolved source (#259)", async () => {
   const check = { resolve: false }, { tasks, board } = await rig("research", check);
@@ -84,10 +89,12 @@ test("profile research records carry closed profile and both classes without tas
 });
 
 test("new document plan fields retain existing PII routing and public redaction (#259)", async () => {
-  const { tasks, board } = await rig("research"), marker = "patient 900101-1234567 needs a follow-up";
-  const task = await tasks.propose("user", { title: "Private claims", class: "fact_check", owner: "local", plan: { claims: [marker], sources: [marker] } });
+  const { tasks, board, registerSource } = await rig("research"), marker = "patient 900101-1234567 needs a follow-up";
+  const source = registerSource(marker, true);
+  const task = await tasks.propose("user", { title: "Private claims", class: "fact_check", owner: "local", plan: { claims: [marker], sources: [source] } });
   expect(tasks.isPii(task)).toBe(true); expect(task.owner).toBe("local");
   expect(JSON.stringify(tasks.publicView(board.get(task.id)!))).not.toContain(marker);
+  expect(JSON.stringify(tasks.publicView(board.get(task.id)!))).not.toContain(source);
 });
 async function profileCli(dir: string, args: string[]) {
   const cli = join(import.meta.dir, "../src/cli/main.ts"), wrapper = join(dir, `cli-${crypto.randomUUID()}.ts`);
@@ -151,7 +158,8 @@ test("#507 AC1/AC2 dev profile review/done descriptions and checklist remain byt
 });
 
 test("#507 AC4 research-profile review request contains no signature or test wording and uses research checklist", async () => {
-  const { tasks, bus } = await rig("research");
+  const { tasks, bus, registerSource } = await rig("research");
+  const source = registerSource("doi:example");
   const published: any[] = [];
   const origPublish = bus.publish.bind(bus);
   bus.publish = (env: any) => { published.push(env); return origPublish(env); };
@@ -160,7 +168,7 @@ test("#507 AC4 research-profile review request contains no signature or test wor
     title: "Synthesize literature",
     class: "draft",
     owner: "codex",
-    plan: { paths: ["summary.md"], sections: ["summary.md#intro"], sources: ["doi:example"], claims: ["claim-1"] },
+    plan: { paths: ["summary.md"], sections: ["summary.md#intro"], sources: [source], claims: ["claim-1"] },
   });
   await tasks.done("codex", task.id, "Drafted synthesis deliverable", { branch: "main", paths: ["summary.md"] });
 

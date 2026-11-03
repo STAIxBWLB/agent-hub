@@ -145,11 +145,14 @@ export function startDashboard(options: DashboardOptions) {
         }
       }
       try {
+        // Intake creates person-attributed drafts; only the server-issued ticket determines this fence.
+        if (sessionOf(cookie).liveTest && input.action === "intake") return reject(403, "live-test dashboard cannot write person-attributed content; use peer tools");
         if (sessionOf(cookie).liveTest && !["start", "stop", "pause", "resume", "permit", "start_peer", "setting", "setting_undo", "setting_preview", "setting_reload", "sdlc_queue", "sdlc_release"].includes(String(input.action))) {
           return reject(403, "live-test dashboard cannot write person-attributed content; use peer tools");
         }
         if (input.action === "sdlc_queue" || input.action === "sdlc_release") server.timeout(req, 35);
         else if (input.action === "backlog_split") server.timeout(req, Math.ceil((BACKLOG_SPLIT_SCREEN_TIMEOUT_MS + HUB_DB_BUSY_TIMEOUT_MS + 5_000) / 1000) + 5);
+        else if (input.action === "intake") server.timeout(req, 95); // the CLI's 90 s intake cap plus the HTTP response margin
         return json(await options.action(input, sessionOf(cookie)));
       } catch {
         // Exceptions may quote private task text or backend details. Never echo them to the page.

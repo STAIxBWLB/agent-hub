@@ -55,6 +55,13 @@ describe("acon plugin manifest", () => {
 });
 
 describe("acon plugin provider (D1)", () => {
+  test("intake forwards through the existing manager action boundary without confirmation (#1144)", async () => {
+    const { provider, actions } = fixture();
+    expect(plugin.manifest.capabilities?.actions).toContain("intake");
+    const input = { action: "intake", projectId: "p1", instanceId: "i1", text: "Prepare report", sources: ["src:0123456789abcdef"] };
+    expect((await provider.action(input)).ok).toBe(true);
+    expect(actions).toEqual([input]);
+  });
   test("a bare panel poll lists the registered projects; a project poll forwards ui_snapshot with the view", async () => {
     const { provider, snapshots } = fixture();
     const listing = await provider.snapshot({ after: 0, panel: "board" });

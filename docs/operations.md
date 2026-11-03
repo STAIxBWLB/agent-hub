@@ -4905,6 +4905,14 @@ A `schedules` entry in `.agenthub/config.local.json` takes either `every` (an in
 - **Upgrades.** The daemon advertises `calendar_schedules`. While a schedule uses `cron` or `tz`, a restart, upgrade or recovery onto a release without it is refused, naming the reason.
 - Out of scope: holiday and exchange calendars. A task whose first step finds a non-working day can end itself.
 
+## Registered sources and request drafts (#1144)
+
+`ahub source add` registers a bounded file or URL snapshot, and `ahub source list` lists its `src:` registry ID. For profiles that support `plan.sources`, task proposal and acceptance validate each ID against this registry before changing the board or notifying peers. An unknown ID is refused with `ahub source list` as the next step. Source overlaps use the registry IDs; a private task's public plan remains withheld.
+
+The dashboard's Plan sheet includes a read-only registered-source list with ID, kind, byte size, hash prefix and registration time. It receives only those allowlisted metadata fields through the existing snapshot, with no source content or origin paths.
+
+Use Capture a request in the same sheet, or `ahub intake`, to stage natural-language work as held draft Backlog cards. Optional source IDs refer to the registered snapshots. The dashboard uses the same Tasks intake path and public task projection as the CLI; nothing is offered until a draft is approved. Inspect drafts in Backlog, then use `ahub intake approve` or `ahub intake discard` in a terminal. A delegated `--live-test` dashboard session cannot create intake drafts. If submission is unconfirmed, read Backlog before trying again to avoid a duplicate request.
+
 ## Staging work in Backlog (#263)
 
 Use `ahub task propose implement "Later work" --backlog --owner codex` to stage

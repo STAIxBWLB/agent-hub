@@ -69,6 +69,12 @@ Automatic offer and backlog paths respect `plannedStart`; a future card becomes 
 
 Urgent acceptance can reclaim only enough unaccepted, unstarted, non-pinned and non-urgent offers to fit the limit. It does so after other admission checks and immediately before the accept write; if insufficient, it reclaims none. Accepted work is never displaced merely to satisfy a new urgent request, because an offer and an active commitment have different costs ([#1080](https://github.com/STAIxBWLB/agent-hub/issues/1080)).
 
+## Source-backed plans and request intake
+
+For a profile that supports `plan.sources`, `Tasks` validates every retained source ID against the source registry at proposal and acceptance, before board writes, admission effects or peer notices. Unknown IDs are refused with the ID and `ahub source list` guidance. Overlap notices compare the registry IDs; private task plans remain withheld by the shared public view.
+
+Natural-language intake from the CLI or dashboard enters the same `Tasks.intake` path and creates held draft Backlog cards, not offers. Dashboard task replies use the public view, and a ticket-bound live-test session cannot create these person-attributed drafts. Approval and discard retain their existing authority. Read-only source snapshots carry only ID, kind, byte size, hash prefix and registration time, with no content or origin paths ([#1144](https://github.com/STAIxBWLB/agent-hub/issues/1144)).
+
 ## Completion, review and evidence
 
 Completion binds the submitted full head and any verified deliverable records. It may run a configured check before requesting review. A review records a verdict against that evidence; it does not itself merge a PR. An unmerged approved task can receive a new owner submission, superseding the earlier review binding rather than treating old approval as authority for changed code ([#1047](https://github.com/STAIxBWLB/agent-hub/issues/1047)). A re-file cannot silently inherit an old head after the linked PR moves, and an approval with no supplied head refuses known-stale evidence. Refusals name the recorded and supplied or read heads and direct the owner to re-file `hub_task_done` with the new full SHA in `refs.commit`; summary text is not head evidence. This prevents stale approval from being presented as review of changed code ([#1121](https://github.com/STAIxBWLB/agent-hub/issues/1121)).
