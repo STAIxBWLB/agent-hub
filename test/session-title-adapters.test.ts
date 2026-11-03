@@ -169,11 +169,15 @@ for (const naming of ["person", "native", "unnamed"] as const) test(`#1055 cache
 test("#1055 a versioned empty TUI snapshot older than a new native title cannot certify empty recovery", async () => {
   const f = await rosterPiFixture(); cleanup.push(f.cleanup);
   const reading = f.peer.captureResume();
-  const refused = expect(reading).rejects.toThrow("title changed during capture");
+  const outcome = reading.then(value => ({ ok: true as const, value }), error => ({ ok: false as const, error: error as unknown }));
   const command = await f.next();
   await f.post("/event", { type: "session_title", sessionId: f.sessionId, sessionName: "native title newer than the snapshot", titleRevision: 1 });
   await f.ack(command, { sessionId: f.sessionId, sessionFile: f.sessionFile, idle: true, empty: true, sessionName: "", titleRevision: 0 });
-  await refused;
+  const result = await outcome;
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("stale title snapshot unexpectedly certified empty recovery");
+  expect(result.error).toBeInstanceOf(Error);
+  expect((result.error as Error).message).toContain("title changed during capture");
   expect(f.peer.sessionTitle).toBe("native title newer than the snapshot");
   expect(f.peer.pendingResume.sessionId).not.toBe(f.sessionId);
   f.owner.kill(); await f.owner.exited; await f.post("/event", { type: "session_shutdown" });
