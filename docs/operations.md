@@ -1288,6 +1288,12 @@ and logs are counted. Normal ring rotation and settle-time cleanup are excluded
 from the full-status dropped total. A stopped probe cannot be started again. Nested durations are not additive. Status counters include
 background observations and do not identify a blocking cause on their own.
 
+Unanswered diagnostic requests expire after five monotonic minutes, reclaiming
+their operation and span slots without cancelling the underlying work or changing
+its eventual result. Full status lists `expired` separately from capacity/log drops
+and normal ring rotation. Argument screening starts only after socket admission;
+model-input diagnostic screens run once only when tracing can admit the observation.
+
 Board-write, queue/status, memory and external-call phases locate an observed
 boundary; they do not weaken its existing authority, privacy or execution gates.
 The probe is unref'd and stopped at daemon shutdown or failed startup. The

@@ -1,11 +1,78 @@
 import { describe, expect, test } from "bun:test";
 import {
-  CONTROL_WRITE_MAX_LINE_BYTES, ControlWriteTelemetry, controlWriteMetadata, controlWriteSpan,
+  CONTROL_WRITE_MAX_LINE_BYTES, CONTROL_WRITE_REQUEST_MAX_AGE_MS, ControlWriteTelemetry, controlWriteMetadata, controlWriteSpan,
 } from "../src/hub/control-write-trace.ts";
 
 const record = (line: string): Record<string, unknown> => JSON.parse(line) as Record<string, unknown>;
 
 describe("control write telemetry", () => {
+  test("input screening is one-shot and is skipped when an observation cannot be traced", async () => {
+    let clock = 0, screens = 0, privacyReads = 0;
+    const lines: string[] = [];
+    const inputPublic = () => { screens++; return true; };
+    const privacyCurrent = () => { privacyReads++; return true; };
+    const stopped = new ControlWriteTelemetry({ emit: () => {}, now: () => clock });
+    stopped.stop();
+    expect(stopped.observe("external", privacyCurrent, () => "stopped result", inputPublic)).toBe("stopped result");
+    expect([screens, privacyReads]).toEqual([0, 0]);
+
+    const telemetry = new ControlWriteTelemetry({ emit: line => lines.push(line), now: () => clock, maxActiveRequests: 1 });
+    let release!: () => void;
+    const pending = telemetry.run({ kind: "hub_review" }, privacyCurrent, () => new Promise<void>(resolve => { release = resolve; }));
+    const beforeFull = privacyReads;
+    expect(telemetry.observe("external", privacyCurrent, () => "full result", inputPublic)).toBe("full result");
+    expect([screens, privacyReads]).toEqual([0, beforeFull]);
+    release(); await pending;
+
+    telemetry.run({ kind: "hub_task_done" }, privacyCurrent, () => {
+      telemetry.observe("external", () => false, () => {});
+      expect(telemetry.observe("external", privacyCurrent, () => "private result", inputPublic)).toBe("private result");
+    });
+    expect(screens).toBe(0);
+
+    telemetry.observe("external", privacyCurrent, () => { clock += 1600; return "public result"; }, inputPublic);
+    expect(screens).toBe(1);
+    expect(lines.map(record).some(row => row.type === "control_write_slow")).toBe(true);
+    telemetry.start();
+    try {
+      clock += 500; telemetry.sample();
+      expect(screens).toBe(1); // Late privacy checks retain only the live guard, never the input screen.
+      expect(privacyReads).toBeGreaterThan(beforeFull);
+    } finally { telemetry.stop(); }
+  });
+
+  for (const sweep of ["probe", "admission"] as const) test(`${sweep} expires unanswered diagnostics without cancelling their eventual result`, async () => {
+    let clock = 0;
+    const lines: string[] = [];
+    const telemetry = new ControlWriteTelemetry({ emit: line => lines.push(line), now: () => clock, maxActiveRequests: 2 });
+    telemetry.sample(); // Set the delayed probe's expected tick before the recorded synchronous interval.
+    let resolve!: (value: string) => void, reject!: (error: Error) => void;
+    const eventualError = new Error("eventual operation failure");
+    const pendingValue = telemetry.run({ kind: "hub_task_propose", task: 17 }, () => true, () => {
+      controlWriteSpan("board-write", () => { clock += 200; });
+      return controlWriteSpan("memory", () => new Promise<string>(done => { resolve = done; }));
+    });
+    const pendingError = telemetry.run({ kind: "hub_review", task: 18 }, () => true,
+      () => controlWriteSpan("external", () => new Promise<void>((_, fail) => { reject = fail; })));
+    const rejected = pendingError.catch(error => error); // Observe rejection before any teardown or completion.
+    expect(telemetry.status()).toMatchObject({ active: 2, activeSpans: 2, expiredRequests: 0 });
+    clock += CONTROL_WRITE_REQUEST_MAX_AGE_MS;
+    if (sweep === "probe") telemetry.sample();
+    expect(telemetry.run({ kind: "hub_task_accept" }, () => true, () => "new result")).toBe("new result");
+    expect(telemetry.status()).toMatchObject({ active: 0, activeSpans: 0, expiredRequests: 2, droppedActive: 0, droppedSpans: 0, droppedRecent: 0, completedRequests: 1 });
+    telemetry.start();
+    try {
+      clock += 500; telemetry.sample();
+      expect(lines.map(record).flatMap(row => row.spans ?? []).some((span: any) => span.task === 17 || span.task === 18)).toBe(false);
+      const priorLines = lines.length;
+      resolve("original operation result"); reject(eventualError);
+      expect(await pendingValue).toBe("original operation result");
+      expect(await rejected).toBe(eventualError);
+      expect(lines).toHaveLength(priorLines);
+      expect(telemetry.status()).toMatchObject({ expiredRequests: 2, completedRequests: 1, slowRequests: 0 });
+    } finally { telemetry.stop(); }
+  });
+
   test("extracts only a closed request kind and safe task number", () => {
     expect(controlWriteMetadata({ t: "task", op: "hub_task_propose", rid: 9, peer: "claude", requestId: "secret-id", args: { id: 7, title: "PRIVATE title" } }))
       .toEqual({ kind: "hub_task_propose", task: 7 });

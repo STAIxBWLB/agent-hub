@@ -10079,6 +10079,7 @@ class ControlWriteTelemetry {
   lastNow = 0;
   stopped = false;
   completedRequests = 0;
+  expiredRequests = 0;
   slowRequests = 0;
   blockedLoopSamples = 0;
   droppedActive = 0;
@@ -10097,7 +10098,7 @@ class ControlWriteTelemetry {
     if (![this.maxActiveRequests, this.maxActiveSpans, this.maxRecentSpans].every((value) => Number.isSafeInteger(value) && value > 0) || !Number.isSafeInteger(this.rateLimitMs) || this.rateLimitMs < 0 || this.rateLimitMs > RATE_LIMIT_MS || this.maxActiveRequests > MAX_ACTIVE_REQUESTS || this.maxActiveSpans > MAX_ACTIVE_SPANS || this.maxRecentSpans > MAX_RECENT_SPANS)
       throw new Error("invalid control write trace bounds");
   }
-  run(metadata, privacyCurrent, fn) {
+  run(metadata, privacyCurrent, fn, inputPublic) {
     if (this.stopped)
       return fn();
     const safeMetadata = this.safeMetadata(metadata);
@@ -10105,13 +10106,18 @@ class ControlWriteTelemetry {
       this.droppedMetadata++;
       return fn();
     }
-    if (!this.privateNow(privacyCurrent))
-      return fn();
+    const now = this.readNow();
+    this.expireRequests(now);
     if (this.requests.size >= this.maxActiveRequests) {
       this.droppedActive++;
       return fn();
     }
-    const now = this.readNow();
+    if (!this.privateNow(privacyCurrent))
+      return fn();
+    const inputVisible = !inputPublic || this.privateNow(inputPublic);
+    inputPublic = undefined;
+    if (!inputVisible)
+      return fn();
     const request = {
       telemetry: this,
       metadata: safeMetadata,
@@ -10145,14 +10151,20 @@ class ControlWriteTelemetry {
       throw error;
     });
   }
-  observe(phase, privacyCurrent, fn) {
+  observe(phase, privacyCurrent, fn, inputPublic) {
+    if (this.stopped)
+      return fn();
     const current = currentTrace.getStore();
     if (current?.telemetry === this && !current.settled) {
-      if (!this.privateNow(privacyCurrent))
+      if (current.privacySuppressed)
+        return fn();
+      const inputVisible = this.privateNow(privacyCurrent) && (!inputPublic || this.privateNow(inputPublic));
+      inputPublic = undefined;
+      if (!inputVisible)
         current.privacySuppressed = true;
       return controlWriteSpan(phase, fn);
     }
-    return this.run({ kind: "background" }, privacyCurrent, () => controlWriteSpan(phase, fn));
+    return this.run({ kind: "background" }, privacyCurrent, () => controlWriteSpan(phase, fn), inputPublic);
   }
   start() {
     if (this.stopped || this.timer)
@@ -10172,6 +10184,7 @@ class ControlWriteTelemetry {
     if (this.stopped)
       return;
     const now = this.readNow(), expected = this.nextSampleAt ?? now;
+    this.expireRequests(now);
     this.nextSampleAt = now + CONTROL_WRITE_SAMPLE_MS;
     const delayMs = Math.max(0, now - expected);
     if (delayMs < CONTROL_WRITE_LOOP_DELAY_MS)
@@ -10218,6 +10231,7 @@ class ControlWriteTelemetry {
       active: this.requests.size,
       activeSpans: this.spans.size,
       completedRequests: this.completedRequests,
+      expiredRequests: this.expiredRequests,
       slowRequests: this.slowRequests,
       blockedLoopSamples: this.blockedLoopSamples,
       recentSpans: this.recent.length,
@@ -10297,6 +10311,19 @@ class ControlWriteTelemetry {
       ...phases.length > MAX_LOOP_SPANS ? { truncated: true } : {}
     }, request.logPrivacy);
   }
+  expireRequests(now) {
+    for (const [id, request] of this.requests) {
+      if (now - request.startedAt < CONTROL_WRITE_REQUEST_MAX_AGE_MS)
+        continue;
+      request.settled = true;
+      request.privacySuppressed = true;
+      this.requests.delete(id);
+      this.expiredRequests++;
+    }
+    for (const [id, span] of this.spans)
+      if (span.request.settled)
+        this.spans.delete(id);
+  }
   emit(key, value, privacyCurrent) {
     if (this.stopped || !this.privateNow(privacyCurrent))
       return;
@@ -10373,7 +10400,7 @@ class ControlWriteTelemetry {
     return Math.round(bounded * 10) / 10;
   }
 }
-var CONTROL_WRITE_KINDS, CONTROL_WRITE_PHASES, CONTROL_WRITE_SLOW_MS = 1000, CONTROL_WRITE_LOOP_DELAY_MS = 250, CONTROL_WRITE_SAMPLE_MS = 100, CONTROL_WRITE_MAX_LINE_BYTES = 2048, CONTROL_WRITE_MAX_DURATION_MS = 86400000, MAX_ACTIVE_REQUESTS = 128, MAX_ACTIVE_SPANS = 256, MAX_RECENT_SPANS = 512, MAX_LOOP_SPANS = 8, MIN_SYNC_PREFIX_MS = 10, MAX_EMITS_PER_MINUTE = 60, RATE_LIMIT_MS = 1000, currentTrace, OPERATIONS;
+var CONTROL_WRITE_KINDS, CONTROL_WRITE_PHASES, CONTROL_WRITE_SLOW_MS = 1000, CONTROL_WRITE_LOOP_DELAY_MS = 250, CONTROL_WRITE_SAMPLE_MS = 100, CONTROL_WRITE_MAX_LINE_BYTES = 2048, CONTROL_WRITE_MAX_DURATION_MS = 86400000, CONTROL_WRITE_REQUEST_MAX_AGE_MS, MAX_ACTIVE_REQUESTS = 128, MAX_ACTIVE_SPANS = 256, MAX_RECENT_SPANS = 512, MAX_LOOP_SPANS = 8, MIN_SYNC_PREFIX_MS = 10, MAX_EMITS_PER_MINUTE = 60, RATE_LIMIT_MS = 1000, currentTrace, OPERATIONS;
 var init_control_write_trace = __esm(() => {
   CONTROL_WRITE_KINDS = [
     "hub_task_propose",
@@ -10401,6 +10428,7 @@ var init_control_write_trace = __esm(() => {
     "external",
     "snapshot"
   ];
+  CONTROL_WRITE_REQUEST_MAX_AGE_MS = 5 * 60000;
   currentTrace = new AsyncLocalStorage;
   OPERATIONS = {
     hub_task_propose: "hub_task_propose",
