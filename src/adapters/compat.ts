@@ -29,11 +29,11 @@ export interface CompatPolicy {
 
 const plain = (text: string) => text.length <= 64 && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(text) ? text : undefined;
 export const COMPAT = {
-  // Receipt: docs/verification/2026-10-26-pi-140-compat.md
-  pi: { label: "Pi", verified: ["1.4.0"], gate: "contract", probe: ["pi", "--version"], config: "pi.cmd",
+  // Receipts: docs/verification/2026-10-26-pi-140-compat.md (1.4.0); docs/verification/2026-11-03-pi-150-compat.md (1.5.0)
+  pi: { label: "Pi", verified: ["1.4.0", "1.5.0"], gate: "contract", probe: ["pi", "--version"], config: "pi.cmd",
     parse: out => plain(out.trim()),
-    trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified.",
-    receipt: "docs/verification/2026-10-26-pi-140-compat.md" },
+    trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0 and 1.5.0. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified.",
+    receipt: "docs/verification/2026-11-03-pi-150-compat.md" },
   // Transport receipts: docs/verification/2026-10-23-headless-claude-permissions.md; 2.1.310: docs/verification/2026-10-26-claude-implementer-2.1.310.md; 2.1.314 (transport and wrapper): docs/verification/2026-10-31-claude-implementer-2.1.314.md; 2.1.316: docs/verification/2026-10-31-claude-implementer-2.1.316.md; host-wrapper receipt below repeats with them.
   "claude-implementer": { label: "Claude headless implementer", verified: ["2.1.309", "2.1.310", "2.1.314", "2.1.316"], gate: "contract", probe: ["claude", "--version"],
     parse: out => plain(out.trim().replace(/ \(Claude Code\)$/, "")),

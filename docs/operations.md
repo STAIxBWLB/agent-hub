@@ -713,8 +713,8 @@ setting (`ahub settings set peers.pi.start_mode headless`), asks for the
 background peer instead. The project uses its existing OmniRoute connection for DGX;
 `pi.dgx_coding` and `pi.dgx_fast` select the gateway's configured model IDs.
 Every Pi start (headless, TUI, console or auto start) first runs the configured
-`pi.cmd` with `--version` (#847). Pi 1.4.0 is verified
-([model-free receipt](verification/2026-10-26-pi-140-compat.md)); another
+`pi.cmd` with `--version` (#847). Pi 1.4.0 and 1.5.0 are verified
+([1.4.0 model-free receipt](verification/2026-10-26-pi-140-compat.md), [1.5.0](verification/2026-11-03-pi-150-compat.md)); another
 version, or one that cannot be read, is refused before Pi starts, unless the
 person trusts that exact version with `ahub agents trust pi <version>`.
 
