@@ -2,7 +2,7 @@
 title: Office view of live agent work in the dashboard
 date: 2026-10-12
 project: agent-hub
-status: phases 1-4 implemented (Flat and Isometric office with motion and turn/checking/link fields); phase 5 pending #263
+status: phases 1-4 implemented (Flat and Isometric office with motion and turn/checking/link fields); phase 5 designed (backlog wall, release docks, planner desk), not implemented
 issue: 264
 ---
 
@@ -55,7 +55,8 @@ asset is copied.
    latch, the settle rule. No daemon change.
 3. Optional snapshot fields `turn`, `checking`, `links` and what they draw.
 4. The Isometric projection of the same model.
-5. Backlog wall, release docks and the planner's desk, once #263 lands.
+5. Backlog wall, release docks and the planner's desk, from the board
+   planning fields that #263 and #469 added (decisions below).
 
 Phase 1 decisions within the spec:
 
@@ -209,6 +210,73 @@ Phase 4 decisions within the spec:
   - Existing theme tokens, public-view privacy, counts/placement classifications,
     animations, reduced motion, keyboard activation and mode cookie remain.
 
+Phase 5 decisions within the spec (designed 2026-11-03, hub task 311; not
+implemented):
+
+- Phase 5 needs no daemon change. `ui_snapshot` already carries everything:
+  - every board task, backlog cards included, with `rank`, `priority`,
+    `reserved`, `release`, `pinned`, `plannedStart` and `deps` next to the
+    public title;
+  - `releases[]`, the `tasks.releaseList` rows, with `id`, `name` (already
+    `[withheld]` when not nameable), `state`, `order`, `cut` and the scope
+    `tasks[]` as `{ id, state, deps }`;
+  - `status.roleInfo[peer].flowRoles`, which names the planner.
+  The model reads these by allowlist. It never reads a release `goal`, `train`,
+  the `afterCut` lists, task `detail`, `lifecycle` or `codeGroup`, and the
+  marker test grows to cover them.
+- **Backlog wall.** A room named "Backlog" before To do in the fixed room
+  order, with placement `room:backlog`. Today `counts.backlog` is counted and
+  placed nowhere; from phase 5 these tasks get placed.
+  - Cards are ordered by `rank` ascending (no rank last), then `priority`
+    ascending (none last), then id. The cap is 8 cards, as in every room; the
+    rest is "+N more", which sets the board's existing `backlog` state filter.
+  - A card shows its id and public title, like other room cards. It adds up to
+    three marks, each with a shape and text in the accessible name:
+    - the reserved peer's colour chip and name;
+    - a pin for `pinned`;
+    - "waits", when a dep is not approved or `plannedStart` is in the future
+      (the date only, never the time).
+  - The wall count equals `taskProgress(tasks).counts.backlog`, pinned by the
+    existing counts test.
+  - A pulled card moves from the wall to To do through the phase-2 transform
+    transition, with no new motion code.
+- **Release docks.** A strip below the rooms, beside the Done shelf. It has
+  one dock per release in state `planning`, `active` or `frozen`, ordered by
+  `order` then id; `shipped` and `dropped` releases get none. The cap is 3
+  docks, then "+N releases", which switches the board's View to "By release".
+  - A dock shows the release name, its state as a word, `approved / scope`
+    from its `tasks[]`, and a thin bar of the same ratio. It also shows the
+    `cut` date when set.
+  - Cards are not duplicated into docks: a card stays in its room. A card in
+    a docked release carries the release's ordinal (1 to 3) as a small tag
+    with the name in its accessible name.
+  - Activating a dock sets the board's existing `task-release-filter` to that
+    release and scrolls to the board, as card activation does for its row.
+- **Planner's desk.** The desk of each peer whose `flowRoles` include
+  `planner` gets a planner badge: a shape plus "planner" in its accessible
+  name. A count joins it: the backlog cards with no `rank` and no `reserved`,
+  that is, the cards still waiting for planning. A peer with no desk gets no
+  badge, and the count then appears on the wall's header. The planner is a
+  mark on the existing desk. It is not a separate desk and claims no seat.
+- **Isometric.** The wall is an ordinary room tile and the docks are slab
+  tiles like the shelf, through the same `officeProject`. Phase 4's fit rule
+  applies: cards that do not fit are counted in "+N more".
+- **Privacy.** A PII backlog card is already a `[pii]` stub in the snapshot;
+  its reserved chip and marks still show, because they carry ids only. A
+  release name that is not nameable stays `[withheld]`.
+- **Page-size bound.** This replaces the issue's original 30 KB office budget,
+  which was historical (see the phase 4 accounting) and is long exceeded by
+  unrelated features. The served page is `renderDashboard().html` with the
+  models injected. Measured on main a51c8fc7 (2026-11-03): 259,254 bytes raw,
+  70,237 gzip; `src/ui/index.html` alone is 236,071 bytes.
+  - The phase-5 PR measures the served page at its merge base and at its head,
+    raw and gzip, and states both deltas in the PR body.
+  - Phase 5 may add at most 12,000 bytes raw and 3,500 bytes gzip. Beyond
+    that, the PR drops art polish first, then trims the dock bar, before it
+    asks the person to raise the bound.
+  - No standing page-size test is added. Other dashboard features grow the
+    same page, and a global cap would block them for an office budget.
+
 ## Verification
 
 - `test/office-model.test.ts`: mapping fixture, counts equality with
@@ -239,8 +307,23 @@ Phase 4 decisions within the spec:
   and overlap/cohort links against a real daemon, pins `PROTOCOL` (16) and
   `EVENTS_SCHEMA` (1), and proves a PII task keeps its stub, refuses a
   non-local owner and joins no link.
+- Phase 5 (planned with the implementation task):
+  - wall placement and order (rank, priority, id) with the cap and "+N more";
+  - wall count equals `counts.backlog`;
+  - the reserved, pin and waits marks;
+  - dock selection by state and order with the 3-dock cap and the approved /
+    scope ratio;
+  - the release ordinal tag on cards;
+  - the planner badge and the unplanned count, including the no-desk fallback
+    to the wall header;
+  - the marker test extended to release `goal`, `train`, `afterCut`, task
+    `lifecycle` and `codeGroup`;
+  - in `test/office-view.test.ts`, "+N more", dock activation setting
+    `task-release-filter` and the "By release" switch, plus a pulled card
+    animating from the wall to To do.
 - The live browser look (two agents working, both themes, console open) is
-  recorded in `docs/smoke.md` as unverified for phase 1.
+  recorded in `docs/smoke.md` as unverified for phase 1. #273 is closed, so
+  AC9's browser look stays with #264 itself.
 
 
 ## Merge review corrections
