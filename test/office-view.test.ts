@@ -646,11 +646,11 @@ test("Office room headers form the final overlay layer with count pills (#394)",
   const f=startOfficeRuntime(()=>view);f.api.draw(snapshot);const scene=f.api.scene();
   expect(scene.svg.children.at(-1)).toBe(scene.layers.headers);
   expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-room-title")).map(node=>node.textContent)).toEqual(["Backlog","To do","Work floor","Review","Done"]);
-  expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-room-count"))).toHaveLength(4);
+  expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-room-count"))).toHaveLength(5);
   expect((scene.layers.rooms as Node).findAll(hasOfficeClass("office-room-title"))).toHaveLength(0);
   expect((scene.layers.rooms as Node).findAll(hasOfficeClass("office-room-wire"))).toHaveLength(0);
-  expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-count-pill"))).toHaveLength(4);
-  expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-header-surface"))).toHaveLength(view==="isometric"?4:0);
+  expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-count-pill"))).toHaveLength(5);
+  expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-header-surface"))).toHaveLength(view==="isometric"?5:0);
  }
 });
 
@@ -660,7 +660,7 @@ test("Office empty rooms and Done shelf contain no decorative slots (#394)",()=>
    const f=startOfficeRuntime(()=>view);f.api.draw({...snapshot,tasks:Array.from({length:count},(_,index)=>({id:index+1,title:"finished",state:"approved",class:"implement"}))});
    const office=f.get("office"),slotClass=view==="flat"?"office-shelf-card":"office-box-top";
    expect(office.findAll(hasOfficeClass(slotClass))).toHaveLength(Math.min(count,view==="flat"?6:3));
-   expect(office.findAll(node=>node.textContent==="No tasks")).toHaveLength(count?3:4);
+   expect(office.findAll(node=>node.textContent==="No tasks")).toHaveLength(count?4:5);
   }
  }
 });
@@ -762,11 +762,20 @@ const OFFICE_TEXT=["ink","muted"],OFFICE_STATE_TEXT=["green","amber","red","blue
 const OFFICE_SEPARATORS=["line","control-border","hover","panel-soft","panel","control","green-soft","waiting"];
 test("every colour token the Office scene uses is checked at its kind's contrast, in both themes (#469 R5)",()=>{
  const used=new Set([...officeCss().matchAll(/var\(--([a-z0-9-]+)\)/g)].map(match=>match[1]!));
- const known=new Set([...OFFICE_TEXT,...OFFICE_STATE_TEXT,...OFFICE_MARKS,...OFFICE_SEPARATORS]);
+ const known=new Set([...OFFICE_TEXT,...OFFICE_STATE_TEXT,...OFFICE_MARKS,...OFFICE_SEPARATORS,"peer-color"]);
  expect([...used].filter(name=>!known.has(name)),"an Office rule uses a token this test does not classify").toEqual([]);
+ // Dynamic peer colour is only a non-text reservation chip. Its adjacent name uses the checked muted text token.
+ const peerRules=[...officeCss().matchAll(/([^{}]+)\{([^}]+)\}/g)].filter(rule=>rule[2]!.includes("var(--peer-color)"));
+ expect(peerRules.map(rule=>rule[1]!.trim())).toEqual([".office-reserved"]);
+ expect(peerRules[0]![2]).toContain("fill:var(--peer-color)");
+ expect(officeCss()).toContain(".office-state,.office-meta,.office-empty{fill:var(--muted)");
  for(const [theme,block] of [["light",lightBlock()],["dark",darkBlock()]] as const){
   const t=tokenMap(block),surfaces=OFFICE_SURFACES.map(name=>t.get(name)!);
   for(const name of used){
+   if(name==="peer-color"){
+    for(const [peer,palette] of Object.entries(PEER_PALETTE))for(const surface of surfaces)expect(ratio(peerVariant(palette.css,theme),surface),theme+" Office reserved chip "+peer+" on "+surface).toBeGreaterThanOrEqual(3);
+    continue;
+   }
    const value=t.get(name);if(!value)continue; // a token that is not a plain hex (none today) is outside this scan
    const need=OFFICE_TEXT.includes(name)||OFFICE_STATE_TEXT.includes(name)?4.5:OFFICE_MARKS.includes(name)?3:0;
    if(!need)continue;
@@ -814,8 +823,8 @@ test("isometric cards paint by depth across occupied rooms (#394)",()=>{
  const ids=layer.children.map(node=>Number(/^#(\d+) /.exec(node.attrs["aria-label"]!)![1]));
  expect(ids).toHaveLength(9);expect([...ids].sort((a,b)=>a-b)).toEqual([1,2,3,5,6,7,9,10,11]);
  const y=layer.children.map(officeRect).map(rect=>rect.y);expect(y).toEqual([...y].sort((a,b)=>a-b));
- // Construction visits Work before Review; depth order must interleave their visible chips.
- expect(ids.indexOf(9)).toBeLessThan(ids.indexOf(7));
+ // With Backlog first, To do and Work now share overlapping depth bands. Model order visits all To do cards before Work.
+ expect(ids.indexOf(5)).toBeLessThan(ids.indexOf(3));
 });
 
 
