@@ -3,7 +3,13 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { USER } from "../src/hub/envelope.ts";
-import { Board } from "../src/hub/board.ts";
+import { Board, isClosedTaskState } from "../src/hub/board.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { Tasks } from "../src/hub/tasks.ts";
+import { loadRouting } from "../src/hub/routing.ts";
+import { looksSecret } from "@staix/agent-mem";
+import { ASK_NOTE_TITLE } from "../src/hub/ask.ts";
+import { mentionsPrivatePath, withoutPii } from "../src/hub/memory-policy.ts";
 import { ControlWriteTelemetry, controlWriteMetadata, controlWriteSpan } from "../src/hub/control-write-trace.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
@@ -13,23 +19,66 @@ import { paint } from "../src/cli/console-state.ts";
 
 test("control admission precedes argument traversal and both privacy screens", async () => {
   const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8");
-  const from = source.indexOf("  function onControlMessage(");
-  const to = source.indexOf("  function onMessage(", from);
-  expect(from).toBeGreaterThan(0); expect(to).toBeGreaterThan(from);
-  const body = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(from, to));
+  const transpiler = new Bun.Transpiler({ loader: "ts" });
+  const extract = (start: string, end: string) => {
+    const from = source.indexOf(start), to = source.indexOf(end, from);
+    expect(from).toBeGreaterThan(0); expect(to).toBeGreaterThan(from);
+    return source.slice(from, to);
+  };
+  const declaration = (start: string) => extract(start, "\n");
+  const body = transpiler.transformSync(extract("  function onControlMessage(", "  function onMessage("));
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-control-screen-")));
+  const board = new Board(join(root, "hub.db")), bus = new Bus({ batchMs: 0 });
+  const routing = loadRouting(root);
+  const tasks = new Tasks({ board, bus, routing: () => routing, cwd: root, project: "screen-fixture", notify: () => {} });
+  const config = { pii: { paths: [] as string[] }, local: { deny: [] as string[] } };
+  const boundedSafe = new Function("looksSecret", "withoutPii", "mentionsPrivatePath", "activeRouting", "opts", "config", "ASK_NOTE_TITLE",
+    `${transpiler.transformSync(declaration("  const screenMemory =") + declaration("  const boundedSafe ="))}\nreturn boundedSafe;`)
+    (looksSecret, withoutPii, mentionsPrivatePath, () => routing, { cwd: root }, config, ASK_NOTE_TITLE) as (text: string) => boolean;
+  const privacyGuard = new Function("turns", "board", "tasks", "isClosedTaskState",
+    `${transpiler.transformSync(declaration("  const contextPii =") + extract("  function controlWritePrivacyGuard(", "  // #878:"))}\nreturn controlWritePrivacyGuard;`)
+    (new Map(), board, tasks, isClosedTaskState);
   let traversals = 0, screens = 0, dispatches = 0;
   const telemetry = new ControlWriteTelemetry({ emit: () => {} });
+  const publicMetadataText = tasks.publicMetadataText;
+  tasks.publicMetadataText = text => { screens++; return publicMetadataText(text); };
+  const finishes: (() => void)[] = [];
   const handler = new Function("controlWriteMetadata", "controlWriteTelemetry", "controlWritePrivacyGuard", "controlWriteSpan", "tasks", "boundedSafe", "onMessage",
-    `${body}\nreturn onControlMessage;`)(controlWriteMetadata, telemetry, () => () => true, controlWriteSpan,
-    { publicMetadataText: () => { screens++; return true; } }, () => { screens++; return true; },
-    (_socket: unknown, _message: unknown, finish?: () => void) => { dispatches++; finish?.(); });
-  const message = { t: "task", op: "hub_task_propose", get args() { traversals++; return { title: "synthetic input" }; } };
-  handler({ data: { authed: false } }, message);
-  expect([dispatches, traversals, screens]).toEqual([1, 0, 0]);
-  expect(telemetry.status().active).toBe(0);
-  handler({ data: { authed: true, role: "console" } }, message);
-  await Promise.resolve();
-  expect([dispatches, traversals, screens]).toEqual([2, 1, 2]);
+    `${body}\nreturn onControlMessage;`)(controlWriteMetadata, telemetry, privacyGuard, controlWriteSpan, tasks,
+    (text: string) => { screens++; return boundedSafe(text); },
+    (_socket: unknown, _message: unknown, finish?: () => void) => { dispatches++; if (finish) finishes.push(finish); });
+  let title = "synthetic input";
+  const message = { t: "task", op: "hub_task_propose", get args() { traversals++; return { title }; } };
+  const admitted = { data: { authed: true, role: "console" } };
+  const finish = async () => { for (const done of finishes.splice(0)) done(); await Promise.resolve(); };
+  try {
+    handler({ data: { authed: false } }, message);
+    expect([dispatches, traversals, screens]).toEqual([1, 0, 0]);
+    expect(telemetry.status().active).toBe(0);
+    handler(admitted, message);
+    expect([dispatches, traversals, screens]).toEqual([2, 1, 2]);
+    expect(telemetry.status().active).toBe(1);
+    await finish();
+    expect(telemetry.status().active).toBe(0);
+
+    routing.signals.pii_patterns = ["private fixture marker"];
+    title = "private fixture marker";
+    handler(admitted, message);
+    expect([dispatches, traversals, screens]).toEqual([3, 2, 3]);
+    expect(telemetry.status().active).toBe(0);
+    await finish();
+
+    routing.signals.pii_patterns = [];
+    config.local.deny = ["private-area/"];
+    title = "private-area/record.txt";
+    handler(admitted, message);
+    expect([dispatches, traversals, screens]).toEqual([4, 3, 5]);
+    expect(telemetry.status().active).toBe(0);
+    await finish();
+  } finally {
+    await finish(); telemetry.stop(); tasks.stopCiWatchers(); tasks.stopQueuePressureRechecks(); bus.closeJournal(); board.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("an unauthenticated control write keeps its existing wire refusal", async () => {
