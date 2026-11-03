@@ -19,7 +19,9 @@ test("#1055 only hub-title definitions explicitly receive the title tool; global
   expect(ADAPTERS.filter(definition => definition.title === "hub").map(definition => definition.kind).sort()).toEqual(["local", "pi"]);
   expect(TASK_TOOLS.some(tool => tool.name === "hub_set_title")).toBe(false);
   expect(TASK_TOOL_NAMES.has("hub_set_title")).toBe(true);
-  expect(SESSION_TITLE_TOOL.inputSchema.properties.title).toMatchObject({ type: "string", description: expect.stringContaining("1-80 characters after doingText normalization") });
+  const titleSchema = SESSION_TITLE_TOOL.inputSchema.properties.title as { type: string; description: string };
+  expect(titleSchema.type).toBe("string");
+  expect(titleSchema.description).toContain("1-80 characters after doingText normalization");
   expect(SESSION_TITLE_TOOL.inputSchema.properties.title).not.toHaveProperty("maxLength");
   expect(SESSION_TITLE_TOOL.inputSchema.properties.title).not.toHaveProperty("minLength");
   for (const profile of PROFILE_NAMES) for (const definition of ADAPTERS) {
@@ -110,8 +112,12 @@ test("#1055 the real Pi extension checks the current native name at write and pr
     expect(acks.find(ack => ack.id === "agent-after-person")).toMatchObject({ result: { ok: false, reason: "already_named", sessionName: "person replacement" } });
     for (const id of ["stale-session", "stale-turn", "stale-epoch"]) expect(acks.find(ack => ack.id === id)).toMatchObject({ result: { ok: false, reason: "invalid", error: expect.stringContaining("check ahub status") } });
     const nativeFailure = acks.find(ack => ack.id === "native-throw");
-    expect(nativeFailure).toMatchObject({ result: { ok: false, reason: "invalid", mayHaveApplied: true, error: expect.stringContaining("may have been applied; check ahub status") } });
-    expect(JSON.stringify(nativeFailure)).not.toContain("THROW_NATIVE_TITLE_CANARY");
+    const originalNativeError = (nativeFailure?.result as Record<string, unknown> | undefined)?.error;
+    const originalNativeFailure = JSON.stringify(nativeFailure);
+    expect(typeof originalNativeError).toBe("string");
+    expect(originalNativeError).toContain("may have been applied; check ahub status");
+    expect(originalNativeFailure).not.toContain("THROW_NATIVE_TITLE_CANARY");
+    expect(nativeFailure).toMatchObject({ result: { ok: false, reason: "invalid", mayHaveApplied: true } });
     expect(acks.find(ack => ack.id === "invalid-length")).toMatchObject({ result: { ok: false, reason: "invalid", error: expect.stringContaining("1-80 character normalized title") } });
   } finally { renamed.release(); if (child.exitCode === null) { child.kill(); await child.exited; } server.stop(true); }
 }, 10_000);
@@ -205,8 +211,8 @@ test("#1055 Pi title refusals distinguish invalid length, offline and post-dispa
   await f.post("/event", { type: "agent_start", sessionId: f.sessionId, generation: 1 });
   await f.ack(command, { ok: true, sessionId: f.sessionId, sessionName: canary });
   const revoked = await writing;
-  expect(revoked).toMatchObject({ ok: false, reason: "invalid", mayHaveApplied: true, error: expect.stringContaining("changed after dispatch") });
-  if (!revoked.ok) { expect(revoked.error).toContain("may have been applied; check ahub status"); expect(revoked.error).not.toContain(canary); }
+  expect(revoked).toMatchObject({ ok: false, reason: "invalid", mayHaveApplied: true });
+  if (!revoked.ok) { expect(typeof revoked.error).toBe("string"); expect(revoked.error).toContain("changed after dispatch"); expect(revoked.error).toContain("may have been applied; check ahub status"); expect(revoked.error).not.toContain(canary); }
   f.owner.kill(); await f.owner.exited; await f.post("/event", { type: "session_shutdown" });
   expect(await f.peer.setSessionTitle(canary, true)).toMatchObject({ ok: false, reason: "invalid", error: expect.stringContaining("offline or stopped; start or reconnect Pi") });
 });
@@ -216,8 +222,8 @@ test("#1055 a failed native title acknowledgement gives actionable uncertainty w
   const writing = f.peer.setSessionTitle("public name", false), command = await f.next();
   await f.post("/ack", { id: command.id, ok: false, error: "NATIVE_TITLE_ERROR_CANARY" });
   const result = await writing;
-  expect(result).toMatchObject({ ok: false, reason: "invalid", mayHaveApplied: true, error: expect.stringContaining("bridge command failed after dispatch") });
-  if (!result.ok) { expect(result.error).toContain("may have been applied; check ahub status"); expect(result.error).not.toContain("NATIVE_TITLE_ERROR_CANARY"); }
+  expect(result).toMatchObject({ ok: false, reason: "invalid", mayHaveApplied: true });
+  if (!result.ok) { expect(typeof result.error).toBe("string"); expect(result.error).toContain("bridge command failed after dispatch"); expect(result.error).toContain("may have been applied; check ahub status"); expect(result.error).not.toContain("NATIVE_TITLE_ERROR_CANARY"); }
 });
 
 test("#1055 accepted same-session startup resets the native title revision before fresh rename events", async () => {

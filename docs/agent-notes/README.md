@@ -8,6 +8,12 @@ outer observer catch protected settlement but could not finish bookkeeping
 after a journal lookup threw. This is the background for isolating that
 fallible observer work in the bus area note.
 
+Two #1055 refusal tests exposed Bun 1.4.2 replacing a received `error` string
+with the `StringContaining` object supplied to `toMatchObject`. A minimal
+same-version reproduction showed `typeof error` changing from `string` to
+`object`. Preserving the original value keeps later error-text and canary
+checks meaningful; changing production messages would not address this cause.
+
 On 2026-10-13, two PR #368 reviews found that a missing delivery id or a missing visible row could select another Queue row. The console navigation rule in daemon.md records the exact-row contract. The missing-row and ID-less secondary-delivery regression tests demonstrate both cases.
 
 Background behind some of the rules, moved from the top-level README on 2026-10-16:
