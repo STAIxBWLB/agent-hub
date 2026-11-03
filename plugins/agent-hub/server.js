@@ -12248,7 +12248,7 @@ var init_hook_contract = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/hook-spool.ts
-var RECORD_BYTES, MAX_BYTES6, DRAIN_BYTES, CAPACITY_BYTES, RETIRE_AFTER_MS;
+var RECORD_BYTES, MAX_BYTES6, HOOK_REPLAY_MAX_BYTES, CAPACITY_BYTES, RETIRE_AFTER_MS;
 var init_hook_spool = __esm(() => {
   init_formats();
   init_capture_input();
@@ -12263,7 +12263,7 @@ var init_hook_spool = __esm(() => {
   init_hook_contract();
   RECORD_BYTES = HOOK_INPUT_BYTES + 8192;
   MAX_BYTES6 = 2 * 1024 * 1024;
-  DRAIN_BYTES = 256 * 1024;
+  HOOK_REPLAY_MAX_BYTES = 256 * 1024;
   CAPACITY_BYTES = 256 * 1024;
   RETIRE_AFTER_MS = 7 * 24 * 3600000;
 });
@@ -12310,6 +12310,7 @@ var init_hook_jcode = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/hooks.ts
+var hookStartedAt;
 var init_hooks = __esm(() => {
   init_hook_project();
   init_hook_native();
@@ -12325,6 +12326,7 @@ var init_hooks = __esm(() => {
   init_config();
   init_hook_contract();
   init_hook_contract();
+  hookStartedAt = performance.now();
 });
 
 // node_modules/@staix/agent-mem/src/ingest.ts
@@ -12489,7 +12491,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.2"
     },
     dependencies: {
-      "@staix/agent-mem": "0.19.0"
+      "@staix/agent-mem": "0.20.0"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
