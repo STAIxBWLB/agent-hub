@@ -102,6 +102,8 @@ export interface PrEvidence {
   mergeCommit?: string;
   /** #786: the PR's head branch name, read so a release branch is refused; never used as an identity. */
   headBranch?: string;
+  /** #1057: when GitHub says the PR was merged or closed (ms), read for the worktree shelf's rule 3 only; absent while open or when GitHub gave none. */
+  changedAt?: number;
 }
 const sha = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
 const repo = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.startsWith("-");
@@ -326,6 +328,12 @@ export function planningIssueReceipt(value: unknown, previous: SdlcReceipt | und
 }
 
 
+/** #1057: the merged or closed time GitHub reports, in ms, only for a PR that is no longer open; a missing, malformed or non-finite value is undefined, never 0. */
+function prChangedAt(p: Record<string, any>): number | undefined {
+  const text = p.state === "MERGED" ? p.mergedAt ?? p.closedAt : p.state === "CLOSED" ? p.closedAt : undefined;
+  const at = typeof text === "string" && text.length <= 40 ? Date.parse(text) : NaN;
+  return Number.isFinite(at) && at > 0 ? at : undefined;
+}
 export function parsePrEvidence(value: unknown): PrEvidence {
   const p = value as Record<string, any>;
   if (!p || !sha(p.headRefOid) || !["OPEN", "CLOSED", "MERGED"].includes(p.state) || !Array.isArray(p.statusCheckRollup) || !Array.isArray(p.files) || p.files.length > 1000) throw new Error("PR readback: invalid or incomplete structured evidence");
@@ -344,6 +352,7 @@ export function parsePrEvidence(value: unknown): PrEvidence {
     pendingReviews: Array.isArray(p.reviewRequests) && p.reviewRequests.length <= 100 && p.reviewRequests.every((r: unknown) => !!r && typeof r === "object") ? p.reviewRequests.length : null,
     unresolved: Number.isSafeInteger(p.unresolvedThreads) && p.unresolvedThreads >= 0 ? p.unresolvedThreads : null,
     ...(sha(p.mergeCommit?.oid) ? { mergeCommit: p.mergeCommit.oid } : {}),
+    ...(prChangedAt(p) !== undefined ? { changedAt: prChangedAt(p)! } : {}),
     ...(typeof p.headRefName === "string" && p.headRefName && p.headRefName.length <= 200 && !/[\x00-\x1f\x7f]/.test(p.headRefName) ? { headBranch: p.headRefName } : {}) };
 }
 
@@ -485,7 +494,7 @@ export function linkedReceipt(previous: SdlcReceipt | undefined, link: { repo: s
 export async function readSdlcPr(receipt: SdlcReceipt, run: SdlcGh = sdlcGh, withIntegrity = false): Promise<PrEvidence | undefined> {
   if (!repo(receipt.repo) || !id(receipt.pr)) return undefined;
   try {
-    const view = await run(["pr", "view", String(receipt.pr), "--repo", receipt.repo, "--json", "headRefOid,state,statusCheckRollup,reviewDecision,reviewRequests,files,changedFiles,mergeCommit,isDraft,baseRefName,baseRefOid,headRefName"]);
+    const view = await run(["pr", "view", String(receipt.pr), "--repo", receipt.repo, "--json", "headRefOid,state,statusCheckRollup,reviewDecision,reviewRequests,files,changedFiles,mergeCommit,isDraft,baseRefName,baseRefOid,headRefName,mergedAt,closedAt"]);
     if (view.code !== 0) return undefined;
     const [owner, name] = receipt.repo.split("/");
     // The enabled S4 label read shares the existing thread snapshot, never a second readback for a known non-bug.

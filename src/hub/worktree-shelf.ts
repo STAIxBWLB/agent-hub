@@ -35,7 +35,7 @@ export interface WorktreeFact {
   /** False when the commit time or the index could not be read (a failed git call or a spent budget): such a row is never settled by a PR or by quiet time, because 'no newer work' is unknown. */
   activityKnown?: boolean;
   /** `private`: the bound task is a PII task. The binding still drives the partition and tidy's refusals on the host, but `row()` never puts its id, PR or state in a reply. */
-  task?: { id: number; state: string; pr?: number; private?: true };
+  task?: { id: number; state: string; pr?: number; repo?: string; private?: true };
   pr: { state: PrState; changedAt?: number };
 }
 /** A row built for a reply. A PII-bound row carries `private: true` and `taskState: "private"` and no task id or PR. This is the one place a reply row is made, so redaction happens here (AGENTS.md), never at a call site. */
@@ -103,8 +103,8 @@ export function boundTask(tasks: readonly Pick<Task, "id" | "state" | "refs" | "
   if (!matching.length) return undefined;
   const closed = (state: string) => state === "approved" || state === "cancelled";
   const pick = [...matching].sort((a, b) => Number(closed(a.state)) - Number(closed(b.state)) || b.updated - a.updated)[0]!;
-  const pr = pick.sdlc?.pr;
-  return { id: pick.id, state: pick.state, ...(typeof pr === "number" ? { pr } : {}), workAt: taskWorkAt(pick) };
+  const pr = pick.sdlc?.pr, repo = pick.sdlc?.repo;
+  return { id: pick.id, state: pick.state, ...(typeof pr === "number" ? { pr } : {}), ...(typeof repo === "string" && typeof pr === "number" ? { repo } : {}), workAt: taskWorkAt(pick) };
 }
 
 /**
@@ -112,11 +112,17 @@ export function boundTask(tasks: readonly Pick<Task, "id" | "state" | "refs" | "
  * touches only the board, so the PR can still be open on GitHub), and a task with no record says nothing either: both are `unknown`. Only the explicit refresh
  * action, which reads GitHub, may learn `closed` or `open` (a later change).
  */
-export function prFromTask(task: Pick<Task, "state" | "sdlc" | "history"> | undefined): WorktreeFact["pr"] {
+export function prFromTask(task: Pick<Task, "state" | "sdlc" | "history"> | undefined, observed?: PrObserver): WorktreeFact["pr"] {
   const merge = task?.sdlc?.merge;
   if (merge && merge.state === "merged" && Number.isFinite(merge.at)) return { state: "merged", changedAt: merge.at };
+  // A PR state the person asked the hub to read (the explicit refresh action) is a stored fact, never fetched here: this module has no GitHub access (AC5).
+  const repo = task?.sdlc?.repo, pr = task?.sdlc?.pr;
+  const seen = typeof repo === "string" && typeof pr === "number" ? observed?.(repo, pr) : undefined;
+  if (seen) return { state: seen.state, ...(seen.changedAt !== undefined && seen.state !== "open" ? { changedAt: seen.changedAt } : {}) };
   return { state: "unknown" };
 }
+/** The stored result of an explicit PR refresh for one repository and PR number, or undefined when none was read. */
+export type PrObserver = (repo: string, pr: number) => { state: "open" | "merged" | "closed"; changedAt?: number } | undefined;
 
 export interface RawWorktree { path: string; branch: string | null; head: string; locked: boolean; prunable: boolean }
 /** `git worktree list --porcelain -z`: one NUL-separated field per attribute, an empty field ends a record. Bounded. */
@@ -175,6 +181,8 @@ export interface ShelfInput {
   isPrivate?: (taskId: number) => boolean;
   /** Resolved instance worktree paths (`.worktrees/<instance>`): never shelved. */
   instancePaths: readonly string[];
+  /** Stored PR observations (D1); called after the git reads, in the same synchronous segment as `tasks`. */
+  observed?: PrObserver;
   git?: ShelfGitPort;
   now?: () => number;
   budgetMs?: number;
@@ -230,8 +238,8 @@ export async function readWorktreeFacts(input: ShelfInput): Promise<ShelfFacts> 
       path, branch: raw.branch, head: raw.head, locked: raw.locked, prunable: raw.prunable,
       main: path === root, instance: instances.has(path),
       lastActiveAt: Math.max(probe?.commitAt ?? 0, probe?.touched ?? 0, task?.workAt ?? 0), activityKnown: probe?.known === true,
-      ...(task ? { task: { id: task.id, state: task.state, ...(task.pr !== undefined ? { pr: task.pr } : {}), ...(task && input.isPrivate?.(task.id) ? { private: true as const } : {}) } } : {}),
-      pr: prFromTask(bound),
+      ...(task ? { task: { id: task.id, state: task.state, ...(task.pr !== undefined ? { pr: task.pr } : {}), ...(task.repo !== undefined ? { repo: task.repo } : {}), ...(input.isPrivate?.(task.id) ? { private: true as const } : {}) } } : {}),
+      pr: prFromTask(bound, input.observed),
     });
   });
   return { facts, complete: parsed.complete && !cut && !unread, available: true };

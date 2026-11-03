@@ -104,7 +104,7 @@ function startOfficeRuntime(view: () => string, measurement?: (text:string,font:
     const empty=(target,text)=>target.append(el('p',text));
     const badge=(text)=>el('span',text),dot=()=>el('span'),peerDot={},taskBadge={};
     const button=(text)=>{const node=el('button',text);node.type='button';return node;};
-    const notice=()=>{},syncStarts=()=>{},renderStarts=()=>{},renderTaskProgress=()=>{},renderApprovals=()=>{},renderBench=()=>{},renderMemory=()=>{},renderSettings=()=>{},renderTaskStage=()=>el('div'),peerOptions=()=>{},restoreDraft=()=>{},refreshRelativeTimes=()=>{},refreshStreamEmpty=()=>{},applyStreamFilter=()=>{},syncMutationControls=()=>{};
+    const notice=()=>{},syncStarts=()=>{},renderStarts=()=>{},renderTaskProgress=()=>{},renderApprovals=()=>{},renderBench=()=>{},renderWorktrees=()=>{},renderMemory=()=>{},renderSettings=()=>{},renderTaskStage=()=>el('div'),peerOptions=()=>{},restoreDraft=()=>{},refreshRelativeTimes=()=>{},refreshStreamEmpty=()=>{},applyStreamFilter=()=>{},syncMutationControls=()=>{};
     const time=()=>'',rel=()=>'soon';
     const action=async()=>false;
     ${scope}

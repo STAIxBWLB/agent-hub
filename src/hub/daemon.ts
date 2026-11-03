@@ -177,6 +177,7 @@ import { AUTONOMY_UNDO, autonomyOwnershipDigest, autonomyUndoKeys, writeAutonomy
 import { githubOriginRepository, githubRemoteRepository } from "./task-repository.ts";
 import { TaskWorktrees, originVerdict } from "./task-worktree.ts";
 import { displayPath, shelfInsideRoot, partition, readWorktreeFacts, type ShelfRow } from "./worktree-shelf.ts";
+import { PrObservations, refreshPrStates, refreshTargets } from "./worktree-prs.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -389,7 +390,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "specs", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet"];
+const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "specs", "checks", "snapshots", "worktrees", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet"];
 
 /** Older targets parse raw keys before placement/trust checks, so even an empty or refused declaration needs the floor. */
 function rawResearchRunnersPresent(cwd: string): boolean {
@@ -668,6 +669,8 @@ export interface DaemonOptions {
   snapshotClock?: () => number;
   /** Host-only seam (#1057): the shelf's read-only git port; tests hold a slow or failing one. Production leaves it unset, never read from configuration or a request. */
   worktreeShelfGit?: import("./worktree-shelf.ts").ShelfGitPort;
+  /** Host-only test seam: the `gh` runner the explicit PR refresh uses. Never read from configuration or a request. */
+  worktreeShelfGh?: import("./sdlc.ts").SdlcGh;
   /** Host-only bounds of the per-head CI watcher (#785 P1b); tests shorten them, never read from config or a tool. */
   ciWatch?: { deadlineMs?: number; pollMs?: number };
   checkoutBranch?: typeof mainCheckoutBranch;
@@ -6968,6 +6971,77 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return snapshot;
   }
+  // #1057: the worktree shelf, shared by the control ops, the dashboard actions and the snapshot's cached read. Git reads are asynchronous and budgeted (D1), so the
+  // event loop is never held; everything after them runs in one synchronous segment where the fence is asked again and the board is read and written with nothing
+  // awaited in between. A GitHub call happens only in `worktrees_refresh_prs`: neither a snapshot, nor `ahub worktrees`, nor the inbox alert can reach it (AC5).
+  const prObservations = new PrObservations();
+  const SHELF_CACHE_MS = 30_000;
+  let shelfCache: { at: number; value: Record<string, unknown> } | undefined;
+  let shelfWarming: Promise<unknown> | undefined;
+  let prRefreshBusy = false;
+  async function worktreeShelf(request: { t: unknown; path?: unknown; value?: unknown }): Promise<Record<string, unknown>> {
+    const t = String(request.t);
+    const refuse = (error: string) => ({ t, ok: false, error });
+    if (recoveryActive() || stopping) return refuse("recovery or shutdown is holding the worktree shelf; retry once the hub is running");
+    const wanted = typeof request.path === "string" && request.path.length <= 4096 ? request.path : "";
+    const refresh = t === "worktrees_refresh_prs";
+    if (refresh) { if (prRefreshBusy) return refuse("a PR refresh is already running; wait for it to finish"); prRefreshBusy = true; }
+    try {
+      const instancePaths = Object.values(config.instances ?? {}).flatMap(instance => instance.worktree ? [resolve(opts.cwd, instance.worktree)] : []);
+      // A PII task still binds its worktree on the host, so its state keeps the worktree live and tidy refuses it; the reply row built by the shelf redacts its id, PR and state (AGENTS.md: redact where the view is built).
+      const read = () => readWorktreeFacts({ root: opts.cwd, tasks: () => board.list(), isPrivate: id => { const task = board.get(id); return !task || tasks.isPii(task); }, instancePaths, observed: prObservations.observer, ...(opts.worktreeShelfGit ? { git: opts.worktreeShelfGit } : {}) });
+      const fenced = () => recoveryActive() || stopping ? refuse("recovery or shutdown began while the worktrees were read; retry once the hub is running") : undefined;
+      let facts = await read();
+      if (fenced()) return fenced()!;
+      if (!facts.available) return refuse("git could not list this project's worktrees; check that the project is a git repository and git is on PATH");
+      let refreshed: { read: number; failed: number; skipped: number } | undefined;
+      if (refresh) {
+        // The explicit action: bounded, on demand, through readSdlcPr with the host's own gh runner. Its result is stored, then the rows are read again so they partition with it.
+        const gh = opts.worktreeShelfGh ?? ((args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound));
+        refreshed = await refreshPrStates(refreshTargets(facts.facts), gh, prObservations);
+        if (fenced()) return fenced()!;
+        facts = await read();
+        if (fenced()) return fenced()!;
+        if (!facts.available) return refuse("git could not list this project's worktrees; check that the project is a git repository and git is on PATH");
+      }
+      if (t === "worktree_override_set" || t === "worktree_override_clear") {
+        // The path must be one the shelf listed: as typed, by its real path (a nonexistent path is simply not listed), or by the project-relative name the panel shows when that names exactly one row.
+        const real = (() => { try { return wanted ? realPath(wanted) : undefined; } catch { return undefined; } })();
+        const byName = wanted ? facts.facts.filter(f => displayPath(opts.cwd, f.path) === wanted) : [];
+        const matches = facts.facts.filter(f => wanted && (f.path === wanted || f.path === real));
+        if (!matches.length && byName.length > 1) return refuse("that name matches more than one worktree; use ahub worktrees to list them");
+        const known = matches[0] ?? (byName.length === 1 ? byName[0] : undefined);
+        if (!known) return refuse("that path is not a worktree of this project; list them with ahub worktrees");
+        if (t === "worktree_override_set") {
+          if (request.value !== "settled" && request.value !== "active") return refuse("value is settled (park) or active (pin)");
+          if (known.main || known.instance) return refuse("the main checkout and instance worktrees are never shelved");
+          board.setWorktreeOverride(known.path, request.value, Date.now());
+        } else board.clearWorktreeOverride(known.path);
+        // Only rows whose activity was actually read can make an override inert: an unread row's time is not a fact.
+        board.pruneInertWorktreeOverrides(new Map(facts.facts.filter(f => f.activityKnown !== false).map(f => [f.path, f.lastActiveAt])));
+      }
+      const quietDays = config.worktrees?.quiet_days ?? 7, alertOver = config.worktrees?.alert_over ?? 10;
+      const split = partition(facts.facts, board.worktreeOverrides(), Date.now(), quietDays);
+      const shown = (rows: ShelfRow[]) => rows.map(r => ({ ...r, path: displayPath(opts.cwd, r.path), ...(shelfInsideRoot(opts.cwd, r.path) ? {} : { outside: true as const }) }));
+      const out = { t, ok: true, live: shown(split.live), settled: shown(split.settled), complete: facts.complete, quietDays, alertOver, ...(prObservations.lastAt !== undefined ? { prsReadAt: prObservations.lastAt } : {}), ...(refreshed ? { refreshed } : {}) };
+      shelfCache = { at: Date.now(), value: out };
+      return out;
+    } finally { if (refresh) prRefreshBusy = false; }
+  }
+  /** The dashboard snapshot's `worktrees`: only for the Agents view, from a cache at most `SHELF_CACHE_MS` old that a background read refreshes. It never waits for git and never reads GitHub. */
+  function worktreesView(wanted: boolean): Record<string, unknown> | undefined {
+    if (!wanted || stopping || recoveryActive()) return undefined;
+    if ((!shelfCache || Date.now() - shelfCache.at >= SHELF_CACHE_MS) && !shelfWarming) {
+      shelfWarming = worktreeShelf({ t: "worktrees" }).then(
+        out => { if (out.ok !== true) shelfCache = { at: Date.now(), value: { unavailable: true } }; },
+        () => { shelfCache = { at: Date.now(), value: { unavailable: true } }; },
+      ).finally(() => { shelfWarming = undefined; });
+    }
+    if (!shelfCache) return { pending: true };
+    const { t: _t, ok: _ok, ...view } = shelfCache.value;
+    return view;
+  }
+
   function uiSnapshot(after: number, _input?: Record<string, unknown>, session?: DashboardSession) {
     const quota = budget.status();
     const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];
@@ -7075,6 +7149,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ...benchView(),
       ...memoryView(_input?.memory),
       usage: usageView(_input?.view === "agents"),
+      worktrees: worktreesView(_input?.view === "agents"),
     };
   }
 
@@ -7907,6 +7982,16 @@ export async function startDaemon(opts: DaemonOptions) {
         return a.undo === true ? settingsUndoPreview() : settingsPreview(a.key, a.value);
       case "setting_reload":
         return reloadConfig(authority);
+      case "worktree_override_set":
+      case "worktree_override_clear":
+      case "worktrees_refresh_prs": {
+        // The person's console and the dashboard session the manager forwards for it; a live-test dashboard never reaches this (ui.ts allowlist), and is refused here too.
+        if (session?.liveTest) return { ok: false, error: "live-test dashboard cannot change the worktree shelf" };
+        const out = await worktreeShelf({ t: a.action, path: a.path, value: a.value });
+        if (out.ok !== true) return { ok: false, error: String(out.error ?? "the worktree shelf could not be read") };
+        const r = out.refreshed as { read: number; failed: number; skipped: number } | undefined;
+        return { ok: true, text: r ? `Read ${r.read} PR state${r.read === 1 ? "" : "s"}${r.failed ? `, ${r.failed} unreadable` : ""}${r.skipped ? `, ${r.skipped} left for the next refresh` : ""}.` : a.action === "worktree_override_set" ? "Worktree moved." : "Worktree override cleared." };
+      }
       case "config_edit_preview":
         return configEditor!.preview(a.edit, authority);
       case "config_edit_apply":
@@ -9749,39 +9834,16 @@ export async function startDaemon(opts: DaemonOptions) {
         setTimeout(() => void stop().catch((error) => log(`shutdown incomplete: ${(error as Error).message}`)), 0);
         return;
       // #1057: the worktree shelf. `worktrees` is a read (facts and the derived partition, never a GitHub call); `worktree_override_set|clear` write the person's
-      // park or pin. Console role only, always answered (rid). The daemon deletes no worktree and no branch: removal is the person's CLI process (AC4).
+      // park or pin; `worktrees_refresh_prs` is the one explicit action that reads GitHub. Console role only except the read, always answered (rid). The daemon deletes
+      // no worktree and no branch: removal is the person's CLI process (AC4).
       case "worktrees":
       case "worktree_override_set":
-      case "worktree_override_clear": {
-        // The read is open to an agent (it can preview a tidy); setting or clearing an override is the person's.
+      case "worktree_override_clear":
+      case "worktrees_refresh_prs": {
+        // The read is open to an agent (it can preview a tidy); setting or clearing an override and the GitHub refresh are the person's.
         const person = c.role === "console";
         if (!person && (msg.t !== "worktrees" || c.role !== "tools" || !c.peer || turns.get(c.peer)?.private)) return void reply({ t: msg.t, ok: false, error: "the worktree shelf is the person's: ask them to run ahub worktrees" });
-        if (recoveryActive() || stopping) return void reply({ t: msg.t, ok: false, error: "recovery or shutdown is holding the worktree shelf; retry once the hub is running" });
-        const request = msg, wanted = typeof request.path === "string" && request.path.length <= 4096 ? request.path : "";
-        // The git reads are asynchronous and budgeted (D1), so the event loop is never held and every other control request is answered meanwhile. Everything after
-        // them runs in one synchronous segment: the fence is asked again, and the board is read and written with nothing awaited in between.
-        void (async () => {
-          const instancePaths = Object.values(config.instances ?? {}).flatMap(instance => instance.worktree ? [resolve(opts.cwd, instance.worktree)] : []);
-          // A PII task still binds its worktree on the host, so its state keeps the worktree live and tidy refuses it; the reply row built by the shelf redacts its id, PR and state (AGENTS.md: redact where the view is built).
-          const facts = await readWorktreeFacts({ root: opts.cwd, tasks: () => board.list(), isPrivate: id => { const task = board.get(id); return !task || tasks.isPii(task); }, instancePaths, ...(opts.worktreeShelfGit ? { git: opts.worktreeShelfGit } : {}) });
-          if (recoveryActive() || stopping) return reply({ t: request.t, ok: false, error: "recovery or shutdown began while the worktrees were read; retry once the hub is running" });
-          if (!facts.available) return reply({ t: request.t, ok: false, error: "git could not list this project's worktrees; check that the project is a git repository and git is on PATH" });
-          if (request.t !== "worktrees") {
-            // The path must be one the shelf listed: compared as typed and, when it exists, by its real path (a nonexistent path is simply not listed).
-            const known = wanted ? facts.facts.find(f => f.path === wanted || f.path === (() => { try { return realPath(wanted); } catch { return undefined; } })()) : undefined;
-            if (!known) return reply({ t: request.t, ok: false, error: "that path is not a worktree of this project; list them with ahub worktrees" });
-            if (request.t === "worktree_override_set") {
-              if (request.value !== "settled" && request.value !== "active") return reply({ t: request.t, ok: false, error: "value is settled (park) or active (pin)" });
-              if (known.main || known.instance) return reply({ t: request.t, ok: false, error: "the main checkout and instance worktrees are never shelved" });
-              board.setWorktreeOverride(known.path, request.value, Date.now());
-            } else board.clearWorktreeOverride(known.path);
-            // Only rows whose activity was actually read can make an override inert: an unread row's time is not a fact.
-            board.pruneInertWorktreeOverrides(new Map(facts.facts.filter(f => f.activityKnown !== false).map(f => [f.path, f.lastActiveAt])));
-          }
-          const split = partition(facts.facts, board.worktreeOverrides(), Date.now(), config.worktrees?.quiet_days ?? 7);
-          const shown = (rows: ShelfRow[]) => rows.map(r => ({ ...r, path: displayPath(opts.cwd, r.path), ...(shelfInsideRoot(opts.cwd, r.path) ? {} : { outside: true as const }) }));
-          reply({ t: request.t, ok: true, live: shown(split.live), settled: shown(split.settled), complete: facts.complete });
-        })().catch(() => reply({ t: request.t, ok: false, error: "the worktree shelf could not be read; inspect the hub log" }));
+        void worktreeShelf({ t: msg.t, path: msg.path, value: msg.value }).then(reply, () => reply({ t: msg.t, ok: false, error: "the worktree shelf could not be read; inspect the hub log" }));
         return;
       }
       // #604 (agent-hub#1030): another project's daemon hands us a task, or reports a state change of one we handed it. Console role only (the same token and the same machine user as every

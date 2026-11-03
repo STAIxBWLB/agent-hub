@@ -46,10 +46,10 @@ export interface ConsolePlugin {
 
 const TITLES: Record<(typeof DASHBOARD_VIEWS)[number], string> = { board: "Board", office: "Office", stream: "Stream", agents: "Agents", message: "Message", memory: "Memory", settings: "Settings" };
 /** The dashboard's own actions plus the inbox verbs; the manager whitelist is still applied to each forwarded call. */
-const FORWARDED = ["start", "stop", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release"] as const;
+const FORWARDED = ["start", "stop", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release", "worktree_override_set", "worktree_override_clear", "worktrees_refresh_prs"] as const;
 const INBOX_VERBS = ["approve", "deny", "open"] as const;
 /** Outward or destructive: answered needsConfirm first (agent-console AGENTS.md); previews are read-only and stay direct. */
-const CONFIRMED = new Set(["stop", "permit", "setting", "setting_undo", "setting_reload", "config_edit_apply", "start_peer", "backlog_split", "send", "approve", "deny"]);
+const CONFIRMED = new Set(["stop", "permit", "setting", "setting_undo", "setting_reload", "config_edit_apply", "start_peer", "backlog_split", "send", "approve", "deny", "worktree_override_set", "worktrees_refresh_prs"]);
 const fingerprintOf = (input: Record<string, unknown>) => {
   const { confirmed: _c, fingerprint: _f, reason: _r, ...rest } = input;
   return createHash("sha256").update(JSON.stringify(Object.keys(rest).sort().map((key) => [key, rest[key]]))).digest("hex");
@@ -176,6 +176,17 @@ export function createProvider(options: { home: string; registry?: Registry; lif
           verbs: [...(allow ? [{ id: "approve", label: "Allow once", primary: true }] : []), ...(deny ? [{ id: "deny", label: "Deny", destructive: true }] : [])],
           link: { panel: "agents", params: { project: project.id } } });
       }
+      // #1057 D4: one alert when the shelf holds more settled worktrees than `worktrees.alert_over` (0 = never). Counts only: no path, branch or title, and no action
+      // beyond opening the panel, because removal is the person's `ahub worktrees tidy` and never a button.
+      const shelf = snap.worktrees as { settled?: unknown[]; alertOver?: number } | undefined;
+      const settledCount = Array.isArray(shelf?.settled) ? shelf!.settled.length : 0;
+      if (typeof shelf?.alertOver === "number" && shelf.alertOver > 0 && settledCount > shelf.alertOver) {
+        const id = `worktrees:${project.id}`;
+        const at = seen.get(id) ?? new Date().toISOString();
+        seen.set(id, at);
+        items.push({ id, group: "alert", kind: "worktrees", title: `${settledCount} settled worktrees`, detail: `More than ${shelf.alertOver}. Review them in Agents, then run ahub worktrees tidy.`, project: name, at,
+          chip: { text: "worktrees", tone: "warn" }, verbs: [{ id: "open", label: "Open Agents", primary: true }], link: { panel: "agents", params: { project: project.id } } });
+      }
       for (const t of (snap.tasks as { id: number; title: string; state: string; reviewer: string | null; owner: string | null }[] | undefined) ?? []) {
         if (t.state !== "in_review" || t.reviewer !== "user") continue;
         const id = `review:${project.id}:${t.id}`;
@@ -231,7 +242,7 @@ export function createProvider(options: { home: string; registry?: Registry; lif
   /** approve/deny resolve to the hub's own `permit` with the request's option; nothing else is reachable from an item. */
   async function inboxVerb(input: Record<string, unknown>): Promise<ActionResult> {
     const m = typeof input.id === "string" ? /^perm:([^:]+):(.+)$/.exec(input.id) : null;
-    if (input.action === "open") return { ok: true, message: "Open the Board panel to review." };
+    if (input.action === "open") return { ok: true, message: typeof input.id === "string" && input.id.startsWith("worktrees:") ? "Open the Agents panel to review the shelf." : "Open the Board panel to review." };
     if (!m) return { ok: false, error: "unknown inbox item" };
     const project = (await running()).find((p) => p.id === m[1]);
     if (!project) return { ok: false, error: "project is not running" };

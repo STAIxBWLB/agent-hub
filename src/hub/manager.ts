@@ -128,8 +128,10 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
         await bounded(lifecycle.stopProject(project, input.instanceId), 20_000);
         return { ok: true };
       }
+      // #1057: the worktree shelf's person actions. The refresh is the one that reads GitHub, so it gets the delivery reads' deadline in its own branch below.
+      const worktreeAction = ["worktree_override_set", "worktree_override_clear", "worktrees_refresh_prs"].includes(String(input.action));
       // The settings actions (#269) reach the project hub as an ordinary session's: this dashboard opens no settings session.
-      if (!["snapshot", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release"].includes(String(input.action))) return { ok: false, error: "invalid dashboard action" };
+      if (!["snapshot", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release"].includes(String(input.action)) && !worktreeAction) return { ok: false, error: "invalid dashboard action" };
       client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: input.instanceId });
       const deliveryRead = input.action === "sdlc_queue" || input.action === "sdlc_release";
       let nominalMs = 10_000;
@@ -137,6 +139,7 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
       else if (input.action === "backlog_split") nominalMs = BACKLOG_SPLIT_SCREEN_TIMEOUT_MS + HUB_DB_BUSY_TIMEOUT_MS + 5_000;
       else if (input.action === "intake") nominalMs = 90_000; // the CLI intake cap, including the hub model's bounded split
       else if (deliveryRead) nominalMs = 30_000;
+      else if (input.action === "worktrees_refresh_prs") nominalMs = 40_000; // up to 25 s of bounded gh reads plus two git passes
       const timeoutMs = options.forwardTimeoutMs?.(String(input.action), nominalMs) ?? nominalMs;
       const result = await client.request(input.action === "snapshot"
         ? { t: "ui_snapshot", after: input.after ?? 0, ...(input.memory !== undefined ? { memory: input.memory } : {}), ...(dashboardView(input.view) ? { view: input.view } : {}) }
