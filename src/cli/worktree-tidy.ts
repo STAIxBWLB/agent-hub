@@ -151,6 +151,8 @@ export const realTidyGit = (spawn: (argv: string[], cwd: string) => { status: nu
   run(cwd, args) {
     const write = args[0] === "worktree" && args[1] === "remove" || args[0] === "branch" && args[1] === "-d";
     if (write) assertRemovalArgv(["-C", cwd, ...args]); // a removal always runs in the project root, with the worktree path or branch as its operand
-    return spawn(["-C", cwd, "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], cwd);
+    // `--no-optional-locks`: a plain `git status` rewrites the worktree's own index file, which is exactly what the shelf reads as activity (D1). Without it a tidy
+    // preview would make every settled worktree look freshly edited, and it would leave the shelf on the next read. The preview must not change what it measures.
+    return spawn(["--no-optional-locks", "-C", cwd, "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], cwd);
   },
 });
