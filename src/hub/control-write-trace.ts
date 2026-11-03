@@ -17,6 +17,7 @@ export const CONTROL_WRITE_LOOP_DELAY_MS = 250;
 export const CONTROL_WRITE_SAMPLE_MS = 100;
 export const CONTROL_WRITE_MAX_LINE_BYTES = 2_048;
 export const CONTROL_WRITE_MAX_DURATION_MS = 86_400_000;
+export const CONTROL_WRITE_REQUEST_MAX_AGE_MS = 5 * 60_000;
 
 const MAX_ACTIVE_REQUESTS = 128;
 const MAX_ACTIVE_SPANS = 256;
@@ -159,6 +160,7 @@ export class ControlWriteTelemetry {
   private lastNow = 0;
   private stopped = false;
   private completedRequests = 0;
+  private expiredRequests = 0;
   private slowRequests = 0;
   private blockedLoopSamples = 0;
   private droppedActive = 0;
@@ -180,16 +182,20 @@ export class ControlWriteTelemetry {
   }
 
   /** Wrap a synchronous or asynchronous operation without changing its result or exception. */
-  run<T>(metadata: ControlWriteMetadata, privacyCurrent: ControlWritePrivacy, fn: () => T): T {
+  run<T>(metadata: ControlWriteMetadata, privacyCurrent: ControlWritePrivacy, fn: () => T, inputPublic?: ControlWritePrivacy): T {
     if (this.stopped) return fn();
     const safeMetadata = this.safeMetadata(metadata);
     if (!safeMetadata || typeof privacyCurrent !== "function") {
       this.droppedMetadata++;
       return fn();
     }
-    if (!this.privateNow(privacyCurrent)) return fn();
-    if (this.requests.size >= this.maxActiveRequests) { this.droppedActive++; return fn(); }
     const now = this.readNow();
+    this.expireRequests(now);
+    if (this.requests.size >= this.maxActiveRequests) { this.droppedActive++; return fn(); }
+    if (!this.privateNow(privacyCurrent)) return fn();
+    const inputVisible = !inputPublic || this.privateNow(inputPublic);
+    inputPublic = undefined; // The admission-only callback may carry raw input; never retain it in a trace.
+    if (!inputVisible) return fn();
     const request: RequestTrace = {
       telemetry: this, metadata: safeMetadata, privacyCurrent,
       startedAt: now, phases: new Map(), phaseOrder: [], settled: false, privacySuppressed: false,
@@ -209,13 +215,17 @@ export class ControlWriteTelemetry {
   }
 
   /** Observe a daemon boundary; work outside a control request is labelled as background. */
-  observe<T>(phase: ControlWritePhase, privacyCurrent: ControlWritePrivacy, fn: () => T): T {
+  observe<T>(phase: ControlWritePhase, privacyCurrent: ControlWritePrivacy, fn: () => T, inputPublic?: ControlWritePrivacy): T {
+    if (this.stopped) return fn();
     const current = currentTrace.getStore();
     if (current?.telemetry === this && !current.settled) {
-      if (!this.privateNow(privacyCurrent)) current.privacySuppressed = true;
+      if (current.privacySuppressed) return fn();
+      const inputVisible = this.privateNow(privacyCurrent) && (!inputPublic || this.privateNow(inputPublic));
+      inputPublic = undefined;
+      if (!inputVisible) current.privacySuppressed = true;
       return controlWriteSpan(phase, fn);
     }
-    return this.run({ kind: "background" }, privacyCurrent, () => controlWriteSpan(phase, fn));
+    return this.run({ kind: "background" }, privacyCurrent, () => controlWriteSpan(phase, fn), inputPublic);
   }
 
   /** Start one unref'd event-loop delay probe for the daemon. */
@@ -238,6 +248,7 @@ export class ControlWriteTelemetry {
   sample(): void {
     if (this.stopped) return;
     const now = this.readNow(), expected = this.nextSampleAt ?? now;
+    this.expireRequests(now);
     this.nextSampleAt = now + CONTROL_WRITE_SAMPLE_MS;
     const delayMs = Math.max(0, now - expected);
     if (delayMs < CONTROL_WRITE_LOOP_DELAY_MS) return;
@@ -273,6 +284,7 @@ export class ControlWriteTelemetry {
       active: this.requests.size,
       activeSpans: this.spans.size,
       completedRequests: this.completedRequests,
+      expiredRequests: this.expiredRequests,
       slowRequests: this.slowRequests,
       blockedLoopSamples: this.blockedLoopSamples,
       recentSpans: this.recent.length,
@@ -335,6 +347,18 @@ export class ControlWriteTelemetry {
       type: "control_write_slow", kind: request.metadata.kind, ...(request.metadata.task === undefined ? {} : { task: request.metadata.task }),
       durationMs, outcome, phases: phases.slice(0, MAX_LOOP_SPANS), ...(phases.length > MAX_LOOP_SPANS ? { truncated: true } : {}),
     }, request.logPrivacy);
+  }
+
+  /** Retire diagnostics only; the operation and its eventual result remain owned by the caller. */
+  private expireRequests(now: number): void {
+    for (const [id, request] of this.requests) {
+      if (now - request.startedAt < CONTROL_WRITE_REQUEST_MAX_AGE_MS) continue;
+      request.settled = true;
+      request.privacySuppressed = true; // Recent intervals must not attribute an expired request either.
+      this.requests.delete(id);
+      this.expiredRequests++;
+    }
+    for (const [id, span] of this.spans) if (span.request.settled) this.spans.delete(id);
   }
 
   private emit(key: typeof RATE_KEYS[number], value: Record<string, unknown>, privacyCurrent: ControlWritePrivacy): void {

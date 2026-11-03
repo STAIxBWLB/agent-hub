@@ -2288,16 +2288,16 @@ export async function startDaemon(opts: DaemonOptions) {
     triage: {
       classify: (title, detail) => {
         const classify = () => inference?.triage(title, detail) ?? Promise.resolve(undefined);
-        const inputPublic = boundedSafe(`${title}\n${detail}`);
-        return controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, inputPublic), classify) : classify();
+        return controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, true), classify,
+          () => boundedSafe(`${title}\n${detail}`)) : classify();
       },
       onCampus: () => controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, true), () => onCampus()) : onCampus(),
     },
     // #334: the hub model's split, validated against the same `hub_backlog_split` parts schema a planner's call is, and the source registry for `--source`.
     intake: { split: (system, user, opts) => {
       const split = () => inference?.split(system, user, opts) ?? Promise.resolve(undefined);
-      const inputPublic = boundedSafe(`${system}\n${user}`);
-      return controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, inputPublic), split) : split();
+      return controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, true), split,
+        () => boundedSafe(`${system}\n${user}`)) : split();
     }, sourceKnown: id => sourceRegistry.get(id) !== undefined,
       partsSchema: () => profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off").find(tool => tool.name === "hub_backlog_split")?.inputSchema.properties.parts },
     studySource: id => sourceRegistry.get(id),
@@ -2305,8 +2305,8 @@ export async function startDaemon(opts: DaemonOptions) {
     // The PII screen (issue #198): the model on this machine when MLX/Ollama is enabled, else the gateway on campus only.
     piiScreen: (text) => {
       const screen = () => (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text);
-      const inputPublic = boundedSafe(text);
-      return controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, inputPublic), screen) : screen();
+      return controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, true), screen,
+        () => boundedSafe(text)) : screen();
     },
     recordScreen: (record) => event({ type: "pii_screen", ...record }),
     quota: (): ReturnType<Budget["headroom"]> => projectBudgetHeadroom(budget.headroom(), accountMembers), // budget is built below; this runs at assignment time
@@ -2603,17 +2603,20 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const activityRings: Record<string, ActivityRing> = Object.fromEntries(SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.capabilities?.watch).map(peer => [peer, new ActivityRing()]));
   const contextPii = (peer: PeerId) => !!turns.get(peer)?.private || board.peerTaskSignals(peer).some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
-  const controlWritePrivacyGuard = (admittedAtReceive: boolean, inputPublicAtReceive: boolean, peer?: PeerId, taskId?: number) => () => {
-    try {
-      if (!admittedAtReceive || !inputPublicAtReceive) return false;
-      if (peer && (turns.get(peer)?.private || contextPii(peer))) return false;
-      if (taskId !== undefined) {
-        const task = board.get(taskId);
-        if (!task || tasks.isPii(task) || !tasks.publicMetadataText(String(task.id))) return false;
-      }
-      return true;
-    } catch { return false; }
-  };
+  // Hoisted for the Tasks ports above; only the returned guard reads fully initialized daemon state.
+  function controlWritePrivacyGuard(admittedAtReceive: boolean, inputPublicAtReceive: boolean, peer?: PeerId, taskId?: number) {
+    return () => {
+      try {
+        if (!admittedAtReceive || !inputPublicAtReceive) return false;
+        if (peer && (turns.get(peer)?.private || contextPii(peer))) return false;
+        if (taskId !== undefined) {
+          const task = board.get(taskId);
+          if (!task || tasks.isPii(task) || !tasks.publicMetadataText(String(task.id))) return false;
+        }
+        return true;
+      } catch { return false; }
+    };
+  }
   // #878: what each peer is doing. Daemon memory only: never persisted (status.json leaves it out), logged, captured or relayed.
   const doings = new Map<PeerId, DoingTracker>();
   const observeDoing = (peer: PeerId, kind: DoingKind, text?: unknown, learnedPrivate = false) => {
@@ -8198,9 +8201,11 @@ export async function startDaemon(opts: DaemonOptions) {
   }
 
   function onControlMessage(sock: Sock, msg: any): void {
+    const client = sock.data;
+    const admittedAtReceive = client.authed && !!client.role, peer = client.peer;
+    if (!admittedAtReceive) return onMessage(sock, msg);
     const metadata = controlWriteMetadata(msg);
     if (!metadata || !controlWriteTelemetry) return onMessage(sock, msg);
-    const client = sock.data;
     const inputPublicAtReceive = (() => {
       const rawArgs = msg?.args;
       if (rawArgs === undefined) return true;
@@ -8231,7 +8236,6 @@ export async function startDaemon(opts: DaemonOptions) {
         return tasks.publicMetadataText(joined) && boundedSafe(joined);
       } catch { return undefined; }
     })();
-    const admittedAtReceive = client.authed && !!client.role, peer = client.peer;
     const privacyCurrent = controlWritePrivacyGuard(admittedAtReceive, inputPublicAtReceive === true, peer, metadata.task);
     let finishControlWrite = () => {};
     let finished = false;
