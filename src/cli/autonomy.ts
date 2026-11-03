@@ -1,3 +1,7 @@
+import { homedir } from "node:os";
+import type { AutonomyPeerStatus } from "../hub/autonomy.ts";
+import type { ClaudeHomeCheck } from "./claude-homes.ts";
+
 export { autonomyEnvironment } from "../hub/autonomy.ts";
 export const AUTONOMY_USAGE = "usage: ahub autonomy on [--all-projects] [--yes] | off [--all-projects] | status [--json]";
 export interface AutonomyCliPorts {
@@ -40,5 +44,66 @@ export async function runAutonomy(args: string[], ports: AutonomyCliPorts): Prom
   }
   if (action === "status" && ports.decorateStatus) reply = await ports.decorateStatus(reply);
   if (action === "status" && args.includes("--json")) ports.print(JSON.stringify(reply.status));
-  else for (const line of Array.isArray(reply.lines) ? reply.lines : typeof reply.text === "string" ? [reply.text] : []) if (typeof line === "string") ports.print(line);
+  else {
+    const lines = action === "status" && reply.status && typeof reply.status === "object"
+      ? renderAutonomyStatus(reply.status as Record<string, unknown>) : null;
+    for (const line of lines ?? (Array.isArray(reply.lines) ? reply.lines : typeof reply.text === "string" ? [reply.text] : [])) if (typeof line === "string") ports.print(line);
+  }
+}
+
+/** Human presentation only; the daemon report and JSON wire output stay unchanged. */
+export function renderAutonomyStatus(status: Record<string, unknown>, home = homedir()): string[] | null {
+  if (!Array.isArray(status.peers)) return null;
+  const peers = status.peers as AutonomyPeerStatus[];
+  const machine = status.machineDefault as { enabled: boolean; notice?: string } | undefined;
+  const lines = [`Project autonomy · environment ${status.environment}${machine ? ` · machine default ${machine.enabled ? "on" : "off"}` : ""}`];
+  if (status.runtime === "stopped") lines.push("The hub is stopped; effective runtime modes and retained consent are unknown.");
+  lines.push("");
+  if (peers.length) {
+    const rows = [["PEER", "NOW", "NEXT START"], ...peers.map(peer => [peer.id, peer.effectiveMode, peer.nextMode ?? "unmanaged"])];
+    const widths = rows[0]!.map((_, column) => Math.max(...rows.map(row => row[column]!.length)));
+    for (const row of rows) lines.push(row.map((value, column) => column < row.length - 1 ? value.padEnd(widths[column]!) : value).join("  "));
+  } else lines.push("No peers were inspected.");
+
+  const floors = new Map<string, { row: AutonomyPeerStatus["floor"][number]; peers: Set<string> }>();
+  const classes = new Set<string>(), enforced = new Set<string>();
+  const unknowns = new Map<string, Set<string>>();
+  for (const peer of peers) {
+    for (const row of peer.floor ?? []) {
+      classes.add(row.class);
+      if (row.status === "hub-enforced" || row.status === "structural-guard") enforced.add(row.class);
+      const key = JSON.stringify([row.class, row.status, row.reason]);
+      let group = floors.get(key);
+      if (!group) { group = { row, peers: new Set() }; floors.set(key, group); }
+      group.peers.add(peer.id);
+    }
+    for (const text of peer.missing ?? []) {
+      if ((peer.floor ?? []).some(row => text.startsWith(`${row.class}: `))) continue;
+      let group = unknowns.get(text);
+      if (!group) { group = new Set(); unknowns.set(text, group); }
+      group.add(peer.id);
+    }
+  }
+  if (peers.length) lines.push("", `Guarded actions (${classes.size} classes; ${enforced.size} enforced for at least one peer)`);
+  for (const { row, peers: members } of floors.values()) {
+    lines.push(`  ${row.class} · ${row.status} · ${members.size === peers.length ? "all peers" : [...members].join(", ")}`, `    ${row.reason}`);
+  }
+  const projectMissing = Array.isArray(status.missing) ? status.missing.filter((text): text is string => typeof text === "string") : [];
+  if (unknowns.size || projectMissing.length) {
+    lines.push("", "Unknowns");
+    for (const text of projectMissing) lines.push(`  project: ${text}`);
+    for (const [text, members] of unknowns) lines.push(`  ${[...members].join(", ")}: ${text}`);
+  }
+  if (machine?.notice) lines.push("", machine.notice);
+  const notices = status.claudeHomeNotices as string[] | undefined;
+  if (Array.isArray(status.claudeHomes) || notices?.length) {
+    lines.push("", "Claude homes");
+    for (const notice of notices ?? []) lines.push(`  ${notice}`);
+    for (const profile of (status.claudeHomes ?? []) as ClaudeHomeCheck[]) {
+      const path = profile.home.path;
+      const display = path === home ? "~" : path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+      lines.push(`  ${display}: plugin ${profile.plugin.state}; hook ${profile.hook.state}. ${profile.hook.reason}`);
+    }
+  }
+  return lines;
 }
