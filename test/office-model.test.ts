@@ -72,7 +72,7 @@ test("officeModel maps a snapshot to desks, conditions, rooms, cards and counts"
   expect(rooms.get("todo")!.cards.map((card) => [card.id, card.waiting])).toEqual([[2, false], [3, true]]);
   expect(rooms.get("todo")!.cards[1]!.name).toContain("waiting on dependencies");
   expect(rooms.get("todo")!.cards[1]!.label).toBe("#3 waiting task");
-  expect(model.rooms.map((room) => room.label)).toEqual(["To do", "Work floor", "Review", "Done"]);
+  expect(model.rooms.map((room) => room.label)).toEqual(["Backlog", "To do", "Work floor", "Review", "Done"]);
   expect(rooms.get("work")!.count).toBe(3);
   expect(rooms.get("work")!.cards).toEqual([]); // every work card found its owner's desk
   expect(rooms.get("review")!.count).toBe(1);
@@ -96,7 +96,7 @@ test("officeModel maps a snapshot to desks, conditions, rooms, cards and counts"
 });
 
 test("room counts equal taskProgress counts across randomized boards", () => {
-  const states = ["proposed", "in_progress", "in_review", "changes_requested", "approved", "mystery"];
+  const states = ["backlog", "proposed", "in_progress", "in_review", "changes_requested", "approved", "mystery"];
   let seed = 264;
   const rand = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
   for (let run = 0; run < 20; run++) {
@@ -230,6 +230,7 @@ test("MARKER: no body, detail, approval title or PII text enters the serialized 
     permissions: [{ id: "p1", peer: "codex", title: `${MARKER} approval title`, options: [] }],
     events: [{ seq: 1, event: { env: { from: "codex", to: ["pi"], kind: "chat", body: `${MARKER} envelope body` } } }],
     budget: { codex: { windows: [], paused: null } },
+    releases: [{ id: 7, name: "[withheld]", state: "active", order: 0, tasks: [], goal: MARKER, train: { note: MARKER }, afterCut: [MARKER], afterCutUnknown: [MARKER] }],
   } as unknown as OfficeSnapshotInput;
   expect(JSON.stringify(dirty)).toContain(MARKER); // the fixture itself carries the marker
   const model = officeModel(dirty, null, { cols: 4, now: 1000 });
@@ -247,7 +248,7 @@ test("MARKER: no body, detail, approval title or PII text enters the serialized 
   const phased = officeModel({
     ...dirty,
     status: { peers: { codex: { state: "busy", turn: { since: 1, task: 1, attribution: "delivery", note: MARKER } }, pi: { state: "idle" } } },
-    tasks: (dirty.tasks as unknown as Record<string, unknown>[]).map((task) => ({ ...task, checking: true, checkOutput: MARKER })),
+    tasks: (dirty.tasks as unknown as Record<string, unknown>[]).map((task) => ({ ...task, checking: true, checkOutput: MARKER, lifecycle: { note: MARKER }, codeGroup: { symbols: [MARKER] } })),
     links: [{ kind: "conflict", tasks: [1, 2], peers: ["codex", "pi"], reason: MARKER, paths: [MARKER] }],
   } as unknown as OfficeSnapshotInput, model, { cols: 4, now: 4000 });
   expect(phased.links).toEqual([{ kind: "conflict", tasks: [1, 2], peers: ["codex", "pi"] }]);
@@ -256,7 +257,7 @@ test("MARKER: no body, detail, approval title or PII text enters the serialized 
   // The PII stub is carried as the public title, nothing more.
   expect(model.desks[0]!.cards[0]!.name).toContain("[pii]");
   expect(model.desks[0]!.cards[0]!.label).toBe("#1 [pii]");
-  expect(model.rooms[0]!.cards[0]!.label).toBe("#2 public title");
+  expect(model.rooms.find(room => room.id === "todo")!.cards[0]!.label).toBe("#2 public title");
 });
 
 test("attributedCards holds the public card of a bubble's task past the rendering cut, and nothing already drawn (#1038)", () => {
@@ -273,8 +274,8 @@ test("attributedCards holds the public card of a bubble's task past the renderin
 test("room cards fit one padded column at the fixed pixel scale, with space for overflow", () => {
   const tasks = Array.from({ length: 12 }, (_, index) => ({ id: index + 1, title: `Readable public title ${index + 1}`, class: "implement", state: "proposed" }));
   const model = officeModel({ status: { peers: {} }, tasks }, null, { cols: 1, now: 1000 });
-  const room = model.rooms[0]!;
-  expect(room).toMatchObject({ x: 0, y: 0, w: 22, h: 29, count: 12, overflow: 4 });
+  const room = model.rooms.find(room => room.id === "todo")!;
+  expect(room).toMatchObject({ x: 0, y: 30, w: 22, h: 29, count: 12, overflow: 4 });
   expect(room.cards.map((card) => card.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   for (const [index, card] of room.cards.entries()) {
     expect(card.x).toBe(room.x + 1); // 12 px inner padding
@@ -288,8 +289,8 @@ test("room cards fit one padded column at the fixed pixel scale, with space for 
   }
   const last = room.cards.at(-1)!;
   expect(room.y + room.h - last.y - last.h).toBeGreaterThan(3); // overflow line plus bottom padding
-  expect(model.rooms.map((entry) => entry.y)).toEqual([0, 30, 60, 90]);
-  expect(model.height).toBe(119);
+  expect(model.rooms.map((entry) => entry.y)).toEqual([0, 30, 60, 90, 120]);
+  expect(model.height).toBe(149);
   for (const [index, entry] of model.rooms.entries()) {
     if (index) expect(entry.y - model.rooms[index - 1]!.y - entry.h).toBe(1);
   }
@@ -300,14 +301,14 @@ test("room cards fit one padded column at the fixed pixel scale, with space for 
 test("cols reflows rooms: left to right when wide, stacked when narrow", () => {
   const wide = officeModel(fixture(), null, { cols: 4, now: 1000 });
   // Six desks take two rows, so the rooms row starts below the desk grid.
-  expect(wide.rooms.map((room) => [room.x, room.y])).toEqual([[0, 47], [23, 47], [46, 47], [69, 47]]);
+  expect(wide.rooms.map((room) => [room.x, room.y])).toEqual([[0, 47], [23, 47], [46, 47], [69, 47], [0, 77]]);
   expect(wide.width).toBe(91);
   const twoColumns = officeModel(fixture(), null, { cols: 2, now: 1000 });
-  expect(twoColumns.rooms.map((room) => [room.x, room.y])).toEqual([[0, 47], [23, 47], [0, 77], [23, 77]]);
+  expect(twoColumns.rooms.map((room) => [room.x, room.y])).toEqual([[0, 47], [23, 47], [0, 77], [23, 77], [0, 107]]);
   expect(twoColumns.rooms[1]!.x - twoColumns.rooms[0]!.x - twoColumns.rooms[0]!.w).toBe(1);
   expect(twoColumns.rooms[2]!.y - twoColumns.rooms[0]!.y - twoColumns.rooms[0]!.h).toBe(1);
   expect(twoColumns.width).toBe(46); // desks extend one unit past the room grid
-  expect(twoColumns.height).toBe(106);
+  expect(twoColumns.height).toBe(136);
   const narrow = officeModel(fixture(), null, { cols: 1, now: 1000 });
   const ys = narrow.rooms.map((room) => room.y);
   expect(new Set(narrow.rooms.map((room) => room.x)).size).toBe(1);
@@ -551,8 +552,8 @@ test("office recognizes staged backlog and matches the shared progress counts (#
   const model=officeModel({status:{peers:{}},tasks},null,{cols:1,now:1000});
   expect(model.counts).toEqual(taskProgress(tasks).counts);
   expect(model.counts.backlog).toBe(1);expect(model.counts.unknown).toBeUndefined();
-  expect(model.placed[1]).toBe("counted:backlog");
-  expect(model.rooms.flatMap(room=>room.cards).some(card=>card.id===1)).toBe(false);
+  expect(model.placed[1]).toBe("room:backlog");
+  expect(model.rooms.find(room=>room.id==="backlog")!.cards.map(card=>card.id)).toEqual([1]);
 });
 test("#438 office counts cancelled work as closed separately from approved and keeps its dependents waiting", () => {
   const tasks = [{ id: 1, title: "cancelled", class: "implement", state: "cancelled", deps: [] },
@@ -562,4 +563,85 @@ test("#438 office counts cancelled work as closed separately from approved and k
   expect(model.counts).toEqual(taskProgress(tasks).counts); expect(model.counts.cancelled).toBe(1); expect(model.counts.approved).toBe(1); expect(model.counts.waiting).toBe(1); expect(model.counts.unknown).toBeUndefined();
   expect(model.placed[1]).toBe("counted:cancelled"); expect(model.placed[2]).toBe("shelf:done"); expect(model.rooms.find(room => room.id === "done")?.count).toBe(1);
   expect(model.rooms.flatMap(room => room.cards).some(card => card.id === 1)).toBe(false);
+});
+
+test("phase 5 backlog wall sorts rank, priority and id, caps cards and keeps progress counts", () => {
+  const tasks = Array.from({ length: 12 }, (_, i) => ({ id: i + 1, title: `task ${i + 1}`, state: "backlog", rank: i < 3 ? 0 : null, priority: i === 0 ? 2 : i < 3 ? 1 : null }));
+  const model = officeModel({ tasks }, null, { cols: 4, now: 1000 });
+  const wall = model.rooms[0]!;
+  expect(wall).toMatchObject({ id: "backlog", label: "Backlog", filterState: "backlog", count: 12, overflow: 4, unplanned: 9 });
+  expect(wall.cards.map(card => card.id)).toEqual([2, 3, 1, 4, 5, 6, 7, 8]);
+  expect(model.counts).toEqual(taskProgress(tasks).counts);
+  expect(model.placed[12]).toBe("room:backlog");
+  const next = officeModel({ tasks: tasks.map(task => task.id === 2 ? { ...task, state: "proposed" } : task) }, model, { cols: 4, now: 1100 });
+  expect(next.transitions.cardsMoved).toEqual([{ id: 2, from: "room:backlog", to: "room:todo" }]);
+  expect(next.rooms.find(room => room.id === "backlog")!.count).toBe(11);
+});
+
+test("phase 5 backlog marks keep reservations and pins on private stubs, and wait only on unfinished dependencies or a future start", () => {
+  const future = new Date(2026, 10, 4).getTime(), now = new Date(2026, 10, 3).getTime();
+  const tasks = [
+    { id: 1, title: "[pii]", state: "backlog", reserved: "codex", pinned: true, plannedStart: future, deps: [8] },
+    { id: 2, title: "clear", state: "backlog", plannedStart: now, deps: [7] },
+    { id: 3, title: "missing", state: "backlog", deps: [99] },
+    { id: 4, title: "cancelled dependency", state: "backlog", deps: [9] },
+    { id: 7, state: "approved" }, { id: 8, state: "in_progress" }, { id: 9, state: "cancelled" },
+  ];
+  const scene = officeModel({ tasks }, null, { cols: 1, now }), cards = scene.rooms[0]!.cards;
+  expect(cards[0]).toMatchObject({ label: "#1 [pii]", reserved: "codex", pinned: true, waiting: true, plannedDate: "2026-11-04" });
+  for (const phrase of ["[pii]", "reserved for codex", "pinned", "waits until 2026-11-04"]) expect(cards[0]!.name).toContain(phrase);
+  expect(cards[1]).toMatchObject({ waiting: false, plannedDate: "" });
+  expect(cards.slice(2).map(card => card.waiting)).toEqual([true, true]);
+  expect(scene.counts).toEqual(taskProgress(tasks).counts);
+  expect(officeModel({ tasks: [{ id: 1, state: "backlog", plannedStart: future }] }, null, { cols: 1, now: future }).rooms[0]!.cards[0]!.waiting).toBe(false);
+});
+
+test("phase 5 release docks use only open states, order and id, with exact scope ratios and card ordinals", () => {
+  const releases = [
+    { id: 9, name: "Shipped", state: "shipped", order: 0 }, { id: 8, name: "Dropped", state: "dropped", order: 0 },
+    { id: 4, name: "Later", state: "planning", order: 2 },
+    { id: 3, name: "[withheld]", state: "frozen", order: 1, cut: new Date(2026, 10, 8).getTime(), tasks: [{ id: 1, state: "approved" }, { id: 2, state: "cancelled" }, { id: 3, state: "backlog" }] },
+    { id: 1, name: "First", state: "active", order: 1, tasks: [{ id: 5, state: "approved" }] },
+    { id: 2, name: "Empty", state: "planning", order: 1, tasks: [] },
+  ];
+  const model = officeModel({ releases, tasks: [{ id: 1, state: "backlog", release: 3 }, { id: 2, state: "proposed", release: 4 }] }, null, { cols: 4, now: 1000 });
+  expect(model.docks.map(dock => [dock.id, dock.ordinal])).toEqual([[1, 1], [2, 2], [3, 3]]);
+  expect(model.extraReleases).toBe(1);
+  expect(model.docks[0]).toMatchObject({ approved: 1, scope: 1, ratio: 1, cut: "" });
+  expect(model.docks[1]).toMatchObject({ approved: 0, scope: 0, ratio: 0 });
+  expect(model.docks[2]).toMatchObject({ name: "[withheld]", approved: 1, scope: 3, cut: "2026-11-08" });
+  expect(model.docks[2]!.ratio).toBeCloseTo(1 / 3);
+  expect(model.rooms[0]!.cards[0]!.releaseTag).toEqual({ ordinal: 3, name: "[withheld]" });
+  expect(model.rooms.find(room => room.id === "todo")!.cards[0]!.releaseTag).toBeUndefined();
+  expect(model.rooms.flatMap(room => room.cards).filter(card => card.id === 1)).toHaveLength(1);
+  for (const dock of model.docks) { expect(model.width).toBeGreaterThanOrEqual(dock.x + dock.w); expect(model.height).toBeGreaterThanOrEqual(dock.y + dock.h); }
+  expect(officeModel({}, null, { cols: 1, now: 1000 })).toMatchObject({ docks: [], extraReleases: 0 });
+});
+
+test("phase 5 planner badges use roleInfo on existing desks and the wall is the fallback when none is visible", () => {
+  const tasks = [{ id: 1, state: "backlog" }, { id: 2, state: "backlog", rank: 0 }, { id: 3, state: "backlog", reserved: "codex" }];
+  const status = { peers: { claude: { state: "idle" }, codex: { state: "idle" } }, roleInfo: { claude: { flowRoles: ["planner"] }, codex: { flowRoles: ["planner", "implementer"] }, ghost: { flowRoles: ["planner"] } } };
+  const model = officeModel({ status, tasks }, null, { cols: 4, now: 1000 });
+  expect(model.desks).toHaveLength(2);
+  for (const desk of model.desks) { expect(desk.planner).toBe(true); expect(desk.unplanned).toBe(1); expect(desk.name).toContain("planner, 1 unplanned"); }
+  expect(model.rooms[0]!.unplanned).toBeUndefined();
+  expect(officeModel({ status: { peers: {}, roleInfo: status.roleInfo }, tasks }, null, { cols: 1, now: 1000 }).rooms[0]!.unplanned).toBe(1);
+  const peers = Object.fromEntries(Array.from({ length: 13 }, (_, i) => [`p${String(i).padStart(2, "0")}`, { state: "idle" }]));
+  const hidden = officeModel({ status: { peers, roleInfo: { p12: { flowRoles: ["planner"] } } }, tasks }, null, { cols: 1, now: 1000 });
+  expect(hidden.desks).toHaveLength(12); expect(hidden.desks.some(desk => desk.planner)).toBe(false); expect(hidden.rooms[0]!.unplanned).toBe(1);
+});
+
+test("phase 5 dates follow the person's local calendar at a timezone boundary without changing the runner TZ", () => {
+  const original = process.env.TZ;
+  const module = new URL("../src/ui/office-model.ts", import.meta.url).href;
+  const code = `import { officeModel } from ${JSON.stringify(module)};
+    const midnight = Date.UTC(2026, 10, 3, 15);
+    const scene = officeModel({tasks:[{id:1,state:"backlog",plannedStart:midnight}],releases:[{id:1,state:"active",name:"Release",cut:midnight,tasks:[]}]},null,{cols:1,now:midnight-1});
+    console.log(JSON.stringify({start:scene.rooms[0].cards[0].plannedDate,cut:scene.docks[0].cut}));`;
+  for (const [zone, expected] of [["Asia/Seoul", "2026-11-04"], ["UTC", "2026-11-03"]]) {
+    const child = Bun.spawnSync([process.execPath, "-e", code], { env: { TZ: zone! }, stdout: "pipe", stderr: "pipe", timeout: 10_000 });
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
+    expect(JSON.parse(child.stdout.toString())).toEqual({ start: expected, cut: expected });
+  }
+  expect(process.env.TZ).toBe(original);
 });

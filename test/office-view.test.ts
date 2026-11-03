@@ -615,7 +615,11 @@ test("Office fixed scale uses projected viewBox width and stable readable type (
  for(const view of ["flat","isometric"]){
   const f=startOfficeRuntime(()=>view);f.get("office-section").clientWidth=1180;f.api.draw(data);
   const svg=f.api.scene().svg as Node,box=svg.attrs.viewBox!.split(" ").map(Number),width=Number(svg.attrs.width);
-  expect(width).toBeCloseTo(box[2]!*12);expect(width).toBeLessThanOrEqual(1180);expect(svg.attrs.height).toBeUndefined();
+  expect(width).toBeCloseTo(box[2]!*12);
+  // Phase 5 adds a fifth room: pin the occupied tile bounds instead of the historical four-room width.
+  const model=officeModel(data,null,{cols:view==="isometric"?2:4});
+  const xs=[...model.rooms,...model.desks].flatMap(tile=>[tile.x-tile.y,tile.x+tile.w-tile.y,tile.x-tile.y-tile.h,tile.x+tile.w-tile.y-tile.h].map(value=>value*0.8660254));
+  expect(width).toBeCloseTo((view==="isometric"?Math.max(...xs)-Math.min(...xs)+6:model.width)*12);expect(svg.attrs.height).toBeUndefined();
   f.get("office-section").clientWidth=1820;f.api.draw(data);expect(Number(svg.attrs.width)).toBe(width);expect(svg.attrs.viewBox!.split(" ").map(Number)).toEqual(box);
  }
  const css=html.match(/<style>([\s\S]*?)<\/style>/)![1]!;
@@ -641,7 +645,7 @@ test("Office room headers form the final overlay layer with count pills (#394)",
  for(const view of ["flat","isometric"]){
   const f=startOfficeRuntime(()=>view);f.api.draw(snapshot);const scene=f.api.scene();
   expect(scene.svg.children.at(-1)).toBe(scene.layers.headers);
-  expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-room-title")).map(node=>node.textContent)).toEqual(["To do","Work floor","Review","Done"]);
+  expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-room-title")).map(node=>node.textContent)).toEqual(["Backlog","To do","Work floor","Review","Done"]);
   expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-room-count"))).toHaveLength(4);
   expect((scene.layers.rooms as Node).findAll(hasOfficeClass("office-room-title"))).toHaveLength(0);
   expect((scene.layers.rooms as Node).findAll(hasOfficeClass("office-room-wire"))).toHaveLength(0);
@@ -702,7 +706,7 @@ test("Office room empty marker refreshes when placements change but total count 
  const f=startOfficeRuntime(()=>"flat"),task={id:77,title:"moves to desk",state:"in_progress",class:"implement",owner:"ghost"};
  const draw=(owner:string)=>f.api.draw({...snapshot,tasks:[{...task,owner}]});
  const room=()=>((f.api.scene().layers.rooms as Node).findAll(hasOfficeClass("office-roombox-work"))[0]!);
- const count=()=>((f.api.scene().layers.headers as Node).children[1]!.findAll(hasOfficeClass("office-room-count"))[0]!.textContent);
+ const count=()=>((f.api.scene().layers.headers as Node).children[2]!.findAll(hasOfficeClass("office-room-count"))[0]!.textContent);
  draw("ghost");expect(count()).toBe("1");expect(room().findAll(hasOfficeClass("office-empty"))).toHaveLength(0);expect(f.api.maps.officeCards.has(77)).toBe(true);
  draw("codex");expect(count()).toBe("1");expect(room().findAll(hasOfficeClass("office-empty"))[0]!.textContent).toBe("No tasks");expect(f.api.maps.officeDesks.get("codex")).toBeDefined();
  draw("ghost");expect(count()).toBe("1");expect(room().findAll(hasOfficeClass("office-empty"))).toHaveLength(0);
@@ -958,4 +962,81 @@ test("isometric More labels clear desk names and header backdrops meet count pil
   const surface=header.findAll(hasOfficeClass("office-header-surface"))[0]!,pill=header.findAll(hasOfficeClass("office-count-pill"))[0]!;
   expect(Number(surface.attrs.x)+Number(surface.attrs.width)).toBeCloseTo(Number(pill.attrs.x)+Number(pill.attrs.width));
  }
+});
+
+test("phase 5 wall marks and planner badges are accessible in both projections, and pulled cards keep their target", () => {
+  for (const view of ["flat", "isometric"]) {
+    const f = startOfficeRuntime(() => view), future = Date.now() + 86_400_000;
+    const data = { ...snapshot, status: { ...snapshot.status, roleInfo: { claude: { flowRoles: ["planner"] } } },
+      tasks: [{ id: 31, title: "[pii]", class: "implement", state: "backlog", rank: null, reserved: "codex", pinned: true, plannedStart: future, deps: [99] }, { id: 32, title: "Unplanned", state: "backlog" }] };
+    f.api.draw(data);
+    const wall = (f.api.scene().layers.rooms as Node).findAll(hasOfficeClass("office-roombox-backlog"))[0]!;
+    expect(wall).toBeDefined();
+    const target = f.api.maps.officeCards.get(31)! as Node;
+    expect(target.attrs["aria-label"]).toContain("reserved for codex"); expect(target.attrs["aria-label"]).toContain("pinned"); expect(target.attrs["aria-label"]).toContain("waits until");
+    const paint = f.api.scene().els.get("paint:card:31").node as Node;
+    expect(paint.findAll(node => node.tag === "circle" && node.attrs.class === "office-reserved peer-codex")).toHaveLength(1);
+    expect(paint.text()).toContain("codex"); expect(paint.text()).toContain("pin"); expect(paint.text()).toContain("waits");
+    const desk = f.api.maps.officeDesks.get("claude")! as Node;
+    expect(desk.attrs["aria-label"]).toContain("planner, 1 unplanned backlog cards");
+    expect(desk.findAll(hasOfficeClass("office-planner"))).toHaveLength(1);
+    const transform = target.style.transform, replacements = paint.replacements;
+    f.api.draw(JSON.parse(JSON.stringify(data))); expect(paint.replacements).toBe(replacements);
+    f.api.draw({ ...data, tasks: data.tasks.map(task => task.id === 31 ? { ...task, state: "proposed" } : task) });
+    expect(f.api.maps.officeCards.get(31)).toBe(target); expect(target.style.transform).not.toBe(transform);
+    expect(target.attrs.class).toContain("office-movable");
+    expect(f.api.scene().svg.attrs.class).not.toContain("office-settle");
+  }
+});
+
+test("phase 5 backlog overflow and release docks select existing board filters with keyboard equivalents", () => {
+  for (const view of ["flat", "isometric"]) {
+    const f = startOfficeRuntime(() => view);
+    const releases = Array.from({ length: 4 }, (_, i) => ({ id: i + 1, name: i === 0 ? "[withheld]" : `Release ${i + 1}`, state: "planning", order: i, cut: new Date(2026, 10, 8).getTime(), tasks: [{ id: 1, state: "approved" }, { id: 2, state: "backlog" }] }));
+    f.api.draw({ ...snapshot, releases, tasks: Array.from({ length: 12 }, (_, i) => ({ id: i + 1, title: `Backlog ${i}`, state: "backlog", release: 1 })) });
+    const wall = (f.api.scene().layers.rooms as Node).findAll(hasOfficeClass("office-roombox-backlog"))[0]!;
+    const more = wall.findAll(node => (node.attrs["aria-label"] || "").includes("more backlog tasks"))[0]!;
+    expect(more).toBeDefined(); more.fire("keydown", { key: "Enter", preventDefault() {} });
+    expect(f.get("task-filter").value).toBe("backlog"); expect(f.api.view()).toBe("board");
+    const docks = (f.api.scene().layers.rooms as Node).findAll(hasOfficeClass("office-release-dock"));
+    expect(docks).toHaveLength(3);
+    expect(docks[0]!.attrs["aria-label"]).toContain("[withheld], planning, 1 / 2 approved, cut 2026-11-08");
+    expect(docks[0]!.findAll(hasOfficeClass("office-dock-progress"))[0]!.attrs.width).toBe("5");
+    const target = f.api.maps.officeCards.get(1)! as Node;
+    expect(target.attrs["aria-label"]).toContain("release 1: [withheld]");
+    docks[0]!.fire("click"); expect(f.get("task-release-filter").value).toBe("1"); expect(f.get("tasks").scrolled).toBeGreaterThan(0);
+    docks[1]!.fire("keydown", { key: " ", preventDefault() {} }); expect(f.get("task-release-filter").value).toBe("2");
+    const extra = (f.api.scene().layers.headers as Node).findAll(node => node.attrs["aria-label"] === "Show 1 more releases")[0]!;
+    expect(extra.attrs.tabindex).toBe("0"); extra.fire("keydown", { key: "Enter", preventDefault() {} });
+    expect(f.get("task-release-filter").value).toBe(""); expect(f.get("task-lanes").value).toBe("releases");
+    expect(f.api.view()).toBe("board");
+  }
+});
+
+test("phase 5 wall header carries planning count without a visible planner and sensitive metadata never enters the scene", () => {
+  const f = startOfficeRuntime(() => "flat"), marker = "PHASE5-PRIVATE-MARKER";
+  f.api.draw({ ...snapshot, status: { peers: {}, roleInfo: { ghost: { flowRoles: ["planner"] } } }, tasks: [{ id: 1, title: "[pii]", state: "backlog", lifecycle: { note: marker }, codeGroup: { symbols: [marker] } }],
+    releases: [{ id: 1, name: "[withheld]", state: "active", order: 0, tasks: [], goal: marker, train: { note: marker }, afterCut: [marker], afterCutUnknown: [marker] }] });
+  expect((f.api.scene().layers.headers as Node).text()).toContain("1 unplanned");
+  expect((f.api.scene().svg as Node).text()).not.toContain(marker);
+  expect((f.api.scene().layers.desks as Node).children).toHaveLength(0);
+});
+
+test("phase 5 backlog overflow clears an expanded Work or Done column before showing every backlog card", () => {
+  // The Work column's persisted focus id is progress (BOARD_FOCUS_COLUMNS).
+  for (const column of ["progress", "done"]) for (const key of ["Enter", " "]) {
+    const f = startOfficeRuntime(() => "flat");
+    const tasks = Array.from({ length: 12 }, (_, i) => ({ id: i + 1, title: `Backlog overflow ${i}`, state: "backlog", class: "implement" }));
+    f.api.draw({ ...snapshot, tasks });
+    f.api.focus(column);
+    expect(f.api.focused()).toBe(column);
+    expect(f.api.maps.taskRows.size).toBe(0);
+    const more = (f.api.scene().layers.rooms as Node).findAll(node => (node.attrs["aria-label"] || "").includes("more backlog tasks"))[0]!;
+    more.fire("keydown", { key, preventDefault() {} });
+    expect(f.api.focused()).toBeNull();
+    expect(f.api.view()).toBe("board");
+    expect(f.get("task-filter").value).toBe("backlog");
+    expect([...f.api.maps.taskRows.keys()]).toEqual(tasks.map(task => task.id));
+    expect(f.get("tasks").text()).toContain("Backlog overflow 11");
+  }
 });
