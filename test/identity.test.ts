@@ -346,6 +346,12 @@ test("autonomy mutations are person-only, including the explicit live-test bypas
 });
 
 // #1084: `autonomy`, `deliverables` and `usage` were in the command table but not in the label table, so an agent shell's refusal and the audit line said "ahub unknown".
+test("session title audit labels never contain the peer or sensitive title operands (#1055)", () => {
+  for (const args of [["private-peer", "Sensitive student record title"], ["local", "--reason=secret", "731"], []]) {
+    expect(cliCommandLabel("title", args)).toBe("title");
+  }
+});
+
 test("no command in the CLI command table is labelled unknown, in the refusal or the audit line (#1084)", () => {
   const source = parseSource("src/cli/main.ts", readFileSync(join(import.meta.dir, "../src/cli/main.ts"), "utf8"));
   const table = findSymbol(source, "commands").find(span => ts.isVariableDeclaration(span.node));
