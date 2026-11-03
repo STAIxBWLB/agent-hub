@@ -33,7 +33,7 @@ test("control admission precedes argument traversal and both privacy screens", a
   const tasks = new Tasks({ board, bus, routing: () => routing, cwd: root, project: "screen-fixture", notify: () => {} });
   const config = { pii: { paths: [] as string[] }, local: { deny: [] as string[] } };
   const boundedSafe = new Function("looksSecret", "withoutPii", "mentionsPrivatePath", "activeRouting", "opts", "config", "ASK_NOTE_TITLE",
-    `${transpiler.transformSync(declaration("  const screenMemory =") + declaration("  const boundedSafe ="))}\nreturn boundedSafe;`)
+    `${transpiler.transformSync(declaration("  const screenMemory =") + extract("  const boundedSafe =", "  let corpusRuntime:"))}\nreturn boundedSafe;`)
     (looksSecret, withoutPii, mentionsPrivatePath, () => routing, { cwd: root }, config, ASK_NOTE_TITLE) as (text: string) => boolean;
   const privacyGuard = new Function("turns", "board", "tasks", "isClosedTaskState",
     `${transpiler.transformSync(declaration("  const contextPii =") + extract("  function controlWritePrivacyGuard(", "  // #878:"))}\nreturn controlWritePrivacyGuard;`)
