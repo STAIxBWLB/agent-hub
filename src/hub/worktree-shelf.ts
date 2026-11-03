@@ -39,12 +39,12 @@ export interface WorktreeFact {
   pr: { state: PrState; changedAt?: number };
 }
 /** A row built for a reply. A PII-bound row carries `private: true` and `taskState: "private"` and no task id or PR. This is the one place a reply row is made, so redaction happens here (AGENTS.md), never at a call site. */
-export interface ShelfRow { path: string; branch: string | null; reason?: SettledReason; task?: number; taskState?: string; pr?: number; private?: true; lastActiveAt: number }
+export interface ShelfRow { path: string; branch: string | null; reason?: SettledReason; task?: number; taskState?: string; pr?: number; private?: true; /** The main checkout or a declared instance worktree: never shelved, so a panel offers no Park for it. */ fixed?: true; lastActiveAt: number }
 export interface Partition { live: ShelfRow[]; settled: ShelfRow[] }
 
 const DAY_MS = 86_400_000;
 const row = (fact: WorktreeFact, reason?: SettledReason): ShelfRow => ({
-  path: fact.path, branch: fact.branch, lastActiveAt: fact.lastActiveAt,
+  path: fact.path, branch: fact.branch, lastActiveAt: fact.lastActiveAt, ...(fact.main || fact.instance ? { fixed: true as const } : {}),
   ...(reason ? { reason: fact.task?.private && (reason === "merged" || reason === "closed") ? "settled" as const : reason } : {}),
   ...(fact.task?.private ? { private: true as const, taskState: "private" }
     : { ...(fact.task ? { task: fact.task.id, taskState: fact.task.state } : {}), ...(fact.task?.pr !== undefined ? { pr: fact.task.pr } : {}) }),

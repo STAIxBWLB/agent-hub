@@ -10,6 +10,7 @@ import type { SdlcGh } from "../src/hub/sdlc.ts";
 import { PrObservations, REFRESH_MAX_PRS, readPrChangeTime, refreshPrStates, refreshTargets } from "../src/hub/worktree-prs.ts";
 import { partition, prFromTask, type WorktreeFact } from "../src/hub/worktree-shelf.ts";
 import { createProvider } from "../src/ui/plugin.ts";
+import { runInNewContext } from "node:vm";
 import { gitProject } from "./fakes/git-project.ts";
 import type { Lifecycle, ProjectRecord } from "../src/hub/manager.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
@@ -340,4 +341,64 @@ test("the daemon's shelf function removes nothing, spawns nothing and reaches Gi
   // the shelf modules: the PR refresh module is the only one that names a GitHub reader, and the shelf module imports neither it nor the sdlc module
   const shelf = readFileSync(join(import.meta.dir, "../src/hub/worktree-shelf.ts"), "utf8");
   expect(shelf).not.toMatch(/from "\.\/(sdlc|worktree-prs)\.ts"/);
+});
+
+// The page's own renderer, run for real against a minimal DOM (the first browser pass found `NaNd` here: `rel` takes epoch milliseconds, and this code had passed it an ISO string).
+test("the page's renderWorktrees draws real relative times, never NaN, and its buttons post exactly the Park/Pin/Unset/refresh actions", () => {
+  const html = readFileSync(join(import.meta.dir, "../src/ui/index.html"), "utf8");
+  const from = (name: string) => { const i = html.indexOf(name); return html.slice(i, html.indexOf("\n", i)); };
+  const start = html.indexOf("function renderWorktrees(shelf)"), end = html.indexOf("function renderBench(bench)");
+  class Node { tag = ""; children: Node[] = []; attrs: Record<string, string> = {}; dataset: Record<string, string> = {}; textContent = ""; className = ""; title = ""; type = ""; disabled = false; listeners: (() => void)[] = [];
+    append(...kids: (Node | string)[]) { for (const kid of kids) { if (typeof kid === "string") { const t = new Node(); t.textContent = kid; this.children.push(t); } else this.children.push(kid); } }
+    replaceChildren() { this.children = []; } addEventListener(_: string, fn: () => void) { this.listeners.push(fn); } setAttribute(k: string, v: string) { this.attrs[k] = v; }
+    get all(): Node[] { return [this, ...this.children.flatMap(c => c.all)]; } get text(): string { return this.textContent + this.children.map(c => c.text).join(" "); } }
+  const posted: Record<string, unknown>[] = [], targets: Record<string, Node> = { "worktrees-count": new Node(), worktrees: new Node() };
+  const api = runInNewContext(`const $ = (id) => targets[id]; const el = (tag, text, cls) => { const node = new Node(); node.tag = tag; if (text !== undefined) node.textContent = String(text); if (cls) node.className = cls; return node; };
+    const badge = (text, cls = '') => el('span', text, 'badge' + (cls ? ' ' + cls : '')); const signatures = new Map();
+    const button = (text, payload) => { const node = el('button', text); node.payload = payload; return node; };
+    ${from("const time = (value)")} ${html.slice(html.indexOf("const rel = (value) => {"), html.indexOf("const badge = (text"))} ${from("function empty(")}
+    function update(id, data, render) { const target = $(id); target.replaceChildren(); render(target); }
+    ${html.slice(start, end)}; ({ renderWorktrees })`, { Node, targets, console, Date });
+  const now = Date.now();
+  api.renderWorktrees({ live: [{ path: ".", branch: "main", fixed: true, lastActiveAt: now - 90_000 }, { path: ".worktrees/a", branch: "task/a", lastActiveAt: now - 3 * 3_600_000, task: 4, taskState: "in_progress", pr: 9 }],
+    settled: [{ path: ".worktrees/b", branch: "task/b", reason: "parked", lastActiveAt: 0 }, { path: ".worktrees/c", branch: "task/c", reason: "merged", lastActiveAt: now - 9 * 86_400_000, private: true, taskState: "private" }],
+    complete: true, quietDays: 7, alertOver: 10, prsReadAt: now - 120_000 });
+  const section = targets.worktrees!, text = section.text;
+  expect(text).not.toMatch(/NaN|Invalid Date|undefined/);
+  expect(text).toMatch(/active 1m ago/); expect(text).toMatch(/active 3h ago/); expect(text).toContain("activity unknown"); expect(text).toMatch(/PR states read\s+2m ago/); expect(text).toContain("PR merged");
+  expect(targets["worktrees-count"]!.textContent).toBe("2 live, 2 settled");
+  expect(text).toContain("#4 in_progress");                                          // an ordinary row names its task; the private row after it shows no id
+  expect(text.slice(text.indexOf(".worktrees/c"))).not.toMatch(/#\d/);
+  const posted2 = section.all.filter(n => n.tag === "button").map(n => ({ label: n.textContent, ...(n as any).payload }));
+  expect(posted2.map(b => b.label)).toEqual(["Park", "Pin", "Unset", "Pin", "Refresh PR states"]);   // the main checkout offers no Park
+  expect(text).toContain("never shelved");
+  expect(posted2.filter(b => b.action === "worktree_override_set").map(b => `${b.path}:${b.value}`)).toEqual([".worktrees/a:settled", ".worktrees/b:active", ".worktrees/c:active"]);
+  expect(posted2.find(b => b.label === "Unset")).toMatchObject({ action: "worktree_override_clear", path: ".worktrees/b" });
+  expect(posted2.at(-1)).toMatchObject({ action: "worktrees_refresh_prs" });
+  void posted;
+  // states that are not a list: pending, unavailable and an older hub with no shelf
+  for (const [shelf, expected] of [[{ pending: true }, "Reading worktrees"], [{ unavailable: true }, "unavailable"], [undefined, "current snapshot"]] as const) { api.renderWorktrees(shelf); expect(targets.worktrees!.text).toContain(expected); }
+  expect(targets["worktrees-count"]!.textContent).toBe("");
+});
+
+// The plugin's inbox alert against a REAL daemon: the provider connects to the daemon's own state dir, so the snapshot shape the alert reads is the one the daemon really emits.
+test("the plugin's inbox alert reads a real daemon's snapshot: it appears once the settled count is above alert_over, with the real count and no path, and goes away at the threshold", async () => {
+  const f = await rig({ config: { worktrees: { quiet_days: 7, alert_over: 1 } } });   // two settled worktrees (merged, quiet) against a threshold of 1
+  const home = mkdtempSync(join(tmpdir(), "ahub-acon-real-")); cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+  const project: ProjectRecord = { id: "shelf3", root: f.cwd, stateDir: f.stateDir, basePort: 4700, instanceId: f.instanceId, pid: process.pid };
+  const registry = { get: (id: string) => id === project.id ? project : undefined, list: () => [project], close() {} } as any;
+  const lifecycle: Lifecycle = { inspectProject: async () => ({ state: "running", status: { instanceId: f.instanceId, peers: {} } }), startProject: async () => ({}), stopProject: async () => {} };
+  const provider = createProvider({ home, registry, lifecycle });
+  const items = async () => ((await provider.snapshot({ after: 0, panel: "inbox" })).items as any[]).filter(i => i.kind === "worktrees");
+  // the first snapshot only warms the daemon's cache; the alert follows on the next poll, as the panel's 2 s poll would see it
+  await items(); await Bun.sleep(500);
+  const raised = await items();
+  expect(raised).toHaveLength(1);
+  expect(raised[0]).toMatchObject({ group: "alert", id: "worktrees:shelf3", title: "2 settled worktrees", verbs: [{ id: "open" }], link: { panel: "agents", params: { project: "shelf3" } } });
+  expect(JSON.stringify(raised)).not.toContain(f.cwd); expect(JSON.stringify(raised)).not.toMatch(/\.worktrees|task\//);
+  // raise the threshold through the real settings path: the alert goes away with no restart (the cache is at most 30 s old, so ask the shelf to refresh it first)
+  expect((await f.person.request({ t: "settings_set", key: "worktrees.alert_over", value: 2 } as never)).ok).toBe(true);
+  await f.person.request({ t: "worktrees" });                                       // a read re-fills the cache with the new threshold
+  const after = await items();
+  expect(after).toEqual([]);
 });

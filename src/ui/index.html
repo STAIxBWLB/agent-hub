@@ -2394,9 +2394,11 @@ function renderWorktrees(shelf) {
         if (item.pr !== undefined) line.append(badge('PR ' + item.pr));
         if (isSettled && item.reason) line.append(badge(reasonText[item.reason] || String(item.reason), item.reason === 'parked' ? '' : 'ok'));
         if (item.outside) line.append(badge('outside project'));
-        const stamp = el('span'); stamp.dataset.ts = new Date(item.lastActiveAt).toISOString(); stamp.title = time(stamp.dataset.ts); stamp.textContent = item.lastActiveAt ? 'active ' + rel(stamp.dataset.ts) : 'activity unknown'; line.append(stamp);
+        // `rel` and `data-ts` take epoch milliseconds (refreshRelativeTimes reads Number(dataset.ts)), never an ISO string.
+        const stamp = el('span'); if (item.lastActiveAt) { stamp.dataset.ts = String(item.lastActiveAt); stamp.title = time(item.lastActiveAt); stamp.textContent = 'active ' + rel(item.lastActiveAt); } else stamp.textContent = 'activity unknown'; line.append(stamp);
         // Park moves a live row to the shelf and Pin keeps a settled row live; both are the person's call and the only writes here. 'Unset' returns the row to what the rules derive.
-        line.append(button(isSettled ? 'Pin' : 'Park', {action: 'worktree_override_set', path: String(item.path), value: isSettled ? 'active' : 'settled'}));
+        if (!item.fixed) line.append(button(isSettled ? 'Pin' : 'Park', {action: 'worktree_override_set', path: String(item.path), value: isSettled ? 'active' : 'settled'}));
+        else line.append(badge('never shelved'));
         if (item.reason === 'parked') line.append(button('Unset', {action: 'worktree_override_clear', path: String(item.path)}));
         block.append(line);
       }
@@ -2405,13 +2407,18 @@ function renderWorktrees(shelf) {
     target.append(group('Live', live, false), group('Settled', settled, true));
     if (shelf.complete === false) target.append(el('p', 'Some worktrees could not be read in time; they are listed as live. The next refresh tries again.', 'meta'));
     const tools = el('div', undefined, 'row-head');
-    tools.append(button('Refresh PR states', {action: 'worktrees_refresh_prs'}), el('span', shelf.prsReadAt ? 'PR states read ' + rel(new Date(shelf.prsReadAt).toISOString()) : 'PR states not read yet: merged work shows as merged only after a guarded merge or a refresh.', 'meta'));
-    target.append(tools);
+    const readNote = el('span', undefined, 'meta');
+    if (shelf.prsReadAt) { readNote.append('PR states read '); const when = el('span'); when.dataset.ts = String(shelf.prsReadAt); when.title = time(shelf.prsReadAt); when.textContent = rel(shelf.prsReadAt); readNote.append(when); }
+    else readNote.textContent = 'PR states not read yet: merged work shows as merged only after a guarded merge or a refresh.';
+    tools.append(button('Refresh PR states', {action: 'worktrees_refresh_prs'}), readNote);
+    const foot = el('div', undefined, 'row');
+    foot.append(tools);
     if (settled.length) {
       const tidy = el('p', 'To remove settled worktrees safely, run in a terminal (it previews first and removes only after you confirm): ', 'meta');
       tidy.append(el('code', 'ahub worktrees tidy'));
-      target.append(tidy);
+      foot.append(tidy);
     }
+    target.append(foot);
   });
 }
 function renderBench(bench) {
