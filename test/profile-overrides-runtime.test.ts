@@ -7,6 +7,7 @@ import { realPath } from "../src/hub/project.ts";
 import { init } from "../src/cli/init.ts";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { SourceRegistry } from "../src/hub/sources.ts";
 const cleanup:(()=>unknown)[]=[];afterEach(async()=>{for(const fn of cleanup.splice(0).reverse())await fn();});
 async function fixture(profile:"dev"|"research"="research", custom=true) {
   const dir=realPath(mkdtempSync(join(tmpdir(),"ahub-override-runtime-"))),home=realPath(mkdtempSync(join(tmpdir(),"ahub-override-home-")));cleanup.push(()=>rmSync(dir,{recursive:true,force:true}),()=>rmSync(home,{recursive:true,force:true}));init(dir,profile);
@@ -19,7 +20,8 @@ async function cli(f:Awaited<ReturnType<typeof fixture>>,args:string[]){const en
 test("project custom aliases reach real CLI Tasks routing and selected plan fields without executing examples (#259)",async()=>{
   const f=await fixture();const result=await cli(f,["task","propose","annotate","Custom task","--owner","user"]);expect(result.code).toBe(0);expect(result.err).toContain('"annotate" was taken as the class');
   const task=JSON.parse((await f.op("task_show",{id:1})).text);expect(task).toMatchObject({class:"bulk_edit",profile:"research",profileClass:"annotate"});
-  await f.op("hub_task_propose",{title:"Selected plan",class:"audit",owner:"user",plan:{paths:["paper.txt"],sources:["source-1"],claims:["not-selected"]}});const planned=JSON.parse((await f.op("task_show",{id:2})).text);expect(planned.plan).toEqual({paths:["paper.txt"],sources:["source-1"]});
+  const source=new SourceRegistry(f.state).add({bytes:Buffer.from("source-1"),kind:"file",origin:"/notes/source-1.txt",private:false}).id;
+  await f.op("hub_task_propose",{title:"Selected plan",class:"audit",owner:"user",plan:{paths:["paper.txt"],sources:[source],claims:["not-selected"]}});const planned=JSON.parse((await f.op("task_show",{id:2})).text);expect(planned.plan).toEqual({paths:["paper.txt"],sources:[source]});
   expect((await f.op("route_explain",{class:"annotate",title:"route custom alias"})).text).toContain("base bulk_edit");expect(f.config.checks).not.toHaveProperty("annotate");expect(readFileSync(join(f.state,"hub.log"),"utf8")).not.toContain("DO_NOT_RUN_EXAMPLE_COMMAND");
 });
 test("dev custom aliases retain alias metadata while existing base meanings stay stable (#259)",async()=>{

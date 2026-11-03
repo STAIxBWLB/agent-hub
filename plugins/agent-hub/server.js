@@ -12746,7 +12746,7 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
     if (customProfile && tool.name === "hub_task_propose")
       properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter((v) => projectProfile("dev").classes[v])])] };
     if (customProfile && properties.plan && tool.name !== "hub_task_accept" && tool.name !== "hub_experiment_record")
-      properties.plan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) } };
+      properties.plan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "registered src:<16 hex> source ids; list available ids with ahub source list" : "short claim ids to verify")])) } };
     if (customProfile && tool.name === "hub_task_done" && data.name !== "dev") {
       const summaryProp = properties.summary;
       properties.summary = {
@@ -12756,7 +12756,7 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
     }
     if (customProfile && tool.name === "hub_backlog_split") {
       const parts = properties.parts;
-      const selectedPlan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) } };
+      const selectedPlan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "registered src:<16 hex> source ids; list available ids with ahub source list" : "short claim ids to verify")])) } };
       properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: selectedPlan } } };
     }
     if (criteria && properties.plan && tool.name !== "hub_experiment_record") {
@@ -12847,7 +12847,7 @@ var init_hub_tools = __esm(() => {
     },
     additionalProperties: false
   };
-  acceptPlan = { ...plan, properties: { ...plan.properties, sections: list("document heading anchors, such as report.md#methods"), sources: list("citation ids, DOI or source URL ids"), claims: list("short claim ids to verify") } };
+  acceptPlan = { ...plan, properties: { ...plan.properties, sections: list("document heading anchors, such as report.md#methods"), sources: list("registered src:<16 hex> source ids; list available ids with ahub source list"), claims: list("short claim ids to verify") } };
   STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff"]);
   HANDOFF_TOOLS = new Set(["hub_task_handoff", "hub_task_handoffs"]);
   BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);

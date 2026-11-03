@@ -6938,6 +6938,8 @@ export async function startDaemon(opts: DaemonOptions) {
       status: { peers: peerView, pendingRestart: allPendingRestart(), retainedConfig, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo, ownerIsolation: attentionStatus.ownerIsolation, ownerIsolationNotes: attentionStatus.ownerIsolationNotes },
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true, wipPull: true, split: true },
+      // #1144: source metadata only, including private records; never expose origins or stored text.
+      sources: sourceRegistry.list().map(({ id, kind, bytes, sha256, added_at }) => ({ id, kind, bytes, hashPrefix: sha256.slice(0, 12), added_at })),
       releases: tasks.releaseList(USER),
       // #335: each schedule's next run, ids and times only (a title or detail is task text). Absent when none is configured, so an older page and an unconfigured project see no change.
       ...(config.schedules.length ? { schedules: scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true) } : {}),
@@ -7726,6 +7728,12 @@ export async function startDaemon(opts: DaemonOptions) {
       return { ok: true, report };
     }
     switch (a.action) {
+      case "intake": {
+        if (session?.liveTest) return { ok: false, error: "live-test dashboard cannot write person-attributed content; use peer tools" };
+        if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding mutations" };
+        // Reuse the CLI task dispatch, including in-flight recovery accounting and publicView projections.
+        return { ok: true, ...JSON.parse(await taskOp(USER, "intake", { text: a.text, sources: a.sources })) };
+      }
       case "pause":
       case "resume":
         return peer() ? holdPeer(a.action, a.peer as string) : bad;

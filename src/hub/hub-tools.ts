@@ -69,7 +69,7 @@ const plan = {
 } as const;
 
 // Accept may target a task from an older project profile; Tasks normalizes by the stored task profile.
-const acceptPlan = { ...plan, properties: { ...plan.properties, sections: list("document heading anchors, such as report.md#methods"), sources: list("citation ids, DOI or source URL ids"), claims: list("short claim ids to verify") } } as const;
+const acceptPlan = { ...plan, properties: { ...plan.properties, sections: list("document heading anchors, such as report.md#methods"), sources: list("registered src:<16 hex> source ids; list available ids with ahub source list"), claims: list("short claim ids to verify") } } as const;
 
 export interface HubTool {
   name: string;
@@ -246,7 +246,7 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
       properties.receipt = { ...receipt, properties: fields };
     }
     if (customProfile && tool.name === "hub_task_propose") properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter(v => projectProfile("dev").classes[v])])] };
-    if (customProfile && properties.plan && tool.name !== "hub_task_accept" && tool.name !== "hub_experiment_record") properties.plan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) } };
+    if (customProfile && properties.plan && tool.name !== "hub_task_accept" && tool.name !== "hub_experiment_record") properties.plan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "registered src:<16 hex> source ids; list available ids with ahub source list" : "short claim ids to verify")])) } };
     if (customProfile && tool.name === "hub_task_done" && data.name !== "dev") {
       const summaryProp = properties.summary as { type: string; description: string };
       properties.summary = {
@@ -258,7 +258,7 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
     }
     if (customProfile && tool.name === "hub_backlog_split") {
       const parts = properties.parts as { items: { properties: Record<string, unknown> } };
-      const selectedPlan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) } };
+      const selectedPlan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "registered src:<16 hex> source ids; list available ids with ahub source list" : "short claim ids to verify")])) } };
       properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: selectedPlan } } };
     }
     if (criteria && properties.plan && tool.name !== "hub_experiment_record") {

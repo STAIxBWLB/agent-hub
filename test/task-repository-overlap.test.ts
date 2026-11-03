@@ -11,6 +11,7 @@ import { TASK_TOOLS } from "../src/hub/hub-tools.ts";
 import { resolveProfile } from "../src/hub/profiles.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
+import { SourceRegistry } from "../src/hub/sources.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(() => { for (const dispose of cleanup.splice(0).reverse()) dispose(); });
@@ -35,12 +36,14 @@ async function fixture(allPlanKeys = false) {
   const bus = new Bus({ batchMs: 0 });
   for (const id of ["codex", "kimi", "local"]) { const peer = new Peer(id); bus.add(peer); await peer.start(); }
   const notices: string[] = [], records: Parameters<NonNullable<TasksDeps["recordOverlap"]>>[] = [];
-  const routing = loadRouting(hub);
+  const routing = loadRouting(hub), registry = new SourceRegistry(hub);
+  const registerSource = (text: string) => registry.add({ bytes: Buffer.from(text), kind: "file", origin: "/notes/reference.txt", private: false }).id;
   const profileData = allPlanKeys ? resolveProfile("dev", { plan_keys: ["paths", "symbols", "sections", "sources", "signatures", "insertion_points"] }) : undefined;
   const tasks = new Tasks({ ...(profileData ? { profileData } : {}), board, bus, cwd: hub, project: "hub", repository: "example/hub", routing: () => routing, wipLimit: () => 16,
+    intake: { sourceKnown: id => !!registry.get(id), split: async () => undefined, partsSchema: () => ({}) },
     coordination: () => true, capable: () => true, notify: line => notices.push(line), recordOverlap: (...args) => records.push(structuredClone(args)) });
   const claim = (owner: string, refs: TaskRefs, plan: TaskPlan = {}) => tasks.propose(owner, { owner, title: "repository fixture", class: "implement", refs, plan });
-  return { dir, hub, sibling, tasks, board, bus, notices, records, claim, routing };
+  return { dir, hub, sibling, tasks, board, bus, notices, records, claim, routing, registerSource };
 }
 
 test("#476 sibling absolute refs and relative test plan never overlap the hub repository", async () => {
@@ -76,9 +79,10 @@ for (const repo of ["example/hub", "."] as const) test(`#476 explicit hub ${repo
 });
 
 for (const field of ["symbols", "sections", "sources"] as const) test(`#476 ${field} are compared only inside one repository`, async () => {
-  const f = await fixture(field !== "symbols"), plan: TaskPlan = { [field]: ["shared-reference"] };
+  const f = await fixture(field !== "symbols");
+  const reference = field === "sources" ? f.registerSource("shared-reference") : "shared-reference", plan: TaskPlan = { [field]: [reference] };
   const first = await f.claim("codex", { repo: "example/sibling" }, plan);
-  expect(first.plan?.[field]).toEqual(["shared-reference"]);
+  expect(first.plan?.[field]).toEqual([reference]);
   const mine = await f.claim("kimi", {}, plan);
   expect(f.tasks.overlaps(mine)).toBe(""); expect(f.records).toEqual([]);
 });

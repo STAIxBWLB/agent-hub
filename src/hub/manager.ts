@@ -129,18 +129,23 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
         return { ok: true };
       }
       // The settings actions (#269) reach the project hub as an ordinary session's: this dashboard opens no settings session.
-      if (!["snapshot", "send", "pause", "resume", "permit", "propose", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release"].includes(String(input.action))) return { ok: false, error: "invalid dashboard action" };
+      if (!["snapshot", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release"].includes(String(input.action))) return { ok: false, error: "invalid dashboard action" };
       client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: input.instanceId });
       const deliveryRead = input.action === "sdlc_queue" || input.action === "sdlc_release";
       let nominalMs = 10_000;
       if (input.action === "start_peer") nominalMs = MAX_COMMAND_MS + 5_000;
       else if (input.action === "backlog_split") nominalMs = BACKLOG_SPLIT_SCREEN_TIMEOUT_MS + HUB_DB_BUSY_TIMEOUT_MS + 5_000;
+      else if (input.action === "intake") nominalMs = 90_000; // the CLI intake cap, including the hub model's bounded split
       else if (deliveryRead) nominalMs = 30_000;
       const timeoutMs = options.forwardTimeoutMs?.(String(input.action), nominalMs) ?? nominalMs;
       const result = await client.request(input.action === "snapshot"
         ? { t: "ui_snapshot", after: input.after ?? 0, ...(input.memory !== undefined ? { memory: input.memory } : {}), ...(dashboardView(input.view) ? { view: input.view } : {}) }
         : { t: "ui_action", action: input, instanceId: input.instanceId }, timeoutMs);
       // ControlClient resolves its deadline as this exact sentinel; a hub refusal stays a known failure.
+      if (input.action === "intake" && result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) {
+        const text = "Intake result is unconfirmed. Check Backlog before retrying; the hub may still create its drafts.";
+        return { ok: false, unconfirmed: true, text, error: text };
+      }
       if (["start_peer", "backlog_split"].includes(String(input.action)) && result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) {
         const text = input.action === "backlog_split" ? "Split result is unconfirmed. Reload the task before retrying; the hub may still commit its children." : "Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.";
         return { ok: false, unconfirmed: true, text, error: text };
