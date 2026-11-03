@@ -1,4 +1,5 @@
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
+import { gitProject } from "./fakes/git-project.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,11 +22,8 @@ const until = async (f: () => boolean, ms = 3000) => {
 async function hub(modelUrl?: string, snapshots = false) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-reliability-"));
   clean.push(() => rmSync(cwd, { recursive: true, force: true }));
-  if (snapshots) {
-    for (const args of [["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "base"]]) {
-      expect(Bun.spawnSync(["git", "-C", cwd, ...args]).exitCode).toBe(0);
-    }
-  }
+  // #1129: implement work is offered to the hub-sandboxed `local` only where the hub can make its worktree, so every fixture project is a repository with a first commit.
+  gitProject(cwd); // this is also the base commit the snapshot tests need (#661)
   const stateDir = join(cwd, ".agenthub", "state");
   const daemon = await startDaemon({ boundedTools: emulatedBoundedTools(), cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     ...(snapshots ? { snapshotClock: () => 0 } : {}), // #661: a held clock, so a slow runner cannot spend the shared snapshot budget (#576) before the end evidence is read

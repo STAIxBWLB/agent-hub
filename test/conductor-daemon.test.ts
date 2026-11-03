@@ -1,4 +1,5 @@
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
+import { gitProject } from "./fakes/git-project.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +23,7 @@ class QuietPeer extends BasePeer {
 async function fixture(conductor: "claude" | "codex" = "claude", feed: "off" | "all" = "off") {
   const dir = mkdtempSync(join(tmpdir(), "ahub-conductor-daemon-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  gitProject(dir); // #1129: implement work is offered to the hub-sandboxed Pi only where the hub can make its worktree
   mkdirSync(join(dir, ".agenthub"));
   const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8")
     .replace(/^pii_patterns = .*$/m, 'pii_patterns = ["PRIVATE-MARKER"]')
@@ -245,6 +247,8 @@ test("a person's reservation carried out by the hub still stands against the pro
   expect((await op(planner, "hub_task_propose", { title: "second", class: "implement", owner: "pi", after: [1] })).ok).toBe(true);
   expect((await op(f.console_, "task_assign", { id: 2, peer: "kimi" })).ok).toBe(true); // the person reserves kimi
   expect((await op(pi, "hub_task_accept", { id: 1 })).ok).toBe(true);
+  // #1129: Pi is hub-sandboxed, so the hub made its worktree at accept and commits it at done; a done with nothing edited is refused ("no changes ... edit files there").
+  writeFileSync(join(f.dir, ".worktrees", "pi-1", "result.txt"), "done by pi\n");
   expect((await op(pi, "hub_task_done", { id: 1, summary: "done" })).ok).toBe(true); // no reviewer attached: approved
   for (let n = 0; n < 100 && (await shown(2)).owner !== "kimi"; n++) await Bun.sleep(10);
   expect(await shown(2)).toMatchObject({ owner: "kimi", state: "proposed" });

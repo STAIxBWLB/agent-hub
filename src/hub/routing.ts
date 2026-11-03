@@ -343,6 +343,12 @@ export function ownerRoleOfClass(cls: TaskClass): "planner" | "implementer" | "r
   return cls === "review" ? "reviewer" : cls === "plan" ? "planner" : "implementer";
 }
 
+/**
+ * #1129: the classes whose owner changes the repository, so a hub-sandboxed owner needs the hub's task worktree and commit (#1115) whether or not the task declares
+ * `needs_worktree`. `test`, `summarize`, `triage`, `review` and `plan` read and report: they get none. One definition, so routing and `Tasks` cannot disagree.
+ */
+export const writesRepository = (cls: TaskClass): boolean => cls === "implement" || cls === "bulk_edit";
+
 /** Why a planner was chosen: the person named it, rotation reached it, the task's recorded planner is kept, or there is none (PII, no holder). */
 export type PlannerReason = "rotation" | "named" | "kept" | "none";
 
@@ -493,7 +499,8 @@ export function assign(
       // #1081: work that declares it needs the network is never offered to a peer whose shell has none. Unknown (no `network` entry) is not a refusal.
       if (task.signals.includes("needs_network") && caps?.network === false) return deny("network", `no network: ${caps.networkReason ?? "its shell cannot reach the network"}`);
       // #1081: work that declares it needs a task worktree is never offered to a peer that cannot create one, so no branch ref is left behind by a refused accept.
-      if (task.signals.includes("needs_worktree") && caps?.worktree === false) return deny("worktree", `no worktree: ${caps.worktreeReason ?? "it cannot create the task worktree"}`);
+      // #1129: write-class work needs one whether or not it declares it, because a hub-sandboxed owner cannot commit and the hub commits in its worktree. Unknown capability is not a refusal.
+      if ((task.signals.includes("needs_worktree") || writesRepository(task.class)) && caps?.worktree === false) return deny("worktree", `no worktree: ${caps.worktreeReason ?? "it cannot create the task worktree"}`);
     }
     if (opts.offRoster?.includes(peer)) return deny("roster", "off roster");
     const named = role === "owner" ? opts.namedOwner ?? reserved : opts.namedReviewer;

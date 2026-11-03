@@ -1107,9 +1107,13 @@ routing, a reservation, `ahub task assign` and `hub_task_accept` all refuse it b
   the worktree and its empty branch; one with uncommitted changes is kept and reported. The sandbox profile is not
   changed (docs/security.md, "Hub-made task worktree").
 
-A peer whose capability the hub cannot tell is never refused on this ground, and work that declares no need is
-routed as before. The flags are a person's or a planner's statement about the work, so an unflagged task can still
-reach a peer that cannot do it.
+A peer whose capability the hub cannot tell is never refused on this ground. Work that declares no need is routed as
+before, with one exception (#1129): write-class work (`implement`, `bulk_edit`) is treated as needing a worktree
+whether or not it is flagged, because a hub-sandboxed owner cannot commit (#1123) and the hub commits in its worktree.
+Such work is never offered to a hub-sandboxed peer on a project where the hub cannot make a worktree, and
+`ahub route explain` says `no worktree` and the cause; `test`, `summarize`, `triage`, `review` and `plan` get none,
+and neither does a PII task. The other flags are a person's or a planner's statement about the work, so an unflagged
+task can still reach a peer that cannot meet them.
 
 Network is off unless `local.bash_network` says otherwise. With `true` it goes
 only through the hub's egress proxy on a loopback port (0.11): commands get

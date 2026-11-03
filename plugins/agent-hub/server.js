@@ -7101,7 +7101,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
         } catch {}
         const refused = res.code !== 0 && /(?:\.git\/(?:refs|HEAD|packed-refs|worktrees)\b|cannot lock ref|index\.lock)[^\n]*(?:Operation not permitted|not permitted)/i.test(res.output);
         return `${res.output}${refused ? `
-note: the sandbox does not let you move a branch, tag or HEAD, or stage inside a linked worktree (#1123). Leave your edits in the working tree and finish with hub_task_done: the hub stages, commits and pushes them for you.` : ""}
+note: the sandbox does not let you move a branch, tag or HEAD, or stage inside a linked worktree (#1123). Leave your edits in the working tree and finish with hub_task_done. For implementation work the hub stages, commits and pushes them for you; for work that changes no files, or a private task, there is nothing for it to commit, so do not try to commit it yourself.` : ""}
 (exit ${res.code})`;
       }
       case "doc_read": {

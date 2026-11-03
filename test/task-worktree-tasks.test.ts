@@ -42,7 +42,7 @@ async function rig() {
   const tasks = new Tasks({ cwd, board, bus, project: "fixture", roles: { claude: ["planner"] }, routing: () => loadRouting(cwd), notify: line => notices.push(line), wipLimit: () => 5,
     sdlc: { config: () => sdlcConfig({ mode: "off" }) }, taskWorktree: worktrees,
     capabilities: () => ({ pi: { tests: true, spec: true, network: true, worktree: true }, codex: { tests: true, spec: true, network: true, worktree: true } }) });
-  const offer = (owner: string, signals: string[] = ["needs_worktree"]) => { const row = board.propose("user", { title: "raise the pin", class: "implement", signals: signals as any }); board.update(row.id, "user", "assigned", { owner }); return row; };
+  const offer = (owner: string, signals: string[] = ["needs_worktree"], cls: "implement" | "bulk_edit" | "test" | "summarize" | "triage" | "review" | "plan" = "implement") => { const row = board.propose("user", { title: "raise the pin", class: cls, signals: signals as any }); board.update(row.id, "user", "assigned", { owner }); return row; };
   return { cwd, state, board, tasks, worktrees, notices, git, offer, branches: () => git("for-each-ref", "--format=%(refname)", "refs/heads/task/") };
 }
 
@@ -60,12 +60,66 @@ test("accepting worktree work as a hub-sandboxed peer makes the worktree on the 
   expect(f.branches()).toBe(`refs/heads/task/${row.id}-pi`);
 });
 
-test("a peer that makes its own worktree, and work that does not declare the need, get no hub worktree", async () => {
+test("a peer that makes its own worktree gets no hub worktree, and a read-only class that does not declare the need gets none either (#1129 AC1)", async () => {
   const f = await rig();
   const own = f.offer("codex"); f.tasks.accept("codex", own.id);
-  const plain = f.offer("pi", []); f.tasks.accept("pi", plain.id);
+  const own2 = f.offer("codex", []); f.tasks.accept("codex", own2.id); // unflagged write-class work by a peer that commits itself: no hub worktree
+  for (const cls of ["test", "summarize", "triage", "plan"] as const) { const row = f.offer("pi", [], cls); f.tasks.accept("pi", row.id); expect(f.tasks.worktreeNote(f.board.get(row.id)!, "pi"), cls).toBeUndefined(); }
   expect(existsSync(join(f.cwd, ".worktrees"))).toBe(false); expect(f.branches()).toBe("");
-  expect(f.tasks.worktreeNote(f.board.get(plain.id)!, "pi")).toBeUndefined();
+});
+
+test("an UNFLAGGED implement or bulk_edit task accepted by a hub-sandboxed peer gets the hub worktree, and a declared read-only class still gets one (#1129 AC1)", async () => {
+  const f = await rig();
+  for (const cls of ["implement", "bulk_edit"] as const) {
+    const row = f.offer("pi", [], cls);
+    expect(f.board.get(row.id)!.signals).not.toContain("needs_worktree");
+    const task = f.tasks.accept("pi", row.id);
+    const path = join(f.cwd, ".worktrees", `pi-${row.id}`);
+    expect(existsSync(join(path, "a.txt")), cls).toBe(true);
+    expect(f.git("-C", path, "symbolic-ref", "HEAD")).toBe(`refs/heads/task/${row.id}-pi`);
+    expect(f.tasks.worktreeNote(task, "pi")).toContain(`the hub made ${path}`);
+  }
+  const declared = f.offer("pi", ["needs_worktree"], "test"); f.tasks.accept("pi", declared.id);
+  expect(existsSync(join(f.cwd, ".worktrees", `pi-${declared.id}`))).toBe(true); // an explicit declaration still wins for a read-only class
+});
+
+test("the hub commits an unflagged task's worktree at hub_task_done, and decline and cancel clear it as for a flagged one (#1129 AC3)", async () => {
+  const f = await rig();
+  const row = f.offer("pi", []); f.tasks.accept("pi", row.id);
+  writeFileSync(join(f.cwd, ".worktrees", `pi-${row.id}`, "a.txt"), "edited by the peer\n");
+  const refs = await f.tasks.worktreeHandoff("pi", row.id, { paths: ["a.txt"] });
+  expect(refs).toMatchObject({ branch: `task/${row.id}-pi`, commit: f.git("rev-parse", `refs/heads/task/${row.id}-pi`) });
+  const declined = f.offer("pi", [], "bulk_edit"); f.tasks.accept("pi", declined.id);
+  await f.tasks.decline("pi", declined.id, "cannot do this");
+  expect(existsSync(join(f.cwd, ".worktrees", `pi-${declined.id}`))).toBe(false);
+  const cancelled = f.offer("pi", []); f.tasks.accept("pi", cancelled.id);
+  await f.tasks.cancel(cancelled.id, "user", { reason: "no longer needed" });
+  expect(existsSync(join(f.cwd, ".worktrees", `pi-${cancelled.id}`))).toBe(false);
+  expect(f.branches()).toBe(`refs/heads/task/${row.id}-pi`); // only the committed task's branch is left
+});
+
+test("a PII task gets no hub worktree even when it is write-class (#1129 AC1)", async () => {
+  const f = await rig();
+  const row = f.board.propose("user", { title: "fix the grade export", class: "implement", signals: ["pii"] });
+  f.board.update(row.id, "user", "assigned", { owner: "pi" });
+  f.tasks.accept("pi", row.id);
+  expect(existsSync(join(f.cwd, ".worktrees"))).toBe(false); expect(f.branches()).toBe("");
+  expect(f.tasks.worktreeNote(f.board.get(row.id)!, "pi")).toBeUndefined();
+});
+
+test("a self-claim of write-class work by a hub-sandboxed peer makes the worktree and carries the note; with no worktree possible the claim stays an assignment (#1129)", async () => {
+  const f = await rig();
+  const made = await f.tasks.propose("pi", { title: "rename a helper", class: "implement", owner: "pi" });
+  expect(f.board.get(made.id)).toMatchObject({ state: "in_progress", owner: "pi" });
+  expect(existsSync(join(f.cwd, ".worktrees", `pi-${made.id}`))).toBe(true);
+  expect(f.tasks.claimRoleGuidance(f.board.get(made.id)!, "pi")).toContain("the hub made");
+  const blocked = await rig();
+  blocked.git("branch", "task/1-pi"); // the first task id is 1, so the hub cannot make its worktree
+  const refused = await blocked.tasks.propose("pi", { title: "rename another helper", class: "implement", owner: "pi" });
+  expect(refused.id).toBe(1);
+  expect(blocked.board.get(1)).toMatchObject({ state: "proposed", owner: "pi" });
+  expect(blocked.notices.some(line => line.includes("the hub could not make one for pi") && line.includes("is not started"))).toBe(true);
+  expect(existsSync(join(blocked.cwd, ".worktrees", "pi-1"))).toBe(false);
 });
 
 test("a refused accept leaves no ref and no directory, changes no task, and names the cause and the next step", async () => {

@@ -1,5 +1,6 @@
 import { FakeMemoryClient } from "./fakes/mem-worker.ts";
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
+import { gitProject } from "./fakes/git-project.ts";
 import { CandidateStore, memoryProjectKey } from "@staix/agent-mem";
 import { afterEach, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -84,6 +85,18 @@ test("a PII owner withdrawal notice uses the public title and a private delivery
   expect(notice.body).toContain("[pii]");
   expect(notice.body).not.toContain("900101");
 });
+
+/**
+ * #1129: implement work goes to the hub-sandboxed `local` only where the hub can make its task worktree. A test that routes such work to `local` runs in a throwaway repository,
+ * never in `ROOT`: the agent-hub checkout carries whatever git config the machine has (a hosted runner's checkout has an `includeIf` credentials entry, which the hub's config guard
+ * refuses, so `local` would be offered nothing there), and a hub worktree and `task/*` branch must not be made inside the checkout under test.
+ */
+function tempGitProject(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-project-")));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  gitProject(dir);
+  return dir;
+}
 
 async function hub(extra: { kimiHome?: string; unattended?: boolean; memoryUrl?: string; nativeMemory?: boolean; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments; roles?: typeof DEFAULT_CONFIG.roles; wipLimits?: Record<string, number>; boundedTools?: Parameters<typeof startDaemon>[0]["boundedTools"] } = {}) {
   const { memoryUrl, nativeMemory, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, roles, wipLimits, ...rest } = extra;
@@ -1048,7 +1061,7 @@ test("budget relay end to end: checkpoint, pause, task to local with the summary
   cleanup.push(model.stop);
   process.env.OMNIROUTE_API_KEY = "k";
   cleanup.push(() => delete process.env.OMNIROUTE_API_KEY);
-  const { stateDir, daemon, console_, events, pushes } = await hub({ modelUrl: model.url });
+  const { stateDir, daemon, console_, events, pushes } = await hub({ modelUrl: model.url, cwd: tempGitProject() });
   await console_.request({ t: "start", peer: "kimi" });
   await console_.request({ t: "start", peer: "local", args: { model: "vllm/x" } });
   expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: "port the parser", class: "implement", owner: "kimi" } })).text).toContain("owner kimi");
@@ -1492,7 +1505,7 @@ test("during a PII turn the local worker cannot accept with a plan, finish or re
   cleanup.push(model.stop);
   process.env.OMNIROUTE_API_KEY = "k";
   cleanup.push(() => delete process.env.OMNIROUTE_API_KEY);
-  const { console_ } = await hub({ modelUrl: model.url });
+  const { console_ } = await hub({ modelUrl: model.url, cwd: tempGitProject() });
   await console_.request({ t: "start", peer: "local", args: { model: "vllm/x" } });
   const op = async (o: string, args: unknown) => console_.request({ t: "task", op: o, args });
   expect((await op("hub_task_propose", { title: "ordinary cleanup", class: "implement", owner: "local" })).text).toContain("task #1");

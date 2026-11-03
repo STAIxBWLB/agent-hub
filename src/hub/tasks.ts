@@ -68,7 +68,7 @@ import { parseClaimVerdict, claimListId, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEY
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
-import { assign, isRemotePeerId, detectSignals, peerEntry, predictSplit, relayCandidates, type Assignment, type InstanceRoutingOptions, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
+import { assign, isRemotePeerId, detectSignals, peerEntry, predictSplit, relayCandidates, writesRepository, type Assignment, type InstanceRoutingOptions, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
@@ -1413,16 +1413,18 @@ export class Tasks {
    * sandboxed peer from accepting work, failing at `git worktree add` (#270) and leaving an empty branch ref behind (#621, #565). Unknown capability is
    * not a refusal, and a PII task skips the check as `requireCapabilities` does.
    */
-  private declaredNeedCheck(task: Pick<Task, "signals" | "id"> & Partial<Pick<Task, "signals">>, peer: PeerId): void {
+  private declaredNeedCheck(task: Pick<Task, "signals" | "id"> & Partial<Pick<Task, "signals" | "class">>, peer: PeerId): void {
     if (!this.d.capabilities || this.isPii(task as Task)) return;
-    const wantsNetwork = task.signals?.includes("needs_network") === true, wantsWorktree = task.signals?.includes("needs_worktree") === true;
+    // #1129: write-class work needs the hub's worktree whether or not it says so, because a hub-sandboxed owner cannot commit.
+    const declaredWorktree = task.signals?.includes("needs_worktree") === true;
+    const wantsNetwork = task.signals?.includes("needs_network") === true, wantsWorktree = declaredWorktree || (task.class !== undefined && writesRepository(task.class));
     if (!wantsNetwork && !wantsWorktree) return;
     const caps = peerEntry(this.d.capabilities(), peer);
     if (wantsNetwork && caps?.network === false) {
       throw new PreEffectToolRefusal(`task #${task.id} needs the network and ${peer} has none: ${caps.networkReason ?? "its shell cannot reach the network"}; decline it so the hub offers it to a peer with network, or ask the person to enable it`);
     }
     if (wantsWorktree && caps?.worktree === false) {
-      throw new PreEffectToolRefusal(`task #${task.id} needs its own git worktree and ${peer} cannot create one: ${caps.worktreeReason ?? "it cannot create the task worktree"}; nothing was created, so no branch ref is left behind; decline it so the hub offers it to a peer that can, this will not change by waiting`);
+      throw new PreEffectToolRefusal(`task #${task.id} ${declaredWorktree ? "needs its own git worktree" : "changes the repository, so the hub must make its git worktree and commit for it"} and ${peer} cannot create one: ${caps.worktreeReason ?? "it cannot create the task worktree"}; nothing was created, so no branch ref is left behind; decline it so the hub offers it to a peer that can, this will not change by waiting`);
     }
   }
 
@@ -4080,7 +4082,17 @@ export class Tasks {
       }
       if (stagedClaimGap) return next; // An explicit claim may reserve its owner, but no offer or acceptance bypasses review.
       this.studyDispatchCheck(next, by);
-      const claimed = this.d.board.update(next.id, by, "accepted", { state: "in_progress" });
+      // #1129: a self-claim of write-class work is an accept too, so a hub-sandboxed claimant gets the hub's worktree here, before the write. When the hub cannot make one the claim stays an assignment, like the missing-spec case above: `hub_task_accept` starts it and refuses with the same cause.
+      let undoWorktree: (() => void) | undefined;
+      try { undoWorktree = this.hubWorktreeFor(next, by); }
+      catch (error) {
+        if (!(error instanceof PreEffectToolRefusal)) throw error;
+        this.releaseNotice(`${error.message}; the claim stays assigned to ${by} and is not started`);
+        return next;
+      }
+      let claimed: Task;
+      try { claimed = this.d.board.update(next.id, by, "accepted", { state: "in_progress" }); }
+      catch (error) { undoWorktree?.(); throw error; }
       this.captureOwnerAcceptance(claimed);
       this.releaseNotice(`task ${this.publicTitle(claimed)} claimed by ${by}`);
       return claimed;
@@ -4116,7 +4128,8 @@ export class Tasks {
   /** A self-claim has no assignment envelope; its tool result carries the same bounded guidance. */
   claimRoleGuidance(task: Task, peer: PeerId): string {
     requireLocalTaskPeer(peer);
-    return task.owner === peer && task.state === "in_progress" ? this.roleGuidance(task, peer) : "";
+    // #1129: a claim by a hub-sandboxed peer carries the worktree note as an accept does, since the claim result is all it reads.
+    return task.owner === peer && task.state === "in_progress" ? [this.roleGuidance(task, peer), this.worktreeNote(task, peer)].filter(Boolean).join("\n") : "";
   }
 
   private roleGuidance(task: Task, peer: PeerId, review = false): string {
@@ -5986,13 +5999,13 @@ export class Tasks {
   checkoutNote = (): string | undefined => { const warning = mainCheckoutWarning(this.d.cwd, this.publicMetadataText); return warning ? `Note: ${warning}.` : undefined; };
 
   /**
-   * #1115: the hub makes the worktree of a hub-sandboxed owner for work that explicitly declares `needs_worktree`. Returns a function that clears it again, or
-   * undefined when there is nothing to clear (another peer, an undeclared need, a PII task, or a worktree an earlier accept already made). A failure refuses the
+   * #1115, #1129: the hub makes the worktree of a hub-sandboxed owner for write-class work (`implement`, `bulk_edit`) and for any work that declares `needs_worktree`. Returns a function that clears it again, or
+   * undefined when there is nothing to clear (another peer, a read-only class that did not declare it, a PII task, or a worktree an earlier accept already made). A failure refuses the
    * accept before any board write and names the cause and the next step; nothing is left behind.
    */
   private hubWorktreeFor(task: Task, peer: PeerId): (() => void) | undefined {
     const port = this.d.taskWorktree;
-    if (!port || peer === USER || peer === HUB || !port.applies(peer) || this.isPii(task) || !task.signals.includes("needs_worktree")) return undefined;
+    if (!port || peer === USER || peer === HUB || !port.applies(peer) || this.isPii(task) || !(task.signals.includes("needs_worktree") || writesRepository(task.class))) return undefined;
     const made = port.create({ peer, task: task.id });
     if (!made.ok) throw new PreEffectToolRefusal(`task #${task.id} needs its own git worktree and the hub could not make one for ${peer}: ${made.reason}; nothing was created, so no branch ref is left behind. Decline the task so the hub offers it to a peer that makes its own worktree`);
     return made.created ? () => { try { port.remove({ peer, task: task.id }); } catch { /* the accept error that got us here is the one reported */ } } : undefined;
