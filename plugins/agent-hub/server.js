@@ -7323,6 +7323,8 @@ var init_pi = __esm(() => {
         value = "";
       if (typeof value !== "string")
         return;
+      if (value)
+        this.noteActivity();
       if (this.observedTitle !== value) {
         this.observedTitle = value;
         this.onDoing?.("title", value);
@@ -7330,8 +7332,11 @@ var init_pi = __esm(() => {
     }
     observeSnapshotTitle(snapshot, before) {
       if (snapshot.titleRevision === undefined && this.titleRevision !== before)
-        return;
+        return false;
+      if (typeof snapshot.titleRevision === "number" && snapshot.titleRevision < this.titleRevision)
+        return false;
       this.observeTitle(snapshot.sessionName, snapshot.titleRevision);
+      return true;
     }
     executionBudgetTimer;
     executionAbort;
@@ -7455,8 +7460,7 @@ var init_pi = __esm(() => {
       const snapshot = this.opts.mode === "headless" ? (await this.waitRpc("get_state", 15000)).data : await this.sendTui({ type: "get_session_state" });
       if (this.state !== "idle" || this.activeTools || snapshot?.sessionId !== this.sessionId || snapshot?.sessionFile !== this.sessionFile)
         throw new Error("Pi source session changed during capture");
-      this.observeSnapshotTitle(snapshot, titleRevisionBefore);
-      if (snapshot.titleRevision === undefined && this.titleRevision !== titleRevisionBefore)
+      if (!this.observeSnapshotTitle(snapshot, titleRevisionBefore))
         throw new Error("Pi source session title changed during capture; retry with a fresh native session snapshot");
       const empty = this.opts.mode === "headless" ? snapshot.messageCount === 0 && snapshot.pendingMessageCount === 0 && snapshot.isStreaming === false && snapshot.isCompacting !== true && !snapshot.sessionName : snapshot.empty === true && snapshot.idle === true;
       if (!empty || this.activityObserved || this.persistedOnce)
