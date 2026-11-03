@@ -56,10 +56,14 @@ export function renderAutonomyStatus(status: Record<string, unknown>, home = hom
   if (!Array.isArray(status.peers)) return null;
   const peers = status.peers as AutonomyPeerStatus[];
   const machine = status.machineDefault as { enabled: boolean; notice?: string } | undefined;
-  const lines = [`Project autonomy · environment ${status.environment}${machine ? ` · machine default ${machine.enabled ? "on" : "off"}` : ""}`, ""];
-  const rows = [["PEER", "NOW", "NEXT START"], ...peers.map(peer => [peer.id, peer.effectiveMode, peer.nextMode ?? "unmanaged"])];
-  const widths = rows[0]!.map((_, column) => Math.max(...rows.map(row => row[column]!.length)));
-  for (const row of rows) lines.push(row.map((value, column) => column < row.length - 1 ? value.padEnd(widths[column]!) : value).join("  "));
+  const lines = [`Project autonomy · environment ${status.environment}${machine ? ` · machine default ${machine.enabled ? "on" : "off"}` : ""}`];
+  if (status.runtime === "stopped") lines.push("The hub is stopped; effective runtime modes and retained consent are unknown.");
+  lines.push("");
+  if (peers.length) {
+    const rows = [["PEER", "NOW", "NEXT START"], ...peers.map(peer => [peer.id, peer.effectiveMode, peer.nextMode ?? "unmanaged"])];
+    const widths = rows[0]!.map((_, column) => Math.max(...rows.map(row => row[column]!.length)));
+    for (const row of rows) lines.push(row.map((value, column) => column < row.length - 1 ? value.padEnd(widths[column]!) : value).join("  "));
+  } else lines.push("No peers were inspected.");
 
   const floors = new Map<string, { row: AutonomyPeerStatus["floor"][number]; peers: Set<string> }>();
   const classes = new Set<string>(), enforced = new Set<string>();
@@ -80,12 +84,14 @@ export function renderAutonomyStatus(status: Record<string, unknown>, home = hom
       group.add(peer.id);
     }
   }
-  lines.push("", `Guarded actions (${classes.size} classes; ${enforced.size} enforced for at least one peer)`);
+  if (peers.length) lines.push("", `Guarded actions (${classes.size} classes; ${enforced.size} enforced for at least one peer)`);
   for (const { row, peers: members } of floors.values()) {
     lines.push(`  ${row.class} · ${row.status} · ${members.size === peers.length ? "all peers" : [...members].join(", ")}`, `    ${row.reason}`);
   }
-  if (unknowns.size) {
+  const projectMissing = Array.isArray(status.missing) ? status.missing.filter((text): text is string => typeof text === "string") : [];
+  if (unknowns.size || projectMissing.length) {
     lines.push("", "Unknowns");
+    for (const text of projectMissing) lines.push(`  project: ${text}`);
     for (const [text, members] of unknowns) lines.push(`  ${[...members].join(", ")}: ${text}`);
   }
   if (machine?.notice) lines.push("", machine.notice);

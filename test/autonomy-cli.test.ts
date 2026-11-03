@@ -50,7 +50,7 @@ test("status JSON and current environment are explicit; default output is readab
   const printed: string[] = [];
   const ports = { environment: "orca", print: (line: string) => printed.push(line), ask: async () => null, request: async () => ({ ok: true, status: { environment: "orca", peers: [] }, lines: ["Project autonomy, environment: orca"] }) };
   await runAutonomy(["status"], ports);
-  expect(printed).toEqual(["Project autonomy · environment orca", "", "PEER  NOW  NEXT START", "", "Guarded actions (0 classes; 0 enforced for at least one peer)"]);
+  expect(printed).toEqual(["Project autonomy · environment orca", "", "No peers were inspected."]);
   printed.length = 0;
   await runAutonomy(["status", "--json"], ports);
   expect(printed).toEqual([JSON.stringify({ environment: "orca", peers: [] })]);
@@ -103,6 +103,47 @@ test("status groups identical floor verdicts and unknowns, preserves differences
     await runAutonomy(["status"], { ...ports, request: async () => ({ ...reply, status: oldStatus }) });
     expect(printed).toEqual(reply.lines);
   }
+});
+
+test("stopped-hub status states that runtime modes and retained consent are unknown", async () => {
+  const status = { environment: "terminal", runtime: "stopped", consentState: "unknown", consentedPeers: [],
+    peers: [{ id: "alpha", effectiveMode: "unknown", nextMode: "never-ask", floor: [
+      { class: "force-push", status: "not-enforced", reason: "The hub is stopped; runtime floor enforcement is unverified." },
+    ], missing: ["The current runtime permission mode is unknown."] }],
+  };
+  const printed: string[] = [];
+  const ports = { environment: "terminal", print: (line: string) => printed.push(line), ask: async () => null,
+    request: async () => ({ ok: true, status, lines: ["The hub is stopped; effective runtime modes and retained consent are unknown."] }),
+  };
+  await runAutonomy(["status"], ports);
+  expect(printed.slice(0, 5)).toEqual([
+    "Project autonomy · environment terminal", "The hub is stopped; effective runtime modes and retained consent are unknown.", "",
+    "PEER   NOW      NEXT START", "alpha  unknown  never-ask",
+  ]);
+  expect(printed).toContain("    The hub is stopped; runtime floor enforcement is unverified.");
+  expect(printed).toContain("  alpha: The current runtime permission mode is unknown.");
+  printed.length = 0;
+  await runAutonomy(["status", "--json"], ports);
+  expect(printed).toEqual([JSON.stringify(status)]);
+});
+
+test("stopped-hub inspection failure preserves every project unknown and omits empty tables", async () => {
+  const status = { environment: "terminal", runtime: "stopped", consentState: "unknown", consentedPeers: [], peers: [],
+    missing: ["Project configuration could not be safely inspected."],
+  };
+  const printed: string[] = [];
+  const ports = { environment: "terminal", print: (line: string) => printed.push(line), ask: async () => null,
+    request: async () => ({ ok: true, status }),
+  };
+  await runAutonomy(["status"], ports);
+  expect(printed).toEqual([
+    "Project autonomy · environment terminal", "The hub is stopped; effective runtime modes and retained consent are unknown.", "",
+    "No peers were inspected.", "", "Unknowns", "  project: Project configuration could not be safely inspected.",
+  ]);
+  expect(renderAutonomyStatus({ ...status, missing: [...status.missing, "Another project unknown."] })).toContain("  project: Another project unknown.");
+  printed.length = 0;
+  await runAutonomy(["status", "--json"], ports);
+  expect(printed).toEqual([JSON.stringify(status)]);
 });
 
 test("new environment detection is preset data rather than a native-name branch", () => {
