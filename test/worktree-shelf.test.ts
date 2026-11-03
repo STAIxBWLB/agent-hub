@@ -121,7 +121,7 @@ test("no module the daemon reaches for the shelf contains a worktree or branch r
   const block = code(daemon.slice(start, end));
   for (const word of ["spawn", "exec", "rmSync", "worktree remove", "branch -d", "hubGitSync", "readSdlcPr", "sdlcGh"]) expect(block, word).not.toContain(word);
   // the only hub modules that name a removal are two pre-existing ones, neither reached from the shelf case: the hub-made task worktree (#1115) and code-facts' private temp checkout (its own `ahub-code-facts-` directory)
-  const removers = readdirSync(join(import.meta.dir, "../src/hub")).filter(f => f.endsWith(".ts") && /"worktree",\s*"remove"|worktree remove/.test(code(src(`src/hub/${f}`))));
+  const removers = readdirSync(join(import.meta.dir, "../src/hub")).sort().filter(f => f.endsWith(".ts") && /"worktree",\s*"remove"|worktree remove/.test(code(src(`src/hub/${f}`))));
   expect(removers).toEqual(["code-facts.ts", "task-worktree.ts"]);
 });
 
