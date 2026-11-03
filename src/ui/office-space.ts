@@ -21,6 +21,7 @@ export interface SpaceScene {
 }
 
 const ZONES: Record<string, { kind: ZoneKind; title: string }> = {
+  backlog: { kind: "queue", title: "Backlog" },
   todo: { kind: "queue", title: "To do" }, work: { kind: "work", title: "Work floor" },
   review: { kind: "review", title: "Review" }, done: { kind: "done", title: "Done" },
 };

@@ -257,6 +257,7 @@ details.settings-group .row:last-child{border-bottom:0}
 
 .office-scene{display:block;max-width:100%;height:auto;margin-inline:auto;font-family:system-ui,sans-serif;font-size:1px}.office-scene :is(rect,path,line,polygon,circle){vector-effect:non-scaling-stroke;stroke-width:1px}.office-room{fill:var(--panel-soft);stroke:var(--line)}.office-room-title{fill:var(--ink);font-size:1.083333px;font-weight:600}.office-room-count{fill:var(--ink);font-size:1px;font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums}.office-header-surface{fill:var(--panel);stroke:var(--line)}.office-count-pill{fill:var(--panel);stroke:var(--line)}.office-desk-surface{fill:var(--panel);stroke:var(--line)}.office-desk.office-dimmed .office-avatar{opacity:.55}.office-name{fill:var(--ink);font-size:1.083333px;font-weight:600}.office-state,.office-meta,.office-empty{fill:var(--muted);font-size:1px}.office-glyph,.office-hand{font-size:1px}.office-idle .office-glyph{fill:var(--green)}.office-busy .office-glyph{fill:var(--amber)}.office-offline .office-glyph,.office-unknown .office-glyph{fill:var(--muted)}.office-paused .office-glyph{fill:var(--amber)}.office-waiting .office-glyph{fill:var(--red)}.office-hand{fill:var(--red)}.office-bubble{fill:var(--panel);stroke:var(--blue)}.office-bubble-text{fill:var(--ink);font-size:1px}.office-mode{fill:var(--muted);font-size:1px;font-family:ui-monospace,monospace}.office-card{fill:var(--control);stroke:var(--control-border)}.office-card-text{fill:var(--ink);font-size:1px}.office-card-id{font-family:ui-monospace,monospace}.office-card-accent{fill:var(--line)}.office-waiting-card .office-card-accent{fill:var(--waiting)}.office-rework-card .office-card-accent{fill:var(--red)}.office-card-checking .office-card-accent{fill:var(--blue)}.office-more{fill:var(--blue);font-size:1px}.office-scene .office-spotlight .office-desk-surface,.office-scene .office-spotlight .office-card,.office-scene [role="button"]:focus-visible > .office-card{stroke:var(--focus);stroke-width:2px}.office-card-hit{fill:transparent;stroke:none;pointer-events:all}.office-card-focus:focus-visible{outline:none}.row.spotlight{background:var(--hover)}
 
+.office-plan-shape{fill:none;stroke:var(--muted)}.office-reserved{fill:var(--peer-color);stroke:none}.office-dock-progress{fill:var(--blue);stroke:none}.office-release-dock:focus-visible .office-room{stroke:var(--focus);stroke-width:2px}
 .office-movable{transition:transform .8s ease}.office-arc .office-arc-path{fill:none;stroke:var(--blue);stroke-width:1px}.office-arc .office-arc-head{fill:var(--blue)}.office-arc-important .office-arc-path{stroke:var(--amber)}.office-arc-important .office-arc-head{fill:var(--amber)}.office-arc-dropped .office-arc-path{stroke:var(--red);stroke-dasharray:.6 .4}.office-arc-dropped .office-arc-head{fill:var(--red)}.office-arc-label{fill:var(--muted);font-size:1px}.office-alert{fill:var(--red);font-size:1px}.office-latch{fill:var(--amber);font-size:1px}.office-link-line{fill:none;stroke-width:1px;stroke-dasharray:.8 .5}.office-link-overlap .office-link-line{stroke:var(--amber)}.office-link-conflict .office-link-line{stroke:var(--red)}.office-link-cohort .office-link-line{stroke:var(--blue)}.office-link-label{font-size:1px;fill:var(--muted)}.office-link-conflict .office-link-label{fill:var(--red)}.office-link-overlap .office-link-label{fill:var(--amber)}.office-link-cohort .office-link-label{fill:var(--blue)}.office-checking{fill:var(--blue);font-size:.916667px}
 .office-avatar{fill:var(--muted)}.office-idle .office-avatar{fill:var(--dot-ok)}.office-busy .office-avatar{fill:var(--dot-warn)}.office-offline .office-avatar{fill:var(--dot)}.office-paused .office-avatar{fill:var(--dot-warn)}.office-waiting .office-avatar{fill:var(--amber)}.office-waiting .office-desk-surface{stroke:var(--amber)}.office-glyph-shape{fill:none;stroke-width:1px}.office-idle .office-glyph-shape{stroke:var(--dot-ok)}.office-busy .office-glyph-shape{stroke:var(--dot-warn);fill:var(--dot-warn)}.office-paused .office-glyph-shape{stroke:var(--dot-warn);fill:var(--dot-warn)}.office-offline .office-glyph-shape{stroke:var(--dot)}.office-handshape{fill:none;stroke:var(--dot-err);stroke-width:1px}.office-desk-leg{fill:var(--panel-soft);stroke:var(--line);stroke-width:1px}.office-nameplate{fill:var(--control);stroke:var(--control-border);stroke-width:1px}.office-room-wire{fill:none;stroke:var(--line);stroke-width:1px}.office-divider{fill:none;stroke:var(--line);stroke-width:1px}.office-shelf{fill:var(--panel-soft);stroke:var(--line);stroke-width:1px}.office-shelf-card{fill:var(--green-soft);stroke:var(--green);stroke-width:1px}.office-box-top{fill:var(--control);stroke:var(--control-border);stroke-width:1px}.office-box-left{fill:var(--panel-soft);stroke:var(--line);stroke-width:1px}.office-box-right{fill:var(--panel);stroke:var(--line);stroke-width:1px}.office-busy .office-glyph,.office-hand{animation:office-pulse 1.2s ease-in-out infinite}.office-appear{animation:office-appear .5s ease-out}.office-leaving{pointer-events:none;animation:office-fade .4s linear forwards}.office-fadeout{animation-name:office-fade;animation-duration:1s;animation-timing-function:linear;animation-fill-mode:forwards}.office-settle .office-movable{transition:none}.office-settle .office-appear{animation:none}
 @keyframes office-pulse{50%{opacity:.45}}@keyframes office-appear{from{opacity:0}}@keyframes office-fade{to{opacity:0}}
@@ -1879,7 +1880,7 @@ function officeTile(w, h, cls) {
 }
 function officeViewBox(w, h, model) {
   if (officeProjection !== 'iso') return '0 0 ' + w + ' ' + h;
-  const corners = model ? [...model.rooms, ...model.desks].flatMap(tile => [officeProject(tile.x, tile.y), officeProject(tile.x + tile.w, tile.y), officeProject(tile.x, tile.y + tile.h), officeProject(tile.x + tile.w, tile.y + tile.h)].map(([x, y]) => [x, y + (model.rooms.includes(tile) ? officeRoomOffset : 0)])) : [officeProject(0, 0), officeProject(w, 0), officeProject(0, h), officeProject(w, h)];
+  const corners = model ? [...model.rooms, ...(model.docks || []), ...model.desks].flatMap(tile => [officeProject(tile.x, tile.y), officeProject(tile.x + tile.w, tile.y), officeProject(tile.x, tile.y + tile.h), officeProject(tile.x + tile.w, tile.y + tile.h)].map(([x, y]) => [x, y + (model.desks.includes(tile) ? 0 : officeRoomOffset)])) : [officeProject(0, 0), officeProject(w, 0), officeProject(0, h), officeProject(w, h)];
   const xs = corners.map((p) => p[0]), ys = corners.map((p) => p[1]), m = 3;
   const minX = Math.min(...xs), minY = Math.min(...ys);
   return (minX - m) + ' ' + (minY - 6) + ' ' + (Math.max(...xs) - minX + 2 * m) + ' ' + (Math.max(...ys) - minY + 9);
@@ -1934,16 +1935,16 @@ function officeClip(text, max) {
 }
 let officeClipSerial = 0;
 let officeMeasureContext;
-function officeTextWidth(value, monospace) {
+function officeTextWidth(value, monospace, size = OFFICE_SCALE, weight = '') {
   if (officeMeasureContext === undefined) {
     try { officeMeasureContext = document.createElement('canvas').getContext?.('2d') || null; } catch { officeMeasureContext = null; }
   }
   if (officeMeasureContext) {
-    officeMeasureContext.font = OFFICE_SCALE + 'px ' + (monospace ? 'ui-monospace,monospace' : 'system-ui,sans-serif');
+    officeMeasureContext.font = (weight ? weight + ' ' : '') + size + 'px ' + (monospace ? 'ui-monospace,monospace' : 'system-ui,sans-serif');
     return officeMeasureContext.measureText(value).width;
   }
   // Non-browser fixtures or unavailable canvas: conservative glyph widths; clipPath is the hard boundary.
-  return [...value].reduce((width, char) => width + (!/^[ -~]$/.test(char) ? 1 : monospace ? 0.6 : /[MW@#%]/.test(char) ? 0.9 : /[ilI., ']/.test(char) ? 0.3 : 0.55), 0) * OFFICE_SCALE;
+  return [...value].reduce((width, char) => width + (!/^[ -~]$/.test(char) ? 1 : monospace ? 0.6 : /[MW@#%]/.test(char) ? 0.9 : /[ilI., ']/.test(char) ? 0.3 : 0.55), 0) * size;
 }
 function officeCardLabel(card, width) {
   const prefix = '#' + card.id, rest = String(card.label).slice(prefix.length);
@@ -1990,6 +1991,7 @@ function spotlightRow(row) { if (spotlitRow && spotlitRow !== row) spotlitRow.cl
 function activateOfficePeer(id) { switchView('agents'); const row = peerRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); row.focus?.(); }
 function activateOfficeTask(id) { setColumnFocus(null); if (!taskRows.has(id)) officeFilter(''); const row = taskRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); openTaskDetail(id); }
 function officeFilter(state) { $('task-filter').value = state; $('task-peer-filter').value = ''; $('task-release-filter').value = ''; if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); }
+function officeRelease(id) { setColumnFocus(null); $('task-filter').value = ''; $('task-peer-filter').value = ''; $('task-release-filter').value = id == null ? '' : String(id); if(id == null)$('task-lanes').value = 'releases'; if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); switchView('board'); $('tasks').scrollIntoView({block:'nearest'}); }
 // Fade timing for a transient mark: it holds, then fades over the final second so it is gone at `until`.
 // Applied once at creation; later renders leave the running animation alone.
 function officeFade(node, until, now) {
@@ -2006,16 +2008,25 @@ function officeFade(node, until, now) {
 function officeCardPaint(node, card) {
   node.setAttribute('class', 'office-card-node office-movable' + (card.waiting ? ' office-waiting-card' : '') + (card.rework ? ' office-rework-card' : '') + (card.checking ? ' office-card-checking' : ''));
   node.setAttribute('aria-label', card.name);
-  const innerWidth = Math.max(0.1, card.w - 1.6 - (card.checking ? 1 : 0));
+  const innerWidth = Math.max(0.1, card.w - 1.6 - (card.checking ? 1 : 0) - (card.releaseTag ? 1.8 : 0));
   const label = officeCardLabel(card, innerWidth * OFFICE_SCALE), prefix = '#' + card.id, clipId = node.dataset.officeClipId || (node.dataset.officeClipId = 'office-card-clip-' + (++officeClipSerial));
   const clip = officeNode('clipPath', { id: clipId, clipPathUnits: 'userSpaceOnUse' });
   clip.append(officeNode('rect', { x: 0.8, y: 0, width: innerWidth, height: card.h }));
   const text = officeNode('text', { x: 0.8, y: card.h / 2 + 0.33, class: 'office-card-text', 'clip-path': 'url(#' + clipId + ')' });
+  const marked = card.reserved || card.pinned || card.waiting && card.state === 'backlog';
+  if(marked)text.setAttribute('y','0.95');
   text.append(officeNode('tspan', { class: 'office-card-id' }, prefix), officeNode('tspan', {}, label.slice(prefix.length)));
   const children = [officeNode('title', {}, card.label), clip,
     officeNode('rect', { x: 0, y: 0, width: card.w, height: card.h, rx: 0.5, class: 'office-card' }),
     officeNode('rect', { x: 0.15, y: 0.25, width: 0.2, height: Math.max(0.4, card.h - 0.5), rx: 0.1, class: 'office-card-accent' }), text];
   if (card.checking) children.push(officeIcon('i-check', card.w - 1.5, card.h / 2 - 0.46, 0.92, 'office-checking'));
+  const marks=[]; let mx=0.8;
+  const mark=(shape,label)=>{const g=officeNode('g',{});shape.setAttribute('transform','translate('+mx+',1.35)');g.append(shape,officeNode('text',{x:mx+0.85,y:2.05,class:'office-meta'},label));marks.push(g);mx+=0.85+officeTextWidth(label,false)/OFFICE_SCALE+0.6;};
+  if(card.reserved){const key=Object.hasOwn(peerPalette,card.reserved)?card.reserved:'other';mark(officeNode('circle',{cx:0.3,cy:0.3,r:0.25,class:'office-reserved peer-'+key}),officeClip(card.reserved,8));}
+  if(card.pinned)mark(officeNode('path',{d:'M0 0H.6L.45 .4H.15ZM.3 .4V.8',class:'office-plan-shape'}),'pin');
+  if(card.waiting && card.state==='backlog')mark(officeNode('path',{d:'M.3 0 .65 .65H0Z',class:'office-plan-shape'}),'waits'+(card.plannedDate?' '+card.plannedDate:''));
+  if(marks.length){const group=officeNode('g',{'clip-path':'url(#'+clipId+')',class:'office-card-marks'});group.append(...marks);children.push(group);}
+  if(card.releaseTag)children.push(officeNode('text',{x:card.w-0.6,y:marked?0.95:card.h/2+0.33,'text-anchor':'end',class:'office-meta'},'R'+card.releaseTag.ordinal));
   node.replaceChildren(...children);
 }
 function officeDeskPaint(node, desk) {
@@ -2064,6 +2075,7 @@ function officeDeskPaint(node, desk) {
   if (desk.tray.needsReview) tray.push(desk.tray.needsReview + ' to review');
   if (desk.tray.heldBy) tray.push('held by ' + desk.tray.heldBy);
   if (tray.length) children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, officeClip(tray.join(' / '), 38)));
+  if(desk.planner){const badge=officeNode('g',{class:'office-planner','aria-label':'planner, '+desk.unplanned+' unplanned backlog cards'});badge.append(officeNode('path',{d:'M7 5H8V6H7ZM7.5 6V6.5',class:'office-plan-shape'}),officeNode('text',{x:8.4,y:6,class:'office-meta'},String(desk.unplanned)));children.push(badge);}
   node.replaceChildren(...children);
 }
 // More is a sibling of the desk button, so assistive technology exposes both targets.
@@ -2082,6 +2094,7 @@ function officeRoomHeader(node, room) {
   node.replaceChildren(...(iso ? [officeNode('rect', { x: -0.5, y: -2.55, width: 12.5, height: 2, rx: 0.5, class: 'office-header-surface' })] : []), officeNode('text', { x: iso ? 0 : 1, y, class: 'office-room-title' }, room.label),
     officeNode('rect', { x: right - 3, y: y - 1.35, width: 3, height: 2, rx: 0.5, class: 'office-count-pill' }),
     officeNode('text', { x: right - 1.5, y, 'text-anchor': 'middle', class: 'office-room-count' }, String(room.count)));
+  if(room.unplanned!==undefined)node.append(officeNode('text',{x:iso?0:1,y:y+1.15,class:'office-meta'},room.unplanned+' unplanned'));
 }
 function officeRoomPaint(node, room) {
   node.setAttribute('class', 'office-roombox office-roombox-' + room.id);
@@ -2095,11 +2108,20 @@ function officeRoomPaint(node, room) {
     const at = iso ? officeIsoLocal(room.w / 2, room.h - 1.5) : [1, room.h - 1];
     const more = officeNode('g', { tabindex: '0', role: 'button', 'aria-label': 'Show ' + room.overflow + ' more ' + room.filterState.replaceAll('_', ' ') + ' tasks in the task list' });
     more.append(officeNode('text', { x: at[0], y: at[1], 'text-anchor': iso ? 'middle' : 'start', class: 'office-more' }, '+' + room.overflow + ' more'));
-    const open = () => officeFilter(room.filterState);
+    const open = () => { setColumnFocus(null); officeFilter(room.filterState); switchView('board'); };
     more.addEventListener('click', open);
     more.addEventListener('keydown', (event) => officeKeys(event, open));
     node.append(more);
   }
+}
+function officeDockPaint(node,dock) {
+  officePlace(node,dock.x,dock.y,true);node.setAttribute('class','office-release-dock');node.setAttribute('aria-label','Release '+dock.ordinal+': '+dock.name+', '+dock.state+', '+dock.approved+' / '+dock.scope+' approved'+(dock.cut?', cut '+dock.cut:''));
+  const iso=officeProjection==='iso',at=iso?officeIsoLocal(dock.w/2,7):[1,5],x=at[0],y=at[1],align=iso?'middle':'start';
+  const full='R'+dock.ordinal+' '+dock.name,width=dock.w-2,chars=[...full],measure=value=>officeTextWidth(value,false,13,'600');let title=full;
+  if(measure(title)>width*OFFICE_SCALE){let low=0,high=chars.length;while(low<high){const mid=Math.ceil((low+high)/2);if(measure(chars.slice(0,mid).join('')+'...')<=width*OFFICE_SCALE)low=mid;else high=mid-1;}title=chars.slice(0,low).join('').trimEnd()+'...';}
+  const clipId=node.dataset.officeDockClipId || (node.dataset.officeDockClipId='office-dock-clip-'+(++officeClipSerial)),clip=officeNode('clipPath',{id:clipId,clipPathUnits:'userSpaceOnUse'});clip.append(officeNode('rect',{x:iso?x-width/2:x,y:y-1.15,width,height:1.5}));
+  node.replaceChildren(officeTile(dock.w,dock.h,'office-room'),officeNode('title',{},full),clip,officeNode('text',{x,y,'text-anchor':align,class:'office-room-title office-dock-title','clip-path':'url(#'+clipId+')'},title),officeNode('text',{x,y:y+1.5,'text-anchor':align,class:'office-meta'},dock.state+' · '+dock.approved+' / '+dock.scope),officeNode('rect',{x:iso?x-5:1,y:y+2.3,width:10,height:0.3,class:'office-count-pill'}),officeNode('rect',{x:iso?x-5:1,y:y+2.3,width:10*dock.ratio,height:0.3,class:'office-dock-progress'}));
+  if(dock.cut)node.append(officeNode('text',{x,y:y+4,'text-anchor':align,class:'office-meta'},'Cut '+dock.cut));
 }
 let officeScene = null;
 function officeEnsure(target) {
@@ -2163,6 +2185,11 @@ function drawOffice(target, model) {
     const visible = roomCards.get(original.id), room = { ...original, cards: visible, overflow: original.overflow + original.cards.length - visible.length };
     keep('room:' + room.id, JSON.stringify({ ...room, cards: undefined, visibleCount: room.cards.length }), scene.layers.rooms, (node) => officeRoomPaint(node, room), false);
   }
+  for(const dock of model.docks || []){
+    const {node,fresh}=keep('dock:'+dock.id,JSON.stringify(dock),scene.layers.rooms,n=>officeDockPaint(n,dock),false);
+    if(fresh&&!node.getAttribute('tabindex')){node.setAttribute('tabindex','0');node.setAttribute('role','button');const open=()=>officeRelease(dock.id);node.addEventListener('click',open);node.addEventListener('keydown',event=>officeKeys(event,open));}
+  }
+  if(model.extraReleases>0 && model.docks.length){const dock=model.docks.at(-1);const {node,fresh}=keep('dock:more',JSON.stringify([dock,model.extraReleases]),scene.layers.headers,n=>{officePlace(n,dock.x,dock.y,true);n.setAttribute('aria-label','Show '+model.extraReleases+' more releases');const at=officeProjection==='iso'?officeIsoLocal(dock.w/2,dock.h-2):[1,dock.h-2];n.replaceChildren(officeNode('text',{x:at[0],y:at[1],class:'office-more'},'+'+model.extraReleases+' releases'));},false);if(fresh&&!node.getAttribute('tabindex')){node.setAttribute('tabindex','0');node.setAttribute('role','button');const open=()=>officeRelease(null);node.addEventListener('click',open);node.addEventListener('keydown',event=>officeKeys(event,open));}}
   const deskCards = new Map(model.desks.map(desk => [desk.id, officeDeskCards(desk)]));
   for (const original of model.desks) {
     const visible = deskCards.get(original.id), desk = { ...original, cards: visible, extraCards: original.extraCards + original.cards.length - visible.length };
@@ -2194,7 +2221,7 @@ function drawOffice(target, model) {
   };
   const paintNodes = [], focusNodes = [];
   for (const card of cards) {
-    const { node } = keep('paint:card:' + card.id, JSON.stringify([card.label, card.name, card.waiting, card.rework, card.checking, card.w, card.h]), scene.layers.cards, n => { officeCardPaint(n, card); n.setAttribute('aria-hidden', 'true'); });
+    const { node } = keep('paint:card:' + card.id, JSON.stringify([card.label, card.name, card.waiting, card.rework, card.checking, card.reserved, card.pinned, card.plannedDate, card.releaseTag, card.w, card.h]), scene.layers.cards, n => { officeCardPaint(n, card); n.setAttribute('aria-hidden', 'true'); });
     paintNodes.push(node); placeCard(node, card);
   }
   for (const card of focusCards) {
@@ -2211,7 +2238,7 @@ function drawOffice(target, model) {
     focusNodes.push(node); placeCard(node, card);
   }
   officeOrderNodes(scene.layers.cards, paintNodes); officeOrderNodes(scene.layers.cardFocus, focusNodes);
-  for (const room of model.rooms) keep('header:' + room.id, JSON.stringify([room.x, room.y, room.w, room.count, room.label]), scene.layers.headers, node => officeRoomHeader(node, room), false);
+  for (const room of model.rooms) keep('header:' + room.id, JSON.stringify([room.x, room.y, room.w, room.count, room.label,room.unplanned]), scene.layers.headers, node => officeRoomHeader(node, room), false);
   if (model.extraPeers > 0) {
     keep('extra:peers', String(model.extraPeers) + ':' + model.width, scene.layers.marks,
       (node) => { officePlace(node, model.width, 0); node.replaceChildren(officeNode('text', { x: 0, y: 1.8, 'text-anchor': 'end', class: 'office-meta' }, '+' + model.extraPeers + ' peers')); }, false);

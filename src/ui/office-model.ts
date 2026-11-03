@@ -33,6 +33,16 @@ export interface OfficeTaskInput {
   deps?: readonly number[];
   /** Optional (phase 3): the task's check is running; the task stays in_progress meanwhile. */
   checking?: boolean;
+  rank?: number | null;
+  priority?: number | null;
+  reserved?: string | null;
+  release?: number | null;
+  pinned?: boolean;
+  plannedStart?: number | null;
+}
+export interface OfficeReleaseInput {
+  id: number; name?: string; state?: string; order?: number; cut?: number | null;
+  tasks?: readonly { id: number; state?: string; deps?: readonly number[] }[];
 }
 /** Optional (phase 3): a warning line between desks. Task and peer ids only, never paths or symbols. */
 export interface OfficeLinkInput {
@@ -55,7 +65,8 @@ export interface OfficeEventInput {
   };
 }
 export interface OfficeSnapshotInput {
-  status?: { peers?: Record<string, OfficePeerInput> };
+  status?: { peers?: Record<string, OfficePeerInput>; roleInfo?: Record<string, { flowRoles?: readonly string[] }> };
+  releases?: readonly OfficeReleaseInput[];
   tasks?: readonly OfficeTaskInput[];
   permissions?: readonly { peer?: string }[];
   budget?: Record<string, { paused?: { reason?: string; resetsAt?: number | null } | null; [key: string]: unknown }>;
@@ -84,6 +95,10 @@ export interface OfficeCard {
   rework: boolean;
   /** The task's check is running; the card stays at its owner's desk. */
   checking: boolean;
+  reserved: string;
+  pinned: boolean;
+  plannedDate: string;
+  releaseTag?: { ordinal: number; name: string };
   /** Visible text: "#id public title". */
   label: string;
   /** Accessible name: "#id class: public title (state)", plus waiting/rework/review marks. */
@@ -114,6 +129,8 @@ export interface OfficeDesk {
   breakResetsAt: number | null;
   cards: OfficeCard[];
   extraCards: number;
+  planner: boolean;
+  unplanned: number;
 }
 export interface OfficeRoom {
   id: string;
@@ -123,6 +140,12 @@ export interface OfficeRoom {
   count: number;
   cards: OfficeCard[];
   overflow: number;
+  unplanned?: number;
+  x: number; y: number; w: number; h: number;
+}
+export interface OfficeDock {
+  id: number; name: string; state: string; ordinal: number;
+  approved: number; scope: number; ratio: number; cut: string;
   x: number; y: number; w: number; h: number;
 }
 export interface OfficeTransitions {
@@ -158,6 +181,8 @@ export interface OfficeScene {
   desks: OfficeDesk[];
   extraPeers: number;
   rooms: OfficeRoom[];
+  docks: OfficeDock[];
+  extraReleases: number;
   counts: OfficeCounts;
   transitions: OfficeTransitions;
   links: OfficeLink[];
@@ -168,7 +193,7 @@ export interface OfficeScene {
    * every `cards` list. Zero geometry: the dashboard never draws it, acon Space maps it. Same allowlisted fields as `cards`.
    */
   attributedCards: OfficeCard[];
-  /** Task id -> placement ("room:todo" | "room:work" | "room:review" | "shelf:done" | "desk:<peer>" | "counted:unknown"). */
+  /** Task id -> placement ("room:backlog" | "room:todo" | "room:work" | "room:review" | "shelf:done" | "desk:<peer>" | "counted:unknown"). */
   placed: Record<string, string>;
   arcs: OfficeArc[];
   alerts: OfficeAlert[];
@@ -204,6 +229,17 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const tasks = Array.isArray(snapshot?.tasks) ? snapshot.tasks.filter((task) => task && typeof task.id === "number") : [];
   const permissions = Array.isArray(snapshot?.permissions) ? snapshot.permissions : [];
   const budget = snapshot?.budget && typeof snapshot.budget === "object" ? snapshot.budget : {};
+  const date = (value: unknown) => {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > 8_640_000_000_000_000) return "";
+    const local = new Date(value);
+    return `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`;
+  };
+  const rank = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : Infinity;
+  const backlog = tasks.filter(task => task.state === "backlog").sort((a, b) => (rank(a.rank) - rank(b.rank)) || (rank(a.priority) - rank(b.priority)) || a.id - b.id);
+  const unplanned = backlog.filter(task => rank(task.rank) === Infinity && !text(task.reserved)).length;
+  const releases: OfficeReleaseInput[] = (Array.isArray(snapshot?.releases) ? snapshot.releases : []).filter(row => row && Number.isSafeInteger(row.id) && row.id > 0 && ["planning", "active", "frozen"].includes(text(row.state)))
+    .sort((a, b) => (rank(a.order) - rank(b.order)) || a.id - b.id);
+  const docked = releases.slice(0, 3);
 
   // State counts mirror taskProgress (src/ui/task-progress.ts) exactly, including the waiting
   // rule on deps; test/office-model.test.ts pins the equality so a drift fails there.
@@ -272,17 +308,24 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const card = (task: OfficeTaskInput, x: number, y: number, w: number, h: number): OfficeCard => {
     const state = text(task.state) || "unknown";
     const taskClass = text(task.class) || "task";
-    const waiting = waitingById.get(task.id) === true;
+    const plannedDate = state === "backlog" && date(task.plannedStart) && task.plannedStart! > now ? date(task.plannedStart) : "";
+    const waiting = waitingById.get(task.id) === true || state === "backlog" && ((task.deps ?? []).some(id => states.get(id) !== "approved") || !!plannedDate);
     const rework = state === "changes_requested";
     const checking = task.checking === true;
     const owner = text(task.owner);
     const reviewer = text(task.reviewer);
+    const reserved = state === "backlog" ? text(task.reserved) : "", pinned = state === "backlog" && task.pinned === true;
+    const releaseIndex = docked.findIndex(row => row.id === task.release);
+    const releaseTag = releaseIndex < 0 ? undefined : { ordinal: releaseIndex + 1, name: text(docked[releaseIndex]!.name) || "[withheld]" };
     let name = `#${task.id} ${taskClass}: ${text(task.title)} (${state.replaceAll("_", " ")})`;
-    if (waiting) name += ", waiting on dependencies";
+    if (waiting) name += state === "backlog" ? ", waits" + (plannedDate ? ` until ${plannedDate}` : "") : ", waiting on dependencies";
+    if (reserved) name += `, reserved for ${reserved}`;
+    if (pinned) name += ", pinned";
+    if (releaseTag) name += `, release ${releaseTag.ordinal}: ${releaseTag.name}`;
     if (rework) name += ", rework";
     if (checking) name += ", check running";
     if (state === "in_review") name += `, ${owner || "unassigned"} reviewed by ${reviewer || "unassigned"}`;
-    return { id: task.id, taskClass, state, owner, reviewer, waiting, rework, checking, label: `#${task.id} ${text(task.title)}`, name, x, y, w, h };
+    return { id: task.id, taskClass, state, owner, reviewer, waiting, rework, checking, reserved, pinned, plannedDate, ...(releaseTag ? { releaseTag } : {}), label: `#${task.id} ${text(task.title)}`, name, x, y, w, h };
   };
 
   const desks: OfficeDesk[] = shownIds.map((id) => {
@@ -320,6 +363,8 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     if (finishing) parts.push("finishing a turn");
     if (condition !== "waiting" && count > 0) parts.push(`${count} approval${count === 1 ? "" : "s"} waiting`);
     if (!attached) parts.push("disconnected, work retained");
+    const planner = Array.isArray(snapshot.status?.roleInfo?.[id]?.flowRoles) && snapshot.status!.roleInfo![id]!.flowRoles!.includes("planner");
+    if (planner) parts.push(`planner, ${unplanned} unplanned backlog cards`);
     // An over-full desk shows two chips and a "+N more" line in the third slot.
     const shown = work.length > DESK_CARDS ? work.slice(0, DESK_CARDS - 1) : work;
     return {
@@ -331,12 +376,14 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
       finishing,
       cards: shown.map((task, index) => card(task, x + 0.8, y + 8.5 + index * 2.5, DESK_W - 1.6, 2)),
       extraCards: work.length - shown.length,
+      planner, unplanned: planner ? unplanned : 0,
     };
   });
 
   const desksBottom = Math.max(0, ...desks.map(desk => desk.y + desk.h));
   const roomsY = desksBottom ? desksBottom + 2 : 0;
   const roomDefs = [
+    { id: "backlog", label: "Backlog", filterState: "backlog", list: backlog, count: counts.backlog ?? 0 },
     { id: "todo", label: "To do", filterState: "proposed", list: todo, count: counts.proposed + counts.waiting },
     { id: "work", label: "Work floor", filterState: "work", list: workUnplaced, count: counts.in_progress + counts.changes_requested },
     { id: "review", label: "Review", filterState: "in_review", list: review, count: counts.in_review },
@@ -347,11 +394,19 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     const y = roomsY + Math.floor(index / cols) * ROOM_DY;
     return {
       id: def.id, label: def.label, filterState: def.filterState, count: def.count,
+      ...(def.id === "backlog" && !desks.some(desk => desk.planner) ? { unplanned } : {}),
       // One column at 12 px per unit: 28 px cards, 6 px gaps, eight cards at most.
       cards: def.list.slice(0, ROOM_CARDS).map((task, row) => card(task, x + 1, y + 3.4 + row * (ROOM_CARD_H + ROOM_CARD_GAP), ROOM_W - 2, ROOM_CARD_H)),
       overflow: Math.max(0, def.list.length - ROOM_CARDS),
       x, y, w: ROOM_W, h: ROOM_H,
     };
+  });
+  const docks: OfficeDock[] = docked.map((row, index) => {
+    const scope: NonNullable<OfficeReleaseInput["tasks"]> = Array.isArray(row.tasks) ? row.tasks.filter((task: NonNullable<OfficeReleaseInput["tasks"]>[number]) => task && Number.isSafeInteger(task.id) && task.id > 0) : [];
+    const approved = scope.filter(task => task.state === "approved").length, position = roomDefs.length + index;
+    return { id: row.id, name: text(row.name) || "[withheld]", state: text(row.state), ordinal: index + 1, approved, scope: scope.length,
+      ratio: scope.length ? approved / scope.length : 0, cut: date(row.cut), x: (position % cols) * ROOM_DX,
+      y: roomsY + Math.floor(position / cols) * ROOM_DY, w: ROOM_W, h: ROOM_H };
   });
 
   const placed: Record<string, string> = {};
@@ -362,7 +417,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
       : state === "approved" ? "shelf:done"
       : state === "cancelled" ? "counted:cancelled"
       : state === "in_progress" || state === "changes_requested" ? (owner && shownSet.has(owner) ? `desk:${owner}` : "room:work")
-      : state === "backlog" ? "counted:backlog" : "counted:unknown";
+      : state === "backlog" ? "room:backlog" : "counted:unknown";
   }
   // A bubble's attributed task may sit past the rendering cut; keep its public card so a consumer that draws more cards than the page can.
   const drawn = new Set<number>([...desks.flatMap((desk) => desk.cards), ...rooms.flatMap((room) => room.cards)].map((entry) => entry.id));
@@ -454,9 +509,10 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   }
   return {
     cols,
-    width: Math.max(desksWidth, ...rooms.map(room => room.x + room.w), 1),
-    height: Math.max(desksBottom, ...rooms.map(room => room.y + room.h), 1),
+    width: Math.max(desksWidth, ...[...rooms, ...docks].map(room => room.x + room.w), 1),
+    height: Math.max(desksBottom, ...[...rooms, ...docks].map(room => room.y + room.h), 1),
     desks, extraPeers, rooms, counts, transitions, slots, placed, attributedCards,
+    docks, extraReleases: Math.max(0, releases.length - docks.length),
     links,
     arcs: keptArcs, alerts: keptAlerts, latched, settle, at, eventTime, lastSeq,
   };

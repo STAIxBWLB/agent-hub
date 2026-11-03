@@ -155,7 +155,7 @@ describe("acon Space from the office model (#1012 Part 2)", () => {
     expect(actor("pi").state).toBe("idle");
     expect(actor("kimi").marks?.map((m) => m.kind)).toContain("paused");
     expect(scene.actors.every((a) => a.pet === undefined)).toBe(true); // the shell assigns installed pets
-    expect(scene.zones.map((z) => [z.id, z.kind, z.count])).toEqual([["p1:todo", "queue", 1], ["p1:work", "work", 1], ["p1:review", "review", 1], ["p1:done", "done", 1]]);
+    expect(scene.zones.map((z) => [z.id, z.kind, z.count])).toEqual([["p1:backlog", "queue", 0], ["p1:todo", "queue", 1], ["p1:work", "work", 1], ["p1:review", "review", 1], ["p1:done", "done", 1]]);
     expect(scene.cards.find((c) => c.id === "p1:1")).toMatchObject({ title: "#1 [pii]", zone: "p1:work", owner: "p1:codex" });
     expect(scene.cards.find((c) => c.id === "p1:2")?.zone).toBe("p1:todo");
     expect(scene.actors.every((a) => JSON.stringify(a.link) === JSON.stringify({ panel: "agents", params: { project: "p1" } }))).toBe(true);
@@ -178,6 +178,14 @@ describe("acon Space from the office model (#1012 Part 2)", () => {
     const scene = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p1", label: "proj" });
     expect(JSON.stringify(scene)).not.toContain(MARKER);
     expect(scene.actors[0]!.name.startsWith("proj / ")).toBe(true);
+  });
+
+  test("phase 5 backlog wall maps to a queue zone and its public cards retain that placement", () => {
+    const snapshot = { ...dirty, tasks: [...dirty.tasks!, { id: 5, title: "[pii]", state: "backlog", detail: MARKER, reserved: "codex", pinned: true, lifecycle: { note: MARKER }, codeGroup: { symbols: [MARKER] } }] } as OfficeSnapshotInput;
+    const scene = officeSpace(officeModel(snapshot, null, { cols: 4, now: 3000 }), { id: "p1" });
+    expect(scene.zones.find(zone => zone.id === "p1:backlog")).toMatchObject({ title: "Backlog", kind: "queue", count: 1 });
+    expect(scene.cards.find(card => card.id === "p1:5")).toMatchObject({ title: "#5 [pii]", zone: "p1:backlog", link: { panel: "board", params: { project: "p1" } } });
+    expect(JSON.stringify(scene)).not.toContain(MARKER);
   });
 
   test("merged scenes stay within acon's caps", () => {

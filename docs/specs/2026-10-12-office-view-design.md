@@ -2,7 +2,7 @@
 title: Office view of live agent work in the dashboard
 date: 2026-10-12
 project: agent-hub
-status: phases 1-4 implemented (Flat and Isometric office with motion and turn/checking/link fields); phase 5 designed (backlog wall, release docks, planner desk), not implemented
+status: phases 1-5 implemented (Flat and Isometric office, backlog wall, release docks and planner marks); AC9 live browser look remains unverified
 issue: 264
 ---
 
@@ -210,8 +210,8 @@ Phase 4 decisions within the spec:
   - Existing theme tokens, public-view privacy, counts/placement classifications,
     animations, reduced motion, keyboard activation and mode cookie remain.
 
-Phase 5 decisions within the spec (designed 2026-11-03, hub task 311; not
-implemented):
+Phase 5 decisions within the spec (designed 2026-11-03, hub task 311;
+implemented by hub task 682, with AC9 live browser look still open):
 
 - Phase 5 needs no daemon change. `ui_snapshot` already carries everything:
   - every board task, backlog cards included, with `rank`, `priority`,
@@ -307,7 +307,7 @@ implemented):
   and overlap/cohort links against a real daemon, pins `PROTOCOL` (16) and
   `EVENTS_SCHEMA` (1), and proves a PII task keeps its stub, refuses a
   non-local owner and joins no link.
-- Phase 5 (planned with the implementation task):
+- Phase 5 (implemented with the model and renderer regression tests):
   - wall placement and order (rank, priority, id) with the cap and "+N more";
   - wall count equals `counts.backlog`;
   - the reserved, pin and waits marks;
