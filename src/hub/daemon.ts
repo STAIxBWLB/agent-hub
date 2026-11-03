@@ -45,6 +45,7 @@ import { createStalenessProbe } from "./memory-staleness.ts";
 import { matchingPlanFails, planGuardNodes, taskMemoryQueryNodes } from "./memory-plan-guard.ts";
 import { planningWipLimits } from "./planning.ts";
 import { ToolWriteRegistry, toolWriteOperation, toolWriteUnknownReply } from "./tool-request.ts";
+import { ControlWriteTelemetry, controlWriteMetadata, controlWriteSpan } from "./control-write-trace.ts";
 import { projectedDiff } from "./projected-diff.ts";
 import { listenWithoutPortCollision } from "./listen.ts";
 import { needs, type NeedsInput } from "../ui/needs.ts";
@@ -1209,7 +1210,7 @@ export async function startDaemon(opts: DaemonOptions) {
         let parsed: any;
         try {
           parsed = JSON.parse(String(data));
-          onMessage(sock, parsed);
+          onControlMessage(sock, parsed);
         } catch (e) {
           if (isDatabaseBusy(e) && sock.data.authed && Number.isSafeInteger(parsed?.rid)) {
             const busy = new RecoveryDatabaseBusy();
@@ -1719,10 +1720,11 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const t of board.list("in_progress")) if (!tasks.isPii(t)) renewLeases(t);
   }
   let syncRun: Promise<void> | undefined;
+  let controlWriteTelemetry: ControlWriteTelemetry | undefined;
   /** Machine sync, when a person set a remote; one log line per failure, never a blocked turn. Stopping aborts and awaits it. */
   function syncNow(): Promise<void> {
     if (!memoryStore || syncRun || stopping) return syncRun ?? Promise.resolve();
-    syncRun = (async () => {
+    const run = async () => {
       try {
         checkMemory();
         const r = await (opts.memorySync ?? syncMemory)(memoryStore!, { signal: syncStop.signal });
@@ -1730,7 +1732,8 @@ export async function startDaemon(opts: DaemonOptions) {
         else if (r.warning) log(`hub memory sync: ${r.warning}`);
       } catch { /* A stale binding disables native memory, never the bus. */ }
       finally { syncRun = undefined; }
-    })();
+    };
+    syncRun = controlWriteTelemetry ? controlWriteTelemetry.observe("memory", () => !stopping, run) : run();
     return syncRun;
   }
 
@@ -2250,13 +2253,16 @@ export async function startDaemon(opts: DaemonOptions) {
         read: task => publicCorpus([task.title, ...task.refs.paths ?? [], ...task.plan?.paths ?? [], ...task.plan?.symbols ?? []].join(" "), () => corpusBriefAllowed(task)).map(item => ({ id: item.id, kind: "note", line: `${item.id}: ${item.text.replace(/\s+/g, " ")}` })),
       }),
     ...(memoryStore ? { planFails: (task: import("./board.ts").Task) => {
-      checkMemory();
-      const context = { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny };
-      const nodes = planGuardNodes(task, context);
-      const related = screenMemory(memoryStore.related(memoryProject, nodes, Number.MAX_SAFE_INTEGER));
-      const all = screenMemory(memoryStore.list({ project: memoryProject, kind: "fail", limit: Number.MAX_SAFE_INTEGER }));
-      const rows = [...new Map([...related, ...all].map(row => [row.id, row])).values()];
-      return matchingPlanFails(task, rows, context).slice(0, config.memory.brief_items).map(v => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about }));
+      const read = () => {
+        checkMemory();
+        const context = { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny };
+        const nodes = planGuardNodes(task, context);
+        const related = screenMemory(memoryStore.related(memoryProject, nodes, Number.MAX_SAFE_INTEGER));
+        const all = screenMemory(memoryStore.list({ project: memoryProject, kind: "fail", limit: Number.MAX_SAFE_INTEGER }));
+        const rows = [...new Map([...related, ...all].map(row => [row.id, row])).values()];
+        return matchingPlanFails(task, rows, context).slice(0, config.memory.brief_items).map(v => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about }));
+      };
+      return controlWriteTelemetry ? controlWriteTelemetry.observe("memory", controlWritePrivacyGuard(true, true, undefined, task.id), read) : read();
     } } : {}),
     ...(memoryStore ? { store: { store: memoryStore, project: memoryProject, repo: memoryRepo, deny: config.local.deny, onNote: (id: string) => void suggestEdges(id) } } : {}),
     notify,
@@ -2279,14 +2285,29 @@ export async function startDaemon(opts: DaemonOptions) {
         log(`note for ${peer} not kept: ${(e as Error).message}`);
       }
     },
-    triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
+    triage: {
+      classify: (title, detail) => {
+        const classify = () => inference?.triage(title, detail) ?? Promise.resolve(undefined);
+        const inputPublic = boundedSafe(`${title}\n${detail}`);
+        return controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, inputPublic), classify) : classify();
+      },
+      onCampus: () => controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, true), () => onCampus()) : onCampus(),
+    },
     // #334: the hub model's split, validated against the same `hub_backlog_split` parts schema a planner's call is, and the source registry for `--source`.
-    intake: { split: (system, user, opts) => inference?.split(system, user, opts) ?? Promise.resolve(undefined), sourceKnown: id => sourceRegistry.get(id) !== undefined,
+    intake: { split: (system, user, opts) => {
+      const split = () => inference?.split(system, user, opts) ?? Promise.resolve(undefined);
+      const inputPublic = boundedSafe(`${system}\n${user}`);
+      return controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, inputPublic), split) : split();
+    }, sourceKnown: id => sourceRegistry.get(id) !== undefined,
       partsSchema: () => profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off").find(tool => tool.name === "hub_backlog_split")?.inputSchema.properties.parts },
     studySource: id => sourceRegistry.get(id),
     experimentCheck: run => checkRunner.result(run),
     // The PII screen (issue #198): the model on this machine when MLX/Ollama is enabled, else the gateway on campus only.
-    piiScreen: opts.piiScreen ?? ((text) => screenPii(text, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })),
+    piiScreen: (text) => {
+      const screen = () => (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text);
+      const inputPublic = boundedSafe(text);
+      return controlWriteTelemetry ? controlWriteTelemetry.observe("external", controlWritePrivacyGuard(true, inputPublic), screen) : screen();
+    },
     recordScreen: (record) => event({ type: "pii_screen", ...record }),
     quota: (): ReturnType<Budget["headroom"]> => projectBudgetHeadroom(budget.headroom(), accountMembers), // budget is built below; this runs at assignment time
     review: config.review,
@@ -2582,6 +2603,17 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const activityRings: Record<string, ActivityRing> = Object.fromEntries(SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.capabilities?.watch).map(peer => [peer, new ActivityRing()]));
   const contextPii = (peer: PeerId) => !!turns.get(peer)?.private || board.peerTaskSignals(peer).some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
+  const controlWritePrivacyGuard = (admittedAtReceive: boolean, inputPublicAtReceive: boolean, peer?: PeerId, taskId?: number) => () => {
+    try {
+      if (!admittedAtReceive || !inputPublicAtReceive) return false;
+      if (peer && (turns.get(peer)?.private || contextPii(peer))) return false;
+      if (taskId !== undefined) {
+        const task = board.get(taskId);
+        if (!task || tasks.isPii(task) || !tasks.publicMetadataText(String(task.id))) return false;
+      }
+      return true;
+    } catch { return false; }
+  };
   // #878: what each peer is doing. Daemon memory only: never persisted (status.json leaves it out), logged, captured or relayed.
   const doings = new Map<PeerId, DoingTracker>();
   const observeDoing = (peer: PeerId, kind: DoingKind, text?: unknown, learnedPrivate = false) => {
@@ -2824,22 +2856,25 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const snap = (what: string, capture = config.snapshots.enabled, peer?: string): { tree?: string; head?: string | null; commit?: string | null; reflog?: HeadMoveCursor; ms: number; budget?: SnapshotBudget; repo?: Repo } => {
     if (!capture) return { ms: 0 };
-    const t0 = performance.now(), budget = reserveSnapshotBudget();
-    let tree: string | undefined, head: string | null | undefined, commit: string | null | undefined, repo: Repo | undefined, reflog: HeadMoveCursor | undefined;
-    try {
-      repo = peer ? repoFor(peer, budget) : factsRepo;
-      const before = repo && headState(repo, budget);
-      tree = repo && (opts.snapshot ?? snapshot)(repo, budget);
-      const after = repo && headState(repo, budget);
-      head = after?.tree; commit = after?.head;
-      if (!before || !after || before.tree !== after.tree) tree = undefined;
-      if (tree && repo && head !== undefined && after) reflog = headMoveCursor(repo, head, budget, after.head);
-      if (repo && !tree) log(`snapshot failed at ${what}`);
-    } catch (error) {
-      tree = undefined; head = undefined; commit = undefined; reflog = undefined;
-      snapshotFailure(what, error);
-    }
-    return { tree, head, commit, reflog, budget, repo, ms: Math.round(performance.now() - t0) };
+    const captureSnapshot = () => {
+      const t0 = performance.now(), budget = reserveSnapshotBudget();
+      let tree: string | undefined, head: string | null | undefined, commit: string | null | undefined, repo: Repo | undefined, reflog: HeadMoveCursor | undefined;
+      try {
+        repo = peer ? repoFor(peer, budget) : factsRepo;
+        const before = repo && headState(repo, budget);
+        tree = repo && (opts.snapshot ?? snapshot)(repo, budget);
+        const after = repo && headState(repo, budget);
+        head = after?.tree; commit = after?.head;
+        if (!before || !after || before.tree !== after.tree) tree = undefined;
+        if (tree && repo && head !== undefined && after) reflog = headMoveCursor(repo, head, budget, after.head);
+        if (repo && !tree) log(`snapshot failed at ${what}`);
+      } catch (error) {
+        tree = undefined; head = undefined; commit = undefined; reflog = undefined;
+        snapshotFailure(what, error);
+      }
+      return { tree, head, commit, reflog, budget, repo, ms: Math.round(performance.now() - t0) };
+    };
+    return controlWriteTelemetry ? controlWriteTelemetry.observe("snapshot", controlWritePrivacyGuard(true, true, peer as PeerId | undefined), captureSnapshot) : captureSnapshot();
   };
   function privateSnapshotWindow(): boolean {
     return [...turns.values()].some(turn => turn.private) || board.list().some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
@@ -3311,6 +3346,10 @@ export async function startDaemon(opts: DaemonOptions) {
   // commit waits for those in flight, or its integrity digest misses their later writes. Completion checks outlive
   // their op, so recoveryReady() also waits for `tasks.checksPending()`: a check the commit's stop kills would write.
   let taskOpsInFlight = 0;
+  controlWriteTelemetry = new ControlWriteTelemetry({ emit: line => {
+    try { if (tasks.publicMetadataText(line) && boundedSafe(line)) log(line); } catch { /* diagnostics never fail a write */ }
+  } });
+  startupCleanup.push(() => controlWriteTelemetry?.stop());
   const toolWriteRegistry = new ToolWriteRegistry(instanceId, opts.toolWriteReplayMaxEntries === undefined ? {} : { maxEntries: opts.toolWriteReplayMaxEntries });
   const toolWriteScope = (c: Client, operation: string): string => {
     const actor = c.peer ?? USER, peer = c.peer ? bus.peers.get(c.peer) : undefined;
@@ -4780,6 +4819,7 @@ export async function startDaemon(opts: DaemonOptions) {
     isolatedChecks: { pending: checkPending.size, orphans: orphanChecks, unknownReceipts: checkRunner.unknownReceipts ?? [], maintenanceUnavailable: checkRunner.maintenanceUnavailable === true },
     taskCapabilities: peerCapabilities(),
     tasks: board.counts(),
+    ...(includeAttentionItems && controlWriteTelemetry ? { controlWriteTiming: controlWriteTelemetry.status() } : {}),
     taskStalls, pendingTaskOffers,
     ...(bus.storageError ? { deliveryError: bus.storageError } : {}),
     ...(recoveryOperationId ? { recovery: { operationId: recoveryOperationId, phase: recoveryPhase, ready: recoveryReady() } } : {}),
@@ -4810,20 +4850,28 @@ export async function startDaemon(opts: DaemonOptions) {
   // (the status reply is unchanged); readers without it judge the pid alone, as 0.12.20 did.
   const pidSignature = processSignature(process.pid);
   const writeStatus = () => {
-    try {
-      const file = join(opts.stateDir, "status.json"); // clients parse this on every connect: replace it atomically
-      writeFileSync(`${file}.${instanceId}.tmp`, `${JSON.stringify({ ...status(), ...(pidSignature ? { pidSignature } : {}) }, null, 2)}\n`);
-      renameSync(`${file}.${instanceId}.tmp`, file);
-    } catch { /* the state dir is gone; the watchdog is stopping the hub (issue #56) */ }
+    const write = () => {
+      try {
+        const file = join(opts.stateDir, "status.json"); // clients parse this on every connect: replace it atomically
+        writeFileSync(`${file}.${instanceId}.tmp`, `${JSON.stringify({ ...status(), ...(pidSignature ? { pidSignature } : {}) }, null, 2)}\n`);
+        renameSync(`${file}.${instanceId}.tmp`, file);
+      } catch { /* the state dir is gone; the watchdog is stopping the hub (issue #56) */ }
+    };
+    if (controlWriteTelemetry) controlWriteTelemetry.observe("status-hook", () => true, write);
+    else write();
   };
   const taskChanged = board.onChange;
   board.onChange = (task, entry) => {
-    try { taskChanged?.(task, entry); }
-    finally {
-      try { handoffNotifyOrigin(task, entry); } catch { /* never throw after a board write */ }
-      try { settleSupersededDeliveries(); }
-      finally { writeStatus(); } // committed task transitions refresh token-free attention even without bus activity
-    }
+    const changed = () => {
+      try { taskChanged?.(task, entry); }
+      finally {
+        try { handoffNotifyOrigin(task, entry); } catch { /* never throw after a board write */ }
+        try { settleSupersededDeliveries(); }
+        finally { writeStatus(); } // committed task transitions refresh token-free attention even without bus activity
+      }
+    };
+    if (controlWriteTelemetry) controlWriteTelemetry.observe("queue-hook", controlWritePrivacyGuard(true, true, undefined, task.id), changed);
+    else changed();
   };
 
   // A queue change is not a bus event: without this, status.json reports the queue as it was before the last
@@ -4858,6 +4906,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let reportingQueues = false;
   let queuePressureStatusQueued = false;
   bus.onQueues = () => {
+    const changed = () => {
     if (stopping || settlingSuperseded || reportingQueues) return;
     remoteQueueChanged();
     reportingQueues = true;
@@ -4883,6 +4932,9 @@ export async function startDaemon(opts: DaemonOptions) {
         });
       }
     }
+    };
+    if (controlWriteTelemetry) controlWriteTelemetry.observe("queue-hook", () => true, changed);
+    else changed();
   };
   // Opening the journal/restoring the snapshot preceded callbacks; classify those holds too.
   settleSupersededDeliveries();
@@ -8145,10 +8197,61 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!result.ok) throw new Error(String(result.error));
   }
 
-  function onMessage(sock: Sock, msg: any): void {
+  function onControlMessage(sock: Sock, msg: any): void {
+    const metadata = controlWriteMetadata(msg);
+    if (!metadata || !controlWriteTelemetry) return onMessage(sock, msg);
+    const client = sock.data;
+    const inputPublicAtReceive = (() => {
+      const rawArgs = msg?.args;
+      if (rawArgs === undefined) return true;
+      if (!rawArgs || typeof rawArgs !== "object" || Array.isArray(rawArgs)) return false;
+      try {
+        const idDescriptor = Object.getOwnPropertyDescriptor(rawArgs, "id");
+        if (idDescriptor && (!Object.hasOwn(idDescriptor, "value") || idDescriptor.value !== undefined) && metadata.task === undefined) return false;
+        const stack: { value: unknown; depth: number }[] = [{ value: rawArgs, depth: 0 }];
+        const text: string[] = [];
+        let bytes = 0, nodes = 0;
+        while (stack.length) {
+          const current = stack.pop()!;
+          if (++nodes > 2048 || current.depth > 16) return undefined;
+          if (typeof current.value === "string") {
+            bytes += Buffer.byteLength(current.value);
+            if (bytes > 32 * 1024) return undefined;
+            text.push(current.value);
+          } else if (Array.isArray(current.value)) {
+            if (current.value.length > 256) return undefined;
+            for (const value of current.value) stack.push({ value, depth: current.depth + 1 });
+          } else if (current.value && typeof current.value === "object") {
+            const values = Object.values(current.value);
+            if (values.length > 256) return undefined;
+            for (const value of values) stack.push({ value, depth: current.depth + 1 });
+          }
+        }
+        const joined = text.join("\n");
+        return tasks.publicMetadataText(joined) && boundedSafe(joined);
+      } catch { return undefined; }
+    })();
+    const admittedAtReceive = client.authed && !!client.role, peer = client.peer;
+    const privacyCurrent = controlWritePrivacyGuard(admittedAtReceive, inputPublicAtReceive === true, peer, metadata.task);
+    let finishControlWrite = () => {};
+    let finished = false;
+    const finish = () => { if (!finished) { finished = true; finishControlWrite(); } };
+    try {
+      void controlWriteTelemetry.run(metadata, privacyCurrent, () => {
+        const completed = new Promise<void>(resolve => { finishControlWrite = resolve; });
+        try {
+          controlWriteSpan("daemon-dispatch", () => onMessage(sock, msg, finish));
+        } catch (error) { finish(); throw error; }
+        return completed;
+      });
+    } catch (error) { finish(); throw error; }
+  }
+
+  function onMessage(sock: Sock, msg: any, finishControlWrite: () => void = () => {}): void {
     const c = sock.data;
     let refusalRecorded=false;
     const reply = (body: Record<string, unknown>) => {
+      const sendReply = () => {
       const writeRequestId = typeof msg.requestId === "string" && msg.requestId.length <= 256 && !/[\p{Cc}\p{Cf}]/u.test(msg.requestId)
         && toolWriteOperation(msg) !== undefined && body.requestId === msg.requestId ? msg.requestId : undefined;
       let writeRefusal: string | undefined;
@@ -8168,6 +8271,10 @@ export async function startDaemon(opts: DaemonOptions) {
         body = { ...body, ...toolWriteUnknownReply(msg, writeRequestId, writeRefusal ?? "caller authority changed before the result could be returned"), ...authority };
       }
       if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ rid: msg.rid, ...body }));
+      };
+      try {
+        controlWriteSpan("daemon-reply", sendReply);
+      } finally { finishControlWrite(); }
     };
     const runTaskRequest = (run: () => Promise<string>, extraCurrent: () => void = () => {}, formatError: (error: unknown) => Record<string, unknown> = error => ({ t: "task", ok: false, error: error instanceof Error ? error.message : "task write refused" })): void => {
       const operation = toolWriteOperation(msg);
@@ -9559,6 +9666,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function stopOnce(): Promise<void> {
     stopping = true;
+    controlWriteTelemetry?.stop();
     roomCommands.stop();
     tasks.stopQueuePressureRechecks();
     const studiesStopped = tasks.stopStudies();
@@ -9658,6 +9766,7 @@ export async function startDaemon(opts: DaemonOptions) {
   bus.onQueues(); // initial restored holds are reported only after the listener is bound; writes status.json too
   log(`${RUN_START}${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
   ready = true;
+  controlWriteTelemetry?.start();
   handoffCatchUp();
   tasks.scheduleQueuePressureRecheck();
   for (const name of opts.configWatch === false ? [] : CONFIG_SOURCE_FILES) {

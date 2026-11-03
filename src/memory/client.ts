@@ -1,5 +1,6 @@
 import packageJson from "../../package.json";
 import { createHash } from "node:crypto";
+import { controlWriteSpan } from "../hub/control-write-trace.ts";
 import { CaptureStore, SearchIndex, looksSecret, memoryBase, readCaptureConfig, type CaptureOptions as StoreCaptureOptions, type MemoryStore, type CandidateStore, type View } from "@staix/agent-mem";
 
 export interface CaptureEvent {
@@ -54,8 +55,10 @@ export class MemoryClient {
   }
   close(): void { this.closed = true; this.releaseCapture(); }
   private run<T>(work: (o: MemoryClientOptions) => T): T | undefined {
-    try { if (!this.options || this.closed) return undefined; this.options.check(); return work(this.options); }
-    catch { this.releaseCapture(); this.options?.log?.("amem operation unavailable"); return undefined; }
+    return controlWriteSpan("memory", () => {
+      try { if (!this.options || this.closed) return undefined; this.options.check(); return work(this.options); }
+      catch { this.releaseCapture(); this.options?.log?.("amem operation unavailable"); return undefined; }
+    });
   }
   private rows(o: MemoryClientOptions): View[] {
     const store = o.store;

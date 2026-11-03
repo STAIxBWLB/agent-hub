@@ -1,5 +1,6 @@
 import { parseIssueLabels, parseRedFirst, testIntegrityBlockers, type RedFirstReceipt, type TestIntegrity } from "./test-integrity.ts";
 import { planConformanceBlockers, type PlanConformance } from "./plan-conformance.ts";
+import { controlWriteSpan } from "./control-write-trace.ts";
 import { DEFAULT_MAX_NITS, findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CostPlan } from "./cost-governance.ts";
 import { bandsConfig, type BandsConfig } from "./sdlc-metrics.ts";
@@ -427,7 +428,7 @@ export function touchingPrs(prs: { pr: number; paths: string[] }[]): { before: n
 
 export type SdlcGh = (args: string[], timeoutMs?: number, cwd?: string, maxOutputBytes?: number) => Promise<{ code: number; stdout: string }>;
 /** Fixed argv and bounded output and time; diagnostics never expose credentials or remote text. Reads, except the one guarded `gh pr merge` that `sdlc-merge.ts` builds (#786). */
-export const sdlcGh: SdlcGh = (args, timeoutMs = 10_000, cwd, maxOutputBytes = 256 * 1024) => new Promise((resolve) => {
+export const sdlcGh: SdlcGh = (args, timeoutMs = 10_000, cwd, maxOutputBytes = 256 * 1024) => controlWriteSpan("external", () => new Promise<{ code: number; stdout: string }>((resolve) => {
   const outputLimit = Number.isSafeInteger(maxOutputBytes) ? Math.min(2 * 1024 * 1024, Math.max(1, maxOutputBytes)) : 256 * 1024;
   let child: ReturnType<typeof spawn>;
   try {
@@ -440,7 +441,7 @@ export const sdlcGh: SdlcGh = (args, timeoutMs = 10_000, cwd, maxOutputBytes = 2
   child.stdout?.on("data", chunk => { if (failed) return; stdout += chunk.toString(); if (Buffer.byteLength(stdout) > outputLimit) { stdout = ""; stop(); } });
   child.once("error", () => { failed = true; clearTimeout(timer); resolve({ code: 1, stdout: "" }); });
   child.once("close", code => { clearTimeout(timer); resolve({ code: failed ? 1 : code ?? 1, stdout: failed ? "" : stdout }); });
-});
+}));
 
 /** Read-only, fixed argv: the issue's edit times, never its body. */
 export async function readSpecEdit(repoName: string, issue: number, run: SdlcGh = sdlcGh): Promise<SpecEdit | undefined> {

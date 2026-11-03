@@ -14,6 +14,7 @@ import type { SpecsStatus } from "../hub/specs-task.ts";
 
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
+  controlWriteTiming?: { active: number; slowRequests: number; blockedLoopSamples: number; droppedActive: number; droppedRecent: number; droppedLogs: number; droppedSpans?: number; droppedMetadata?: number };
   specs?: SpecsStatus & { missingBlockHint?: boolean };
   queueBackpressure?: QueueBackpressureStatus;
   pendingRestart?: readonly { key: string; reason: string }[];
@@ -213,6 +214,10 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (data.roleInfo) data = { ...data, peers: Object.fromEntries(Object.entries(data.peers).map(([peer, value]) => [peer, { ...value, ...data.roleInfo?.[peer] }])) };
   const out = lines(`agent-hub${data.version ? ` ${data.version}` : ""}  pid ${data.pid ?? "unknown"}  control 127.0.0.1:${data.controlPort ?? "unknown"}`, columns, "info");
   if (data.cwd) out.push(...lines(data.cwd, columns));
+  const timing = data.controlWriteTiming;
+  if (full && timing && Object.values(timing).every(value => Number.isSafeInteger(value) && value >= 0)) {
+    out.push(...lines(`control writes: active ${timing.active}, slow ${timing.slowRequests}, loop delays ${timing.blockedLoopSamples}, dropped ${timing.droppedActive + timing.droppedLogs + (timing.droppedSpans ?? 0) + (timing.droppedMetadata ?? 0)}; timings in hub.log`, columns, timing.slowRequests || timing.blockedLoopSamples ? "attention" : undefined));
+  }
   const specs = data.specs;
   if (specs && [specs.specCount, specs.documents, specs.errors, specs.stale].every(value => Number.isSafeInteger(value) && value >= 0)
     && (specs.specCount > 0 || specs.documents > 0 || specs.errors > 0)) {

@@ -1,0 +1,241 @@
+{
+  "schema": "agent-hub.stall-window-correlation/v1",
+  "clock": "recorded UTC wall time, not a monotonic lag measurement",
+  "windows": [
+    {
+      "window": "proposes",
+      "start": "2026-11-02T20:55:10Z",
+      "end": "2026-11-02T20:57:00Z",
+      "event_counts": {
+        "quota": 5,
+        "attach": 4,
+        "agent_cli": 1,
+        "task": 6,
+        "envelope": 3,
+        "state": 1,
+        "turn_start": 1,
+        "conduct": 1
+      },
+      "largest_event_gap": {
+        "seconds": 60.237,
+        "from": "2026-11-02T20:55:33.923Z",
+        "to": "2026-11-02T20:56:34.160Z",
+        "from_line": 572984,
+        "to_line": 572985,
+        "from_kind": "envelope",
+        "to_kind": "envelope"
+      },
+      "periodic_quota_count": 5,
+      "largest_periodic_quota_gap_seconds": 65.133,
+      "task_events": [
+        {
+          "at": "2026-11-02T20:55:33.866Z",
+          "task": 667,
+          "event": "proposed",
+          "source_line": 572981
+        },
+        {
+          "at": "2026-11-02T20:55:33.895Z",
+          "task": 667,
+          "event": "lifecycle linked",
+          "source_line": 572982
+        },
+        {
+          "at": "2026-11-02T20:55:33.916Z",
+          "task": 667,
+          "event": "assigned",
+          "source_line": 572983
+        },
+        {
+          "at": "2026-11-02T20:56:34.414Z",
+          "task": 668,
+          "event": "proposed",
+          "source_line": 572990
+        },
+        {
+          "at": "2026-11-02T20:56:34.445Z",
+          "task": 668,
+          "event": "lifecycle linked",
+          "source_line": 572991
+        },
+        {
+          "at": "2026-11-02T20:56:34.466Z",
+          "task": 668,
+          "event": "assigned",
+          "source_line": 572992
+        }
+      ]
+    },
+    {
+      "window": "late_propose",
+      "start": "2026-11-02T21:00:45Z",
+      "end": "2026-11-02T21:02:30Z",
+      "event_counts": {
+        "quota": 42,
+        "tokens": 2,
+        "usage": 2,
+        "progress": 1
+      },
+      "largest_event_gap": {
+        "seconds": 5.004,
+        "from": "2026-11-02T21:02:01.805Z",
+        "to": "2026-11-02T21:02:06.809Z",
+        "from_line": 573128,
+        "to_line": 573129,
+        "from_kind": "quota",
+        "to_kind": "quota"
+      },
+      "periodic_quota_count": 21,
+      "largest_periodic_quota_gap_seconds": 5.014,
+      "task_events": []
+    },
+    {
+      "window": "review_667",
+      "start": "2026-11-02T21:31:30Z",
+      "end": "2026-11-02T21:33:00Z",
+      "event_counts": {
+        "quota": 30,
+        "tokens": 6,
+        "usage": 8,
+        "progress": 3,
+        "task": 6,
+        "envelope": 12,
+        "attach": 12,
+        "state": 5,
+        "turn_start": 3,
+        "turn_end": 2,
+        "agent_cli": 1,
+        "cohort": 1,
+        "split": 1,
+        "overlap": 1
+      },
+      "largest_event_gap": {
+        "seconds": 4.818,
+        "from": "2026-11-02T21:31:42.684Z",
+        "to": "2026-11-02T21:31:47.502Z",
+        "from_line": 573825,
+        "to_line": 573826,
+        "from_kind": "quota",
+        "to_kind": "progress"
+      },
+      "periodic_quota_count": 14,
+      "largest_periodic_quota_gap_seconds": 5.225,
+      "task_events": [
+        {
+          "at": "2026-11-02T21:31:47.586Z",
+          "task": 668,
+          "event": "accepted",
+          "source_line": 573827
+        },
+        {
+          "at": "2026-11-02T21:32:03.597Z",
+          "task": 667,
+          "event": "done",
+          "source_line": 573849
+        },
+        {
+          "at": "2026-11-02T21:32:03.721Z",
+          "task": 667,
+          "event": "memory reference started",
+          "source_line": 573851
+        },
+        {
+          "at": "2026-11-02T21:32:42.925Z",
+          "task": 667,
+          "event": "approved",
+          "source_line": 573897
+        },
+        {
+          "at": "2026-11-02T21:32:43.509Z",
+          "task": 670,
+          "event": "ready",
+          "source_line": 573904
+        },
+        {
+          "at": "2026-11-02T21:32:43.542Z",
+          "task": 670,
+          "event": "assigned",
+          "source_line": 573905
+        }
+      ]
+    },
+    {
+      "window": "review_668",
+      "start": "2026-11-02T21:49:30Z",
+      "end": "2026-11-02T21:51:00Z",
+      "event_counts": {
+        "quota": 22,
+        "progress": 6,
+        "tokens": 9,
+        "usage": 9,
+        "task": 5,
+        "envelope": 11,
+        "attach": 4,
+        "state": 5,
+        "turn_start": 3,
+        "turn_end": 2,
+        "stale": 1,
+        "cohort": 1,
+        "split": 1,
+        "overlap": 1
+      },
+      "largest_event_gap": {
+        "seconds": 5.015,
+        "from": "2026-11-02T21:50:01.150Z",
+        "to": "2026-11-02T21:50:06.165Z",
+        "from_line": 574463,
+        "to_line": 574464,
+        "from_kind": "quota",
+        "to_kind": "quota"
+      },
+      "periodic_quota_count": 13,
+      "largest_periodic_quota_gap_seconds": 5.336,
+      "task_events": [
+        {
+          "at": "2026-11-02T21:50:12.802Z",
+          "task": 668,
+          "event": "done",
+          "source_line": 574466
+        },
+        {
+          "at": "2026-11-02T21:50:12.936Z",
+          "task": 668,
+          "event": "memory reference started",
+          "source_line": 574468
+        },
+        {
+          "at": "2026-11-02T21:50:33.167Z",
+          "task": 668,
+          "event": "approved",
+          "source_line": 574500
+        },
+        {
+          "at": "2026-11-02T21:50:33.760Z",
+          "task": 669,
+          "event": "ready",
+          "source_line": 574507
+        },
+        {
+          "at": "2026-11-02T21:50:33.782Z",
+          "task": 669,
+          "event": "assigned",
+          "source_line": 574508
+        }
+      ]
+    }
+  ],
+  "nearby_proposal_context": {
+    "gap_seconds": 68.894,
+    "from": "2026-11-02T20:56:34.474Z",
+    "to": "2026-11-02T20:57:43.368Z",
+    "from_line": 572993,
+    "to_line": 572994,
+    "end_kind": "memory_brief",
+    "task": 668,
+    "native_items": 4,
+    "fail_items": 4,
+    "legacy_items": 0,
+    "following_offer_at": "2026-11-02T20:57:43.369Z",
+    "interpretation": "A nearby gap ending at a brief record, not a measured memory-call duration or proven cause."
+  }
+}
