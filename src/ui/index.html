@@ -1462,6 +1462,44 @@ function renderBoard(snapshot, peers, ids) {
   });
   refreshTaskDetail();
 }
+function renderSources(sources) {
+  update('sources', sources ?? null, target => {
+    if (!Array.isArray(sources)) return empty(target, 'Source list unavailable for this project snapshot.');
+    if (!sources.length) return empty(target, 'No registered sources. Register a file or URL with ahub source add.');
+    for (const source of sources) {
+      const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
+      head.append(el('code', source.id, 'label'), el('span', source.kind, 'meta'));
+      const registered = Number.isSafeInteger(source.added_at) ? new Date(source.added_at).toLocaleString() : 'unknown';
+      row.append(head, el('p', source.bytes + ' bytes · hash ' + source.hashPrefix + ' · registered ' + registered, 'meta'));
+      target.append(row);
+    }
+  });
+}
+function intakeFeedback(text, error = false) {
+  const result = $('intake-result'); result.textContent = text; result.classList.toggle('error', error);
+}
+async function submitIntake(event) {
+  event.preventDefault();
+  const submit = event.submitter || $('intake-submit');
+  if (pendingButtons.has(submit) || stopped) return;
+  const text = $('intake-text').value.trim(), sourceText = $('intake-sources').value.trim();
+  const sources = sourceText ? sourceText.split(/[\s,]+/).filter(Boolean) : [];
+  $('intake-text').setAttribute('aria-invalid', 'false'); $('intake-sources').setAttribute('aria-invalid', 'false');
+  const invalid = !text || text.length > 7000 ? 'intake-text' : sources.length > 16 || new Set(sources).size !== sources.length || sources.some(id => !/^src:[0-9a-f]{16}$/.test(id)) ? 'intake-sources' : '';
+  if (invalid) {
+    intakeFeedback(invalid === 'intake-text' ? 'Enter a request of 1 to 7000 characters.' : 'Use at most 16 distinct registered src: IDs; run ahub source list to check them.', true);
+    $(invalid).setAttribute('aria-invalid', 'true'); $(invalid).focus(); return;
+  }
+  const captured = context();
+  intakeFeedback('Creating draft. Waiting for the hub result...');
+  const accepted = await action({action:'intake', text, sources}, submit);
+  const current = context();
+  if (stopped || captured.generation !== current.generation || captured.projectId !== current.projectId || captured.instanceId !== current.instanceId) return;
+  if (accepted) {
+    if ($('intake-text').value.trim() === text && $('intake-sources').value.trim() === sourceText) { $('intake-text').value = ''; $('intake-sources').value = ''; }
+    intakeFeedback('Draft saved to Backlog. Inspect it there; approve or discard with ahub intake in a terminal.');
+  } else intakeFeedback('Intake was not confirmed. Read the notice and check Backlog before submitting again.', true);
+}
 const attentionBaseTitle = typeof document === 'undefined' ? 'agent-hub | Local dashboard' : document.title;
 let attentionSignature = '', attentionFirst;
 function reachAttention() {
@@ -1730,44 +1768,6 @@ function appendRoleDetails(target, peer) {
   if (typeof peer.form === 'string') target.append(el('p', 'Form: ' + peer.form, 'meta'));
   if (Array.isArray(peer.capableRoles)) target.append(el('p', 'Capable roles: ' + (peer.capableRoles.join(', ') || 'none'), 'meta'));
   if (typeof peer.ownerIsolation === 'boolean') target.append(el('p', 'Owner isolation: ' + (peer.ownerIsolation ? 'isolated' : 'not isolated: ' + (peer.ownerIsolationNote || 'execution root not verified')), 'meta'));
-}
-function renderSources(sources) {
-  update('sources', sources ?? null, target => {
-    if (!Array.isArray(sources)) return empty(target, 'Source list unavailable for this project snapshot.');
-    if (!sources.length) return empty(target, 'No registered sources. Register a file or URL with ahub source add.');
-    for (const source of sources) {
-      const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
-      head.append(el('code', source.id, 'label'), el('span', source.kind, 'meta'));
-      const registered = Number.isSafeInteger(source.added_at) ? new Date(source.added_at).toLocaleString() : 'unknown';
-      row.append(head, el('p', source.bytes + ' bytes · hash ' + source.hashPrefix + ' · registered ' + registered, 'meta'));
-      target.append(row);
-    }
-  });
-}
-function intakeFeedback(text, error = false) {
-  const result = $('intake-result'); result.textContent = text; result.classList.toggle('error', error);
-}
-async function submitIntake(event) {
-  event.preventDefault();
-  const submit = event.submitter || $('intake-submit');
-  if (pendingButtons.has(submit) || stopped) return;
-  const text = $('intake-text').value.trim(), sourceText = $('intake-sources').value.trim();
-  const sources = sourceText ? sourceText.split(/[\s,]+/).filter(Boolean) : [];
-  $('intake-text').setAttribute('aria-invalid', 'false'); $('intake-sources').setAttribute('aria-invalid', 'false');
-  const invalid = !text || text.length > 7000 ? 'intake-text' : sources.length > 16 || new Set(sources).size !== sources.length || sources.some(id => !/^src:[0-9a-f]{16}$/.test(id)) ? 'intake-sources' : '';
-  if (invalid) {
-    intakeFeedback(invalid === 'intake-text' ? 'Enter a request of 1 to 7000 characters.' : 'Use at most 16 distinct registered src: IDs; run ahub source list to check them.', true);
-    $(invalid).setAttribute('aria-invalid', 'true'); $(invalid).focus(); return;
-  }
-  const captured = context();
-  intakeFeedback('Creating draft. Waiting for the hub result...');
-  const accepted = await action({action:'intake', text, sources}, submit);
-  const current = context();
-  if (stopped || captured.generation !== current.generation || captured.projectId !== current.projectId || captured.instanceId !== current.instanceId) return;
-  if (accepted) {
-    if ($('intake-text').value.trim() === text && $('intake-sources').value.trim() === sourceText) { $('intake-text').value = ''; $('intake-sources').value = ''; }
-    intakeFeedback('Draft saved to Backlog. Inspect it there; approve or discard with ahub intake in a terminal.');
-  } else intakeFeedback('Intake was not confirmed. Read the notice and check Backlog before submitting again.', true);
 }
 function render(snapshot) {
   renderNeedsAttention(snapshot);

@@ -4,7 +4,7 @@ import { runInNewContext } from "node:vm";
 import { INTAKE_MAX_SOURCES, INTAKE_MAX_TEXT } from "../src/hub/intake.ts";
 
 const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
-const start = html.indexOf("function renderSources("), end = html.indexOf("function render(snapshot)", start);
+const start = html.indexOf("function renderSources("), end = html.indexOf("const attentionBaseTitle =", start);
 const code = html.slice(start, end);
 const updateCode = html.slice(html.indexOf("function update("), html.indexOf("function empty("));
 class Node {
