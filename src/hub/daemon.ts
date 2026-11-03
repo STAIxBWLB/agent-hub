@@ -176,7 +176,7 @@ import { readAutonomyDefaults } from "./autonomy-defaults.ts";
 import { AUTONOMY_UNDO, autonomyOwnershipDigest, autonomyUndoKeys, writeAutonomyPreset, LEARN_CHECKLIST, NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { githubOriginRepository, githubRemoteRepository } from "./task-repository.ts";
 import { TaskWorktrees, originVerdict } from "./task-worktree.ts";
-import { displayPath, partition, readWorktreeFacts, type ShelfRow } from "./worktree-shelf.ts";
+import { displayPath, shelfInsideRoot, partition, readWorktreeFacts, type ShelfRow } from "./worktree-shelf.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -9753,14 +9753,17 @@ export async function startDaemon(opts: DaemonOptions) {
       case "worktrees":
       case "worktree_override_set":
       case "worktree_override_clear": {
-        if (c.role !== "console") return void reply({ t: msg.t, ok: false, error: "the worktree shelf is the person's: ask them to run ahub worktrees" });
+        // The read is open to an agent (it can preview a tidy); setting or clearing an override is the person's.
+        const person = c.role === "console";
+        if (!person && (msg.t !== "worktrees" || c.role !== "tools" || !c.peer || turns.get(c.peer)?.private)) return void reply({ t: msg.t, ok: false, error: "the worktree shelf is the person's: ask them to run ahub worktrees" });
         if (recoveryActive() || stopping) return void reply({ t: msg.t, ok: false, error: "recovery or shutdown is holding the worktree shelf; retry once the hub is running" });
         const request = msg, wanted = typeof request.path === "string" && request.path.length <= 4096 ? request.path : "";
         // The git reads are asynchronous and budgeted (D1), so the event loop is never held and every other control request is answered meanwhile. Everything after
         // them runs in one synchronous segment: the fence is asked again, and the board is read and written with nothing awaited in between.
         void (async () => {
           const instancePaths = Object.values(config.instances ?? {}).flatMap(instance => instance.worktree ? [resolve(opts.cwd, instance.worktree)] : []);
-          const facts = await readWorktreeFacts({ root: opts.cwd, tasks: () => board.list(), instancePaths, ...(opts.worktreeShelfGit ? { git: opts.worktreeShelfGit } : {}) });
+          // A PII task still binds its worktree on the host, so its state keeps the worktree live and tidy refuses it; the reply row built by the shelf redacts its id, PR and state (AGENTS.md: redact where the view is built).
+          const facts = await readWorktreeFacts({ root: opts.cwd, tasks: () => board.list(), isPrivate: id => { const task = board.get(id); return !task || tasks.isPii(task); }, instancePaths, ...(opts.worktreeShelfGit ? { git: opts.worktreeShelfGit } : {}) });
           if (recoveryActive() || stopping) return reply({ t: request.t, ok: false, error: "recovery or shutdown began while the worktrees were read; retry once the hub is running" });
           if (!facts.available) return reply({ t: request.t, ok: false, error: "git could not list this project's worktrees; check that the project is a git repository and git is on PATH" });
           if (request.t !== "worktrees") {
@@ -9776,7 +9779,7 @@ export async function startDaemon(opts: DaemonOptions) {
             board.pruneInertWorktreeOverrides(new Map(facts.facts.filter(f => f.activityKnown !== false).map(f => [f.path, f.lastActiveAt])));
           }
           const split = partition(facts.facts, board.worktreeOverrides(), Date.now(), config.worktrees?.quiet_days ?? 7);
-          const shown = (rows: ShelfRow[]) => rows.map(r => ({ ...r, path: displayPath(opts.cwd, r.path) }));
+          const shown = (rows: ShelfRow[]) => rows.map(r => ({ ...r, path: displayPath(opts.cwd, r.path), ...(shelfInsideRoot(opts.cwd, r.path) ? {} : { outside: true as const }) }));
           reply({ t: request.t, ok: true, live: shown(split.live), settled: shown(split.settled), complete: facts.complete });
         })().catch(() => reply({ t: request.t, ok: false, error: "the worktree shelf could not be read; inspect the hub log" }));
         return;

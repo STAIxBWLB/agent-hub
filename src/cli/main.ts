@@ -105,6 +105,8 @@ import { benchPreflight, defaultIo, runBench } from "./bench.ts";
 import { ADDONS, isAddon, type AddonName } from "../hub/tooling.ts";
 import { goalCommand, memoryCommand, memoryStaleAnchorsCommand } from "./memory.ts";
 import { runSpecs, runSpecsStamp } from "./specs.ts";
+import { confirmTidy, planTidy, realTidyGit, rowsFromReply, type TidyGit } from "./worktree-tidy.ts";
+import { renderTidyPreview, renderTidyResult, renderWorktrees } from "./worktrees-output.ts";
 import { formatMemoryStaleAnchors } from "../hub/memory-stale-anchors.ts";
 import { AGENT_MEM_VERSION, assertAgentMemVersion, selectedMemoryProfile } from "../hub/memory-profile.ts";
 import { checkMemoryProfiles, formatMemoryProfileCheck } from "../hub/memory-profile-check.ts";
@@ -2455,6 +2457,31 @@ const commands: Record<string, () => Promise<void> | void> = {
     try {
       process.exitCode = await runSpecsStamp(args.slice(1), cwd, loadConfig(cwd).specs, { isTTY: !!rl, ask: async question => /^y(es)?$/i.test((await rl!.question(`${question} [y/N] `)).trim()) });
     } finally { rl?.close(); }
+  },
+  // #1057: `ahub worktrees [--json]` lists live and settled worktrees; `tidy` previews what is safe to remove; `tidy --confirm <fingerprint>` removes it, in THIS process,
+  // never the daemon's. `--confirm` is console class (classifyPeerCommand) and refused under --live-test, so an agent can only list and preview.
+  worktrees: async () => {
+    const options = outputOptions();
+    const rest = outputArguments();
+    const sub = rest[0] === "tidy" ? "tidy" : undefined;
+    const flags = sub ? rest.slice(1) : rest;
+    const at = flags.indexOf("--confirm");
+    const fingerprint = at >= 0 ? flags[at + 1] : undefined;
+    const known = flags.every((arg, i) => arg === "--confirm" || i === at + 1 && at >= 0);
+    if ((rest.length && !sub && rest.some(arg => !arg.startsWith("--"))) || !known || (at >= 0 && (!sub || fingerprint === undefined || fingerprint.startsWith("--"))) || (sub === undefined && at >= 0)) fail("usage: ahub worktrees [--json] | tidy [--json] | tidy --confirm <fingerprint>");
+    const hub = await connect();
+    const reply = await hub.request({ t: "worktrees" }, 20_000);
+    hub.close();
+    if (!reply.ok) return fail(String(reply.error ?? "the worktree shelf is unavailable"));
+    if (!sub) return options.json ? console.log(JSON.stringify({ live: reply.live, settled: reply.settled, complete: reply.complete }, null, 2)) : printOutput(renderWorktrees(reply, options.columns, Date.now()), options.color);
+    // tidy: read-only git in this process to decide what is safe; the daemon only said which rows are settled.
+    const git: TidyGit = realTidyGit((argv, dir) => { const run = hubGitSync(argv, { cwd: dir, encoding: "utf8", timeout: 20_000, maxBuffer: 4 * 1024 * 1024, env: hubGitEnv(process.env, { repositoryIsolation: true }) }); return run.error ? undefined : { status: run.status, stdout: String(run.stdout ?? "") }; });
+    const plan = planTidy(rowsFromReply(reply.settled ?? [], cwd, git), cwd, git);
+    if (at < 0) return options.json ? console.log(JSON.stringify({ entries: plan.entries, removable: plan.removable, fingerprint: plan.fingerprint }, null, 2)) : printOutput(renderTidyPreview(plan, options.columns), options.color);
+    const result = confirmTidy(plan, fingerprint!, cwd, git);
+    if (!result.ok) return fail(result.error);
+    if (options.json) return console.log(JSON.stringify({ outcomes: result.outcomes }, null, 2));
+    printOutput(renderTidyResult(result.outcomes, options.columns), options.color);
   },
   usage: async () => {
     const options = outputOptions();

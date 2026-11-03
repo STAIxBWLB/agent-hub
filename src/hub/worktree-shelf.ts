@@ -14,7 +14,8 @@ import type { Task } from "./board.ts";
  */
 
 export type PrState = "open" | "merged" | "closed" | "unknown";
-export type SettledReason = "merged" | "closed" | "quiet" | "parked";
+/** `settled` is what a PII-bound row says in a reply for a merged or closed PR: the reason is real on the host, but a reply carries no PR state of a private task. */
+export type SettledReason = "merged" | "closed" | "quiet" | "parked" | "settled";
 export type OverrideValue = "settled" | "active";
 export interface WorktreeOverride { path: string; value: OverrideValue; at: number }
 
@@ -33,16 +34,20 @@ export interface WorktreeFact {
   lastActiveAt: number;
   /** False when the commit time or the index could not be read (a failed git call or a spent budget): such a row is never settled by a PR or by quiet time, because 'no newer work' is unknown. */
   activityKnown?: boolean;
-  task?: { id: number; state: string; pr?: number };
+  /** `private`: the bound task is a PII task. The binding still drives the partition and tidy's refusals on the host, but `row()` never puts its id, PR or state in a reply. */
+  task?: { id: number; state: string; pr?: number; private?: true };
   pr: { state: PrState; changedAt?: number };
 }
-export interface ShelfRow { path: string; branch: string | null; reason?: SettledReason; task?: number; pr?: number; lastActiveAt: number }
+/** A row built for a reply. A PII-bound row carries `private: true` and `taskState: "private"` and no task id or PR. This is the one place a reply row is made, so redaction happens here (AGENTS.md), never at a call site. */
+export interface ShelfRow { path: string; branch: string | null; reason?: SettledReason; task?: number; taskState?: string; pr?: number; private?: true; lastActiveAt: number }
 export interface Partition { live: ShelfRow[]; settled: ShelfRow[] }
 
 const DAY_MS = 86_400_000;
 const row = (fact: WorktreeFact, reason?: SettledReason): ShelfRow => ({
   path: fact.path, branch: fact.branch, lastActiveAt: fact.lastActiveAt,
-  ...(reason ? { reason } : {}), ...(fact.task ? { task: fact.task.id } : {}), ...(fact.task?.pr !== undefined ? { pr: fact.task.pr } : {}),
+  ...(reason ? { reason: fact.task?.private && (reason === "merged" || reason === "closed") ? "settled" as const : reason } : {}),
+  ...(fact.task?.private ? { private: true as const, taskState: "private" }
+    : { ...(fact.task ? { task: fact.task.id, taskState: fact.task.state } : {}), ...(fact.task?.pr !== undefined ? { pr: fact.task.pr } : {}) }),
 });
 
 /** An override counts only while no newer activity exists: `lastActiveAt <= at` (D2). Newer activity makes it inert. */
@@ -80,6 +85,9 @@ export function displayPath(root: string, path: string): string {
   const rel = relative(root, path);
   return rel && !rel.startsWith("..") && !rel.startsWith(sep) && rel !== path ? rel : basename(path);
 }
+
+/** Whether a path is the root or below it, so a row can be resolved against the project root and one outside it cannot. */
+export const shelfInsideRoot = (root: string, path: string): boolean => path === root || (!relative(root, path).startsWith("..") && !relative(root, path).startsWith(sep) && relative(root, path) !== path);
 
 /**
  * The latest time anyone but the hub wrote to a task: its work, not its bookkeeping. The hub's own entries (the merge result, the owner notice,
@@ -163,6 +171,8 @@ export interface ShelfInput {
   root: string;
   /** Called AFTER the git reads, so the board is read once and fresh, never held across an await. */
   tasks: () => readonly Pick<Task, "id" | "state" | "refs" | "sdlc" | "updated" | "created" | "history">[];
+  /** Whether a task is a PII task (`Tasks.isPii`). Its binding is kept for the partition and the refusals and redacted in the reply row. A host that does not pass it treats no task as private. */
+  isPrivate?: (taskId: number) => boolean;
   /** Resolved instance worktree paths (`.worktrees/<instance>`): never shelved. */
   instancePaths: readonly string[];
   git?: ShelfGitPort;
@@ -220,7 +230,7 @@ export async function readWorktreeFacts(input: ShelfInput): Promise<ShelfFacts> 
       path, branch: raw.branch, head: raw.head, locked: raw.locked, prunable: raw.prunable,
       main: path === root, instance: instances.has(path),
       lastActiveAt: Math.max(probe?.commitAt ?? 0, probe?.touched ?? 0, task?.workAt ?? 0), activityKnown: probe?.known === true,
-      ...(task ? { task: { id: task.id, state: task.state, ...(task.pr !== undefined ? { pr: task.pr } : {}) } } : {}),
+      ...(task ? { task: { id: task.id, state: task.state, ...(task.pr !== undefined ? { pr: task.pr } : {}), ...(task && input.isPrivate?.(task.id) ? { private: true as const } : {}) } } : {}),
       pr: prFromTask(bound),
     });
   });

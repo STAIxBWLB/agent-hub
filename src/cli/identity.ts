@@ -31,6 +31,8 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
     || command === "autonomy" || command === "title"
     // #1064 T3: a stamp is a person's record that they reviewed a document; no delegation, live-test or otherwise, may write one.
     || (command === "specs" && args[0] === "stamp")
+    // #1057: removing a worktree and its branch is the person's own act, in their own terminal; no delegation, live-test or otherwise, may confirm a tidy.
+    || (command === "worktrees" && args.some(arg => arg === "--confirm" || arg.startsWith("--confirm=")))
     || (command === "agents" && !args.every(arg => arg === "--json"));
 }
 
@@ -79,6 +81,8 @@ interface PeerReadForm {
 const publicReadDisplayFlags = ["--json", "--full", "--color=auto", "--color=always", "--color=never"] as const;
 const sdlcReadDisplayFlags = ["--json", "--color=auto", "--color=always", "--color=never"] as const;
 const peerReadForms: Readonly<Record<string, Readonly<Record<string, PeerReadForm>>>> = {
+  // #1057: listing the shelf and previewing a tidy are reads an agent may run; `tidy --confirm` and any other form fall to `console` below, and live-test refuses them.
+  worktrees: { "": { displayFlags: ["--json", "--full", "--color=auto", "--color=always", "--color=never"] }, tidy: { displayFlags: ["--json", "--color=auto", "--color=always", "--color=never"] } },
   specs: { list: { displayFlags: ["--json"] }, check: { valueFlags: ["--base"], displayFlags: ["--json", "--require-fresh"] }, covers: { positional: 2000, minimum: 1, displayFlags: [] } },
   room: { list: { displayFlags: ["--json"] }, status: { positional: 1, displayFlags: ["--json"] } },
   queue: { list: { valueFlags: ["--peer"], displayFlags: [...publicReadDisplayFlags, "--all"] } },
@@ -207,6 +211,8 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   if (command === "deliverables") return "deliverables";
   if (command === "title") return "title";
   if (command === "specs") return ["list", "check", "covers", "stamp"].includes(args[0] ?? "") ? `specs ${args[0]}` : "specs";
+  // #1057: the audit names the subcommand and whether it confirms, never a path, a branch or a fingerprint.
+  if (command === "worktrees") return args[0] === "tidy" ? (args.some(arg => arg === "--confirm" || arg.startsWith("--confirm=")) ? "worktrees tidy confirm" : "worktrees tidy") : "worktrees";
   if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "down", "reset", "doctor", "agents", "source", "broker", "schedule", "intake", "learn", "study"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench", "agents", "roster", "settings"].includes(command)) {
     const sub = command === "bench" || command === "memory" || command === "goal" ? args.find((arg) => arg !== "--json") : args[0];
