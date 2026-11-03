@@ -176,6 +176,7 @@ import { readAutonomyDefaults } from "./autonomy-defaults.ts";
 import { AUTONOMY_UNDO, autonomyOwnershipDigest, autonomyUndoKeys, writeAutonomyPreset, LEARN_CHECKLIST, NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { githubOriginRepository, githubRemoteRepository } from "./task-repository.ts";
 import { TaskWorktrees, originVerdict } from "./task-worktree.ts";
+import { displayPath, partition, readWorktreeFacts, type ShelfRow } from "./worktree-shelf.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -291,6 +292,8 @@ export interface HubConfig {
   checks: { timeout_s: number; runner?: "container" | "remote"; remote?: RemoteRunnerConfig; [cls: string]: string | number | RemoteRunnerConfig | undefined };
   /** A git tree at each turn boundary for `ahub turns` and `ahub undo`, the last `keep` per peer (issue #33). */
   snapshots: { enabled: boolean; keep: number };
+  /** #1057: the worktree shelf. `quiet_days` shelves a worktree idle that long (0 = never); `alert_over` is the settled count that raises one inbox alert (0 = never). */
+  worktrees: { quiet_days: number; alert_over: number };
   /** #247: opt-in research records of each approved task in ~/.agenthub/research (ids, counts and tokens only). */
   research: { enabled: boolean; runners?: Record<string, RegisteredRunnerV1> };
   /** #251: a project kept for benchmarks: `ahub bench run` resets its work tree between attempts. */
@@ -363,6 +366,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   checks: { timeout_s: 600 },
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
   snapshots: { enabled: false, keep: 20 },
+  worktrees: { quiet_days: 7, alert_over: 10 },
   research: { enabled: false },
   bench: { enabled: false },
   peers: {},
@@ -465,6 +469,8 @@ function retiredRoutingSettings(cwd: string): readonly string[] {
   catch { return []; } // Routing admission and reload report parse errors using their own last-good state.
 }
 
+/** #1057: a whole non-negative number of days or alert count; anything else (a negative, a fraction, a string) is the default, so a bad value never changes the shelf. The reload schema refuses it by name. */
+const wholeDays = (value: unknown, fallback: number): number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 100_000 ? value : fallback;
 export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routingRetired: readonly string[] = retiredRoutingSettings(cwd), externalDefinitions?: readonly import("../adapters/registry-types.ts").AdapterDefinition[]): HubConfig {
   const captured = layers ?? readInstanceConfigLayers(cwd);
   const instanceConfig = readInstanceConfig(cwd, captured, externalDefinitions);
@@ -612,6 +618,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks, runner: file.checks?.runner === "remote" ? "remote" : file.checks?.runner === "container" ? "container" : undefined,
       ...(file.checks?.remote !== undefined || file.checks?.runner === "remote" ? { remote: remoteRunnerConfig(file.checks?.remote) } : {}) },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
+    worktrees: { quiet_days: wholeDays(file.worktrees?.quiet_days, DEFAULT_CONFIG.worktrees.quiet_days), alert_over: wholeDays(file.worktrees?.alert_over, DEFAULT_CONFIG.worktrees.alert_over) },
     research: { enabled: file.research?.enabled === true, ...(file.research?.runners !== undefined ? { runners: parseResearchRunners(file.research.runners) } : {}) }, // opt-in: anything but true is off
     bench: { enabled: file.bench?.enabled === true }, // opt-in: a run resets this project's work tree
     peers: { ...instanceModes, ...peerStartConfig(file.peers, instances, adapterCatalog) },
@@ -659,6 +666,8 @@ export interface DaemonOptions {
   snapshotBurstMs?: number;
   /** Host-only (#661): the clock the shared snapshot Git budget reads (default performance.now). A test holds it fixed so a slow runner cannot spend the 250 ms; production never sets it and no config key or tool reaches it. */
   snapshotClock?: () => number;
+  /** Host-only seam (#1057): the shelf's read-only git port; tests hold a slow or failing one. Production leaves it unset, never read from configuration or a request. */
+  worktreeShelfGit?: import("./worktree-shelf.ts").ShelfGitPort;
   /** Host-only bounds of the per-head CI watcher (#785 P1b); tests shorten them, never read from config or a tool. */
   ciWatch?: { deadlineMs?: number; pollMs?: number };
   checkoutBranch?: typeof mainCheckoutBranch;
@@ -9636,6 +9645,39 @@ export async function startDaemon(opts: DaemonOptions) {
         // Let the acknowledgement flush before closing the control listener.
         setTimeout(() => void stop().catch((error) => log(`shutdown incomplete: ${(error as Error).message}`)), 0);
         return;
+      // #1057: the worktree shelf. `worktrees` is a read (facts and the derived partition, never a GitHub call); `worktree_override_set|clear` write the person's
+      // park or pin. Console role only, always answered (rid). The daemon deletes no worktree and no branch: removal is the person's CLI process (AC4).
+      case "worktrees":
+      case "worktree_override_set":
+      case "worktree_override_clear": {
+        if (c.role !== "console") return void reply({ t: msg.t, ok: false, error: "the worktree shelf is the person's: ask them to run ahub worktrees" });
+        if (recoveryActive() || stopping) return void reply({ t: msg.t, ok: false, error: "recovery or shutdown is holding the worktree shelf; retry once the hub is running" });
+        const request = msg, wanted = typeof request.path === "string" && request.path.length <= 4096 ? request.path : "";
+        // The git reads are asynchronous and budgeted (D1), so the event loop is never held and every other control request is answered meanwhile. Everything after
+        // them runs in one synchronous segment: the fence is asked again, and the board is read and written with nothing awaited in between.
+        void (async () => {
+          const instancePaths = Object.values(config.instances ?? {}).flatMap(instance => instance.worktree ? [resolve(opts.cwd, instance.worktree)] : []);
+          const facts = await readWorktreeFacts({ root: opts.cwd, tasks: () => board.list(), instancePaths, ...(opts.worktreeShelfGit ? { git: opts.worktreeShelfGit } : {}) });
+          if (recoveryActive() || stopping) return reply({ t: request.t, ok: false, error: "recovery or shutdown began while the worktrees were read; retry once the hub is running" });
+          if (!facts.available) return reply({ t: request.t, ok: false, error: "git could not list this project's worktrees; check that the project is a git repository and git is on PATH" });
+          if (request.t !== "worktrees") {
+            // The path must be one the shelf listed: compared as typed and, when it exists, by its real path (a nonexistent path is simply not listed).
+            const known = wanted ? facts.facts.find(f => f.path === wanted || f.path === (() => { try { return realPath(wanted); } catch { return undefined; } })()) : undefined;
+            if (!known) return reply({ t: request.t, ok: false, error: "that path is not a worktree of this project; list them with ahub worktrees" });
+            if (request.t === "worktree_override_set") {
+              if (request.value !== "settled" && request.value !== "active") return reply({ t: request.t, ok: false, error: "value is settled (park) or active (pin)" });
+              if (known.main || known.instance) return reply({ t: request.t, ok: false, error: "the main checkout and instance worktrees are never shelved" });
+              board.setWorktreeOverride(known.path, request.value, Date.now());
+            } else board.clearWorktreeOverride(known.path);
+            // Only rows whose activity was actually read can make an override inert: an unread row's time is not a fact.
+            board.pruneInertWorktreeOverrides(new Map(facts.facts.filter(f => f.activityKnown !== false).map(f => [f.path, f.lastActiveAt])));
+          }
+          const split = partition(facts.facts, board.worktreeOverrides(), Date.now(), config.worktrees?.quiet_days ?? 7);
+          const shown = (rows: ShelfRow[]) => rows.map(r => ({ ...r, path: displayPath(opts.cwd, r.path) }));
+          reply({ t: request.t, ok: true, live: shown(split.live), settled: shown(split.settled), complete: facts.complete });
+        })().catch(() => reply({ t: request.t, ok: false, error: "the worktree shelf could not be read; inspect the hub log" }));
+        return;
+      }
       // #604 (agent-hub#1030): another project's daemon hands us a task, or reports a state change of one we handed it. Console role only (the same token and the same machine user as every
       // control message): an agent connection never reaches these. The origin peer named in the request is a record, never an identity here, and nothing in it grants a role.
       case "task_handoff": {
