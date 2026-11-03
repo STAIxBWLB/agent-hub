@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { init, planInit, specsBlock, upsertBlock } from "../src/cli/init.ts";
-import { profileClass, projectProfile, PROFILE_NAMES, type ProfileName } from "../src/hub/profiles.ts";
+import { profileClass, projectProfile, PROFILE_NAMES, resolveProfile, type ProfileName } from "../src/hub/profiles.ts";
 import { DEFAULT_ROLES, roleContract, TASK_TOOLS, profileTaskTools } from "../src/hub/hub-tools.ts";
 import { loadRoleCatalog, selectedRoles } from "../src/hub/roles.ts";
 import { loadConfig } from "../src/hub/daemon.ts";
@@ -125,6 +125,21 @@ test("accept schemas retain both document and dev plan fields across profile cha
   const { tasks, board } = await rig("research");
   const legacy = board.propose("codex", { title: "Legacy dev task", class: "implement", plan: { paths: ["a.ts"] } }); board.update(legacy.id, "codex", "assigned", { state: "in_progress", owner: "codex" });
   tasks.accept("codex", legacy.id, { symbols: ["LegacySymbol"], sections: ["ignored"] }); expect(board.get(legacy.id)!.plan).toEqual({ symbols: ["LegacySymbol"] });
+});
+
+test("#1144 plan source schemas direct every profile to registered ids and the source list", () => {
+  const custom = resolveProfile("dev", { plan_keys: ["paths", "sources"] });
+  for (const profile of [...PROFILE_NAMES, custom]) {
+    const tools = profileTaskTools(profile);
+    for (const name of ["hub_task_propose", "hub_task_accept", "hub_backlog_split"]) {
+      const properties = tools.find(tool => tool.name === name)!.inputSchema.properties as any;
+      const fields = name === "hub_backlog_split" ? properties.parts.items.properties.plan.properties : properties.plan.properties;
+      if (!fields.sources) { expect(name).not.toBe("hub_task_accept"); continue; }
+      expect(fields.sources.description).toContain("registered src:<16 hex> source ids");
+      expect(fields.sources.description).toContain("ahub source list");
+      expect(fields.sources.description).not.toContain("DOI");
+    }
+  }
 });
 
 test("#607 every profile's AGENTS block carries the agy first-turn guidance", () => {

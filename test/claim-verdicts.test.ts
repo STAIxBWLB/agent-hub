@@ -11,6 +11,7 @@ import { realPath } from "../src/hub/project.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { DEFAULT_ROLES } from "../src/hub/hub-tools.ts";
 import { Tasks } from "../src/hub/tasks.ts";
+import { SourceRegistry } from "../src/hub/sources.ts";
 
 // agent-hub#901 (follow-up to #799): per-claim person verdicts and the check key behind a fact_check result, so the research scorecard rows have a source.
 // Everything goes through the real Tasks (check run, verdict), the real board history, the real scorecard reader and the real aggregation.
@@ -24,12 +25,16 @@ async function rig(options: { output?: string; code?: number; key?: string | und
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-claims-"))), file = join(dir, "hub.db"), board = new Board(file), bus = new Bus({ batchMs: 0 });
   cleanups.push(() => { board.close(); rmSync(dir, { recursive: true, force: true }); });
   for (const name of ["claude", "codex", "kimi", "local"]) { const peer = new Peer(name); bus.add(peer); await peer.start(); }
+  const registry = new SourceRegistry(dir);
+  const registerSource = (text: string, privateSource = false) => registry.add({ bytes: Buffer.from(text), kind: "file", origin: "/notes/reference.txt", private: privateSource }).id;
+  const sourceId = registerSource("doi:1");
   const state = { output: options.output ?? "citations: 2 declared keys, 0 missing", code: options.code ?? 0, key: "key" in options ? options.key : "fact_check" };
   const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture", profile: "research", roles: DEFAULT_ROLES, routing: () => loadRouting(dir), notify: () => {}, ...(options.piiPaths ? { piiPaths: options.piiPaths } : {}),
+    intake: { sourceKnown: id => !!registry.get(id), split: async () => undefined, partsSchema: () => ({}) },
     check: (_base, task) => task?.profileClass === "fact_check" ? "citations" : undefined,
     checkKey: (_base, task) => task?.profileClass === "fact_check" ? state.key : undefined,
     runCheck: async () => ({ code: state.code, timedOut: false, tail: state.output }) });
-  return { dir, file, board, tasks, state };
+  return { dir, file, board, tasks, state, sourceId, registerSource };
 }
 const scorecard = (file: string) => {
   const input: DogfoodInput = { since: 0, until: Date.now() + 60_000, projectProfile: source("research"), tasks: dogfoodTasks(file), events: source([]), prs: source([]), log: source([]), features: source([]) };
@@ -37,7 +42,7 @@ const scorecard = (file: string) => {
   return { card, row: card.profile!.rows.find(r => r.profile === "research" && r.alias === null)!, input };
 };
 async function factCheckTask(r: Awaited<ReturnType<typeof rig>>, claims = ["c1", "c2", "c3"]) {
-  const task = await r.tasks.propose("codex", { title: "Check the claims", class: "fact_check", owner: "codex", plan: { paths: ["report.md"], sources: ["doi:1"], claims } });
+  const task = await r.tasks.propose("codex", { title: "Check the claims", class: "fact_check", owner: "codex", plan: { paths: ["report.md"], sources: [r.sourceId], claims } });
   return task;
 }
 const runCheck = async (r: Awaited<ReturnType<typeof rig>>, id: number) => { await r.tasks.done("codex", id, "checked"); await until(() => r.tasks.checksPending() === 0); };
@@ -240,7 +245,7 @@ test("a verdict belongs to the claim list it evaluated: replacing or reordering 
   const slot1 = () => scorecard(r.file).row.research!.claims.perTask[0]!.claims![0]!;
   expect(slot1()).toMatchObject({ personVerdict: "supported", agreement: true });
   // The owner replaces the claim in slot 1 with an unrelated one: the old verdict must not be reported for it.
-  const accept = (claims: string[]) => r.tasks.accept("codex", task.id, { paths: ["report.md"], sources: ["doi:1"], claims });
+  const accept = (claims: string[]) => r.tasks.accept("codex", task.id, { paths: ["report.md"], sources: [r.sourceId], claims });
   accept(["something else entirely", "beta", "gamma"]);
   expect(slot1()).toEqual({ slot: 1, modelLabel: null, personVerdict: null, agreement: null });
   expect(scorecard(r.file).row.research!.claims.reachedPersonVerdict).toBeNull();
@@ -270,7 +275,8 @@ test("a verdict recorded before claim lists were bound cannot be attributed to a
 
 test("a PII task: its verdicts count but name no model, its history entry is a stub, and no claim, key or label text reaches the scorecard", async () => {
   const r = await rig({ piiPaths: ["PRIVATE_PATH_CANARY.md"] });   // a declared path under the PII policy makes the task private
-  const task = await r.tasks.propose("codex", { title: "PRIVATE_TITLE_CANARY", class: "fact_check", owner: "codex", plan: { paths: ["PRIVATE_PATH_CANARY.md"], sources: ["PRIVATE_SOURCE"], claims: ["PRIVATE_CLAIM_1", "PRIVATE_CLAIM_2"] } });
+  const privateSource = r.registerSource("PRIVATE_SOURCE", true);
+  const task = await r.tasks.propose("codex", { title: "PRIVATE_TITLE_CANARY", class: "fact_check", owner: "codex", plan: { paths: ["PRIVATE_PATH_CANARY.md"], sources: [privateSource], claims: ["PRIVATE_CLAIM_1", "PRIVATE_CLAIM_2"] } });
   r.tasks.recordClaimVerdict("user", task.id, { slot: 1, verdict: "supported", model: "PRIVATE_MODEL_LABEL", modelVerdict: "supported" });
   expect(r.tasks.isPii(r.board.get(task.id)!)).toBe(true);
   const entry = r.board.get(task.id)!.history.at(-1)!;
@@ -279,6 +285,8 @@ test("a PII task: its verdicts count but name no model, its history entry is a s
   expect(row.research!.claims.perTask[0]!.claims![0]).toEqual({ slot: 1, modelLabel: null, personVerdict: "supported", agreement: true });
   const text = JSON.stringify(card) + formatDogfood(card).join("\n");
   expect(text).not.toMatch(/PRIVATE_/);
+  expect(text).not.toContain(privateSource);
+  expect(JSON.stringify(r.tasks.publicView(r.board.get(task.id)!))).not.toContain(privateSource);
   // The verdict reply to the console names the slot and verdict only.
   expect(JSON.stringify(r.tasks.recordClaimVerdict("user", task.id, { slot: 2, verdict: "unclear" }).history.at(-1))).not.toMatch(/PRIVATE_/);
 });
