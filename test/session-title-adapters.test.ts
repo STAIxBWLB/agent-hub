@@ -9,6 +9,7 @@ import { TASK_TOOLS, TASK_TOOL_NAMES, profileTaskTools, sessionTitleTools, SESSI
 import { PROFILE_NAMES } from "../src/hub/profiles.ts";
 import { Capture } from "../src/memory/capture.ts";
 import type { MemoryClient } from "../src/memory/client.ts";
+import { processSignature } from "../src/pi/process-signature.ts";
 import { rosterPiFixture } from "./fakes/pi-roster-tui.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -29,6 +30,8 @@ test("#1055 only hub-title definitions explicitly receive the title tool; global
     expect(sessionTitleTools(selected).some(tool => tool.name === "hub_set_title")).toBe(false);
   }
   expect(definitionOf("pi")!.title).toBe("hub");
+  expect(ADAPTERS.filter(definition => definition.titlePersistence === "native").map(definition => definition.kind)).toEqual(["pi"]);
+  expect(definitionOf("local")!.titlePersistence).toBeUndefined();
 });
 
 test("#1055 local title is conditional, person replaceable and belongs only to this in-memory session", async () => {
@@ -36,15 +39,18 @@ test("#1055 local title is conditional, person replaceable and belongs only to t
   const make = () => new LocalPeer("local", { cwd, fixedModel: "fixture", omni: new OmniRoute({ urls: [], access_hosts: [] }), tools: { deny: [], permit: async () => false } });
   const peer = make(), observed: unknown[][] = []; peer.onDoing = (...args) => { observed.push(args); }; await peer.start(); cleanup.push(() => peer.stop());
   expect(peer.sessionTitle).toBe("");
-  expect(await peer.setSessionTitle("agent title", true, () => false)).toEqual({ ok: false, reason: "invalid" });
+  expect(await peer.setSessionTitle("x".repeat(81), true)).toMatchObject({ ok: false, reason: "invalid", error: expect.stringContaining("1-80 normalized characters") });
+  expect(await peer.setSessionTitle("agent title", true, () => false)).toMatchObject({ ok: false, reason: "invalid", error: expect.any(String) });
   expect(peer.sessionTitle).toBe("");
   expect(await peer.setSessionTitle("agent title", true)).toEqual({ ok: true });
-  expect(await peer.setSessionTitle("agent second title", true)).toEqual({ ok: false, reason: "already_named" });
+  expect(await peer.setSessionTitle("agent second title", true)).toMatchObject({ ok: false, reason: "already_named", error: expect.any(String) });
   expect(await peer.setSessionTitle("person title", false)).toEqual({ ok: true });
-  expect(await peer.setSessionTitle("late agent title", true)).toEqual({ ok: false, reason: "already_named" });
+  expect(await peer.setSessionTitle("late agent title", true)).toMatchObject({ ok: false, reason: "already_named", error: expect.any(String) });
   expect(peer.sessionTitle).toBe("person title");
   expect(observed).toEqual([["title", "agent title"], ["title", "person title"]]);
   expect(make().sessionTitle).toBe("");
+  await peer.stop();
+  expect(await peer.setSessionTitle("offline title", false)).toMatchObject({ ok: false, reason: "invalid", error: expect.stringContaining("offline; start the peer and check ahub status") });
 });
 
 test("#1055 title tool arguments and results never reach capture, plain or MCP qualified", () => {
@@ -65,9 +71,9 @@ test("#1055 Pi title setter waits for native confirmation and refuses missing re
   await f.ack(command, { ok: true, sessionId: f.sessionId, sessionName: "native title" });
   expect(await writing).toEqual({ ok: true }); expect(f.peer.sessionTitle).toBe("native title");
   const missing = f.peer.setSessionTitle("person replacement", false), second = await f.next(); await f.ack(second);
-  expect(await missing).toEqual({ ok: false, reason: "invalid" }); expect(f.peer.sessionTitle).toBe("native title");
+  expect(await missing).toMatchObject({ ok: false, reason: "invalid", error: expect.any(String) }); expect(f.peer.sessionTitle).toBe("native title");
   const stale = f.peer.setSessionTitle("wrong session", false), third = await f.next(); await f.ack(third, { ok: true, sessionId: "different", sessionName: "wrong session" });
-  expect(await stale).toEqual({ ok: false, reason: "invalid" }); expect(f.peer.sessionTitle).toBe("native title");
+  expect(await stale).toMatchObject({ ok: false, reason: "invalid", error: expect.any(String) }); expect(f.peer.sessionTitle).toBe("native title");
 });
 
 test("#1055 the real Pi extension checks the current native name at write and preserves a manual rename", async () => {
@@ -79,6 +85,9 @@ test("#1055 the real Pi extension checks the current native name at write and pr
     { id: "agent-after-person", type: "set_session_title", title: "agent overwrite", onlyIfUnnamed: true, sessionId: "title-session", generation: 0 },
     { id: "stale-session", type: "set_session_title", title: "stale title", onlyIfUnnamed: false, sessionId: "other-session", generation: 0 },
     { id: "stale-turn", type: "set_session_title", title: "stale turn title", onlyIfUnnamed: false, sessionId: "title-session", generation: 1 },
+    { id: "stale-epoch", type: "set_session_title", title: "old extension title", onlyIfUnnamed: false, sessionId: "title-session", generation: 0, titleEpoch: "previous-start" },
+    { id: "native-throw", type: "set_session_title", title: "THROW_NATIVE_TITLE_CANARY", onlyIfUnnamed: false, sessionId: "title-session", generation: 0 },
+    { id: "invalid-length", type: "set_session_title", title: "x".repeat(81), onlyIfUnnamed: false, sessionId: "title-session", generation: 0 },
     { id: "shutdown", type: "shutdown" },
   ];
   let index = 0;
@@ -99,7 +108,11 @@ test("#1055 the real Pi extension checks the current native name at write and pr
     expect(nativeTitles.some(event => event.sessionName === "person native name")).toBe(true);
     expect(acks.find(ack => ack.id === "late-agent")).toMatchObject({ result: { ok: false, reason: "already_named", sessionName: "person native name" } });
     expect(acks.find(ack => ack.id === "agent-after-person")).toMatchObject({ result: { ok: false, reason: "already_named", sessionName: "person replacement" } });
-    for (const id of ["stale-session", "stale-turn"]) expect(acks.find(ack => ack.id === id)).toMatchObject({ result: { ok: false, reason: "invalid" } });
+    for (const id of ["stale-session", "stale-turn", "stale-epoch"]) expect(acks.find(ack => ack.id === id)).toMatchObject({ result: { ok: false, reason: "invalid", error: expect.stringContaining("check ahub status") } });
+    const nativeFailure = acks.find(ack => ack.id === "native-throw");
+    expect(nativeFailure).toMatchObject({ result: { ok: false, reason: "invalid", mayHaveApplied: true, error: expect.stringContaining("may have been applied; check ahub status") } });
+    expect(JSON.stringify(nativeFailure)).not.toContain("THROW_NATIVE_TITLE_CANARY");
+    expect(acks.find(ack => ack.id === "invalid-length")).toMatchObject({ result: { ok: false, reason: "invalid", error: expect.stringContaining("1-80 character normalized title") } });
   } finally { renamed.release(); if (child.exitCode === null) { child.kill(); await child.exited; } server.stop(true); }
 }, 10_000);
 
@@ -110,7 +123,7 @@ test("#1055 a queued Pi title command is withdrawn when host admission changes",
   allowed = false;
   const admitted = f.peer.setSessionTitle("current title", true), command = await f.next();
   expect(command.title).toBe("current title");
-  expect(await stale).toEqual({ ok: false, reason: "invalid" });
+  expect(await stale).toMatchObject({ ok: false, reason: "invalid", error: expect.any(String) });
   await f.ack(command, { ok: true, sessionId: f.sessionId, sessionName: "current title" });
   expect(await admitted).toEqual({ ok: true });
 });
@@ -182,4 +195,64 @@ test("#1055 a versioned empty TUI snapshot older than a new native title cannot 
   expect(f.peer.pendingResume.sessionId).not.toBe(f.sessionId);
   f.owner.kill(); await f.owner.exited; await f.post("/event", { type: "session_shutdown" });
   await expect(f.peer.captureResume()).rejects.toThrow("no verified persisted resume state");
+});
+
+test("#1055 Pi title refusals distinguish invalid length, offline and post-dispatch turn changes without echoing text", async () => {
+  const f = await rosterPiFixture(); cleanup.push(f.cleanup);
+  const canary = "TITLE_REFUSAL_CANARY", oversized = canary.repeat(8);
+  expect(await f.peer.setSessionTitle(oversized, true)).toMatchObject({ ok: false, reason: "invalid", error: expect.stringContaining("1-80 normalized characters") });
+  const writing = f.peer.setSessionTitle(canary, true), command = await f.next();
+  await f.post("/event", { type: "agent_start", sessionId: f.sessionId, generation: 1 });
+  await f.ack(command, { ok: true, sessionId: f.sessionId, sessionName: canary });
+  const revoked = await writing;
+  expect(revoked).toMatchObject({ ok: false, reason: "invalid", mayHaveApplied: true, error: expect.stringContaining("changed after dispatch") });
+  if (!revoked.ok) { expect(revoked.error).toContain("may have been applied; check ahub status"); expect(revoked.error).not.toContain(canary); }
+  f.owner.kill(); await f.owner.exited; await f.post("/event", { type: "session_shutdown" });
+  expect(await f.peer.setSessionTitle(canary, true)).toMatchObject({ ok: false, reason: "invalid", error: expect.stringContaining("offline or stopped; start or reconnect Pi") });
+});
+
+test("#1055 a failed native title acknowledgement gives actionable uncertainty without native error text", async () => {
+  const f = await rosterPiFixture(); cleanup.push(f.cleanup);
+  const writing = f.peer.setSessionTitle("public name", false), command = await f.next();
+  await f.post("/ack", { id: command.id, ok: false, error: "NATIVE_TITLE_ERROR_CANARY" });
+  const result = await writing;
+  expect(result).toMatchObject({ ok: false, reason: "invalid", mayHaveApplied: true, error: expect.stringContaining("bridge command failed after dispatch") });
+  if (!result.ok) { expect(result.error).toContain("may have been applied; check ahub status"); expect(result.error).not.toContain("NATIVE_TITLE_ERROR_CANARY"); }
+});
+
+test("#1055 accepted same-session startup resets the native title revision before fresh rename events", async () => {
+  const f = await rosterPiFixture(); cleanup.push(f.cleanup);
+  await f.post("/event", { type: "session_title", sessionId: f.sessionId, titleRevision: 7, sessionName: "prior extension title" });
+  expect(f.peer.sessionTitle).toBe("prior extension title");
+  const start = await f.post("/event", { type: "session_start", ownerToken: f.launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: f.owner.pid, signature: processSignature(f.owner.pid), sessionId: f.sessionId, sessionFile: f.sessionFile, fencedPrompt: true, titleRevision: 0, sessionName: "restored same session title", titleEpoch: "fresh-start" });
+  expect(start.status).toBe(200);
+  expect(f.peer.sessionTitle).toBe("restored same session title");
+  await f.post("/event", { type: "session_title", sessionId: f.sessionId, titleRevision: 1, sessionName: "fresh native rename", titleEpoch: "fresh-start" });
+  expect(f.peer.sessionTitle).toBe("fresh native rename");
+  await f.post("/event", { type: "session_title", sessionId: f.sessionId, titleRevision: 99, titleEpoch: "previous-start", sessionName: "late old title event" });
+  expect(f.peer.sessionTitle).toBe("fresh native rename");
+});
+
+test("#1055 a pending title ACK from before accepted same-session startup cannot replace the fresh native name", async () => {
+  const f = await rosterPiFixture(); cleanup.push(f.cleanup);
+  const writing = f.peer.setSessionTitle("old pending title", false), command = await f.next();
+  await f.post("/event", { type: "session_start", ownerToken: f.launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: f.owner.pid, signature: processSignature(f.owner.pid), sessionId: f.sessionId, sessionFile: f.sessionFile, fencedPrompt: true, titleRevision: 0, titleEpoch: "fresh-start", sessionName: "fresh person name" });
+  await f.ack(command, { ok: true, sessionId: f.sessionId, titleRevision: 99, sessionName: "old pending title" });
+  expect(await writing).toMatchObject({ ok: false, reason: "invalid", mayHaveApplied: true, error: expect.stringContaining("changed after dispatch") });
+  expect(f.peer.sessionTitle).toBe("fresh person name");
+});
+
+test("#1055 a pending snapshot from before accepted same-session startup cannot certify empty recovery", async () => {
+  const f = await rosterPiFixture(); cleanup.push(f.cleanup);
+  const reading = f.peer.captureResume();
+  const outcome = reading.then(value => ({ ok: true as const, value }), error => ({ ok: false as const, error: error as unknown }));
+  const command = await f.next();
+  await f.post("/event", { type: "session_start", ownerToken: f.launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: f.owner.pid, signature: processSignature(f.owner.pid), sessionId: f.sessionId, sessionFile: f.sessionFile, fencedPrompt: true, titleRevision: 0, titleEpoch: "fresh-start", sessionName: "fresh person name" });
+  await f.ack(command, { sessionId: f.sessionId, sessionFile: f.sessionFile, titleRevision: 99, titleEpoch: "previous-start", sessionName: "", empty: true, idle: true });
+  const result = await outcome;
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("pre-startup title snapshot unexpectedly certified empty recovery");
+  expect(result.error).toBeInstanceOf(Error);
+  expect((result.error as Error).message).toContain("title changed during capture");
+  expect(f.peer.sessionTitle).toBe("fresh person name");
 });

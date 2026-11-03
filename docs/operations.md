@@ -287,12 +287,27 @@ native UI. No helper model is called, and task, branch and instance names are
 independent. A private turn, an open PII owner/reviewer assignment, a sensitive
 title or a failed metadata screen refuses the write.
 
+Every refused title call includes its reason code plus a public cause and next
+step. An unconfirmed write can have landed: check `ahub status` before retrying
+when the error says it may have been applied. A person rename on an idle Pi
+session that has never exchanged a message creates native title metadata but
+may not create a session file yet. Recovery preserves that state by refusing
+ID-only recreation; exchange one message or explicitly start a new session,
+then retry recovery.
+
 An unnamed session displays a muted label from the first acknowledged hub
 delivery, at most 60 normalized characters. Queued or unaccepted messages do not
-supply it. The label is computed only for live status and dashboard reads;
+supply it. The console and configured conductor can see this incoming-message
+label; other agent status readers see `unnamed`. Its source note distinguishes
+the incoming message from text written by the recipient peer. The label is
+computed only for live status and dashboard reads;
 `status.json`, events, logs and memory receive no derived label. The daemon
 stores only the peer's title-session ID and acknowledged delivery/envelope IDs
-in `session-title-inputs.json`. After restart it recomputes the label only when
+for native-session peers in `session-title-inputs.json`. The
+[storage contract](design/adapters.md#session-title-slots) defines its bounds
+and lifetime. Removed instances are pruned when their removal applies, and
+Local bindings are discarded because the worker starts a new memory session.
+After restart it recomputes the label only when
 the same session and retained journal original match; a new session or pruned
 original shows no inherited label. Pi's real name stays in Pi's native session;
 the local worker's name lives only with that worker's in-memory session. The

@@ -2635,6 +2635,11 @@ export async function startDaemon(opts: DaemonOptions) {
     const fd = openSync(titleBindingFile, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
     try { const st = fstatSync(fd); if (st.isFile() && st.nlink === 1 && st.size <= 64 * 1024) titleBindings = sessionTitleBindings(JSON.parse(readFileSync(fd, "utf8"))); } finally { closeSync(fd); }
   } catch { /* absent or damaged optional restart labels stay unavailable */ }
+  const retainedTitleBindings = Object.fromEntries(Object.entries(titleBindings).filter(([peer]) => definitionOf(peer)?.titlePersistence === "native"));
+  if (Object.keys(retainedTitleBindings).length !== Object.keys(titleBindings).length) {
+    titleBindings = retainedTitleBindings;
+    try { atomicPrivateJSON(titleBindingFile, titleBindings); } catch { /* cleanup failure cannot grant display continuity */ }
+  }
   // Retain an existing delivery reference, never its derived label. A new native session needs its own acknowledged delivery.
   const firstTitleMessages = new Map<PeerId, { owner: PeerAdapter; session: string | undefined; env: Envelope }>();
   const privateTitleWrites = new Map<PeerId, PeerAdapter>();
@@ -2643,26 +2648,35 @@ export async function startDaemon(opts: DaemonOptions) {
     try { return contextPii(peer) || text !== undefined && !tasks.publicMetadataText(text); } catch { return true; }
   };
   const titlePreface = (peer: PeerId): string | undefined => definitionOf(peer)?.title === "hub" && bus.peers.get(peer)?.sessionTitle === "" && !titlePrivate(peer) ? SESSION_TITLE_HINT : undefined;
-  type TitleResult = { ok: true } | { ok: false; reason: "already_named" | "private" | "invalid" };
+  type TitleResult = { ok: true } | { ok: false; reason: "already_named" | "private" | "invalid"; error: string; mayHaveApplied?: true };
   async function setSessionTitle(peer: PeerId, value: unknown, onlyIfUnnamed: boolean, privateTurn = false): Promise<TitleResult> {
     const owner = bus.peers.get(peer);
-    if (definitionOf(peer)?.title !== "hub" || !owner?.setSessionTitle || owner.state === "offline" || stopping || recoveryActive()) return { ok: false, reason: "invalid" };
+    if (definitionOf(peer)?.title !== "hub") return { ok: false, reason: "invalid", error: "this peer has no hub-owned title slot; choose a Pi/local peer from ahub status or rename its session in its own UI" };
+    if (!owner?.setSessionTitle || owner.state === "offline") return { ok: false, reason: "invalid", error: "peer title slot is offline or unavailable; start or reconnect the peer, then retry hub_set_title" };
+    if (stopping || recoveryActive()) return { ok: false, reason: "invalid", error: "recovery or shutdown is holding titles; wait for ahub status to settle, then retry" };
     const session = owner.titleSession, generation = owner.sessionGeneration;
     const current = () => !stopping && !recoveryActive() && bus.peers.get(peer) === owner && owner.state !== "offline" && owner.titleSession === session && owner.sessionGeneration === generation;
-    const privateRefusal = (): TitleResult => { privateTitleWrites.set(peer, owner); return { ok: false, reason: "private" }; };
+    const privateRefusal = (): TitleResult => { privateTitleWrites.set(peer, owner); return { ok: false, reason: "private", error: "title withheld by privacy policy; finish PII work or use a public, non-secret title" }; };
+    const uncertain = (reason: "private" | "invalid"): TitleResult => {
+      if (reason === "private") privateTitleWrites.set(peer, owner);
+      return { ok: false, reason, mayHaveApplied: true, error: "session or privacy state changed while naming; the title may have been applied; check ahub status before retrying" };
+    };
     const run = async (): Promise<TitleResult> => {
-      if (!current()) return { ok: false, reason: "invalid" };
+      if (!current()) return { ok: false, reason: "invalid", error: "session changed before naming; refresh ahub status, then retry hub_set_title" };
       const title = sessionTitleText(value);
       if (privateTurn || titlePrivate(peer, title)) return privateRefusal();
-      if (!title || owner.sessionTitle === undefined) return { ok: false, reason: "invalid" };
-      if (onlyIfUnnamed && owner.sessionTitle !== "") return { ok: false, reason: "already_named" };
+      if (!title) return { ok: false, reason: "invalid", error: "title needs 1-80 normalized characters; enter a short public title" };
+      if (owner.sessionTitle === undefined) return { ok: false, reason: "invalid", error: "native title state is unknown; reconnect the peer, check ahub status, then retry" };
+      if (onlyIfUnnamed && owner.sessionTitle !== "") return { ok: false, reason: "already_named", error: "this session already has a title; keep it, or ask the person to replace it with ahub title" };
       const admitted = () => current() && !privateTurn && !titlePrivate(peer, title);
       let result: Awaited<ReturnType<NonNullable<PeerAdapter["setSessionTitle"]>>>;
-      try { result = await owner.setSessionTitle!(title, onlyIfUnnamed, admitted); } catch { return titlePrivate(peer, title) ? privateRefusal() : { ok: false, reason: "invalid" }; }
-      if (privateTurn || titlePrivate(peer, title)) return privateRefusal();
-      if (!current()) return { ok: false, reason: "invalid" };
+      try { result = await owner.setSessionTitle!(title, onlyIfUnnamed, admitted); } catch { return uncertain(titlePrivate(peer, title) ? "private" : "invalid"); }
+      if (privateTurn || titlePrivate(peer, title)) return uncertain("private");
+      if (!current()) return uncertain("invalid");
       if (result.ok) { privateTitleWrites.delete(peer); observeDoing(peer, "title", owner.sessionTitle); }
-      return result;
+      if (result.ok) return result;
+      const error = result.error ?? (result.reason === "already_named" ? "this session already has a title; ask the person to replace it with ahub title" : "native session could not accept the title; refresh ahub status, then retry");
+      return { ...result, error: error + (result.mayHaveApplied && !error.includes("may have been applied; check ahub status") ? "; the title may have been applied; check ahub status before retrying" : "") };
     };
     const pending = (titleWrites.get(peer) ?? Promise.resolve()).then(run, run);
     titleWrites.set(peer, pending);
@@ -2676,7 +2690,7 @@ export async function startDaemon(opts: DaemonOptions) {
     tracker.observe(kind, text, value => learnedPrivate || contextPii(peer) || !tasks.publicMetadataText(value));
   };
   /** Shown only for an attached peer; a stub while it owns or reviews a PII task or is in a private turn. */
-  const doingRows = (ids: string[]): Record<string, PeerDoing> => {
+  const doingRows = (ids: string[], includeIncomingLabels = false): Record<string, PeerDoing> => {
     const live = ids.filter(id => (doings.has(id) || definitionOf(id)?.title === "hub") && bus.stateOf(id) !== "offline");
     if (!live.length) return {};
     const pii = board.list().filter(t => !isClosedTaskState(t.state) && tasks.isPii(t));
@@ -2687,12 +2701,13 @@ export async function startDaemon(opts: DaemonOptions) {
       let first = firstTitleMessages.get(id);
       const binding = titleBindings[id];
       if (!first && owner?.sessionTitle === "" && owner.titleSession && binding?.session === owner.titleSession) {
-        const row = journal.get(binding.delivery), env = row?.originals.find(env => env.id === binding.envelope);
-        if (row?.peer === id && env && !remoteEnvelope(env)) {
-          first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(id, first);
-        }
+        try {
+          const row = journal.get(binding.delivery), env = row?.originals.find(env => env.id === binding.envelope);
+          if (row?.peer === id && env && !remoteEnvelope(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(id, first); }
+        } catch { /* unknown optional label evidence never fails live status */ }
       }
       if (!view && owner?.sessionTitle === "" && first?.owner === owner && first.session === owner.titleSession) view = unnamedSessionLabel(first.env.body, value => first.env.private === true || titlePrivate(id, value), first.env.ts);
+      if (view?.source === "label" && !includeIncomingLabels && view.text !== DOING_STUB) view = { ...view, text: "unnamed" };
       return view ? [[id, view]] : [];
     }));
   };
@@ -2861,25 +2876,27 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   bus.onDelivered = (peer, originals, deliveryId) => {
     if (peer.includes("@")) return;
-    const owner = bus.peers.get(peer); let first = firstTitleMessages.get(peer);
-    const retained = titleBindings[peer];
-    if (!first && owner?.titleSession && retained?.session === owner.titleSession) {
-      const row = journal.get(retained.delivery), env = row?.originals.find(env => env.id === retained.envelope);
-      if (row?.peer === peer && env && !remoteEnvelope(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(peer, first); }
-    }
-    if (definitionOf(peer)?.title === "hub" && owner && (!first || first.owner !== owner || first.session !== owner.titleSession)) {
-      const env = originals.find(env => !(env.from === HUB && env.kind === "presence") && !remoteEnvelope(env));
-      if (env) {
-        firstTitleMessages.set(peer, { owner, session: owner.titleSession, env });
-        if (deliveryId && owner.titleSession && (Object.hasOwn(titleBindings, peer) || Object.keys(titleBindings).length < 128)) {
-          const candidate = sessionTitleBindings({ ...titleBindings, [peer]: { session: owner.titleSession, delivery: deliveryId, envelope: env.id } });
-          if (Buffer.byteLength(JSON.stringify(candidate, null, 2) + "\n") <= 64 * 1024) {
-            titleBindings = candidate;
-            try { atomicPrivateJSON(titleBindingFile, titleBindings); } catch { /* restart fallback unavailable; delivery itself succeeded */ }
+    try {
+      const owner = bus.peers.get(peer); let first = firstTitleMessages.get(peer);
+      const retained = titleBindings[peer];
+      if (!first && owner?.titleSession && retained?.session === owner.titleSession) {
+        const row = journal.get(retained.delivery), env = row?.originals.find(env => env.id === retained.envelope);
+        if (row?.peer === peer && env && !remoteEnvelope(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(peer, first); }
+      }
+      if (definitionOf(peer)?.title === "hub" && owner && (!first || first.owner !== owner || first.session !== owner.titleSession)) {
+        const env = originals.find(env => !(env.from === HUB && env.kind === "presence") && !remoteEnvelope(env));
+        if (env) {
+          firstTitleMessages.set(peer, { owner, session: owner.titleSession, env });
+          if (definitionOf(peer)?.titlePersistence === "native" && deliveryId && owner.titleSession && (Object.hasOwn(titleBindings, peer) || Object.keys(titleBindings).length < 128)) {
+            const candidate = sessionTitleBindings({ ...titleBindings, [peer]: { session: owner.titleSession, delivery: deliveryId, envelope: env.id } });
+            if (Buffer.byteLength(JSON.stringify(candidate, null, 2) + "\n") <= 64 * 1024) {
+              titleBindings = candidate;
+              try { atomicPrivateJSON(titleBindingFile, titleBindings); } catch { /* restart fallback unavailable; delivery itself succeeded */ }
+            }
           }
         }
       }
-    }
+    } catch { /* optional title observations cannot skip invocation/task/supervision acknowledgements */ }
     for (const env of originals) if (env.kind === "invocation" && env.from === HUB && env.refs?.invocation === env.id) invocations.markDelivered(env.id); // #445 C2: the target accepted the request
     pendingDeliveryTask.delete(peer);
     if (!originals.some(env => env.from === HUB && env.refs?.supervision) || supervisionTurns.has(peer)) return;
@@ -3764,7 +3781,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
     if (op === "hub_set_title") {
-      if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "title")) return JSON.stringify({ ok: false, reason: "invalid" });
+      if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "title")) return JSON.stringify({ ok: false, reason: "invalid", error: "hub_set_title accepts only title; provide a public name of 1-80 normalized characters" });
       return JSON.stringify(await setSessionTitle(by, a.title, true, piiTurn));
     }
     if (inProcess && (op === "hub_task_propose" || op === "hub_review") && a && typeof a === "object" && Object.hasOwn(a, "request_id")) throw new PreEffectToolRefusal("request_id replay keys require the control-protocol task transport");
@@ -4838,7 +4855,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (crashLostIds.size) { try { for (const row of bus.queueList(undefined, true)) if (row.state === "needs_review" && crashLostIds.has(row.id)) inFlight++; } catch { inFlight = crashLostIds.size; } }
     return openCrashNotices(crashNotices, { attached, inFlight });
   };
-  const status = (includeAttentionItems = false, includeAttentionInput = false, includeDoing = false) => {
+  const status = (includeAttentionItems = false, includeAttentionInput = false, includeDoing = false, includeIncomingLabels = false) => {
     const taskNeeds = board.statusTasks();
     const ownerIsolation = ownerIsolationProjection();
     const taskStalls = tasks.stalled({ ownerIsolation });
@@ -4911,7 +4928,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(recoveryOperationId ? { recovery: { operationId: recoveryOperationId, phase: recoveryPhase, ready: recoveryReady() } } : {}),
     };
     // #878: live readers only (the status reply, the dashboard); writeStatus never asks, so status.json never holds it.
-    if (includeDoing) for (const [id, doing] of Object.entries(doingRows(peerIds))) Object.assign(view.peers[id]!, { doing });
+    if (includeDoing) for (const [id, doing] of Object.entries(doingRows(peerIds, includeIncomingLabels))) Object.assign(view.peers[id]!, { doing });
     const peerNeeds: Record<string, NonNullable<NeedsInput["peers"]>[string]> = Object.fromEntries(Object.entries(view.peers).map(([peer, row]) => [peer, { state: row.state, attached: row.attached, needsReview: row.needsReview, heldBy: row.heldBy }]));
     // Lazy legacy peer lists need not contain a persisted owner that is now offline.
     for (const task of taskNeeds) if (task.owner && task.owner !== USER && task.owner !== HUB && !Object.hasOwn(peerNeeds, task.owner)) {
@@ -6721,7 +6738,7 @@ export async function startDaemon(opts: DaemonOptions) {
     status: () => {
       const quota = budget.status();
       const ids = [...new Set([...bus.knownPeers(), ...Object.keys(quota), ...conductorHolds.list().map(h => h.peer)])];
-      const doing = doingRows(ids);
+      const doing = doingRows(ids, true);
       return {
         peers: ids.map(peer => {
           const summary = bus.queueSummary(peer);
@@ -6973,7 +6990,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return ta && tb && CONFLICT_STATES.includes(ta.state) && CONFLICT_STATES.includes(tb.state) ? [{ kind: "conflict" as const, tasks: conflict.tasks, peers: conflict.peers }] : [];
       }),
     ];
-    const attentionStatus = status(false, true, true);
+    const attentionStatus = status(false, true, true, true);
     let pet; try { const config = loadPetConfig(opts.cwd); pet = { enabled: config.enabled, character: config.character ?? "stai", blink: config.blink }; } catch { pet = { enabled: false }; }
     const peerView = Object.fromEntries(Object.entries(attentionStatus.peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])), boardTasks = board.list();
     const usageView = (open: boolean) => {
@@ -8618,11 +8635,11 @@ export async function startDaemon(opts: DaemonOptions) {
       case "title": {
         if (c.role !== "console" || msg.liveTest === true) return void reply({ ok: false, reason: "invalid", error: "session titles are person console commands" });
         if (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer)) return void reply({ ok: false, reason: "invalid", error: "invalid peer id; choose a Pi or local-worker peer from ahub status" });
-        if (definitionOf(msg.peer)?.title !== "hub") return void reply({ ok: false, reason: "invalid", error: "this peer uses native titles; rename the session in its own UI" });
+        if (definitionOf(msg.peer)?.title !== "hub") return void reply({ ok: false, reason: "invalid", error: "this peer has no hub-owned title slot; choose a Pi/local peer from ahub status or rename its session in its own UI" });
         if (!bus.peers.has(msg.peer) || bus.stateOf(msg.peer) === "offline") return void reply({ ok: false, reason: "invalid", error: `peer is offline; start it with ahub ${msg.peer}, then retry ahub title` });
         if (stopping || recoveryActive()) return void reply({ ok: false, reason: "invalid", error: "recovery or shutdown is holding titles; wait for ahub status to settle, then retry" });
         if (!sessionTitleText(msg.title)) return void reply({ ok: false, reason: "invalid", error: "title needs 1-80 normalized characters; enter a short public title" });
-        void setSessionTitle(msg.peer, msg.title, false).then(result => reply(result.ok ? result : { ...result, error: result.reason === "private" ? "title withheld by privacy policy; finish PII work or use a public, non-secret title" : "session changed or could not accept the title; refresh ahub status, then retry" }), () => reply({ ok: false, reason: "invalid", error: "session title unavailable; refresh ahub status, then retry" }));
+        void setSessionTitle(msg.peer, msg.title, false).then(reply, () => reply({ ok: false, reason: "invalid", mayHaveApplied: true, error: "session title result is unconfirmed; the title may have been applied; check ahub status before retrying" }));
         return;
       }
       case "queue": {
@@ -9421,7 +9438,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return void reply({ ok: false, error: "unknown room operation" });
       }
       case "status": {
-        const current = status(c.role === "console", false, true);
+        const current = status(c.role === "console", false, true, c.role === "console" || (c.role === "tools" || c.role === "peer") && c.peer === conductorPeer(config.roles));
         if ((c.role === "console" || c.role === "tools") && msg.specs === true) {
           const summary = projectSpecs.status();
           if (summary) {

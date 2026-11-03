@@ -1195,4 +1195,8 @@ title-session, delivery and envelope IDs written by positive delivery
 acknowledgement, never by a title tool. Restart resolves a still-retained
 original only for the same title-session ID. A missing or different session,
 invalid binding or pruned original yields no inherited label. Live status may
-show it; `status.json`, events, logs and memory never receive a derived copy.
+show it only to the console or configured conductor; other readers see
+`unnamed`. Metadata screening does not grant audience membership. The label's
+source note identifies incoming-message text and never attributes it as the
+recipient peer's own speech. `status.json`, events, logs and memory never
+receive a derived copy. Removed-instance and Local bindings are not retained.

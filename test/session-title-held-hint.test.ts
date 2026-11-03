@@ -25,7 +25,7 @@ test("in-process session title JSON and errors are never decorated with a held-d
   const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${readOnly}\n${readTools}\nlet taskOpsInFlight=0;\n${source.slice(start, end)}\nglobalThis.extracted={run:taskOp,pending:()=>taskOpsInFlight};`);
   runInNewContext(script, context);
   const wrapper = context.extracted as { run: (by: string, op: string, args: Record<string, unknown>, inProcess: boolean, piiTurn?: boolean) => Promise<string>; pending: () => number };
-  for (const peer of ["local", "pi"]) for (const expected of [{ ok: true }, { ok: false, reason: "already_named" }, { ok: false, reason: "private" }]) {
+  for (const peer of ["local", "pi"]) for (const expected of [{ ok: true }, { ok: false, reason: "already_named", error: "keep the name or ask the person to rename" }, { ok: false, reason: "private", error: "finish PII work before naming" }]) {
     result = expected;
     const text = await wrapper.run(peer, "hub_set_title", { title: "Bounded title" }, true, expected.reason === "private");
     expect(text).toBe(JSON.stringify(expected));

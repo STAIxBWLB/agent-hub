@@ -63,7 +63,10 @@ The hub's portable memory storage, sync, indexing, and project helpers come from
 Session titles for the two hub-owned title slots (#1055) are conditional writes
 to the current adapter session, under the same open-PII-task/private-turn and
 public-metadata screens as DOING. Person rename remains console-only. Live
-unnamed labels are computed from acknowledged source messages; only opaque
+unnamed labels are computed from acknowledged source messages and shown only
+to the console and configured conductor; other readers see `unnamed`.
+Their source note identifies incoming text, not speech by the recipient.
+Only opaque
 session/delivery/envelope bindings persist in `session-title-inputs.json`, never
 copied labels. Its fields, bounds and lifetime are defined by the
 [session-title storage contract](adapters.md#session-title-slots). Native title,

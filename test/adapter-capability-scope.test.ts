@@ -11,6 +11,7 @@ function external(): AdapterDefinition {
 
 for (const [field, set] of [
   ["title", (definition: AdapterDefinition) => { definition.title = "hub"; }],
+  ["titlePersistence", (definition: AdapterDefinition) => { definition.titlePersistence = "native"; }],
   ["start.acpCommand", (definition: AdapterDefinition) => { definition.start.acpCommand = () => ["fixture"]; }],
   ["attach.admission", (definition: AdapterDefinition) => { definition.attach = { admission: { reservedRefusal: "reserved", watchRefusal: "watch" } }; }],
   ["budget.resetSoftTokensOnResume", (definition: AdapterDefinition) => { definition.budget = { account: "fixture", resetSoftTokensOnResume: true }; }],

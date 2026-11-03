@@ -6,7 +6,7 @@ import type { ToolObservation } from "../models/route/signals.ts";
 import { randomUUID } from "node:crypto";
 import { MAX_HOP, remoteEnvelope, renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
 import { CONDUCTOR_TOOL_NAMES, CONDUCTOR_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools, SESSION_TITLE_TOOL } from "../hub/hub-tools.ts";
-import { BasePeer } from "../hub/peers.ts";
+import { BasePeer, type SessionTitleResult } from "../hub/peers.ts";
 import type { PublishResult } from "../hub/bus.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import type { DocReadPort } from "../local/doc-read.ts";
@@ -87,11 +87,15 @@ export class LocalPeer extends BasePeer {
   private title = "";
   get sessionTitle(): string { return this.title; }
   get titleSession(): string { return this.sessionId; }
-  async setSessionTitle(title: string, onlyIfUnnamed: boolean, current?: () => boolean): Promise<{ ok: true } | { ok: false; reason: "already_named" | "invalid" }> {
-    if (this.state === "offline" || !title.trim() || [...title].length > 80 || current?.() === false) return { ok: false, reason: "invalid" };
-    if (onlyIfUnnamed && this.title) return { ok: false, reason: "already_named" };
+  async setSessionTitle(title: string, onlyIfUnnamed: boolean, current?: () => boolean): Promise<SessionTitleResult> {
+    if (typeof title !== "string" || !title.trim() || [...title].length > 80 || typeof onlyIfUnnamed !== "boolean") return { ok: false, reason: "invalid", error: "Session title must contain 1-80 normalized characters and use a conditional-write flag; correct the title request and try again." };
+    if (this.state === "offline") return { ok: false, reason: "invalid", error: "Local worker session is offline; start the peer and check ahub status before naming it." };
+    let admitted = false;
+    try { admitted = current?.() !== false; } catch { /* host admission failure is a refusal */ }
+    if (!admitted) return { ok: false, reason: "invalid", error: "Session title admission changed before the write; check ahub status and retry only in the current public session." };
+    if (onlyIfUnnamed && this.title) return { ok: false, reason: "already_named", error: "This session already has a title; keep it or ask the person to rename it with ahub title." };
     this.title = title;
-    this.onDoing?.("title", title);
+    try { this.onDoing?.("title", title); } catch { /* observation failure cannot undo the saved local title */ }
     return { ok: true };
   }
   private readonly sessionId = `agent-hub-local-${randomUUID()}`;

@@ -24,6 +24,7 @@ let forcedFailure = "";
 let turnGeneration = 0;
 let sessionId = "";
 let titleRevision = 0;
+let titleEpoch = "";
 let pendingPromptId: string | undefined;
 let activePromptId: string | undefined;
 let settlement: Promise<void> | undefined;
@@ -95,27 +96,35 @@ async function poll(pi: ExtensionAPI): Promise<void> {
             continue;
           }
         } else if (command.type === "set_session_title") {
+          const refuse = (cause: string, error: string) => post("/ack", { id: command.id, ok: true, result: { ok: false, reason: "invalid", cause, error, sessionId, titleEpoch, titleRevision } });
           const nativeId = runtimeCtx?.sessionManager?.getHeader?.()?.id;
-          if (command.sessionId !== sessionId || nativeId !== sessionId || command.generation !== turnGeneration
-            || typeof command.title !== "string" || !command.title.trim() || [...command.title].length > 80
-            || typeof command.onlyIfUnnamed !== "boolean" || typeof pi.getSessionName !== "function" || typeof pi.setSessionName !== "function") {
-            await post("/ack", { id: command.id, ok: true, result: { ok: false, reason: "invalid" } }); continue;
+          if (command.sessionId !== sessionId || nativeId !== sessionId || command.titleEpoch !== undefined && command.titleEpoch !== titleEpoch) {
+            await refuse("session", "Pi native session changed before the title write; check ahub status and reconnect the current session before retrying."); continue;
+          }
+          if (command.generation !== turnGeneration) {
+            await refuse("generation", "Pi native turn changed before the title write; wait for the current turn and check ahub status before retrying."); continue;
+          }
+          if (typeof command.title !== "string" || !command.title.trim() || [...command.title].length > 80 || typeof command.onlyIfUnnamed !== "boolean") {
+            await refuse("arguments", "Pi title command arguments are invalid; use a 1-80 character normalized title and a conditional-write flag before retrying."); continue;
+          }
+          if (typeof pi.getSessionName !== "function" || typeof pi.setSessionName !== "function") {
+            await refuse("native_unavailable", "Pi native title API is unavailable; restart Pi with the supported hub extension and check ahub status before retrying."); continue;
           }
           // The native read and synchronous write share one JS turn: a manual rename always wins against the agent.
           const before = pi.getSessionName() ?? "";
           if (command.onlyIfUnnamed && before) {
-            await post("/ack", { id: command.id, ok: true, result: { ok: false, reason: "already_named", sessionId, titleRevision, sessionName: before } }); continue;
+            await post("/ack", { id: command.id, ok: true, result: { ok: false, reason: "already_named", error: "This session already has a title; keep it or ask the person to rename it with ahub title.", sessionId, titleEpoch, titleRevision, sessionName: before } }); continue;
           }
           pi.setSessionName(command.title);
           const sessionName = pi.getSessionName() ?? "";
-          await post("/ack", { id: command.id, ok: true, result: { ok: sessionName === command.title, ...(sessionName === command.title ? {} : { reason: "invalid" }), sessionId, titleRevision, sessionName } });
+          await post("/ack", { id: command.id, ok: true, result: { ok: sessionName === command.title, ...(sessionName === command.title ? {} : { reason: "invalid", cause: "native_readback", mayHaveApplied: true, error: "Pi native title readback did not confirm the write; the title may have been applied; check ahub status before retrying." }), sessionId, titleEpoch, titleRevision, sessionName } });
           continue;
         } else if (command.type === "get_session_state") {
           const entries = runtimeCtx.sessionManager.getEntries();
           await post("/ack", { id: command.id, ok: true, result: {
             sessionId: runtimeCtx.sessionManager.getHeader()?.id,
             sessionFile: runtimeCtx.sessionManager.getSessionFile(),
-            ...(typeof pi.getSessionName === "function" ? { sessionName: pi.getSessionName() ?? "", titleRevision } : {}),
+            ...(typeof pi.getSessionName === "function" ? { sessionName: pi.getSessionName() ?? "", titleEpoch, titleRevision } : {}),
             idle: runtimeCtx.isIdle() === true,
             empty: entries.every((entry: any) => ["model_change", "thinking_level_change"].includes(entry.type)),
           } });
@@ -138,7 +147,14 @@ async function poll(pi: ExtensionAPI): Promise<void> {
           }
         }
         await post("/ack", { id: command.id, ok: true });
-      } catch (error) { if (pendingPromptId === command.id) pendingPromptId = undefined; await post("/ack", { id: command.id, ok: false, error: (error as Error).message }); }
+      } catch (error) {
+        if (command.type === "set_session_title") {
+          await post("/ack", { id: command.id, ok: true, result: { ok: false, reason: "invalid", cause: "native_failed", mayHaveApplied: true, error: "Pi native title API failed without confirming the write; the title may have been applied; check ahub status before retrying.", sessionId, titleEpoch, titleRevision } });
+          continue;
+        }
+        if (pendingPromptId === command.id) pendingPromptId = undefined;
+        await post("/ack", { id: command.id, ok: false, error: (error as Error).message });
+      }
     } catch { await new Promise((resolve) => setTimeout(resolve, 250)); }
   }
 }
@@ -160,9 +176,9 @@ export default function(pi: ExtensionAPI): void {
     shutdown = ctx.shutdown;
     const state = ctx.sessionManager.getHeader();
     sessionId = String(state?.id ?? "");
-    titleRevision = 0;
+    titleRevision = 0; titleEpoch = crypto.randomUUID();
     try {
-      const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(process.pid), ...(typeof pi.getSessionName === "function" ? { sessionName: pi.getSessionName() ?? "", titleRevision } : {}), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile(), approvalTurnAbort: typeof ctx.abort === "function", fencedPrompt: true });
+      const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(process.pid), ...(typeof pi.getSessionName === "function" ? { sessionName: pi.getSessionName() ?? "", titleEpoch, titleRevision } : {}), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile(), approvalTurnAbort: typeof ctx.abort === "function", fencedPrompt: true });
       if (claimed?.ok === false) { ctx.shutdown?.(); return; }
     } catch (error) { ctx.shutdown?.(); throw error; }
     if (!pollStarted) { pollStarted = true; void poll(pi); }
@@ -189,11 +205,11 @@ export default function(pi: ExtensionAPI): void {
   });
   pi.on("session_info_changed", async () => {
     if (runtimeCtx?.sessionManager?.getHeader?.()?.id !== sessionId || typeof pi.getSessionName !== "function") return;
-    try { await post("/event", { type: "session_title", sessionId, titleRevision: ++titleRevision, sessionName: pi.getSessionName() ?? "" }); }
+    try { await post("/event", { type: "session_title", sessionId, titleEpoch, titleRevision: ++titleRevision, sessionName: pi.getSessionName() ?? "" }); }
     catch { /* title observation must not disrupt the native session */ }
   });
   // Native retries/continuations emit more starts before the one logical agent_settled.
-  pi.on("agent_start", async () => { toolSteps = 0; forcedFailure = ""; turnGeneration++; activePromptId = pendingPromptId ?? activePromptId; pendingPromptId = undefined; await post("/event", { type: "agent_start", sessionId, ...(typeof pi.getSessionName === "function" ? { sessionName: pi.getSessionName() ?? "", titleRevision } : {}), generation: turnGeneration, ...(activePromptId ? { promptId: activePromptId } : {}) }); });
+  pi.on("agent_start", async () => { toolSteps = 0; forcedFailure = ""; turnGeneration++; activePromptId = pendingPromptId ?? activePromptId; pendingPromptId = undefined; await post("/event", { type: "agent_start", sessionId, ...(typeof pi.getSessionName === "function" ? { sessionName: pi.getSessionName() ?? "", titleEpoch, titleRevision } : {}), generation: turnGeneration, ...(activePromptId ? { promptId: activePromptId } : {}) }); });
   pi.on("model_select", async (_event: any, ctx: any) => { if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") ctx.shutdown?.(); });
   pi.on("before_agent_start", async (event: any, ctx: any) => {
     if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") { ctx.abort?.(); return { systemPrompt: event.systemPrompt }; }

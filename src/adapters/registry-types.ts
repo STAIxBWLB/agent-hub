@@ -206,6 +206,8 @@ export interface AdapterDefinition {
   identity: { mcp: "acp-session" | "project-file" | "env" | "channel-plugin"; currentChild?: true };
   /** Who owns the session title; only hub-owned slots receive hub_set_title. */
   title?: "native" | "hub";
+  /** Fixed builtins only: the title slot survives native-session restoration. Absent means ephemeral. */
+  titlePersistence?: "native";
   /** External module data-only opt-in. The verified loader derives the internal instances policy from it (#754). */
   headlessInstances?: { form: "headless"; roles: readonly ("implementer" | "verifier" | "reviewer")[] };
   /** Declaration admission only; execution-root and runtime owner proof remain host responsibilities. */

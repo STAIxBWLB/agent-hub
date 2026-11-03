@@ -84,12 +84,20 @@ identity for display continuity; Local's native-session/provenance authority
 does not change. Titles pass the current metadata/privacy screen at write and
 display. No helper inference or task/Git/instance naming path is involved.
 
+Refusals keep the `already_named`, `private` and `invalid` reason codes and
+include a public `error` explaining the cause and next step. Errors identify
+length, offline/owner, session/generation and confirmation failures without
+copying the supplied title or private details. If a write might have landed,
+the result says it may have been applied and directs the caller to inspect
+`ahub status` before retrying.
+
 An unnamed label is derived from the first positively acknowledged original,
 never stored as a name. The #1055 restart-recomputation design is amended with
 `session-title-inputs.json` under the daemon state directory: the journal does
 not itself bind an original delivery to the recipient's native session.
-This private, atomically replaced file maps each peer ID to exactly three
-opaque IDs, `session`, `delivery` and `envelope`. It contains no source body,
+Only fixed definitions declaring `titlePersistence: "native"` retain restart
+bindings. This private, atomically replaced file maps each retained peer ID
+to exactly three opaque IDs, `session`, `delivery` and `envelope`. It contains no source body,
 session title or derived label. Only the first positive delivery acknowledgement
 for a peer's current title-session can create or replace its entry;
 `hub_set_title` and person rename never write it.
@@ -101,14 +109,23 @@ An unreadable, malformed, oversized, symlinked or multiply linked input is
 ignored. Capacity or write failure leaves delivery successful and makes that
 new restart binding unavailable.
 
-Bindings survive daemon stop/restart until replaced by the first acknowledged
-delivery of a later session for that peer, or until the state directory is
-removed. A stale entry can remain on disk but grants no display value: restore
+Native-session bindings survive daemon stop/restart until replaced by the
+first acknowledged delivery of a later session for that peer, or until the
+state directory is removed. Entries for removed instances are dropped when
+their removal applies. Local's session exists only in daemon memory and gets
+a fresh ID each start, so its binding is not retained on disk; startup removes
+legacy Local entries. A stale native-session entry grants no display value: restore
 requires the same title-session ID and the original still retained in that
 project's journal. A different session or pruned original yields no inherited
 label. There is no separate retention of message text and no timer or automatic
 replay. The derived label remains absent from disk status, events, logs,
 capture and rooms.
+
+Incoming-message labels are visible only to the console and the configured
+conductor. Other status readers receive `unnamed`. A label has its own source
+tag and explanation: its text comes from an incoming message and is never
+attributed as speech written by the session's peer. Public-metadata screening
+and private stubs still apply to authorized label viewers.
 
 ## Evidence boundary
 
