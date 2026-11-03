@@ -77,6 +77,54 @@ const hooksUnder = (parent: string): string => {
   return depth > MAX_ANCHOR_DEPTH ? `^.*/${hfsFoldedName("hooks")}(/|$)` : `^${"/[^/]+".repeat(depth)}/${hfsFoldedName("hooks")}(/|$)`;
 };
 
+/**
+ * #1123: a sandboxed command may not move what a branch, HEAD or a linked worktree points at. `refs/**` (branches, tags, `refs/stash`), `packed-refs*`, `HEAD*` (its lock too) and
+ * `worktrees/**` (a linked worktree's admin dir: its HEAD, index, logs) are refused directly under every plain `.git` and under each external git dir (the common dir and a linked
+ * worktree's own, whatever they are named). The hub's own git runs outside the sandbox and is unaffected, so #1115's hub commit still lands.
+ *
+ * Every name must sit DIRECTLY under its git dir. An unanchored `refs` or `worktrees` filter would also match an ANCESTOR of the project with that name, and a project under
+ * `~/worktrees/` would lose every `.git` write (the #520 `hooks` lesson). So each rule is adjacent by construction: one literal for `.git` + a short name, or, for the long names
+ * (`worktrees`, `packed-refs`, where `.git` + name would pass the 1024-byte literal limit), a front half and a back half that must both match, or a depth anchor for an external dir.
+ * A submodule's git dir (`.git/modules/<name>`, nested ones, and `.git/worktrees/<wt>/modules/<name>` for a linked worktree) is covered the same way (`subDirs`, the discovered
+ * ones: a git dir that is not discovered is refused whole by the #518/#520 rules), per the person's "deny .git writes" decision: nothing is listed as a residual.
+ */
+const refDepth = (d: string): number => d.split("/").filter(Boolean).length;
+/**
+ * `^(/[^/]+){depth}/<name>(/|$)`: `name` as the entry directly under `d`, the depth written out because seatbelt ignores `{n}`. The folded names cost (measured, bytes of regex): `refs` 334,
+ * `worktrees` 669, so past the depth where the path plus the name would near 1024 it falls back to the unanchored name, which over-refuses only under an ancestor with that name and
+ * never under-protects.
+ */
+const refUnder = (d: string, name: string): string => {
+  const depth = refDepth(d), cost = Buffer.byteLength(hfsFoldedName(name)) + depth * 6 + 8;
+  return cost > 1000 ? `^.*/${hfsFoldedName(name)}(/|$)` : `^${"/[^/]+".repeat(depth)}/${hfsFoldedName(name)}(/|$)`;
+};
+function gitRefRules(gitDirs: string[], subDirs: string[] = []): string[] {
+  const git = hfsFoldedName(".git");
+  const re = (s: string) => `(regex ${sbplString(s)})`;
+  const name = (n: string) => hfsFoldedName(n);
+  // A linked worktree's own submodule git dirs (`worktrees/<wt>/modules/**`) are governed by the #518/#520 rules, not these.
+  const plainSub = `(require-not ${re(`^.*/${git}/worktrees/[^/]+/modules(/|$)`)})`;
+  const plain = [
+    // `.git` (335 bytes) + `HEAD` or `refs` (334) fit one literal: adjacent by construction. `HEAD.lock` goes with `HEAD`.
+    re(`^.*/${git}/${name("HEAD")}(\\.lock)?$`),
+    re(`^.*/${git}/${name("refs")}(/|$)`),
+    // `.git` + `packed-refs` (803) and `.git` + `worktrees` (669) do not fit one literal. The front literal pins the start of the name right under a `.git`, and for `worktrees` the
+    // back literal pins its end; `packed` alone covers `packed-refs` and its lock/new files, which is the intent.
+    re(`^.*/${git}/${name("packed")}`),
+    `(require-all ${re(`^.*/${git}/${name("work")}`)} ${re(`^.*${name("trees")}(/|$)`)} ${plainSub})`,
+  ];
+  const external = [...gitDirs, ...subDirs].flatMap((d) => {
+    const own = sbplString(d), direct = re(`^${sbplEscape(d)}/[^/]+$`);
+    return [
+      `(require-all ${direct} ${re(`^.*/${name("HEAD")}(\\.lock)?$`)})`,
+      `(require-all ${direct} ${re(`^.*/${name("packed")}`)})`,
+      `(require-all (subpath ${own}) ${re(refUnder(d, "refs"))})`,
+      `(require-all (subpath ${own}) ${re(refUnder(d, "worktrees"))} (require-not ${re(`^${sbplEscape(d)}/worktrees/[^/]+/modules(/|$)`)}))`,
+    ];
+  });
+  return [...plain, ...external];
+}
+
 export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit: readonly { root: string; entries: string[]; dirs?: string[] }[] = [], worktreesRoot?: string): string[] {
   const git = hfsFoldedName(".git");
   const re = (s: string) => `(regex ${sbplString(s)})`;
@@ -157,6 +205,7 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
     `(require-all ${re(`^.*/${git}/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
     re(`^.*/${git}/${hfsFoldedName("hooks")}(/|$)`),
     `(require-all ${re(`^.*/${git}/.*$`)} ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
+    ...gitRefRules(gitDirs, allDirs),
     ...modules,
     ...siblings,
     ...external,
