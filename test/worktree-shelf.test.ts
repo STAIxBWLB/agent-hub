@@ -6,7 +6,7 @@ import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { Board } from "../src/hub/board.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { hubGitSync } from "../src/hub/git.ts";
-import { boundTask, displayPath, overrideInForce, parseWorktreeList, partition, prFromTask, readWorktreeFacts, realShelfGit, shelfReadAllowed, taskWorkAt, type WorktreeFact, type WorktreeOverride } from "../src/hub/worktree-shelf.ts";
+import { boundTask, displayPath, overrideInForce, parseWorktreeList, partition, prFromTask, readWorktreeFacts, realShelfGit, shelfReadAllowed, taskWorkAt, type ShelfGitPort, type WorktreeFact, type WorktreeOverride } from "../src/hub/worktree-shelf.ts";
 import { gitProject } from "./fakes/git-project.ts";
 
 const DAY = 86_400_000, NOW = 100 * DAY;
@@ -64,12 +64,29 @@ test("partition rows carry the reason, the task and the PR, and nothing else fro
   expect(out.settled[0]).toEqual({ path: "/p/.worktrees/a", branch: "task/1", lastActiveAt: 5, reason: "merged", task: 7, pr: 12 });
 });
 
-test("prFromTask reads only evidence already on the board: a guarded merge is merged, a cancelled task with a PR is closed, anything else unknown", () => {
+test("prFromTask reads only the guarded merge's own record: a cancel, an open task and no record are all unknown", () => {
   expect(prFromTask(undefined)).toEqual({ state: "unknown" });
   expect(prFromTask({ state: "approved", history: [], sdlc: { stage: "merge", merge: { repo: "o/r", pr: 3, head: "h", at: 50, state: "merged", exit: 0, cleanup: "deleted", ownerNotice: "sent" } } })).toEqual({ state: "merged", changedAt: 50 });
   expect(prFromTask({ state: "approved", history: [], sdlc: { stage: "merge", merge: { repo: "o/r", pr: 3, head: "h", at: 50, state: "unknown", exit: 1, cleanup: "unknown", ownerNotice: "unknown" } } })).toEqual({ state: "unknown" });
-  expect(prFromTask({ state: "cancelled", history: [{ at: 1, by: "x", event: "proposed" }, { at: 70, by: "x", event: "cancelled" }], sdlc: { stage: "build", pr: 3 } })).toEqual({ state: "closed", changedAt: 70 });
+  expect(prFromTask({ state: "approved", history: [], sdlc: { stage: "merge", merge: { repo: "o/r", pr: 3, head: "h", at: 50, state: "not_merged", exit: 1, cleanup: "not_started", ownerNotice: "not_started" } } })).toEqual({ state: "unknown" });
+  // Tasks.cancel touches only the board: the PR can still be open on GitHub, so a cancel is no evidence about it (#1057 D1)
+  expect(prFromTask({ state: "cancelled", history: [{ at: 1, by: "x", event: "proposed" }, { at: 70, by: "x", event: "cancelled" }], sdlc: { stage: "build", pr: 3 } })).toEqual({ state: "unknown" });
   expect(prFromTask({ state: "cancelled", history: [], sdlc: { stage: "build" } })).toEqual({ state: "unknown" });
+});
+
+test("a cancelled task with an open PR stays live even with quiet_days 0, and only its own quiet time can shelve it", () => {
+  const cancelled = { state: "cancelled" as const, history: [{ at: 1, by: "claude", event: "proposed" }, { at: NOW - 3 * DAY, by: "claude", event: "cancelled" }], sdlc: { stage: "build" as const, pr: 3 } };
+  const pr = prFromTask(cancelled);
+  const recent = partition([fact({ lastActiveAt: NOW - 3 * DAY - 1, pr, task: { id: 9, state: "cancelled", pr: 3 } })], [], NOW, 0);
+  expect(ids(recent.live)).toEqual(["/p/.worktrees/a"]); expect(recent.settled).toEqual([]);
+  expect(partition([fact({ lastActiveAt: NOW - 8 * DAY, pr, task: { id: 9, state: "cancelled", pr: 3 } })], [], NOW, 7).settled).toMatchObject([{ reason: "quiet" }]);
+});
+
+test("a row whose activity could not be read is live: neither a merged PR nor quiet time can settle it", () => {
+  const unread = fact({ activityKnown: false, lastActiveAt: 0, pr: { state: "merged", changedAt: NOW } });
+  expect(partition([unread], [{ path: unread.path, value: "settled", at: NOW }], NOW, 7).settled).toEqual([]);
+  expect(partition([fact({ activityKnown: false, lastActiveAt: 1 })], [], NOW, 7).settled).toEqual([]);
+  expect(partition([fact({ activityKnown: true, lastActiveAt: 1 })], [], NOW, 7).settled).toMatchObject([{ reason: "quiet" }]);
 });
 
 test("a task's work time ignores the hub's own bookkeeping, so a merged task can settle (D1 vs D3)", () => {
@@ -102,10 +119,10 @@ test("parseWorktreeList reads locked, prunable and detached records and bounds t
 });
 
 // AC4 (module boundary): the shelf can only run read-only git, and no daemon-reachable module holds a removal argv.
-test("the shelf's git port refuses every argv that is not one of its reads, before spawning anything", () => {
+test("the shelf's git port refuses every argv that is not one of its reads, before spawning anything", async () => {
   for (const args of [["worktree", "remove", "x"], ["worktree", "remove", "--force", "x"], ["branch", "-d", "x"], ["branch", "-D", "x"], ["worktree", "prune"], ["update-ref", "-d", "refs/heads/x"], ["worktree", "list", "--porcelain"], ["log", "-1", "--format=%ct", "HEAD", "--"]]) {
     expect(shelfReadAllowed(args), args.join(" ")).toBe(false);
-    expect(() => realShelfGit.run("/", args), args.join(" ")).toThrow("read-only");
+    await expect(realShelfGit.run("/", args, 1000), args.join(" ")).rejects.toThrow("read-only");
   }
   for (const args of [["worktree", "list", "--porcelain", "-z"], ["log", "-1", "--format=%ct", "HEAD"], ["rev-parse", "--absolute-git-dir"]]) expect(shelfReadAllowed(args)).toBe(true);
 });
@@ -137,7 +154,7 @@ const commitAt = (cwd: string, unix: number, message: string) => {
   if (run.status !== 0) throw new Error(run.stderr);
 };
 
-async function rig(seed?: (board: Board) => void, extraConfig: Record<string, unknown> = {}) {
+async function rig(seed?: (board: Board) => void, extraConfig: Record<string, unknown> = {}, shelfGit?: ShelfGitPort) {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-shelf-"))), stateDir = join(cwd, ".agenthub-state");
   cleanup.push(() => rmSync(cwd, { recursive: true, force: true }));
   gitProject(cwd);
@@ -154,7 +171,7 @@ async function rig(seed?: (board: Board) => void, extraConfig: Record<string, un
   for (const name of ["merged", "quiet"]) for (const index of readdirSync(join(cwd, ".git", "worktrees")).filter(d => d === name).map(d => join(cwd, ".git", "worktrees", d, "index"))) if (existsSync(index)) utimesSync(index, now - 25 * 86400, now - 25 * 86400);
   mkdirSync(stateDir, { recursive: true });
   if (seed) { const board = new Board(join(stateDir, "hub.db")); seed(board); board.close(); }
-  const daemon = await startDaemon({ cwd, stateDir, projectId: "shelf", instanceId: crypto.randomUUID(), controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+  const daemon = await startDaemon({ cwd, stateDir, projectId: "shelf", instanceId: crypto.randomUUID(), controlPort: 0, codexAppPort: 0, codexProxyPort: 0, ...(shelfGit ? { worktreeShelfGit: shelfGit } : {}),
     config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false },
       instances: { "codex-inst": { kind: "codex", worktree: ".worktrees/inst", roles: ["implementer"] } } as never, ...extraConfig } });
   cleanup.push(() => daemon.stop());
@@ -222,6 +239,81 @@ test("AC4: a tools caller can neither read the shelf nor set an override, and is
 });
 
 // AC5: a panel refresh makes no GitHub call, and no worktree or branch is touched by the read.
+/** A scripted git port over a fixed list of worktrees; `delay` makes every per-worktree read slow, `fail` makes the named subcommand fail. */
+function fakeGit(paths: string[], opts: { delayMs?: number; failLog?: boolean } = {}): ShelfGitPort & { calls: string[][]; open: () => number } {
+  const calls: string[][] = []; let inFlight = 0, peak = 0;
+  const port = {
+    calls, open: () => peak,
+    async run(cwd: string, args: string[], timeoutMs: number) {
+      calls.push([cwd, ...args]); inFlight++; peak = Math.max(peak, inFlight);
+      try {
+        if (args[0] === "worktree") return { status: 0, stdout: paths.map((p, i) => `worktree ${p}\0HEAD ${String(i).padStart(40, "0")}\0branch refs/heads/b${i}\0\0`).join("") };
+        if (opts.delayMs) await new Promise(r => setTimeout(r, Math.min(opts.delayMs!, Math.max(1, timeoutMs))));
+        if (args[0] === "log") return opts.failLog ? undefined : { status: 0, stdout: `${Math.floor(Date.now() / 1000) - 100 * 86400}\n` };
+        return { status: 1, stdout: "" };
+      } finally { inFlight--; }
+    },
+  };
+  return port;
+}
+
+test("D1 budget: a slow git cuts the read at its total budget, the rows not read are listed live with complete:false, and the read never exceeds the budget by a call", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-shelf-slow-"))); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const paths = Array.from({ length: 40 }, (_, i) => join(dir, `w${i}`));
+  const git = fakeGit(paths, { delayMs: 200 });
+  const started = Date.now();
+  const out = await readWorktreeFacts({ root: dir, tasks: () => [], instancePaths: [], git, budgetMs: 600 });
+  const took = Date.now() - started;
+  expect(out.available).toBe(true); expect(out.complete).toBe(false);
+  expect(out.facts).toHaveLength(40);                                    // every worktree is still listed
+  expect(out.facts.some(f => f.activityKnown === false)).toBe(true);     // the ones not read are unknown, not zero
+  expect(took).toBeLessThan(1500);                                       // 40 rows x 2 reads x 200 ms would take 16 s serially; the budget cut it
+  expect(git.open()).toBeLessThanOrEqual(4);                             // bounded concurrency
+  // an unread row is live and never settled, whatever the quiet days
+  expect(partition(out.facts, [], Date.now(), 1).settled.every(r => out.facts.find(f => f.path === r.path)?.activityKnown === true)).toBe(true);
+});
+
+test("D1 budget: a failed commit-time read makes that row's activity unknown and the result incomplete, never a settled row", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-shelf-fail-"))); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const out = await readWorktreeFacts({ root: dir, tasks: () => [], instancePaths: [], git: fakeGit([join(dir, "a"), join(dir, "b")], { failLog: true }), budgetMs: 2000 });
+  expect(out.complete).toBe(false); expect(out.facts.map(f => f.activityKnown)).toEqual([false, false]);
+  expect(partition(out.facts, [], Date.now(), 1).settled).toEqual([]);
+});
+
+test("D1: the board is read once, after every git read, so a task change during the reads is seen and nothing stale is used", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-shelf-late-"))); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  let reads = 0, sawGitCallsBeforeBoard = -1; const git = fakeGit([join(dir, "a")], { delayMs: 20 });
+  const out = await readWorktreeFacts({ root: dir, tasks: () => { reads++; sawGitCallsBeforeBoard = git.calls.length; return []; }, instancePaths: [], git, budgetMs: 2000 });
+  expect(out.available).toBe(true); expect(reads).toBe(1); expect(sawGitCallsBeforeBoard).toBe(3); // list, log, rev-parse for the one worktree
+});
+
+test("D1: while the shelf's git is slow, other control requests are answered (the event loop is never held)", async () => {
+  const slow = fakeGit([], { delayMs: 1500 });
+  slow.run = async (_cwd, args) => { await new Promise(r => setTimeout(r, 1500)); return args[0] === "worktree" ? { status: 0, stdout: "" } : { status: 1, stdout: "" }; };
+  const f = await rig(undefined, {}, slow);
+  const shelf = f.person.request({ t: "worktrees" }, 10_000);       // takes ~1.5 s inside the daemon
+  const started = Date.now();
+  const status = await f.person.request({ t: "status" }, 5_000);    // must not wait for it
+  const answeredIn = Date.now() - started;
+  expect(status.ok ?? true).toBeTruthy();
+  expect(answeredIn).toBeLessThan(1000);
+  const out = await shelf;
+  expect(out.ok).toBe(true);
+});
+
+test("D1: recovery or shutdown beginning while the git reads run refuses the answer and writes no override", async () => {
+  const gate: { release: () => void } = { release: () => {} };
+  const held = new Promise<void>(r => { gate.release = r; });
+  const slow = fakeGit([]); slow.run = async (_c, args) => { await held; return args[0] === "worktree" ? { status: 0, stdout: "" } : { status: 1, stdout: "" }; };
+  const f = await rig(undefined, {}, slow);
+  const pending = f.person.request({ t: "worktrees" }, 10_000);
+  const stopping = f.daemon.stop();            // the daemon begins stopping while the shelf's git is still running
+  await Bun.sleep(50); gate.release();
+  const out = await pending.catch(() => ({ ok: false, error: "closed" }));
+  await stopping;
+  expect(out.ok).toBe(false);
+});
+
 test("AC5: reading the shelf runs no gh and changes no worktree, branch or index", async () => {
   const f = await rig();
   const before = git(f.cwd, "worktree", "list", "--porcelain") + git(f.cwd, "branch", "--format=%(refname) %(objectname)");
@@ -232,9 +324,9 @@ test("AC5: reading the shelf runs no gh and changes no worktree, branch or index
   expect(readFileSync(join(import.meta.dir, "../src/hub/worktree-shelf.ts"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")).not.toMatch(/sdlcGh|readSdlcPr|\bgh\b/);
 });
 
-test("readWorktreeFacts on a directory that is not a git repository is unavailable, never an empty shelf", () => {
+test("readWorktreeFacts on a directory that is not a git repository is unavailable, never an empty shelf", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-shelf-none-"))); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
-  expect(readWorktreeFacts({ root: dir, tasks: [], instancePaths: [] })).toEqual({ facts: [], complete: false, available: false });
+  expect(await readWorktreeFacts({ root: dir, tasks: () => [], instancePaths: [] })).toEqual({ facts: [], complete: false, available: false });
 });
 
 test("the worktrees config defaults to 7 quiet days and 10 as the alert count, ignores a bad value at load, and the reload schema refuses it by name", async () => {

@@ -1,7 +1,8 @@
-import { statSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { stat } from "node:fs/promises";
 import { basename, join, relative, sep } from "node:path";
 import { childEnv } from "./child-process.ts";
-import { hubGitEnv, hubGitSync } from "./git.ts";
+import { hubGitArgv, hubGitEnv } from "./git.ts";
 import { HUB } from "./envelope.ts";
 import { realPath } from "./project.ts";
 import type { Task } from "./board.ts";
@@ -30,6 +31,8 @@ export interface WorktreeFact {
   instance: boolean;
   /** Max of the HEAD commit time, the worktree index mtime and the latest time someone other than the hub wrote to the bound task. 0 when none could be read. */
   lastActiveAt: number;
+  /** False when the commit time or the index could not be read (a failed git call or a spent budget): such a row is never settled by a PR or by quiet time, because 'no newer work' is unknown. */
+  activityKnown?: boolean;
   task?: { id: number; state: string; pr?: number };
   pr: { state: PrState; changedAt?: number };
 }
@@ -47,7 +50,8 @@ export const overrideInForce = (override: WorktreeOverride | undefined, lastActi
   !!override && lastActiveAt <= override.at;
 
 /**
- * D3, pure. Rules in order: (1) the main checkout and instance worktrees are never shelved; (2) an effective override wins; (3) a merged or
+ * D3, pure. A row whose activity is unknown (`activityKnown === false`) is live: every settling rule compares with `lastActiveAt`, which is then not a fact.
+ * Rules in order: (1) the main checkout and instance worktrees are never shelved; (2) an effective override wins; (3) a merged or
  * closed PR with `lastActiveAt <= changedAt` is settled; (4) `quietDays > 0` and a quiet span of at least that long is settled; (5) live.
  * `now`, the facts and the overrides are arguments: no clock, no I/O.
  */
@@ -55,7 +59,7 @@ export function partition(facts: readonly WorktreeFact[], overrides: readonly Wo
   const byPath = new Map(overrides.map(o => [o.path, o]));
   const out: Partition = { live: [], settled: [] };
   for (const fact of facts) {
-    if (fact.main || fact.instance) { out.live.push(row(fact)); continue; }
+    if (fact.main || fact.instance || fact.activityKnown === false) { out.live.push(row(fact)); continue; }
     const override = byPath.get(fact.path);
     if (overrideInForce(override, fact.lastActiveAt)) {
       if (override.value === "settled") out.settled.push(row(fact, "parked")); else out.live.push(row(fact));
@@ -96,16 +100,13 @@ export function boundTask(tasks: readonly Pick<Task, "id" | "state" | "refs" | "
 }
 
 /**
- * PR state from evidence already on the board (D1): the guarded merge's record is `merged`, a cancelled task with a PR is `closed`; anything
- * else is `unknown`, never a GitHub read. The explicit refresh action (`readSdlcPr`) is a later change.
+ * PR state from evidence already on the board (D1): only the guarded merge's own record says `merged`. A cancelled task says nothing about its PR (`Tasks.cancel`
+ * touches only the board, so the PR can still be open on GitHub), and a task with no record says nothing either: both are `unknown`. Only the explicit refresh
+ * action, which reads GitHub, may learn `closed` or `open` (a later change).
  */
 export function prFromTask(task: Pick<Task, "state" | "sdlc" | "history"> | undefined): WorktreeFact["pr"] {
   const merge = task?.sdlc?.merge;
   if (merge && merge.state === "merged" && Number.isFinite(merge.at)) return { state: "merged", changedAt: merge.at };
-  if (task?.state === "cancelled" && task.sdlc?.pr !== undefined) {
-    const at = [...(task.history ?? [])].reverse().find(h => h.event === "cancelled")?.at;
-    return at !== undefined ? { state: "closed", changedAt: at } : { state: "unknown" };
-  }
   return { state: "unknown" };
 }
 
@@ -129,17 +130,22 @@ export function parseWorktreeList(stdout: string, limit = 256): { rows: RawWorkt
 }
 
 export interface ShelfGitPort {
-  /** Read-only git, bounded. `undefined` is a failed or timed-out read, never an empty answer. */
-  run(cwd: string, args: string[]): { status: number | null; stdout: string } | undefined;
+  /** Read-only git, bounded by `timeoutMs`, never blocking the event loop. `undefined` is a failed or timed-out read, never an empty answer. */
+  run(cwd: string, args: string[], timeoutMs: number): Promise<{ status: number | null; stdout: string } | undefined>;
 }
-const READ_TIMEOUT_MS = 5_000;
+/** One git call's ceiling, and the whole read's: a slow repository answers `complete: false` after this, never a stalled hub (D1's snapshot-budget pattern). */
+export const READ_TIMEOUT_MS = 5_000, TOTAL_BUDGET_MS = 3_000, READ_CONCURRENCY = 4;
 export const realShelfGit: ShelfGitPort = {
-  run(cwd, args) {
+  async run(cwd, args, timeoutMs) {
     if (!shelfReadAllowed(args)) throw new Error("the worktree shelf runs read-only git commands only");
-    const result = hubGitSync(["-C", cwd, "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], {
-      encoding: "utf8", timeout: READ_TIMEOUT_MS, maxBuffer: 1024 * 1024, env: hubGitEnv(childEnv(), { repositoryIsolation: true }),
+    const argv = hubGitArgv(["-C", cwd, "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args]);
+    return await new Promise(resolve => {
+      execFile(argv[0]!, argv.slice(1), { encoding: "utf8", timeout: Math.max(1, Math.min(READ_TIMEOUT_MS, timeoutMs)), killSignal: "SIGKILL", maxBuffer: 1024 * 1024, env: hubGitEnv(childEnv(), { repositoryIsolation: true }) }, (error, stdout) => {
+        const code = (error as (Error & { code?: unknown }) | null)?.code;
+        // a non-zero exit is an answer (status), a spawn failure, timeout or overflow is not
+        resolve(error && typeof code !== "number" ? undefined : { status: typeof code === "number" ? code : 0, stdout: String(stdout ?? "") });
+      });
     });
-    return result.error ? undefined : { status: result.status, stdout: String(result.stdout ?? "") };
   },
 };
 /**
@@ -155,45 +161,68 @@ export const shelfReadAllowed = (args: readonly string[]): boolean => SHELF_GIT_
 
 export interface ShelfInput {
   root: string;
-  tasks: readonly Pick<Task, "id" | "state" | "refs" | "sdlc" | "updated" | "created" | "history">[];
+  /** Called AFTER the git reads, so the board is read once and fresh, never held across an await. */
+  tasks: () => readonly Pick<Task, "id" | "state" | "refs" | "sdlc" | "updated" | "created" | "history">[];
   /** Resolved instance worktree paths (`.worktrees/<instance>`): never shelved. */
   instancePaths: readonly string[];
   git?: ShelfGitPort;
-  mtime?: (path: string) => number | undefined;
+  now?: () => number;
+  budgetMs?: number;
 }
 export interface ShelfFacts { facts: WorktreeFact[]; complete: boolean; available: boolean }
 
-const indexMtime = (git: ShelfGitPort, path: string): number | undefined => {
-  const dir = git.run(path, ["rev-parse", "--absolute-git-dir"]);
+/** The worktree's own index mtime (D1: it covers uncommitted editing). `undefined` is unknown; a missing index file is a known 0. */
+async function indexMtime(git: ShelfGitPort, path: string, timeoutMs: number): Promise<number | undefined> {
+  const dir = await git.run(path, ["rev-parse", "--absolute-git-dir"], timeoutMs);
   if (!dir || dir.status !== 0) return undefined;
-  try { const info = statSync(join(dir.stdout.trim(), "index")); return info.isFile() ? info.mtimeMs : undefined; } catch { return undefined; }
-};
+  try { const info = await stat(join(dir.stdout.trim(), "index")); return info.isFile() ? info.mtimeMs : 0; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? 0 : undefined; }
+}
 
-/** D1: facts per worktree. Read on demand with a bounded number of git calls (one list plus one commit-time read per worktree). Never writes. */
-export function readWorktreeFacts(input: ShelfInput): ShelfFacts {
-  const git = input.git ?? realShelfGit;
+interface Probe { commitAt: number; touched: number; known: boolean }
+
+/**
+ * D1: facts per worktree. One `worktree list`, then a commit-time read and an index read per worktree, at most `READ_CONCURRENCY` at a time and all under one
+ * total budget. Asynchronous throughout: the daemon's event loop is never held. When the budget is spent, the rows not yet read are still listed, with unknown
+ * activity (live, never settled), and the result says `complete: false`. Never writes.
+ */
+export async function readWorktreeFacts(input: ShelfInput): Promise<ShelfFacts> {
+  const git = input.git ?? realShelfGit, now = input.now ?? Date.now, deadline = now() + (input.budgetMs ?? TOTAL_BUDGET_MS);
+  const left = () => Math.max(0, deadline - now());
   let root: string;
   try { root = realPath(input.root); } catch { return { facts: [], complete: false, available: false }; }
-  const listed = git.run(root, ["worktree", "list", "--porcelain", "-z"]);
+  const listed = await git.run(root, ["worktree", "list", "--porcelain", "-z"], left());
   if (!listed || listed.status !== 0) return { facts: [], complete: false, available: false };
   const parsed = parseWorktreeList(listed.stdout);
-  const instances = new Set(input.instancePaths);
-  const facts: WorktreeFact[] = [];
-  for (const raw of parsed.rows) {
-    let path = raw.path;
-    try { path = realPath(raw.path); } catch { /* a prunable worktree's directory is gone: keep the registered path */ }
-    const task = boundTask(input.tasks, raw.branch);
-    const stamp = git.run(path, ["log", "-1", "--format=%ct", "HEAD"]);
-    const commitAt = stamp && stamp.status === 0 && /^\d{1,12}$/.test(stamp.stdout.trim()) ? Number(stamp.stdout.trim()) * 1000 : 0;
-    const touched = (input.mtime ?? ((p: string) => indexMtime(git, p)))(path) ?? 0;
-    const bound = task ? input.tasks.find(t => t.id === task.id) : undefined;
+  const paths = parsed.rows.map(raw => { try { return realPath(raw.path); } catch { return raw.path; } }); // a prunable worktree's directory is gone: keep the registered path
+  const probes: (Probe | undefined)[] = parsed.rows.map(() => undefined);
+  let next = 0, cut = false;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= paths.length) return;
+      if (left() <= 0) { cut = true; return; }
+      const stamp = await git.run(paths[i]!, ["log", "-1", "--format=%ct", "HEAD"], left());
+      const text = stamp && stamp.status === 0 ? stamp.stdout.trim() : "";
+      const touched = left() > 0 ? await indexMtime(git, paths[i]!, left()) : undefined;
+      if (!/^\d{1,12}$/.test(text) || touched === undefined) { probes[i] = { commitAt: 0, touched: 0, known: false }; cut = cut || left() <= 0; continue; }
+      probes[i] = { commitAt: Number(text) * 1000, touched, known: true };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, paths.length) }, worker));
+  // From here to the return nothing is awaited: the board is read once, synchronously, so it is current for every row.
+  const tasks = input.tasks(), instances = new Set(input.instancePaths), facts: WorktreeFact[] = [];
+  let unread = false;
+  parsed.rows.forEach((raw, i) => {
+    const path = paths[i]!, probe = probes[i], task = boundTask(tasks, raw.branch), bound = task ? tasks.find(t => t.id === task.id) : undefined;
+    if (!probe?.known) unread = true;
     facts.push({
       path, branch: raw.branch, head: raw.head, locked: raw.locked, prunable: raw.prunable,
       main: path === root, instance: instances.has(path),
-      lastActiveAt: Math.max(commitAt, touched, task?.workAt ?? 0),
+      lastActiveAt: Math.max(probe?.commitAt ?? 0, probe?.touched ?? 0, task?.workAt ?? 0), activityKnown: probe?.known === true,
       ...(task ? { task: { id: task.id, state: task.state, ...(task.pr !== undefined ? { pr: task.pr } : {}) } } : {}),
       pr: prFromTask(bound),
     });
-  }
-  return { facts, complete: parsed.complete, available: true };
+  });
+  return { facts, complete: parsed.complete && !cut && !unread, available: true };
 }
