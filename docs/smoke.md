@@ -38,7 +38,7 @@ Autonomy T4 (#999 AC8): [2026-11-02 live inventory](verification/2026-11-02-auto
 | Character glyphs in real terminals and tmux (#280) | Console attention; Dashboard character | agent-evidence / person-verdict | glyph rendering in physical terminals |
 | Console Settings panel in a native terminal (#439) | Settings reload and console fixture | agent-evidence / person-verdict | the panel as a person sees it |
 | Reviewer pool native legs (#519) | Reviewer pool native legs | agent-executable | after #783 ships |
-| Antigravity TUI close (#485) | Antigravity P1 | agent-executable | |
+| Antigravity TUI close (#485) | Antigravity P1 | agent-executable | launcher close leg passed on 2026-11-03 ([receipt](verification/2026-11-03-agy-tui-close.md)); still open: `hub_send` and a board read or proposal through the TUI, a real account |
 | Managed Pi live receipts (#418 AC8) | none yet (issue #418) | person-only, then agent-executable | the person opts in to a check runner and answers the approvals |
 | Kimi credential probe (#285 AC9) | Kimi usage counting | person-only | the owner's approval of the probe |
 | Six role instances (#525-6, hub card #138 I4) | Six role instances (#525-6) | person-only | native terminal/account starts, the person's sandbox and approval choices, and the live six-instance verdict |
@@ -2026,6 +2026,7 @@ Kimi usage ceiling: 2.2.0 print stream-json exposes no token counts. Keep unobse
 ## Antigravity P1 (#485)
 
 - Run agy on the 1.4.x line (1.4.2 and 1.4.7 verified; other patches warn, #589); verify its executable/version and keep the actual TUI/IDE leg separate from the account-free T0 transport receipts ([1.4.2](verification/2026-10-19-agy-p1-t0.md), [1.4.7](verification/2026-10-26-agy-1.4.7.md)).
+- The hub launcher's own close leg ran in a scratch project with the real `ahub agy` and a fixture provider ([2026-11-03 receipt](verification/2026-11-03-agy-tui-close.md)): the launch slot is held while agy starts and runs, a normal `/exit` releases it so the next launch is admitted, only the managed three-file plugin is removed, and the real Gemini config hashes are unchanged. Set `AGY_CLI_DISABLE_AUTO_UPDATE=1` for any further live agy run: without it agy replaced `~/.local/bin/agy` during that run.
 - With a reviewed compatible daemon running and agy explicitly on roster, the person runs `ahub agy` in a terminal. Confirm peer `agy` is pull-only, native permissions unmanaged and no hub sandbox/budget source is claimed.
 - In the native TUI call `hub_inbox`, `hub_send`, and a permitted board read/proposal within a non-PII task. Confirm the tool audience and actor remain `agy`, the native model consumes the tool results, and no unsolicited push or PII task text reaches it.
 - End the TUI normally. Confirm its group/socket detaches and only its matching managed three-file plugin is cleaned up; unrelated project/global settings remain unchanged.
