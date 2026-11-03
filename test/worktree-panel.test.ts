@@ -297,3 +297,23 @@ test("the page's Worktrees section is in the Agents view, draws removal as a com
   expect(html.match(/worktrees_refresh_prs/g)).toHaveLength(1);
   expect(html.slice(html.indexOf("function render(snapshot"), html.indexOf("function render(snapshot") + 200)).not.toContain("worktrees_refresh_prs");
 });
+
+// AC4/AC5, module boundary: the shelf's real logic now lives in `worktreeShelf` (and the snapshot's `worktreesView`), outside the control case that worktree-shelf.test.ts greps.
+test("the daemon's shelf function removes nothing, spawns nothing and reaches GitHub only through the one refresh call", () => {
+  const src = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
+  const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const start = src.indexOf("async function worktreeShelf("), end = src.indexOf("function uiSnapshot(", start);
+  expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  const body = code(src.slice(start, end));
+  for (const word of ["spawn", "exec(", "execFile", "rmSync", "unlinkSync", "worktree remove", "branch -d", "hubGitSync", "readSdlcPr", ".kill("]) expect(body, word).not.toContain(word);
+  // GitHub is reached in exactly one place, inside the `refresh` branch, through the host's runner
+  expect(body.match(/sdlcGh/g)).toHaveLength(1);
+  expect(body.match(/refreshPrStates\(/g)).toHaveLength(1);
+  expect(body.indexOf("refreshPrStates(")).toBeGreaterThan(body.indexOf("if (refresh) {"));
+  // the snapshot view only calls the shelf function with the read request, never the refresh
+  const view = code(src.slice(src.indexOf("function worktreesView("), src.indexOf("function uiSnapshot(")));
+  expect(view).toContain('worktreeShelf({ t: "worktrees" })'); expect(view).not.toContain("refresh");
+  // the shelf modules: the PR refresh module is the only one that names a GitHub reader, and the shelf module imports neither it nor the sdlc module
+  const shelf = readFileSync(join(import.meta.dir, "../src/hub/worktree-shelf.ts"), "utf8");
+  expect(shelf).not.toMatch(/from "\.\/(sdlc|worktree-prs)\.ts"/);
+});
