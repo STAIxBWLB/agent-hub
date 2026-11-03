@@ -540,16 +540,17 @@ test("an approval answer that could not be written does not settle the turn: the
 
 test("the owner is the root of the process tree that names the input file: the real Qwen is a script wrapper, a node launcher and a cli.js child, all three naming it (measured on 0.26.1)", async () => {
   const sig = (pid: number) => `sig-${pid}`;   // the pids below are not real processes
+  const rootPid = process.pid + 1000; // Synthetic rows must never equal the runner PID, which discoverOwner excludes.
   const r = rig({ signature: sig }, {}); await r.peer.start();
   const input = join(r.dir, "input.jsonl"), named = (pid: number, ppid: number, head: string): ProcRow => ({ pid, ppid, pgid: pid, started: "x", command: `${head} --input-file ${input} --json-file ${join(r.dir, "events.jsonl")}` });
   const own = (r.peer as any).opts as QwenDualOptions & { table?: () => ProcRow[] | undefined };
-  const real: ProcRow[] = [named(300, 299, "script -q /dev/null qwen"), named(301, 300, "node /bin/qwen"), named(302, 301, "node --expose-gc cli.js"), { pid: 5, ppid: 1, pgid: 5, started: "x", command: "unrelated" }];
+  const real: ProcRow[] = [named(rootPid, rootPid - 1, "script -q /dev/null qwen"), named(rootPid + 1, rootPid, "node /bin/qwen"), named(rootPid + 2, rootPid + 1, "node --expose-gc cli.js"), { pid: rootPid + 3, ppid: 1, pgid: rootPid + 3, started: "x", command: "unrelated" }];
   own.table = () => real;
   (r.peer as any).sessionSeen = true; (r.peer as any).discoverOwner();
-  expect((r.peer as any).state_.ownerPid).toBe(300);   // the root, so the person's terminal is what the hub watches
+  expect((r.peer as any).state_.ownerPid).toBe(rootPid);   // the root, so the person's terminal is what the hub watches
   // Two separate trees naming the same file is ambiguous: no owner is bound, and nothing is guessed.
   const second = rig({ signature: sig }, {}); await second.peer.start();
-  const file = join(second.dir, "input.jsonl"), both: ProcRow[] = [{ pid: 400, ppid: 1, pgid: 400, started: "x", command: `qwen --input-file ${file}` }, { pid: 500, ppid: 1, pgid: 500, started: "x", command: `qwen --input-file ${file}` }];
+  const file = join(second.dir, "input.jsonl"), both: ProcRow[] = [{ pid: rootPid + 100, ppid: 1, pgid: rootPid + 100, started: "x", command: `qwen --input-file ${file}` }, { pid: rootPid + 200, ppid: 1, pgid: rootPid + 200, started: "x", command: `qwen --input-file ${file}` }];
   (second.peer as any).opts.table = () => both; (second.peer as any).sessionSeen = true; (second.peer as any).discoverOwner();
   expect((second.peer as any).state_.ownerPid).toBeUndefined();
 });
