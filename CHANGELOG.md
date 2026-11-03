@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.29.0
+
 - The hub makes the task worktree for a hub-sandboxed owner (Pi, the local worker) and commits and pushes its work at `hub_task_done` (#1115, #1127). The commit goes through a private index and a compare-and-swap ref update, only on top of the recorded base or the hub's own last commit, after the changed paths pass the deny and grant policy; a moved branch or HEAD, a refused path or a changed gitlink refuses the commit with its cause. Decline and cancel remove an empty worktree and keep one with uncommitted work.
 - Every write-class task (`implement`, `bulk_edit`) of a hub-sandboxed owner gets that worktree and hub commit, whether or not it declares `needs_worktree` (#1129, #1132). Where the hub cannot make a worktree (no repository, no first commit, a repository config that names a helper, filter or include), such work is not offered to Pi or the local worker, and an accept or a person's assignment is refused with the cause and the next step.
 - The sandbox refuses writes to `refs/**`, `packed-refs`, `HEAD` and a linked worktree's admin dir under every git dir a sandboxed command can reach, discovered submodule git dirs included (#1123, #1130). A sandboxed peer can no longer commit, branch, tag, stash, switch, merge, rebase or reset, nor `git add` inside a linked worktree; the local `git` tool says so in its result and points at `hub_task_done`. What stays writable under `.git`, and why, is listed in docs/security.md.
