@@ -36,13 +36,13 @@ export interface WorktreeFact {
   task?: { id: number; state: string; pr?: number };
   pr: { state: PrState; changedAt?: number };
 }
-export interface ShelfRow { path: string; branch: string | null; reason?: SettledReason; task?: number; pr?: number; lastActiveAt: number }
+export interface ShelfRow { path: string; branch: string | null; reason?: SettledReason; task?: number; taskState?: string; pr?: number; lastActiveAt: number }
 export interface Partition { live: ShelfRow[]; settled: ShelfRow[] }
 
 const DAY_MS = 86_400_000;
 const row = (fact: WorktreeFact, reason?: SettledReason): ShelfRow => ({
   path: fact.path, branch: fact.branch, lastActiveAt: fact.lastActiveAt,
-  ...(reason ? { reason } : {}), ...(fact.task ? { task: fact.task.id } : {}), ...(fact.task?.pr !== undefined ? { pr: fact.task.pr } : {}),
+  ...(reason ? { reason } : {}), ...(fact.task ? { task: fact.task.id, taskState: fact.task.state } : {}), ...(fact.task?.pr !== undefined ? { pr: fact.task.pr } : {}),
 });
 
 /** An override counts only while no newer activity exists: `lastActiveAt <= at` (D2). Newer activity makes it inert. */
@@ -80,6 +80,9 @@ export function displayPath(root: string, path: string): string {
   const rel = relative(root, path);
   return rel && !rel.startsWith("..") && !rel.startsWith(sep) && rel !== path ? rel : basename(path);
 }
+
+/** Whether a path is the root or below it, so a row can be resolved against the project root and one outside it cannot. */
+export const shelfInsideRoot = (root: string, path: string): boolean => path === root || (!relative(root, path).startsWith("..") && !relative(root, path).startsWith(sep) && relative(root, path) !== path);
 
 /**
  * The latest time anyone but the hub wrote to a task: its work, not its bookkeeping. The hub's own entries (the merge result, the owner notice,
