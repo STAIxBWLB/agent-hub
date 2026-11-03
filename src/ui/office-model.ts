@@ -237,7 +237,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const rank = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : Infinity;
   const backlog = tasks.filter(task => task.state === "backlog").sort((a, b) => (rank(a.rank) - rank(b.rank)) || (rank(a.priority) - rank(b.priority)) || a.id - b.id);
   const unplanned = backlog.filter(task => rank(task.rank) === Infinity && !text(task.reserved)).length;
-  const releases = (Array.isArray(snapshot?.releases) ? snapshot.releases : []).filter(row => row && Number.isSafeInteger(row.id) && row.id > 0 && ["planning", "active", "frozen"].includes(text(row.state)))
+  const releases: OfficeReleaseInput[] = (Array.isArray(snapshot?.releases) ? snapshot.releases : []).filter(row => row && Number.isSafeInteger(row.id) && row.id > 0 && ["planning", "active", "frozen"].includes(text(row.state)))
     .sort((a, b) => (rank(a.order) - rank(b.order)) || a.id - b.id);
   const docked = releases.slice(0, 3);
 
@@ -402,7 +402,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     };
   });
   const docks: OfficeDock[] = docked.map((row, index) => {
-    const scope = Array.isArray(row.tasks) ? row.tasks.filter(task => task && Number.isSafeInteger(task.id) && task.id > 0) : [];
+    const scope: NonNullable<OfficeReleaseInput["tasks"]> = Array.isArray(row.tasks) ? row.tasks.filter((task: NonNullable<OfficeReleaseInput["tasks"]>[number]) => task && Number.isSafeInteger(task.id) && task.id > 0) : [];
     const approved = scope.filter(task => task.state === "approved").length, position = roomDefs.length + index;
     return { id: row.id, name: text(row.name) || "[withheld]", state: text(row.state), ordinal: index + 1, approved, scope: scope.length,
       ratio: scope.length ? approved / scope.length : 0, cut: date(row.cut), x: (position % cols) * ROOM_DX,
