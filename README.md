@@ -100,7 +100,9 @@ defaults. The
   worktree with a machine-wide view, live settings reload, machine-local schedules
   that propose tasks by interval or by a `cron` expression in a time zone
   (`ahub schedule list`), a one-confirmation autonomy
-  preset (`ahub autonomy on|off|status`), structural config
+  preset (`ahub autonomy on|off|status`), a worktree shelf that lists live and
+  settled worktrees and removes the safe ones only on your confirmation
+  (`ahub worktrees`), structural config
   (instances, review, lifecycle) edited with a validated diff and a backup from the
   console or a dashboard settings session, token usage and quota
   history (`ahub usage` and the dashboard's Usage view), and `ahub upgrade`, which
@@ -135,7 +137,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-11-03-0.29.0.md) and the
+[release verification report](docs/verification/2026-11-03-0.30.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation

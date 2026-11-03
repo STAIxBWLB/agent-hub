@@ -8,7 +8,7 @@ export interface HelpEntry { section: string; usage: string; description: string
 const SECTIONS: [string, [usage: string, description: string][]][] = [
   ["Projects", [
     ["ahub specs list [--json] | check [--require-fresh] [--base <ref>] [--json] | covers <file...> | stamp <id-or-document...> [--yes]", "read design specs, validate their graph and source freshness, or find covering specs; runs without a daemon; check exits 1 on errors and, with --require-fresh, stale documents; stamp is person only (a terminal, never an agent): it shows old -> new, asks (--yes skips the question but still needs a terminal), and then changes only the verified-against line (or the stamps-file entry) to the full HEAD SHA, refused while the covered paths have uncommitted changes"],
-    ["ahub worktrees [--json] | tidy [--json] | tidy --confirm <fingerprint>", "list live and settled worktrees; preview what is safe to remove; `--confirm` (the person only) runs git worktree remove and git branch -d, never forced"],
+    ["ahub worktrees [--json] | tidy [--json] | tidy --confirm <fingerprint> [--json]", "list live and settled worktrees; preview what is safe to remove; `--confirm` (the person only) runs git worktree remove and git branch -d, never forced"],
     ["ahub --project <path|id> <command>", "select a repository or worktree explicitly"],
     ["ahub projects [--json] [--full] [--color=auto|always|never]", "list registered projects and live status"],
     ["ahub projects remove <id>", "forget a stopped registration (keeps project files)"],

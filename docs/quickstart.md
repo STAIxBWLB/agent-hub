@@ -17,7 +17,7 @@ ahub setup                                # installs the channel plugin and a pr
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.29.0
+bun add -g github:STAIxBWLB/agent-hub#v0.30.0
 ahub setup
 ```
 
@@ -30,6 +30,12 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move a running project to a newer release later, run `ahub upgrade` in a
 terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version.
+
+## Upgrading to 0.30.0
+
+The hub now exact-pins `@staix/agent-mem` 0.20.1 (#1136). A setup receipt written by 0.20.1 can be v2, which 0.20.0 refuses to apply or undo; undo a setup with the release that wrote it.
+
+Nothing else changes until you use something new. `ahub worktrees` lists the project's live and settled worktrees (settled: its PR merged or closed with no newer work, or quiet for `worktrees.quiet_days`, default 7), and `ahub worktrees tidy` previews which settled ones are safe to remove, with the reasons for each refused row; only you remove them, with `ahub worktrees tidy --confirm <fingerprint>` in your own terminal, which runs `git worktree remove` and `git branch -d` and never forces (#1057). The dashboard's Agents panel gets a Worktrees section with Park, Pin and "Refresh PR states", and an inbox alert fires above `worktrees.alert_over` (default 10). Pi and the local worker name their own session with `hub_set_title`; `ahub title <peer> <text...>` or the console's `t` editor replaces the name (#1157). A plan's `sources` must now name registered `src:<16 hex>` ids (`ahub source list`), or the proposal or acceptance is refused (#1151). Run agy with `AGY_CLI_DISABLE_AUTO_UPDATE=1`: without it agy replaced its own binary during a launch (#1140).
 
 ## Upgrading to 0.29.0
 
@@ -171,7 +177,7 @@ The restarted Claude planner gets the release-train tools (`hub_release_new`, `h
 
 Jcode must be 0.98.0 or later, below 1.0.0; 0.94.0 is no longer accepted, so `ahub doctor` fails its Jcode row for an older install and the peer does not start (#529). Every owned jcode process runs with `JCODE_NO_TELEMETRY=1`.
 
-Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.20.0. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
+Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.20.1. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
 
 From 0.12.30 or earlier, existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
 
@@ -235,6 +241,7 @@ or set `OMNIROUTE_API_KEY`. The `.agenthub/routing.toml` that `ahub init` writes
 | `ahub settings edit <file> set <path> <json>` | change an instance, the review block or the `sdlc.toml` lifecycle with a validated diff and a backup; `ahub settings backups` lists the backups |
 | `ahub status` | peers, queues, pauses; `ahub budget` for quota windows |
 | `ahub usage [--by peer\|task\|issue\|pr\|release\|day\|model]` | tokens per group, each number with its source; `ahub usage limits` for pauses and resets |
+| `ahub worktrees` | live and settled worktrees; `ahub worktrees tidy` previews what is safe to remove, and only you confirm it with `--confirm <fingerprint>` |
 | `ahub agents` | which installed agent CLI versions the hub accepts; `ahub agents trust <id> <version>` accepts an untested one on this machine |
 | `ahub memory profile-check` | a person's read-only check of running memory bindings in the current registry |
 | `ahub ask <question>` | what the board, shared memory and the log say, with the ids the answer rests on |
@@ -246,7 +253,7 @@ More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-de
 
 ## Shared memory
 
-The hub exact-pins the first-party `@staix/agent-mem` 0.20.0 core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
+The hub exact-pins the first-party `@staix/agent-mem` 0.20.1 core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
 
 Before any real generation migration, upgrade every hub sharing that memory home to 0.12.30 or later and check its authenticated binding with `ahub memory profile-check` in each custom registry. Ready bindings prove compatibility, not an atomic live cutover: quiesce consumers and close their handles before migrating, then reopen through the supported session-preserving lifecycle. Invalid or changed profiles disable native memory without falling back to legacy writes; the bus and board continue. See [memory operations](operations.md#hub-memory) for the remaining rollout gates.
 

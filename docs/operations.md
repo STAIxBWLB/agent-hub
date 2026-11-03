@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.29.0 and control protocols 16 through 17. Live verification
+This guide describes ahub 0.30.0 and control protocols 16 through 17. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -489,7 +489,7 @@ OS color preference through CSS. Both inline scripts and the style retain CSP
 hashes; there are no external chart/theme assets. Live theme/readability inspection
 is tracked in `docs/smoke.md` and remains unverified until performed.
 
-The dashboard Office section (#264, phase 1 of 4) draws the same snapshot as a
+The dashboard Office section (#264, phase 1) draws the same snapshot as a
 static flat office: one desk per peer in a stable slot (claude, codex, kimi, pi,
 local, then others by id; a peer going offline dims its desk and never moves
 another), rooms for the board columns in a fixed order (To do, Work floor,
@@ -515,6 +515,16 @@ accessible names are identical to Flat. Switching the view jumps to the new
 projection without animating; the settle rule and reduced motion apply
 unchanged. The live browser look is tracked in `docs/smoke.md` and
 remains unverified until performed.
+
+Phase 5 (#1152) adds a Backlog room before To do: cards in rank, then
+priority, then id order, at most 8 with "+N more" opening the backlog filter,
+each with its reserved, pinned and waiting marks, and a count equal to the
+board's backlog count. Up to three release docks (planning, active or frozen
+releases, then "+N releases") show approved/scope and the cut date; activating
+a dock sets the task list's release filter. Each planner-role desk carries the
+number of unplanned backlog cards (no rank, no reservation), and the wall shows
+that count when no planner desk is visible. All of it is read from the existing
+snapshot; the design is `docs/specs/2026-10-12-office-view-design.md`.
 
 Motion (phase 2): card moves between rooms and desks, message arcs between
 desks (from the hub or the console they start at an anchor point), delivery
@@ -1800,7 +1810,7 @@ ahub memory forget 1a2b3c4d              # a person's; also promote, demote, sup
 
 `"memory": { "native": false }` in `.agenthub/config.json` turns it off for a project.
 
-The exact-pinned `@staix/agent-mem` 0.18.0 resolves `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. An absent `M/profile.json` selects shared v1; an explicit generation selects `M/generations/G` with the package's readonly legacy bridge. All daemon memory consumers and the hub memory/goal CLI use that selected profile. Invalid metadata or a missing selected generation makes native memory unavailable while the bus and board continue; there is no fallback to legacy writes. Inspect the daemon's memory binding/availability before interpreting missing memory as an empty store.
+The exact-pinned `@staix/agent-mem` 0.20.1 resolves `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. An absent `M/profile.json` selects shared v1; an explicit generation selects `M/generations/G` with the package's readonly legacy bridge. All daemon memory consumers and the hub memory/goal CLI use that selected profile. Invalid metadata or a missing selected generation makes native memory unavailable while the bus and board continue; there is no fallback to legacy writes. Inspect the daemon's memory binding/availability before interpreting missing memory as an empty store.
 
 The daemon checks its selector at hub operation entry and before candidate/counter writes. It does not hot-switch handles or provide an atomic fence against selection changes during an in-flight core call. Quiesce consumers and close their handles before migration or selection changes; reopen through the supported session-preserving lifecycle afterward. Candidate/counter storage remains `M/candidates.db`, independent of `G`; since agent-mem 0.7.0 `amem review` also lists and accepts candidates on a selected generation. Every running hub using this home needs an authenticated receipt: a matching ready binding, or a generation-capable unbound receipt (`disabled` when native memory is off, `unavailable` when opening failed) proving it holds no memory handle. An unbound daemon and zero running hubs are quiesced for memory; a stale bound handle, unreadable registry or unknown runtime is not ready. Existing JSON memory/goal results remain unchanged; the additive binding receipt belongs to daemon status, profile-check and the decay object. This source integration does not authorize installing a new runtime, migrating real memory, restarting sessions or claiming real-machine sync/capture receipts. Migration/deactivation and their limits belong to [agent-mem](https://github.com/STAIxBWLB/agent-mem); see [the hub profile contract](memory.md#selected-memory-profile).
 
@@ -2422,6 +2432,7 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Routing | `routing.stay_switch`, `routing.classes.<class>.peers`, `.escalate_to`, `.route`, `.pi_backend` | `routing.local.toml` | at once |
 | Switches | `research.enabled`, `approvals.notify`, `snapshots.enabled` | `config.local.json` | live, without disturbing an active turn |
 | Switches | `coordination` | `config.local.json` | newly created tasks only |
+| Switches | `worktrees.quiet_days` (0-3650, default 7, 0 never shelves by quiet time), `worktrees.alert_over` (0-100000, default 10, 0 never alerts) ([worktree shelf](#the-worktree-shelf-1057)) | `config.local.json` | live |
 | Switches | `task_sweep.enabled`, `.auto_reassign`, `.interval_s`, `.unaccepted_min`, `.idle_min`, `.review_min`, `.ready_min`, `.ladder_min`, `.no_writes_turns` | `config.local.json` | live; `.no_writes_turns` sets the turn threshold independently; other keys reschedule the sweep timer |
 | Routing | `tasks.wip_limits.<peer>` | `config.local.json` | live |
 | Routing | `tasks.escalate_after` (1-10, default 3: consecutive `changes_requested` before a task moves to the next `escalate_to` peer) | `config.local.json` | live; the next verdict uses it |
@@ -3488,7 +3499,7 @@ version is older than the selected running daemon; it installs nothing.
 | Runtime | Control protocol window | Legacy status field |
 | --- | --- | --- |
 | 0.12.20 through 0.25.0 | 16 only | `protocol: 16` |
-| 0.26.0 through 0.29.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
+| 0.26.0 through 0.30.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
 
 New clients choose the highest common protocol. The runtime supports N-1, so the
 published protocol-16 client and channel plugin remain usable; unrelated feature
@@ -4812,7 +4823,7 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 
 ## Optional Antigravity (agy) peer
 
-Antigravity is optional and off roster by default. Use `ahub roster add agy`, then run `ahub agy` in a terminal: it runs the Antigravity CLI as a fresh pull-only TUI in that terminal. It accepts the 1.4.x line: 1.4.2 and 1.4.7 are the verified versions ([1.4.7 receipt](verification/2026-10-26-agy-1.4.7.md)), any other 1.4.x launches with a stderr warning (agy updates itself), and other versions are refused (#589) unless the person trusts that exact version with `ahub agents trust agy <version>` (#691). The running hub must advertise `native_hook_launch`; an older hub refuses before any write with an upgrade-or-restart remedy. Only the person's launcher starts it: conductor starts are refused, there is no controlled restore or resume, and a declared agy extra instance is refused when the config loads (#625). Headless/print, resume (`--conversation`, `--continue`, `--new`), `--mode`, `--dangerously-skip-permissions` and `--unattended` are refused until their native mapping is verified; `--print-command` previews without writing.
+Antigravity is optional and off roster by default. Use `ahub roster add agy`, then run `ahub agy` in a terminal: it runs the Antigravity CLI as a fresh pull-only TUI in that terminal. It accepts the 1.4.x line: 1.4.2, 1.4.7 and 1.4.12 are the verified versions ([1.4.7 receipt](verification/2026-10-26-agy-1.4.7.md), [1.4.12 launcher nonce receipt](verification/2026-11-03-agy-1.4.12-launcher-nonce.md)), any other 1.4.x launches with a stderr warning (agy updates itself; set `AGY_CLI_DISABLE_AUTO_UPDATE=1` for a live run, #1140), and other versions are refused (#589) unless the person trusts that exact version with `ahub agents trust agy <version>` (#691). The running hub must advertise `native_hook_launch`; an older hub refuses before any write with an upgrade-or-restart remedy. Only the person's launcher starts it: conductor starts are refused, there is no controlled restore or resume, and a declared agy extra instance is refused when the config loads (#625). Headless/print, resume (`--conversation`, `--continue`, `--new`), `--mode`, `--dangerously-skip-permissions` and `--unattended` are refused until their native mapping is verified; `--print-command` previews without writing.
 
 The launcher writes exactly `plugin.json`, `mcp_config.json` and `hooks.json` in `.agents/plugins/agent-hub/`, refusing linked or foreign entries before any write, and removes only its own matching files when the TUI ends. It never writes project-level `.agents/hooks.json` or the person's `~/.gemini` settings. Run `ahub init` afterwards to ignore the untracked plugin directory; a tracked plugin is written with a warning. The native model sees the hub tools under the server name `agent-hub_agent-hub`.
 
@@ -5592,7 +5603,7 @@ Native launcher connections retry transport timeouts/unclean closes with bounded
 
 ## amem runtime (agent-mem#13 P4)
 
-The hub exact-pins @staix/agent-mem 0.18.0 for recall, curated evidence and local deterministic capture. No runtime call reaches a claude-mem worker; `memory.worker_url` is ignored. The person's `ahub memory import claude-mem` remains explicit and off by default. Existing profile, alias, PII and private-turn fences still apply. `ask --remember` and context checkpoints propose machine-local candidates, never automatic curated evidence. See [memory integration](memory.md#in-process-recall-and-capture-agent-mem13-p4) for changed behavior and bounded-view ceilings.
+The hub exact-pins @staix/agent-mem 0.20.1 for recall, curated evidence and local deterministic capture. No runtime call reaches a claude-mem worker; `memory.worker_url` is ignored. The person's `ahub memory import claude-mem` remains explicit and off by default. Existing profile, alias, PII and private-turn fences still apply. `ask --remember` and context checkpoints propose machine-local candidates, never automatic curated evidence. See [memory integration](memory.md#in-process-recall-and-capture-agent-mem13-p4) for changed behavior and bounded-view ceilings.
 
 ## Backlog issue identity and notes
 
@@ -6041,8 +6052,8 @@ ahub worktrees tidy                    # a preview: what is safe to remove, what
 ahub worktrees tidy --confirm <fingerprint>    # the person's own terminal: re-reads everything, then removes
 ```
 
-- **Settled is derived, never stored.** The hub stores facts and two person overrides, and works the groups out on every read. Rules, in order: the main checkout and the declared instance worktrees (`.worktrees/<instance>`) are never shelved; an override that is still in force wins; a merged or closed PR with no work newer than its change time settles the worktree; `worktrees.quiet_days` without activity settles it (`quiet`); everything else is live. A settled row names its reason: `merged`, `closed`, `quiet` or `parked`.
-- **What counts as activity.** The latest of the HEAD commit time, the mtime of the worktree's own index (uncommitted editing) and the bound task's latest history entry written by anyone but the hub. The hub's own entries (the merge result, the owner notice) are left out, or a merge would always look like newer work. A worktree whose commit time or index could not be read (a failed git call, or the read budget used up) is listed live with `complete: false` and is never shelved by a PR or by quiet time: unknown is not settled.
+- **Settled is derived, never stored.** The hub stores facts and two person overrides, and works the groups out on every read. Rules, in order: the main checkout and the declared instance worktrees (`.worktrees/<instance>`) are never shelved; an override that is still in force wins; a merged or closed PR with no work newer than its change time settles the worktree; `worktrees.quiet_days` without activity settles it (`quiet`); everything else is live. A settled row names its reason: `merged`, `closed`, `quiet` or `parked`; a row bound to a PII task shows `settled` and `task: private` instead of its PR reason, task id and PR.
+- **What counts as activity.** The latest of the HEAD commit time, the mtime of the worktree's own index (uncommitted editing) and the bound task's latest history entry written by anyone but the hub. The hub's own entries (the merge result, the owner notice) are left out, or a merge would always look like newer work. The tidy preview's own git reads run with `--no-optional-locks`, so previewing does not touch the index and make a settled worktree look active. A worktree whose commit time or index could not be read (a failed git call, or the read budget used up) is listed live with `complete: false` and is never shelved by a PR or by quiet time: unknown is not settled.
 - **Where the PR state comes from.** From the board only: a guarded merge's own record says `merged`. A cancelled task says nothing about its PR, and a task with no record reads `unknown`. Nothing is fetched from GitHub when you open the panel, run `ahub worktrees`, or when the inbox alert is computed.
 - **Park, Pin and Unset.** The Agents panel offers Park (move a live row to the shelf), Pin (keep a settled row live) and Unset (back to what the rules derive). An override counts only while the worktree has had no newer activity (`lastActiveAt <= at`); later work makes it inert and the next write removes it. They are control operations `worktree_override_set` and `worktree_override_clear`, console role only: an agent's tools connection is refused.
 - **Refresh PR states.** The one button that reads GitHub, and the control operation `worktrees_refresh_prs` behind it (console role). It reads each bound task's PR with the same `readSdlcPr` the guarded merge uses, at most 8 PRs, 8 s per call and 25 s in all, one refresh at a time, and keeps what it read in the hub's memory (a restart forgets it and those rows read `unknown` again). A PR GitHub could not answer for keeps its old state and is counted as unreadable. The plugin asks you to confirm it first, because it calls GitHub.
