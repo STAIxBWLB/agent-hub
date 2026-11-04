@@ -69,7 +69,7 @@ test("real console drafts are silent, send is one private-observer capsule, and 
     expect(readFileSync(join(f.stateDir,"hub.log"),"utf8")).not.toContain("REFUSED_FORGED_REVIEW");
     for (let i = 0; i < 3; i++) {
       const result = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "REVIEW_BODY_CANARY " + i, personMeta: { identity: "access:person", node: "console-node", via: "console" } });
-      expect(result.ok).toBe(true); expect(typeof result.rid).toBe("string"); ids.push(result.id);
+      expect(result.ok).toBe(true); expect(Number.isSafeInteger(result.rid)).toBe(true); ids.push(result.id);
     }
     expect(packets).toEqual([]); expect(f.owner.got).toEqual([]);
     const list = await f.person.request({ t: "review_comments", task: f.task });
@@ -77,7 +77,7 @@ test("real console drafts are silent, send is one private-observer capsule, and 
     expect(list.comments.map((view: { thread: { author: string } }) => view.thread.author)).toEqual(["access:person", "access:person", "access:person"]);
     for (const actor of [f.peer, f.conductor]) for (const t of ["review_comment_put", "review_comment_delete", "review_comment_send"]) {
       const denied = await actor.request({ t, task: f.task, id: ids[0], revision: 1, commit: f.head, anchor: f.anchor, body: "forged" });
-      expect(denied.ok).toBe(false); expect(typeof denied.rid).toBe("string");
+      expect(denied.ok).toBe(false); expect(Number.isSafeInteger(denied.rid)).toBe(true);
     }
     const spoof = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "forged", author: "forged" });
     expect(spoof.ok).toBe(false);
