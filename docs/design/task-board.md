@@ -31,6 +31,7 @@ paths:
   - src/hub/no-writes.ts
   - src/hub/review-findings.ts
   - src/hub/review-anchor.ts
+  - src/hub/acon-review-contract.d.ts
   - src/hub/review-comments.ts
   - src/hub/review-material.ts
   - src/hub/workflow.ts
