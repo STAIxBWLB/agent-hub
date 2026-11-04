@@ -16,6 +16,7 @@ import { BasePeer } from "../src/hub/peers.ts";
 import { AcpPeer } from "../src/adapters/acp.ts";
 import { realPath } from "../src/hub/project.ts";
 import { hubGitSync } from "../src/hub/git.ts";
+import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 
 async function legacyHub(root: string, enabled: boolean, roster: PeerRoster = {}, extra: Partial<HubConfig> = {}, codexAppPort = 0, hooks: { taskSweepNow?: () => number } = {}) {
   const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true });
@@ -329,7 +330,11 @@ test("the same Claude channel client retries removal and reconnects by itself af
   process.env.AGENTHUB_HOME = join(root, "home"); mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/config.json"), "{}");
   const hub = await legacyHub(root, false), client = new Client({ name: "roster-channel-fixture", version: "0" }, { capabilities: {} });
   const pushed: any[] = []; client.fallbackNotificationHandler = async notification => { pushed.push(notification); };
-  const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../plugins/agent-hub/server.js")], env: { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: hub.stateDir, AGENTHUB_PEER_ID: "claude", AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "peer" }, cwd: root, stderr: "pipe" });
+  const entry = join(import.meta.dir, "../src/adapters/claude-channel.ts"), wrapper = join(root, "roster-channel-fixture.ts");
+  writeFileSync(wrapper, `${syntheticClaudeParentEvidenceSetup()} await import(${JSON.stringify(entry)});`);
+  const env = { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: hub.stateDir, AGENTHUB_PROJECT_DIR: root, AGENTHUB_PEER_ID: "claude", AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "peer" };
+  for (const name of ["AGENTHUB_LAUNCH_ID", "AGENTHUB_INSTANCE_ID", "AGENTHUB_DELIVERY_ONLY", "CODEX_THREAD_ID"]) delete env[name];
+  const transport = new StdioClientTransport({ command: process.execPath, args: [wrapper], env, cwd: root, stderr: "pipe" });
   let diagnostics = ""; transport.stderr!.on("data", chunk => { diagnostics += String(chunk); });
   const observed = async (condition: () => boolean) => { const deadline = Date.now() + 10_000; while (!condition() && Date.now() < deadline) await Bun.sleep(10); expect(condition()).toBe(true); };
   try {

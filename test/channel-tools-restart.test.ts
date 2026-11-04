@@ -6,6 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { realPath } from "../src/hub/project.ts";
+import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 
 const config = { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } };
 async function until(check: () => boolean, tries = 400) {
@@ -21,7 +22,9 @@ async function channelSession(dir: string) {
   const client = new Client({ name: "fixture-claude", version: "1" });
   const changes: string[] = [];
   client.setNotificationHandler((await import("@modelcontextprotocol/sdk/types.js")).ToolListChangedNotificationSchema, async () => { changes.push("list_changed"); });
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")], env, cwd: dir, stderr: "ignore" }));
+  const entry = join(import.meta.dir, "../src/adapters/claude-channel.ts"), wrapper = join(dir, "claude-channel-fixture.ts");
+  writeFileSync(wrapper, `${syntheticClaudeParentEvidenceSetup()} await import(${JSON.stringify(entry)});`);
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [wrapper], env, cwd: dir, stderr: "ignore" }));
   return { client, changes };
 }
 

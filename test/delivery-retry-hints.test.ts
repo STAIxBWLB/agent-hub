@@ -12,6 +12,7 @@ import { configureJcodeMcp, jcodeMcpEntry } from "../src/cli/jcode-mcp.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { renderHeldHint } from "../src/hub/delivery-hints.ts";
 import { realPath } from "../src/hub/project.ts";
+import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 
 async function rig(peer: string, mode: "channel" | "pull" | "tools", deliveryOnly = false) {
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-retry-hints-")));   // the plugin compares resolved paths (#604 item 10)
@@ -31,7 +32,10 @@ async function rig(peer: string, mode: "channel" | "pull" | "tools", deliveryOnl
     try { expect((await console_.request({ t: "start", peer: "jcode", args: { mode: "headless" } })).ok).toBe(true); } finally { console_.close(); }
     envs.AGENTHUB_LAUNCH_ID = readFileSync(jcodeRecord, "utf8").trim().split("\n").map(line => JSON.parse(line)).find(row => row.kind === "launch" && row.role === "acp").launch;
   }
-  const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")], cwd: dir, env: envs, stderr: "pipe" });
+  const entry = join(import.meta.dir, "../src/adapters/claude-channel.ts"), wrapper = join(dir, "channel-tools-fixture.ts");
+  const evidence = peer === "claude" && mode === "channel" ? syntheticClaudeParentEvidenceSetup() : "";
+  writeFileSync(wrapper, `${evidence}\nawait import(${JSON.stringify(entry)});`);
+  const transport = new StdioClientTransport({ command: process.execPath, args: [wrapper], cwd: dir, env: envs, stderr: "pipe" });
   let diagnostics = ""; transport.stderr!.on("data", chunk => { diagnostics += chunk.toString(); });
   await client.connect(transport);
   for (let i = 0; i < 100 && !diagnostics.includes(`connected to hub as "${peer}"`); i++) await Bun.sleep(5);

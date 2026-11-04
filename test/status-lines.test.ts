@@ -55,6 +55,10 @@ test("tools-only state and its next action remain visible in a labelled detail (
   expect(peerFields("claude", peers)).toMatchObject({ LINK: "tools-only", Q: "2" });
   expect(text(peers)).toContain("messages wait for hub_inbox; for pushes restart Claude with ahub claude");
 });
+test("Claude attach mode and its evidence label are visible in human status (#1171)", () => {
+  expect(text({ claude: { state: "idle", attachMode: "tools-only", attachEvidence: "launch-unverified" } })).toContain("attach  tools-only; evidence: launch-unverified");
+  expect(text({ claude: { state: "idle", attachMode: "channel", attachEvidence: "development-channel-launch" } })).toContain("attach  channel; evidence: development-channel-launch");
+});
 test("a disconnected recipient exposes pending age and uncertain work", () => {
   const peers = { codex: { state: "offline", queued: 2, queuedImportant: 1, needsReview: 1, attached: false, oldestQueuedAt: 0 } };
   expect(peerFields("codex", peers)).toMatchObject({ STATE: "offline", Q: "2", "!": "1", REVIEW: "1", LINK: "detached" });

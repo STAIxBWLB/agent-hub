@@ -297,6 +297,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
         : flat(p.paused).replace(/^(budget: .*), resets .+$/, "$1; reset unknown");
       out.push(...detail("paused", pauseText, columns, "attention"));
     }
+    if (p.attachMode === "channel" || p.attachMode === "tools-only") out.push(...detail("attach", `${p.attachMode}; evidence: ${flat(p.attachEvidence ?? "unknown")}`, columns, p.attachMode === "channel" ? "muted" : "attention"));
     if (p.toolsOnly) out.push(...detail(definitionOf(id)?.attach?.pullOnlyForms?.includes("tui") && p.pullOnly ? "pull-only" : "tools-only", flat(p.toolsOnly).replace(/^(?:tools-only|pull-only):\s*/, ""), columns, "attention"));
     if (p.pullOnly && definitionOf(id)?.attach?.pullOnlyForms?.includes("tui")) out.push(...detail(`${id} last read`, typeof p.lastInboxAt === "number" ? relative(p.lastInboxAt, now) : "never", columns, "muted"));
     const actionPolicy = data.actionPolicyInfo?.[id];
