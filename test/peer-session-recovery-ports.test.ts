@@ -20,6 +20,9 @@ import { MemoryObservations } from "../src/hub/memory-observations.ts";
 import { isReviewObserverExcluded } from "../src/hub/memory-policy.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { restartPath } from "../src/hub/restart.ts";
+import { createHash, randomUUID } from "node:crypto";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
+import { HUB, USER } from "../src/hub/envelope.ts";
 
 const cleanup: (() => unknown | Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -150,6 +153,42 @@ test("#625 local memory provenance stays unbound even when its other native sess
   expect(contextSession(local.id)).toBeUndefined();
   memoryObservations.cite(local.id, `mem:${"a".repeat(32)} fixture`, "message:fixture", [newEnvelope("user", "fixture")]);
   expect(recorded).toHaveLength(1); expect(recorded[0]!.session).toBeNull();
+});
+
+test("restored and unknown review input excludes the actual memory observation sink until ordinary input", () => {
+  const cwd = scratch(), file = join(cwd, "hub.db"), hash = (value: string) => createHash("sha256").update(value).digest("hex");
+  const session = "surviving-observer-session", peer = ports(new PlainPeer("codex"), { nativeSession: session });
+  const initial = new DeliveryJournal({ file, projectRoot: cwd, projectId: "observer", instanceId: "before" });
+  initial.holdReviewInput({ peer: peer.id, sessionHash: hash(session), inputHash: hash("review-envelope") });
+  initial.close();
+  const journal = new DeliveryJournal({ file, projectRoot: cwd, projectId: "observer", instanceId: "after" });
+  cleanup.push(() => journal.close());
+  const bus = new Bus({ batchMs: 0 }); bus.add(peer); cleanup.push(() => bus.closeJournal());
+  const recorded: string[] = [];
+  let host: any;
+  host = hostVariables(["contextSession", "contextPii", "reviewObserverDeliveryKey", "reviewObserverHash", "reviewObserverSessionHash", "reviewObserverInputHash", "reviewObserverDurableHeld", "presenceOnlyDelivery", "reviewInputHeld", "persistReviewObserverHold", "notePulledReviewInput", "reviewObserverInput", "reviewObserverHeld", "memoryObservations"], {
+    bus, journal, HUB, USER, createHash, randomUUID, isWsPeer, definitionOf, claudeSession: () => { throw new Error("unexpected Claude read"); },
+    turns: new Map(), board: { peerTaskSignals: () => [], get: () => undefined, hasReviewObserverScope: () => false }, isClosedTaskState,
+    currentReviewObserverInputs: new Map(), pendingReviewObserverInputs: new Map(), ordinaryReviewObserverInputs: new Map(), reviewObserverRuntimeSessions: new WeakMap(),
+    progress: { clearPeer() {} }, readReviewObserverScope: (id: string) => host.reviewObserverInput(id) ? "open-review-comments" : undefined,
+    tasks: { isPii: () => { throw new Error("fixture has no task text"); } }, MemoryObservations, isReviewObserverExcluded,
+    deliveryTask, taskKey, memoryProject: "observer", memoryTelemetry: { record: (_text: string, _context: unknown, kind: string) => recorded.push(kind) },
+  });
+  const citation = `mem:${"a".repeat(32)} fixture`, ordinary = newEnvelope(USER, citation, { to: [peer.id] });
+  const observe = () => {
+    host.memoryObservations.cite(peer.id, citation, "message:observer", [ordinary]);
+    const brief = newEnvelope(HUB, `Memory brief (${citation})`, { to: [peer.id], kind: "presence" });
+    host.memoryObservations.delivery(peer.id, "observer-delivery", [brief], "rendered");
+    host.memoryObservations.delivery(peer.id, "observer-delivery", [brief], "delivered");
+  };
+  expect(host.reviewObserverInput(peer.id)).toBe(true);
+  observe(); expect(recorded).toEqual([]);
+  journal.clearReviewInput(peer.id); // Missing persisted evidence remains unknown after restart.
+  expect(host.reviewObserverInput(peer.id)).toBe(true);
+  observe(); expect(recorded).toEqual([]);
+  host.notePulledReviewInput(peer.id, [ordinary]);
+  expect(host.reviewObserverInput(peer.id)).toBe(false);
+  observe(); expect(recorded).toEqual(["cited", "rendered", "delivered"]);
 });
 
 test("#625 the Codex resume command keeps its daemon-held fallback and respects an explicit empty port", () => {

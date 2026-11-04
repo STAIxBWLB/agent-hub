@@ -25,6 +25,7 @@ export const TERMINAL_CAP = 2048;
 export const ACCEPTED_SETTLE_TIMEOUT_REASON = "channel delivery confirmation timed out; inspect effects before resolving";
 const SCHEMA_VERSION = 1,
   MAX_ROWS = 100_000,
+  MAX_REVIEW_INPUTS = 4096,
   MAX_JSON = 20 * 1024 * 1024;
 const STATES = new Set<JournalDeliveryState>([
   "queued",
@@ -52,6 +53,7 @@ export interface JournalDelivery {
   attempt?: number;
   previousId?: string;
 }
+export interface ReviewInputHold { peer: string; sessionHash: string; inputHash: string }
 export interface AcceptedDeliveryCandidate { id: string; peer: string; revision: number; updatedAt: number; notifyConductor: boolean }
 export interface DeliveryJournalOptions {
   file: string;
@@ -69,6 +71,7 @@ export interface JournalSnapshot {
   bus: BusSnapshot;
   deliveries: JournalDelivery[];
   manualPaused: string[];
+  reviewInputs?: ReviewInputHold[];
 }
 
 function fail(message: string): never {
@@ -83,6 +86,29 @@ function text(value: unknown, name: string, max = 4096): string {
   if (typeof value !== "string" || value.length < 1 || value.length > max)
     fail(`${name} must be a non-empty string`);
   return value;
+}
+function hashText(value: unknown, name: string): string {
+  const hash = text(value, name, 64);
+  if (!/^[a-f0-9]{64}$/.test(hash)) fail(`${name} is invalid`);
+  return hash;
+}
+function reviewInputHold(value: unknown, name: string): ReviewInputHold {
+  let fields: Record<string, unknown>, keys: PropertyKey[];
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) fail(`${name} must be a plain object`);
+    keys = Reflect.ownKeys(value);
+    if (keys.length !== 3 || !["peer", "sessionHash", "inputHash"].every(key => keys.includes(key))) fail(`${name} has unexpected fields`);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (keys.some(key => typeof key !== "string" || !descriptors[key]?.enumerable || !("value" in descriptors[key]!))) fail(`${name} must contain own data fields`);
+    fields = Object.fromEntries(keys.map(key => [key, descriptors[key as string]!.value]));
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("invalid delivery journal:")) throw error;
+    fail(`${name} is unreadable`);
+  }
+  const peer = text(fields.peer, `${name}.peer`, 256);
+  const sessionHash = hashText(fields.sessionHash, `${name}.sessionHash`);
+  const inputHash = hashText(fields.inputHash, `${name}.inputHash`);
+  return { peer, sessionHash, inputHash };
 }
 function integer(
   value: unknown,
@@ -262,6 +288,18 @@ export function validateJournalSnapshot(
     if (ids.has(d.id)) fail(`duplicate delivery ${d.id}`);
     ids.add(d.id);
   }
+  if (Object.hasOwn(s, "reviewInputs")) {
+    if (!Array.isArray(s.reviewInputs)) fail("snapshot.reviewInputs must be an array");
+    if (s.reviewInputs.length > MAX_REVIEW_INPUTS) fail(`snapshot.reviewInputs exceeds ${MAX_REVIEW_INPUTS}`);
+    const holds = list(s.reviewInputs, "snapshot.reviewInputs", MAX_REVIEW_INPUTS);
+    if (!holds.length) fail("snapshot.reviewInputs must be omitted when empty");
+    const peers = new Set<string>();
+    for (const [index, raw] of holds.entries()) {
+      const hold = reviewInputHold(raw, `snapshot.reviewInputs[${index}]`);
+      if (peers.has(hold.peer)) fail("duplicate snapshot review input peer");
+      peers.add(hold.peer);
+    }
+  }
   return true;
 }
 
@@ -358,6 +396,7 @@ export class DeliveryJournal {
     this.db.run(
       `CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, peer TEXT NOT NULL, state TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, originals TEXT NOT NULL, out_json TEXT NOT NULL, reason TEXT, attempt INTEGER, previous_id TEXT)`,
     );
+    this.db.run("CREATE TABLE IF NOT EXISTS review_input_holds (project_id TEXT NOT NULL, peer TEXT NOT NULL, session_hash TEXT NOT NULL, input_hash TEXT NOT NULL, PRIMARY KEY(project_id,peer))");
     this.db.run("CREATE TABLE IF NOT EXISTS delivery_queue_meta_state (project_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)");
     this.db.run("CREATE TABLE IF NOT EXISTS delivery_queue_meta (project_id TEXT NOT NULL, peer TEXT NOT NULL, queued INTEGER NOT NULL, oldest_at INTEGER, unknown_age INTEGER NOT NULL, PRIMARY KEY(project_id,peer))");
     this.db.run("CREATE TABLE IF NOT EXISTS task_offer_reads (project_id TEXT NOT NULL, peer TEXT NOT NULL, envelope_id TEXT NOT NULL, delivery_id TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('adapter','reply','pull')), offer_revision INTEGER NOT NULL CHECK(offer_revision >= 1), PRIMARY KEY(project_id,peer,envelope_id))");
@@ -483,6 +522,13 @@ export class DeliveryJournal {
         .get(this.projectId, MAX_ROWS)
     )
       fail("too many delivery rows");
+    this.reviewInputRows();
+  }
+  private reviewInputRows(): ReviewInputHold[] {
+    const rows = this.db.query("SELECT peer,session_hash,input_hash FROM review_input_holds WHERE project_id=? ORDER BY peer LIMIT ?")
+      .all(this.projectId, MAX_REVIEW_INPUTS + 1) as Record<string, unknown>[];
+    if (rows.length > MAX_REVIEW_INPUTS) fail("too many review input holds");
+    return rows.map((row, index) => reviewInputHold({ peer: row.peer, sessionHash: row.session_hash, inputHash: row.input_hash }, `stored review input ${index}`));
   }
   private recoverInterrupted(): void {
     this.db
@@ -577,6 +623,49 @@ export class DeliveryJournal {
     try { return this.db.transaction(fn)(); }
     catch (error) { this.queueMetadataInvalidated = invalidated; throw error; }
   }
+  holdReviewInput(value: unknown): void {
+    this.ensureOpen();
+    const hold = reviewInputHold(value, "review input hold");
+    this.transaction(() => {
+      const current = this.db.query("SELECT peer,session_hash,input_hash FROM review_input_holds WHERE project_id=? AND peer=?")
+        .get(this.projectId, hold.peer) as Record<string, unknown> | null;
+      const prior = current ? reviewInputHold({ peer: current.peer, sessionHash: current.session_hash, inputHash: current.input_hash }, "stored review input") : undefined;
+      if (prior?.sessionHash === hold.sessionHash && prior.inputHash === hold.inputHash) return;
+      if (!prior && this.reviewInputRows().length >= MAX_REVIEW_INPUTS) fail("too many review input holds");
+      this.bump();
+      this.db.query("INSERT INTO review_input_holds(project_id,peer,session_hash,input_hash) VALUES(?,?,?,?) ON CONFLICT(project_id,peer) DO UPDATE SET session_hash=excluded.session_hash,input_hash=excluded.input_hash")
+        .run(this.projectId, hold.peer, hold.sessionHash, hold.inputHash);
+      this.harden();
+    });
+  }
+  /** Only positive held evidence is durable; absence or a different session is unknown, never ordinary. */
+  readReviewInput(peerValue: string, sessionHashValue: string): string | undefined {
+    this.ensureOpen();
+    const peer = text(peerValue, "review input peer", 256), sessionHash = hashText(sessionHashValue, "review input session hash");
+    this.reviewInputRows(); // Any malformed row makes the evidence set unknown.
+    const row = this.db.query("SELECT peer,session_hash,input_hash FROM review_input_holds WHERE project_id=? AND peer=?")
+      .get(this.projectId, peer) as Record<string, unknown> | null;
+    if (!row) return undefined;
+    const hold = reviewInputHold({ peer: row.peer, sessionHash: row.session_hash, inputHash: row.input_hash }, "stored review input");
+    return hold.sessionHash === sessionHash ? hold.inputHash : undefined;
+  }
+  clearReviewInput(peerValue: string): void {
+    this.ensureOpen();
+    const peer = text(peerValue, "review input peer", 256);
+    this.transaction(() => {
+      const row = this.db.query("SELECT peer,session_hash,input_hash FROM review_input_holds WHERE project_id=? AND peer=?")
+        .get(this.projectId, peer) as Record<string, unknown> | null;
+      if (!row) return;
+      reviewInputHold({ peer: row.peer, sessionHash: row.session_hash, inputHash: row.input_hash }, "stored review input");
+      this.bump();
+      this.db.query("DELETE FROM review_input_holds WHERE project_id=? AND peer=?").run(this.projectId, peer);
+      this.harden();
+    });
+  }
+  hasReviewInputState(): boolean {
+    this.ensureOpen();
+    return this.reviewInputRows().length > 0;
+  }
   snapshot(): JournalSnapshot {
     this.ensureOpen();
     const meta = this.readMeta();
@@ -599,6 +688,7 @@ export class DeliveryJournal {
             withdrawn: [],
           }
         : storedBus;
+    const reviewInputs = this.reviewInputRows();
     const result = {
       schemaVersion: SCHEMA_VERSION,
       revision: Number(meta.revision),
@@ -606,6 +696,7 @@ export class DeliveryJournal {
       bus,
       manualPaused: JSON.parse(String(meta.manual_paused || "[]")),
       deliveries: rows.map(parseDelivery),
+      ...(reviewInputs.length ? { reviewInputs } : {}),
     };
     validateJournalSnapshot(result);
     return result;
@@ -1190,6 +1281,11 @@ export class DeliveryJournal {
             row.attempt ?? null,
             row.previousId ?? null,
           );
+      for (const raw of snapshot.reviewInputs ?? []) {
+        const hold = reviewInputHold(raw, "snapshot review input");
+        this.db.query("INSERT INTO review_input_holds(project_id,peer,session_hash,input_hash) VALUES(?,?,?,?)")
+          .run(this.projectId, hold.peer, hold.sessionHash, hold.inputHash);
+      }
       // Snapshots deliberately omit resolution history; only these imported originals have unknown retry rights.
       this.markRetryUnknown(snapshot.deliveries, bus);
       return true;

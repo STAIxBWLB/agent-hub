@@ -44,6 +44,7 @@ test("a failing optional title journal read cannot skip invocation, pending task
   const context = {
     Buffer, HUB, randomUUID, definitionOf, isWsPeer, remoteEnvelope, sessionTitleBindings, isReviewObserverExcluded, progress:{clearPeer(){}},
     bus, board, currentReviewObserverInputs, pendingReviewObserverInputs, readReviewObserverScope,
+    reviewObserverInput: (id: string) => readReviewObserverScope(id) !== undefined,
     firstTitleMessages: new Map(), titleBindings: { pi: { session: "native-session", delivery: "old-delivery", envelope: "old-envelope" } },
     journal: { get: () => { reads++; if (journalThrows) throw new Error("journal unavailable"); return journalRow; } },
     titleBindingFile: "unused", atomicPrivateJSON: unexpected, claudeSession: unexpected,

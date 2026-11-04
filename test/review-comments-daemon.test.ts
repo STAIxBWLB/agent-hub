@@ -1,11 +1,12 @@
 import type { ReviewAnchor } from "../src/hub/review-anchor.ts";
+import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { Board } from "../src/hub/board.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
@@ -15,6 +16,7 @@ import { realPath } from "../src/hub/project.ts";
 import { gitProject } from "./fakes/git-project.ts";
 
 class ReviewOwner extends BasePeer {
+  readonly nativeSession?: string;
   got: Envelope[] = [];
   echo = false;
   afterDelivery?: () => void;
@@ -22,18 +24,19 @@ class ReviewOwner extends BasePeer {
   steerGate?: Promise<void>;
   steered: Envelope[] = [];
   steer?: (envs: Envelope[], deliveryId?: string) => Promise<void>;
-  constructor(id: string, readonly pullOnly = false, withSteer = false) {
+  constructor(id: string, readonly pullOnly = false, withSteer = false, nativeSession?: string) {
     super(id);
+    this.nativeSession = nativeSession;
     if (withSteer) this.steer = async (envs, deliveryId) => { this.steered.push(...envs); this.afterDelivery?.(); if (this.steerGate) await this.steerGate; if (deliveryId) this.delivery({ id: deliveryId, state: "completed", reason: "synthetic owner consumed steer" }); };
   }
   async start() { this.setState("idle"); }
   async stop() { this.setState("offline"); }
   markBusy() { this.setState("busy"); }
   markIdle() { this.setState("idle"); }
-  async deliver(envs: Envelope[], deliveryId?: string) { this.got.push(...envs); if (this.echo) this.onMessage?.("OWNER_ECHO_CANARY " + envs[0]!.body, { to: ["user"], inReplyTo: envs[0] }); this.afterDelivery?.(); if (this.deliveryGate) await this.deliveryGate; if (deliveryId) this.delivery({ id: deliveryId, state: "completed", reason: "synthetic owner consumed delivery" }); }
+  async deliver(envs: Envelope[], deliveryId?: string) { this.got.push(...envs.filter(env => env.body !== "fixture ordinary context")); if (this.echo) this.onMessage?.("OWNER_ECHO_CANARY " + envs[0]!.body, { to: ["user"], inReplyTo: envs[0] }); this.afterDelivery?.(); if (this.deliveryGate) await this.deliveryGate; if (deliveryId) this.delivery({ id: deliveryId, state: "completed", reason: "synthetic owner consumed delivery" }); }
 }
 class PiTitleOwner extends ReviewOwner {
-  constructor(withSteer = false) { super("pi", false, withSteer); }
+  constructor(withSteer = false, nativeSession = "same-pi-native-session") { super("pi", false, withSteer, nativeSession); }
   get titleSession() { return "pi-title-session"; }
   get sessionTitle() { return ""; }
 }
@@ -48,26 +51,50 @@ async function fixture(reviewMaterialsGh?: import("../src/hub/sdlc.ts").SdlcGh, 
   const head = hubGitSync(["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 5000 }).stdout.trim();
   mkdirSync(join(cwd, ".agenthub"));
   writeFileSync(join(cwd, ".agenthub/routing.toml"), readFileSync(new URL("../templates/routing.toml", import.meta.url), "utf8").replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"').replace('pii_screen = "local"', 'pii_screen = "off"'));
-  const daemon = await startDaemon({ cwd, stateDir, projectId: "review-comment-fixture", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, reviewMaterialsGh,
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, roles: { codex: ["implementer"], claude: ["conductor"] },
+  const config = { ...DEFAULT_CONFIG, batch_ms: 0, roles: { codex: ["implementer"], claude: ["conductor"] },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
-      pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [], access_hosts: [] } } });
-  const board = new Board(join(stateDir, "hub.db"));
+      pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [], access_hosts: [] } };
+  const daemonOptions = () => ({ cwd, stateDir, projectId: "review-comment-fixture", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, reviewMaterialsGh, config });
+  let daemon = await startDaemon(daemonOptions());
+  let board = new Board(join(stateDir, "hub.db"));
   const row = board.propose("user", { title: "Review document", class: "test", refs: { paths: ["report.md"], commit: head } });
   board.update(row.id, "user", "fixture", { owner: "codex", state: "in_progress" });
-  const owner = new ReviewOwner("codex", pullOnly, withSteer); daemon.bus.add(owner); await owner.start();
-  const person = await ControlClient.connect(stateDir, { role: "console", projectRoot: cwd });
-  const peer = await ControlClient.connect(stateDir, { role: "tools", peer: "codex", projectRoot: cwd });
-  const conductor = await ControlClient.connect(stateDir, { role: "tools", peer: "claude", projectRoot: cwd });
+  let owner = new ReviewOwner("codex", pullOnly, withSteer, "same-native-session"); daemon.bus.add(owner); await owner.start();
+  let person = await ControlClient.connect(stateDir, { role: "console", projectRoot: cwd });
+  let peer = await ControlClient.connect(stateDir, { role: "tools", peer: "codex", projectRoot: cwd });
+  let conductor = await ControlClient.connect(stateDir, { role: "tools", peer: "claude", projectRoot: cwd });
   const anchor: ReviewAnchor = { path: "report.md", side: "head", contentHash: createHash("sha256").update(text).digest("hex"), selectors: [{ kind: "lineRange", startLine: 1, endLine: 1 }, { kind: "textQuote", exact: "REVIEW_QUOTE_CANARY", prefix: "", suffix: "" }] };
-  return { cwd, stateDir, daemon, board, owner, person, peer, conductor, task: row.id, head, anchor,
+  const baselineDelivery = pullOnly ? undefined : waitForDelivery(owner);
+  daemon.bus.publish(newEnvelope("user", "fixture ordinary context", { to: ["codex"], priority: "important" }));
+  if (pullOnly) daemon.bus.pull("codex"); else await baselineDelivery;
+  return { cwd, stateDir, get daemon() { return daemon; }, get board() { return board; }, get owner() { return owner; }, get person() { return person; }, get peer() { return peer; }, get conductor() { return conductor; }, task: row.id, head, anchor,
+    restartNative: async () => {
+      person.close(); peer.close(); conductor.close(); board.close(); await daemon.stop();
+      daemon = await startDaemon(daemonOptions()); board = new Board(join(stateDir, "hub.db"));
+      owner = new ReviewOwner("codex", pullOnly, withSteer, "same-native-session"); daemon.bus.add(owner); await owner.start();
+      person = await ControlClient.connect(stateDir, { role: "console", projectRoot: cwd });
+      peer = await ControlClient.connect(stateDir, { role: "tools", peer: "codex", projectRoot: cwd });
+      conductor = await ControlClient.connect(stateDir, { role: "tools", peer: "claude", projectRoot: cwd });
+    },
     stop: async () => { person.close(); peer.close(); conductor.close(); board.close(); await daemon.stop(); rmSync(cwd, { recursive: true, force: true }); } };
 }
 
 function proposeOwnedTask(board: Board, owner: string, task: Parameters<Board["propose"]>[1]) {
   const row = board.propose("user", task);
   return board.update(row.id, "user", "fixture owner", { owner });
+}
+
+function waitForDelivery(owner: ReviewOwner): Promise<void> {
+  const previous = owner.onDelivery;
+  return new Promise<void>(resolve => {
+    owner.onDelivery = receipt => {
+      previous?.(receipt);
+      if (receipt.state !== "completed") return;
+      owner.onDelivery = previous;
+      resolve();
+    };
+  });
 }
 
 test("real console drafts are silent, send is one private-observer capsule, and every non-console write is refused", async () => {
@@ -300,6 +327,124 @@ test("an ordinary Task B input releases Task A review provenance without clearin
     expect((await f.person.request({ t: "status" })).status.peers.codex.doing.text).toBe("ORDINARY_PROGRESS_CANARY");
     const audit = readFileSync(join(f.stateDir, "hub.log"), "utf8") + readFileSync(join(f.stateDir, "events.jsonl"), "utf8");
     expect(audit).toContain("ORDINARY_REPLY_CANARY");
+  } finally { await f.stop(); }
+});
+
+test("a consumed review package stays excluded for the same native session across daemon restart", async () => {
+  const f = await fixture();
+  try {
+    const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "restart review scope" });
+    const reviewAck = waitForDelivery(f.owner);
+    const sent = await f.person.request({ t: "review_comment_send", task: f.task, ids: [saved.id] });
+    expect(sent).toMatchObject({ ok: true, delivery: "queued" });
+    await reviewAck;
+    const piBeforeRestart = new PiTitleOwner(); f.daemon.bus.add(piBeforeRestart); await piBeforeRestart.start();
+    const piReviewAck = waitForDelivery(piBeforeRestart);
+    f.daemon.bus.publish(newEnvelope("hub", "RESTART_TITLE_REVIEW_QUOTE_CANARY", { to: ["pi"], kind: "review", priority: "important", refs: { task: String(f.task), reviewPackage: "review:restart-title-fixture" } }));
+    await piReviewAck;
+    const bindingFile = join(f.stateDir, "session-title-inputs.json");
+    expect(existsSync(bindingFile)).toBe(false);
+    f.owner.onDoing?.("todo", "RESTART_REVIEW_PROGRESS_CANARY");
+    expect((await f.person.request({ t: "status" })).status.peers.codex.doing.text).toBe(DOING_STUB);
+    const taskB = proposeOwnedTask(f.board, "codex", { title: "ordinary after restart", class: "test", refs: { paths: ["outside.md"], commit: f.head } });
+
+    await f.restartNative();
+    const piAfterRestart = new PiTitleOwner(); f.daemon.bus.add(piAfterRestart); await piAfterRestart.start();
+    expect(existsSync(bindingFile)).toBe(false);
+    const held = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "must remain private after restart", kind: "finding" } });
+    expect(held.ok).toBe(false);
+    const personNote = await f.person.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "person memory is not a native review turn", kind: "finding" } });
+    expect(personNote.ok).toBe(true);
+    f.owner.onDoing?.("todo", "RESTART_REVIEW_PROGRESS_CANARY");
+    expect((await f.person.request({ t: "status" })).status.peers.codex.doing.text).toBe(DOING_STUB);
+    f.owner.onMessage?.("RESTART_REVIEW_CAPTURE_CANARY", { to: ["user"] });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const captured = readFileSync(join(f.stateDir, "hub.log"), "utf8") + readFileSync(join(f.stateDir, "events.jsonl"), "utf8");
+    expect(captured).not.toContain("RESTART_REVIEW_CAPTURE_CANARY");
+
+    const titleAck = waitForDelivery(piAfterRestart);
+    f.daemon.bus.publish(newEnvelope("user", "ORDINARY_AFTER_RESTART_TITLE_CANARY", { to: ["pi"], kind: "chat", priority: "important" }));
+    await titleAck;
+    expect(existsSync(bindingFile)).toBe(true);
+    const titleBindings = readFileSync(bindingFile, "utf8");
+    expect(titleBindings).toContain('"pi"');
+    expect(titleBindings).not.toContain("RESTART_TITLE_REVIEW_QUOTE_CANARY");
+
+    const ordinaryAck = waitForDelivery(f.owner);
+    f.daemon.bus.publish(newEnvelope("user", "ordinary next turn", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
+    await ordinaryAck;
+    const ordinary = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary input follows held review", kind: "finding" } });
+    expect(ordinary.ok).toBe(true);
+    f.owner.onDoing?.("todo", "ORDINARY_AFTER_RESTART_PROGRESS_CANARY");
+    expect((await f.person.request({ t: "status" })).status.peers.codex.doing.text).toBe("ORDINARY_AFTER_RESTART_PROGRESS_CANARY");
+    f.owner.onMessage?.("ORDINARY_AFTER_RESTART_CAPTURE_CANARY", { to: ["user"] });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const afterOrdinary = readFileSync(join(f.stateDir, "hub.log"), "utf8") + readFileSync(join(f.stateDir, "events.jsonl"), "utf8");
+    expect(afterOrdinary).toContain("ORDINARY_AFTER_RESTART_CAPTURE_CANARY");
+    const named = await f.peer.request({ t: "task", op: "hub_remember", args: { task: f.task, text: "named review task remains scoped", kind: "finding" } });
+    expect(named.ok).toBe(false);
+
+    const status = await f.person.request({ t: "status" });
+    const prepared = await f.person.request({ t: "recovery", op: "prepare", operationId: "review-observer-restart", expectedInstanceId: status.status.instanceId, targetFeatures: DAEMON_FEATURES });
+    expect(prepared.ok).toBe(true);
+    f.daemon.bus.peers.delete("codex");
+    const olderTarget = DAEMON_FEATURES.filter(feature => feature !== "review_observer_input_state");
+    const rejected = await f.person.request({ t: "recovery", op: "inspect", operationId: "review-observer-restart", expectedInstanceId: status.status.instanceId, targetFeatures: olderTarget });
+    expect(rejected).toMatchObject({ ok: false, error: expect.stringContaining("review_observer_input_state") });
+  } finally { await f.stop(); }
+});
+
+test("recovery refuses a target without review input state when a native session id is unknown", async () => {
+  const f = await fixture();
+  try {
+    Object.defineProperty(f.owner, "nativeSession", { value: undefined });
+    const status = await f.person.request({ t: "status" });
+    const olderTarget = DAEMON_FEATURES.filter(feature => feature !== "review_observer_input_state");
+    const result = await f.person.request({ t: "recovery", op: "inspect", expectedInstanceId: status.status.instanceId, targetFeatures: olderTarget });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("review_observer_input_state") });
+  } finally { await f.stop(); }
+});
+
+test("recovery refuses an old target when persisted review input state cannot be read", async () => {
+  const f = await fixture();
+  try {
+    const reviewAck = waitForDelivery(f.owner);
+    f.daemon.bus.publish(newEnvelope("hub", "REVIEW_DURABLE_CANARY", { to: ["codex"], kind: "review", priority: "important", refs: { task: String(f.task), reviewPackage: "review:read-error-fixture" } }));
+    await reviewAck;
+    const db = new Database(join(f.stateDir, "hub.db"));
+    try { db.query("UPDATE review_input_holds SET input_hash='malformed' WHERE peer='codex'").run(); } finally { db.close(); }
+    const status = await f.person.request({ t: "status" });
+    const olderTarget = DAEMON_FEATURES.filter(feature => feature !== "review_observer_input_state");
+    const result = await f.person.request({ t: "recovery", op: "inspect", expectedInstanceId: status.status.instanceId, targetFeatures: olderTarget });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("compatibility is unknown") });
+  } finally { await f.stop(); }
+});
+
+test("an anchored finding submission remains latched across a daemon restart until ordinary input is acknowledged", async () => {
+  const f = await fixture();
+  try {
+    const reviewer = new ReviewOwner("claude", false, false, "same-claude-session"); f.daemon.bus.add(reviewer); await reviewer.start();
+    f.board.update(f.task, "user", "fixture reviewer", { reviewer: "claude" });
+    const reviewRequestAck = waitForDelivery(reviewer);
+    const done = await f.peer.request({ t: "task", op: "hub_task_done", args: { id: f.task, summary: "Document ready", refs: { commit: f.head } } });
+    expect(done.ok).toBe(true);
+    await reviewRequestAck;
+    const finding = { id: "restart-latched-anchor", pass: "bugs", severity: "important", disposition: "open", path: "report.md", anchor: f.anchor };
+    const verdict = await f.conductor.request({ t: "task", op: "hub_review", args: { id: f.task, head: f.head, verdict: "changes_requested", note: "Review finding", findings: [finding] } });
+    expect(verdict.ok).toBe(true);
+    const taskB = proposeOwnedTask(f.board, "claude", { title: "ordinary reviewer task", class: "test", refs: { paths: ["outside.md"], commit: f.head } });
+
+    await f.restartNative();
+    const reviewerAfterRestart = new ReviewOwner("claude", false, false, "same-claude-session"); f.daemon.bus.add(reviewerAfterRestart); await reviewerAfterRestart.start();
+    const stillHeld = await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "anchored reviewer input stays held", kind: "finding" } });
+    expect(stillHeld.ok).toBe(false);
+    const nextTurnAck = waitForDelivery(reviewerAfterRestart);
+    f.daemon.bus.publish(newEnvelope("user", "ordinary reviewer next turn", { to: ["claude"], priority: "important", refs: { task: String(taskB.id) } }));
+    await nextTurnAck;
+    const released = await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary reviewer turn is clear", kind: "finding" } });
+    expect(released.ok).toBe(true);
+    const named = await f.conductor.request({ t: "task", op: "hub_remember", args: { task: f.task, text: "anchored task remains scoped", kind: "finding" } });
+    expect(named.ok).toBe(false);
   } finally { await f.stop(); }
 });
 
