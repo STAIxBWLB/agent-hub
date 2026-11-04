@@ -44,6 +44,19 @@ Authority is role-scoped: the person retains decisions requiring judgment or con
 
 Native tools keep their vendor permission and execution boundaries. The local worker applies path and permission checks to its tools, and runs command execution through a host-supported sandbox; the hub does not sandbox vendor-native tools or claim all ACP commands are isolated. This avoids confusing a hub permission mode with execution confinement ([#39](https://github.com/STAIxBWLB/agent-hub/issues/39), [#270](https://github.com/STAIxBWLB/agent-hub/issues/270)).
 
+## Console presentation surfaces
+
+The floating pet belongs to acon Mini (#1012). The compatibility command
+`ahub pet --window [--close]` prints the `acon ui` pointer and succeeds for
+person, agent and live-test identities, without starting a host or window.
+The retired `ahub pet --palette <value>` validates its argument and prints the
+same pointer without writing configuration. Legacy `pet.palette` remains
+validated compatibility input with no rendering effect.
+Legacy `pet.window` input is ignored with one notice and cannot change authority
+or re-enable an inherited disabled terminal pet by itself. Terminal pet frames
+remain local TUI presentation. The acon plugin's existing **Console message**
+view owns the composer through its established `send` action (#935).
+
 ## Board, assignment, and delivery
 
 `Tasks` is the task state machine and policy boundary; `Board` is its SQLite persistence. Proposals, assignments, acceptance, completion, and review flow through `Tasks`, which checks roles, state, privacy, and revisions before writes. Pure candidate selection keeps route explanations aligned with actual assignment. This prevents adapters or CLIs bypassing invariants with direct board writes ([#424](https://github.com/STAIxBWLB/agent-hub/issues/424), [#481](https://github.com/STAIxBWLB/agent-hub/issues/481)).

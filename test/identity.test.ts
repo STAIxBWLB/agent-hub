@@ -285,7 +285,7 @@ const consoleClassForms: readonly [string, readonly string[], PeerCommandAccess]
   ["task", ["cancel", "1", "--reason", "x", "--as-user"], "console"],
   ["board", ["import", "github", "--label", "x", "--as-user=1"], "console"],
   ["pi", ["--replace-session", "--session-file", "preserved.jsonl"], "console"],
-  ["pet", ["--window"], "console"],
+  ["pet", ["--window"], "allowed"],
   ["watch", ["kimi"], "console"],
   ["recovery", ["reattach", "op-1", "codex"], "console"],
   ["no-such-command", [], "console"],

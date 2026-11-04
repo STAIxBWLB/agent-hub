@@ -49,7 +49,7 @@ import { ControlWriteTelemetry, controlWriteMetadata, controlWriteSpan } from ".
 import { projectedDiff } from "./projected-diff.ts";
 import { listenWithoutPortCollision } from "./listen.ts";
 import { needs, type NeedsInput } from "../ui/needs.ts";
-import { loadPetConfig } from "../pet/config.ts";
+import { loadPetConfig, PET_WINDOW_RETIRED_NOTICE, stripLegacyPetWindow } from "../pet/config.ts";
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, matchesPolicy } from "./path-policy.ts";
 import { CodeFacts, type CodeFactResult, type CodeSymbol } from "./code-facts.ts";
@@ -323,7 +323,7 @@ export interface HubConfig {
   coordination: "advisory" | "turn-free";
   /** Switches for controlled ablations only (issue #110): `stale_notices: "deliver"` turns #106's dropping off. */
   experiments?: { stale_notices?: "drop" | "deliver" };
-  /** Console-local character and window presentation (#280, #483); grants no authority. */
+  /** Console-local terminal presentation (#280, #483); grants no authority. */
   pet?: false | Record<string, unknown>;
   /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
   ignored?: string[];
@@ -480,6 +480,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
   const ignored: string[] = [...instanceConfig.ignored];
   const inertModuleRoster = !!instanceConfig.adapter_modules?.length;
   const appliedPermissionSources: NonNullable<HubConfig["permission_default_sources"]> = {};
+  let retiredPetWindow = false;
   const files = CONFIG_FILES.flatMap((name) => {
     let file: Record<string, any>; // parsed JSON, checked field by field below
     if (!captured.some(layer => layer.name === name)) return [];
@@ -518,6 +519,8 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     terminalTemplate(file.terminal?.open);
     if (file.start != null && (typeof file.start !== "object" || Array.isArray(file.start) || Object.keys(file.start).some((key: string) => key !== "agents"))) throw new Error("start must be an object with an agents list");
     if (file.start?.agents !== undefined) checkStartAgents(file.start.agents);
+    const pet = stripLegacyPetWindow(file.pet);
+    if (pet !== file.pet) { retiredPetWindow = true; if (pet && typeof pet === "object" && !Object.keys(pet).length) delete file.pet; else file.pet = pet; }
     if (file.pet !== undefined) validatePetConfig(file.pet, "config.pet");
     if (file.pet && typeof file.pet === "object" && !Object.keys(file.pet).length) delete file.pet;
     delete file.declaredExternalInstances; // host-derived refusal rows, never a file claim
@@ -549,6 +552,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
   // Escape hatches with a stated end (issue #83). A removed one is ignored, never an error: an old config.local.json
   // must not stop a hub from starting.
   const retired: string[] = [...routingRetired];
+  if (retiredPetWindow && !retired.includes(PET_WINDOW_RETIRED_NOTICE)) retired.push(PET_WINDOW_RETIRED_NOTICE);
   if (file.local?.sandbox !== undefined) {
     if (file.local.sandbox === "allow-default") retired.push('local.sandbox "allow-default" was removed in 0.12.0: the deny-default sandbox applies (local.read_allow adds paths)');
     file.local = { ...file.local };
@@ -7181,6 +7185,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   function declaredPaths(value: unknown, prefix = ""): string[] {
     if (prefix === "_autonomy" || prefix.startsWith("_autonomy.")) return [];
+    if (prefix === "pet.window") return [];
     // Retired dictionaries never enter active publication; hub ids remain opaque keys.
     if (prefix === "routing.targets" || prefix === "routing.routes") return [];
     if (prefix === "routing.hub_routes") return [prefix];

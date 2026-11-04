@@ -1670,10 +1670,11 @@ test("#441 navigation reads split into presses only when made of known sequences
   expect([s.events.map(e => e.text), s.selection, selectedPanelRow(s)?.text]).toEqual([["e2", "e3", "e4", "e5"], 0, "e2"]);
 });
 
-test("#452 w outside Peers opens the web UI and o the pet window, never while editing, confirming or under the key table", () => {
+test("#1012 w outside Peers opens the web UI and o never opens a retired pet window", () => {
   let s = reduceConsole(state(true), "2", NOW).state;
   expect(reduceConsole(s, "w", NOW).effects).toEqual([{ type: "command", args: ["ui"] }]);
-  expect(reduceConsole(s, "o", NOW).effects).toEqual([{ type: "command", args: ["pet", "--window"] }]);
+  expect(reduceConsole(s, "o", NOW).effects).toEqual([]);
+  expect(renderConsole(reduceConsole(s, "?", NOW).state, 120, 40, NOW).join("\n")).not.toContain("o pet window");
   const editing = { ...s, editing: true, input: "" };
   const help = reduceConsole(s, "?", NOW).state;
   const confirming = reduceConsole({ ...s, editing: true, input: "task assign 9 kimi" }, "\r", NOW).state;

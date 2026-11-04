@@ -26,7 +26,7 @@ import { validateInstances, type InstancesConfig } from "./instances.ts";
 import { peerRosterConfig, staleInstanceKey } from "./roster.ts";
 import { CHARACTER_IDS } from "../pet/characters.ts";
 import { autonomyOwnership, checkSettingValue, settingDef } from "./settings.ts";
-import { petPalette } from "../pet/config.ts";
+import { petPalette, stripLegacyPetWindow, PET_WINDOW_RETIRED_NOTICE } from "../pet/config.ts";
 import { parseSpecsConfig } from "./specs-config.ts";
 
 export type ApplyClass = "live" | "next use" | "restart";
@@ -67,6 +67,7 @@ export function authorizeConfigLeaf(input: ConfigAuthorizationInput): ConfigAuth
   const result = (allowed: boolean, guarded: boolean, reason: string): ConfigAuthorizationDecision => ({ key, allowed, guarded, reason });
   const runners = key === "research.runners" || key.startsWith("research.runners.") || key === "research"
     && [before, after].some(value => !!value && typeof value === "object" && Object.hasOwn(value, "runners"));
+  if (input.source === "config" && key === "pet.window") return result(false, false, PET_WINDOW_RETIRED_NOTICE);
   if (runners) {
     if (input.source !== "config" || input.sourceFile !== "config.local.json" || input.tracked !== false) return result(false, true, "research.runners requires untracked config.local.json");
     if (input.authority === "conductor") return result(false, true, "runner registration is person only");
@@ -176,11 +177,10 @@ const petFields: Record<string, Check> = {
   blink: bool,
   bell: bool,
   palette: (v, k) => { if (!petPalette(v)) fail(k, "unknown choice"); },
-  window: bool,
 };
 export const validatePetConfig: Check = (v, k) => {
   if (v === false) return;
-  block(petFields)(v, k);
+  block(petFields)(stripLegacyPetWindow(v), k);
 };
 shapes.set(validatePetConfig, { fields: petFields });
 const nativeValidators = { bool, text, strings, argv, number, words, block };

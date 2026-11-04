@@ -331,10 +331,11 @@ test("native shell CLI messages and board history retain the actor while plain t
 test("live-test cannot impersonate the user or file person verdicts and workflow history", async () => {
   const root = project(), stateDir = join(root, ".agenthub/state");
   try {
+    // #1012: bare --window is an allowed compatibility pointer, covered by pet-window-retired-cli.test.ts; --as-user stays forbidden.
     for (const args of [["say", "--as-user", "private-message"], ["say", "--as-user=true", "private-message"],
       ["task", "assign", "1", "pi"], ["task", "escalate", "1"], ["backlog", "add", "test", "private-title"],
       ["release", "new", "private-release", "goal", "1"], ["sdlc", "record", "1", "{}"], ["board", "import", "github"],
-      ["bench", "run", "private-suite"], ["pet", "--window"]]) {
+      ["bench", "run", "private-suite"], ["pet", "--window", "--as-user"]]) {
       const result = await cli(root, ["--live-test", ...args], { AGENTHUB_PEER_ID: "codex" });
       expect(result.code).toBe(1);
       expect(result.stderr).toContain("live-test cannot write person-attributed content");

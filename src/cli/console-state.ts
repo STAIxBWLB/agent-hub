@@ -397,7 +397,7 @@ export const LAST_KEYS = [">", "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~"];
 const KEYS: [string, string[]][] = [
   ["Everywhere", ["Tab stream/panels", ": command", "? keys", "Esc back", "q quit"]],
   ["Command", ["Enter run", "Esc cancel", "Up/Down history", "Ctrl-U clear"]],
-  ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Home/< first, End/> last", "Enter view", "j/k scroll a view", "w web UI (outside Peers)", "o pet window"]],
+  ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Home/< first, End/> last", "Enter view", "j/k scroll a view", "w web UI (outside Peers)"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
   ["Peers", ["p pause", "r resume", "m permission mode", "w WIP limit", "l make planner (then y)", "t rename Pi/local session"]],
   ["Tasks", ["b backlog/open", "n add backlog", "a assign/reserve (then y)", "u unassign (then y)", "r approve or request changes (in review; a or c, then a note)", "p pull, e plan (backlog)", "R return to backlog", "c cancel (then y)"]],
@@ -764,9 +764,9 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     return done();
   }
   if (key === "\x1b") { s.detail = undefined; s.requestDetail = undefined; s.help = false; s.optionChoice = undefined; return done(); }
-  // #452: open the project dashboard or the pet window as a person's console command; both return at once.
-  if (s.mode === "panels" && (key === "w" || key === "o") && !s.optionChoice) {
-    effects.push({ type: "command", args: key === "w" ? ["ui"] : ["pet", "--window"] });
+  // #1012: the project dashboard stays on w; the floating pet window belongs to acon Mini.
+  if (s.mode === "panels" && key === "w" && !s.optionChoice) {
+    effects.push({ type: "command", args: ["ui"] });
     return done();
   }
   if (s.mode === "panels" && (FIRST_KEYS.includes(key) || LAST_KEYS.includes(key))) {
