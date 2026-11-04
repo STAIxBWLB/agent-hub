@@ -7,7 +7,9 @@ import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { USER } from "../src/hub/envelope.ts";
 import { openProfileMemory } from "../src/hub/memory-profile.ts";
+import { promotionScreen } from "../src/hub/memory-policy.ts";
 import { loadRouting } from "../src/hub/routing.ts";
+import { createMemorySyncPolicy } from "../src/hub/memory-sync-policy.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 
 function authoredRows(dir: string): Record<string, string> {
@@ -21,9 +23,12 @@ for (const approval of ["review", "done without reviewer"] as const) {
   test(`${approval} approval preserves the board outcome but fences stale-profile settlement and promotion`, async () => {
     const dir = mkdtempSync(join(tmpdir(), "ahub-profile-settle-"));
     const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 });
-    const opened = openProfileMemory({ home: join(dir, "home"), screen: () => "promote" });
+    const project = "synthetic/profile-settle";
+    const home = join(dir, "home");
+    const opened = openProfileMemory({ home, screen: promotionScreen(project, dir, () => loadRouting(dir), () => [], () => [],
+      () => createMemorySyncPolicy({ home: join(home, "memory"), cwd: dir })) });
     try {
-      const project = "synthetic/profile-settle", notices: string[] = [];
+      const notices: string[] = [];
       const task = board.propose(USER, { title: "synthetic work ready for approval", class: "implement" });
       board.update(task.id, "codex", "accepted", { owner: "codex", reviewer: approval === "review" ? "claude" : null, state: "in_progress" });
       if (approval === "review") board.update(task.id, "codex", "done", { state: "in_review" }, "synthetic work complete");

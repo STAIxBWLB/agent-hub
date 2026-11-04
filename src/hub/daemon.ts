@@ -234,6 +234,8 @@ import { SourceRegistry } from "./sources.ts";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead, sourceRead, validateSourceRead } from "./read-tools.ts";
 import { nativeRecall } from "../memory/recall.ts";
 import { promotionScreen, withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
+import { classifyMemorySyncFailure, initialMemorySyncState, memorySyncDeclinedDetails, memorySyncFailureDetailHash, memorySyncView, reduceMemorySync } from "./memory-sync-state.ts";
+import { createMemorySyncPolicy, inspectDeclinedMemoryRows } from "./memory-sync-policy.ts";
 import { DEFAULT_SPECS_CONFIG, parseSpecsConfig, type SpecsConfig } from "./specs-config.ts";
 
 export interface HubConfig {
@@ -773,6 +775,8 @@ export interface DaemonOptions {
   webFetchTransport?: import("../local/web-fetch.ts").WebFetchPort["fetch"];
   /** Tests observe timer-driven sync without opening a remote; production uses the package sync. */
   memorySync?: typeof syncMemory;
+  /** Host-only fixture seam to trigger the existing single-flight sync cycle; suppresses its timers only in the fixture; never config or control input. */
+  memorySyncTrigger?: (syncNow: () => Promise<void>) => void;
   /** Host-only test/embedding transports. Never read from config or tool input. */
   boundedTools?: {
     specAvailable?: typeof specAvailable;
@@ -1557,11 +1561,31 @@ export async function startDaemon(opts: DaemonOptions) {
     syncStop.abort();
     memoryNotice(`hub native memory disabled: ${reason}`);
   };
+  const memorySyncHostScreen = (row: Record<string, unknown>) => {
+    const title = typeof row.title === "string" ? row.title : "";
+    const text = typeof row.text === "string" ? row.text : "";
+    const about = Array.isArray(row.about) ? row.about.filter((node): node is string => typeof node === "string") : [];
+    const extraText = JSON.stringify(Object.fromEntries(Object.entries(row).filter(([key]) => !["title", "text", "about", "task", "project"].includes(key))));
+    const task = typeof row.task === "string" ? row.task : null;
+    const rowProject = typeof row.project === "string" ? row.project : undefined;
+    const taskMatch = rowProject === memoryProject && task?.startsWith(`${memoryProject}#`) ? /#(\d+)@(\d+)$/.exec(task) : null;
+    const item = taskMatch ? board.get(Number(taskMatch[1])) : undefined;
+    const taskPaths = item && String(item.created) === taskMatch?.[2] && taskKey(memoryProject, item) === task ? [...(item.refs.paths ?? []), ...(item.plan?.paths ?? [])] : [];
+    const candidate = { title, text: `${text}\n${extraText}`, about: [...about, ...taskPaths.map(path => `path:${path}`)], task, project: rowProject };
+    if (looksSecret(`${title}\n${text}\n${extraText}`)) return { ok: false, rule: "hub privacy policy: PII pattern or private path" };
+    if (!withoutPii([candidate], activeRouting(), opts.cwd, config.pii?.paths ?? []).length) return { ok: false, rule: "hub privacy policy: PII pattern or private path" };
+    return { ok: true };
+  };
+  const currentMemorySyncPolicy = () => createMemorySyncPolicy({
+    home: memoryBinding?.home ?? memoryHome(), cwd: opts.cwd,
+    denyPaths: config.local.deny, piiPatterns: activeRouting().signals.pii_patterns,
+    hostScreen: memorySyncHostScreen,
+  });
   if (config.memory.native) {
     try { const opened = openProfileMemory({ project: memoryProject, projectKey: memoryProjectRaw, ttlMs: (config.memory.short_ttl_days ?? 14) * 24 * 3600_000, log, screen: promotionScreen(memoryProject, opts.cwd, () => activeRouting(), () => config.pii?.paths ?? [], (key) => {
       const m = /#(\d+)@(\d+)$/.exec(key), t = m ? board.get(Number(m[1])) : undefined;
       return t && String(t.created) === m![2] ? [...(t.refs.paths ?? []), ...(t.plan?.paths ?? [])] : [];
-    }) }, memoryUnavailable); memoryStore = opened.store; memoryBinding = opened.binding; startupCleanup.push(() => opened.store.close()); }
+    }, () => currentMemorySyncPolicy()) }, memoryUnavailable); memoryStore = opened.store; memoryBinding = opened.binding; startupCleanup.push(() => opened.store.close()); }
     catch (error) { if (!memoryProblem) memoryUnavailable(error instanceof Error && error.message === MEMORY_SPLIT_INCOMPLETE ? error.message : "memory profile unavailable; inspect the selector and generation, then restart the hub"); }
   }
   const memoryProfileStatus = (person = false) => {
@@ -1569,9 +1593,13 @@ export async function startDaemon(opts: DaemonOptions) {
       state: config.memory.native ? "unavailable" : "disabled", home: memoryHome(), agentMemVersion: AGENT_MEM_VERSION,
       ...(memoryProblem ? { error: memoryProblem } : {}),
     } satisfies UnboundMemoryProfileReceipt);
-    if (person) return value;
+    const memorySyncAvailability = !config.memory.native || (config.memory.sync_interval_min ?? 10) <= 0
+      ? "disabled" as const
+      : !memoryStore || memoryProblem ? "unavailable" as const : "enabled" as const;
+    const withSync = { ...value, sync: memorySyncView(memorySyncState, memorySyncAvailability) };
+    if (person) return withSync;
     // Skip counts, the selector receipt and the machine's home are person-local diagnostics.
-    const { home: _home, selectorRevision: _selector, skippedRows: _skipped, ...publicStatus } = value as typeof value & { selectorRevision?: string; skippedRows?: number };
+    const { home: _home, selectorRevision: _selector, skippedRows: _skipped, ...publicStatus } = withSync as typeof withSync & { selectorRevision?: string; skippedRows?: number };
     return { ...publicStatus, ...("generation" in publicStatus && typeof publicStatus.generation === "string" ? { generation: publicStatus.generation.slice(0, 8) } : {}) };
   };
   // ponytail: operation-entry fencing is not atomic with an in-flight cross-process cutover.
@@ -1589,6 +1617,14 @@ export async function startDaemon(opts: DaemonOptions) {
     try { candidates = openProfileCandidates(memoryBinding!); const opened = candidates; startupCleanup.push(() => opened.close()); }
     catch { log("memory candidate sidecar unavailable"); }
   }
+  const memorySyncPolicyVersion = () => {
+    const profile = memoryBinding?.status(memoryStore);
+    return createHash("sha256").update(JSON.stringify([
+      profile ? [profile.state, "profile" in profile ? profile.profile : undefined, "generation" in profile ? profile.generation : undefined,
+        "selectorRevision" in profile ? profile.selectorRevision : undefined] : "unbound", config.local.deny,
+      config.pii?.paths ?? [], activeRouting().signals.pii_patterns,
+    ])).digest("hex");
+  };
   let captureBinding = memoryBinding;
   if (config.memory.enabled && !captureBinding && !memoryProblem) {
     try { captureBinding = new MemoryProfileBinding({ project: memoryProject, projectKey: memoryProjectRaw }); }
@@ -1767,21 +1803,71 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const t of board.list("in_progress")) if (!tasks.isPii(t)) renewLeases(t);
   }
   let syncRun: Promise<void> | undefined;
+  let memorySyncState = initialMemorySyncState();
   let controlWriteTelemetry: ControlWriteTelemetry | undefined;
   /** Machine sync, when a person set a remote; one log line per failure, never a blocked turn. Stopping aborts and awaits it. */
   function syncNow(): Promise<void> {
     if (!memoryStore || syncRun || stopping) return syncRun ?? Promise.resolve();
+    const recordFailure = (cause: ReturnType<typeof classifyMemorySyncFailure> & { declinedIdsFingerprint?: string; declinedIdsKnown?: false; failureDetailHash?: string }, errorText?: string) => {
+      if (quietSyncError(errorText)) {
+        const state = errorText?.startsWith("stopped") ? "stopped" : "not-configured";
+        memorySyncState = reduceMemorySync(memorySyncState, { type: "quiet", at: Date.now(), state }).state;
+        return;
+      }
+      const reduced = reduceMemorySync(memorySyncState, { type: "failure", at: Date.now(), ...cause });
+      memorySyncState = reduced.state;
+      if (reduced.logFailure && !quietSyncError(errorText)) log(`hub memory sync failed: ${cause.cause}${cause.cause === "declined" ? ` (${cause.declinedCount ?? 0} declined)` : ""}`);
+    };
+    const recordUnexpectedFailure = (error: unknown) => {
+      const errorText = typeof error === "string" ? error : error instanceof Error ? error.message : undefined;
+      if (quietSyncError(errorText)) {
+        recordFailure(classifyMemorySyncFailure(error), errorText);
+        return;
+      }
+      recordFailure({ cause: "unknown", failureDetailHash: memorySyncFailureDetailHash(error) }, errorText);
+    };
     const run = async () => {
       try {
         checkMemory();
-        const r = await (opts.memorySync ?? syncMemory)(memoryStore!, { signal: syncStop.signal });
-        if (!r.ok && !quietSyncError(r.error)) log(`hub memory sync failed: ${r.error}`);
-        else if (r.warning) log(`hub memory sync: ${r.warning}`);
-      } catch { /* A stale binding disables native memory, never the bus. */ }
-      finally { syncRun = undefined; }
+        const policy = currentMemorySyncPolicy();
+        const policyVersion = memorySyncPolicyVersion();
+        const r = await (opts.memorySync ?? syncMemory)(memoryStore!, {
+          signal: syncStop.signal,
+          screen: row => policy.screen(row).ok,
+          policyVersion: () => memorySyncPolicyVersion(),
+        });
+        if (memorySyncPolicyVersion() !== policyVersion) {
+          recordFailure({ cause: "binding" }, "binding changed");
+          return;
+        }
+        checkMemory();
+        if (r.ok) {
+          memorySyncState = reduceMemorySync(memorySyncState, { type: "success", at: Date.now() }).state;
+          if (r.warning) log("hub memory sync completed with a warning");
+        } else {
+          const failure = classifyMemorySyncFailure(r.error);
+          if (failure.cause === "declined") {
+            const inspected = inspectDeclinedMemoryRows(memoryStore!, policy);
+            recordFailure(memorySyncDeclinedDetails(failure, inspected), r.error);
+          } else recordFailure({ ...failure, failureDetailHash: memorySyncFailureDetailHash(r.error) }, r.error);
+        }
+      } catch (error) { recordUnexpectedFailure(error); }
     };
-    syncRun = controlWriteTelemetry ? controlWriteTelemetry.observe("memory", () => !stopping, run) : run();
-    return syncRun;
+    // Publish the single-flight promise before invoking policy construction or telemetry: either can fail before `run` reaches its first await.
+    let settle!: () => void;
+    const flight = new Promise<void>(resolve => { settle = resolve; }).finally(() => {
+      if (syncRun === flight) syncRun = undefined;
+    });
+    syncRun = flight;
+    try {
+      const observed = controlWriteTelemetry ? controlWriteTelemetry.observe("memory", () => !stopping, run) : run();
+      void Promise.resolve(observed).then(settle, error => {
+        try { recordUnexpectedFailure(error); } finally { settle(); }
+      }).catch(() => {});
+    } catch (error) {
+      try { recordUnexpectedFailure(error); } finally { settle(); }
+    }
+    return flight;
   }
 
   /** Session-start cross-platform recall. Awaited before the peer can receive anything, so it rides on the first delivery. Fail-open. */
@@ -7441,6 +7527,7 @@ export async function startDaemon(opts: DaemonOptions) {
       questions: session?.liveTest ? [] : questionStore.list({ state: "open" }, 64).map(row => ({ set: row.set, peer: row.peer, created: row.created, private: row.private, questions: row.questions })),
       events: uiEvents.filter((e) => e.seq > after),
       cursor: uiSequence,
+      memorySync: memoryProfileStatus(true).sync,
       ...settingsSnapshot(session),
       starts: startPlans(),
       roster: rosterView(),
@@ -10438,11 +10525,12 @@ export async function startDaemon(opts: DaemonOptions) {
     renewAllLeases();
     const leases = setInterval(renewAllLeases, 10 * 60_000); leases.unref?.(); intervals.push(leases);
     const every = config.memory.sync_interval_min ?? 10;
-    if (every > 0) {
+    if (every > 0 && !opts.memorySyncTrigger) {
       const first = setTimeout(() => void syncNow(), 5_000); first.unref?.(); intervals.push(first);
       const timer = setInterval(() => void syncNow(), every * 60_000); timer.unref?.(); intervals.push(timer);
     }
   }
+  opts.memorySyncTrigger?.(syncNow);
   if (crashed) {
     // This run owns the record now, so its clean stop removes it even if no peer attaches to rewrite it.
     try { if (readSessions(opts.stateDir)?.instanceId === crashed.instanceId) writeSessions(opts.stateDir, { ...crashed, instanceId, at: Date.now() }); } catch (error) { log(`session record not adopted: ${(error as Error).message}`); }

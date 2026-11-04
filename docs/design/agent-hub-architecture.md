@@ -79,6 +79,8 @@ Peer selection, hub-owned model routing, and provider access are distinct layers
 
 The hub's portable memory storage, sync, indexing, and project helpers come from the pinned first-party `@staix/agent-mem` package. `src/memory/` and `Tasks` provide hub-specific capture, recall, privacy screening, task briefs, and shared notes. Runtime memory is in-process: there is no claude-mem worker HTTP client or model summarizer. claude-mem is an off-by-default, import-only source. This removes a second capture path while keeping caller authority and task privacy in the hub ([#752](https://github.com/STAIxBWLB/agent-hub/issues/752), [agent-mem#13](https://github.com/STAIxBWLB/agent-mem/issues/13)).
 
+Long-term hub writes and core promotion callbacks use the configured standalone sync policy plus hub narrowing. Profile readiness is independent of the current daemon's last automatic sync result. Public status exposes safe cause/count/action metadata; person-only declined inspection exposes IDs and rule categories, with explicit incomplete state when the portable core cannot supply a bounded physical view. Portable row placement and physical sync inspection remain agent-mem responsibilities.
+
 ## Privacy and recovery
 
 Session titles for the two hub-owned title slots (#1055) are conditional writes

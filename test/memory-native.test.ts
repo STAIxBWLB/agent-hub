@@ -207,6 +207,33 @@ test("a note about a private path is refused before either memory sees it (revie
   expect(await h.refused(h.worker, "hub_remember", { text: "the parser in src/csv.ts splits badly", kind: "fail", horizon: "long" })).toContain("private"); // denied from the graph, still private
 }, 30_000);
 
+test("long native notes declined by the configured sync policy are refused without a fallback write", async () => {
+  const home = temp("sync-policy-write");
+  mkdirSync(join(home, "memory"), { recursive: true });
+  writeFileSync(join(home, "memory", "amem.config.json"), JSON.stringify({ piiPatterns: ["LOCAL-ONLY-MARKER"] }));
+  const h = await hub(home);
+  const error = await h.refused(h.worker, "hub_remember", { text: "this decision contains LOCAL-ONLY-MARKER", kind: "decision", horizon: "long" });
+  expect(error).toContain("configured standalone policy");
+  const store = new MemoryStore({ home }); cleanup.push(() => store.close());
+  expect(store.list({ q: "LOCAL-ONLY-MARKER" })).toEqual([]);
+}, 30_000);
+
+test("a task note rejected by the configured sync policy stays short when approval tries to promote it", async () => {
+  const home = temp("sync-policy-promotion");
+  const h = await hub(home);
+  await h.op(h.worker, "hub_task_propose", { title: "settle safely", class: "implement", owner: "worker" });
+  await h.op(h.worker, "hub_remember", { text: "decision has LOCAL-ONLY-MARKER", kind: "decision", task: 1 });
+  writeFileSync(join(home, "memory", "amem.config.json"), JSON.stringify({ piiPatterns: ["LOCAL-ONLY-MARKER"] }));
+  const done = await h.op(h.worker, "hub_task_done", { id: 1, summary: "done" });
+  if (done.includes("in_review")) await h.op(h.claude, "hub_review", { id: 1, verdict: "approved", note: "ok" });
+  const store = new MemoryStore({ home }); cleanup.push(() => store.close());
+  const declined = store.list({ q: "LOCAL-ONLY-MARKER" })[0]!;
+  expect(declined).toMatchObject({ tier: "short", local: true });
+  expect(declined.expiresAt).not.toBeNull();
+  const ownLongSegment = join(store.dir, "log", `${store.machine.id}.jsonl`);
+  expect(existsSync(ownLongSegment) ? readFileSync(ownLongSegment, "utf8") : "").not.toContain("LOCAL-ONLY-MARKER");
+}, 30_000);
+
 
 test("a saved native note and its recall line share one identity per delivery without changing stored text (#412)", async () => {
   const home = temp("shared-recall-id");

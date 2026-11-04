@@ -450,7 +450,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <section id="office-section" aria-labelledby="office-title" data-view="office" hidden><div class="section-head"><h2 id="office-title">Office</h2><div class="filters"><label for="office-view">Office mode</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option><option value="isometric">Isometric</option></select></div></div><div id="office" class="content"></div></section>
 <section aria-labelledby="stream-title" data-view="stream" hidden><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
 
-<section aria-labelledby="memory-title" data-view="memory" hidden><div class="section-head"><h2 id="memory-title">Memory</h2><div class="filters"><div id="memory-tiers" class="chips" role="group" aria-label="Memory tier"></div><span id="memory-count" class="meta"></span></div></div><div class="memory-controls"><input id="memory-q" type="search" maxlength="200" placeholder="Search memory" aria-label="Search memory"><select id="memory-kind" aria-label="Filter memory by kind"><option value="">All kinds</option><option value="decision">Decisions</option><option value="contract">Contracts</option><option value="fail">Fails</option><option value="finding">Findings</option></select><select id="memory-peer" aria-label="Filter memory by peer"><option value="">All peers</option></select><select id="memory-machine" aria-label="Filter memory by machine"><option value="">All machines</option></select><select id="memory-since" aria-label="Filter memory by time"><option value="">Any time</option><option value="1">Last day</option><option value="7">Last week</option><option value="30">Last 30 days</option></select><select id="memory-hops" aria-label="Graph neighbourhood depth"><option value="1">1 hop</option><option value="2">2 hops</option></select><label class="memory-code-toggle"><input id="memory-code-neighbours" type="checkbox" aria-describedby="memory-code-help" disabled>Code neighbours (1 hop)</label><span id="memory-code-help" class="meta">Select a symbol to inspect derived code neighbours.</span></div><div id="memory-list" class="task-list" aria-label="Memory entries"></div><div id="memory-graph" class="memory-graph"></div><div id="memory-detail"></div></section>
+<section aria-labelledby="memory-title" data-view="memory" hidden><div class="section-head"><h2 id="memory-title">Memory</h2><div class="filters"><div id="memory-tiers" class="chips" role="group" aria-label="Memory tier"></div><span id="memory-count" class="meta"></span></div></div><p id="memory-sync-status" class="meta" aria-live="polite"></p><div class="memory-controls"><input id="memory-q" type="search" maxlength="200" placeholder="Search memory" aria-label="Search memory"><select id="memory-kind" aria-label="Filter memory by kind"><option value="">All kinds</option><option value="decision">Decisions</option><option value="contract">Contracts</option><option value="fail">Fails</option><option value="finding">Findings</option></select><select id="memory-peer" aria-label="Filter memory by peer"><option value="">All peers</option></select><select id="memory-machine" aria-label="Filter memory by machine"><option value="">All machines</option></select><select id="memory-since" aria-label="Filter memory by time"><option value="">Any time</option><option value="1">Last day</option><option value="7">Last week</option><option value="30">Last 30 days</option></select><select id="memory-hops" aria-label="Graph neighbourhood depth"><option value="1">1 hop</option><option value="2">2 hops</option></select><label class="memory-code-toggle"><input id="memory-code-neighbours" type="checkbox" aria-describedby="memory-code-help" disabled>Code neighbours (1 hop)</label><span id="memory-code-help" class="meta">Select a symbol to inspect derived code neighbours.</span></div><div id="memory-list" class="task-list" aria-label="Memory entries"></div><div id="memory-graph" class="memory-graph"></div><div id="memory-detail"></div></section>
 <section aria-labelledby="compose-title" data-view="message" hidden><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" data-mutation="project" type="submit">Send message</button></form></section>
 <section aria-labelledby="settings-title" data-view="settings" hidden><div class="section-head"><h2 id="settings-title">Settings</h2><span id="settings-session" class="meta" role="status"></span></div><div id="settings"><p class="empty">Waiting for the hub...</p></div></section>
 </div>
@@ -1930,7 +1930,7 @@ function render(snapshot) {
   });
   renderBench(snapshot.bench);
   renderWorktrees(snapshot.worktrees);
-  renderMemory(snapshot.memory);
+  renderMemory(snapshot.memory, snapshot.memorySync);
   renderSettings(snapshot.settings, snapshot.roster);
   renderUsage(snapshot.usage, snapshot.tasks, snapshot.budget);
   renderSchedules(snapshot.schedules);
@@ -2629,7 +2629,24 @@ function layout(graph) {
   return pos;
 }
 function selectMemoryNode(node) { memoryQuery.node = memoryQuery.node === node ? '' : node; rerenderMemory(); }
-function renderMemory(memory) {
+function memorySyncLine(sync) {
+  if (!sync || typeof sync.state !== 'string') return 'Machine sync: unknown';
+  const hasTimestamp = sync.at !== undefined, validTimestamp = Number.isSafeInteger(sync.at) && Math.abs(sync.at) <= 8640000000000000;
+  const stamp = hasTimestamp ? ' / last ' + (validTimestamp ? time(sync.at) : 'unknown') : '';
+  if (sync.state === 'not-configured' || sync.state === 'stopped') {
+    const next = sync.state === 'stopped' ? 'retry after hub restart' : 'configure a private sync remote';
+    return 'Machine sync: ' + sync.state + stamp + ' / next: ' + next;
+  }
+  if (sync.state !== 'failed') return 'Machine sync: ' + (['disabled','unavailable','notrun','ok','unknown'].includes(sync.state) ? sync.state : 'unknown') + stamp;
+  const causes = ['declined','remote','binding','stopped','transport','unknown'];
+  const cause = causes.includes(sync.cause) ? sync.cause : 'unknown';
+  const count = Number.isSafeInteger(sync.declinedCount) && sync.declinedCount >= 0 ? ' / ' + sync.declinedCount + ' declined' : '';
+  const ids = cause === 'declined' && sync.declinedIdsKnown === false ? ' / declined ID set unknown' : '';
+  const next = cause === 'declined' ? 'ahub memory declined' : cause === 'remote' ? 'configure a private sync remote' : cause === 'binding' ? 'ahub memory profile-check' : cause === 'stopped' ? 'retry after hub restart' : 'run ahub memory sync as a person';
+  return 'Machine sync: failed (' + cause + count + ')' + stamp + ids + ' / next: ' + next;
+}
+function renderMemory(memory, sync) {
+  $('memory-sync-status').textContent = memorySyncLine(sync);
   memoryCodeToggle();
   const tiers = $('memory-tiers');
   if (!tiers.children.length) for (const [tier, label] of [['short', 'Short-term'], ['long', 'Long-term'], ['goals', 'Long-term tasks']]) {

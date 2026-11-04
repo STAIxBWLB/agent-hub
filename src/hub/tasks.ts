@@ -54,6 +54,7 @@ import { foldSegment, isHubWritePath } from "./permission-mode.ts";
 import { correctionInput, resolveVisibleMemory } from "./memory-candidates.ts";
 import type { MemoryScreen } from "./read-tools.ts";
 import { withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
+import { createMemorySyncPolicy } from "./memory-sync-policy.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
 import { criteriaView, unmetCriteriaIds, workflowHash } from "./workflow.ts";
 import { candidateCard, criterionKey, groupUnmetCriteria, LEARNING_DEFAULTS, overridesDiff, parseCandidateCard, selectGroups, type CriterionGroup } from "./learning.ts";
@@ -71,7 +72,7 @@ import { checkDeliverables, DeliverableRefusal, hashDeliverables, vetDeliverable
 import { isAbsolute, relative, resolve } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
-import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type Scope, type Tier } from "@staix/agent-mem";
+import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type NoteInput, type Scope, type Tier } from "@staix/agent-mem";
 import { parseClaimVerdict, taskClaimIdentity, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
@@ -7949,6 +7950,7 @@ export class Tasks {
     requestCheck();
     const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) as Kind : "finding";
     const native = this.saveNative(by, kind, text, title, task, input.horizon === "long" || input.horizon === "short" ? input.horizon : undefined, input.scope === "shared" ? "shared" : "project");
+    if (native && "refused" in native) throw new PreEffectToolRefusal(`${native.refused}; save it with horizon "short" or correct the machine/repository privacy policy, then retry`);
     if (task && this.d.memory) this.markMemoryReference(task, by);
     const res = !native && this.d.memory ? await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } }) : undefined;
     if (!res && !native) return "memory store unavailable; nothing saved";
@@ -8003,14 +8005,16 @@ export class Tasks {
    * long, decisions, contracts and fails are long-term. Fail-open: a store that cannot be written costs one notice.
    * The caller has screened the text for PII; never a PII task's.
    */
-  private saveNative(by: PeerId, kind: Kind, text: string, title: string, task: Task | undefined, horizon?: Tier, scope: Scope = "project", symbols?: MemorySymbolNodes): { id: string; tier: Tier } | undefined {
+  private saveNative(by: PeerId, kind: Kind, text: string, title: string, task: Task | undefined, horizon?: Tier, scope: Scope = "project", symbols?: MemorySymbolNodes): { id: string; tier: Tier } | { refused: string } | undefined {
     const st = this.d.store;
     if (!st || (task && this.isPii(task))) return undefined;
+    let longTerm = horizon === "long" || (horizon !== "short" && !!task && task.state === "approved" && PROMOTED_KINDS.includes(kind));
     try { // never throws: callers run after a board write
       this.d.memoryCheck?.();
       // Approved, or settled in the store already: the snapshot the caller holds can predate an approval made while it awaited.
       const approved = !!task && (task.state === "approved" || st.store.settled(this.memoryKey(task)));
       const tier: Tier = horizon ?? (approved && PROMOTED_KINDS.includes(kind) ? "long" : "short");
+      longTerm ||= tier === "long";
       const about = extractNodes(`${title}\n${text}`, { cwd: this.d.cwd, project: st.project, repo: st.repo, deny: st.deny, paths: [...(task?.refs.paths ?? []), ...(task?.plan?.paths ?? [])], symbols: symbols ? [] : task?.plan?.symbols?.map(normalizeMemorySymbolInput), ...(task ? { task: { id: task.id, created: task.created } } : {}) });
       // Existing notes remain immutable; the completion note connects actual symbols through the shared task node.
       if (symbols && task) {
@@ -8019,12 +8023,20 @@ export class Tasks {
       }
       // A short-term note on a task already approved (before hub memory existed, or late): the task is settled first, so
       // the note gets its own deadline and is never taken for a source waiting for promotion.
-      if (task && approved && tier === "short" && !st.store.settled(this.memoryKey(task))) st.store.settle(this.memoryKey(task), by);
+      if (task && approved && tier === "short" && !st.store.settled(this.memoryKey(task))) this.settleMemory(task);
+      const row: NoteInput = { op: "note", project: st.project, scope, tier, kind, peer: by, ...(title ? { title } : {}), text, ...(task ? { task: this.memoryKey(task) } : {}), about, source: by === USER ? "person" : "hub" };
+      if (tier === "long") {
+        try {
+          const result = this.memorySyncPolicy().screen(row);
+          if (!result.ok) return { refused: `long-term note declined by ${result.rule}` };
+        } catch { return { refused: "machine privacy policy unavailable" }; }
+      }
       if (task) this.markMemoryReference(task, by);
-      const id = st.store.note({ op: "note", project: st.project, scope, tier, kind, peer: by, ...(title ? { title } : {}), text, ...(task ? { task: this.memoryKey(task) } : {}), about, source: by === USER ? "person" : "hub" }, horizon === "short");
+      const id = st.store.note(row, horizon === "short");
       st.onNote?.(id);
       return { id, tier };
     } catch (e) {
+      if (longTerm) return { refused: "machine privacy policy unavailable" };
       this.releaseNotice(`a ${kind} note was not saved to hub memory (${(e as Error).message})`);
       return undefined;
     }
@@ -8040,17 +8052,40 @@ export class Tasks {
     let n = 0;
     for (const t of this.d.board.list("approved")) {
       if (this.isPii(t)) continue;
-      try { this.d.memoryCheck?.(); const key = this.memoryKey(t); if (this.d.store.store.hasTask(key) && !this.d.store.store.settled(key, { includeLegacy: true })) { this.settleMemory(t); n++; } }
+      try { this.d.memoryCheck?.(); const key = this.memoryKey(t); if (this.d.store.store.hasTask(key) && !this.d.store.store.settled(key, { includeLegacy: true }) && this.settleMemory(t)) n++; }
       catch { /* fail-open: tried again at the next start */ }
     }
     return n;
   }
 
-  private settleMemory(task: Task): void {
-    if (!this.d.store || this.isPii(task)) return;
-    // The store screens each note as it moves to the synced log (the promotion screen the daemon gives it).
-    try { this.d.memoryCheck?.(); this.d.store.store.settle(this.memoryKey(task), task.reviewer ?? task.owner ?? HUB); }
-    catch (e) { this.releaseNotice(`task #${task.id}: hub memory could not settle its notes (${(e as Error).message})`); }
+  private settleMemory(task: Task): boolean {
+    const st = this.d.store;
+    if (!st || this.isPii(task)) return false;
+    try {
+      this.d.memoryCheck?.();
+      st.store.settle(this.memoryKey(task), task.reviewer ?? task.owner ?? HUB);
+      return true;
+    } catch (e) { this.releaseNotice(`task #${task.id}: hub memory could not settle its notes (${(e as Error).message})`); return false; }
+  }
+
+  /** Standalone outbound rules plus the hub's current routing and project-private-path policy. */
+  private memorySyncPolicy() {
+    const st = this.d.store!;
+    const hostScreen = (row: Record<string, unknown>) => {
+      const taskKeyValue = typeof row.task === "string" ? row.task : undefined;
+      const match = taskKeyValue ? /#(\d+)@(\d+)$/.exec(taskKeyValue) : null;
+      const task = match ? this.d.board.get(Number(match[1])) : undefined;
+      const taskPaths = task && String(task.created) === match?.[2] ? [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])] : [];
+      const title = typeof row.title === "string" ? row.title : "";
+      const text = typeof row.text === "string" ? row.text : "";
+      const about = Array.isArray(row.about) ? row.about.filter((value): value is string => typeof value === "string") : [];
+      const extraText = JSON.stringify(Object.fromEntries(Object.entries(row).filter(([key]) => !["title", "text", "about", "task", "project"].includes(key))));
+      const note = { title, text: `${text}\n${extraText}`, about: [...about, ...taskPaths.map(path => `path:${path}`)], ...(typeof row.task === "string" ? { task: row.task } : {}), ...(typeof row.project === "string" ? { project: row.project } : {}) };
+      const safe = withoutPii([note], this.d.routing(), this.d.cwd, this.d.piiPaths ?? []);
+      const privatePath = mentionsPrivatePath(`${title}\n${text}\n${extraText}`, note.about, this.d.piiPaths ?? [], this.d.cwd);
+      return safe.length && !privatePath ? { ok: true as const } : { ok: false as const, rule: "hub privacy policy: PII pattern or private path" };
+    };
+    return createMemorySyncPolicy({ home: st.store.profile.home, cwd: this.d.cwd, denyPaths: st.deny, piiPatterns: this.d.routing().signals.pii_patterns, hostScreen });
   }
 
   /**
@@ -8074,6 +8109,7 @@ export class Tasks {
     const title = `agent-hub task #${task.id}: ${task.title}`.slice(0, 120);
     if (this.aboutPrivatePath(title, text, task)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (it is about a private path)`);
     const native = this.saveNative(by, kind, text, title, task, undefined, "project", symbols);
+    if (native && "refused" in native) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (${native.refused})`);
     if (!native && this.d.memory) {
       try { this.markMemoryReference(task, by); } catch { return this.releaseNotice(`task #${task.id}: memory reference could not be recorded; note was not saved`); }
       void this.d.memory.save({ text, title, project: this.d.project, metadata: { peer: by, task: task.id, kind } });

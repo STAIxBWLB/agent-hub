@@ -14,7 +14,7 @@ import { memoryAnchorTaskIdentity, memoryStaleAnchors, unavailableMemoryStaleAnc
 import { MEMORY_SYMBOL_START_BUDGET_MS } from "../hub/memory-symbols.ts";
 import { detectCliIdentity } from "./identity.ts";
 import { createStalenessProbe } from "../hub/memory-staleness.ts";
-import { looksSecret, memoryProjectKey, pathCandidates, readProfileJSON, resolveShardProfile, type MemoryStore } from "@staix/agent-mem";
+import { looksSecret, memoryHome, memoryProjectKey, pathCandidates, readProfileJSON, resolveShardProfile, type MemoryStore } from "@staix/agent-mem";
 import type { SyncOptions } from "@staix/agent-mem";
 import { memoryUsage, goalUsage, rawMemoryCommand, rawGoalCommand } from "@staix/agent-mem";
 
@@ -24,9 +24,10 @@ import { mentionsPrivatePath, promotionScreen, withoutPii } from "../hub/memory-
 import { currentRouting, detectSignals } from "../hub/routing.ts";
 import { loadConfig } from "../hub/daemon.ts";
 import { bindProfileMemory, memoryProjectFor, memoryProjectForStore, openProfileMemory, MemoryProfileBinding, MEMORY_PROFILE_UNAVAILABLE, MEMORY_SPLIT_INCOMPLETE, type MemoryProfileReceipt, type ProfileMemoryOptions } from "../hub/memory-profile.ts";
+import { createMemorySyncPolicy, inspectDeclinedMemoryRows, projectMemorySyncText } from "../hub/memory-sync-policy.ts";
 
 export const GOAL_USAGE = goalUsage(AHUB_NAMES.goal);
-export const MEMORY_USAGE = `${memoryUsage(AHUB_NAMES.memory)} | decay [--days N] [--json] | profile-check [--json]`;
+export const MEMORY_USAGE = `${memoryUsage(AHUB_NAMES.memory)} | decay [--days N] [--json] | declined [--json] | profile-check [--json]`;
 
 const fail = (message: string): never => { throw new Error(message); };
 /** The project's config, or none when there is no valid one (reading memory needs none). */
@@ -35,6 +36,75 @@ const loadConfigSafe = (cwd: string) => { try { return loadConfig(cwd); } catch 
 
 /** The project key: an injected store resolves the alias in its own home, the default open in the ambient one (#240). */
 const projectOf = (cwd: string, provided: MemoryStore | undefined): string => provided ? memoryProjectForStore(provided, cwd) : memoryProjectFor(cwd);
+
+/** Bounded, read-only lookup of current task paths that the daemon's promotion screen also considers. */
+function memoryTaskPaths(cwd: string, boundProject: string, rowProject: string, key: string): string[] | undefined {
+  if (rowProject !== boundProject) return [];
+  const identity = memoryAnchorTaskIdentity(key, boundProject);
+  if (!identity) return [];
+  let db: Database | undefined;
+  try {
+    const file = join(stateDirFor(cwd), "hub.db");
+    let stat;
+    try { stat = lstatSync(file); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+    if (!stat.isFile() || stat.isSymbolicLink()) return undefined;
+    db = new Database(file, { readonly: true, create: false });
+    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
+    const row = db.query(`SELECT id,created,length(refs) AS refsLength,length(plan) AS planLength,
+      CASE WHEN length(refs)<=65536 THEN refs END AS refs,CASE WHEN length(plan)<=65536 THEN plan END AS plan
+      FROM tasks WHERE id=? AND created=?`).get(identity.id, identity.created) as { id: number; created: number; refsLength: number; planLength: number; refs: string | null; plan: string | null } | null;
+    if (!row || row.id !== identity.id || row.created !== identity.created) return [];
+    if (row.refsLength > 65536 || row.planLength > 65536 || typeof row.refs !== "string" || typeof row.plan !== "string") return undefined;
+    const refs: unknown = JSON.parse(row.refs), plan: unknown = JSON.parse(row.plan);
+    if (!refs || typeof refs !== "object" || Array.isArray(refs) || !plan || typeof plan !== "object" || Array.isArray(plan)) return undefined;
+    const refPaths = (refs as TaskRefs).paths ?? [], planPaths = (plan as TaskPlan).paths ?? [];
+    if (!Array.isArray(refPaths) || !refPaths.every(path => typeof path === "string") || !Array.isArray(planPaths) || !planPaths.every(path => typeof path === "string")) return undefined;
+    return [...refPaths, ...planPaths];
+  } catch { return undefined; }
+  finally { db?.close(); }
+}
+
+function hostSyncPolicyInputs(cwd: string, home: string, boundProject: string, profile?: MemoryProfileReceipt): { version: string; denyPaths: string[]; piiPaths: string[]; piiPatterns: string[]; routing: ReturnType<typeof currentRouting> } {
+  const config = loadConfig(cwd), routing = currentRouting(cwd);
+  const denyPaths = [...config.local.deny], piiPaths = [...(config.pii?.paths ?? [])], piiPatterns = [...routing.signals.pii_patterns];
+  return { version: JSON.stringify({ home, boundProject, profile: profile ? { profile: profile.profile, generation: profile.generation, selectorRevision: profile.selectorRevision } : null, denyPaths, piiPaths, piiPatterns }), denyPaths, piiPaths, piiPatterns, routing };
+}
+function createHubMemorySyncPolicy(cwd: string, home: string, boundProject: string, profile?: MemoryProfileReceipt) {
+  const inputs = hostSyncPolicyInputs(cwd, home, boundProject, profile);
+  const policy = createMemorySyncPolicy({
+    home, cwd, denyPaths: inputs.denyPaths, piiPatterns: inputs.piiPatterns,
+    hostScreen: row => {
+      const task = typeof row.task === "string" ? row.task : "";
+      const project = typeof row.project === "string" ? row.project : "";
+      const about = Array.isArray(row.about) ? row.about.filter((node): node is string => typeof node === "string") : [];
+      const taskPaths = memoryTaskPaths(cwd, boundProject, project, task);
+      if (task && taskPaths === undefined) return { ok: false, rule: "hub privacy policy unavailable" };
+      const enrichedAbout = [...about, ...(taskPaths ?? []).map(path => `path:${path}`)];
+      const visible = withoutPii([{
+        title: typeof row.title === "string" ? row.title : null,
+        text: JSON.stringify(row), about: enrichedAbout,
+        ...(task ? { task } : {}), ...(project ? { project } : {}),
+      }], inputs.routing, cwd, inputs.piiPaths).length > 0;
+      return visible ? { ok: true } : { ok: false, rule: "hub privacy policy: PII pattern or private path" };
+    },
+  });
+  return { policy, version: inputs.version };
+}
+
+/** Preserve any trusted caller's stricter sync screen and bind its epoch into the host policy stamp. */
+export function composeMemorySyncOptions(host: Pick<SyncOptions, "screen" | "policyVersion">, caller?: Omit<SyncOptions, "remote">): Omit<SyncOptions, "remote"> {
+  return {
+    ...caller,
+    screen: row => {
+      try {
+        const content = projectMemorySyncText(row);
+        return host.screen?.(content) === true && (caller?.screen ? caller.screen(content) === true : true);
+      }
+      catch { return false; }
+    },
+    policyVersion: () => JSON.stringify([host.policyVersion?.() ?? null, caller?.policyVersion?.() ?? null]),
+  };
+}
 
 /** Bind each command at entry; the CLI closes default opens and injected stores remain caller-owned. */
 function commandStores(provided: MemoryStore | undefined, options: ProfileMemoryOptions, cwd: string) {
@@ -86,13 +156,45 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
       return profileOutput(text, false, profile, person);
     } finally { if (context.owned) store.close(); }
   }
+  if (rest[0] === "declined") {
+    if (!person) fail("memory declined requires person authority");
+    if (rest.length !== 1) fail("usage: ahub memory declined [--json]");
+    const project = projectOf(cwd, opts.store);
+    const context = commandStores(opts.store, { project, deferPromotions: true, now: opts.now }, cwd);
+    try {
+      context.binding.assertCurrent();
+      const policy = createHubMemorySyncPolicy(cwd, context.binding.home, project, context.binding.status(context.store)).policy;
+      const result = inspectDeclinedMemoryRows(context.store, { screen: row => {
+        const content = projectMemorySyncText(row);
+        const host = policy.screen(content);
+        if (!host.ok) return host;
+        try { return opts.sync?.screen ? (opts.sync.screen(content) === true ? { ok: true } : { ok: false, rule: "caller sync policy" }) : { ok: true }; }
+        catch { return { ok: false, rule: "caller sync policy" }; }
+      } });
+      context.binding.assertCurrent();
+      const profile = context.binding.status(context.store);
+      if (args.includes("--json")) return JSON.stringify({ rows: result.rows, complete: result.complete, ...(result.reason ? { reason: result.reason } : {}), memoryProfile: profile });
+      const text = result.complete
+        ? result.rows.length
+          ? [`${result.rows.length} declined physical outbound row${result.rows.length === 1 ? "" : "s"}:`, ...result.rows.map(row => `mem:${row.id} ${row.rule}`), "Review the source or approved policy, then run `ahub memory sync`. `forget` does not remove append-only physical rows."].join("\n")
+          : "no declined physical outbound rows; inspection complete"
+        : [`declined-row inspection incomplete: ${result.reason ?? "physical memory rows could not be inspected"}`, ...(result.rows.length ? [`${result.rows.length} declined row${result.rows.length === 1 ? "" : "s"} found before inspection stopped:`, ...result.rows.map(row => `mem:${row.id} ${row.rule}`)] : []), "No complete result is available; resolve the inspection issue before treating the list as empty."].join("\n");
+      return text;
+    } finally { if (context.owned) context.store.close(); }
+  }
   let showStale = false;
   const project = projectOf(cwd, opts.store);
+  let policyHome = opts.store?.profile.home ?? memoryHome();
   const context = commandStores(opts.store, { project, ttlMs: (loadConfigSafe(cwd)?.memory.short_ttl_days ?? 14) * 24 * 3600_000,
-    screen: promotionScreen(project, cwd, () => currentRouting(cwd), privatePaths) }, cwd);
+    screen: promotionScreen(project, cwd, () => currentRouting(cwd), privatePaths, task => memoryTaskPaths(cwd, project, project, task) ?? [], () => createHubMemorySyncPolicy(cwd, policyHome, project).policy) }, cwd);
+  policyHome = context.binding.home;
   try {
     context.binding.assertCurrent();
+    let boundSyncPolicy: ReturnType<typeof createHubMemorySyncPolicy> | undefined;
+    const syncPolicy = () => boundSyncPolicy ??= createHubMemorySyncPolicy(cwd, context.binding.home, project, context.binding.status(context.store));
     const text = await rawMemoryCommand(args, cwd, { ...opts, names: AHUB_NAMES, project, store: context.store, open: () => context.store,
+      sync: composeMemorySyncOptions({ screen: row => syncPolicy().policy.screen(row).ok,
+        policyVersion: () => { context.binding.assertCurrent(); return hostSyncPolicyInputs(cwd, context.binding.home, project, context.binding.status(context.store)).version; } }, opts.sync),
       readable: notes => {
       const paths = privatePaths(), visible = withoutPii(notes, currentRouting(cwd), cwd, paths);
       if (args[0] !== "show" || args.includes("--json")) return visible;
