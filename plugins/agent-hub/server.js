@@ -12995,7 +12995,7 @@ var init_hub_tools = __esm(() => {
     additionalProperties: false
   };
   acceptPlan = { ...plan, properties: { ...plan.properties, sections: list("document heading anchors, such as report.md#methods"), sources: list("registered src:<16 hex> source ids; list available ids with ahub source list"), claims: list("short claim ids to verify") } };
-  STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_evidence_record"]);
+  STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff"]);
   EVIDENCE_RECORD_TOOL = tool2("hub_evidence_record", "Record a provenance link for a claim on your current in-progress research task. Projection hash/version and scalar locator are declared metadata in T1, not resolved or verified. A relation proposes supports, contradicts or context; it never creates a person verdict. Private turns, tasks and sources refuse. The actor is host-stamped; no fetch, resolver or synthesis check runs.", {
     id: { type: "string", pattern: "^ev:[0-9a-f]{32}$" },
     taskId: id2,
