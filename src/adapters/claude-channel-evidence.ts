@@ -50,4 +50,3 @@ export function claudeChannelEvidence(env: NodeJS.ProcessEnv = process.env, ppid
 export function currentClaudeChannelEvidence(): ClaudeChannelEvidence {
   return claudeChannelEvidence();
 }
-

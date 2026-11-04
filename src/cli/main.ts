@@ -1925,8 +1925,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub === "handoff") {
       // #604: work that belongs to ANOTHER project that runs agent-hub goes onto that project's board. The person's form (a console command: the classifier gives an agent `console` for it, and an
       // agent uses hub_task_handoff); the hub resolves the target, asks its daemon and records the answer. Nothing is queued: a target that is not running is named with the action.
-      const present = outputOptions(splitPresentation(rest, { valueFlags: ["--project", "--path", "--issue", "--task", "--detail"], edges: true }).flags);
-      const parsed = parseHandoffArgs(splitPresentation(rest, { valueFlags: ["--project", "--path", "--issue", "--task", "--detail"], edges: true }).operands);
+      const present = outputOptions(splitPresentation(rest, { valueFlags: ["--project", "--path", "--issue", "--task", "--detail", "--duplicate-ok"], edges: true }).flags);
+      const parsed = parseHandoffArgs(splitPresentation(rest, { valueFlags: ["--project", "--path", "--issue", "--task", "--detail", "--duplicate-ok"], edges: true }).operands);
       if ("usage" in parsed) return fail(parsed.usage);
       const text = await taskOp("hub_task_handoff", { ...parsed });
       return showToolText(data => renderHandoffReceipt(data, present.columns), text, present);

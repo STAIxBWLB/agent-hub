@@ -3558,7 +3558,12 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       const { project: _project, task: originTask, ...body } = request;
       const reply = await client.request({ t: "task_handoff", origin: { projectId, peer: by, ...(originTask === undefined ? {} : { taskId: originTask }) }, request: body }, 30_000);
-      if (!reply.ok) throw new HandoffRefusal("invalid", sanitize(String(reply.error ?? "the target refused the handoff")).slice(0, 300));
+      if (!reply.ok) {
+        const text = sanitize(String(reply.error ?? "the target refused the handoff")).slice(0, 300);
+        // #1175: a target from before the duplicate check refuses the new field as unknown; name the step instead of repeating its closed-shape error.
+        if (request.duplicate_ok !== undefined && /unknown field: duplicate_ok/.test(text)) throw new HandoffRefusal("older_target", `the hub of ${target.id} predates duplicate_ok: run \`ahub upgrade\` in ${target.root}, or hand the task off without duplicate_ok`);
+        throw new HandoffRefusal("invalid", text);
+      }
       const remote = Number(reply.task);
       if (!Number.isSafeInteger(remote) || remote < 1) throw new HandoffRefusal("invalid", "the target answered without a task id");
       tasks.handoffSent(by, { projectId: target.id }, remote, request.title, request.task);
