@@ -1,3 +1,4 @@
+import { isReviewObserverExcluded } from "./memory-policy.ts";
 import { remoteEnvelope, appendNote, DIGEST, frame, HUB, USER, isInvocationKind, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
 import type { DoingKind } from "./peer-doing.ts";
@@ -167,6 +168,8 @@ export class Bus {
   private readonly taps = new Set<(e: BusEvent) => void>();
   private readonly withdrawn = new Set<string>();
   /** What each peer was last handed, next to what it stands for: an adapter that reports a failure later hands back the former. */
+  private readonly reviewParents = new Map<PeerId, Map<string, string>>();
+  private readonly reviewResponses = new Map<string, { peer: PeerId; source: string }>();
   private readonly lastDelivery = new Map<PeerId, { out: Envelope[]; originals: Envelope[] }>();
   private readonly failureStreak = new Map<PeerId, number>();
   private readonly lastFailure = new Map<PeerId, string>();
@@ -277,10 +280,11 @@ export class Bus {
       else if (member !== peer.remoteMember) throw new Error("remote queued member binding changed");
     }
     if (peer.remoteRoom !== undefined && !pendingRemote) { this.remoteQueueRooms.delete(peer.id); this.remoteQueueMembers.delete(peer.id); }
+    this.clearReviewProvenance(peer.id);
     this.peers.set(peer.id, peer);
     if (!this.queues.has(peer.id)) this.queues.set(peer.id, []);
     peer.onDelivery = (receipt) => this.deliveryReceipt(peer.id, receipt);
-    peer.onDoing = (kind, text) => { if (!this.closed && this.peers.get(peer.id) === peer) this.opts.doing?.(peer.id, kind, text); };
+    peer.onDoing = (kind, text) => { if (kind === "reset") this.clearReviewProvenance(peer.id); if (!this.closed && this.peers.get(peer.id) === peer) this.opts.doing?.(peer.id, kind, text); };
     this.opts.doing?.(peer.id, "reset"); // a new adapter never shows what the one it replaces was doing
     peer.onMessage = (text, opts) => {
       if (!this.isRostered(peer.id)) return `off roster: ${peer.id}`;
@@ -307,6 +311,7 @@ export class Bus {
       const audienceOriginals = originals ?? (opts?.to?.includes(DIGEST) && condensed ? last?.originals : undefined);
       const to = opts?.to?.length ? resolveTo(opts.to, audienceOriginals) : undefined;
       let env = newEnvelope(peer.id, body, { ...opts, ...(to ? { to } : {}), priority: opts?.priority ?? capPriority(peer, priority, opts?.inReplyTo, originals) });
+      env = this.reviewResponse(env, opts?.inReplyTo?.id);
       try { this.checkRemotePublication(env); }
       catch (error) {
         if (!(error instanceof PreEffectToolRefusal)) throw error;
@@ -369,6 +374,7 @@ export class Bus {
       } else this.failed(peer.id, same ? last.originals : envs, undefined, failure?.quota === true);
     };
     peer.onState = () => {
+      if (peer.state === "offline") this.clearReviewProvenance(peer.id);
       if (this.closed) return;
       if (this.peers.get(peer.id) !== peer) return;
       if (peer.state === "offline" && this.journal) {
@@ -744,6 +750,7 @@ export class Bus {
   manualPausedPeers(): string[] { return [...this.manualPaused].sort(); }
   setManualPaused(ids: string[]): void { this.manualPaused.clear(); for (const id of ids) this.manualPaused.add(id); this.persist(); }
   closeJournal(): void {
+    this.reviewParents.clear(); this.reviewResponses.clear();
     this.closed = true;
     this.recoveryHeld = true;
     for (const timer of this.timers.values()) clearTimeout(timer);
@@ -1078,8 +1085,35 @@ export class Bus {
     return this.publishResult(env).targets;
   }
 
+  private clearReviewProvenance(peer: PeerId): void {
+    this.reviewParents.delete(peer);
+    for (const [id, source] of this.reviewResponses) if (source.peer === peer) this.reviewResponses.delete(id);
+  }
+
+  /** Host-derived observer provenance. Caller-supplied response/package markers are stripped.
+   * ponytail: active turns and 128 delivered parent IDs per peer are attributable; arbitrary later
+   * native-session paraphrases need explicit session provenance, never content matching or PII authority.
+   */
+  reviewResponse(env: Envelope, parentId?: string): Envelope {
+    if (env.from === HUB) return env;
+    const active = this.lastDelivery.get(env.from)?.originals ?? [];
+    const parent = parentId ? active.find(item => item.id === parentId && isReviewObserverExcluded(item)) : active.find(isReviewObserverExcluded);
+    const known = this.reviewResponses.get(env.id);
+    const source = parent?.refs?.reviewPackage ?? parent?.refs?.reviewResponse
+      ?? (parentId ? this.reviewParents.get(env.from)?.get(parentId) : undefined)
+      ?? (known?.peer === env.from ? known.source : undefined);
+    const { reviewPackage: _package, reviewResponse: _response, ...refs } = env.refs ?? {};
+    if (source && (env.kind === "chat" || env.kind === "status")) {
+      this.reviewResponses.set(env.id, { peer: env.from, source });
+      if (this.reviewResponses.size > SEEN_CAP) this.reviewResponses.delete(this.reviewResponses.keys().next().value!);
+      return { ...env, refs: { ...refs, reviewResponse: source } };
+    }
+    return _package !== undefined || _response !== undefined ? { ...env, refs } : env;
+  }
+
   /** Publication outcome distinguishes a policy drop from an empty audience. */
   publishResult(env: Envelope): PublishResult {
+    env = this.reviewResponse(env);
     if (this.storageError) throw new Error("delivery journal unavailable");
     if (this.seen.has(env.id) || this.deferredHub.has(env.id)) return { targets: [] };
     this.checkRemotePublication(env);
@@ -1254,11 +1288,17 @@ export class Bus {
   }
 
   private memoryDelivery(peer: PeerId, id: string, out: Envelope[], field: "rendered" | "delivered", originals: Envelope[] = out): void {
-    if (remoteId(peer) || [...out, ...originals].some(env => env.private || remoteId(env.from) || env.to?.some(remoteId))) return;
+    if (remoteId(peer) || [...out, ...originals].some(env => isReviewObserverExcluded(env) || env.private || remoteId(env.from) || env.to?.some(remoteId))) return;
     try { this.onMemoryDelivery?.(peer, id, out, field); } catch { /* optional telemetry never alters delivery */ }
   }
 
   private delivered(peer: PeerId, originals: Envelope[], deliveryId?: string): void {
+    for (const env of originals) if (!this.closed && this.peers.has(peer) && this.stateOf(peer) !== "offline" && isReviewObserverExcluded(env)) {
+      const parents = this.reviewParents.get(peer) ?? new Map<string, string>();
+      parents.set(env.id, (env.refs?.reviewPackage ?? env.refs?.reviewResponse)!);
+      if (parents.size > 128) parents.delete(parents.keys().next().value!);
+      this.reviewParents.set(peer, parents);
+    }
     try { this.onDelivered?.(peer, originals, deliveryId); } catch { /* observation must never affect delivery settlement */ }
   }
 

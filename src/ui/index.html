@@ -574,6 +574,7 @@ function initializeDashboardNavigation() {
 let ticket = location.hash.slice(1);
 history.replaceState(null, '', location.pathname);
 const $ = (id) => document.getElementById(id);
+const reviewKit = null;
 const el = (tag, text, cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); if (cls) node.className = cls; return node; };
 let stopped = false, cursor = 0, timer, projectsTimer, eventCount = 0;
 const setConnection = (text, state) => { const node = $('connection'); node.textContent = text; node.dataset.state = state; };
@@ -1281,6 +1282,50 @@ function deliverablesSection(task) {
   for (const file of d.files) list.append(el('li', (file.path || 'private file') + ' [' + file.format + (file.version ? ' ' + file.version : '') + '] ' + file.bytes + ' B, sha256 ' + file.sha256.slice(0, 12), 'meta'));
   section.append(list); return section;
 }
+function reviewCommentsSection(task) {
+  const expectedReview = boardContext(), section = el('section', undefined, 'detail-group'); section.append(el('h4', 'Review comments', 'detail-heading'));
+  const view = boardViewState?.snapshot.reviewComments, current = view?.task === task.id ? view : null;
+  const counts = current?.counts || task.reviewComments;
+  section.append(el('p', counts ? ['draft','sent','resolved','dismissed'].map(key => (counts[key] || 0) + ' ' + key).join(' / ') : 'No review comments.', 'meta'));
+  const writable = !!reviewKit && boardViewState?.snapshot.reviewWritable === true;
+  for (const comment of current?.comments || []) {
+    const thread = comment.thread, id = thread?.id || comment.id, item = el('article', undefined, 'detail-group');
+    const placement = comment.placement?.status || 'unavailable', range = thread && (placement === 'anchored' || placement === 'moved') ? comment.placement?.range || thread.anchor.selectors.find(selector => selector.kind === 'lineRange') : undefined;
+    item.append(el('p', (thread ? thread.anchor.path + (range ? ':' + range.startLine + '-' + range.endLine : '') : 'Comment ' + id) + ' (' + placement + ') / ' + comment.lifecycle, 'meta'));
+    if (thread) item.append(el('p', thread.body), el('p', thread.author + ' / ' + thread.at, 'meta'));
+    if (writable) {
+      if (comment.lifecycle === 'draft' && thread) {
+        const edit = el('textarea'); edit.value = thread.body; edit.maxLength = 2048; edit.setAttribute('aria-label', 'Edit review comment ' + thread.id);
+        const save = el('button', 'Save draft'); save.type='button'; save.dataset.mutation='project';
+        save.onclick = () => sameBoardContext(expectedReview) && void action({action:'review_comment_put',task:task.id,id:thread.id,revision:comment.revision,commit:comment.commit,anchor:thread.anchor,body:edit.value},save);
+        item.append(edit,save);
+      }
+      if (comment.lifecycle !== 'dismissed') item.append(boardButton(comment.lifecycle === 'draft' ? 'Delete draft' : 'Dismiss', {action:'review_comment_delete',task:task.id,id,revision:comment.revision}));
+    }
+    section.append(item);
+  }
+  if (!writable) section.append(el('p', 'Read-only here. Open this task in a current acon console to comment and send.', 'meta'));
+  else {
+    if (counts?.draft) section.append(boardButton('Send draft comments', {action:'review_comment_send',task:task.id}));
+    const label = el('label', 'File to review'), path = el('input'); path.setAttribute('aria-label','Task file path to review'); path.placeholder = 'path/to/document.md'; label.append(path);
+    const mount = el('div'), open = el('button', 'Open review file'); open.type = 'button';
+    const expected = boardContext();
+    open.addEventListener('click', async () => {
+      if (!sameBoardContext(expected)) return;
+      open.disabled = true;
+      try {
+        const result = await reviewKit.snapshot({panel:'review_blob',projectId:selectedProjectId,instanceId:selectedInstanceId,task:task.id,path:path.value,side:'head'});
+        if (!sameBoardContext(expected) || taskDetailId !== task.id) return;
+        if (result.ok === false || !result.doc) throw new Error(result.error || 'Review material unavailable.');
+        mount.replaceChildren(reviewKit.render({doc:result.doc,threads:(current?.comments || []).filter(comment => comment.thread && comment.thread.anchor.path === result.doc.path && comment.thread.anchor.side !== 'base').map(comment => comment.thread),
+          onComment: ({anchor,body}) => sameBoardContext(expected) && action({action:'review_comment_put',task:task.id,commit:result.head,anchor,body})}));
+      } catch (error) { if (sameBoardContext(expected)) notice(error.message, true); }
+      finally { open.disabled = false; }
+    });
+    section.append(label,open,mount);
+  }
+  return section;
+}
 function taskDetail(task, card, stage, ids, overdue) {
   const row = el('article', undefined, 'task-detail'), head = el('div', undefined, 'row-head');
   row.setAttribute('aria-label', '#' + task.id + ' ' + task.title + ', ' + task.state.replaceAll('_', ' ') + ', owner ' + (task.owner || 'unassigned') + ', priority P' + card.priority);
@@ -1317,6 +1362,7 @@ function taskDetail(task, card, stage, ids, overdue) {
   if (links.children.length > 1) row.append(links);
   const code = codeGroupSection(task); if (code) row.append(code);
   const delivered = deliverablesSection(task); if (delivered) row.append(delivered);
+  row.append(reviewCommentsSection(task));
   const controls = el('div', undefined, 'actions');
   if (card.pull && boardViewState?.snapshot.boardCapabilities?.backlog===true) controls.append(boardButton('Pull into To Do', {action:'backlog_pull',id:task.id}));
   if (card.pull && boardViewState?.snapshot.planningCapabilities?.wipPull===true) controls.append(boardButton('Pull within WIP', {action:'planner_pull',id:task.id,revision:task.planningRevision ?? 0,reason:'person requested a WIP-constrained pull'}));
@@ -1379,7 +1425,7 @@ function refreshTaskDetail() {
   const ids = boardViewState.ids.filter(id => ['idle','busy'].includes(boardViewState.peers[id]?.state) && boardViewState.peers[id]?.attached !== false && boardViewState.peers[id]?.rostered !== false);
   const overdue = task.due != null && task.due < Date.now() && !isClosedTaskState(task.state);
   $('task-detail-title').textContent = 'Task #' + task.id;
-  update('task-detail-content', [task, card, stage, ids, overdue, boardContext()], target => target.append(taskDetail(task, card, stage, ids, overdue)));
+  update('task-detail-content', [task, card, stage, ids, overdue, boardContext(), snapshot.reviewComments, snapshot.reviewWritable], target => target.append(taskDetail(task, card, stage, ids, overdue)));
 }
 function openTaskDetail(id) {
   if (stopped || !Number.isSafeInteger(id) || !snapshotValid || !boardViewState?.cards.has(id)) return;
@@ -1885,7 +1931,7 @@ async function poll() {
   const captured = context();
   if (managerMode && (!captured.projectId || !captured.instanceId)) { if (!stopped) timer = setTimeout(poll, 1000); return; }
   try {
-    const input = {after:cursor, memory:memoryInput(), view:currentView}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
+    const input = {after:cursor, memory:memoryInput(), view:currentView, ...(taskDetailId !== null ? {reviewTask:taskDetailId} : {})}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
     const result = await post('/snapshot', input);
     if (!managerMode || (result.projectId === captured.projectId && result.instanceId === captured.instanceId && captured.generation === viewGeneration)) {
       snapshotValid = true; lastSnapshot = result; lastSnapshotAt = Date.now(); render(result); setConnection('Live / updated ' + new Date().toLocaleTimeString(), 'live'); setDisconnected(false);

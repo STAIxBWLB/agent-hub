@@ -1,3 +1,4 @@
+import { isReviewObserverExcluded } from "./memory-policy.ts";
 import { sanitize } from "./envelope.ts";
 import type { BusEvent } from "./bus.ts";
 import { CLASSES, type Task } from "./board.ts";
@@ -77,7 +78,12 @@ function metadataValue(type:string,key:string,value:unknown):boolean {
 
 /** Shared by the daemon's existing console stream and operational projection tests. */
 export function redactBusEvent(e:BusEvent):BusEvent {
-  if (!("env" in e) || !e.env.private) return e;
+  if (!("env" in e)) return e;
+  if (isReviewObserverExcluded(e.env)) {
+    const { refs, ...env } = e.env;
+    return { ...e, env: { ...env, refs: { ...(refs?.reviewPackage ? { reviewPackage: refs.reviewPackage } : {}), ...(refs?.reviewResponse ? { reviewResponse: refs.reviewResponse } : {}), ...(refs?.task && /^[0-9]+$/.test(refs.task) ? { task: refs.task } : {}) }, body: "[review package: inspect task review comments]" } };
+  }
+  if (!e.env.private) return e;
   const {refs,...env}=e.env;
   const task=refs?.task && /^[0-9]+$/.test(refs.task)?refs.task:undefined;
   return {...e,env:{...env,...(task?{refs:{task}}:{}),body:`[private${task?`: task #${task}, see ahub task show ${task}`:""}]`}};

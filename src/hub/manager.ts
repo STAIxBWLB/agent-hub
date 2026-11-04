@@ -1,3 +1,4 @@
+import type { ActionMeta } from "@staix/agent-console/contract";
 import { assertExecutableRuntimeRoot } from "./project-runtime-state.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS } from "./planning.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
@@ -142,7 +143,7 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
       else if (input.action === "worktrees_refresh_prs") nominalMs = 40_000; // up to 25 s of bounded gh reads plus two git passes
       const timeoutMs = options.forwardTimeoutMs?.(String(input.action), nominalMs) ?? nominalMs;
       const result = await client.request(input.action === "snapshot"
-        ? { t: "ui_snapshot", after: input.after ?? 0, ...(input.memory !== undefined ? { memory: input.memory } : {}), ...(dashboardView(input.view) ? { view: input.view } : {}) }
+        ? { t: "ui_snapshot", after: input.after ?? 0, ...(input.reviewTask !== undefined ? { reviewTask: input.reviewTask } : {}), ...(input.memory !== undefined ? { memory: input.memory } : {}), ...(dashboardView(input.view) ? { view: input.view } : {}) }
         : { t: "ui_action", action: input, instanceId: input.instanceId }, timeoutMs);
       // ControlClient resolves its deadline as this exact sentinel; a hub refusal stays a known failure.
       if (input.action === "intake" && result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) {
@@ -158,7 +159,28 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
     } catch (error) { return { ok: false, error: safeError(error) }; }
     finally { client?.close(); }
   };
-  return { list, act };
+  // #1056: only the server-side acon provider calls this port. Dashboard action bodies
+  // cannot select a control operation or manufacture verified person metadata.
+  const consoleControl = async (target: { projectId: unknown; instanceId: unknown },
+    op: "review_comment_put" | "review_comment_delete" | "review_comment_send" | "review_comments" | "review_blob",
+    payload: Record<string, unknown>, personMeta?: ActionMeta) => {
+    if (options.stopping?.()) return { ok: false, error: "manager is stopping" };
+    if (!["review_comment_put", "review_comment_delete", "review_comment_send", "review_comments", "review_blob"].includes(op)) return { ok: false, error: "invalid review operation" };
+    const project = typeof target.projectId === "string" ? registry.get(target.projectId) : undefined;
+    if (!project) return { ok: false, error: "unknown project" };
+    if (typeof target.instanceId !== "string" || !target.instanceId) return { ok: false, error: "expected daemon instance is required" };
+    let client: ControlClient | undefined;
+    try {
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: target.instanceId });
+      const timeoutMs = options.forwardTimeoutMs?.(op, 10_000) ?? 10_000;
+      const result = await client.request({ ...payload, t: op, instanceId: target.instanceId, personMeta }, timeoutMs);
+      if (result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) return { ok: false, unconfirmed: true as const, text: "Review result is unconfirmed. Refresh and check the task before retrying.", error: "Review result is unconfirmed. Refresh and check the task before retrying." };
+      const { rid: _transportId, ...reply } = result;
+      return reply;
+    } catch { return { ok: false, unconfirmed: true as const, text: "Review result is unconfirmed. Refresh and check the task before retrying.", error: "Review result is unconfirmed. Refresh and check the task before retrying." }; }
+    finally { client?.close(); }
+  };
+  return { list, act, consoleControl };
 }
 
 export async function startManager(options: ManagerOptions = {}): Promise<ManagerHandle> {

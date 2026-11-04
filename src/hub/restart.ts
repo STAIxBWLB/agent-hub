@@ -55,6 +55,7 @@ export interface RestartSnapshot {
     researchComparisons?: { plans: number; approvals: number; contexts: number; digest: string };
     researchRunners?: { count: number; digest: string };
     researchEvidence?: { links: number; revisions: number; digest: string };
+    reviewComments?: { comments: number; packages: number; digest: string };
   };
 }
 
@@ -135,6 +136,12 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
     const value = s.integrity.researchEvidence;
     if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["links", "revisions", "digest"].includes(key))
       || ![value.links, value.revisions].every(count => Number.isSafeInteger(count) && count >= 0)
+      || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "reviewComments")) {
+    const value = s.integrity.reviewComments;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["comments", "packages", "digest"].includes(key))
+      || ![value.comments, value.packages].every(count => Number.isSafeInteger(count) && count >= 0)
       || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }
   if (bus.journal !== undefined) { try { validateJournalSnapshot(bus.journal); } catch { return undefined; } }

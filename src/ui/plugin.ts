@@ -8,10 +8,11 @@
  *
  * Contract: @staix/agent-console api 1, declared structurally below so agent-hub keeps zero runtime dependencies.
  */
+import type { ActionMeta } from "@staix/agent-console/contract";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { Registry } from "../hub/registry.ts";
-import { projectConsole, type Lifecycle } from "../hub/manager.ts";
+import { projectConsole, type Lifecycle, type ManagerOptions } from "../hub/manager.ts";
 // lifecycle.ts reaches the whole daemon; it is imported only when a project is inspected, started or stopped.
 import { DASHBOARD_VIEWS, renderDashboard } from "../hub/ui.ts";
 import { officeModel, type OfficeScene } from "./office-model.ts";
@@ -32,7 +33,7 @@ type ActionResult =
 export interface ConsoleProvider {
   assets: { js: string; css?: string };
   snapshot(input: { after: number; panel: string } & Record<string, unknown>): Promise<Record<string, unknown>>;
-  action(input: { action: string; confirmed?: true; fingerprint?: string } & Record<string, unknown>): Promise<ActionResult>;
+  action(input: { action: string; confirmed?: true; fingerprint?: string } & Record<string, unknown>, meta?: ActionMeta): Promise<ActionResult>;
   close?(): Promise<void>;
 }
 export interface ConsolePlugin {
@@ -41,15 +42,16 @@ export interface ConsolePlugin {
     panels: { id: string; title: string; order?: number }[];
     capabilities?: { actions?: string[]; confirm?: boolean; multiProject?: boolean; inbox?: boolean; space?: boolean };
   };
-  open(ctx: { home: string; log(line: string): void }): Promise<ConsoleProvider>;
+  open(ctx: { home: string; log(line: string): void; features?: readonly string[] }): Promise<ConsoleProvider>;
 }
 
 const TITLES: Record<(typeof DASHBOARD_VIEWS)[number], string> = { board: "Board", office: "Office", stream: "Stream", agents: "Agents", message: "Message", memory: "Memory", settings: "Settings" };
 /** The dashboard's own actions plus the inbox verbs; the manager whitelist is still applied to each forwarded call. */
 const FORWARDED = ["start", "stop", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release", "worktree_override_set", "worktree_override_clear", "worktrees_refresh_prs"] as const;
+const REVIEW_ACTIONS = ["review_comment_put", "review_comment_delete", "review_comment_send"] as const;
 const INBOX_VERBS = ["approve", "deny", "open"] as const;
 /** Outward or destructive: answered needsConfirm first (agent-console AGENTS.md); previews are read-only and stay direct. */
-const CONFIRMED = new Set(["stop", "permit", "setting", "setting_undo", "setting_reload", "config_edit_apply", "start_peer", "backlog_split", "send", "approve", "deny", "worktree_override_set", "worktrees_refresh_prs"]);
+const CONFIRMED = new Set(["review_comment_send", "stop", "permit", "setting", "setting_undo", "setting_reload", "config_edit_apply", "start_peer", "backlog_split", "send", "approve", "deny", "worktree_override_set", "worktrees_refresh_prs"]);
 const fingerprintOf = (input: Record<string, unknown>) => {
   const { confirmed: _c, fingerprint: _f, reason: _r, ...rest } = input;
   return createHash("sha256").update(JSON.stringify(Object.keys(rest).sort().map((key) => [key, rest[key]]))).digest("hex");
@@ -72,6 +74,7 @@ export function panelAssets(): { js: string; css: string } {
   body = swap(body, "let ticket = location.hash.slice(1);\nhistory.replaceState(null, '', location.pathname);", "let ticket = '';");
   body = swap(body, "const apply = () => { document.documentElement.dataset.theme = choice; };", "const apply = () => {};");
   body = swap(body, "const $ = (id) => $$(id);", "const $ = $$;");
+  body = swap(body, "const reviewKit = null;", "const reviewKit = typeof host.ui.review === 'function' ? {render:host.ui.review.bind(host.ui),snapshot:input=>host.snapshot(input)} : null;");
   // post() goes to the host: /projects is the manager listing, /snapshot and /action are the plugin's panel calls.
   body = swap(body, "async function post(path, body) {\n  const response = await fetch(path, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});\n  if (response.status === 401) { expire(); throw new Error('Run ahub ui to start a new session.'); }\n  const result = await response.json();",
     "async function post(path, body) {\n  const result = path === '/projects' ? await host.snapshot({ panel: 'board' }) : path === '/snapshot' ? await host.snapshot({ ...body, panel: 'board' }) : await host.action(body);\n  if (!result) { expire(); throw new Error('The console session ended.'); }\n  const response = { ok: result.ok !== false, status: 200 };");
@@ -147,11 +150,11 @@ function lazyLifecycle(): Lifecycle {
 }
 
 /** Build the provider over an injectable registry and lifecycle (tests use a temp home and fakes). */
-export function createProvider(options: { home: string; registry?: Registry; lifecycle?: Lifecycle; log?: (line: string) => void; spaceBudgetMs?: number }): ConsoleProvider {
+export function createProvider(options: { home: string; registry?: Registry; lifecycle?: Lifecycle; log?: (line: string) => void; spaceBudgetMs?: number; features?: readonly string[]; forwardTimeoutMs?: ManagerOptions["forwardTimeoutMs"] }): ConsoleProvider {
   const registry = options.registry ?? new Registry(join(options.home, "registry.db"));
   const owned = !options.registry;
   const lifecycle = options.lifecycle ?? lazyLifecycle();
-  const { list, act } = projectConsole({ registry, lifecycle, home: options.home });
+  const { list, act, consoleControl } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
   const assets = panelAssets();
   const seen = new Map<string, string>(); // inbox item id -> first-seen ISO time, so `at` stays stable
 
@@ -260,6 +263,10 @@ export function createProvider(options: { home: string; registry?: Registry; lif
   return {
     assets,
     async snapshot(input) {
+      if (input.panel === "review_blob" || input.panel === "review_comments") {
+        const { panel: _panel, projectId, instanceId, ...payload } = input;
+        return await consoleControl({ projectId, instanceId }, input.panel, payload);
+      }
       if (input.panel === "inbox") return { items: await inbox() };
       if (input.panel === "space") return { scene: await space() };
       const view = (DASHBOARD_VIEWS as readonly string[]).includes(String(input.view)) ? input.view : (DASHBOARD_VIEWS as readonly string[]).includes(input.panel) ? input.panel : undefined;
@@ -271,11 +278,18 @@ export function createProvider(options: { home: string; registry?: Registry; lif
         return { ...listing, ...(live.length === 1 ? { selectedProjectId: live[0]!.id } : {}), panel: input.panel };
       }
       const { panel: _panel, ...rest } = input;
-      return await act({ ...rest, action: "snapshot", ...(view ? { view } : {}) }) as Record<string, unknown>;
+      return { ...await act({ ...rest, action: "snapshot", ...(view ? { view } : {}) }) as Record<string, unknown>, reviewWritable: options.features?.includes("action.meta") === true };
     },
-    async action(input) {
+    async action(input, meta) {
       const name = String(input.action);
-      if (![...FORWARDED, ...INBOX_VERBS].includes(name as never)) return { ok: false, error: "unknown action" };
+      const review = REVIEW_ACTIONS.includes(name as typeof REVIEW_ACTIONS[number]);
+      if (review && (!options.features?.includes("action.meta") || !meta || meta.via !== "console" || typeof meta.identity !== "string" || !meta.identity.trim() || typeof meta.node !== "string" || !meta.node.trim())) {
+        return { ok: false, error: "Review comments need a console with verified person identity; update acon and reopen this panel." };
+      }
+      if (review && ["author", "meta", "personMeta", "at", "state", "sentAt"].some(key => Object.hasOwn(input, key))) {
+        return { ok: false, error: "Review identity and timestamps are supplied by the console; remove those fields and retry." };
+      }
+      if (![...FORWARDED, ...INBOX_VERBS, ...REVIEW_ACTIONS].includes(name as never)) return { ok: false, error: "unknown action" };
       const fingerprint = fingerprintOf(input);
       if (CONFIRMED.has(name) && !(input.confirmed === true && input.fingerprint === fingerprint)) {
         const target = typeof input.projectId === "string" ? registry.get(input.projectId)?.root.split("/").filter(Boolean).pop() : undefined;
@@ -283,6 +297,10 @@ export function createProvider(options: { home: string; registry?: Registry; lif
           : name === "send" ? [`Send a message as you${target ? ` in ${target}` : ""}.`]
           : [`Run ${name}${target ? ` in ${target}` : ""}.`];
         return { ok: false, needsConfirm: true, preview, fingerprint, verb: name === "approve" ? "Allow once" : name === "deny" ? "Deny" : name };
+      }
+      if (review) {
+        const { action: _action, confirmed: _confirmed, fingerprint: _fingerprint, projectId, instanceId, ...payload } = input;
+        return await consoleControl({ projectId, instanceId }, name as typeof REVIEW_ACTIONS[number], payload, meta) as ActionResult;
       }
       const { confirmed: _c, fingerprint: _f, ...forward } = input;
       if (name === "approve" || name === "deny" || name === "open") return await inboxVerb(forward);
@@ -297,8 +315,8 @@ const plugin: ConsolePlugin = {
   manifest: {
     api: 1, tool: "ahub", version, title: "agent-hub", icon: "agents", pollMs: 2000,
     panels: DASHBOARD_VIEWS.map((id, order) => ({ id, title: TITLES[id], order })),
-    capabilities: { actions: [...FORWARDED, ...INBOX_VERBS], confirm: true, multiProject: true, inbox: true, space: true },
+    capabilities: { actions: [...FORWARDED, ...INBOX_VERBS, ...REVIEW_ACTIONS], confirm: true, multiProject: true, inbox: true, space: true },
   },
-  async open(ctx) { return createProvider({ home: ctx.home, log: ctx.log }); },
+  async open(ctx) { return createProvider({ home: ctx.home, log: ctx.log, features: ctx.features }); },
 };
 export default plugin;

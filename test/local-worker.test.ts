@@ -672,3 +672,69 @@ test("#1055 local tool publication and dispatch name its session without tool ca
   expect(f.lines.join("\n")).not.toContain(title);
   expect(JSON.stringify(f.model.requests[0]?.body.messages)).toContain(hint);
 });
+
+
+test("#1056 review capture admission is fixed for its turn, ordinary next turns resume, and a late old completion stays excluded", async () => {
+  const rows: unknown[] = [], observations: unknown[] = [], secret = "ANCHORED_REVIEW_CAPTURE_CANARY";
+  const client = { appendCapture: (row: unknown) => { rows.push(row); return Promise.resolve(); } } as unknown as import("../src/memory/client.ts").MemoryClient;
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const began = new Promise<void>(resolve => { entered = resolve; });
+  const ctx = await setup(async body => {
+    const user = String(body.messages.findLast(message => message.role === "user")?.content);
+    const tool = body.messages.at(-1)?.role === "tool";
+    if (user.includes("LATE_REVIEW") && tool) { entered(); await held; }
+    return tool ? { content: user.includes("NORMAL") ? "NORMAL_CAPTURE" : secret }
+      : { tool_calls: [toolCall("read", { path: "a.txt" })] };
+  }, { capture: new Capture(client, { project: "review-test", cwd: "/fixture" }), onTool: observation=>{observations.push(observation);} });
+  let parsedLate!: () => void;
+  const lateParsed = new Promise<void>(resolve => { parsedLate = resolve; });
+  const chat = ctx.omni.chat.bind(ctx.omni);
+  ctx.omni.chat = async (body, options = {}) => {
+    const late = String(body.messages.findLast(message => message.role === "user")?.content).includes("LATE_REVIEW") && body.messages.at(-1)?.role === "tool";
+    const response = await chat(body, late ? { ...options, signal: undefined } : options);
+    if (late) parsedLate();
+    return response;
+  };
+  cleanup.push(() => { ctx.omni.chat = chat; release(); });
+  rows.length = 0;
+  const review = (body: string) => newEnvelope("hub", body, { to: ["local"], kind: "review", priority: "important", refs: { reviewPackage: "review:local-fixture" } });
+  ctx.bus.publish(review(secret));
+  await until(() => ctx.said.length === 1, "review conclusion");
+  expect(rows).toEqual([]);expect(observations).toEqual([]);
+  ctx.bus.publish(review("LATE_REVIEW " + secret));
+  await began;
+  ctx.bus.publish(newEnvelope("user", "NORMAL next turn", { to: ["local"], priority: "important" }));
+  ctx.peer.expireWatchdog();
+  await until(() => ctx.said.some(env => env.body === "NORMAL_CAPTURE"), "ordinary turn after review watchdog");
+  const ordinary = JSON.stringify(rows);
+  expect(ordinary).toContain("NORMAL_CAPTURE");
+  expect(ordinary).not.toContain(secret);
+  const ordinaryInput=ctx.model.requests.find(request=>String(request.body.messages.findLast((message:{role:string})=>message.role==="user")?.content).includes("NORMAL"));
+  expect(ordinaryInput).toBeDefined();expect(JSON.stringify(ordinaryInput!.body.messages)).not.toContain(secret);
+  release();
+  await lateParsed; // the real parser accepts the old response after the ordinary turn finished
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(JSON.stringify(rows)).toBe(ordinary);expect(observations.length).toBeGreaterThan(0);expect(JSON.stringify(observations)).not.toContain(secret);
+  expect(ctx.said.filter(env => env.body === secret)).toHaveLength(1);
+});
+
+
+test("#1056 provider failure during a public review turn never logs or retains its quote", async () => {
+  const secret="REVIEW_FAILURE_QUOTE_CANARY";
+  const ctx=await setup(()=>({content:secret,tool_calls:[toolCall("edit",{path:"a.txt",old:"two",new:"2"})]}));
+  const chat=ctx.omni.chat.bind(ctx.omni);
+  ctx.omni.chat=async(body,options)=>{
+    if(body.messages.at(-1)?.role==="tool")throw new Error(secret);
+    return chat(body,options);
+  };
+  cleanup.push(()=>{ctx.omni.chat=chat;});
+  ctx.bus.publish(newEnvelope("hub",secret,{kind:"review",to:["local"],priority:"important",refs:{reviewPackage:"review:failure-fixture"}}));
+  await until(()=>ctx.said.length===1,"review failure response after side effect");
+  expect(ctx.lines.join("\n")).not.toContain(secret);expect(ctx.said[0]!.body).not.toContain(secret);
+  expect(ctx.said[0]!.private).not.toBe(true);
+  ctx.omni.chat=chat;ctx.model.state.script=()=>({content:"ordinary answer"});
+  ctx.bus.publish(newEnvelope("user","next ordinary request",{to:["local"],priority:"important"}));
+  await until(()=>ctx.said.length===2,"ordinary request after failed review");
+  expect(JSON.stringify(ctx.model.requests.at(-1)!.body.messages)).not.toContain(secret);
+});

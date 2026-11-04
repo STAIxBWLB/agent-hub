@@ -33,6 +33,7 @@ function page(options: { cached?: boolean; now?: () => number; focus?: string } 
   const api = runInNewContext(`let stopped=false,managerMode=true,snapshotValid=true,currentView="board";const dashboardCookie=cookiePrefs;const switchView=()=>{},applyDashboardView=()=>{};const taskRows=new Map(),officeCards=new Map(),signatures=new Map(); ${elSource} ${updateSource} ${source}; ({draw:renderBoard,draggedCard,open:openTaskDetail,refresh:refreshTaskDetail,close:closeTaskDetail,focus:setColumnFocus,stop:()=>{stopped=true}})`, {
     cookiePrefs:{get:()=>options.focus ?? "",set:(name:string,value:string)=>cookies.push([name,value])},
     Date: class extends Date { static override now() { return options.now?.() ?? Date.now(); } },
+    reviewKit: null, // standalone dashboard: anchored comments are read-only (#1056)
     location: { origin: "http://127.0.0.1:4000" }, context: () => ({ ...scope }), canMutate: () => true,
     document: { createElement: (tag: string) => new Node(tag), createElementNS: (_ns: string, tag: string) => new Node(tag) }, $, boardColumns, taskProgress, peerPalette: PEER_PALETTE, badge: (text: string, cls = "") => el("span", text, "badge" + (cls ? " " + cls : "")),
     renderTaskProgress: () => {}, renderTaskStage: (stage: { label: string }) => el("p", stage.label),

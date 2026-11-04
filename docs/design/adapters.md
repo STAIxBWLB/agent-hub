@@ -130,3 +130,7 @@ and private stubs still apply to authorized label viewers.
 ## Evidence boundary
 
 Compatibility probes and fake transports verify source contracts, not an account login, live model turn, native permission prompt, or operating-system isolation. Those receipts remain separate because protocol inventory alone cannot prove runtime behavior ([#625](https://github.com/STAIxBWLB/agent-hub/issues/625), [#754](https://github.com/STAIxBWLB/agent-hub/issues/754)).
+
+## Local review turns (#1056)
+
+The local worker binds review observer exclusion to its actual input envelopes before awaiting model or tool work. Such turns do not call capture, commit review messages into later model history, or put provider error text and partial model text in failure logs. A later ordinary local turn resumes ordinary history and capture without inheriting the review payload. This is distinct from the PII policy: a public review package retains ordinary task authority and does not acquire an on-campus-only model route. Vendor-native histories remain owned by their adapters; the hub's current-turn and named-parent observer provenance is described in [the bus contract](bus.md#review-observer-provenance-1056).

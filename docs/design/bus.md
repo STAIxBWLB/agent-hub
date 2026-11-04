@@ -54,3 +54,9 @@ Invocation requests and results are single-envelope deliveries, not digest mater
 ## Cross-project transport
 
 Encrypted rooms add a screened message transport between local project hubs. Room identity, deadlines, and remote provenance stay bound to each delivery; traffic is not merged into a shared board. A separately pinned read-only invocation relay cannot transfer task or approval authority. This keeps remote delivery from acquiring the receiving project's roles or memory ([#941](https://github.com/STAIxBWLB/agent-hub/issues/941), [#992](https://github.com/STAIxBWLB/agent-hub/issues/992)).
+
+## Review observer provenance (#1056)
+
+An admitted person comment package or anchored-finding review request carries the host-only opaque `refs.reviewPackage`. The intended recipient keeps its public body; observer projections show an IDs-only stub. A PII task still uses its existing private stub and authority rules. Peer-supplied review markers are discarded. The bus derives `refs.reviewResponse` for a response to the current delivered review input or a retained named parent, so a direct echo cannot enter logs, stream projections or memory observers as ordinary chat. This marker grants no task, console or PII capability.
+
+The provenance cache retains at most 128 delivered parent IDs per peer and a globally bounded response cache; peer removal drops its parent binding. It holds identifiers only, not excerpts. This boundary attributes current turns and named parents. Arbitrary paraphrases from later vendor-native session history need a native session/turn provenance protocol; content matching is not used to guess them.
