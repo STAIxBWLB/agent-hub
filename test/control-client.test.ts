@@ -153,7 +153,8 @@ async function writeOutcomeServer(replay = true) {
   writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: srv.port, protocol: PROTOCOL, projectId: "p1", instanceId: "i1", cwd: ROOT }));
   const client = await ControlClient.connect(stateDir, { role: "tools", peer: "codex" }); cleanup.push(() => client.close());
   const untilSeen = async (count: number) => {
-    for (let i = 0; i < 200 && seen.length < count; i++) await new Promise<void>(resolve => setImmediate(resolve));
+    // #1163: wait on time, not on a count of event-loop turns, which a loaded runner burns before the frame arrives.
+    for (const deadline = Date.now() + 2000; seen.length < count && Date.now() < deadline;) await Bun.sleep(5);
     expect(seen.length).toBeGreaterThanOrEqual(count);
   };
   return { client, seen, untilSeen, respond: (rid: number, body: Record<string, unknown>) => socket!.send(JSON.stringify({ rid, ...body })), close: () => socket!.close() };
