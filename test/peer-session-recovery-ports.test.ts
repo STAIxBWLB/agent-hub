@@ -138,12 +138,15 @@ test("#625 local memory provenance stays unbound even when its other native sess
   expect("nativeSession" in local).toBe(false);
   const bus = new Bus({ batchMs: 0 }); bus.add(local); cleanup.push(() => bus.closeJournal());
   const recorded: { session: unknown }[] = [];
-  const { contextSession, memoryObservations } = hostVariables(["contextSession", "contextPii", "memoryObservations"], {
+  const { contextSession, contextPii, reviewObserverHeld, memoryObservations } = hostVariables(["contextSession", "contextPii", "reviewObserverHeld", "memoryObservations"], {
     bus, isWsPeer, definitionOf, claudeSession: () => { throw new Error("local must not read Claude state"); },
     turns: new Map(), board: { list: () => [], peerTaskSignals: () => [], get: () => undefined }, isClosedTaskState, deliveryTask, taskKey, memoryProject: "fixture",
+    readReviewObserverScope: () => undefined,
     tasks: { isPii: () => { throw new Error("fixture has no tasks to screen"); } }, MemoryObservations, isReviewObserverExcluded,
     memoryTelemetry: { record: (_text: string, context: { session: unknown }) => recorded.push(context) },
   });
+  expect(reviewObserverHeld(local.id)).toBe(false);
+  expect(contextPii(local.id)).toBe(false);
   expect(contextSession(local.id)).toBeUndefined();
   memoryObservations.cite(local.id, `mem:${"a".repeat(32)} fixture`, "message:fixture", [newEnvelope("user", "fixture")]);
   expect(recorded).toHaveLength(1); expect(recorded[0]!.session).toBeNull();

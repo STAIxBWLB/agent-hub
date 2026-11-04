@@ -85,6 +85,7 @@ export class ReviewAnchorError extends Error {
   constructor(readonly field: string, readonly maxBytes?: number, readonly shapeFields?: readonly string[]) {
     super("review anchor validation failed");
     this.name = "ReviewAnchorError";
+    this.message = this.safeMessage + (maxBytes === undefined ? "" : " (hub bound)");
     Object.freeze(this);
   }
   get safeMessage(): string {
