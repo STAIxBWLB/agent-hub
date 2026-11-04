@@ -7,6 +7,7 @@ import { Board } from "../src/hub/board.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { readEvents } from "../src/hub/events.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { MAX_HOP, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
@@ -611,6 +612,9 @@ test("daemon local expiry text and N2 stop use real approval timeout without rep
   expect(daemon.bus.queueSummary("local").heldBy).toBeUndefined();
   expect(answers).toHaveLength(1);
   expect(answers[0]!.body).toContain("two unanswered approvals");
+  // #1054: the delivery settles `completed` so nothing replays, but the work was stopped without its approvals: the person's run ends `failed`, never `done`
+  await until(() => readEvents(join(stateDir, "events.jsonl")).some(e => e.type === "completion"), "the run's completion");
+  expect(readEvents(join(stateDir, "events.jsonl")).filter(e => e.type === "completion")).toEqual([expect.objectContaining({ peer: "local", outcome: "failed" })]);
 
   const second = newEnvelope("user", nextTurn, { to: ["local"] });
   daemon.bus.publish(second);
