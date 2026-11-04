@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseNeedsSummary, petView, readPet, renderPet } from "../src/cli/pet.ts";
+import { summarizeNeeds } from "../src/ui/needs.ts";
 
 const none = { lock: () => undefined, runner: () => undefined };
 test("pet summary parsing excludes private fields and rejects unknown or inconsistent metadata", () => {
@@ -45,4 +46,26 @@ test("pet output is static ASCII without console keys and empty short output is 
   expect(renderPet(petView(undefined, none), true)).toBe("");
   const blocked = petView(undefined, { lock: () => "operation", runner: () => undefined });
   expect(renderPet(blocked)).toContain("blocked (1)"); expect(renderPet(blocked)).toContain("status unavailable");
+});
+
+test("#1054 an unread result as the first need keeps the pet and the status line available, and a lower budget pause is still counted", () => {
+  const result = { id: "cmp-0123456789ab", peer: "codex", since: 5 };
+  const only = summarizeNeeds({ results: [result] } as never, 1000);
+  const view = petView({ needs: only }, none);
+  expect(view.unavailable).toBe(false);
+  expect(view.summary).toEqual(only);
+  expect(renderPet(view)).not.toBe("attention unavailable");
+  // a result outranks the budget pause that follows it, and the pause is still in the count rather than hidden behind "attention unavailable"
+  const both = summarizeNeeds({ results: [result], budget: { claude: { paused: { since: 1, resetsAt: 9999 } } } } as never, 1000);
+  expect(both.first?.kind).toBe("result"); expect(both.watch).toBe(2);
+  const withBoth = petView({ needs: both }, none);
+  expect(withBoth.unavailable).toBe(false); expect(withBoth.summary?.watch).toBe(2);
+  expect(renderPet(withBoth)).toContain("+2");
+  // through the file the status line reads (readPet), the owner confirmed live
+  const dir = mkdtempSync(join(tmpdir(), "ahub-pet-result-"));
+  try {
+    writeFileSync(join(dir, "status.json"), JSON.stringify({ pid: 12, pidSignature: "signed-owner", needs: both }));
+    const read = readPet(dir, none, () => "live");
+    expect(read.unavailable).toBe(false); expect(renderPet(read)).not.toBe("attention unavailable");
+  } finally { rmSync(dir, { recursive: true }); }
 });
