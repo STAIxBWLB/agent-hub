@@ -36,7 +36,9 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
     || (command === "worktrees" && args.some(arg => arg === "--confirm" || arg.startsWith("--confirm=")))
     || (command === "agents" && !args.every(arg => arg === "--json"))
     // #1053: an answer is the person's choice, recorded as the person's; an agent that could run it through `--live-test` would answer its own hub_ask as the person. Any operand answers (the set, a pick, --other); a bare listing stays allowed.
-    || (command === "answer" && args.some(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color=")));
+    || (command === "answer" && args.some(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color=")))
+    // #1054: a receipt is the person's record that they read a result and clears their unread need; no delegation, live-test or otherwise, may write one. A plain listing stays allowed.
+    || (command === "results" && args.some(arg => arg === "--read" || arg.startsWith("--read=") || arg === "--read-all" || arg === "--unread-last"));
 }
 
 export type CliIdentity =
@@ -213,10 +215,12 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   if (command === "usage") return args[0] === "limits" || args[0] === "total" ? `usage ${args[0]}` : "usage";
   if (command === "deliverables") return "deliverables";
   if (command === "title") return "title";
+  // #1054: a result id is the hub's, but the audit names the action only, never the id.
+  if (command === "results") return ["--read-all", "--unread-last"].find(flag => args.includes(flag))?.slice(2) ? `results ${["--read-all", "--unread-last"].find(flag => args.includes(flag))!.slice(2)}` : args.includes("--read") || args.some(arg => arg.startsWith("--read=")) ? "results read" : "results";
   if (command === "specs") return ["list", "check", "covers", "stamp"].includes(args[0] ?? "") ? `specs ${args[0]}` : "specs";
   // #1057: the audit names the subcommand and whether it confirms, never a path, a branch or a fingerprint.
   if (command === "worktrees") return args[0] === "tidy" ? (args.some(arg => arg === "--confirm" || arg.startsWith("--confirm=")) ? "worktrees tidy confirm" : "worktrees tidy") : "worktrees";
-  if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "answer", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "down", "reset", "doctor", "agents", "source", "broker", "schedule", "intake", "learn", "study"].includes(command)) return "unknown";
+  if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "answer", "permission", "results", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "down", "reset", "doctor", "agents", "source", "broker", "schedule", "intake", "learn", "study"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench", "agents", "roster", "settings"].includes(command)) {
     const sub = command === "bench" || command === "memory" || command === "goal" ? args.find((arg) => arg !== "--json") : args[0];
     if (sub && ["propose", "show", "assign", "unassign", "escalate", "cancel", "claim", "label", "list", "add", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "reattach", "setup", "start", "stop", "remove", "discard", "export", "backfill", "addons", "run", "report", "compare", "search", "graph", "promote", "demote", "forget", "supersede", "dedupe", "decay", "rebuild", "sync", "machine", "import", "suggestions", "confirm", "reject", "new", "link", "state", "done", "take", "trust"].includes(sub)) return `${command} ${sub}`;

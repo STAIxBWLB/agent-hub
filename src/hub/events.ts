@@ -59,6 +59,8 @@ export type HubEvent =
   /** Completed native turns that received supervision, not feed enqueues or inferred costs. */
   | { type: "supervision_turn"; peer: string; turn: string; tokens?: number; ms?: number }
   /** #1054: a run a person started settled (or a restart cut it short). Ids, a closed outcome and a duration only: never the prompt or the reply. */
+  /** #1054: a person (or the hub on a person's command) marked a result read. A receipt only: never read from a snapshot. */
+  | { type: "completion_seen"; id: string; surface: "terminal" | "console" | "dashboard" | "acon" }
   | { type: "completion"; id: string; peer: string; outcome: "done" | "failed" | "limit" | "interrupted"; ms: number }
   | { type: "hook_stats"; peer: string; n: number; startupMs: number; hubMs: number; maxStartupMs: number }
   | { type: "cohort"; id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: string[] }
