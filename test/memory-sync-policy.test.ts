@@ -31,8 +31,15 @@ test("policy matches configured sync rules for forgotten physical originals and 
     .flatMap(source => readMigrationPrefix(home, source).toString("utf8").trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>))
     .find(row => row.id === id)!;
   expect(policy.screen(original)).toMatchObject({ ok: false, rule: "configured standalone policy: personal data, configured pattern, or deny path" });
+  const originalTargets = store.openedSyncTargets.bind(store), originalPrunePort = store.prunePort.bind(store);
+  let targetCalls = 0, prunePortCalls = 0;
+  store.openedSyncTargets = () => { targetCalls++; return originalTargets(); };
+  store.prunePort = () => { prunePortCalls++; return originalPrunePort(); };
   const inspected = inspectDeclinedMemoryRows(store, policy);
-  expect(inspected).toMatchObject({ complete: false, reason: expect.stringContaining("legacy physical rows") });
+  expect(inspected).toMatchObject({ complete: false, reason: "declined-row inspection requires a bounded public agent-mem API" });
+  expect([targetCalls, prunePortCalls]).toEqual([0, 0]);
+  store.openedSyncTargets = originalTargets;
+  store.prunePort = originalPrunePort;
   expect(JSON.stringify(inspected)).not.toContain("decline-me");
   expect(inspected.declinedIdsFingerprint).toMatch(/^[a-f0-9]{64}$/);
   const synced = await syncMemory(store, { ...privateRemote, screen: row => policy.screen(row).ok });

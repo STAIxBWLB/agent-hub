@@ -5,7 +5,6 @@ import { types } from "node:util";
 /** Fields produced by agent-mem itself. Every other field is outbound text, including fields this hub has not seen yet. */
 // ponytail: projection matches the exact-pinned agent-mem 0.20.1 schema; replace it with the public outbound projection requested in agent-mem#260.
 const GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "target", "promotedFrom", "supersedes", "expires", "by", "tier", "scope", "kind", "source"]);
-const MAX_ROWS = 20_000;
 const hostRule = (value: string | undefined): string => value === "hub privacy policy: PII pattern or private path"
   ? value : "hub privacy policy";
 
@@ -86,31 +85,18 @@ function safeHostResult(value: unknown): { ok: boolean; rule?: string } | undefi
   return { ok, ...(typeof rule === "string" ? { rule } : {}) };
 }
 
-/** Inspect the same physical own rows sync would publish, including forgotten originals still present in the log. */
-export function inspectDeclinedMemoryRows(store: MemoryStore, policy: ReturnType<typeof createMemorySyncPolicy>): {
+/**
+ * ponytail: @staix/agent-mem@0.20.1 has no bounded public inspector for physical rows across all profiles; upgrade after agent-mem#260 (handoff task 128).
+ * Refuse as incomplete until that API can inspect forgotten originals and all sync targets within sync's own bounds.
+ */
+export function inspectDeclinedMemoryRows(_store: MemoryStore, _policy: ReturnType<typeof createMemorySyncPolicy>): {
   rows: { id: string; rule: string }[];
   declinedIdsFingerprint: string;
   complete: boolean;
   reason?: string;
 } {
   const rows: { id: string; rule: string }[] = [];
-  for (const target of store.openedSyncTargets()) {
-    // The public prune snapshot is the canonical physical source for generation-backed sync, including shard overlays.
-    // The public legacy-prefix reader has no byte-budget argument; do not use it to inspect shared-v1 homes unboundedly.
-    if (target.profile.kind !== "generation") return { rows, declinedIdsFingerprint: fingerprint(rows), complete: false, reason: "legacy physical rows cannot be inspected within the sync read bound using the public store API" };
-    let snapshot: ReturnType<ReturnType<MemoryStore["prunePort"]>["snapshot"]>;
-    try { snapshot = target.prunePort().snapshot(); }
-    catch { return { rows, declinedIdsFingerprint: fingerprint(rows), complete: false, reason: "physical memory rows could not be inspected" }; }
-    let scanned = 0;
-    for (const source of snapshot.rows) {
-      if (source.placement !== "synced" || !(source.own || source.legacy)) continue;
-      if (++scanned > MAX_ROWS) return { rows, declinedIdsFingerprint: fingerprint(rows), complete: false, reason: `more than ${MAX_ROWS} rows; inspection stopped` };
-      const row = source.row as unknown as Record<string, unknown>;
-      const result = policy.screen(row);
-      if (!result.ok) rows.push({ id: typeof row.id === "string" ? row.id : "(no id)", rule: result.rule });
-    }
-  }
-  return { rows, declinedIdsFingerprint: fingerprint(rows), complete: true };
+  return { rows, declinedIdsFingerprint: fingerprint(rows), complete: false, reason: "declined-row inspection requires a bounded public agent-mem API" };
 }
 
 function fingerprint(rows: readonly { id: string }[]): string {
