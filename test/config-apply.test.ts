@@ -364,7 +364,7 @@ test("#1012 legacy window-only layers are inert over pet:false at startup and re
       expect(loadConfig(root).retired?.filter(notice => notice === PET_WINDOW_RETIRED_NOTICE)).toHaveLength(1);
       const sources = parseConfigSources(configSourceTexts(root));
       expect(sources.layers.find(layer => layer.name === "config.local.json")?.raw).not.toHaveProperty("pet");
-      expect(sources.trustLayers.find(layer => layer.name === "config.local.json")?.raw).not.toHaveProperty("pet");
+      expect(sources.trustLayers.find(layer => layer.name === "config.local.json")?.raw).toEqual({ pet: { window } });
       expect(readFileSync(join(root, ".agenthub/config.local.json"), "utf8")).toBe(raw);
     }
   } finally { rmSync(root, { recursive: true, force: true }); }

@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/hub/daemon.ts";
-import { assertRecoveryConfiguration, captureRecoveryPolicy, readRecoveryPolicyInputs } from "../src/hub/recovery-policy.ts";
+import { assertRecoveryConfiguration, assertRecoverySourceInputs, captureRecoveryPolicy, readRecoveryPolicyInputs } from "../src/hub/recovery-policy.ts";
+import { configSourceTexts, parseConfigSources } from "../src/hub/config-reload.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "../src/hub/db-timeout.ts";
 import { realPath } from "../src/hub/project.ts";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -166,5 +167,32 @@ test("conductor recovery semantic configuration comparison never invokes config 
     Object.defineProperty(copied.local.deny, "0", { enumerable: true, get() { callbacks++; return "private"; } });
     expect(() => assertRecoveryConfiguration(accepted, copied)).toThrow(refused);
     expect(callbacks).toBe(0);
+  } finally { f.close(); }
+});
+
+test("#1012 retired window is absent from effective config but retained in recovery trust snapshots", () => {
+  const f = fixture();
+  try {
+    const original = { ...f.config(), pet: { window: false, bell: true } };
+    f.write(original);
+    writeFileSync(join(f.root, ".agenthub/config.json"), JSON.stringify(original));
+    const accepted = parseConfigSources(configSourceTexts(f.root), undefined, f.root);
+    for (const name of ["config.json", "config.local.json"]) {
+      const effective = accepted.layers.find(row => row.name === name)!, trusted = accepted.trustLayers.find(row => row.name === name)!;
+      expect(effective.raw.pet).toEqual({ bell: true });
+      expect(trusted.raw.pet).toEqual({ window: false, bell: true });
+      expect(effective.raw).not.toBe(trusted.raw);
+    }
+    const current = readRecoveryPolicyInputs(f.root);
+    expect(() => assertRecoverySourceInputs(accepted.trustLayers, current)).not.toThrow();
+    expect(() => assertRecoveryConfiguration(loadConfig(f.root), loadConfig(f.root, current.layers, current.routing.retired ?? [], []))).not.toThrow();
+    const captured = f.capture();
+    expect(f.capture()).toEqual(captured);
+    // Even an ignored retired option remains raw provenance: changing its source still needs authorization.
+    f.write({ ...original, pet: { window: true, bell: true } });
+    const changed = readRecoveryPolicyInputs(f.root);
+    expect(loadConfig(f.root).pet).toEqual({ bell: true });
+    expect(() => assertRecoverySourceInputs(accepted.trustLayers, changed)).toThrow(refused);
+    expect(accepted.trustLayers.find(row => row.name === "config.local.json")!.raw.pet).toEqual({ window: false, bell: true });
   } finally { f.close(); }
 });
