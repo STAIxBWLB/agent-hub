@@ -139,6 +139,20 @@ test("missing remote and stopped sync results are neutral status outcomes and ne
   expect(JSON.stringify(snapshot.memorySync)).not.toContain("private git url");
 });
 
+test("pinned agent-mem sync with no configured remote reports neutral health without failure details", async () => {
+  const f = fixture();
+  const h = await hub(f, { sync_interval_min: 10 });
+
+  await h.syncNow();
+
+  expect((await h.status()).sync).toMatchObject({ state: "not-configured", nextStep: "configure a private sync remote" });
+  const log = readFileSync(join(f.stateDir, "hub.log"), "utf8");
+  expect(log).not.toContain("hub memory sync failed:");
+  expect(log).not.toContain("https://");
+  expect(log).not.toContain("private git url");
+  expect(log).not.toContain("generation sync remote");
+});
+
 test("a synchronous sync-policy construction failure releases the single-flight slot for a corrected retry", async () => {
   const f = fixture();
   mkdirSync(f.memoryDir, { recursive: true });
