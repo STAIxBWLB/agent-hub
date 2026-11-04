@@ -89,7 +89,7 @@ import { CONTRADICTION_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SET
 import { CONSOLE_POLL_SETTING, CONSOLE_NOTICE_SETTING, CONSOLE_HISTORY_SETTING, CONSOLE_PENDING_STREAM_SETTING, CONSOLE_ATTENTION_SETTING, type ConsoleOperationalConfig } from "./operational-settings.ts";
 import { MODEL_COOLDOWN_FAILURES_SETTING, MODEL_COOLDOWN_SETTING, MODEL_COOLDOWN_CAP_SETTING, MODEL_TERMINAL_HISTORY_SETTING, modelOperationalReaders, type ModelOperationalConfig } from "./operational-settings.ts";
 import { ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEOUT_SETTING, adapterOperationalReaders, type AdapterTimingConfig } from "./operational-settings.ts";
-import { BUS_DIGEST_MAX_SETTING, BUS_MAX_ATTEMPTS_SETTING, BUS_NOTES_KEPT_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING, busOperationalReaders, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING } from "./operational-settings.ts";
+import { BUS_ACCEPTED_SETTLE_MS_SETTING, BUS_DIGEST_MAX_SETTING, BUS_MAX_ATTEMPTS_SETTING, BUS_NOTES_KEPT_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING, busOperationalReaders, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING } from "./operational-settings.ts";
 import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
 import { QuestionStore, QUESTION_SURFACES } from "./questions.ts";
@@ -182,7 +182,7 @@ import { displayPath, shelfInsideRoot, partition, readWorktreeFacts, type ShelfR
 import { PrObservations, refreshPrStates, refreshTargets } from "./worktree-prs.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
-import { DeliveryJournal } from "./delivery-journal.ts";
+import { ACCEPTED_SETTLE_TIMEOUT_REASON, DeliveryJournal } from "./delivery-journal.ts";
 import { assertHubDbCompatible } from "./db-schema.ts";
 import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { codeGroup } from "./task-code-group.ts";
@@ -250,7 +250,7 @@ export interface HubConfig {
   batch_ms: number;
   queue_cap: number;
   /** #489 H3: accepted delivery policy, read at the next delivery operation without rewriting queued work. */
-  bus?: { max_attempts?: number; digest_max?: number; pull_budget_bytes?: number; notes_kept?: number; terminal_history_limit?: number };
+  bus?: { max_attempts?: number; digest_max?: number; pull_budget_bytes?: number; notes_kept?: number; terminal_history_limit?: number; accepted_settle_ms?: number };
   /** #489 H5: accepted timing captured only when a new native adapter is constructed. */
   adapter_timing?: AdapterTimingConfig["adapter_timing"];
   /** #489 H6: relay policy is captured from restart-bound accepted configuration. */
@@ -345,7 +345,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   batch_max: 3,
   batch_ms: 15_000,
   queue_cap: 200,
-  bus: { max_attempts: BUS_MAX_ATTEMPTS_SETTING.defaultValue, digest_max: BUS_DIGEST_MAX_SETTING.defaultValue, pull_budget_bytes: BUS_PULL_BUDGET_BYTES_SETTING.defaultValue, notes_kept: BUS_NOTES_KEPT_SETTING.defaultValue, terminal_history_limit: BUS_TERMINAL_HISTORY_LIMIT_SETTING.defaultValue },
+  bus: { max_attempts: BUS_MAX_ATTEMPTS_SETTING.defaultValue, digest_max: BUS_DIGEST_MAX_SETTING.defaultValue, pull_budget_bytes: BUS_PULL_BUDGET_BYTES_SETTING.defaultValue, notes_kept: BUS_NOTES_KEPT_SETTING.defaultValue, terminal_history_limit: BUS_TERMINAL_HISTORY_LIMIT_SETTING.defaultValue, accepted_settle_ms: BUS_ACCEPTED_SETTLE_MS_SETTING.defaultValue },
   adapter_timing: { acp_tool_ceiling_min: ACP_TOOL_CEILING_SETTING.defaultValue, acp_activity_batch_ms: ACP_ACTIVITY_BATCH_SETTING.defaultValue, jcode_steer_timeout_s: JCODE_STEER_TIMEOUT_SETTING.defaultValue },
   memory: { enabled: true, inject_tokens: 2000, brief_items: 8 },
   roster: {},
@@ -732,6 +732,8 @@ export interface DaemonOptions {
   agentDriftEveryMs?: number;
   /** Test seam: the period of the invocation deadline sweep (#445 C2), default 5 s. */
   invocationSweepMs?: number;
+  /** Host-only clock for accepted channel delivery expiry; never read from configuration or a tool. */
+  acceptedSettlementNow?: () => number;
   /** #1053: how often the question sweep runs (expiry, session change, owed envelopes); tests shorten it. */
   questionSweepMs?: number;
   /** Test seam: an extra hold on the SDLC band evaluation, like a storage error. */
@@ -3301,8 +3303,29 @@ export async function startDaemon(opts: DaemonOptions) {
       writeStatus();
     } catch { log("agent CLI drift sweep failed; run ahub agents"); } finally { agentDriftRunning = false; }
   };
+  const sweepAcceptedChannelDeliveries = () => {
+    if (!ready || stopping || recoveryActive()) return;
+    const expired = bus.expireAcceptedDeliveries(opts.acceptedSettlementNow?.() ?? Date.now());
+    const conductor = conductorPeer(config.roles);
+    if (!conductor || config.conductor.feed === "off") return;
+    for (const row of expired) {
+      if (!row.notifyConductor) continue;
+      // Preserve a configured, rostered conductor destination even before its adapter starts.
+      try {
+        bus.ensureKnownRecipientQueue(conductor);
+        const deliveryId = sanitize(row.id), peerId = sanitize(row.peer);
+        const targets = bus.publish(newEnvelope(HUB, `Accepted delivery ${deliveryId} for ${peerId} timed out at revision ${row.revision}; inspect it with ahub queue show ${deliveryId} before resolving.`, {
+          to: [conductor], kind: "status", priority: "status", refs: { supervision: true, supervisionKey: `accepted-timeout:${row.id}:${row.revision}` },
+        }));
+        if (!targets.includes(conductor)) log(`accepted delivery timeout notice publication unconfirmed; inspect ahub queue list --peer ${sanitize(conductor)} and ahub queue show ${deliveryId}`);
+      } catch { log(`accepted delivery timeout notice publication unconfirmed; inspect ahub queue list --peer ${sanitize(conductor)} and ahub queue show ${sanitize(row.id)}`); }
+    }
+  };
   const intervals = [
-    setInterval(() => { try { sweepInvocations(); } catch { log("invocation deadline sweep failed; the rows keep their state"); } }, opts.invocationSweepMs ?? 5_000),
+    setInterval(() => {
+      try { sweepInvocations(); } catch { log("invocation deadline sweep failed; the rows keep their state"); }
+      try { sweepAcceptedChannelDeliveries(); } catch { log("accepted channel delivery sweep failed; the rows keep their state"); }
+    }, opts.invocationSweepMs ?? 5_000),
     setInterval(() => { void sweepAgentDrift(); }, opts.agentDriftEveryMs ?? 86_400_000),
     setInterval(() => {
       void refreshRunner().catch(() => {});
@@ -3311,7 +3334,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (agentDrift.length && !stopping && !recoveryActive()) try { offerAgentDrift(); } catch { /* the next tick tries again */ }
       for (const pending of checkpointWaits.values()) if (!pending.valid()) pending.done(undefined);
       for (const [id, request] of permissions) if (request.expiresAt > Date.now()) supervision.approvalWaiting({ id, peer: request.peer, tool: request.tool ?? "unknown", createdAt: request.createdAt });
-      for (const row of bus.queueList(undefined, true)) if (row.state === "needs_review") supervision.needsReview(row.peer, row.id);
+      for (const row of bus.queueList(undefined, true)) if (row.state === "needs_review" && row.reason !== ACCEPTED_SETTLE_TIMEOUT_REASON) supervision.needsReview(row.peer, row.id);
       feedBudgetPauses();
       supervision.checkRound();
       try {
@@ -3654,9 +3677,9 @@ export async function startDaemon(opts: DaemonOptions) {
     try { return renderHeldHint(bus.heldDeliveryHints(peer), Date.now(), deliveryRetryAllowed(bus.peers.get(peer))); }
     catch { return ""; } // unavailable telemetry is not a zero count or a reason to fail the tool itself
   }
-  function inboxHeldMetadata(peer: PeerId) {
-    try { return bus.heldDeliveryHints(peer); }
-    catch { return undefined; } // the inbox pull is already settled; advisory held-row metadata cannot hide its result
+  function inboxHeldMetadata(peer: PeerId, includeAccepted = false) {
+    try { return bus.heldDeliveryHints(peer, includeAccepted) ?? { unavailable: true as const }; }
+    catch { return { unavailable: true as const }; } // advisory failure is explicit without exposing an error or hiding a settled pull
   }
   /** A model-written peer argument: a peer id, or nothing for absent, null or "". Anything else is refused. */
   const peerArg = (v: unknown, name: string): PeerId | undefined => {
@@ -5043,6 +5066,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return bus.queueList(peer, true).filter(row => row.state === "needs_review").map(row => ({
       id: row.id, senders: [...new Set(row.originals.map(env => sanitize(env.from)))],
       kinds: [...new Set(row.originals.map(env => env.kind))], createdAt: row.createdAt,
+      reason: row.reason,
       context: deliveryTaskContext(row.originals, board, peer),
     }));
   }
@@ -5057,7 +5081,7 @@ export async function startDaemon(opts: DaemonOptions) {
     settlingSuperseded = true;
     try {
       for (const row of bus.queueList(undefined, true)) {
-        if (row.state !== "needs_review" || row.reason?.startsWith("requested stop:") || row.reason?.startsWith(REVIEWER_FALLBACK_UNCONFIRMED)) continue;
+        if (row.state !== "needs_review" || row.reason === ACCEPTED_SETTLE_TIMEOUT_REASON || row.reason?.startsWith("requested stop:") || row.reason?.startsWith(REVIEWER_FALLBACK_UNCONFIRMED)) continue;
         const reason = supersededDeliveryReason(row.originals, board, row.peer);
         if (!reason) continue;
         try { bus.resolveDelivery(row.id, row.revision, "completed", reason, "hub"); }
@@ -5078,7 +5102,7 @@ export async function startDaemon(opts: DaemonOptions) {
       for (const peer of bus.knownPeers()) {
         const rows = heldRows(peer);
         if (!rows.some(row => !noticedHolds.has(row.id))) continue;
-        for (const row of rows) { noticedHolds.add(row.id); supervision.needsReview(peer, row.id); }
+        for (const row of rows) { noticedHolds.add(row.id); if (row.reason !== ACCEPTED_SETTLE_TIMEOUT_REASON) supervision.needsReview(peer, row.id); }
         notify(`${peer} queue ${queueHold(peer)}`);
       }
       writeStatus();
@@ -8160,6 +8184,12 @@ export async function startDaemon(opts: DaemonOptions) {
       // would read that sender as a peer it does not know and queue a reply to it; this is its own label, so a daemon that has the older floors but not this one is still refused.
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("session_identity")) && bus.queueList(undefined, true).some(row => (row.originals as Envelope[]).some(env => env.session === true)))
         return "target lacks session_identity; unsettled deliveries hold messages from distinct sessions that require a supporting daemon";
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("accepted_delivery_settlement")) {
+        let hasTimeoutHolds: boolean;
+        try { hasTimeoutHolds = bus.hasAcceptedTimeoutHolds(); }
+        catch { return "accepted_delivery_settlement compatibility is unknown; inspect and resolve held rows with ahub queue list/resolve, or choose a target with accepted_delivery_settlement"; }
+        if (hasTimeoutHolds) return "target lacks accepted_delivery_settlement; inspect and resolve held rows with ahub queue list/resolve, or choose a target with accepted_delivery_settlement";
+      }
       // #604: a handoff row in either direction (a task another project handed us, or one we handed over) needs a target that knows `task_handoff`; without it the origin is silently lost.
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("task_handoff")) && board.hasHandoffState())
         return "target lacks task_handoff; stored handoffs require a supporting daemon";
@@ -8889,8 +8919,8 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!current() || pending.some(env => { const task = env.refs?.task === undefined ? undefined : board.get(Number(env.refs.task)); return env.private || contextPii(peer) || !!task && tasks.isPii(task); })) return void reply({ ok: false, error: "private inbox delivery refused" });
             if (!launch || pending.some(env => (env.refs?.task === undefined ? implementerChatTask(peer) : Number(env.refs.task)) !== launch.task)) return void reply({ ok: false, error: "inbox delivery belongs to another task session" });
             const envs = bus.pull(peer, { allowNeedsReviewHold: true });
-            if (!envs) return void reply({ ok: false, error: queueHold(peer) ?? "delivery held" });
-            return void reply({ ok: true, envs, held: inboxHeldMetadata(peer), waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
+            if (!envs) return void reply({ ok: false, error: queueHold(peer) ?? "delivery held", held: inboxHeldMetadata(peer, true), waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
+            return void reply({ ok: true, envs, held: inboxHeldMetadata(peer, true), waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
           } catch { return void reply({ ok: false, error: "delivery journal unavailable" }); }
         }
         // The attached session can explicitly claim queued work even during a native turn (#493).
@@ -8899,7 +8929,17 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "peer" || !isWsPeer(peer) || !peer.owns(sock)) return void reply({ ok: false, error: "not attached to the hub yet; retry hub_inbox in a moment" });
         try {
           const envs = bus.pull(peer.id, { allowNeedsReviewHold: true });
-          if (!envs) return void reply({ ok: false, error: queueHold(peer.id) ?? (bus.isRecoveryHeld ? "recovery is holding deliveries" : pauseReason(peer.id)) });
+          if (!envs) {
+            const held = inboxHeldMetadata(peer.id, true);
+            const heldRows = held && typeof held === "object" && !Array.isArray(held) && Array.isArray((held as { rows?: unknown }).rows)
+              ? (held as { rows: { state?: unknown }[] }).rows : undefined;
+            const accepted = heldRows?.some(row => row.state === "accepted") === true;
+            const blockingCause = queueHold(peer.id)
+              ?? (bus.isRecoveryHeld ? "recovery is holding deliveries" : undefined)
+              ?? (bus.stateOf(peer.id) === "paused" ? pauseReason(peer.id) : undefined);
+            const error = blockingCause ?? (accepted ? "an accepted delivery is awaiting your explicit confirmation" : "delivery held");
+            return void reply({ ok: false, error, held, waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id) });
+          }
           peer.lastInboxAt = Date.now();
           let polling: ReturnType<InboxPolling["read"]>;
           try {
@@ -8909,7 +8949,7 @@ export async function startDaemon(opts: DaemonOptions) {
           } catch { polling = undefined; } // The pull already completed: advice must never discard its envelopes.
           writeStatus();
           if (envs.length) log(`${peer.id} read ${envs.length} queued message(s) through hub_inbox`);
-          return void reply({ ok: true, envs, held: inboxHeldMetadata(peer.id), waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id), ...(polling ? { pollingAdvice: { count: polling.count, minutes: polling.minutes } } : {}) });
+          return void reply({ ok: true, envs, held: inboxHeldMetadata(peer.id, true), waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id), ...(polling ? { pollingAdvice: { count: polling.count, minutes: polling.minutes } } : {}) });
         } catch { return void reply({ ok: false, error: "delivery journal unavailable" }); }
       }
       case "delivery_complete": {

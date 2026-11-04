@@ -14,6 +14,7 @@ export interface ChannelSocket {
 
 /** A peer that lives in another process and attaches over the control WS (the Claude channel plugin). */
 export class WsPeer extends BasePeer {
+  readonly acceptedSettlement = "explicit" as const;
   readonly form: StartForm = "tui";
   private generation = crypto.randomUUID();
   // Checkpoints become stale at hello/claim, before asynchronous recall finishes and attach changes delivery generation.

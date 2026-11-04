@@ -396,8 +396,11 @@ observed revision from the bounded held-row metadata returned with `hub_inbox`.
 Use `completed` after handling the delivery, or `discard` when it should not be
 acted on, with a nonempty reason. The journal records the recipient actor and
 reason. Another peer's row, a stale revision, remote-room disposition, active
-`dispatching`/`accepted` rows, a paused or held peer, recovery, shutdown or storage
-holds, and a reason that is private or sensitive all refuse. A row that carries an
+`dispatching` rows, a non-channel peer's `accepted` row, a paused or held peer,
+recovery, shutdown or storage holds, and a reason that is private or sensitive
+all refuse. An explicit push-channel session may also settle its own `accepted`
+row as described under [accepted channel delivery settlement](#accepted-channel-delivery-settlement-1172).
+A row that carries an
 invocation stays person-only (`ahub queue show <id>`, then `ahub queue resolve
 <id>`), because the invocation may still be running. This never retries a message, changes a task
 role or cancels the native turn; recipient retry keeps its existing one-use rules.
@@ -1253,6 +1256,10 @@ to look for a queued or needs_review delivery with
 `ahub task show <id>` if the journal itself is down) and then send the assignment again
 with `ahub task assign <id> <owner>`. Nothing resends automatically: a blind resend can
 duplicate a delivery that actually left.
+
+#### Accepted channel delivery settlement (#1172)
+
+An explicit Claude push-channel session can settle or discard its own accepted row with the shown revision and a public-safe reason, but an `accepted` receipt still means transport acceptance only. If the session sends neither native completion nor an explicit disposition within `bus.accepted_settle_ms`, the next maintenance sweep moves the row to `needs_review` with a fixed timeout cause; no replay occurs. The default is ten minutes (range 1,000-86,400,000 ms). A live `hub_inbox` result includes that session's own accepted and held row ids and revisions, including when the accepted delivery blocks pulling, so it can inspect the row and use `hub_delivery_resolve`. If held metadata cannot be read, the response carries a fixed unavailable sentinel; the plugin keeps any pulled messages and directs the session to `ahub queue list --peer <peer-id>`, without exposing the metadata error. Important, task and review timeouts publish one status notice to the configured conductor with only delivery id, peer id and revision when `conductor.feed` is on; `feed: off` remains the existing opt-out, and no conductor role is forced. The timeout row is excluded from task-state superseding and remains visible until a person or the explicit channel session records a disposition. Recovery refuses a target without `accepted_delivery_settlement` while such a timeout row is retained; projects without one remain compatible with older targets. The row transition is durable before notice publication; if the hub crashes or notice publication is refused by journal storage after the transition, the held row remains authoritative and visible and the host does not invent a replay path.
 
 Reviewer candidates follow `[classes.review].peers`, then attached peers with a
 `reviewer` role in `roles`. The owner cannot review its own task. If none is available,
@@ -2450,6 +2457,7 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Routing | `bus.pull_budget_bytes` (1-65536 bytes, default 65536) | `config.local.json` | live; next pull-only read, oldest first; the first oversized item still goes |
 | Routing | `bus.notes_kept` (1-10 notes, default 10) | `config.local.json` | live; next shared-note or failed-preface merge; existing prefaces remain unchanged on reload |
 | Routing | `bus.terminal_history_limit` (1-2048 rows, default 2048) | `config.local.json` | live; next normal terminal settlement; unresolved rows and retry ancestry stay protected |
+| Routing | `bus.accepted_settle_ms` (1000-86400000 ms, default 600000) | `config.local.json` | live; the next accepted-channel timeout sweep, approximately every five seconds |
 | Routing | `recovery.reconnect_wait_s` (600-3600 seconds, default 600) | `config.local.json` | next use; the next managed-terminal attachment wait of an upgrade recovery reads it once, at its start |
 | Routing | `recovery.unmanaged_reconnect_wait_s` (90-900 seconds, default 90) | `config.local.json` | next use; the next unmanaged Claude reconnect wait reads it once, at its start |
 | Routing | `recovery.control_timeout_s` (30-300 seconds, default 30) | `config.local.json` | next use; the next control request of the recovery coordinator to a hub reads it |
@@ -2529,13 +2537,15 @@ The H0 operational items of `tasks.ts`, `routing.ts` and `task-sweep.ts` that st
 
 #### Bus and delivery conversions (#489 H3)
 
-The five `bus.*` rows above use the H1 descriptor, schema, settings writer and live
+The five pre-existing #489 `bus.*` rows above use the H1 descriptor, schema, settings writer and live
 reload path. Unset defaults equal `MAX_ATTEMPTS`, `DIGEST_MAX`, `PULL_BUDGET_BYTES`,
 `NOTES_KEPT` and `TERMINAL_CAP`. Only `bus.max_attempts` may rise; the other four
 can only tighten today's ceilings. A reload does not trim/reorder queues or
 prefaces, reset attempts, re-arm batch deadlines, prune history, or change a pause
 or in-flight delivery. Terminal history is a target: protected retry parents and the current mutation receipt may
 keep the count above it. The settings add no conductor authority.
+
+`bus.accepted_settle_ms` (#1172) adds a timeout for explicit push-channel acceptance, rather than converting an existing constant. Its ten-minute default allows normal session initialization, compaction and handling while bounding a silently lost notification; the channel can confirm earlier, before a long task finishes. The setting is read at the next maintenance sweep. Expiry changes only the delivery journal to `needs_review` and never replays the message; native completion, task completion and task approval remain separate.
 
 The [H3 H0 ledger](verification/2026-10-30-bus-delivery-operational-settings.md)
 lists all 59 unique inventory identities (5 converted and 54 excluded). The
