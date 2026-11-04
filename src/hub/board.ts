@@ -1146,6 +1146,10 @@ export class Board {
       let scoped = counts.tasks > 500 || counts.bytes > 16 * 1024 * 1024 || counts.invalid > 0;
       if (!scoped) {
         const comments = this.hasOpenReviewCommentsFor(peer, taskId);
+        const reviewerCommentScope = this.db.query(`WITH candidate AS (
+            SELECT id,created FROM tasks WHERE state='in_review' AND reviewer=?${scope} LIMIT 501
+          ) SELECT EXISTS(SELECT 1 FROM candidate JOIN review_comments AS comment ON comment.task_id=candidate.id AND comment.task_created=candidate.created
+            WHERE comment.lifecycle IN ('sent','resolved','dismissed')) AS present`).get(...(taskId === undefined ? [peer] : [peer, taskId])) as { present: number };
         const findings = this.db.query(`WITH candidate AS (
             SELECT id,history FROM tasks WHERE state NOT IN ('approved','cancelled') AND (owner=? OR reviewer=?)${scope} LIMIT 501
           )
@@ -1153,7 +1157,7 @@ export class Board {
             json_each(json_extract(history.value,'$.reviewFindings.items')) AS item
             WHERE json_type(history.value,'$.reviewFindings.items')='array'
               AND json_type(item.value,'$.anchor')='object') AS present`).get(...params) as { present: number };
-        scoped = comments || findings.present === 1;
+        scoped = comments || reviewerCommentScope.present === 1 || findings.present === 1;
       }
       this.reviewObserverScopeCache.set(cacheKey, scoped);
       if (this.reviewObserverScopeCache.size > 512) this.reviewObserverScopeCache.delete(this.reviewObserverScopeCache.keys().next().value as string);

@@ -6121,3 +6121,5 @@ Comment IDs resolve only after final successful `hub_task_done`, not while a che
 Anchored-finding observer scope conservatively lasts until task close, including a finding later marked fixed. Sent-comment scope lasts until resolution or person dismissal. If that scope is unavailable or exceeds its bounded metadata scan, shared-memory capture stays held; inspect the task board before retrying. Public comment edits from another person appear on the next explicit refresh.
 
 An owner/reviewer change does not dispose of an earlier review delivery. Its original recipient remains excluded from shared-memory capture while that delivery is queued or unsettled. Dismissing comments does not dispose of the envelope: inspect `ahub queue list --peer <original-recipient>` and explicitly settle the relevant delivery when appropriate.
+
+Comment resolution does not end the current review input. Manual shared-memory writes remain held until ordinary new input arrives. A reviewer still receives the owner's completion summary, but its review envelope remains observer-excluded and reviewer scope persists through the active review.

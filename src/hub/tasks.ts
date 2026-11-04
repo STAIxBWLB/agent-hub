@@ -7149,7 +7149,10 @@ export class Tasks {
     // #572 AC3: advisory only, from git state never from task text, so it is safe for a PII task too.
     const checkout = mainCheckoutWarning(this.d.cwd, this.publicMetadataText);
     const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${carriedText}${conformanceText}${rulingsBlock}${verified}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
-    return this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(carried.some(item => item.anchor) ? { reviewPackage: `finding-${crypto.randomUUID()}` } : {}), ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) })).includes(reviewer);
+    const comments = this.d.board.reviewCommentCounts(task.id, task.created);
+    const quoteMaterial = task.history.some(entry => entry.reviewFindings?.items.some(item => item.anchor !== undefined))
+      || comments.sent + comments.resolved + comments.dismissed > 0;
+    return this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(quoteMaterial ? { reviewPackage: `review-${crypto.randomUUID()}` } : {}), ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) })).includes(reviewer);
   }
 
   /** #785 P1b: remember a review the hub held as premature, so a green CI at this exact head can re-offer it once. Also watches that head. */
@@ -7903,8 +7906,8 @@ export class Tasks {
     const title = String(input.title ?? "").trim();
     if (by !== USER) {
       let scoped = false;
-      try { scoped = this.d.board.hasReviewObserverScope(by) || this.d.bus.hasUnsettledReviewScope(by); } catch { throw new PreEffectToolRefusal("shared memory is held because the open review scope (sent comments, anchored findings or an unsettled delivery) could not be checked; inspect ahub task list after recovery"); }
-      if (scoped) throw new PreEffectToolRefusal(`shared memory is held while an open review scope (sent comments, anchored findings or an unsettled delivery) exists; complete or review the task, ask the person to dismiss comments if appropriate, or inspect ahub queue list --peer ${by} and explicitly settle the delivery, then inspect ahub task list`);
+      try { scoped = this.reviewObserverTurn(by); } catch { throw new PreEffectToolRefusal("shared memory is held because the open review scope (sent comments, anchored findings, unsettled delivery or current review input) could not be checked; inspect ahub task list after recovery"); }
+      if (scoped) throw new PreEffectToolRefusal(`shared memory is held while an open review scope (sent comments, anchored findings, unsettled delivery or current review input) exists; complete or review the task, ask the person to dismiss comments if appropriate, inspect ahub queue list --peer ${by} and explicitly settle any delivery, then wait for ordinary new input after completion`);
     }
     if (this.isPii({ signals: detectSignals({ title, detail: text, refs: {} }, this.d.routing(), this.d.cwd) })) throw new Error("this note matches a PII pattern and is not saved: shared memory excludes private data");
     if (input.horizon !== undefined && input.horizon !== "short" && input.horizon !== "long") throw new Error('horizon is "short" or "long"');

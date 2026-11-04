@@ -11,6 +11,8 @@ import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
+import { isReviewObserverExcluded } from "../src/hub/memory-policy.ts";
+import { redactBusEvent } from "../src/hub/operational-view.ts";
 import type { ReviewAnchor } from "@staix/agent-console/contract";
 
 const cleanup: (() => void)[] = [];
@@ -18,9 +20,20 @@ afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 
 class FixturePeer extends BasePeer {
   received: Envelope[] = [];
+  private waiters: { match: (envelope: Envelope) => boolean; resolve: (envelope: Envelope) => void }[] = [];
   async start() { this.setState("idle"); }
   async stop() {}
-  async deliver(envelopes: Envelope[]) { this.received.push(...envelopes); }
+  async deliver(envelopes: Envelope[]) {
+    this.received.push(...envelopes);
+    for (const envelope of envelopes) for (const waiter of [...this.waiters]) if (waiter.match(envelope)) {
+      this.waiters.splice(this.waiters.indexOf(waiter), 1); waiter.resolve(envelope);
+    }
+  }
+  waitFor(match: (envelope: Envelope) => boolean): Promise<Envelope> {
+    const existing = this.received.find(match);
+    if (existing) return Promise.resolve(existing);
+    return new Promise(resolve => this.waiters.push({ match, resolve }));
+  }
 }
 
 async function fixture(checking = false, screened = false, durable = false, heldPeer?: string) {
@@ -70,7 +83,7 @@ test("open review scope survives intervening chat, blocks memory, and leaves own
   let refusal: unknown;
   try { await f.tasks.remember("codex", { task: f.task.id, text: "memory attempt" }); } catch (error) { refusal = error; }
   expect(refusal).toBeInstanceOf(PreEffectToolRefusal);
-  expect((refusal as Error).message).toContain("open review scope (sent comments, anchored findings or an unsettled delivery)");
+  expect((refusal as Error).message).toContain("open review scope (sent comments, anchored findings, unsettled delivery or current review input)");
 
   const done = await f.tasks.done("codex", f.task.id, "Addressed review summary", undefined, undefined, undefined, [f.draft.id]);
   const completion = done.history.findLast(entry => entry.event === "done")!;
@@ -78,6 +91,34 @@ test("open review scope survives intervening chat, blocks memory, and leaves own
   expect(completion.withheld).toBeUndefined();
   expect(f.board.reviewComments(f.task.id, f.task.created)[0]?.lifecycle).toBe("resolved");
   expect(await f.tasks.remember("codex", { task: f.task.id, text: "after resolution" })).toContain("memory is disabled");
+});
+
+test("review input remains excluded from memory through the completion call until ordinary input arrives", async () => {
+  const f = await fixture();
+  await f.tasks.reviewCommentSend("user", { task: f.task.id });
+  const quote = "REVIEW_SUMMARY_QUOTE_CANARY";
+  const done = await f.tasks.done("codex", f.task.id, `Addressed review in the review turn ${quote}`, undefined, undefined, undefined, [f.draft.id]);
+  expect(done.reviewer).toBe("claude");
+  expect(done.history.findLast(entry => entry.event === "done")?.note).toContain(`Addressed review in the review turn ${quote}`);
+  expect(f.board.reviewComments(f.task.id, f.task.created)[0]?.lifecycle).toBe("resolved");
+  const reviewEnvelope = f.observer.received.find(envelope => envelope.kind === "review" && envelope.refs?.task === String(f.task.id));
+  expect(reviewEnvelope?.refs?.reviewPackage).toMatch(/^review-/);
+  expect(reviewEnvelope && isReviewObserverExcluded(reviewEnvelope)).toBe(true);
+  expect(reviewEnvelope?.body).toContain(quote); // the assigned reviewer still receives the owner's summary
+  expect(JSON.stringify(redactBusEvent({ t: "envelope", env: reviewEnvelope! }))).not.toContain(quote);
+
+  let refusal: unknown;
+  try { await f.tasks.remember("codex", { task: f.task.id, text: "same review turn memory" }); } catch (error) { refusal = error; }
+  expect(refusal).toBeInstanceOf(PreEffectToolRefusal);
+  expect((refusal as Error).message).toContain("current review input");
+
+  const ordinary = "ordinary input after review completion";
+  const delivered = f.owner.waitFor(envelope => envelope.body === ordinary);
+  f.bus.publish(newEnvelope("hub", ordinary, { to: ["codex"], kind: "task" }));
+  await delivered;
+  expect(await f.tasks.remember("codex", { task: f.task.id, text: "after ordinary input" })).toContain("memory is disabled");
+  expect(f.board.hasReviewObserverScope("claude", f.task.id)).toBe(true);
+  expect(f.reopenBoard().hasReviewObserverScope("claude", f.task.id)).toBe(true);
 });
 
 test("an owner's unrelated task remains visible while another task has open review comments", async () => {
@@ -106,7 +147,7 @@ test("a former owner keeps review observer scope for a journaled package until i
   let refusal: unknown;
   try { await f.tasks.remember("codex", { task: f.task.id, text: "former owner memory attempt" }); } catch (error) { refusal = error; }
   expect(refusal).toBeInstanceOf(PreEffectToolRefusal);
-  expect((refusal as Error).message).toContain("open review scope (sent comments, anchored findings or an unsettled delivery)");
+  expect((refusal as Error).message).toContain("open review scope (sent comments, anchored findings, unsettled delivery or current review input)");
 });
 
 test("anchored finding scope survives restart and intervening reviewer chat", async () => {
