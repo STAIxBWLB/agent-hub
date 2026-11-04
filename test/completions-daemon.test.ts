@@ -36,12 +36,12 @@ class Manual extends BasePeer {
 
 const until = async (condition: () => boolean, label: string) => { for (let i = 0; i < 500 && !condition(); i++) await Bun.sleep(10); if (!condition()) throw new Error(`timed out waiting for ${label}`); };
 
-async function rig(options: { keep?: { cwd: string }; peers?: string[]; checks?: Record<string, string | number> } = {}) {
+async function rig(options: { keep?: { cwd: string }; peers?: string[]; checks?: Record<string, string | number>; store?: (store: CompletionStore) => CompletionStore } = {}) {
   const cwd = options.keep?.cwd ?? realPath(mkdtempSync(join(tmpdir(), "ahub-completions-d-")));
   if (!options.keep) cleanup.push(() => rmSync(cwd, { recursive: true, force: true }));
   const stateDir = join(cwd, ".agenthub/state"); mkdirSync(join(cwd, ".agenthub"), { recursive: true });
   if (!options.keep) { gitProject(cwd); writeFileSync(join(cwd, ".agenthub/config.local.json"), '{"instances":{}}\n'); }
-  const daemon = await startDaemon({ cwd, stateDir, projectId: "completions-fixture", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, questionSweepMs: 50,
+  const daemon = await startDaemon({ cwd, stateDir, projectId: "completions-fixture", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, questionSweepMs: 50, ...(options.store ? { completionStore: options.store } : {}),
     config: { ...DEFAULT_CONFIG, ...(options.checks ? { checks: { ...DEFAULT_CONFIG.checks, ...options.checks } } : {}), batch_ms: 0, questions: { ttl_s: 86_400, wait_ms: { codex: 60_000, pi: 60_000, local: 60_000 } }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [], access_hosts: [] }, specs: { ...DEFAULT_CONFIG.specs, enabled: false } } });
@@ -221,3 +221,67 @@ test("no prompt or reply text reaches hub.db completion rows, the log or events.
   try { expect(JSON.stringify(probe.list())).not.toContain("TOPSECRET-PROMPT-TEXT"); } finally { probe.close(); }
   expect(Object.keys(f.completions()[0]!).sort()).toEqual(["at", "id", "ms", "outcome", "peer", "type", "v"]);
 });
+
+test("a person-started run whose local worker stops at its step ceiling is stored `limit`, never `done`, and a run that concludes on its own is `done`", async () => {
+  const prior = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "completions-fixture-key";
+  cleanup.push(() => { if (prior === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = prior; });
+  const { startFakeModelServer, toolCall } = await import("./fakes/model-server.ts");
+  const model = startFakeModelServer({ key: "completions-fixture-key", script: body => {
+    const wantsLoop = String(body.messages.findLast(message => message.role === "user")?.content).includes("LOOP");
+    return wantsLoop ? { content: "still going", tool_calls: [toolCall("read", { path: "nowhere.txt" })] } : { content: "all done" };
+  } });
+  cleanup.push(model.stop);
+  const cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-completions-limit-"))), stateDir = join(cwd, "state");
+  cleanup.push(() => rmSync(cwd, { recursive: true, force: true }));
+  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, local: { ...DEFAULT_CONFIG.local, max_steps: 2 }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [model.url], access_hosts: [] },
+      memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false },
+      mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false } } });
+  cleanup.push(() => daemon.stop());
+  const client = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => client.close());
+  expect((await client.request({ t: "start", peer: "local", args: { model: "vllm/test" } })).ok).toBe(true);
+  const completions = () => readEvents(join(stateDir, "events.jsonl")).flatMap(e => e.type === "completion" ? [e] : []);
+  await client.request({ t: "send", body: "LOOP forever", to: ["local"] });
+  await until(() => completions().length === 1, "the looping run's completion");
+  expect(completions()[0]).toMatchObject({ peer: "local", outcome: "limit" });
+  await until(() => daemon.bus.stateOf("local") === "idle", "the local worker idle");
+  await client.request({ t: "send", body: "just answer", to: ["local"] });
+  await until(() => completions().length === 2, "the second run's completion");
+  expect(completions()[1]).toMatchObject({ peer: "local", outcome: "done" });
+}, 30_000);
+
+test("a failed completion write leaves the run open and a later settle succeeds; a quiet stop whose write fails keeps the run too", async () => {
+  let failing = true, attempts = 0;
+  const f = await rig({ peers: ["local", "codex"], store: store => {
+    const settle = store.settle.bind(store), dropRun = store.dropRun.bind(store);
+    store.settle = (...args) => { attempts++; if (failing) throw new Error("database is locked"); return settle(...args); };
+    store.dropRun = (...args) => { if (failing) throw new Error("database is locked"); return dropRun(...args); };
+    return store;
+  } });
+  await f.say("codex");
+  await until(() => f.peers.codex!.state === "busy", "the turn");
+  f.peers.codex!.end();
+  await until(() => attempts >= 1, "the settle attempt");
+  await Bun.sleep(150);
+  expect(f.completions()).toEqual([]);                                       // the write threw: nothing was claimed
+  const open = () => { const s = new CompletionStore(join(f.stateDir, "hub.db")); try { return s.openRuns(); } finally { s.close(); } };
+  expect(open()).toHaveLength(1);                                            // and the durable row is still the run's, not a false interrupted
+  failing = false;
+  // the next callback that can change a fact retries the very same run: a queue change is one
+  await f.say("codex", "again");
+  await until(() => f.peers.codex!.state === "busy", "the continuation turn");
+  f.peers.codex!.end();
+  await until(() => f.completions().length === 1, "the completion once the store works");
+  await Bun.sleep(150);
+  expect(f.completions()).toHaveLength(1);
+  expect(open()).toEqual([]);
+  // a quiet stop whose write fails leaves the run tracked, so it is not silently lost either
+  failing = true;
+  await f.say("local");
+  await until(() => f.peers.local!.state === "busy", "the local turn");
+  const refused = await f.person.request({ t: "peer_stop", peer: "local" });
+  expect(refused.ok, JSON.stringify(refused)).toBe(true);
+  expect(open()).toHaveLength(1);
+  failing = false;
+  expect(f.completions()).toHaveLength(1);
+}, 30_000);

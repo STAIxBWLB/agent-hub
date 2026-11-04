@@ -13534,6 +13534,7 @@ var init_local_worker = __esm(() => {
       }
       if (usedTools)
         capture?.summarize(progress.last);
+      this.opts.onLimit?.("steps");
       return `(stopped after ${maxSteps} steps) ${progress.last}`.trim();
     }
     toolSchemas() {
@@ -13605,6 +13606,7 @@ var init_local_worker = __esm(() => {
       };
     }
     reportBudgetStop(e, msgs, progress, reply, privateHistory, deliveryId, remoteTurn = false) {
+      this.opts.onLimit?.("budget");
       const message = remoteTurn ? "remote turn failed" : e.message;
       this.completeMissingToolResults(msgs, `not run: ${message}`);
       const detail = remoteTurn ? message : progress.sideEffects ? `(execution budget stopped after ${progress.sideEffects} tool call(s) with side effects; partial work may exist and needs review) ${progress.last}`.trim() : `(execution budget stopped before any tool side effects; no work was repeated) ${progress.last}`.trim();
@@ -13720,6 +13722,8 @@ var init_local_worker = __esm(() => {
       if (turn !== this.turn || !feedback)
         return answer;
       msgs.push({ role: "user", content: feedback });
+      if (step + 1 >= maxSteps)
+        this.opts.onLimit?.("steps");
       return step + 1 < maxSteps ? undefined : `(review requested changes; step limit reached) ${answer}`;
     }
     observeTool(call, output, policy, nativeTurn) {
