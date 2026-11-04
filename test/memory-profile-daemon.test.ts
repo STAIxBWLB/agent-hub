@@ -110,6 +110,26 @@ test("real daemon publishes automatic machine sync outcomes and logs one line pe
   expect(JSON.stringify(snapshot.memorySync)).not.toContain("secret.invalid");
 });
 
+test("a synchronous sync-policy construction failure releases the single-flight slot for a corrected retry", async () => {
+  const f = fixture();
+  mkdirSync(f.memoryDir, { recursive: true });
+  const policyFile = join(f.memoryDir, "amem.config.json");
+  writeFileSync(policyFile, "{invalid machine policy");
+  let calls = 0;
+  const h = await hub(f, { sync_interval_min: 10 }, {
+    memorySync: async () => { calls++; return { ok: true, pushed: false, entries: 0 }; },
+  });
+
+  await h.syncNow();
+  expect(calls).toBe(0);
+  expect((await h.status()).sync).toMatchObject({ state: "failed", cause: "unknown" });
+
+  writeFileSync(policyFile, JSON.stringify({ piiPatterns: [] }));
+  await h.syncNow();
+  expect(calls).toBe(1);
+  expect((await h.status()).sync).toMatchObject({ state: "ok" });
+});
+
 test("machine sync screening resolves task paths only for task keys bound to this project", async () => {
   const f = fixture();
   // Seed a pre-existing public board row before the private-path policy is loaded by the daemon.

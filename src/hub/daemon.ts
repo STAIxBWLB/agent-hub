@@ -1808,6 +1808,11 @@ export async function startDaemon(opts: DaemonOptions) {
   /** Machine sync, when a person set a remote; one log line per failure, never a blocked turn. Stopping aborts and awaits it. */
   function syncNow(): Promise<void> {
     if (!memoryStore || syncRun || stopping) return syncRun ?? Promise.resolve();
+    const recordUnexpectedFailure = (error: unknown) => {
+      const failure = reduceMemorySync(memorySyncState, { type: "failure", at: Date.now(), cause: "unknown", failureDetailHash: memorySyncFailureDetailHash(error) });
+      memorySyncState = failure.state;
+      if (failure.logFailure) log("hub memory sync failed: unknown");
+    };
     const run = async () => {
       try {
         checkMemory();
@@ -1838,15 +1843,23 @@ export async function startDaemon(opts: DaemonOptions) {
             recordFailure(memorySyncDeclinedDetails(failure, inspected));
           } else recordFailure({ ...failure, failureDetailHash: memorySyncFailureDetailHash(r.error) });
         }
-      } catch (error) {
-        const failure = reduceMemorySync(memorySyncState, { type: "failure", at: Date.now(), cause: "unknown", failureDetailHash: memorySyncFailureDetailHash(error) });
-        memorySyncState = failure.state;
-        if (failure.logFailure) log("hub memory sync failed: unknown");
-      }
-      finally { syncRun = undefined; }
+      } catch (error) { recordUnexpectedFailure(error); }
     };
-    syncRun = controlWriteTelemetry ? controlWriteTelemetry.observe("memory", () => !stopping, run) : run();
-    return syncRun;
+    // Publish the single-flight promise before invoking policy construction or telemetry: either can fail before `run` reaches its first await.
+    let settle!: () => void;
+    const flight = new Promise<void>(resolve => { settle = resolve; }).finally(() => {
+      if (syncRun === flight) syncRun = undefined;
+    });
+    syncRun = flight;
+    try {
+      const observed = controlWriteTelemetry ? controlWriteTelemetry.observe("memory", () => !stopping, run) : run();
+      void Promise.resolve(observed).then(settle, error => {
+        try { recordUnexpectedFailure(error); } finally { settle(); }
+      }).catch(() => {});
+    } catch (error) {
+      try { recordUnexpectedFailure(error); } finally { settle(); }
+    }
+    return flight;
   }
 
   /** Session-start cross-platform recall. Awaited before the peer can receive anything, so it rides on the first delivery. Fail-open. */
