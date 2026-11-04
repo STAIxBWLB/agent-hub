@@ -8,7 +8,7 @@ import { NOTE_KINDS } from "./envelope.ts";
 
 /** Restricted to the fixed current-child tools server, never an ordinary peer tool. */
 /** The fixed MCP surface of a current owned implementer child; independent of broader project roles. */
-export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve"]);
+export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record"]);
 
 export const IMPLEMENTER_PERMISSION_TOOL = {
   name: "hub_permission_request",
@@ -84,7 +84,17 @@ const tool = (name: string, description: string, properties: Record<string, unkn
 });
 
 /** #601: a campaign's contract and handoff are model-written text about its sources. The write tools' arguments and every study result stay out of memory capture. */
-export const STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff"]);
+export const STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_evidence_record"]);
+/** Research-only publication. Recognized globally for dispatch/capture, never added to the dev schemas. */
+export const EVIDENCE_RECORD_TOOL = tool("hub_evidence_record", "Record a provenance link for a claim on your current in-progress research task. Projection hash/version and scalar locator are declared metadata in T1, not resolved or verified. A relation proposes supports, contradicts or context; it never creates a person verdict. Private turns, tasks and sources refuse. The actor is host-stamped; no fetch, resolver or synthesis check runs.", {
+  id: { type: "string", pattern: "^ev:[0-9a-f]{32}$" }, taskId: id,
+  claimId: { type: "string", minLength: 1, maxLength: 64, pattern: "^claim:[1-9][0-9]{0,15}:(?:0|[1-9][0-9]{0,15}):[1-9][0-9]?$", description: "Canonical #901 claim:<taskId>:<created>:<slot> identity: safe integer parts, slots 1-50; no claim text." }, claimRevision: { type: "string", pattern: "^[0-9a-f]{16}$" },
+  sourceId: { type: "string", pattern: "^src:[0-9a-f]{16}$" },
+  rawSha256: { type: "string", pattern: "^[0-9a-f]{64}$" }, projectionSha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+  projectionVersion: { type: "string", minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63}$" },
+  locator: { type: "object", properties: { start: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, end: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER } }, required: ["start", "end"], additionalProperties: false, description: "Declared zero-based, half-open Unicode scalar-value offsets; nonempty span <=4096. T2 will resolve the immutable projection." },
+  relation: { type: "string", enum: ["supports", "contradicts", "context"] }, revision: { type: "integer", minimum: 1, description: "Default 1; later revisions name the existing link id." },
+}, ["taskId", "claimId", "claimRevision", "sourceId", "rawSha256", "projectionSha256", "projectionVersion", "locator", "relation"]);
 /** #604: a handoff's arguments cross to another project, so neither tool's arguments nor result are captured to memory. */
 export const HANDOFF_TOOLS = new Set(["hub_task_handoff", "hub_task_handoffs"]);
 export const BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
@@ -163,7 +173,7 @@ export function sessionTitleTools(tools: HubTool[], allowed = false): HubTool[] 
   const filtered = tools.filter(tool => tool.name !== SESSION_TITLE_TOOL.name);
   return allowed ? [...filtered, SESSION_TITLE_TOOL] : filtered;
 }
-export const TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name]);
+export const TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name, EVIDENCE_RECORD_TOOL.name]);
 
 /** Separately published: serving a schema grants no authority, only the daemon's explicit role does. */
 export const CONDUCTOR_TOOLS: HubTool[] = [
@@ -238,7 +248,8 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
   const customProfile = !(profile === "dev" || profileData(profile) === projectProfile("dev"));
   if (!customStages && !customProfile && !criteria) return TASK_TOOLS;
   const data = profileData(profile);
-  return TASK_TOOLS.map(tool => {
+  const tools = data.name === "research" ? [...TASK_TOOLS, EVIDENCE_RECORD_TOOL] : TASK_TOOLS;
+  return tools.map(tool => {
     const properties = { ...tool.inputSchema.properties };
     if ((customStages || criteria) && tool.name === "hub_sdlc_record") {
       const receipt = properties.receipt as { type: string; properties: Record<string, unknown>; additionalProperties: boolean };

@@ -3443,7 +3443,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const SERVER_JS = join(import.meta.dir, "..", "..", "plugins", "agent-hub", "server.js");
   // What the hub's MCP server offers a native peer. Codex approves them in config, Kimi's requests for exactly these
   // names are answered by the hub; every call still passes daemon role/capability checks before its effects.
-  const HUB_TOOLS = ["hub_send", ...[...TASK_TOOL_NAMES].filter(name => name !== "hub_set_title"), ...CONDUCTOR_TOOLS.map((t) => t.name)];
+  const HUB_TOOLS = ["hub_send", ...[...TASK_TOOL_NAMES].filter(name => name !== "hub_set_title" && (name !== "hub_evidence_record" || resolvedProfile.name === "research")), ...CONDUCTOR_TOOLS.map((t) => t.name)];
   const HUB_TOOL_TITLES = new Set(HUB_TOOLS.map((name) => `mcp__agent-hub__${name}`));
   const toolEnv = (peer: PeerId, deliveryOnly = false) => ({ ...(deliveryOnly ? { AGENTHUB_DELIVERY_ONLY: "true" } : {}), AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd });
 
@@ -3614,13 +3614,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const id = Number.isSafeInteger(proposed) && proposed! > 0 ? proposed : admittedId;
         auditConduct({ kind: "conduct", actor: by, action: op.slice(4), ...(id === undefined ? {} : { task: id }) });
       }
-      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" ? ownHeldHint(by) : "";
+      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" ? ownHeldHint(by) : "";
       return hint ? `${text}\n\n${hint}` : text;
     } catch (error) {
       if (reviewTool && traceId !== undefined) reviewerToolObservers.get(by)?.(traceId, reviewTool, error instanceof Error ? error.message : "review tool refused");
       if (nativeTurn && effectful && !(error instanceof PreEffectToolRefusal) && turns.get(by) === nativeTurn) nativeTurn.taskEffect = true;
       // Keep proven pre-effect refusal identity/code for native receipts; only add body-free metadata.
-      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" ? ownHeldHint(by) : "";
+      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" ? ownHeldHint(by) : "";
       if (hint && error instanceof Error) error.message += `\n\n${hint}`;
       throw error;
     } finally {
@@ -3813,6 +3813,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // shared memory and a new task could be routed to a cloud peer without matching any pattern.
     if (op === "hub_experiment_record" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (op === "hub_evidence_record" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("evidence recording is unavailable in a private or PII context; keep private work on-prem and record only public evidence outside that context");
     if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_sdlc_metrics" || op.startsWith("hub_release_") || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new" || op === "hub_study_draft" || op === "hub_study_revise")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and shared memory. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
@@ -4045,6 +4046,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify(await tasks.experimentShow(by, a));
       case "hub_experiment_record":
         return JSON.stringify(await tasks.experimentRecord(by, a));
+      case "hub_evidence_record":
+        return JSON.stringify(await tasks.evidenceRecord(by, a));
       case "hub_study_handoff":
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "handoff")) throw new PreEffectToolRefusal("study handoff takes only a handoff object");
         return JSON.stringify(await tasks.studyHandoff(by, a.handoff));
@@ -4788,7 +4791,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const researchExperiments = board.researchExperimentsIntegrity();
     const researchComparisons = board.researchComparisonIntegrity();
     const researchRunners = board.runnerReceiptIntegrity();
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    const researchEvidence = board.researchEvidenceIntegrity();
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -8106,6 +8110,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return "target lacks research_experiments; persisted experiment records require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_comparisons")) && board.hasResearchComparisonState())
         return "target lacks research_comparisons; persisted comparison plans, approvals or protocol context require a supporting daemon";
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_evidence")) && board.hasResearchEvidenceState())
+        return "target lacks research_evidence; choose a daemon advertising research_evidence to preserve persisted links and revisions";
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("project_autonomy")) {
         let needsAutonomy = autonomyConfirmed.size > 0;
         try {

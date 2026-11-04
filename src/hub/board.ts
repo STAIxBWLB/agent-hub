@@ -1,5 +1,6 @@
 import { parseAttemptReceipt, parseResearchRunners, verifyAttemptReceipt, type AttemptReceiptV1 } from "./research-runner.ts";
 import { canonicalJson } from "./packs.ts";
+import { parseEvidenceLink, evidenceLinkCanonical, MAX_EVIDENCE_RECORD_BYTES, type EvidenceLinkV1 } from "./research-evidence.ts";
 import { parseComparisonPlan, comparisonPlanHash, evaluatorIdentityHash, parseExperimentProtocol, protocolHash, parseExperimentAttempt, parseExperimentEvent, parseExperimentHostEvidence, experimentStatus, projectExperimentWithObservations, declaredExperimentEvents,
   type ComparisonPlanV1, type ExperimentProtocolRecord, type ExperimentAttemptRecord, type ExperimentEventRecord, type ExperimentWriteFence, type DeclaredExperimentEventInput, type ExperimentHostEvidence, type ExperimentStatus } from "./research-experiments.ts";
 import type { InvocationRow } from "./invocations.ts";
@@ -258,6 +259,14 @@ export interface ClaimVerdict { slot: number; verdict: (typeof CLAIM_VERDICTS)[n
 /** A short opaque identity of an ordered claim list (a sha-256 prefix of its canonical form): equal lists, in order, give equal ids; it reveals nothing of the claims. Absent list: the empty list's id. */
 export function claimListId(claims: readonly string[] | undefined): string {
   return createHash("sha256").update(planFingerprint({ claims: [...(claims ?? [])] })).digest("hex").slice(0, 16);
+}
+/** #901's one claim identity boundary, shared by person verdicts and declared passage links. */
+export function taskClaimIdentity(task: Pick<Task, "id" | "created" | "plan">, slot: number): { claimId: string; claimRevision: string; slot: number } {
+  if (!Number.isSafeInteger(task.id) || task.id < 1 || !Number.isSafeInteger(task.created) || task.created < 0
+    || !Number.isSafeInteger(slot) || slot < 1 || slot > Math.min(50, task.plan?.claims?.length ?? 0)) throw new Error("claim slot is unavailable; refresh ahub task show and use a current declared claim slot");
+  // ponytail: revision binds the whole ordered list, so another claim's edit invalidates every link.
+  // Upgrade to shared per-claim revision bindings at this #901 boundary, preserving exact-list restoration of existing verdicts.
+  return { claimId: `claim:${task.id}:${task.created}:${slot}`, claimRevision: claimListId(task.plan?.claims), slot };
 }
 /** A claim slot is a position in the plan's claim list (at most 50, as the scorecard's own bound); a model label is a bounded token, never prose. */
 export function parseClaimVerdict(value: unknown, slots: number): ClaimVerdict {
@@ -530,6 +539,9 @@ export class Board {
       campaign_id TEXT NOT NULL, unit_id TEXT NOT NULL, seq INTEGER NOT NULL, revision INTEGER NOT NULL,
       task_id INTEGER NOT NULL, body TEXT NOT NULL, by_peer TEXT NOT NULL, at INTEGER NOT NULL, private INTEGER NOT NULL,
       PRIMARY KEY(campaign_id,unit_id,seq))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS research_evidence_links (
+      project TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, task_id INTEGER NOT NULL,
+      body TEXT NOT NULL, body_sha256 TEXT NOT NULL, PRIMARY KEY(project,id,revision))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS research_protocols (
       hash TEXT PRIMARY KEY, project TEXT NOT NULL, campaign_id TEXT NOT NULL, campaign_revision INTEGER NOT NULL, task_id INTEGER NOT NULL, body TEXT NOT NULL,
       by_peer TEXT NOT NULL, at INTEGER NOT NULL, private INTEGER NOT NULL)`);
@@ -910,6 +922,66 @@ export class Board {
       this.update(parent.id, by, "study closed", {}, `${id} revision ${revision}`, {}, expectedParentFlow);
       return this.researchCampaign(id, revision)!;
     });
+  }
+
+  /** Immutable declared link revisions. Caller/source/privacy admission belongs to Tasks. */
+  evidenceLink(project: string, id: string, revision?: number): EvidenceLinkV1 | undefined {
+    if (!researchText(project) || !/^ev:[a-f0-9]{32}$/.test(id) || revision !== undefined && !researchInteger(revision)) throw new Error("invalid evidence identity; use the recorded evidence id and revision");
+    const row = this.db.query(`SELECT project,id,revision,task_id,CASE WHEN length(CAST(body AS BLOB))<=${MAX_EVIDENCE_RECORD_BYTES} THEN body END AS body,body_sha256
+      FROM research_evidence_links WHERE project=? AND id=?${revision === undefined ? "" : " AND revision=?"} ORDER BY revision DESC LIMIT 1`)
+      .get(...(revision === undefined ? [project, id] : [project, id, revision])) as { project: string; id: string; revision: number; task_id: number; body: string | null; body_sha256: string } | null;
+    if (!row) return undefined;
+    try {
+      if (typeof row.body !== "string") throw new Error("invalid body");
+      const link = parseEvidenceLink(JSON.parse(row.body)), canonical = evidenceLinkCanonical(link);
+      if (link.id !== row.id || link.revision !== row.revision || link.taskId !== row.task_id || createHash("sha256").update(canonical).digest("hex") !== row.body_sha256) throw new Error("invalid binding");
+      return link;
+    } catch { throw new Error("evidence storage invalid; inspect the evidence record before retrying"); }
+  }
+
+  recordEvidenceLink(project: string, input: EvidenceLinkV1, fence: { taskFlowRevision: number; taskCreated: number; owner: PeerId }): EvidenceLinkV1 {
+    const link = parseEvidenceLink(input), canonical = evidenceLinkCanonical(link);
+    if (!researchText(project) || !researchInteger(fence.taskFlowRevision, 0) || !researchInteger(fence.taskCreated, 0) || fence.owner !== link.recordedBy) throw new Error("evidence write binding is invalid; refresh the task before retrying");
+    return this.atomic(() => {
+      const task = this.get(link.taskId);
+      if (!task || task.created !== fence.taskCreated || task.history.length !== fence.taskFlowRevision || task.owner !== fence.owner || task.state !== "in_progress" || task.profile !== "research"
+        || task.signals.includes("pii") || task.signals.includes("pii_path")) throw new Error("evidence task authority changed; refresh ahub task show before retrying");
+      const identity = taskClaimIdentity(task, Number(link.claimId.split(":").at(-1)));
+      if (identity.claimId !== link.claimId || identity.claimRevision !== link.claimRevision) throw new Error("evidence claim revision changed; refresh the claim binding before retrying");
+      const known = this.evidenceLink(project, link.id, link.revision);
+      if (known) {
+        if (evidenceLinkCanonical(known) !== canonical) throw new Error("evidence revision already records different content; use a new id or the next revision");
+        return known;
+      }
+      const latest = this.evidenceLink(project, link.id);
+      if (link.revision !== (latest?.revision ?? 0) + 1) throw new Error("evidence revision is out of sequence; use the next recorded revision");
+      if (latest && (latest.taskId !== link.taskId || latest.claimId !== link.claimId)) throw new Error("evidence id belongs to another claim; use a new evidence id");
+      this.taskWrite(() => this.db.query("INSERT INTO research_evidence_links(project,id,revision,task_id,body,body_sha256) VALUES(?,?,?,?,?,?)")
+        .run(project, link.id, link.revision, link.taskId, canonical, createHash("sha256").update(canonical).digest("hex")));
+      return this.evidenceLink(project, link.id, link.revision)!;
+    });
+  }
+
+  hasResearchEvidenceState(): boolean {
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_evidence_links) AS present").get() as { present: number }).present === 1;
+  }
+
+  researchEvidenceIntegrity(): { links: number; revisions: number; digest: string } {
+    return this.db.transaction(() => {
+      const digest = createHash("sha256").update("agent-hub.research-evidence/v1\n");
+      let links = 0, revisions = 0, previous: string | undefined, previousRevision = 0;
+      let claim: string | undefined, task: number | undefined;
+      for (const row of this.db.query("SELECT project,id,revision FROM research_evidence_links ORDER BY project,id,revision").iterate() as Iterable<{ project: string; id: string; revision: number }>) {
+        const link = this.evidenceLink(row.project, row.id, row.revision);
+        if (!link) throw new Error("evidence storage changed during integrity read; retry recovery inspection");
+        const key = JSON.stringify([row.project, row.id]);
+        if (key !== previous) { links++; previous = key; previousRevision = 0; claim = link.claimId; task = link.taskId; }
+        if (row.revision !== previousRevision + 1 || link.claimId !== claim || link.taskId !== task) throw new Error("evidence revision history is incomplete or changed claims; inspect stored evidence before retrying recovery");
+        previousRevision = row.revision; revisions++;
+        digest.update(JSON.stringify([row.project, evidenceLinkCanonical(link)])).update("\n");
+      }
+      return { links, revisions, digest: digest.digest("hex") };
+    })();
   }
 
   hasResearchState(): boolean {
