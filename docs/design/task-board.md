@@ -39,6 +39,7 @@ paths:
   - src/hub/ci-watch.ts
   - src/hub/research-campaign.ts
   - src/hub/research-experiments.ts
+  - src/hub/research-evidence.ts
   - src/hub/research-runner.ts
   - src/hub/task-approval.ts
   - src/hub/schedules.ts
@@ -86,6 +87,70 @@ Completion binds the submitted full head and any verified deliverable records. I
 Review independence and declared scope are different controls. Selection excludes conflicts using current implementation history; a `code` reviewer supplies code findings, while full test/CI proof belongs to the merger's gate. Evidence-only inability to run tests is not a code defect. This keeps valuable sandboxed review without inventing CI evidence or accepting self-review ([#744](https://github.com/STAIxBWLB/agent-hub/issues/744), [#852](https://github.com/STAIxBWLB/agent-hub/issues/852)).
 
 Task text and private-turn words can reach owners, reviewers, overlap notices and memory. Public views use the host's current privacy projection; PII tasks remain stubs for unauthorized observers, and private turns cannot write ordinary shared task text. The projection belongs at the shared boundary because filtering individual callers would leave another observer exposed ([#198](https://github.com/STAIxBWLB/agent-hub/issues/198), [#230](https://github.com/STAIxBWLB/agent-hub/issues/230)).
+
+## Claim evidence records (#931 T1)
+
+The #901 owner boundary exposes one canonical `taskClaimIdentity(task, slot)`.
+`claimId` is `claim:<task id>:<created>:<1-based slot>`, so a reset that reuses a
+task number cannot inherit an earlier task's evidence. `claimRevision` is the
+existing `claimListId(task.plan?.claims)`, the opaque 16-hex ordered-list hash
+already stamped in person verdicts. `recordClaimVerdict` and the evidence writer
+use that same helper; neither a second claim/verdict store nor a numeric claim
+counter is introduced. Exact-list restoration retains #901's existing verdict
+semantics. The list-level ceiling is conservative: any claim edit, reorder or
+replacement stales every link bound to the changed list. Per-claim revisions
+would be the upgrade path if that over-invalidation becomes a problem.
+
+Existing `hub_task_show` and `ahub task show --json` views expose a research
+task's current text-free `claims: [{slot, claimId, claimRevision}]` bindings,
+derived only from that canonical helper. PII tasks expose none, and dev views
+keep their existing shape. A caller copies the returned binding rather than
+reimplementing plan hashing; a changed list requires a fresh view before record.
+
+`EvidenceLinkV1` carries exactly `id`, `claimId`, `claimRevision`, `sourceId`,
+`rawSha256`, `projectionSha256`, `projectionVersion`, `locator`, `relation`,
+`recordedBy`, `taskId` and `revision`. Relations are `supports`, `contradicts` or
+`context`, all declared provenance rather than an entailment decision. `locator`
+stores proposed zero-based, half-open Unicode scalar-value `start`/`end` bounds
+with a nonempty span of at most 4096. T1 does not convert offsets, resolve text,
+accept page/section/excerpt fields or claim a projection is verified.
+
+The flat `hub_evidence_record` input omits host-owned `recordedBy`; `revision`
+defaults to 1 and `id` is optional for initial writes. A later revision names
+its existing ID and the next revision number. Initial IDs are deterministic for
+the same normalized input and actor. Replaying identical canonical bytes at an
+existing ID/revision writes nothing; conflicting bytes or an out-of-sequence
+revision refuse. Every accepted revision remains in the append-only evidence
+table. #901 person-verdict history and scorecard counts remain the sole judgment
+record, unaffected by evidence relation labels.
+
+Tasks prechecks sequence and claim association before screening and immediately
+before append; the Board transaction repeats them as the race fence. Ordinary
+sequence/association refusals are pre-effect and name the expected next revision
+when applicable. Invalid stored evidence directs the person to stop the hub,
+restore a trusted project `hub.db` backup, restart and retry; T1 does not name an
+unimplemented evidence-read command.
+
+`Tasks.evidenceRecord` admits only the current in-progress owner of a stored
+research-profile task, with current claim binding and registered source/raw hash.
+Standalone tasks do not need a campaign, and role-catalog guidance grants no
+authority. Recovery/shutdown holds, private turns, PII tasks, private sources,
+unknown sources, stale claims and foreign-task writes refuse before effects.
+Every awaited preparation is followed by current task/source/actor checks; the
+append transaction also fences task incarnation, owner, flow and claim revision.
+Current metadata privacy is checked again after asynchronous screening and immediately before append; a failed or unavailable policy refuses. Successful evidence receipts, including replay, are owner task effects for the existing no-write advisory.
+Public receipts contain only link ID, revision and task ID. The tool is excluded
+from argument/result capture and from read-only publication; dev-profile tool
+lists retain their existing shape.
+
+Projection hashes/version are caller-declared T1 bindings; only the raw source
+hash is checked against registry metadata. Locator resolution, Unicode offset
+conversion and current-privacy public revalidation are T2. Evidence read/CLI
+surfaces, complete inventory bindings and synthesis readiness remain later work.
+Stored evidence adds a conditional `research_evidence` recovery feature and
+`{links, revisions, digest}` integrity section. An absent section is the empty
+store, preserving older recovery records; an empty database requires no new
+feature. Provenance never manufactures a person verdict or readiness result.
 
 ## Read models and policy extensions
 

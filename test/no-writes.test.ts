@@ -23,6 +23,18 @@ test("#498 two proven no-write turns emit the streak count once", async () => {
   for (let i = 0; i < 10; i++) expect(observe(turns)).toBeUndefined();
 });
 
+test("#931 an evidence-only owner turn or replay breaks the no-write streak despite an unchanged workspace", async () => {
+  const { ownerToolEffect } = await import("../src/hub/no-writes.ts");
+  for (const input of [{ taskId: 17, relation: "supports" }, { taskId: 17, id: "ev:" + "a".repeat(32), revision: 1, relation: "supports" }]) {
+    const turns = await counter();
+    expect(observe(turns)).toBeUndefined(); // one prior empty turn, immediately before its warning threshold
+    expect(observe(turns, { changed: false, effect: ownerToolEffect("hub_evidence_record", input) })).toBeUndefined();
+    expect(observe(turns, { effect: ownerToolEffect("hub_task_list", {}) })).toBeUndefined(); // the first later read-only turn
+    expect(observe(turns)).toBe(2); // only two new empty turns may warn, not the evidence turn
+    expect(observe(turns)).toBeUndefined(); // retain the ordinary emit-once rule
+  }
+});
+
 test("#498 a one-turn threshold emits on the first proven no-write turn only", async () => {
   const turns = await counter();
   expect(observe(turns, { limit: 1 })).toBe(1);

@@ -65,6 +65,14 @@ The message bus is separate from task state. `Bus` frames and routes envelopes; 
 
 Encrypted rooms are an optional message transport between project hubs. They do not federate task boards, roles, approvals, or memory; each receiving project makes its own local admission decision. This prevents a remote room membership from becoming local authority ([#446](https://github.com/STAIxBWLB/agent-hub/issues/446)).
 
+Claim evidence (#931 T1) uses the same Tasks/Board boundary and #901's canonical
+claim identity and ordered-list revision. Evidence links are append-only
+provenance proposals; they create no separate claim/verdict store and do not
+establish entailment or synthesis readiness. The research-only record tool
+returns an ids-only receipt and excludes its arguments/results from capture.
+Its T1 authorization, revision and recovery boundaries are defined in
+[the task-board contract](task-board.md#claim-evidence-records-931-t1).
+
 ## Models and memory
 
 Peer selection, hub-owned model routing, and provider access are distinct layers. Task routing chooses a peer; the in-process route selects a model for hub-owned inference; OmniRoute owns provider keys, provider fallback, and usage. Native CLIs retain their own account and provider configuration; subscription OAuth credentials are not pooled through the gateway. The former Switchyard sidecar is retired; routing now runs in process. This keeps provider credentials and fallback policy in one gateway while avoiding a second routing service ([#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).

@@ -1,3 +1,4 @@
+import { parseEvidenceRecord, parseEvidenceLink, evidenceLinkId, evidenceLinkCanonical, type EvidenceRecordInput, type EvidenceReceipt } from "./research-evidence.ts";
 import { parseAttemptReceipt, parseResearchRunners, verifyAttemptReceipt } from "./research-runner.ts";
 import { approvalBinding, approvalText } from "./task-approval.ts";
 import type { InvocationRow } from "./invocations.ts";
@@ -64,7 +65,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type Scope, type Tier } from "@staix/agent-mem";
-import { parseClaimVerdict, claimListId, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
+import { parseClaimVerdict, taskClaimIdentity, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
@@ -913,6 +914,14 @@ export class Tasks {
     for (const id of created) this.releaseNotice(`task #${id}: recurring review finding amendment proposed in the backlog`);
   }
 
+  private publicClaimBindings(task: Task): ReturnType<typeof taskClaimIdentity>[] | undefined {
+    const claims = task.plan?.claims;
+    if (task.profile !== "research" || task.signals.includes("pii") || task.signals.includes("pii_path")
+      || !Array.isArray(claims) || !claims.length || claims.length > 50 || claims.some(value => typeof value !== "string")) return undefined;
+    try { return claims.map((_claim, index) => taskClaimIdentity(task, index + 1)); }
+    catch { return undefined; } // Optional public metadata never exposes a partial or malformed binding.
+  }
+
   /** A task as a cloud peer may see it. */
 
   publicView(task: Task, fullHistory = false): Record<string, unknown> {
@@ -929,6 +938,7 @@ export class Tasks {
     if (rest.sdlc?.redFirst && !this.publicMetadataText(JSON.stringify(rest.sdlc.redFirst))) {
       const { redFirst: _withheld, ...receipt } = rest.sdlc; rest.sdlc = receipt;
     }
+    const claimBindings = this.publicClaimBindings(task);
     const currentSpecReport = this.currentSpecReport(task);
     const currentSpecEntry = currentSpecReport ? history.findLast(entry => entry.event === "done" || entry.event === "done (checking)") : undefined;
     const screenHistoryText = (text: string, field: string, withheld = false): string => !withheld && this.nameable(text) ? text : `[history ${field} withheld: ${this.whyWithheld(text)}; ahub task show ${task.id}]`;
@@ -964,7 +974,7 @@ export class Tasks {
     const symbolRepository = codeSymbols && this.codeSymbolsRepository(task);
     const publicSymbols = codeSymbols && symbolRepository ? publicTaskCodeSymbols(codeSymbols, this.reviewHead(task), symbolRepository.key, this.publicMetadataText) : undefined;
     const handedOff = this.d.board.handoffOrigin(task.id);   // #604: where another project's handoff came from; two ids, never text
-    return { ...rest, ...(currentSpecReport ? { specReport: currentSpecReport } : {}), ...(approvalBinding(task) ? { approval: approvalBinding(task) } : {}), ...(handedOff ? { handoffOrigin: { projectId: handedOff.projectId, peer: handedOff.peer, ...(handedOff.originTask === null ? {} : { task: handedOff.originTask }) } } : {}), ...(publicSymbols ? { codeSymbols: publicSymbols } : {}), ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
+    return { ...rest, ...(claimBindings ? { claims: claimBindings } : {}), ...(currentSpecReport ? { specReport: currentSpecReport } : {}), ...(approvalBinding(task) ? { approval: approvalBinding(task) } : {}), ...(handedOff ? { handoffOrigin: { projectId: handedOff.projectId, peer: handedOff.peer, ...(handedOff.originTask === null ? {} : { task: handedOff.originTask }) } } : {}), ...(publicSymbols ? { codeSymbols: publicSymbols } : {}), ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
@@ -4515,6 +4525,65 @@ export class Tasks {
     // Advice joins the planner's next delivery; it must not manufacture a turn beside a withheld backlog batch.
     for (const peer of this.taskPlanner(task).filter(peer => this.d.bus.isRostered(peer))) this.releaseNotice(`task #${task.id}: stall notice unavailable`, () => this.d.tell?.(peer, noteLine(HUB, "finding", text)));
   }
+  /** T1 records declared provenance only; no locator resolution or #901 judgment is manufactured. */
+  async evidenceRecord(by: PeerId, input: unknown): Promise<EvidenceReceipt> {
+    try { requireLocalTaskPeer(by); }
+    catch { throw new PreEffectToolRefusal("remote peers cannot record local evidence; ask the current local research task owner to record it"); }
+    const requestCheck = this.requestCheck(by, () => this.studyHold());
+    let proposed: EvidenceRecordInput;
+    try { proposed = parseEvidenceRecord(input); }
+    catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid evidence record; check the bounded evidence fields before retrying"); }
+    return this.studyWrite(async () => {
+      const context = () => {
+        requestCheck();
+        let task: Task;
+        try { task = this.studyParent(proposed.taskId); }
+        catch { throw new PreEffectToolRefusal("evidence task is unavailable or outside this project; refresh ahub task show and select an active research task in this project"); }
+        if (task.profile !== "research" || task.state !== "in_progress" || task.owner !== by) throw new PreEffectToolRefusal("evidence recording requires the current in-progress research task owner; accept an assigned research task before recording evidence");
+        if (this.d.privateTurn?.(by) || this.isPii(task) || task.signals.includes("pii") || task.signals.includes("pii_path")) throw new PreEffectToolRefusal("private evidence recording is unavailable in T1; use a public research task outside a private turn");
+        let identity;
+        try { identity = taskClaimIdentity(task, Number(proposed.claimId.split(":").at(-1))); }
+        catch { throw new PreEffectToolRefusal("evidence claim is unavailable; refresh hub_task_show or ahub task show --json and use a current claim binding"); }
+        if (identity.claimId !== proposed.claimId || identity.claimRevision !== proposed.claimRevision) throw new PreEffectToolRefusal("evidence claim revision changed; refresh hub_task_show or ahub task show --json and record the current claim binding");
+        const source = this.studySource(proposed.sourceId);
+        if (!source || source.sha256 !== proposed.rawSha256) throw new PreEffectToolRefusal("evidence source is unknown or its raw hash changed; use ahub source list and read the registered snapshot before retrying");
+        if (source.private) throw new PreEffectToolRefusal("private evidence sources are unavailable in T1; select a registered public source");
+        return { task, key: JSON.stringify([task.created, task.history.length, task.owner, identity, source]) };
+      };
+      const before = context();
+      const link = parseEvidenceLink({ ...proposed, id: proposed.id ?? evidenceLinkId(proposed, by), recordedBy: by });
+      const canonical = evidenceLinkCanonical(link);
+      const requirePublicMetadata = () => {
+        let nameable = false;
+        try { nameable = this.publicMetadataText(canonical) === true; } catch { /* unknown privacy is refused */ }
+        if (!nameable) throw new PreEffectToolRefusal("evidence metadata is private or sensitive; remove sensitive metadata before recording a public link");
+      };
+      requirePublicMetadata();
+      const requireRevision = () => {
+        const latest = this.d.board.evidenceLink(this.d.project, link.id);
+        const next = (latest?.revision ?? 0) + 1;
+        if (latest && (latest.taskId !== link.taskId || latest.claimId !== link.claimId)) throw new PreEffectToolRefusal("evidence id belongs to another claim; use a new evidence id");
+        const known = this.d.board.evidenceLink(this.d.project, link.id, link.revision);
+        if (known && evidenceLinkCanonical(known) !== canonical) throw new PreEffectToolRefusal(`evidence revision already records different content; use next revision ${next} or a new evidence id`);
+        if (!known && link.revision !== next) throw new PreEffectToolRefusal(`evidence revision is out of sequence; expected next revision ${next}; use that revision or replay an unchanged recorded revision`);
+        return !!known;
+      };
+      const replay = requireRevision();
+      if (!replay && this.screenOn()) {
+        const screen = await this.screenCall(canonical);
+        requestCheck();
+        if (screen.label !== "clear") throw new PreEffectToolRefusal("evidence privacy screening did not clear the metadata; use public evidence metadata and retry when the screen is available");
+      }
+      requestCheck();
+      const current = context();
+      if (current.key !== before.key) throw new PreEffectToolRefusal("evidence task, claim or source changed during admission; refresh hub_task_show or ahub task show --json and registered source metadata before retrying");
+      requirePublicMetadata();
+      requireRevision();
+      const saved = this.d.board.recordEvidenceLink(this.d.project, link, { taskFlowRevision: current.task.history.length, taskCreated: current.task.created, owner: by });
+      return { id: saved.id, revision: saved.revision, taskId: saved.taskId };
+    });
+  }
+
   /**
    * #901: the person's verdict on one declared claim of a document plan, with the model label they say produced it. Person only (an agent's word on its own claim is no verdict, and task
    * approval never supplies one). The claim is named by its 1-based slot in the task's current plan; its text is not stored, sent or echoed, so a PII task records the same counters and
@@ -4528,7 +4597,8 @@ export class Tasks {
     if (!claims) throw new Error(`task #${task.id} declares no plan claims: add them to its plan first`);
     const claim = parseClaimVerdict(input, claims);
     // Bound to the claim list it evaluated: a hash of the plan's claims (never their text), so a later replacement or reorder of the list leaves this verdict naming no claim of the new list.
-    return this.d.board.update(task.id, USER, "claim verdict", {}, undefined, { claim: { ...claim, list: claimListId(task.plan?.claims) } });  // no note: nothing a person typed beyond the closed fields is kept
+    const identity = taskClaimIdentity(task, claim.slot);
+    return this.d.board.update(task.id, USER, "claim verdict", {}, undefined, { claim: { ...claim, list: identity.claimRevision } });  // no note: nothing a person typed beyond the closed fields is kept
   }
 
   async cancel(id: unknown, by: PeerId, input: { reason: string; supersededBy?: string; expectedFlowRevision?: number }): Promise<Task> {

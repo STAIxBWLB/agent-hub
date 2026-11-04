@@ -11554,6 +11554,22 @@ var init_research_runner = __esm(() => {
   RUNNER_RECEIPT_DOMAIN = "agent-hub.runner-receipt/v1" + String.fromCharCode(0);
 });
 
+// src/hub/sources.ts
+var MAX_META_BYTES;
+var init_sources = __esm(() => {
+  init_platform();
+  init_text_projection();
+  MAX_META_BYTES = 2 * 1024 * 1024;
+});
+
+// src/hub/research-evidence.ts
+var FIELDS, INPUT_FIELDS;
+var init_research_evidence = __esm(() => {
+  init_sources();
+  FIELDS = ["id", "claimId", "claimRevision", "sourceId", "rawSha256", "projectionSha256", "projectionVersion", "locator", "relation", "recordedBy", "taskId", "revision"];
+  INPUT_FIELDS = FIELDS.filter((field) => field !== "recordedBy");
+});
+
 // node_modules/@staix/agent-mem/src/memory/formats.ts
 import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, openSync as openSync7, readFileSync as readFileSync8, readSync as readSync5 } from "fs";
 var MAX_BYTES3, SEMVER, READER_VERSION;
@@ -12714,6 +12730,7 @@ var CLASSES2, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
   init_research_runner();
   init_packs();
+  init_research_evidence();
   init_research_experiments();
   init_task_code_symbols();
   init_plan_conformance();
@@ -12860,7 +12877,8 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
   if (!customStages && !customProfile && !criteria)
     return TASK_TOOLS;
   const data = profileData(profile);
-  return TASK_TOOLS.map((tool) => {
+  const tools = data.name === "research" ? [...TASK_TOOLS, EVIDENCE_RECORD_TOOL] : TASK_TOOLS;
+  return tools.map((tool) => {
     const properties = { ...tool.inputSchema.properties };
     if ((customStages || criteria) && tool.name === "hub_sdlc_record") {
       const receipt = properties.receipt;
@@ -12913,7 +12931,7 @@ var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_
   name,
   description,
   inputSchema: { type: "object", properties: name === "hub_review" || name === "hub_task_propose" ? { ...properties, request_id: toolWriteRequestId } : properties, required, additionalProperties: false }
-}), STUDY_TOOLS, HANDOFF_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, SESSION_TITLE_TOOL, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
+}), STUDY_TOOLS, EVIDENCE_RECORD_TOOL, HANDOFF_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, SESSION_TITLE_TOOL, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
 var init_hub_tools = __esm(() => {
   init_test_integrity();
   init_sdlc();
@@ -12921,7 +12939,7 @@ var init_hub_tools = __esm(() => {
   init_roles();
   init_registry();
   init_envelope();
-  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve"]);
+  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record"]);
   IMPLEMENTER_PERMISSION_TOOL = {
     name: "hub_permission_request",
     description: "Native permission prompt for this current owned child. The person allows once or denies; failure is deny.",
@@ -12978,6 +12996,19 @@ var init_hub_tools = __esm(() => {
   };
   acceptPlan = { ...plan, properties: { ...plan.properties, sections: list("document heading anchors, such as report.md#methods"), sources: list("registered src:<16 hex> source ids; list available ids with ahub source list"), claims: list("short claim ids to verify") } };
   STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff"]);
+  EVIDENCE_RECORD_TOOL = tool2("hub_evidence_record", "Record a provenance link for a claim on your current in-progress research task. Read hub_task_show or ahub task show --json and copy claims[].claimId and claims[].claimRevision for the selected slot; do not reconstruct identities or hash claim text. Projection hash/version and scalar locator are declared metadata in T1, not resolved or verified. A relation proposes supports, contradicts or context; it never creates a person verdict. Private turns, tasks and sources refuse. The actor is host-stamped; no fetch, resolver or synthesis check runs.", {
+    id: { type: "string", pattern: "^ev:[0-9a-f]{32}$" },
+    taskId: id2,
+    claimId: { type: "string", minLength: 1, maxLength: 64, pattern: "^claim:[1-9][0-9]{0,15}:(?:0|[1-9][0-9]{0,15}):[1-9][0-9]?$", description: "Canonical #901 claim:<taskId>:<created>:<slot> identity: safe integer parts, slots 1-50; no claim text." },
+    claimRevision: { type: "string", pattern: "^[0-9a-f]{16}$" },
+    sourceId: { type: "string", pattern: "^src:[0-9a-f]{16}$" },
+    rawSha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+    projectionSha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+    projectionVersion: { type: "string", minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63}$" },
+    locator: { type: "object", properties: { start: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, end: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER } }, required: ["start", "end"], additionalProperties: false, description: "Declared zero-based, half-open Unicode scalar-value offsets; nonempty span <=4096. T2 will resolve the immutable projection." },
+    relation: { type: "string", enum: ["supports", "contradicts", "context"] },
+    revision: { type: "integer", minimum: 1, description: "Default 1; later revisions name the existing link id." }
+  }, ["taskId", "claimId", "claimRevision", "sourceId", "rawSha256", "projectionSha256", "projectionVersion", "locator", "relation"]);
   HANDOFF_TOOLS = new Set(["hub_task_handoff", "hub_task_handoffs"]);
   BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
   CAPABILITY_TOOLS = new Set(["hub_capabilities", "hub_capabilities_publish", "hub_invoke"]);
@@ -13049,7 +13080,7 @@ var init_hub_tools = __esm(() => {
   ];
   TASK_TOOLS.push(...PLANNER_REVIEW_TOOLS);
   SESSION_TITLE_TOOL = tool2("hub_set_title", "Name your own session once the task is clear. Only an unnamed session accepts the first agent name; the person may replace it. Private contexts refuse the write. No task, branch or instance is renamed.", { title: { type: "string", description: "1-80 characters after doingText normalization (one line, controls removed, surrounding whitespace trimmed)" } }, ["title"]);
-  TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name]);
+  TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name, EVIDENCE_RECORD_TOOL.name]);
   CONDUCTOR_TOOLS = [
     tool2("hub_status", "Inspect public team state, holds, quota windows, task counts and pending approval peer/tool/age. Only the configured conductor may use this tool.", {}),
     tool2("hub_task_show", "Read a task's public view and history, its done summary and check result included. PII tasks remain stubs. Only the conductor, the configured planner and the task's current owner and reviewer may use this tool.", { id: id2 }, ["id"]),
@@ -24255,6 +24286,7 @@ init_hub_tools();
 init_envelope();
 
 // src/hub/tasks.ts
+init_research_evidence();
 init_research_runner();
 init_queue_backpressure();
 
@@ -24309,7 +24341,7 @@ init_security_baseline();
 init_version();
 
 // src/hub/no-writes.ts
-var OWNER_TOOL_EFFECTS = new Set(["hub_task_propose", "hub_task_decline", "hub_task_done", "hub_task_cancel", "hub_task_assign", "hub_task_escalate", "hub_review", "hub_checkpoint", "hub_remember", "hub_memory_correct", "hub_check_start", "hub_check_cancel", "hub_sdlc_record", "hub_plan_review", "hub_backlog_plan", "hub_backlog_pull", "hub_backlog_undo", "hub_backlog_split", "hub_backlog_return_untouched", "hub_release_new", "hub_release_configure", "hub_release_assign", "hub_release_cut", "hub_study_handoff", "hub_experiment_record"]);
+var OWNER_TOOL_EFFECTS = new Set(["hub_task_propose", "hub_task_decline", "hub_task_done", "hub_task_cancel", "hub_task_assign", "hub_task_escalate", "hub_review", "hub_checkpoint", "hub_remember", "hub_memory_correct", "hub_check_start", "hub_check_cancel", "hub_sdlc_record", "hub_plan_review", "hub_backlog_plan", "hub_backlog_pull", "hub_backlog_undo", "hub_backlog_split", "hub_backlog_return_untouched", "hub_release_new", "hub_release_configure", "hub_release_assign", "hub_release_cut", "hub_study_handoff", "hub_experiment_record", "hub_evidence_record"]);
 
 // src/hub/github-import.ts
 init_sdlc();
