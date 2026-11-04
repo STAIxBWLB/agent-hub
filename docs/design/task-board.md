@@ -101,6 +101,12 @@ semantics. The list-level ceiling is conservative: any claim edit, reorder or
 replacement stales every link bound to the changed list. Per-claim revisions
 would be the upgrade path if that over-invalidation becomes a problem.
 
+Existing `hub_task_show` and `ahub task show --json` views expose a research
+task's current text-free `claims: [{slot, claimId, claimRevision}]` bindings,
+derived only from that canonical helper. PII tasks expose none, and dev views
+keep their existing shape. A caller copies the returned binding rather than
+reimplementing plan hashing; a changed list requires a fresh view before record.
+
 `EvidenceLinkV1` carries exactly `id`, `claimId`, `claimRevision`, `sourceId`,
 `rawSha256`, `projectionSha256`, `projectionVersion`, `locator`, `relation`,
 `recordedBy`, `taskId` and `revision`. Relations are `supports`, `contradicts` or
@@ -117,6 +123,13 @@ existing ID/revision writes nothing; conflicting bytes or an out-of-sequence
 revision refuse. Every accepted revision remains in the append-only evidence
 table. #901 person-verdict history and scorecard counts remain the sole judgment
 record, unaffected by evidence relation labels.
+
+Tasks prechecks sequence and claim association before screening and immediately
+before append; the Board transaction repeats them as the race fence. Ordinary
+sequence/association refusals are pre-effect and name the expected next revision
+when applicable. Invalid stored evidence directs the person to stop the hub,
+restore a trusted project `hub.db` backup, restart and retry; T1 does not name an
+unimplemented evidence-read command.
 
 `Tasks.evidenceRecord` admits only the current in-progress owner of a stored
 research-profile task, with current claim binding and registered source/raw hash.

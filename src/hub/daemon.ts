@@ -4287,7 +4287,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const related = tasks.isPii(task) ? undefined : await taskMemoryResult(task, true).catch(() => ({ items: [], state: "unknown" as const }));
         const fresh = board.get(task.id);
         const relatedMemory = related && fresh?.updated === task.updated && !tasks.isPii(fresh) ? { state: related.state, count: related.items.length, ...("head" in related ? { head: related.head } : {}) } : { state: "unknown" };
-        return JSON.stringify({ ...detail, ...holderReasons(publicTask), relatedMemory, ...(publicTask.handoffOrigin ? { handoffOrigin: publicTask.handoffOrigin } : {}), ...(codeSymbols ? { codeSymbols } : {}), ...(consoleDeliverables ? { deliverables: consoleDeliverables } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
+        return JSON.stringify({ ...detail, ...holderReasons(publicTask), relatedMemory, ...(publicTask.claims !== undefined ? { claims: publicTask.claims } : {}), ...(publicTask.handoffOrigin ? { handoffOrigin: publicTask.handoffOrigin } : {}), ...(codeSymbols ? { codeSymbols } : {}), ...(consoleDeliverables ? { deliverables: consoleDeliverables } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
       }
       case "deliverables": {
         // #317 (`ahub deliverables`): the board's deliverable records, person only. `check` measures the files now; without it nothing is opened.

@@ -32,6 +32,12 @@ An active owner of an in-progress research-profile task can record
 guidance grants no extra authority, and the tool is absent from dev-profile and
 read-only publication. T1 refuses private-turn, PII-task and private-source writes.
 
+Read the task with `hub_task_show` or `ahub task show --json`, then copy its
+text-free `claims[].claimId` and `claims[].claimRevision` into the record. The
+view also gives each slot. Refresh that view after claims change; clients never
+need to reproduce the internal plan encoding or hash. PII and dev tasks expose
+no such bindings.
+
 Claim references use #901's canonical identity: `claim:<task id>:<created>:<slot>`
 with a 1-based slot, and `claimRevision` equal to the plan's existing ordered-list
 hash (`claimListId`). Any edit or reordering of that list stales every bound link;

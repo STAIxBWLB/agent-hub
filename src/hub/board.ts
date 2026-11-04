@@ -936,7 +936,7 @@ export class Board {
       const link = parseEvidenceLink(JSON.parse(row.body)), canonical = evidenceLinkCanonical(link);
       if (link.id !== row.id || link.revision !== row.revision || link.taskId !== row.task_id || createHash("sha256").update(canonical).digest("hex") !== row.body_sha256) throw new Error("invalid binding");
       return link;
-    } catch { throw new Error("evidence storage invalid; inspect the evidence record before retrying"); }
+    } catch { throw new Error("evidence storage invalid; stop the hub and restore a trusted hub.db backup; then restart and retry"); }
   }
 
   recordEvidenceLink(project: string, input: EvidenceLinkV1, fence: { taskFlowRevision: number; taskCreated: number; owner: PeerId }): EvidenceLinkV1 {
@@ -948,14 +948,14 @@ export class Board {
         || task.signals.includes("pii") || task.signals.includes("pii_path")) throw new Error("evidence task authority changed; refresh ahub task show before retrying");
       const identity = taskClaimIdentity(task, Number(link.claimId.split(":").at(-1)));
       if (identity.claimId !== link.claimId || identity.claimRevision !== link.claimRevision) throw new Error("evidence claim revision changed; refresh the claim binding before retrying");
+      const latest = this.evidenceLink(project, link.id), next = (latest?.revision ?? 0) + 1;
+      if (latest && (latest.taskId !== link.taskId || latest.claimId !== link.claimId)) throw new Error("evidence id belongs to another claim; use a new evidence id");
       const known = this.evidenceLink(project, link.id, link.revision);
       if (known) {
-        if (evidenceLinkCanonical(known) !== canonical) throw new Error("evidence revision already records different content; use a new id or the next revision");
+        if (evidenceLinkCanonical(known) !== canonical) throw new Error(`evidence revision already records different content; use next revision ${next} or a new evidence id`);
         return known;
       }
-      const latest = this.evidenceLink(project, link.id);
-      if (link.revision !== (latest?.revision ?? 0) + 1) throw new Error("evidence revision is out of sequence; use the next recorded revision");
-      if (latest && (latest.taskId !== link.taskId || latest.claimId !== link.claimId)) throw new Error("evidence id belongs to another claim; use a new evidence id");
+      if (link.revision !== next) throw new Error(`evidence revision is out of sequence; expected next revision ${next}; use that revision or replay an unchanged recorded revision`);
       this.taskWrite(() => this.db.query("INSERT INTO research_evidence_links(project,id,revision,task_id,body,body_sha256) VALUES(?,?,?,?,?,?)")
         .run(project, link.id, link.revision, link.taskId, canonical, createHash("sha256").update(canonical).digest("hex")));
       return this.evidenceLink(project, link.id, link.revision)!;
@@ -976,7 +976,7 @@ export class Board {
         if (!link) throw new Error("evidence storage changed during integrity read; retry recovery inspection");
         const key = JSON.stringify([row.project, row.id]);
         if (key !== previous) { links++; previous = key; previousRevision = 0; claim = link.claimId; task = link.taskId; }
-        if (row.revision !== previousRevision + 1 || link.claimId !== claim || link.taskId !== task) throw new Error("evidence revision history is incomplete or changed claims; inspect stored evidence before retrying recovery");
+        if (row.revision !== previousRevision + 1 || link.claimId !== claim || link.taskId !== task) throw new Error("evidence revision history is incomplete or changed claims; stop the hub and restore a trusted hub.db backup; then restart and retry recovery");
         previousRevision = row.revision; revisions++;
         digest.update(JSON.stringify([row.project, evidenceLinkCanonical(link)])).update("\n");
       }

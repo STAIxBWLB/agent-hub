@@ -914,6 +914,14 @@ export class Tasks {
     for (const id of created) this.releaseNotice(`task #${id}: recurring review finding amendment proposed in the backlog`);
   }
 
+  private publicClaimBindings(task: Task): ReturnType<typeof taskClaimIdentity>[] | undefined {
+    const claims = task.plan?.claims;
+    if (task.profile !== "research" || task.signals.includes("pii") || task.signals.includes("pii_path")
+      || !Array.isArray(claims) || !claims.length || claims.length > 50 || claims.some(value => typeof value !== "string")) return undefined;
+    try { return claims.map((_claim, index) => taskClaimIdentity(task, index + 1)); }
+    catch { return undefined; } // Optional public metadata never exposes a partial or malformed binding.
+  }
+
   /** A task as a cloud peer may see it. */
 
   publicView(task: Task, fullHistory = false): Record<string, unknown> {
@@ -930,6 +938,7 @@ export class Tasks {
     if (rest.sdlc?.redFirst && !this.publicMetadataText(JSON.stringify(rest.sdlc.redFirst))) {
       const { redFirst: _withheld, ...receipt } = rest.sdlc; rest.sdlc = receipt;
     }
+    const claimBindings = this.publicClaimBindings(task);
     const currentSpecReport = this.currentSpecReport(task);
     const currentSpecEntry = currentSpecReport ? history.findLast(entry => entry.event === "done" || entry.event === "done (checking)") : undefined;
     const screenHistoryText = (text: string, field: string, withheld = false): string => !withheld && this.nameable(text) ? text : `[history ${field} withheld: ${this.whyWithheld(text)}; ahub task show ${task.id}]`;
@@ -965,7 +974,7 @@ export class Tasks {
     const symbolRepository = codeSymbols && this.codeSymbolsRepository(task);
     const publicSymbols = codeSymbols && symbolRepository ? publicTaskCodeSymbols(codeSymbols, this.reviewHead(task), symbolRepository.key, this.publicMetadataText) : undefined;
     const handedOff = this.d.board.handoffOrigin(task.id);   // #604: where another project's handoff came from; two ids, never text
-    return { ...rest, ...(currentSpecReport ? { specReport: currentSpecReport } : {}), ...(approvalBinding(task) ? { approval: approvalBinding(task) } : {}), ...(handedOff ? { handoffOrigin: { projectId: handedOff.projectId, peer: handedOff.peer, ...(handedOff.originTask === null ? {} : { task: handedOff.originTask }) } } : {}), ...(publicSymbols ? { codeSymbols: publicSymbols } : {}), ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
+    return { ...rest, ...(claimBindings ? { claims: claimBindings } : {}), ...(currentSpecReport ? { specReport: currentSpecReport } : {}), ...(approvalBinding(task) ? { approval: approvalBinding(task) } : {}), ...(handedOff ? { handoffOrigin: { projectId: handedOff.projectId, peer: handedOff.peer, ...(handedOff.originTask === null ? {} : { task: handedOff.originTask }) } } : {}), ...(publicSymbols ? { codeSymbols: publicSymbols } : {}), ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
@@ -4534,8 +4543,8 @@ export class Tasks {
         if (this.d.privateTurn?.(by) || this.isPii(task) || task.signals.includes("pii") || task.signals.includes("pii_path")) throw new PreEffectToolRefusal("private evidence recording is unavailable in T1; use a public research task outside a private turn");
         let identity;
         try { identity = taskClaimIdentity(task, Number(proposed.claimId.split(":").at(-1))); }
-        catch { throw new PreEffectToolRefusal("evidence claim is unavailable; refresh ahub task show and use a current claim binding"); }
-        if (identity.claimId !== proposed.claimId || identity.claimRevision !== proposed.claimRevision) throw new PreEffectToolRefusal("evidence claim revision changed; refresh ahub task show and record the current claim binding");
+        catch { throw new PreEffectToolRefusal("evidence claim is unavailable; refresh hub_task_show or ahub task show --json and use a current claim binding"); }
+        if (identity.claimId !== proposed.claimId || identity.claimRevision !== proposed.claimRevision) throw new PreEffectToolRefusal("evidence claim revision changed; refresh hub_task_show or ahub task show --json and record the current claim binding");
         const source = this.studySource(proposed.sourceId);
         if (!source || source.sha256 !== proposed.rawSha256) throw new PreEffectToolRefusal("evidence source is unknown or its raw hash changed; use ahub source list and read the registered snapshot before retrying");
         if (source.private) throw new PreEffectToolRefusal("private evidence sources are unavailable in T1; select a registered public source");
@@ -4550,9 +4559,16 @@ export class Tasks {
         if (!nameable) throw new PreEffectToolRefusal("evidence metadata is private or sensitive; remove sensitive metadata before recording a public link");
       };
       requirePublicMetadata();
-      const known = this.d.board.evidenceLink(this.d.project, link.id, link.revision);
-      const replay = known && evidenceLinkCanonical(known) === canonical;
-      if (known && !replay) throw new PreEffectToolRefusal("evidence revision already records different content; use a new id or the next revision");
+      const requireRevision = () => {
+        const latest = this.d.board.evidenceLink(this.d.project, link.id);
+        const next = (latest?.revision ?? 0) + 1;
+        if (latest && (latest.taskId !== link.taskId || latest.claimId !== link.claimId)) throw new PreEffectToolRefusal("evidence id belongs to another claim; use a new evidence id");
+        const known = this.d.board.evidenceLink(this.d.project, link.id, link.revision);
+        if (known && evidenceLinkCanonical(known) !== canonical) throw new PreEffectToolRefusal(`evidence revision already records different content; use next revision ${next} or a new evidence id`);
+        if (!known && link.revision !== next) throw new PreEffectToolRefusal(`evidence revision is out of sequence; expected next revision ${next}; use that revision or replay an unchanged recorded revision`);
+        return !!known;
+      };
+      const replay = requireRevision();
       if (!replay && this.screenOn()) {
         const screen = await this.screenCall(canonical);
         requestCheck();
@@ -4560,8 +4576,9 @@ export class Tasks {
       }
       requestCheck();
       const current = context();
-      if (current.key !== before.key) throw new PreEffectToolRefusal("evidence task, claim or source changed during admission; refresh ahub task show and source metadata before retrying");
+      if (current.key !== before.key) throw new PreEffectToolRefusal("evidence task, claim or source changed during admission; refresh hub_task_show or ahub task show --json and registered source metadata before retrying");
       requirePublicMetadata();
+      requireRevision();
       const saved = this.d.board.recordEvidenceLink(this.d.project, link, { taskFlowRevision: current.task.history.length, taskCreated: current.task.created, owner: by });
       return { id: saved.id, revision: saved.revision, taskId: saved.taskId };
     });

@@ -11,7 +11,7 @@ import { loadRouting } from "../src/hub/routing.ts";
 import { SourceRegistry, sha256Of } from "../src/hub/sources.ts";
 import { TaskRepositories } from "../src/hub/task-repository.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
-import type { EvidenceRecordInput } from "../src/hub/research-evidence.ts";
+import { evidenceLinkCanonical, type EvidenceRecordInput } from "../src/hub/research-evidence.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -83,7 +83,9 @@ test("#931 T1 exact replay writes nothing, survives restart, and retains every l
   expect(f.board.statusRevision()).toBe(restartedGeneration);
   expect(f.board.evidenceLink("other-project", first.id)).toBeUndefined();
   await refused(f.tasks.evidenceRecord("codex", { ...input, id: first.id, relation: "contradicts" }));
-  await expect(f.tasks.evidenceRecord("codex", { ...input, id: first.id, revision: 4 })).rejects.toThrow("out of sequence");
+  const outOfSequence = await refused(f.tasks.evidenceRecord("codex", { ...input, id: first.id, revision: 4 }));
+  expect((outOfSequence as Error).message).toContain("out of sequence");
+  expect((outOfSequence as Error).message).toContain("expected next revision 3");
   expect(f.board.researchEvidenceIntegrity()).toEqual(saved);
 });
 
@@ -221,7 +223,7 @@ test("#931 T1 corrupt stored JSON, schema and hashes never echo stored private b
     let readError: unknown;
     try { f.board.evidenceLink("evidence-fixture", receipt.id); } catch (error) { readError = error; }
     expect(readError).toBeInstanceOf(Error);
-    expect((readError as Error).message).toBe("evidence storage invalid; inspect the evidence record before retrying");
+    expect((readError as Error).message).toBe("evidence storage invalid; stop the hub and restore a trusted hub.db backup; then restart and retry");
     expect(String((readError as Error).stack)).not.toContain(marker);
     let writeError: unknown;
     try { await f.tasks.evidenceRecord("codex", input); } catch (error) { writeError = error; }
@@ -254,3 +256,80 @@ for (const policy of ["PII patterns", "private paths", "unavailable policy (thro
     expect(f.tasks.studiesPending()).toBe(0);
   });
 }
+
+test("#931 T1 public claim bindings can be recorded and become stale after a claim edit", async () => {
+  const f = await fixture();
+  const bindings = f.tasks.publicView(f.board.get(f.task.id)!).claims as ReturnType<typeof taskClaimIdentity>[];
+  expect(bindings).toEqual(CLAIMS.map((_claim, index) => taskClaimIdentity(f.task, index + 1)));
+  for (const binding of bindings) expect(Object.keys(binding).sort()).toEqual(["claimId", "claimRevision", "slot"]);
+  expect(JSON.stringify(bindings)).not.toContain("CLAIM_TEXT_CANARY");
+  const binding = bindings[0]!, input = { ...f.input(), claimId: binding.claimId, claimRevision: binding.claimRevision };
+  await f.tasks.evidenceRecord("codex", input);
+  f.tasks.accept("codex", f.task.id, { claims: ["edited claim", CLAIMS[1]!] });
+  const changed = f.tasks.publicView(f.board.get(f.task.id)!).claims as ReturnType<typeof taskClaimIdentity>[];
+  expect(changed[0]?.claimId).toBe(binding.claimId);
+  expect(changed[0]?.claimRevision).not.toBe(binding.claimRevision);
+  const generation = f.board.statusRevision(), before = f.board.researchEvidenceIntegrity();
+  const error = await refused(f.tasks.evidenceRecord("codex", input));
+  expect((error as Error).message).toContain("claim revision changed");
+  expect((error as Error).message).toContain("hub_task_show or ahub task show --json");
+  expect(f.board.statusRevision()).toBe(generation);
+  expect(f.board.researchEvidenceIntegrity()).toEqual(before);
+});
+
+test("#931 T1 private, dev and malformed optional claim views expose no claim bindings", async () => {
+  const f = await fixture();
+  for (const signal of ["pii", "pii_path"]) {
+    const task = f.board.update(f.task.id, "user", "privacy changed", { signals: [signal] });
+    const view = f.tasks.publicView(task);
+    expect(view).not.toHaveProperty("claims");
+    expect(JSON.stringify(view)).not.toContain("CLAIM_TEXT_CANARY");
+  }
+  // Even a routing opt-out cannot publish new bindings for raw PII signals.
+  const raw = f.board.get(f.task.id)!;
+  const permissiveBus = new Bus({ batchMs: 0 }); cleanup.push(() => permissiveBus.closeJournal());
+  const permissive = new Tasks({ cwd: f.cwd, board: f.board, bus: permissiveBus, project: "evidence-fixture", routing: () => { const routing = loadRouting(f.cwd); return { ...routing, constraints: { ...routing.constraints, pii: "off" as const } }; }, notify: () => {} });
+  expect(permissive.publicView({ ...raw, signals: ["pii"] })).not.toHaveProperty("claims");
+  const dev = f.board.propose("codex", { title: "Dev fixture", class: "test", plan: { claims: CLAIMS } });
+  expect(f.tasks.publicView(dev)).not.toHaveProperty("claims");
+  expect(f.tasks.publicView(dev).plan).toEqual(dev.plan);
+  const current = { ...raw, signals: [] };
+  expect(() => f.tasks.publicView({ ...current, created: NaN })).not.toThrow();
+  expect(f.tasks.publicView({ ...current, created: NaN })).not.toHaveProperty("claims");
+  const malformed = { ...current, plan: { claims: [null] } } as unknown as Task;
+  expect(() => f.tasks.publicView(malformed)).not.toThrow();
+  expect(f.tasks.publicView(malformed)).not.toHaveProperty("claims");
+});
+
+test("#931 T1 sequence and claim association refuse before screening or storage", async () => {
+  const f = await fixture(), input = f.input(), first = await f.tasks.evidenceRecord("codex", input);
+  let screens = 0; f.control.screen = async () => { screens++; };
+  const generation = f.board.statusRevision(), before = f.board.researchEvidenceIntegrity(), task = f.board.get(f.task.id);
+  const sequence = await refused(f.tasks.evidenceRecord("codex", { ...input, id: first.id, revision: 3 }));
+  expect((sequence as Error).message).toContain("expected next revision 2");
+  const association = await refused(f.tasks.evidenceRecord("codex", { ...f.input(f.board.get(f.task.id)!, f.first.id, 2), id: first.id, revision: 2 }));
+  expect((association as Error).message).toContain("belongs to another claim");
+  expect(screens).toBe(0);
+  expect(f.board.statusRevision()).toBe(generation);
+  expect(f.board.researchEvidenceIntegrity()).toEqual(before);
+  expect(f.board.get(f.task.id)).toEqual(task);
+});
+
+for (const drift of ["revision", "claim association"] as const) test(`#931 T1 ${drift} is checked again after screening`, async () => {
+  const f = await fixture(), input = f.input(), first = await f.tasks.evidenceRecord("codex", input);
+  const original = f.board.evidenceLink("evidence-fixture", first.id)!, task = f.board.get(f.task.id)!;
+  let expected = f.board.researchEvidenceIntegrity(), generation = f.board.statusRevision();
+  f.control.screen = async () => {
+    if (drift === "revision") f.board.recordEvidenceLink("evidence-fixture", { ...original, revision: 2, relation: "context" }, { owner: "codex", taskCreated: task.created, taskFlowRevision: task.history.length });
+    else {
+      const body = evidenceLinkCanonical({ ...original, claimId: taskClaimIdentity(task, 2).claimId });
+      (f.board as unknown as { db: Database }).db.query("UPDATE research_evidence_links SET body=?,body_sha256=? WHERE project=? AND id=?").run(body, sha256Of(Buffer.from(body)), "evidence-fixture", first.id);
+    }
+    expected = f.board.researchEvidenceIntegrity(); generation = f.board.statusRevision();
+  };
+  const error = await refused(f.tasks.evidenceRecord("codex", { ...input, id: first.id, revision: 2, relation: "contradicts" }));
+  expect((error as Error).message).toContain(drift === "revision" ? "next revision 3" : "belongs to another claim");
+  expect(f.board.researchEvidenceIntegrity()).toEqual(expected);
+  expect(f.board.statusRevision()).toBe(generation);
+  expect(f.board.get(f.task.id)).toEqual(task);
+});
