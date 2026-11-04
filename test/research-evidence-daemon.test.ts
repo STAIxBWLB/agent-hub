@@ -46,7 +46,8 @@ async function rig() {
     project: projectChain(root).at(-1)!, close: async () => { for (const client of clients) client.close(); board.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); } };
 }
 
-function receipt(response: { ok?: boolean; error?: string; text?: string }) { expect(response.ok, response.error).toBe(true); const result = JSON.parse(response.text ?? ""); expect(Object.keys(result).sort()).toEqual(["id", "revision", "taskId"]); return result; }
+function assertOk(response: { ok?: boolean; error?: string }) { expect(response.ok, response.error).toBe(true); }
+function receipt(response: { ok?: boolean; error?: string; text?: string }) { assertOk(response); const result = JSON.parse(response.text ?? ""); expect(Object.keys(result).sort()).toEqual(["id", "revision", "taskId"]); return result; }
 
 test("evidence recording is research-only publication, recognized for dispatch/capture and absent from readonly/dev tools", () => {
   expect(profileTaskTools("dev")).toBe(TASK_TOOLS);
@@ -165,14 +166,14 @@ test("an owner reads canonical claim bindings over RPC and a legal plan edit sta
   const f = await rig();
   const show = async (id: number) => {
     const response = await f.owner.request({ t: "task", op: "hub_task_show", args: { id } });
-    expect(response.ok, response.error).toBe(true);
+    assertOk(response);
     return JSON.parse(response.text);
   };
   try {
     const shown = await show(f.active.id), binding = shown.claims.find((claim: { slot: number }) => claim.slot === 1);
     expect(binding).toBeDefined(); expect(Object.keys(binding).sort()).toEqual(["claimId", "claimRevision", "slot"]);
     const consoleRead = await f.person.request({ t: "task", op: "task_show", args: { id: f.active.id } });
-    expect(consoleRead.ok, consoleRead.error).toBe(true); expect(JSON.parse(consoleRead.text).claims).toEqual(shown.claims);
+    assertOk(consoleRead); expect(JSON.parse(consoleRead.text).claims).toEqual(shown.claims);
     expect(JSON.stringify(shown.claims)).not.toContain("bounded-claim-a"); expect(JSON.stringify(shown.claims)).not.toContain("bounded-claim-b");
     const source = f.registered[0]!;
     // Use the public RPC values directly. The client neither reconstructs identity nor hashes the claim list.
@@ -180,11 +181,11 @@ test("an owner reads canonical claim bindings over RPC and a legal plan edit sta
       projectionSha256: hash(source.text), projectionVersion: "fixture-v1", locator: { start: 0, end: 2 }, relation: "supports" };
     const first = receipt(await f.record(f.owner, input));
     const edited = await f.owner.request({ t: "task", op: "hub_task_accept", args: { id: f.active.id, plan: { claims: ["revised-claim-a", "bounded-claim-b"] } } });
-    expect(edited.ok, edited.error).toBe(true);
+    assertOk(edited);
     expect(f.board.get(f.active.id)!.plan!.claims).toEqual(["revised-claim-a", "bounded-claim-b"]);
     const refreshed = await show(f.active.id), fresh = refreshed.claims.find((claim: { slot: number }) => claim.slot === 1);
     const consoleRefreshed = await f.person.request({ t: "task", op: "task_show", args: { id: f.active.id } });
-    expect(consoleRefreshed.ok, consoleRefreshed.error).toBe(true); expect(JSON.parse(consoleRefreshed.text).claims).toEqual(refreshed.claims);
+    assertOk(consoleRefreshed); expect(JSON.parse(consoleRefreshed.text).claims).toEqual(refreshed.claims);
     expect(fresh.claimId).toBe(binding.claimId); expect(fresh.claimRevision).not.toBe(binding.claimRevision);
     const before = f.board.researchEvidenceIntegrity();
     const stale = await f.record(f.owner, input);
@@ -200,15 +201,15 @@ test("owner task reads omit evidence claim bindings for development and private 
   const f = await rig();
   try {
     const dev = await f.owner.request({ t: "task", op: "hub_task_show", args: { id: f.devActive.id } });
-    expect(dev.ok, dev.error).toBe(true); expect(JSON.parse(dev.text)).not.toHaveProperty("claims");
+    assertOk(dev); expect(JSON.parse(dev.text)).not.toHaveProperty("claims");
     const consoleDev = await f.person.request({ t: "task", op: "task_show", args: { id: f.devActive.id } });
-    expect(consoleDev.ok, consoleDev.error).toBe(true); expect(JSON.parse(consoleDev.text)).not.toHaveProperty("claims");
+    assertOk(consoleDev); expect(JSON.parse(consoleDev.text)).not.toHaveProperty("claims");
     const row = f.board.propose("user", { title: "PII evidence fixture", class: "test", profile: "research", plan: { claims: ["PRIVATE_CLAIM_TEXT_CANARY"] }, signals: ["pii"] });
     f.board.update(row.id, "user", "fixture accepted", { owner: "codex", state: "in_progress" });
     const hidden = await f.owner.request({ t: "task", op: "hub_task_show", args: { id: row.id } });
-    expect(hidden.ok, hidden.error).toBe(true); expect(JSON.parse(hidden.text)).toMatchObject({ title: "[pii]" });
+    assertOk(hidden); expect(JSON.parse(hidden.text)).toMatchObject({ title: "[pii]" });
     expect(JSON.parse(hidden.text)).not.toHaveProperty("claims"); expect(hidden.text).not.toContain("PRIVATE_CLAIM_TEXT_CANARY");
     const consolePrivate = await f.person.request({ t: "task", op: "task_show", args: { id: row.id } });
-    expect(consolePrivate.ok, consolePrivate.error).toBe(true); expect(JSON.parse(consolePrivate.text)).not.toHaveProperty("claims");
+    assertOk(consolePrivate); expect(JSON.parse(consolePrivate.text)).not.toHaveProperty("claims");
   } finally { await f.close(); }
 });
