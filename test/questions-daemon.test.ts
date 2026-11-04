@@ -310,7 +310,8 @@ const prepare = (f: { person: ControlClient }, features: readonly string[], op =
   f.person.request({ t: "recovery", op, operationId, expectedInstanceId, targetFeatures: features });
 
 test("recovery refuses a target without the questions feature while a question is open, and accepts one that has it", async () => {
-  const f = await rig({ wait: { codex: 1000 } });
+  // This checks recovery evidence, not dispatch: keep the seeded owed answer pending until prepare reads it.
+  const f = await rig({ wait: { codex: 1000 }, sweepMs: 60_000 });
   const result = await f.ask(await f.asAgent("codex"));
   const set = JSON.parse(result.text).questionSet as string; // pending: the row stays open
   const instance = (await f.person.request({ t: "status" })).status.instanceId as string;
