@@ -33635,6 +33635,12 @@ var pendingQueued;
 var QUEUED_COUNTED = Symbol("queuedCounted");
 var HELD_HINT_INCLUDED = Symbol("heldHintIncluded");
 var heldMetadataUnavailable = (value) => !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && value.unavailable === true;
+var heldMetadataNeedsReviewOnly = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const held = value;
+  return Number.isSafeInteger(held.count) && held.count > 0 && held.truncated === false && Array.isArray(held.rows) && held.rows.length > 0 && held.rows.every((row) => !!row && typeof row === "object" && !Array.isArray(row) && (row.state === undefined || row.state === "needs_review"));
+};
 async function withPendingHint(result, recommendInbox = true) {
   const r = result;
   const appendQueued = (hint) => {
@@ -33910,10 +33916,11 @@ async function callTool(req, signal) {
     return text5(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && (!toolsMode || permissionTool)) {
-    let remote = [], notice = "", polling = "", counted = false, heldHint = "", metadataWarning = "";
+    let remote = [], notice = "", polling = "", counted = false, heldHint = "", metadataWarning = "", heldMetadata;
     if (hub) {
       try {
         const res = await hub.request({ t: "inbox" });
+        heldMetadata = res.held;
         const metadataUnavailable = heldMetadataUnavailable(res.held);
         heldHint = renderHeldHint(res.held, Date.now(), !deliveryOnly);
         if (metadataUnavailable)
@@ -33944,10 +33951,15 @@ async function callTool(req, signal) {
       out.push(heldHint);
     if (metadataWarning)
       out.push(metadataWarning);
-    const body = out.length ? out.join(`
+    let body = out.length ? out.join(`
 
 `) : `(no queued hub messages)
 Nothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.`;
+    if (out.length === 1 && out[0] === heldHint && heldHint && heldMetadataNeedsReviewOnly(heldMetadata)) {
+      body = `(no queued hub messages)
+
+${body}`;
+    }
     const result = text5(polling ? `${body}
 ${polling}` : body);
     if (counted)

@@ -198,6 +198,13 @@ const QUEUED_COUNTED = Symbol("queuedCounted");
 const HELD_HINT_INCLUDED = Symbol("heldHintIncluded");
 const heldMetadataUnavailable = (value: unknown): boolean => !!value && typeof value === "object" && !Array.isArray(value)
   && Object.keys(value).length === 1 && (value as { unavailable?: unknown }).unavailable === true;
+const heldMetadataNeedsReviewOnly = (value: unknown): boolean => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const held = value as { count?: unknown; rows?: unknown; truncated?: unknown };
+  return Number.isSafeInteger(held.count) && (held.count as number) > 0 && held.truncated === false && Array.isArray(held.rows) && held.rows.length > 0
+    && held.rows.every(row => !!row && typeof row === "object" && !Array.isArray(row)
+      && ((row as { state?: unknown }).state === undefined || (row as { state?: unknown }).state === "needs_review"));
+};
 /** Fresh own-peer counts accompany all tool modes; only old plain sessions use advisory queued nudges. */
 async function withPendingHint<T>(result: T, recommendInbox = true): Promise<T> {
   const r = result as { content?: { type: string; text?: string }[] };
@@ -455,10 +462,11 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     return text(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && (!toolsMode || permissionTool)) {
-    let remote: string[] = [], notice = "", polling = "", counted = false, heldHint = "", metadataWarning = "";
+    let remote: string[] = [], notice = "", polling = "", counted = false, heldHint = "", metadataWarning = "", heldMetadata: unknown;
     if (hub) {
       try {
         const res = await hub.request({ t: "inbox" });
+        heldMetadata = res.held;
         const metadataUnavailable = heldMetadataUnavailable(res.held);
         heldHint = renderHeldHint(res.held, Date.now(), !deliveryOnly);
         if (metadataUnavailable) metadataWarning = `Delivery confirmation metadata is unavailable; inspect ahub queue list --peer ${sanitize(peerId)} before deciding whether anything is waiting.`;
@@ -478,7 +486,10 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     if (notice) out.push(notice);
     if (heldHint) out.push(heldHint);
     if (metadataWarning) out.push(metadataWarning);
-    const body = out.length ? out.join("\n\n") : "(no queued hub messages)\nNothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.";
+    let body = out.length ? out.join("\n\n") : "(no queued hub messages)\nNothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.";
+    if (out.length === 1 && out[0] === heldHint && heldHint && heldMetadataNeedsReviewOnly(heldMetadata)) {
+      body = `(no queued hub messages)\n\n${body}`;
+    }
     const result = text(polling ? `${body}\n${polling}` : body);
     if (counted) Object.defineProperty(result, QUEUED_COUNTED, { value: true });
     if (heldHint || metadataWarning) Object.defineProperty(result, HELD_HINT_INCLUDED, { value: true });
