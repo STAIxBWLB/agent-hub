@@ -12660,8 +12660,6 @@ var init_package = __esm(() => {
     files: [
       ".claude-plugin",
       "src",
-      "src/pet/window.jxa.js",
-      "src/pet/window.html",
       "plugins",
       "templates",
       "scripts/check-docs.mjs",
