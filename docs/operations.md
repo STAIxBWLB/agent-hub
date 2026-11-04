@@ -6141,7 +6141,7 @@ Comment resolution does not end the current review input. Manual shared-memory w
 
 ## Memory sync diagnosis (#1173)
 
-A ready memory profile does not prove a successful sync. Read the separate automatic-sync result and timestamp in `ahub status` or Memory. It resets to not run after daemon restart; it is not a machine-global record of manual CLI attempts.
+A ready memory profile does not prove a successful sync. Read the separate automatic-sync result and timestamp in `ahub status` or Memory. It resets to not run after daemon restart; it is not a machine-global record of manual CLI attempts. Missing remote configuration is the neutral `not-configured` state; an interrupted/stopped attempt is neutral `stopped`. Both keep their safe next step and produce no failure log under `quietSyncError`.
 
 For a privacy refusal, a person runs `ahub memory declined --json` to inspect IDs and safe rule categories. `complete:false` means the scan is unavailable or over its diagnostic bound; it does not mean zero declined rows. The pinned public API currently lacks a bounded physical inspection path for both shared-v1 and generation profiles (agent-mem#260, handed off as agent-mem task 128). Generation snapshots also materialize the full history before a caller can apply its row limit. The command therefore returns incomplete without scanning either profile until the core API is published and its exact pin is raised here. No migration or policy edit is performed automatically.
 

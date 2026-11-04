@@ -32,6 +32,22 @@ test("memory sync failure logging dedupes the full declined-ID fingerprint and s
   expect(reduceMemorySync(state, { ...failure, at: 5 }).logFailure).toBe(true);
 });
 
+test("quiet missing-remote and stopped outcomes stay neutral and clear the prior failure episode", () => {
+  let state = initialMemorySyncState();
+  state = reduceMemorySync(state, { type: "failure", at: 1, cause: "transport", failureDetailHash: "private" }).state;
+  const missingRemote = reduceMemorySync(state, { type: "quiet", at: 2, state: "not-configured" });
+  state = missingRemote.state;
+  expect(missingRemote.logFailure).toBe(false);
+  expect(memorySyncView(state, "enabled")).toEqual({ state: "not-configured", at: 2, nextStep: "configure a private sync remote" });
+  expect(memorySyncLine(memorySyncView(state, "enabled"))).toContain("not-configured; automatic, last");
+  expect(memorySyncLine(memorySyncView(state, "enabled"))).toContain("next: configure a private sync remote");
+  const stopped = reduceMemorySync(state, { type: "quiet", at: 3, state: "stopped" });
+  state = stopped.state;
+  expect(stopped.logFailure).toBe(false);
+  expect(memorySyncView(state, "enabled")).toEqual({ state: "stopped", at: 3, nextStep: "retry after hub restart" });
+  expect(reduceMemorySync(state, { type: "failure", at: 4, cause: "transport", failureDetailHash: "private" }).logFailure).toBe(true);
+});
+
 test("declined sync dedupe uses the complete inspected ID set across targets, not the first-target result count", () => {
   const idA = "a".repeat(32), idB = "b".repeat(32), idC = "c".repeat(32);
   const fingerprint = (ids: string[]) => createHash("sha256").update(ids.sort().join("\n")).digest("hex");

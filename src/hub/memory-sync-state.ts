@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 export type MemorySyncCause = "declined" | "remote" | "binding" | "stopped" | "transport" | "unknown";
 export type MemorySyncOutcome =
   | { state: "notrun" }
+  | { state: "not-configured" | "stopped"; at: number }
   | { state: "ok"; at: number }
   | { state: "failed"; at: number; cause: MemorySyncCause; declinedCount?: number; declinedIdsKnown?: false };
 
@@ -15,6 +16,7 @@ export interface MemorySyncState {
 
 export type MemorySyncEvent =
   | { type: "success"; at: number }
+  | { type: "quiet"; at: number; state: "not-configured" | "stopped" }
   | { type: "failure"; at: number; cause: MemorySyncCause; declinedCount?: number; declinedIdsFingerprint?: string; declinedIdsKnown?: false; failureDetailHash?: string };
 
 export const initialMemorySyncState = (): MemorySyncState => ({ outcome: { state: "notrun" } });
@@ -23,6 +25,7 @@ const MAX_DECLINED_ROWS = 20_000;
 /** Reduces one completed sync. The boolean says whether this failure is a new loggable episode. */
 export function reduceMemorySync(state: MemorySyncState, event: MemorySyncEvent): { state: MemorySyncState; logFailure: boolean } {
   if (event.type === "success") return { state: { outcome: { state: "ok", at: event.at } }, logFailure: false };
+  if (event.type === "quiet") return { state: { outcome: { state: event.state, at: event.at } }, logFailure: false };
   const signature = [event.cause, event.declinedCount ?? "", event.declinedIdsFingerprint ?? (event.declinedIdsKnown === false ? "ids-unknown" : ""), event.failureDetailHash ?? ""].join("\0");
   const changed = state.failureSignature !== signature;
   return {
@@ -32,7 +35,7 @@ export function reduceMemorySync(state: MemorySyncState, event: MemorySyncEvent)
 }
 
 export interface MemorySyncView {
-  state: "disabled" | "unavailable" | "notrun" | "ok" | "failed" | "unknown";
+  state: "disabled" | "unavailable" | "notrun" | "not-configured" | "stopped" | "ok" | "failed" | "unknown";
   at?: number;
   cause?: MemorySyncCause;
   declinedCount?: number;
@@ -53,6 +56,8 @@ export function memorySyncView(state: MemorySyncState, availability: "enabled" |
   if (availability !== "enabled") return { state: availability };
   const outcome = state.outcome;
   if (outcome.state === "notrun") return { state: "notrun" };
+  if (outcome.state === "not-configured") return { state: "not-configured", at: outcome.at, nextStep: memorySyncNextStep("remote") };
+  if (outcome.state === "stopped") return { state: "stopped", at: outcome.at, nextStep: memorySyncNextStep("stopped") };
   if (outcome.state === "ok") return { state: "ok", at: outcome.at };
   return {
     state: "failed", at: outcome.at, cause: outcome.cause,

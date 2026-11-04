@@ -29,7 +29,7 @@ export interface StatusOutput {
   pendingTaskOffers?: readonly { task: number; peer: string }[];
   isolatedChecks?: { pending?: number; orphans?: string[]; unknownReceipts?: readonly string[]; maintenanceUnavailable?: boolean };
   memoryRead?: { truncated: boolean; scanned: number; limit: number };
-  memoryProfile?: { profile?: string; generation?: string; state?: string; agentMemVersion?: string; skippedRows?: number; error?: string; sync?: { state: "disabled" | "unavailable" | "notrun" | "ok" | "failed" | "unknown"; at?: number; cause?: string; declinedCount?: number; declinedIdsKnown?: false; nextStep?: string } };
+  memoryProfile?: { profile?: string; generation?: string; state?: string; agentMemVersion?: string; skippedRows?: number; error?: string; sync?: { state: "disabled" | "unavailable" | "notrun" | "not-configured" | "stopped" | "ok" | "failed" | "unknown"; at?: number; cause?: string; declinedCount?: number; declinedIdsKnown?: false; nextStep?: string } };
   /** #784 AC3: `active`, `reviewWait` and `reserved` add up to `wip`; absent from an older hub. */
   taskWip?: Record<string, { wip: number; wipLimit: number; active?: number; reviewWait?: number; reserved?: number }>;
   pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; actionPolicyInfo?: Record<string, { note: string; enforceable: boolean }>; budget?: Record<string, any>; planner?: { peers?: string[]; source?: string };

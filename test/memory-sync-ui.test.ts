@@ -29,3 +29,8 @@ test("Memory sync UI does not turn unavailable states or invalid timestamps into
   expect(invalid).toContain("run ahub memory sync as a person");
   expect(invalid).not.toMatch(/Invalid Date|NaN/);
 });
+
+test("Memory sync UI shows neutral next steps for an unconfigured remote and a stopped run", () => {
+  expect(render({ state: "not-configured" })).toContain("not-configured / next: configure a private sync remote");
+  expect(render({ state: "stopped" })).toContain("stopped / next: retry after hub restart");
+});

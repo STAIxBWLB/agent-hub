@@ -2633,6 +2633,10 @@ function memorySyncLine(sync) {
   if (!sync || typeof sync.state !== 'string') return 'Machine sync: unknown';
   const hasTimestamp = sync.at !== undefined, validTimestamp = Number.isSafeInteger(sync.at) && Math.abs(sync.at) <= 8640000000000000;
   const stamp = hasTimestamp ? ' / last ' + (validTimestamp ? time(sync.at) : 'unknown') : '';
+  if (sync.state === 'not-configured' || sync.state === 'stopped') {
+    const next = sync.state === 'stopped' ? 'retry after hub restart' : 'configure a private sync remote';
+    return 'Machine sync: ' + sync.state + stamp + ' / next: ' + next;
+  }
   if (sync.state !== 'failed') return 'Machine sync: ' + (['disabled','unavailable','notrun','ok','unknown'].includes(sync.state) ? sync.state : 'unknown') + stamp;
   const causes = ['declined','remote','binding','stopped','transport','unknown'];
   const cause = causes.includes(sync.cause) ? sync.cause : 'unknown';

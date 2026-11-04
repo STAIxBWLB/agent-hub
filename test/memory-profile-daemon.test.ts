@@ -110,6 +110,35 @@ test("real daemon publishes automatic machine sync outcomes and logs one line pe
   expect(JSON.stringify(snapshot.memorySync)).not.toContain("secret.invalid");
 });
 
+test("missing remote and stopped sync results are neutral status outcomes and never failure logs", async () => {
+  const f = fixture();
+  const errors = [
+    "no sync remote: a person sets one with ahub memory sync --remote <private git url>",
+    "no generation sync remote configured",
+    "stopped",
+  ];
+  const h = await hub(f, { sync_interval_min: 10 }, {
+    memorySync: async () => ({ ok: false, pushed: false, entries: 0, error: errors.shift()! }),
+  });
+  for (const [errorState, nextStep] of [
+    ["not-configured", "configure a private sync remote"],
+    ["not-configured", "configure a private sync remote"],
+    ["stopped", "retry after hub restart"],
+  ]) {
+    await h.syncNow();
+    const sync = (await h.status()).sync;
+    expect(sync).toMatchObject({ state: errorState, nextStep });
+    expect(sync).not.toHaveProperty("cause");
+  }
+  const log = readFileSync(join(f.stateDir, "hub.log"), "utf8");
+  expect(log).not.toContain("hub memory sync failed:");
+  expect(log).not.toContain("no generation sync remote configured");
+  expect(log).not.toContain("private git url");
+  const snapshot = await h.person.request({ t: "ui_snapshot", after: 0, view: "memory" });
+  expect(snapshot.memorySync).toMatchObject({ state: "stopped", nextStep: "retry after hub restart" });
+  expect(JSON.stringify(snapshot.memorySync)).not.toContain("private git url");
+});
+
 test("a synchronous sync-policy construction failure releases the single-flight slot for a corrected retry", async () => {
   const f = fixture();
   mkdirSync(f.memoryDir, { recursive: true });

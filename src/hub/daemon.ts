@@ -1808,10 +1808,23 @@ export async function startDaemon(opts: DaemonOptions) {
   /** Machine sync, when a person set a remote; one log line per failure, never a blocked turn. Stopping aborts and awaits it. */
   function syncNow(): Promise<void> {
     if (!memoryStore || syncRun || stopping) return syncRun ?? Promise.resolve();
+    const recordFailure = (cause: ReturnType<typeof classifyMemorySyncFailure> & { declinedIdsFingerprint?: string; declinedIdsKnown?: false; failureDetailHash?: string }, errorText?: string) => {
+      if (quietSyncError(errorText)) {
+        const state = errorText?.startsWith("stopped") ? "stopped" : "not-configured";
+        memorySyncState = reduceMemorySync(memorySyncState, { type: "quiet", at: Date.now(), state }).state;
+        return;
+      }
+      const reduced = reduceMemorySync(memorySyncState, { type: "failure", at: Date.now(), ...cause });
+      memorySyncState = reduced.state;
+      if (reduced.logFailure && !quietSyncError(errorText)) log(`hub memory sync failed: ${cause.cause}${cause.cause === "declined" ? ` (${cause.declinedCount ?? 0} declined)` : ""}`);
+    };
     const recordUnexpectedFailure = (error: unknown) => {
-      const failure = reduceMemorySync(memorySyncState, { type: "failure", at: Date.now(), cause: "unknown", failureDetailHash: memorySyncFailureDetailHash(error) });
-      memorySyncState = failure.state;
-      if (failure.logFailure) log("hub memory sync failed: unknown");
+      const errorText = typeof error === "string" ? error : error instanceof Error ? error.message : undefined;
+      if (quietSyncError(errorText)) {
+        recordFailure(classifyMemorySyncFailure(error), errorText);
+        return;
+      }
+      recordFailure({ cause: "unknown", failureDetailHash: memorySyncFailureDetailHash(error) }, errorText);
     };
     const run = async () => {
       try {
@@ -1823,13 +1836,8 @@ export async function startDaemon(opts: DaemonOptions) {
           screen: row => policy.screen(row).ok,
           policyVersion: () => memorySyncPolicyVersion(),
         });
-        const recordFailure = (cause: ReturnType<typeof classifyMemorySyncFailure> & { declinedIdsFingerprint?: string; declinedIdsKnown?: false; failureDetailHash?: string }) => {
-          const reduced = reduceMemorySync(memorySyncState, { type: "failure", at: Date.now(), ...cause });
-          memorySyncState = reduced.state;
-          if (reduced.logFailure && cause.cause !== "stopped") log(`hub memory sync failed: ${cause.cause}${cause.cause === "declined" ? ` (${cause.declinedCount ?? 0} declined)` : ""}`);
-        };
         if (memorySyncPolicyVersion() !== policyVersion) {
-          recordFailure({ cause: "binding" });
+          recordFailure({ cause: "binding" }, "binding changed");
           return;
         }
         checkMemory();
@@ -1840,8 +1848,8 @@ export async function startDaemon(opts: DaemonOptions) {
           const failure = classifyMemorySyncFailure(r.error);
           if (failure.cause === "declined") {
             const inspected = inspectDeclinedMemoryRows(memoryStore!, policy);
-            recordFailure(memorySyncDeclinedDetails(failure, inspected));
-          } else recordFailure({ ...failure, failureDetailHash: memorySyncFailureDetailHash(r.error) });
+            recordFailure(memorySyncDeclinedDetails(failure, inspected), r.error);
+          } else recordFailure({ ...failure, failureDetailHash: memorySyncFailureDetailHash(r.error) }, r.error);
         }
       } catch (error) { recordUnexpectedFailure(error); }
     };

@@ -20,11 +20,12 @@ export function contextLine(reading: ContextView, time = (at: number) => new Dat
 
 /** Human status copy for machine-local sync; upstream error text never enters this projection. */
 export function memorySyncLine(sync: MemorySyncRow, time = (at: number) => new Date(at).toISOString()): string {
-  const allowedStates = ["disabled", "unavailable", "notrun", "ok", "failed", "unknown"];
+  const allowedStates = ["disabled", "unavailable", "notrun", "not-configured", "stopped", "ok", "failed", "unknown"];
   const state = allowedStates.includes(sync.state ?? "") ? sync.state! : "unknown";
   const hasTimestamp = sync.at !== undefined;
   const validTimestamp = Number.isSafeInteger(sync.at) && Math.abs(sync.at!) <= 8_640_000_000_000_000;
   const stamp = hasTimestamp ? `; automatic, last ${validTimestamp ? time(sync.at!) : "unknown"}` : "";
+  if (state === "not-configured" || state === "stopped") return `${state}${stamp}; next: ${memorySyncNextStep(state === "stopped" ? "stopped" : "remote")}`;
   if (state !== "failed") return `${state}${stamp}`;
   const causes = ["declined", "remote", "binding", "stopped", "transport", "unknown"];
   const cause = (causes.includes(sync.cause ?? "") ? sync.cause : "unknown") as MemorySyncCause;
