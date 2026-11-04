@@ -12,6 +12,7 @@ import { loadConfig } from "../src/hub/daemon.ts";
 import { realPath } from "../src/hub/project.ts";
 import { AcpPeer } from "../src/adapters/acp.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
+import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const f of cleanups.splice(0).reverse()) await f(); });
 const root = () => { const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-roles-"))); cleanups.push(() => rmSync(dir, { recursive: true, force: true })); return dir; };
@@ -71,8 +72,14 @@ test("MCP instructions carry catalog once for channel/inbox and omit it in nativ
     Object.assign(env, { AGENTHUB_PROJECT_DIR: dir, AGENTHUB_STATE_DIR: join(dir, "state"), AGENTHUB_PEER_ID: channel === "tools" ? "kimi" : "claude" });
     if (channel === "tools") env.AGENTHUB_MODE = "tools"; else if (channel) env.AGENTHUB_CHANNEL = "1";
     const client = new Client({ name: "role-fixture", version: "1" });
-    const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../plugins/agent-hub/server.js")], cwd: dir, env, stderr: "pipe" });
+    let entry = join(import.meta.dir, "../plugins/agent-hub/server.js");
+    if (channel === true) {
+      entry = join(dir, "channel-role-parent.ts");
+      writeFileSync(entry, `${syntheticClaudeParentEvidenceSetup()} await import(${JSON.stringify(join(import.meta.dir, "../src/adapters/claude-channel.ts"))});`);
+    }
+    const transport = new StdioClientTransport({ command: process.execPath, args: [entry], cwd: dir, env, stderr: "pipe" });
     cleanups.push(() => client.close()); await client.connect(transport);
+    expect(!!client.getServerCapabilities()?.experimental?.["claude/channel"]).toBe(channel === true);
     const instructions = client.getInstructions()!;
     if (channel === "tools") expect(instructions).not.toContain("Catalog roles (");
     else { expect(instructions.split("Catalog roles (")).toHaveLength(2); expect(instructions).toContain("code-reviewer [dev, shipped"); }
