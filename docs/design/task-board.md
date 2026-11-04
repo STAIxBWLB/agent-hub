@@ -125,6 +125,7 @@ authority. Recovery/shutdown holds, private turns, PII tasks, private sources,
 unknown sources, stale claims and foreign-task writes refuse before effects.
 Every awaited preparation is followed by current task/source/actor checks; the
 append transaction also fences task incarnation, owner, flow and claim revision.
+Current metadata privacy is checked again after asynchronous screening and immediately before append; a failed or unavailable policy refuses. Successful evidence receipts, including replay, are owner task effects for the existing no-write advisory.
 Public receipts contain only link ID, revision and task ID. The tool is excluded
 from argument/result capture and from read-only publication; dev-profile tool
 lists retain their existing shape.
