@@ -99,7 +99,7 @@ function startOfficeRuntime(view: () => string, measurement?: (text:string,font:
     let stopped=false, managerMode=false, selectedProjectId='', selectedInstanceId='', snapshotValid=true, viewGeneration=0, lastSnapshot=null, eventCount=0, cursor=0, draftChoicesPending=false, officePrev=null;
     let currentView="office";const dashboardCookie={get(){return ""},set(){}};const applyDashboardView=()=>{get("office-section").hidden=currentView!=="office"},switchView=view=>{currentView=view};const pendingButtons=new WeakSet(), pendingStarts=new Map(), signatures=new Map();
     const peerRows=new Map(), taskRows=new Map(), officeDesks=new Map(), officeCards=new Map();
-    const $=get;
+    const $=get, reviewKit=null;
     const update=(id,data,render)=>{const signature=JSON.stringify(data);if(signatures.get(id)===signature)return;signatures.set(id,signature);const target=$(id);target.replaceChildren();render(target);};
     const empty=(target,text)=>target.append(el('p',text));
     const badge=(text)=>el('span',text),dot=()=>el('span'),peerDot={},taskBadge={};

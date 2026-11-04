@@ -17,6 +17,7 @@ import { OmniRoute } from "../src/omniroute/client.ts";
 import { isClosedTaskState } from "../src/hub/board.ts";
 import { deliveryTask } from "../src/hub/attribution.ts";
 import { MemoryObservations } from "../src/hub/memory-observations.ts";
+import { isReviewObserverExcluded } from "../src/hub/memory-policy.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { restartPath } from "../src/hub/restart.ts";
 
@@ -140,7 +141,7 @@ test("#625 local memory provenance stays unbound even when its other native sess
   const { contextSession, memoryObservations } = hostVariables(["contextSession", "contextPii", "memoryObservations"], {
     bus, isWsPeer, definitionOf, claudeSession: () => { throw new Error("local must not read Claude state"); },
     turns: new Map(), board: { list: () => [], peerTaskSignals: () => [], get: () => undefined }, isClosedTaskState, deliveryTask, taskKey, memoryProject: "fixture",
-    tasks: { isPii: () => { throw new Error("fixture has no tasks to screen"); } }, MemoryObservations,
+    tasks: { isPii: () => { throw new Error("fixture has no tasks to screen"); } }, MemoryObservations, isReviewObserverExcluded,
     memoryTelemetry: { record: (_text: string, context: { session: unknown }) => recorded.push(context) },
   });
   expect(contextSession(local.id)).toBeUndefined();

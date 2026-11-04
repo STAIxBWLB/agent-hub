@@ -3206,7 +3206,9 @@ export async function startDaemon(opts: DaemonOptions) {
     } catch { return undefined; } // Unknown is never evidence of no writes, including a missing/pruned tree.
   }
   async function reviewMaterials(task: Task, requests: readonly ReviewReadRequest[]): Promise<ReviewMaterialBatch> {
-    const deadline = performance.now() + 8000;
+    const budget: SnapshotBudget = { deadline: Infinity };
+    budget.deadline = budgetNow(budget) + 8000;
+    const deadline = budget.deadline;
     let head = "";
     const fingerprint = (row: Task) => JSON.stringify([row.created, row.owner, row.history.length, row.refs, row.plan, row.signals, row.sdlc]);
     const identity = (row: Task) => JSON.stringify([row.id, row.created, row.owner, row.history.length, row.plan, row.signals]);
@@ -3221,13 +3223,13 @@ export async function startDaemon(opts: DaemonOptions) {
     const unavailable = (): ReviewMaterialBatch => ({ head, materials: requests.map(request => ({ state: "unavailable", path: request.path, side: request.side ?? "head" })) });
     try {
       if (!currentTask()) return unavailable();
-      const owner = task.owner ?? "", root = executionRoot(owner), budget = { deadline };
+      const owner = task.owner ?? "", root = executionRoot(owner);
       const repository = repoFor(owner, budget);
       if (!repository) return unavailable();
       const current = headState(repository, budget);
-      if (typeof task.refs.commit === "string" && /^[a-f0-9]{40}$/.test(task.refs.commit) && hubGitSync(repoGitArgs(repository, ["cat-file", "-e", `${task.refs.commit}^{commit}`]), { encoding: "utf8", maxBuffer: 1024, timeout: Math.ceil(Math.max(1, deadline - performance.now())), env: repoGitEnv(repository) }).status === 0) head = task.refs.commit;
+      if (typeof task.refs.commit === "string" && /^[a-f0-9]{40}$/.test(task.refs.commit) && hubGitSync(repoGitArgs(repository, ["cat-file", "-e", `${task.refs.commit}^{commit}`]), { encoding: "utf8", maxBuffer: 1024, timeout: Math.ceil(Math.max(1, deadline - budgetNow(budget))), env: repoGitEnv(repository) }).status === 0) head = task.refs.commit;
       else if (current?.head && /^[a-f0-9]{40}$/.test(current.head)) head = current.head;
-      if (!head || performance.now() >= deadline || (tasks.isPii(task) || task.signals.includes("pii") || task.signals.includes("pii_path")) || privateSnapshotWindow()) return unavailable();
+      if (!head || budgetNow(budget) >= deadline || (tasks.isPii(task) || task.signals.includes("pii") || task.signals.includes("pii_path")) || privateSnapshotWindow()) return unavailable();
       const scopes = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.sections ?? []).map(section => section.split("#")[0]!)].map(path => {
         const scoped = relative(root, resolve(root, path));
         if (root === opts.cwd || scoped !== ".." && !scoped.startsWith("../")) return scoped;
@@ -3239,7 +3241,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // or a locally guessed merge base is never an inventory of its changed files.
       if (task.sdlc?.repo && task.sdlc.pr) {
         const pr = await readSdlcPr(task.sdlc, (args, timeout, _cwd, bound) => {
-          const remaining = deadline - performance.now();
+          const remaining = deadline - budgetNow(budget);
           return remaining <= 0 ? Promise.resolve({ code: 1, stdout: "" }) : (opts.reviewMaterialsGh ?? sdlcGh)(args, Math.ceil(Math.min(timeout ?? remaining, remaining)), root, bound);
         });
         if (!currentTask()) return unavailable();
