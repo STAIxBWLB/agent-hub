@@ -562,12 +562,23 @@ export class Tasks {
         check(); const context = this.reviewContext(taskId), packet = this.d.board.reviewCommentPackage(packageId);
         if (!packet || packet.task !== taskId || packet.taskCreated !== context.task.created || packet.owner !== context.task.owner) throw new PreEffectToolRefusal("saved review package is unavailable for this task owner; refresh the task review and inspect the existing package history");
         if (!packet.body || !packet.envelopeId || !packet.trace || packet.ts === undefined) throw new PreEffectToolRefusal(`saved review package ${packageId} predates recoverable delivery; inspect the owner's queue and sent comments before drafting a new package`);
-        if (packet.publicationEvidenceVersion !== 1) throw new PreEffectToolRefusal(`saved review package ${packageId} has no retained delivery proof; inspect the owner's queue and sent comments before retrying`);
         if (!context.task.owner || context.task.owner === USER || context.task.owner === HUB) throw new PreEffectToolRefusal("saved review package has no current agent owner; assign the open task before retrying");
         if (isClosedTaskState(context.task.state)) throw new PreEffectToolRefusal("review package cannot be sent because the task is closed; reopen the task review before sending");
         const env = { id: packet.envelopeId, trace: packet.trace, hop: 0, from: HUB, to: [packet.owner], kind: "review" as const, priority: "important" as const, body: packet.body,
           refs: { task: String(taskId), taskRecipient: "owner" as const, reviewPackage: packageId }, ts: packet.ts };
         check();
+        const status = this.d.bus.reviewEnvelopeStatus(env.id);
+        if (status === "unknown") throw new PreEffectToolRefusal("saved review package delivery history is unavailable; inspect ahub queue list --peer " + packet.owner + " and sent comments before retrying");
+        if (status === "absent") {
+          if (packet.publicationEvidenceVersion !== 1) throw new PreEffectToolRefusal(`saved review package ${packageId} has no retained delivery proof; inspect the owner's queue and sent comments before retrying`);
+          if (packet.visibleIds === undefined) throw new PreEffectToolRefusal("saved review package has no privacy binding; inspect the owner's queue and sent comments, then dismiss or recreate the package");
+          const records = this.d.board.reviewComments(taskId, context.task.created);
+          if (packet.ids.some(id => records.find(row => row.thread.id === id)?.lifecycle !== "sent")) throw new PreEffectToolRefusal("saved review package comments are no longer all sent; inspect the owner's queue and dismiss or recreate the package");
+          if (packet.visibleIds.length && (this.reviewTaskPrivate(context.task)
+            || packet.visibleIds.some(id => { const record = records.find(row => row.thread.id === id); return !record || this.reviewRecordPrivate(context.task, record); }))) {
+            throw new PreEffectToolRefusal("saved review package is private under current policy; inspect the owner's queue, dismiss the old comments, and create a new package only after review privacy is clear");
+          }
+        }
         try {
           const targets = this.d.bus.publishReviewEnvelope(env);
           if (!targets.includes(packet.owner)) throw new Error("owner not queued");
@@ -602,7 +613,8 @@ export class Tasks {
       let packageHead: string;
       try { packageHead = reviewCommentHead(batch?.head ?? this.reviewHead(current.task)); }
       catch { throw new PreEffectToolRefusal("review package has no current immutable head; refresh the task review before sending"); }
-      check(); this.d.board.sendReviewComments(drafts, { id: packageId, task: taskId, taskCreated: current.task.created, ids: drafts.map(row => row.thread.id), owner, head: packageHead, at: new Date(this.d.now?.() ?? Date.now()).toISOString(), body,
+      check(); this.d.board.sendReviewComments(drafts, { id: packageId, task: taskId, taskCreated: current.task.created, ids: drafts.map(row => row.thread.id),
+        visibleIds: privateTask ? [] : publicDrafts.map(row => row.thread.id), owner, head: packageHead, at: new Date(this.d.now?.() ?? Date.now()).toISOString(), body,
         envelopeId, trace, ts, delivery: "unconfirmed", publicationEvidenceVersion: 1 }, current.fence);
       let delivery: "queued" | "unconfirmed" = "unconfirmed";
       this.releaseNotice(`task #${taskId}: review package ${packageId} publication unconfirmed; inspect ahub queue list --peer ${owner} before any retry`, () => {

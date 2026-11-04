@@ -30,11 +30,20 @@ function page(options: { cached?: boolean; now?: () => number; focus?: string } 
   const el = (tag: string, text?: unknown, cls = "") => { const node = new Node(tag); if (text !== undefined) node.textContent = String(text); node.className = cls; return node; };
   const elSource = html.match(/const el = [^\n]+/)![0];
   const updateSource = options.cached ? html.match(/^function update\(.*$/m)![0] : "";
-  const api = runInNewContext(`let stopped=false,managerMode=true,snapshotValid=true,currentView="board";const dashboardCookie=cookiePrefs;const switchView=()=>{},applyDashboardView=()=>{};const taskRows=new Map(),officeCards=new Map(),signatures=new Map(); ${elSource} ${updateSource} ${source}; ({draw:renderBoard,draggedCard,open:openTaskDetail,refresh:refreshTaskDetail,close:closeTaskDetail,focus:setColumnFocus,stop:()=>{stopped=true}})`, {
+  const snapshot = { projectId: scope.projectId, instanceId: scope.instanceId, boardCapabilities: { backlog: true }, boardLegend: [{ peer: "codex", state: "idle", wip: 1, permissionMode: "ask", activeTasks: [2] }], tasks: [
+    { id: 1, state: "backlog", title: "[pii]", detail: "[pii]", class: "implement", reviewStateKey: "task-1" },
+    { id: 2, state: "proposed", title: "<img src=x onerror=alert(1)>", class: "implement", owner: "codex", urgent: true, reviewStateKey: "task-2" },
+    { id: 3, state: "in_review", title: "review", class: "implement", owner: "claude", reviewer: "codex", reviewStateKey: "task-3" },
+    { id: 4, state: "approved", title: "done", class: "implement", owner: "codex", reviewStateKey: "task-4" },
+  ] };
+  const reviewRequests: unknown[] = [];
+  const api = runInNewContext(`let stopped=false,managerMode=true,snapshotValid=true,currentView="board",viewGeneration=1,cursor=0,lastSnapshot=snapshot;const dashboardCookie=cookiePrefs;const switchView=()=>{},applyDashboardView=()=>{};const taskRows=new Map(),officeCards=new Map(),signatures=new Map(); ${elSource} ${updateSource} ${source}; ({draw:renderBoard,draggedCard,open:openTaskDetail,refresh:refreshTaskDetail,close:closeTaskDetail,focus:setColumnFocus,stop:()=>{stopped=true}})`, {
     cookiePrefs:{get:()=>options.focus ?? "",set:(name:string,value:string)=>cookies.push([name,value])},
     Date: class extends Date { static override now() { return options.now?.() ?? Date.now(); } },
     reviewKit: null, // standalone dashboard: anchored comments are read-only (#1056)
     location: { origin: "http://127.0.0.1:4000" }, context: () => ({ ...scope }), canMutate: () => true,
+    snapshot, post: async (_path: string, input: Record<string, unknown>) => { reviewRequests.push(input); return { ...snapshot, reviewComments: { task: input.reviewTask, counts: { draft: 0, sent: 0, resolved: 0, dismissed: 0 }, comments: [], packages: [] } }; },
+    render: () => {},
     document: { createElement: (tag: string) => new Node(tag), createElementNS: (_ns: string, tag: string) => new Node(tag) }, $, boardColumns, taskProgress, peerPalette: PEER_PALETTE, badge: (text: string, cls = "") => el("span", text, "badge" + (cls ? " " + cls : "")),
     renderTaskProgress: () => {}, renderTaskStage: (stage: { label: string }) => el("p", stage.label),
     empty: (target: Node, text: string) => target.append(el("p", text)),
@@ -45,14 +54,8 @@ function page(options: { cached?: boolean; now?: () => number; focus?: string } 
   function $(id: string) { return get(id); }
   const all = (node: Node): Node[] => [node, ...node.children.flatMap(all)];
   const peers = { codex: { state: "idle", attached: true }, claude: { state: "busy", attached: true } };
-  const snapshot = { projectId: scope.projectId, instanceId: scope.instanceId, boardCapabilities: { backlog: true }, boardLegend: [{ peer: "codex", state: "idle", wip: 1, permissionMode: "ask", activeTasks: [2] }], tasks: [
-    { id: 1, state: "backlog", title: "[pii]", detail: "[pii]", class: "implement" },
-    { id: 2, state: "proposed", title: "<img src=x onerror=alert(1)>", class: "implement", owner: "codex", urgent: true },
-    { id: 3, state: "in_review", title: "review", class: "implement", owner: "claude", reviewer: "codex" },
-    { id: 4, state: "approved", title: "done", class: "implement", owner: "codex" },
-  ] };
   api.draw(snapshot, peers, Object.keys(peers));
-  return { api, scope, calls, cookies, get, all, peers, snapshot };
+  return { api, scope, calls, reviewRequests, cookies, get, all, peers, snapshot };
 }
 
 test("board DOM renders five columns public cards and keyboard actions without flow dragging (#263)", () => {

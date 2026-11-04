@@ -1053,13 +1053,15 @@ export class Board {
       const task = this.reviewCommentFence(fence), rows = this.reviewComments(task.id, task.created);
       if (!selected.length || selected.length > REVIEW_COMMENT_LIMIT || new Set(selected.map(row => row.thread.id)).size !== selected.length || selected.length !== packet.ids.length
         || task.id !== packet.task || task.created !== packet.taskCreated || task.owner !== packet.owner || selected.some(row => !packet.ids.includes(row.thread.id))) throw new Error("review package binding changed; refresh the selected drafts before sending");
+      const encodedPacket = JSON.stringify(packet);
+      if (typeof encodedPacket !== "string" || Buffer.byteLength(encodedPacket, "utf8") > 32768) throw new Error("review package storage exceeds 32768 UTF-8 bytes; select fewer ids before sending");
       for (const expected of selected) {
         const record = rows.find(row => row.thread.id === expected.thread.id);
         if (!record || record.lifecycle !== "draft" || record.revision !== expected.revision) throw new Error("review drafts changed; refresh the list before sending");
         const sent: ReviewCommentRecord = { ...record, lifecycle: "sent", sentAt: packet.at, revision: record.revision + 1 };
         this.taskWrite(() => this.db.query("UPDATE review_comments SET body=?,lifecycle=?,revision=? WHERE task_id=? AND task_created=? AND id=?").run(JSON.stringify(sent), sent.lifecycle, sent.revision, task.id, task.created, record.thread.id));
       }
-      this.taskWrite(() => this.db.query("INSERT INTO review_comment_packages(id,task_id,task_created,body) VALUES(?,?,?,?)").run(packet.id, task.id, task.created, JSON.stringify(packet)));
+      this.taskWrite(() => this.db.query("INSERT INTO review_comment_packages(id,task_id,task_created,body) VALUES(?,?,?,?)").run(packet.id, task.id, task.created, encodedPacket));
       return this.update(task.id, "user", `person review comments sent (${selected.length})`, {}, undefined, {}, task.history.length);
     });
   }
@@ -1071,6 +1073,8 @@ export class Board {
         if (typeof row.body !== "string") throw new Error();
         const packet = JSON.parse(row.body) as ReviewCommentPackage;
         if (!packet || packet.id !== row.id || packet.task !== task || packet.taskCreated !== created || !Array.isArray(packet.ids) || packet.ids.length < 1 || packet.ids.length > REVIEW_COMMENT_LIMIT) throw new Error();
+        const ids = reviewCommentIds(packet.ids);
+        if (packet.visibleIds !== undefined && (reviewCommentIds(packet.visibleIds).some(id => !ids.includes(id)))) throw new Error();
         const delivery = packet.delivery ?? "unconfirmed";
         if (delivery !== "queued" && delivery !== "unconfirmed") throw new Error();
         return { id: row.id, count: packet.ids.length, delivery: packet.body && packet.envelopeId && packet.trace && packet.ts !== undefined && packet.publicationEvidenceVersion === 1 ? delivery : "unavailable" };
@@ -1088,6 +1092,7 @@ export class Board {
         || typeof packet.owner !== "string" || typeof packet.head !== "string" || typeof packet.at !== "string"
         || packet.delivery !== undefined && packet.delivery !== "queued" && packet.delivery !== "unconfirmed"
         || packet.publicationEvidenceVersion !== undefined && packet.publicationEvidenceVersion !== 1
+        || packet.visibleIds !== undefined && (reviewCommentIds(packet.visibleIds).some(value => !packet.ids.includes(value)))
         || packet.body !== undefined && (typeof packet.body !== "string" || Buffer.byteLength(packet.body, "utf8") > 12000)
         || packet.envelopeId !== undefined && !/^[a-f0-9-]{36}$/.test(packet.envelopeId)
         || packet.trace !== undefined && !/^[a-f0-9-]{36}$/.test(packet.trace)

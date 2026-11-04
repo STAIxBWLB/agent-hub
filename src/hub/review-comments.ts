@@ -23,6 +23,8 @@ export interface ReviewCommentPackage {
   task: number; taskCreated: number; id: string; ids: string[]; owner: string; head: string; at: string;
   /** Immutable delivery payload. Missing on pre-recovery packages; those require explicit manual inspection. */
   body?: string; envelopeId?: string; trace?: string; ts?: number; delivery?: "unconfirmed" | "queued"; publicationEvidenceVersion?: 1;
+  /** Ids whose quote/body were included in the immutable public envelope; absent on legacy packets. */
+  visibleIds?: string[];
 }
 export interface ReviewCommentPackageView { id: string; count: number; delivery: "queued" | "unconfirmed" | "unavailable" }
 export const emptyReviewCommentCounts = (): ReviewCommentCounts => ({ draft: 0, sent: 0, resolved: 0, dismissed: 0 });

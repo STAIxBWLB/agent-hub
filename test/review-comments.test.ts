@@ -204,10 +204,49 @@ test("synchronous publish failure leaves a package for explicit same-envelope re
   expect(f.owner.received.filter(env => env.refs?.reviewPackage === sent.packageId)).toHaveLength(1);
 });
 
+test("an unconfirmed public package cannot be newly published after its path becomes private", async () => {
+  const f = await fixture(false, true), draft = await f.draft(), publish = f.bus.publishResult.bind(f.bus);
+  f.bus.publishResult = (() => { throw new Error("fixture publication failure"); }) as typeof f.bus.publishResult;
+  const sent = await f.tasks.reviewCommentSend("user", { task: f.task.id, ids: [draft.id] });
+  f.bus.publishResult = publish;
+  expect(sent.delivery).toBe("unconfirmed");
+  f.paths.push("notes/report.md");
+  const before = f.board.reviewCommentsIntegrity();
+  expect((await refusal(f.tasks.reviewCommentSend("user", { task: f.task.id, packageId: sent.packageId }))).message).toContain("private under current policy");
+  expect(f.board.reviewCommentsIntegrity()).toEqual(before);
+  expect(f.owner.received.filter(env => env.refs?.reviewPackage === sent.packageId)).toHaveLength(0);
+});
+
+test("a dismissed package cannot be newly published from its old body", async () => {
+  const f = await fixture(false, true), draft = await f.draft(), publish = f.bus.publishResult.bind(f.bus);
+  f.bus.publishResult = (() => { throw new Error("fixture publication failure"); }) as typeof f.bus.publishResult;
+  const sent = await f.tasks.reviewCommentSend("user", { task: f.task.id, ids: [draft.id] });
+  f.bus.publishResult = publish;
+  const current = f.board.reviewComments(f.task.id, f.task.created)[0]!;
+  await f.tasks.reviewCommentDelete("user", { task: f.task.id, id: draft.id, revision: current.revision });
+  const before = f.board.reviewCommentsIntegrity();
+  expect((await refusal(f.tasks.reviewCommentSend("user", { task: f.task.id, packageId: sent.packageId }))).message).toContain("no longer all sent");
+  expect(f.board.reviewCommentsIntegrity()).toEqual(before);
+  expect(f.owner.received.filter(env => env.refs?.reviewPackage === sent.packageId)).toHaveLength(0);
+});
+
+test("an unchanged private count-only package can recover without revealing comment text", async () => {
+  const f = await fixture(false, true);
+  f.board.update(f.task.id, "user", "screened", { signals: ["pii"] });
+  const draft = await f.draft("PRIVATE_COUNT_ONLY_CANARY"), publish = f.bus.publishResult.bind(f.bus);
+  f.bus.publishResult = (() => { throw new Error("fixture publication failure"); }) as typeof f.bus.publishResult;
+  const sent = await f.tasks.reviewCommentSend("user", { task: f.task.id, ids: [draft.id] });
+  f.bus.publishResult = publish;
+  expect(sent.delivery).toBe("unconfirmed");
+  expect((await f.tasks.reviewCommentSend("user", { task: f.task.id, packageId: sent.packageId })).delivery).toBe("queued");
+  const packet = await f.owner.nextPackage();
+  expect(packet.body).toContain("private text is withheld"); expect(packet.body).not.toContain("PRIVATE_COUNT_ONLY_CANARY");
+});
+
 test("a crash gap after package persistence recovers after Board and Bus reopen", async () => {
   const f = await fixture(false, true), draft = await f.draft(), row = f.board.get(f.task.id)!, record = f.board.reviewComments(row.id, row.created)[0]!;
   const packageId = `review-${crypto.randomUUID()}`, envelopeId = crypto.randomUUID(), trace = crypto.randomUUID(), ts = Date.now();
-  const packet: ReviewCommentPackage = { id: packageId, task: row.id, taskCreated: row.created, ids: [record.thread.id], owner: row.owner!, head: HEAD,
+  const packet: ReviewCommentPackage = { id: packageId, task: row.id, taskCreated: row.created, ids: [record.thread.id], visibleIds: [record.thread.id], owner: row.owner!, head: HEAD,
     at: new Date(ts).toISOString(), body: "CRASH_GAP_IMMUTABLE_BODY", envelopeId, trace, ts, delivery: "unconfirmed", publicationEvidenceVersion: 1 };
   const fence: ReviewCommentFence = { task: row.id, taskCreated: row.created, flow: row.history.length, owner: row.owner, head: HEAD };
   f.board.sendReviewComments([record], packet, fence);
