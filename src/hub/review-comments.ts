@@ -1,4 +1,4 @@
-import type { ActionMeta, ReviewAnchor, ReviewThread } from "@staix/agent-console/contract";
+import type { ActionMeta, ReviewAnchor, ReviewThread } from "./acon-review-contract.d.ts";
 import { types } from "node:util";
 import { sanitize } from "./envelope.ts";
 import { parseReviewAnchor, type ReviewAnchorStatus as AnchorPlacement } from "./review-anchor.ts";

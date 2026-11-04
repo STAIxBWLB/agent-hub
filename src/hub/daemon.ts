@@ -1,7 +1,7 @@
 import { repoGitArgs, repoGitEnv } from "./snapshots.ts";
 import { createReviewMaterialReader, type ReviewReadRequest, type ReviewMaterialBatch } from "./review-material.ts";
 import { readSdlcPr } from "./sdlc.ts";
-import type { ActionMeta } from "@staix/agent-console/contract";
+import type { ActionMeta } from "./acon-review-contract.d.ts";
 import { isReviewObserverExcluded, reviewCaptureExcluded } from "./memory-policy.ts";
 import { RoomStoreError } from "../rooms/store.ts";
 import { RoomCommands, type RoomPreview } from "../rooms/commands.ts";

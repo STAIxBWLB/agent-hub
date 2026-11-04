@@ -1,7 +1,7 @@
 import { types } from "node:util";
 import { sanitize } from "./envelope.ts";
 import { parseReviewAnchor } from "./review-anchor.ts";
-import type { ReviewAnchor } from "@staix/agent-console/contract";
+import type { ReviewAnchor } from "./acon-review-contract.d.ts";
 
 export interface ReviewFinding {
   id: string;

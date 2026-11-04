@@ -8,7 +8,7 @@ import { Bus } from "../src/hub/bus.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
-import type { ReviewAnchor } from "@staix/agent-console/contract";
+import type { ReviewAnchor } from "../src/hub/acon-review-contract.d.ts";
 import { reviewCommentFields, reviewCommentIds, reviewCommentBody, parseStoredReviewComment } from "../src/hub/review-comments.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";

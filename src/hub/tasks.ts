@@ -1,5 +1,5 @@
 import { parseEvidenceRecord, parseEvidenceLink, evidenceLinkId, evidenceLinkCanonical, type EvidenceRecordInput, type EvidenceReceipt } from "./research-evidence.ts";
-import type { ActionMeta, ReviewAnchor } from "@staix/agent-console/contract";
+import type { ActionMeta, ReviewAnchor } from "./acon-review-contract.d.ts";
 import { parseReviewAnchor, anchorStatus, type ReviewAnchorStatus } from "./review-anchor.ts";
 import type { ReviewMaterialBatch } from "./review-material.ts";
 import { isReviewObserverExcluded } from "./memory-policy.ts";

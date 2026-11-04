@@ -7,7 +7,7 @@ import { Bus } from "../src/hub/bus.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
-import type { ReviewAnchor, ReviewSelector } from "@staix/agent-console/contract";
+import type { ReviewAnchor, ReviewSelector } from "../src/hub/acon-review-contract.d.ts";
 import type { ReviewFinding } from "../src/hub/review-findings.ts";
 
 const HEAD = "a".repeat(40), cleanup: (() => void)[] = [];

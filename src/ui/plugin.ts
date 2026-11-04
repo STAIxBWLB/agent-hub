@@ -8,7 +8,7 @@
  *
  * Contract: @staix/agent-console api 1, declared structurally below so agent-hub keeps zero runtime dependencies.
  */
-import type { ActionMeta } from "@staix/agent-console/contract";
+import type { ActionMeta } from "../hub/acon-review-contract.d.ts";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { Registry } from "../hub/registry.ts";

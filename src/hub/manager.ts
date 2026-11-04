@@ -1,4 +1,4 @@
-import type { ActionMeta } from "@staix/agent-console/contract";
+import type { ActionMeta } from "./acon-review-contract.d.ts";
 import { assertExecutableRuntimeRoot } from "./project-runtime-state.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS } from "./planning.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";

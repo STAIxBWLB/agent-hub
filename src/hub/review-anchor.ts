@@ -1,9 +1,9 @@
 import { types } from "node:util";
-import type { ReviewAnchor, ReviewSelector } from "@staix/agent-console/contract";
+import type { ReviewAnchor, ReviewSelector } from "./acon-review-contract.d.ts";
 import { sanitize } from "./envelope.ts";
 import { projectionPath } from "./projected-diff.ts";
 import type { ReviewMaterial } from "./review-material.ts";
-export type { ReviewAnchor, ReviewSelector, ReviewThread } from "@staix/agent-console/contract";
+export type { ReviewAnchor, ReviewSelector, ReviewThread } from "./acon-review-contract.d.ts";
 
 /** Conformance bounds belong to the published acon contract; hub write byte bounds are a separate layer below. */
 const CONTRACT = { exact: 2000, context: 64, body: 4000, threads: 200, selectors: 4 };
