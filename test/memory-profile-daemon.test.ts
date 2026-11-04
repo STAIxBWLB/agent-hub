@@ -39,11 +39,11 @@ function legacyRows(memoryDir: string): Record<string, string> {
   }));
 }
 
-async function hub(f: ReturnType<typeof fixture>, memory: Partial<HubConfig["memory"]> = {}, options: Partial<DaemonOptions> = {}, configOverrides: Partial<HubConfig> = {}) {
+async function hub(f: ReturnType<typeof fixture>, memory: Partial<HubConfig["memory"]> = {}, options: Partial<DaemonOptions> = {}, configOverrides: Partial<HubConfig> = {}, useSyncTimers = false) {
   let syncNow: (() => Promise<void>) | undefined;
   const daemon = await startDaemon({ cwd: f.cwd, stateDir: f.stateDir, projectId: "p-profile", instanceId: "i-profile",
     controlPort: 0, codexAppPort: 0, codexProxyPort: 0, ...options,
-    memorySyncTrigger: run => { syncNow = run; options.memorySyncTrigger?.(run); },
+    ...(useSyncTimers ? {} : { memorySyncTrigger: (run: () => Promise<void>) => { syncNow = run; options.memorySyncTrigger?.(run); } }),
     config: { ...DEFAULT_CONFIG, ...configOverrides, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: true, sync_interval_min: 0, ...memory } } });
   cleanup.push(() => daemon.stop());
@@ -290,7 +290,7 @@ test("scheduled memory sync checks the selected profile before invoking the sync
   }) as typeof setInterval;
   let h: Awaited<ReturnType<typeof hub>>;
   try {
-    h = await hub(f, { sync_interval_min: 7 }, { memorySync: () => { calls++; return completed; } });
+    h = await hub(f, { sync_interval_min: 7 }, { memorySync: () => { calls++; return completed; } }, {}, true);
   } finally { globalThis.setInterval = originalInterval; }
   expect(scheduled).toBeDefined();
   scheduled!();
