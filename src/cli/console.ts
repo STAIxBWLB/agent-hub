@@ -13,7 +13,7 @@ import { consoleNeeds, attentionFacts } from "./attention.ts";
 import { loadPetConfig } from "./pet-config.ts";
 import { CHARACTER_IDS, petGlyphs, petSize } from "../pet/frame.ts";
 import { activeNotice, consoleFooterRows } from "./console-state.ts";
-import { questionRows } from "./console-question.ts";
+import { pasteFlow, questionRows } from "./console-question.ts";
 import { characterAttentionLine } from "./attention.ts";
 import { projectRoomStatus } from "../rooms/status.ts";
 
@@ -455,6 +455,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
             state.attentionMessages = []; state.attentionSelection = undefined;
             if (state.help && state.mode === "panels") { draw(); return; }
             if (state.confirm?.type === "permission_default") { draw(); return; }
+            // #1053: while the person types an `o` answer a paste is that answer's text, never the command line's; pasteFlow keeps only printable characters, so a pasted Enter, Esc or digit cannot send, leave or pick.
+            if (state.questionFlow) { state.questionFlow = pasteFlow(state.questionFlow, text.replace(/\x1b\[20[01]~/g, "")); draw(); return; }
             if (state.settingsEdit) {
               const edit = state.settingsEdit;
               if (edit.phase === "value" || edit.phase === "reason") state.settingsEdit = { ...edit, text: (edit.text + terminalText(text.replace(/\x1b\[20[01]~/g, "")).replace(/[\r\n]/g, " ")).slice(0, 1000) };

@@ -9,7 +9,7 @@ import { sanitize } from "../hub/envelope.ts";
 import { DOING_STUB } from "../hub/peer-doing.ts";
 import type { SettingRow, SettingValue } from "../hub/settings.ts";
 import { symbolFields, overlapFields } from "./console-symbols.ts";
-import { flowPrompt, startFlow, stepFlow, type QuestionFlow, type QuestionView } from "./console-question.ts";
+import { flowBody, flowPrompt, startFlow, stepFlow, type QuestionFlow, type QuestionView } from "./console-question.ts";
 import { choicePrompt, reviewChoiceFor, reviewHint, reviewRefusal, verdictGuide, verdictInput, type ReviewChoice, type Verdict } from "./console-review.ts";
 import { configFormPrompt, reduceConfigForm, type ConfigEditBody, type ConfigForm } from "./console-config.ts";
 import { windowKind } from "../hub/window-kind.ts";
@@ -432,6 +432,15 @@ export function pruneApprovals(s: ConsoleState, now: number): ConsoleState {
  * dropped, and an open detail follows the selection from its top (it closes when nothing is selected). Every reducer
  * exit and every prune passes through here, so no key can act on a request other than the one shown.
  */
+/**
+ * #1053: in stream mode there is no body to draw the question in, and the footer holds only the keys, so the question and every numbered option are printed into the
+ * stream when a flow opens and at each new part. In panels mode the body shows them (renderConsoleLines), so nothing is printed.
+ */
+function showQuestion(s: ConsoleState, row: QuestionView, effects: ConsoleEffect[]): void {
+  if (s.mode !== "stream" || !s.questionFlow) return;
+  const body = flowBody(s.questionFlow, row, flat);
+  if (body) effects.push({ type: "print", text: [`${body.head}: ${body.prompt}`, ...body.options.map(line => `  ${line}`)].join("\n"), kind: "attention", tone: "attention" });
+}
 function bound(s: ConsoleState): ConsoleState {
   if (s.optionChoice && s.optionChoice !== s.approvalId) s.optionChoice = undefined;
   if (s.confirm?.type === "permission" && s.confirm.id !== s.approvalId) s.confirm = undefined;
@@ -541,14 +550,14 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     if (!row) { s.questionFlow = undefined; notify(s, "that question is no longer open", now, "attention"); return done(); }
     const step = stepFlow(s.questionFlow, row, key);
     if (step.answers) { effects.push({ type: "answer", set: row.set, answers: step.answers }); s.questionFlow = undefined; }
-    else if (step.flow) s.questionFlow = step.flow;
+    else if (step.flow) { const moved = step.flow.index !== s.questionFlow.index; s.questionFlow = step.flow; if (moved) showQuestion(s, row, effects); }
     else { s.questionFlow = undefined; if (step.notice) notify(s, step.notice, now, "attention"); }
     return done();
   }
   if (key === "A" && !s.settingsEdit && !s.confirm && !s.editing && !s.input && !s.modeChoice && !s.reviewChoice && !s.optionChoice && !s.help && !s.configForm) {
     const row = s.questions?.[0];
     if (!row) { notify(s, "no open question; agents ask with hub_ask", now, "attention"); return done(); }
-    s.questionFlow = startFlow(row); s.detail = undefined; s.requestDetail = undefined;
+    s.questionFlow = startFlow(row); s.detail = undefined; s.requestDetail = undefined; showQuestion(s, row, effects);
     return done();
   }
   if (s.configForm) {
@@ -719,7 +728,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       navigated = true;
     } else if (item.kind === "question") {
       const row = s.questions?.find(question => question.set === item.id);
-      if (row) { s.questionFlow = startFlow(row); s.detail = undefined; s.requestDetail = undefined; navigated = true; }
+      if (row) { s.questionFlow = startFlow(row); s.detail = undefined; s.requestDetail = undefined; navigated = true; showQuestion(s, row, effects); }
     } else if (item.kind === "delivery" && s.mode === "panels") {
       const rows = s.queue.filter(row => row.state === "needs_review" || row.state === "queued");
       const selected = item.id === undefined ? -1 : rows.findIndex(row => row.id === item.id);
@@ -1170,7 +1179,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (s.reviewChoice) prompt = choicePrompt(s.reviewChoice);
   const choice = s.optionChoice ? s.approvals.find(a => a.id === s.optionChoice) : undefined;
   const asking = s.questionFlow ? s.questions?.find(row => row.set === s.questionFlow!.set) : undefined;
-  if (s.questionFlow && asking) prompt = flowPrompt(s.questionFlow, asking, flat);
+  if (s.questionFlow && asking) prompt = flowPrompt(s.questionFlow, asking, flat, columns);
   if (choice) prompt = `allow request ${choice.id} (${choice.peer}) with: ${allowOptions(choice).map((o, i) => `${i + 1} ${quoted(o.name)}`).join("  ")}  Esc cancel`;
   const summary: Span[] = [];
   for (const [id, p] of Object.entries(s.peers)) {
@@ -1225,6 +1234,16 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const row = s.settingsRows?.find(row => row.key === edit.key);
     const definition: [string, unknown][] = row ? [["type", row.type], ...(row.min !== undefined || row.max !== undefined ? [["range", `${row.min ?? "-"}..${row.max ?? "-"}`] as [string, unknown]] : []), ["risk", row.risk], ["applies", row.applies]] : [];
     lines.push(...fieldLines([["setting", edit.key ?? s.settingsUndo ?? "last write"], ...definition, ["preview", (edit.lines ?? []).join("\n")], ["decision", "Esc cancels; saving needs a reason and explicit y"]], columns, now).flat());
+  }
+  else if (s.questionFlow && asking && flowBody(s.questionFlow, asking, flat)) {
+    // #1053: the question and every option in the body, wrapped, never the one-line footer that clips. The options come first and are never cut; the prompt gives way (marked) when the terminal is short.
+    const body = flowBody(s.questionFlow, asking, flat)!;
+    const optionLines = body.options.flatMap(option => wrap(option, columns, 3).map(text => [span(text, "info")]));
+    const room = Math.max(1, height - 1 - optionLines.length);
+    const promptLines = wrap(body.prompt, columns);
+    const shown = promptLines.length > room ? [...promptLines.slice(0, Math.max(1, room) - 1), "..."] : promptLines;
+    // Options that do not fit even wrapped are shown one per line (clipped to the width, but a label is at most 80 characters) rather than dropped: no option is ever off screen.
+    lines.push([span(body.head, "attention")], ...shown.map(text => [span(text)]), ...(optionLines.length <= height - 1 ? optionLines : body.options.map(option => fitLine([span(option, "info")], columns))));
   }
   else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled || !!s.petChoices?.length, !!s.petChoices?.length, roomsVisible(s)));
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
