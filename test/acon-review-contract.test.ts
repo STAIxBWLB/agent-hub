@@ -7,7 +7,10 @@ import { reviewAnchorContractProblems, reviewThreadContractProblems, reviewThrea
 type FixtureCase = { name: string; field?: string; value?: unknown; repeat?: { count: number; of: unknown; idPrefix: string } };
 type SharedFixture = { version: number; anchors: { valid: FixtureCase[]; invalid: FixtureCase[] }; threads: { valid: FixtureCase[]; invalid: FixtureCase[]; lists: { invalid: FixtureCase[] } } };
 const shared = JSON.parse(readFileSync(new URL("./fixtures/review/cases.json", import.meta.url), "utf8")) as SharedFixture;
-const hubValue = (entry: FixtureCase): unknown => entry.repeat ? Array.from({ length: entry.repeat.count }, (_, index) => ({ ...expandReviewCase(entry.repeat.of) as object, id: entry.repeat.idPrefix + index })) : expandReviewCase(entry.value);
+const hubValue = (entry: FixtureCase): unknown => {
+  const repeat = entry.repeat;
+  return repeat ? Array.from({ length: repeat.count }, (_, index) => ({ ...expandReviewCase(repeat.of) as object, id: repeat.idPrefix + index })) : expandReviewCase(entry.value);
+};
 
 // These assignments make the compile-time dependency on the published, DOM-free contract explicit.
 const contractTypes: [ReviewSelector | undefined, ReviewAnchor | undefined, ReviewThread | undefined, ReviewDoc | undefined, ActionMeta | undefined] = [undefined, undefined, undefined, undefined, undefined];

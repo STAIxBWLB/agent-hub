@@ -1097,7 +1097,7 @@ export class Board {
     this.taskWrite(() => {
       const packet = this.reviewCommentPackage(id);
       if (!packet || !packet.body || !packet.envelopeId || !packet.trace || packet.ts === undefined) throw new Error("review comment package is unavailable for retry; inspect the task review before sending a new comment");
-      this.db.query("UPDATE review_comment_packages SET body=? WHERE id=?").run(JSON.stringify({ ...packet, delivery: "queued" }), id);
+      return this.db.query("UPDATE review_comment_packages SET body=? WHERE id=?").run(JSON.stringify({ ...packet, delivery: "queued" }), id);
     });
   }
   hasOpenReviewCommentsFor(owner: string, taskId?: number): boolean {
