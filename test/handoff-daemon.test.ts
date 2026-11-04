@@ -385,10 +385,10 @@ test("#1175 AC2: only the configured conductor, only for a handed-off task nobod
   const handed = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" }));
   const localId = proposed(await task(b.person, "hub_task_propose", { title: "A task proposed in B itself", class: "implement" }));
   // a peer without the conductor role, and the conductor on a task B proposed itself, are refused as before
-  for (const [peer, id] of [["codex", handed.task], ["claude", handed.task], ["kimi", localId]] as const) {
+  for (const [peer, id, rule] of [["codex", handed.task, /planning requires a person or configured planner role/], ["claude", handed.task, /planner may cancel only its own/], ["kimi", localId, /the conductor may cancel only a task another project handed off.*`ahub task cancel <id> --reason <text>`/]] as const) {
     const refused = await onBoard(b, "hub_task_cancel", { id, reason: "not mine" }, peer);
     expect(refused.ok, `${peer} #${id}`).toBe(false);
-    expect(String(refused.error)).toMatch(/planner|planning requires|may cancel/);
+    expect(String(refused.error), `${peer} #${id}`).toMatch(rule);
   }
   expect(rowsOf(b).find(r => r.id === handed.task)!.state).not.toBe("cancelled");
   // once an owner accepted it, the conductor's special path is gone
@@ -413,15 +413,41 @@ test("#1175 AC3: a refused duplicate leaves no row to offer or escalate, and a t
   expect(first.task).toBe(1);
 }, 60_000);
 
-test("#1175 the real ahub process passes --duplicate-ok and prints the refusal with the open ids", async () => {
+test("#1175 AC1: an imported backlog row that carries its issue only as external {repo, issue} is a duplicate, and a closed one is not", async () => {
+  const { a, b } = await pair({ b: { roles: conductorRoles } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const write = boardOf(b);
+  let open: number, closed: number;
+  try {
+    open = write.board.propose("user", { title: "The issue's own words", class: "implement", backlog: true, external: { provider: "github", repo: "acme/hub", issue: 6001, url: "https://github.com/acme/hub/issues/6001" } }).id;
+    closed = write.board.propose("user", { title: "An earlier import", class: "implement", backlog: true, external: { provider: "github", repo: "acme/hub", issue: 6002, url: "https://github.com/acme/hub/issues/6002" } }).id;
+    
+  } finally { write.close(); }
+  expect((await task(b.person, "hub_task_cancel", { id: closed, reason: "done elsewhere" })).ok).toBe(true);
+  const refused = await task(planner, "hub_task_handoff", { project: b.id, title: "Spec", issue: 6001 });
+  expect(refused.ok).toBe(false); expect(String(refused.error)).toContain(`#${open}`);
+  expect(rowsOf(b)).toHaveLength(2);                                                                              // nothing was written by the refusal
+  expect((await task(planner, "hub_task_handoff", { project: b.id, title: "Spec", issue: 6002 })).ok).toBe(true);   // a cancelled import is not open work
+}, 60_000);
+
+test("#1175 the real ahub process passes --duplicate-ok, refuses a duplicate naming the open ids, and admits it with a reason", async () => {
   const { a, b } = await pair({ b: { roles: conductorRoles } });
   const planner = await a.connect({ role: "tools", peer: "claude" });
   const first = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Spec", issue: 5001 }));
-  const { parseHandoffArgs } = await import("../src/cli/handoff-args.ts");
-  expect(parseHandoffArgs(["--project", b.id, "Spec", "--issue", "5001", "--duplicate-ok", "separate leg"])).toMatchObject({ project: b.id, title: "Spec", issue: 5001, duplicate_ok: "separate leg" });
-  expect(parseHandoffArgs(["--project", b.id, "Spec", "--duplicate-ok"])).toHaveProperty("usage");
-  expect(parseHandoffArgs(["--project", b.id, "Spec", "--duplicate-ok", "a", "--duplicate-ok", "b"])).toHaveProperty("usage");
-  const refused = await task(a.person, "hub_task_handoff", { project: b.id, title: "Spec", issue: 5001 });
-  expect(refused.ok).toBe(false); expect(String(refused.error)).toContain(`#${first.task}`);
-  expect(body(await task(a.person, "hub_task_handoff", { project: b.id, title: "Spec", issue: 5001, duplicate_ok: "separate leg" })).task).toBeGreaterThan(first.task);
+  const cli = async (...args: string[]) => {
+    const env = { ...process.env, NO_COLOR: "1", COLUMNS: "120" } as Record<string, string>;
+    for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") && key !== "AGENTHUB_HOME" || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CODEX_THREAD_ID", "KIMI_CODE"].includes(key)) delete env[key];
+    const proc = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", a.root, "task", "handoff", "--project", b.id, ...args], { cwd: a.root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    return { code: await proc.exited, stdout, stderr };
+  };
+  const refused = await cli("Spec", "--issue", "5001");
+  expect(refused.code).toBe(1); expect(refused.stderr).toContain(`#${first.task}`); expect(refused.stderr).toContain("--duplicate-ok");
+  expect(rowsOf(b)).toHaveLength(1);                                                                              // the refusal wrote nothing
+  const missing = await cli("Spec", "--issue", "5001", "--duplicate-ok");
+  expect(missing.code).toBe(1); expect(missing.stderr).toContain("usage: ahub task handoff");
+  const admitted = await cli("Spec", "--issue", "5001", "--duplicate-ok", "separate leg");
+  expect(admitted.code, admitted.stderr).toBe(0); expect(admitted.stdout).toContain(`Handed off to project ${b.id}`);
+  expect(rowsOf(b)).toHaveLength(2);
+  expect(rowsOf(b)[1]!.detail).toContain("duplicate acknowledged by the sender: separate leg");
 }, 60_000);

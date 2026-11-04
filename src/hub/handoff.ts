@@ -129,14 +129,18 @@ export function followBackLine(remoteTask: number, event: HandoffEvent, evidence
   return `agent-hub task ${remoteTask} ${event.replace("_", " ")}${pr || head ? `:${pr}${head}` : ""}`;
 }
 
+export interface DuplicateRow { id: number; state: string; title: string; detail?: string; refs?: { repo?: string }; external?: { repo: string; issue: number } | undefined; sdlc?: { issue?: number; repo?: string } | undefined }
+
 /**
  * #1175: the ids of tasks already open on THIS board for the spec issue a handoff names. Pure: the caller passes the board's rows (a `[pii]` row is the caller's to leave out, so no
  * private task id is ever named to another project) and the project's own repository slug. A task counts when it is not closed and one of these names the issue: its lifecycle
  * receipt, a bare `#N` or an `owner/repo#N` of this repository in its title, or the `spec issue: #N in this repository` line a handoff keeps in its detail. A reference qualified
  * with another repository never counts, and a number that appears in a title as another kind of reference (a PR) is the one false positive: the sender's `duplicate_ok` answers it.
  */
-export function duplicateIssueTasks(tasks: readonly { id: number; state: string; title: string; detail?: string; sdlc?: { issue?: number } | undefined }[], issue: number, repository?: string): number[] {
-  const own = repository?.toLowerCase();
+export function duplicateIssueTasks(tasks: readonly DuplicateRow[], issue: number, repository?: string): number[] {
+  const slug = (value: string | undefined): string | undefined => value !== undefined && /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(value) ? value.toLowerCase() : undefined;
+  // A project with no GitHub remote has a path, not a slug, for its repository: nothing can then be compared, so no row is foreign and no qualified reference matches.
+  const own = slug(repository);
   const names = (text: string, bare: boolean): boolean => {
     for (const match of text.matchAll(/(?<![A-Za-z0-9_./-])(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9][0-9]*)\b|#([1-9][0-9]*)\b)/g)) {
       const qualified = match[1];
@@ -145,13 +149,21 @@ export function duplicateIssueTasks(tasks: readonly { id: number; state: string;
     }
     return false;
   };
-  return tasks.filter(task => task.state !== "approved" && task.state !== "cancelled" && (task.sdlc?.issue !== undefined ? task.sdlc.issue === issue
-    : names(task.title, true) || /(^|\n)spec issue: #([1-9][0-9]*) in this repository/.test(task.detail ?? "") && Number(/(^|\n)spec issue: #([1-9][0-9]*) in this repository/.exec(task.detail ?? "")![2]) === issue))
-    .map(task => task.id).sort((a, b) => a - b);
+  return tasks.filter(task => {
+    if (task.state === "approved" || task.state === "cancelled") return false;
+    // The repository each identity belongs to: `sdlc.repo`, `external.repo` (an imported issue) and a slug `refs.repo` (a checkout path says nothing). One naming another repository
+    // than this project's keeps its `#N` out: an issue number is only an identity together with its repository. With no own slug nothing can be compared, so the number counts and `duplicate_ok` answers.
+    const foreign = (repo: string | undefined): boolean => own !== undefined && slug(repo) !== undefined && slug(repo) !== own;
+    if (task.external?.issue === issue && !foreign(task.external.repo)) return true;
+    if (task.sdlc?.issue !== undefined) return task.sdlc.issue === issue && !foreign(task.sdlc.repo) && !foreign(task.refs?.repo);
+    if (foreign(task.external?.repo) || foreign(task.refs?.repo)) return false;
+    const line = /(^|\n)spec issue: #([1-9][0-9]*) in this repository/.exec(task.detail ?? "");
+    return names(task.title, true) || line !== null && Number(line[2]) === issue;
+  }).map(task => task.id).sort((a, b) => a - b);
 }
 
 /** One refusal sentence that names the open tasks and both ways forward. The ids are this board's own; no title or text from a task is repeated. */
 export function duplicateRefusalText(issue: number, ids: readonly number[]): string {
   const named = ids.slice(0, 6).map(id => `#${id}`).join(", ") + (ids.length > 6 ? ` and ${ids.length - 6} more` : "");
-  return `spec issue #${issue} already has open ${ids.length === 1 ? "task" : "tasks"} here: ${named}. Use ${ids.length === 1 ? "it" : "them"} (ask the conductor there), or hand off again with duplicate_ok: <reason> if this is genuinely separate work`;
+  return `spec issue #${issue} already has open ${ids.length === 1 ? "task" : "tasks"} here: ${named}. Use ${ids.length === 1 ? "it" : "them"} (ask the conductor there), or hand off again with duplicate_ok: <reason> (--duplicate-ok <reason> in the CLI) if this is genuinely separate work`;
 }

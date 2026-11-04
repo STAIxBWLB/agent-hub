@@ -1909,7 +1909,7 @@ export class Tasks {
     // #1175: a spec issue that already has open work here is refused before any row exists, so a duplicate is never offered to an owner or escalated by the sweep. This runs after the last
     // await and writes nothing before it, so the check and the proposal below see one board; a `[pii]` task is left out, so no private task id is named to another project.
     if (request.issue !== undefined && request.duplicate_ok === undefined) {
-      const open = duplicateIssueTasks(this.d.board.list().filter(row => !this.isPii(row)).map(row => ({ id: row.id, state: row.state, title: row.title, detail: row.detail, sdlc: row.sdlc })), request.issue, this.d.repository);
+      const open = duplicateIssueTasks(this.d.board.list().filter(row => !this.isPii(row)).map(row => ({ id: row.id, state: row.state, title: row.title, detail: row.detail, refs: row.refs, external: row.external, sdlc: row.sdlc })), request.issue, this.d.repository);
       if (open.length) throw new HandoffRefusal("duplicate", duplicateRefusalText(request.issue, open));
     }
     let task = this.d.board.propose(HUB, { title: request.title, detail, class: request.class, refs, plan: {}, signals });
@@ -4618,6 +4618,8 @@ export class Tasks {
       if (by !== USER && this.d.privateTurn?.(by) && !this.isPii(task)) throw new PreEffectToolRefusal("cancellation on ordinary work is unavailable during a private turn");
       if (by !== USER && this.conductorHandoffCancel(by, task)) { /* #1175: the receiving conductor's own authority over a handed-off task nobody accepted; the board write below records it as the actor */ }
       else if (by !== USER) {
+        // The conductor without the planner role is refused with its own rule (#1175): the planner sentence below would point it at a role it does not hold.
+        if (this.configuredManualConductor(by) && !this.d.roles?.[by]?.includes("planner")) throw new PreEffectToolRefusal("the conductor may cancel only a task another project handed off that nobody has accepted (no owner, branch, commit, PR, check, done or verdict) while the conductor is on the roster; for any other task the person runs `ahub task cancel <id> --reason <text>`");
         this.planningAuthority(by, task);
         const proposer = task.history.find(h => h.event === "proposed" || h.event === "backlogged")?.by;
         // #812 AC5: back in proposed or backlog with no execution evidence (the `hub_backlog_return_untouched` test: no branch, commit, PR, local check, done, verdict or reopen), an accepted-then-declined task is cancellable; any such evidence keeps today's refusal.

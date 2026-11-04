@@ -99,7 +99,7 @@ test("#1175 duplicate_ok is a bounded reason: normalised, optional, and refused 
   expect(refusal(() => parseHandoff({ ...good, duplicate_ok: "a\u0007b" })).code).toBe("invalid");
 });
 
-const row = (id: number, state: string, title: string, extra: { detail?: string; sdlc?: { issue?: number } } = {}) => ({ id, state, title, ...extra });
+const row = (id: number, state: string, title: string, extra: { detail?: string; refs?: { repo?: string }; external?: { repo: string; issue: number }; sdlc?: { issue?: number; repo?: string } } = {}) => ({ id, state, title, ...extra });
 test("#1175 an open task names the issue by its receipt, a bare or own-repository title reference, or a handoff's spec-issue line; closed tasks and other repositories never count", () => {
   const board = [
     row(700, "in_progress", "#1053 T2+T3: questions store"),
@@ -128,4 +128,19 @@ test("#1175 the refusal names the open tasks and both ways forward, never a task
   expect(text).toContain("spec issue #1053");
   expect(duplicateRefusalText(7, [1])).toContain("already has open task here: #1");
   expect(duplicateRefusalText(7, [1, 2, 3, 4, 5, 6, 7, 8])).toContain("and 2 more");
+});
+
+test("#1175 an issue number only identifies work together with its repository: another repository's #N is no duplicate, an imported row is found by its external identity", () => {
+  const board = [
+    row(800, "proposed", "Other repository work", { sdlc: { issue: 12, repo: "acme/mem" } }),
+    row(801, "proposed", "Own repository work", { sdlc: { issue: 12, repo: "Acme/Hub" } }),
+    row(802, "in_progress", "#12 sibling shorthand", { refs: { repo: "acme/mem" } }),
+    row(803, "proposed", "#12 in a checkout path", { refs: { repo: "/work/dev/agent-mem" } }),
+    row(804, "backlog", "The issue's own title", { external: { repo: "ACME/hub", issue: 12 } }),
+    row(805, "backlog", "Another repository's import", { external: { repo: "acme/mem", issue: 12 } }),
+    row(806, "approved", "Closed import", { external: { repo: "acme/hub", issue: 12 } }),
+    row(807, "backlog", "Import of another number", { external: { repo: "acme/hub", issue: 13 } }),
+  ];
+  expect(duplicateIssueTasks(board, 12, "acme/hub")).toEqual([801, 803, 804]);
+  expect(duplicateIssueTasks(board, 12, "acme/mem")).toEqual([800, 802, 803, 805]);   // a checkout path names no slug, so the bare #12 still counts
 });
