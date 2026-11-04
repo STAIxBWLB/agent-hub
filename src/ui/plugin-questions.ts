@@ -6,16 +6,19 @@
  * `identity`), which the page cannot set (agent-console `action(input, meta?)`). An answer without it is refused before any request reaches the hub.
  */
 
-/** The console's evidence of who acted (agent-console `ActionMeta`), declared structurally so agent-hub keeps zero runtime dependencies. */
-export interface PersonMeta { identity: string; node: string; via: "console" }
+import type { ActionMeta, InboxAnswers, InboxVerb, VerbForm } from "@staix/agent-console/contract";
+
+// The acon types come only through the generated bridge (`scripts/acon-review-types.ts`, regenerated and compared by its check), so a drift of the form or of the answer it
+// submits fails there and not at a user's console. Type-only: agent-hub keeps zero runtime dependencies.
+export type { ActionMeta, InboxAnswers };
 export interface QuestionRowView {
   set: string; peer: string; created: number; private?: boolean;
   questions: { id: string; prompt: string; options: { id: string; label: string; description?: string }[]; multi?: boolean; allowOther?: boolean }[];
 }
-interface FormQuestion { id: string; prompt: string; options: { id: string; label: string; description?: string }[]; multiple?: boolean; other?: { maxLength: number } }
+type FormQuestion = VerbForm["questions"][number];
 export interface QuestionItem {
   id: string; group: "decision"; kind: string; title: string; actor: string; project: string; at: string; chip: { text: string; tone: "warn" };
-  verbs: { id: string; label: string; primary?: boolean; form?: { questions: FormQuestion[] } }[];
+  verbs: InboxVerb[];
   link: { panel: string; params: Record<string, string> };
 }
 
@@ -42,9 +45,9 @@ export function questionItem(row: QuestionRowView, project: { id: string; name: 
 }
 
 /** The console's evidence, or the refusal that tells the person how to get it. Page-supplied fields that would stand in for it are refused too. */
-export function personEvidence(features: readonly string[] | undefined, meta: unknown, input: Record<string, unknown>): { ok: true; identity: string } | { ok: false; error: string } {
+export function personEvidence(features: readonly string[] | undefined, meta: ActionMeta | undefined, input: Record<string, unknown>): { ok: true; identity: string } | { ok: false; error: string } {
   if (!features?.includes("action.meta") || !meta || typeof meta !== "object") return { ok: false, error: "Answering needs a console with verified person identity; update acon and reopen this panel, or answer with ahub answer." };
-  const value = meta as Record<string, unknown>;
+  const value = meta as unknown as Record<string, unknown>;
   if (value.via !== "console" || typeof value.identity !== "string" || !value.identity.trim() || typeof value.node !== "string" || !value.node.trim())
     return { ok: false, error: "Answering needs a console with verified person identity; update acon and reopen this panel, or answer with ahub answer." };
   if (["author", "meta", "personMeta", "person", "identity", "surface", "questionSet", "projectId", "instanceId"].some(key => Object.hasOwn(input, key)))

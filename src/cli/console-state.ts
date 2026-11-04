@@ -110,7 +110,7 @@ export function syncPermissionDefaults(s: ConsoleState, rows: unknown): boolean 
   s.permissionDefaultsHandled = s.permissionDefaultsHandled.filter(fingerprint => current.has(fingerprint));
   const pending = s.confirm;
   if (pending?.type === "permission_default" && !s.permissionDefaults.some(row => row.peer === pending.peer && row.source === pending.source)) s.confirm = undefined;
-  if (s.settingsEdit || s.confirm || s.editing || s.input || s.modeChoice || s.reviewChoice || s.optionChoice || s.help) return false;
+  if (s.settingsEdit || s.confirm || s.editing || s.input || s.modeChoice || s.reviewChoice || s.optionChoice || s.questionFlow || s.help) return false;
   const next = s.permissionDefaults.find(row => !s.permissionDefaultsHandled.includes(permissionDefaultFingerprint(s, row)));
   if (!next) return false;
   s.confirm = { type: "permission_default", peer: next.peer, source: next.source };
@@ -1082,7 +1082,10 @@ function panelContext(s: ConsoleState, row: any): string[] {
 }
 /** The footer's key hint: only keys that act in this mode, panel and state. */
 function hint(s: ConsoleState, columns: number): string {
-  if (s.questionFlow) return "number picks  o other  Enter done  Esc cancel";
+  if (s.questionFlow) {
+    const asking = s.questions?.find(row => row.set === s.questionFlow!.set)?.questions[s.questionFlow.index];
+    return `${s.questionFlow.typing !== undefined ? "Enter keeps  Esc back" : `number picks${asking?.allowOther === true ? "  o other" : ""}${asking?.multi === true ? "  Enter done" : ""}  Esc cancel`}`;
+  }
   const pending = [...(selectedApproval(s) ? ["a allow", "d deny"] : []), ...(s.questions?.length ? ["A answer"] : [])];
   if (s.mode === "stream") return [...pending, ...(pending.length ? ["v view"] : []), ...(s.approvals.length > (pending.length ? 1 : 0) ? ["[ ] select"] : []), "Tab panels", ": command", "? keys", "q quit"].join("  ");
   if (s.help) return "? or Esc close  q quit";

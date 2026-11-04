@@ -91,9 +91,18 @@ test("an answer with the console's person meta is forwarded to the hub as a cons
   const result = await provider.action({ action: "answer", id: "question:p1:qs-0123456789ab", answers: ANSWERS }, META);
   expect(result).toEqual({ ok: true, message: "Answered" });
   const sent = received.find(m => m.t === "answer")!;
-  expect(sent).toMatchObject({ t: "answer", surface: "acon", questionSet: "qs-0123456789ab", answers: ANSWERS });
+  expect(sent).toMatchObject({ t: "answer", surface: "acon", questionSet: "qs-0123456789ab", answers: ANSWERS, person: "local" }); // the verified identity travels with the answer
   expect(received.some(m => m.t === "ui_action")).toBe(false); // never through the dashboard whitelist
+  // advertised so acon lets the page send it, and never in the forwarded list: the call returns before that list is read
   expect(plugin.manifest.capabilities?.actions).toContain("answer");
+  expect(plugin.manifest.capabilities?.actions?.filter(action => action === "answer")).toHaveLength(1);
+});
+
+test("the open verb of a question item names the Agents panel, which is where its link goes", async () => {
+  const { provider } = fixture({ features: FEATURES });
+  const [item] = await inboxOf(provider);
+  expect(item.link.panel).toBe("agents");
+  expect(await provider.action({ action: "open", id: item.id })).toEqual({ ok: true, message: "Open the Agents panel to answer." });
 });
 
 test("an answer without the person meta is refused before it reaches the hub, however the page dresses it", async () => {

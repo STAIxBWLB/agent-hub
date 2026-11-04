@@ -120,7 +120,7 @@ test("an agent shell is refused ahub answer before it reaches the hub, and its a
   expect(JSON.stringify(audits)).not.toContain("db=pg");
 });
 
-test("the dashboard snapshot carries the open question for the person, and a live-test dashboard never gets its text", async () => {
+test("the dashboard snapshot carries the open question for the person", async () => {
   const f = await rig(30_000);
   void f.ask(TWO);
   const set = await f.setOf();
@@ -130,6 +130,48 @@ test("the dashboard snapshot carries the open question for the person, and a liv
 
 // T6 / AC6 --------------------------------------------------------------------------------------------------------------------------------------------------------------
 const SECRETS = ["PRIVATE-MARKER-PROMPT", "PRIVATE-MARKER-LABEL", "TOPSECRET-OTHER-TEXT", "PRIVATE-MARKER task title"];
+
+test("a live-test dashboard session never gets a question's text, while an ordinary session of the same hub does", async () => {
+  const f = await rig(30_000);
+  void f.ask(TWO);
+  await f.setOf();
+  const session = async (liveTest: boolean) => {
+    const opened = await f.person.request({ t: "ui", liveTest }), target = new URL(opened.url), origin = target.origin;
+    const base = { origin, "content-type": "application/json" };
+    const accepted = await fetch(`${origin}/session`, { method: "POST", headers: base, body: JSON.stringify({ ticket: target.hash.slice(1) }) });
+    expect(accepted.status).toBe(200);
+    const cookie = accepted.headers.get("set-cookie")!.split(";")[0]!;
+    return async (path: string, input: unknown) => (await fetch(`${origin}${path}`, { method: "POST", headers: { ...base, cookie }, body: JSON.stringify(input) })).json() as Promise<any>;
+  };
+  const ordinary = await (await session(false))("/snapshot", { after: 0 });
+  expect(ordinary.questions).toHaveLength(1);
+  expect(JSON.stringify(ordinary.questions)).toContain("Which database?");
+  const live = await (await session(true))("/snapshot", { after: 0 });
+  expect(live.questions).toEqual([]);
+  expect(JSON.stringify(live)).not.toContain("Which database?");
+});
+
+test("an acon answer records the console's verified person on the row and in the event, and no other surface does", async () => {
+  const f = await rig(30_000);
+  void f.ask(TWO);
+  const set = await f.setOf();
+  const answers = [{ questionId: "db", optionIds: ["pg"] }, { questionId: "extras", optionIds: ["a"] }];
+  // a console-surface answer cannot claim a person: the field is read only for acon
+  const spoof = await f.person.request({ t: "answer", questionSet: set, surface: "console", person: "mallory", answers });
+  expect(spoof.ok).toBe(true);
+  expect(f.rows().find(row => row.set === set)).toMatchObject({ state: "answered", surface: "console" });
+  expect(f.rows().find(row => row.set === set)!.person).toBeUndefined();
+  void f.ask(TWO);
+  await until(() => f.rows().some(row => row.state === "open"), "a second open question");
+  const second = f.rows().find(row => row.state === "open")!.set;
+  const accepted = await f.person.request({ t: "answer", questionSet: second, surface: "acon", person: "access:ada@example.org", answers });
+  expect(accepted).toMatchObject({ ok: true, state: "answered" });
+  expect(f.rows().find(row => row.set === second)).toMatchObject({ state: "answered", surface: "acon", person: "access:ada@example.org" });
+  const events = readEvents(join(f.stateDir, "events.jsonl")).flatMap(e => e.type === "question" && e.event === "answered" ? [e] : []);
+  expect(events.map(e => [e.surface, e.person])).toEqual([["console", undefined], ["acon", "access:ada@example.org"]]);
+  // the identity is one bounded line of the console's own, never question or answer text
+  expect(JSON.stringify(events)).not.toContain("Which database");
+});
 
 test("AC6 a private question (asked about a PII task) is private in its row, in the status need and in the answer envelope, and no question or answer text reaches hub.log, events.jsonl or memory capture", async () => {
   const f = await rig(1000);
@@ -152,7 +194,7 @@ test("AC6 a private question (asked about a PII task) is private in its row, in 
   await Bun.sleep(150);
   for (const name of ["hub.log", "events.jsonl"]) {
     const file = join(f.stateDir, name);
-    if (!existsSync(file)) continue;
+    expect(existsSync(file), `${name} must exist, or this check proves nothing`).toBe(true);
     const text = readFileSync(file, "utf8");
     for (const secret of SECRETS) expect(text, `${name} must not hold ${secret}`).not.toContain(secret);
   }

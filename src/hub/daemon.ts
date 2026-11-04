@@ -10188,7 +10188,9 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "console") return void reply({ t: "answer", ok: false, error: "answer is a console command: only the person answers a question" });
         if (recoveryActive() || stopping) return void reply({ t: "answer", ok: false, error: "recovery or shutdown is holding answers; answer again once the hub is back" });
         const surface = QUESTION_SURFACES.includes(msg.surface as never) ? msg.surface : "console";
-        const result = questionDesk.answer(msg.questionSet, msg.answers, surface);
+        // The verified identity the acon plugin read from its console's `ActionMeta` rides only on the `acon` surface, one line and bounded, never text of the question or the answer.
+        const person = surface === "acon" && typeof msg.person === "string" && msg.person.trim() ? sanitize(msg.person).replace(/\s+/g, " ").trim().slice(0, 200) : undefined;
+        const result = questionDesk.answer(msg.questionSet, msg.answers, surface, person);
         return void reply(result.ok ? { t: "answer", ok: true, questionSet: result.row.set, state: result.row.state } : { t: "answer", ok: false, error: `${result.error}; the questions read lists the open ones (console)`, ...(result.state ? { state: result.state } : {}) });
       }
       // The person's read of the open questions (the console, `ahub`, the panel). Question text is the person's surface only: a tools connection is refused.

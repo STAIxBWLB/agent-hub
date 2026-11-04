@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -439,4 +440,26 @@ test("the envelope builders are pure and sanitize-safe: an answer whose text for
   // the JSON body escapes the newline inside the other text, so no line of the body starts a forged header
   expect(env.body.split("\n").some(line => /^\s*\[agent-hub\b/.test(line))).toBe(false);
   expect(expiryEnvelope({ ...row, state: "expired" }, 90_000_000).body).toContain("expired unanswered after about 25 hours");
+});
+
+test("the verified person of an acon answer is stored on the row, and a table made before the column is altered in place without losing a row", () => {
+  const { s, db } = store();
+  const open = s.ask({ peer: "codex", session: "", private: false, questions: ASK.questions }, 1000);
+  if ("error" in open) throw new Error(open.error);
+  expect(s.answer(open.set, ANSWER, "acon", 2000, false, "access:ada@example.org")).toMatchObject({ ok: true, row: { surface: "acon", person: "access:ada@example.org" } });
+  const other = s.ask({ peer: "codex", session: "", private: false, questions: ASK.questions }, 3000);
+  if ("error" in other) throw new Error(other.error);
+  expect((s.answer(other.set, ANSWER, "terminal", 4000, false) as { row: QuestionRow }).row.person).toBeUndefined();   // no person unless the acon surface names one
+  s.close();
+  // the table as it was before the column: dropping it leaves the rows and the open question intact once the store reopens
+  const raw = new Database(db);
+  raw.run("ALTER TABLE questions DROP COLUMN person");
+  raw.close();
+  const reopened = new QuestionStore(db);
+  cleanup.push(() => reopened.close());
+  expect(reopened.get(open.set)).toMatchObject({ state: "answered", surface: "acon" });
+  expect(reopened.get(open.set)!.person).toBeUndefined();
+  const again = reopened.ask({ peer: "codex", session: "", private: false, questions: ASK.questions }, 5000);
+  if ("error" in again) throw new Error(again.error);
+  expect(reopened.answer(again.set, ANSWER, "acon", 6000, false, "local")).toMatchObject({ ok: true, row: { person: "local" } });
 });

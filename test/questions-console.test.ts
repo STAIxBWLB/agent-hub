@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { needs, summarizeNeeds } from "../src/ui/needs.ts";
 import { parseNeedsSummary } from "../src/cli/pet.ts";
 import { consoleNeeds, attentionCommand } from "../src/cli/attention.ts";
-import { initialConsoleState, reduceConsole, renderConsoleLines, paint, keyTable, type ConsoleState } from "../src/cli/console-state.ts";
+import { initialConsoleState, reduceConsole, renderConsoleLines, paint, keyTable, syncPermissionDefaults, type ConsoleState } from "../src/cli/console-state.ts";
 import { questionRows, startFlow, stepFlow, type QuestionView } from "../src/cli/console-question.ts";
 import { parseAnswerArgs } from "../src/cli/answer-args.ts";
 import { HELP, helpCommands } from "../src/cli/help.ts";
@@ -146,4 +146,27 @@ test("the running console reads questions only from a hub that lists the feature
       expect(output).toContain("answered qs-aaaaaaaaaaaa");
     } finally { stop(); await running; rmSync(root, { recursive: true, force: true }); }
   }
+});
+
+test("a refresh never opens a y/n default prompt while the question flow owns the keys, and the footer hint names only the keys that act for the question", () => {
+  let state: ConsoleState = { ...initialConsoleState(false), questions: [row()] };
+  const press = (key: string) => { const out = reduceConsole(state, key, now); state = out.state; return out.effects; };
+  press("A");
+  const defaults = [{ peer: "codex", mode: "never-ask", source: "/p/.agenthub/config.json" }];
+  expect(syncPermissionDefaults(state, defaults)).toBe(false);
+  expect(state.confirm).toBeUndefined();
+  expect(lines(state)).toContain("codex asks 1/2: Which database?");
+  // the first question takes one option and no other text: its prompt offers neither "o other" nor "Enter done" (the prompt line replaces the footer hint while the flow is open)
+  expect(lines(state)).toContain("1 Postgres  2 SQLite  Esc cancel");
+  expect(lines(state)).not.toContain("o other");
+  press("2");
+  // the second is multi with other text: both keys act
+  expect(lines(state)).toContain("o other  Enter done  Esc cancel");
+  press("o");
+  expect(lines(state)).toContain("Enter keeps  Esc back");
+  // once the flow ends the default prompt is offered as before
+  press("\x1b"); press("\x1b");
+  expect(state.questionFlow).toBeUndefined();
+  expect(syncPermissionDefaults(state, defaults)).toBe(true);
+  expect(state.confirm).toMatchObject({ type: "permission_default", peer: "codex" });
 });

@@ -43,6 +43,8 @@ export interface QuestionRow {
   settled?: number;
   reason?: QuestionReason;
   surface?: QuestionSurface;
+  /** The console's verified identity (`ActionMeta.identity`) of an answer given in the acon panel; absent for the terminal and the hub's own console, whose person is the local user. */
+  person?: string;
   questions: AskQuestion[];
   answers?: QuestionAnswer[];
   /** 0 nothing to publish, 1 a hub envelope (late answer or expiry notice) is owed to the peer, 2 it was published. */
@@ -150,13 +152,13 @@ export function validateAnswers(questions: readonly AskQuestion[], input: unknow
 
 interface RawRow {
   set_id: string; peer: string; session: string; task: number | null; private: number; state: string; created: number; settled: number | null; reason: string | null;
-  surface: string | null; questions: string; answers: string | null; envelope: number;
+  surface: string | null; person: string | null; questions: string; answers: string | null; envelope: number;
 }
 function rowOf(raw: RawRow): QuestionRow {
   return {
     set: raw.set_id, peer: raw.peer, session: raw.session, ...(raw.task !== null ? { task: raw.task } : {}), private: raw.private === 1, state: raw.state as QuestionState,
     created: raw.created, ...(raw.settled !== null ? { settled: raw.settled } : {}), ...(raw.reason !== null ? { reason: raw.reason as QuestionReason } : {}),
-    ...(raw.surface !== null ? { surface: raw.surface as QuestionSurface } : {}), questions: JSON.parse(raw.questions) as AskQuestion[],
+    ...(raw.surface !== null ? { surface: raw.surface as QuestionSurface } : {}), ...(raw.person ? { person: raw.person } : {}), questions: JSON.parse(raw.questions) as AskQuestion[],
     ...(raw.answers !== null ? { answers: JSON.parse(raw.answers) as QuestionAnswer[] } : {}), envelope: raw.envelope as 0 | 1 | 2,
   };
 }
@@ -172,6 +174,8 @@ export class QuestionStore {
       set_id TEXT PRIMARY KEY, peer TEXT NOT NULL, session TEXT NOT NULL DEFAULT '', task INTEGER, private INTEGER NOT NULL DEFAULT 0,
       state TEXT NOT NULL CHECK (state IN ('open','answered','superseded','cancelled','expired')), created INTEGER NOT NULL, settled INTEGER, reason TEXT, surface TEXT,
       questions TEXT NOT NULL, answers TEXT, envelope INTEGER NOT NULL DEFAULT 0)`);
+    // The verified person of an acon answer: an additive column, so a table made before it is altered in place and an older hub simply never reads it.
+    if (!(this.db.query("PRAGMA table_info(questions)").all() as { name: string }[]).some(column => column.name === "person")) this.db.run("ALTER TABLE questions ADD COLUMN person TEXT");
     this.db.run("CREATE INDEX IF NOT EXISTS questions_by_state ON questions(state, peer)");
   }
   close(): void { try { this.db.close(); } catch { /* already closed */ } }
@@ -211,14 +215,14 @@ export class QuestionStore {
    * The one terminal transition: a compare-and-set on `state = 'open'`. Of any number of concurrent callers (a person's answer, a stop, an expiry) exactly one
    * sees `changes === 1`; every other gets the row's real terminal state back. `late` says no waiting call will carry the result, so an envelope is owed.
    */
-  answer(set: string, raw: unknown, surface: QuestionSurface, now: number, late: boolean): AnswerResult {
+  answer(set: string, raw: unknown, surface: QuestionSurface, now: number, late: boolean, person?: string): AnswerResult {
     const row = this.get(set);
     if (!row) return { ok: false, error: "no such question" };
     if (row.state !== "open") return { ok: false, error: `question is already ${row.state}`, state: row.state };
     const parsed = validateAnswers(row.questions, raw);
     if (!parsed.ok) return { ok: false, error: parsed.error };
-    const result = this.db.query("UPDATE questions SET state = 'answered', settled = ?, surface = ?, answers = ?, envelope = ? WHERE set_id = ? AND state = 'open'")
-      .run(now, surface, JSON.stringify(parsed.value), late ? 1 : 0, set);
+    const result = this.db.query("UPDATE questions SET state = 'answered', settled = ?, surface = ?, person = ?, answers = ?, envelope = ? WHERE set_id = ? AND state = 'open'")
+      .run(now, surface, person ?? null, JSON.stringify(parsed.value), late ? 1 : 0, set);
     if (result.changes !== 1) { const now_ = this.get(set); return { ok: false, error: `question is already ${now_?.state ?? "settled"}`, ...(now_ ? { state: now_.state } : {}) }; }
     return { ok: true, row: this.get(set)! };
   }

@@ -113,7 +113,7 @@ export class QuestionDesk {
    * The person's answer, from the console role only (the daemon checks the role before it calls this). Of any number of concurrent answers, stops and expiries,
    * the store's compare-and-set lets exactly one win; a loser is told the row's real terminal state. An answer to a row with no waiting call is the late path.
    */
-  answer(set: unknown, raw: unknown, surface: QuestionSurface): AnswerResult {
+  answer(set: unknown, raw: unknown, surface: QuestionSurface, person?: string): AnswerResult {
     if (typeof set !== "string" || !QUESTION_SET.test(set)) return { ok: false, error: "no such question" };
     const current = this.p.store.get(set);
     if (current?.state === "open" && this.sessionChanged(current)) {
@@ -121,9 +121,9 @@ export class QuestionDesk {
       return { ok: false, error: "question is already cancelled", state: "cancelled" };
     }
     const late = !this.waiters.has(set);
-    const result = this.p.store.answer(set, raw, surface, this.p.now(), late);
+    const result = this.p.store.answer(set, raw, surface, this.p.now(), late, person);
     if (!result.ok) return result;
-    this.p.event({ type: "question", set, peer: result.row.peer, event: "answered", latencyMs: this.p.now() - result.row.created, surface, private: result.row.private });
+    this.p.event({ type: "question", set, peer: result.row.peer, event: "answered", latencyMs: this.p.now() - result.row.created, surface, ...(person ? { person } : {}), private: result.row.private });
     if (late) this.publishOwed(result.row);
     else this.settleWait(set, { status: "answered", questionSet: set, answers: result.row.answers ?? [], answeredBy: "person", surface });
     return result;
