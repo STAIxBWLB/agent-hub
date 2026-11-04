@@ -104,6 +104,11 @@ export class CompletionStore {
       .map(raw => ({ ...completionOf(raw), ...(raw.seen_at !== null ? { seenAt: raw.seen_at } : {}), ...(raw.surface ? { surface: raw.surface } : {}) }));
   }
 
+  /** Whether any completion has been read: the one fact the person's mark-unread needs to know it has something to relight. */
+  hasRead(): boolean {
+    return this.db.query("SELECT 1 AS one FROM completion_receipts LIMIT 1").get() !== null;
+  }
+
   /** How many completions have no receipt: the number status counts, so a listing can say when it showed fewer. */
   unreadCount(): number {
     return (this.db.query("SELECT COUNT(*) AS n FROM completions c WHERE NOT EXISTS (SELECT 1 FROM completion_receipts r WHERE r.completion_id = c.id)").get() as { n: number }).n;

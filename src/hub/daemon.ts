@@ -99,6 +99,7 @@ import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type Fold
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
 import { QuestionStore, QUESTION_SURFACES } from "./questions.ts";
 import { RunTracker, outcomeOf, settleVerdict, type Run } from "./completions.ts";
+import { resultDetail, type ResultDetail } from "./completion-detail.ts";
 import { CompletionStore } from "./completions-store.ts";
 import { QuestionDesk } from "./question-desk.ts";
 import type { ScannedFile } from "./schedules.ts";
@@ -4842,6 +4843,62 @@ export async function startDaemon(opts: DaemonOptions) {
     title: row.private ? `${row.peer}: a private result` : `${row.peer}: ${row.outcome === "done" ? "finished" : row.outcome === "failed" ? "failed" : row.outcome === "limit" ? "stopped at a limit" : "interrupted"}`,
     read: row.seenAt !== undefined, ...(row.seenAt !== undefined ? { seenAt: row.seenAt, surface: row.surface } : {}),
   });
+  /**
+   * #1054 T6: the detail of a result for the person's surfaces (the acon inbox and the dashboard), built NOW from the starting prompt's envelope if the bus still holds it, and
+   * never stored, logged or put in an event. A private run shows a stub without reading the body; a head the hub's own screens refuse shows a stub; an envelope the bus no longer
+   * holds shows nothing. The body is sanitized so a prompt cannot forge a hub header in the panel.
+   */
+  const resultDetailOf = (row: { promptEnvelope?: string; private: boolean }): ResultDetail => {
+    try {
+      const body = row.private || !row.promptEnvelope ? undefined : bus.get(row.promptEnvelope)?.body;
+      return resultDetail({ private: row.private, ...(body !== undefined ? { body: sanitize(body) } : {}), safe: boundedSafe });
+    } catch { return { kind: "none" }; }
+  };
+  /** Unread results the dashboard and the acon inbox may list at once; the rest is a count, and `ahub results --unread` reaches every one. */
+  const RESULTS_VIEW_MAX = 50;
+  /**
+   * #1054 T6: the `results` of a dashboard snapshot, for the person's surfaces only. A READ: building it never writes a receipt (a poll is not a person looking). Unread rows
+   * only, newest first, each with its detail built now (`resultDetailOf`); `moreUnread` counts what the bound left out and `canUnread` says a read result exists to relight.
+   * A live-test dashboard never gets it, and a read that fails reads as none (a need is advice).
+   */
+  const resultsView = (session?: DashboardSession): { unread: Record<string, unknown>[]; moreUnread: number; canUnread: boolean } | undefined => {
+    if (session?.liveTest) return undefined;
+    try {
+      const rows = completionStore.listWithState(RESULTS_VIEW_MAX, true);
+      return {
+        unread: rows.map(row => ({ ...resultView(row), detail: resultDetailOf(row) })),
+        moreUnread: Math.max(0, completionStore.unreadCount() - rows.length),
+        canUnread: completionStore.hasRead(),
+      };
+    } catch { return undefined; }
+  };
+  /**
+   * #1054 T4/T6: the three receipt writes, once, for every surface that may make one: the console-role control messages (`result_seen`, `results`) and the dashboard session's
+   * `uiAction`. A receipt is only ever the person's: the callers check the role or the session before they get here. Each write is held during recovery or shutdown, names its
+   * refusal, and emits `completion_seen` (id and surface, no text) for exactly the rows it changed.
+   */
+  type ReceiptSurface = "terminal" | "console" | "dashboard" | "acon";
+  const receiptSurface = (value: unknown): ReceiptSurface => (["terminal", "console", "dashboard", "acon"] as const).find(known => known === value) ?? "console";
+  const receiptHeld = () => recoveryActive() || stopping;
+  const markResultSeen = (id: unknown, surface: ReceiptSurface): { ok: true; id: string } | { ok: false; error: string } => {
+    if (receiptHeld()) return { ok: false, error: "recovery or shutdown is holding receipts; mark it read again once the hub is back" };
+    if (typeof id !== "string") return { ok: false, error: "result_seen needs the result id (ahub results lists them)" };
+    const marked = completionStore.markSeen(id, Date.now(), surface);
+    if (!marked.ok) return marked;
+    event({ type: "completion_seen", id, surface });
+    return { ok: true, id };
+  };
+  const markAllResultsSeen = (surface: ReceiptSurface): { ok: true; marked: number } | { ok: false; error: string } => {
+    if (receiptHeld()) return { ok: false, error: "recovery or shutdown is holding receipts; try again once the hub is back" };
+    const ids = completionStore.markAllSeen(Date.now(), surface);
+    for (const id of ids) event({ type: "completion_seen", id, surface });
+    return { ok: true, marked: ids.length };
+  };
+  const unmarkLastResult = (): { ok: true; unread: string } | { ok: false; error: string } => {
+    if (receiptHeld()) return { ok: false, error: "recovery or shutdown is holding receipts; try again once the hub is back" };
+    const relit = completionStore.unmarkLast();
+    return relit ? { ok: true, unread: relit } : { ok: false, error: "no result has been read, so there is nothing to mark unread" };
+  };
   /** An explicit stop by the person: the run ends and creates nothing. */
   const quietStop = (peer: PeerId): void => { try { const run = runs.get(peer); if (run) { completionStore.dropRun(run.runTurn); runs.quietStop(peer); } } catch { log(`completion quiet stop for ${peer} failed; its run stays open`); } };
   /** Restart reconstruction: an open run row whose process is gone settles `interrupted`, once. The unique run turn makes any number of restarts yield one completion per run. */
@@ -7525,6 +7582,8 @@ export async function startDaemon(opts: DaemonOptions) {
       }),
       // #1053 T4: the open questions, for the person's surfaces (the panel and the acon inbox). A live-test dashboard never gets the text.
       questions: session?.liveTest ? [] : questionStore.list({ state: "open" }, 64).map(row => ({ set: row.set, peer: row.peer, created: row.created, private: row.private, questions: row.questions })),
+      // #1054 T6: unread results for the person's surfaces (the panel and the acon inbox), only for the Agents view the inbox and the Results section read.
+      ...(_input?.view === "agents" ? { results: resultsView(session) } : {}),
       events: uiEvents.filter((e) => e.seq > after),
       cursor: uiSequence,
       memorySync: memoryProfileStatus(true).sync,
@@ -8378,6 +8437,17 @@ export async function startDaemon(opts: DaemonOptions) {
         if (out.ok !== true) return { ok: false, error: String(out.error ?? "the worktree shelf could not be read") };
         const r = out.refreshed as { read: number; failed: number; skipped: number } | undefined;
         return { ok: true, text: r ? `Read ${r.read} PR state${r.read === 1 ? "" : "s"}${r.failed ? `, ${r.failed} unreadable` : ""}${r.skipped ? `, ${r.skipped} left for the next refresh` : ""}.` : a.action === "worktree_override_set" ? "Worktree moved." : "Worktree override cleared." };
+      }
+      // #1054 T6: a person's receipt from the dashboard session. The manager forwards these only from the server-side acon provider's `receipt` port (after it checked the console's
+      // person meta) or from the page of `ahub ui` itself, which is the person's own browser session; a live-test dashboard is refused here as in `ui.ts`. The writes are the same three
+      // the console control messages make, so a receipt means the same on every surface; the surface is `dashboard`, and `acon` only through the control message the port sends.
+      case "result_seen":
+      case "results_read_all":
+      case "results_unread_last": {
+        if (session?.liveTest) return { ok: false, error: "live-test dashboard cannot write a receipt for the person" };
+        const done = a.action === "result_seen" ? markResultSeen(a.id, "dashboard") : a.action === "results_read_all" ? markAllResultsSeen("dashboard") : unmarkLastResult();
+        if (!done.ok) return { ok: false, error: done.error };
+        return { ok: true, text: a.action === "result_seen" ? "Marked read." : a.action === "results_read_all" ? `Marked ${(done as { marked: number }).marked} read.` : "Marked unread again." };
       }
       case "config_edit_preview":
         return configEditor!.preview(a.edit, authority);
@@ -10305,25 +10375,13 @@ export async function startDaemon(opts: DaemonOptions) {
       // the store. A snapshot or a `results` read never writes one. Every message gets a reply (rid), a refusal included.
       case "result_seen": {
         if (c.role !== "console") return void reply({ t: "result_seen", ok: false, error: "result_seen is a console command: only the person marks a result read" });
-        if (recoveryActive() || stopping) return void reply({ t: "result_seen", ok: false, error: "recovery or shutdown is holding receipts; mark it read again once the hub is back" });
-        const surface = (["terminal", "console", "dashboard", "acon"] as const).find(known => known === msg.surface) ?? "console";
-        if (typeof msg.id !== "string") return void reply({ t: "result_seen", ok: false, error: "result_seen needs the result id (ahub results lists them)" });
-        const marked = completionStore.markSeen(msg.id, Date.now(), surface);
-        if (marked.ok) event({ type: "completion_seen", id: msg.id, surface });
-        return void reply(marked.ok ? { t: "result_seen", ok: true, id: msg.id } : { t: "result_seen", ok: false, error: marked.error });
+        const marked = markResultSeen(msg.id, receiptSurface(msg.surface));
+        return void reply({ t: "result_seen", ...marked });
       }
       case "results": {
         if (c.role !== "console") return void reply({ t: "results", ok: false, error: "results are shown to the person: use the console" });
         if (msg.action === "read-all" || msg.action === "unread-last") {
-          if (recoveryActive() || stopping) return void reply({ t: "results", ok: false, error: "recovery or shutdown is holding receipts; try again once the hub is back" });
-          const surface = (["terminal", "console", "dashboard", "acon"] as const).find(known => known === msg.surface) ?? "console";
-          if (msg.action === "read-all") {
-            const ids = completionStore.markAllSeen(Date.now(), surface);
-            for (const id of ids) event({ type: "completion_seen", id, surface });
-            return void reply({ t: "results", ok: true, marked: ids.length });
-          }
-          const relit = completionStore.unmarkLast();
-          return void reply(relit ? { t: "results", ok: true, unread: relit } : { t: "results", ok: false, error: "no result has been read, so there is nothing to mark unread" });
+          return void reply({ t: "results", ...(msg.action === "read-all" ? markAllResultsSeen(receiptSurface(msg.surface)) : unmarkLastResult()) });
         }
         const unreadOnly = msg.unread === true;
         const rows = completionStore.listWithState(100, unreadOnly).map(resultView);
