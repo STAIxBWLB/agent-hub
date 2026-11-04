@@ -7185,6 +7185,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   function declaredPaths(value: unknown, prefix = ""): string[] {
     if (prefix === "_autonomy" || prefix.startsWith("_autonomy.")) return [];
+    if (prefix === "pet.window") return [];
     // Retired dictionaries never enter active publication; hub ids remain opaque keys.
     if (prefix === "routing.targets" || prefix === "routing.routes") return [];
     if (prefix === "routing.hub_routes") return [prefix];

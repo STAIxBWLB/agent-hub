@@ -388,3 +388,27 @@ test("#1012 legacy window removal preserves mixed terminal presentation and emit
     expect(loadPetConfig(root)).toEqual({ enabled: true, character: "gyul", glyphs: "ascii", palette: "violet", blink: true, bell: false, notice: PET_WINDOW_RETIRED_NOTICE });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("#1012 explicit reload ignores retired window changes and removal while applying terminal fields", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-retired-pet-reload-")), stateDir = join(root, ".agenthub/state");
+  mkdirSync(join(root, ".agenthub"));
+  writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, pet: { bell: false, blink: true } }));
+  const local = join(root, ".agenthub/config.local.json");
+  writeFileSync(local, JSON.stringify({ pet: { window: false } }));
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false });
+  const client = await ControlClient.connect(stateDir, { role: "console" });
+  try {
+    writeFileSync(local, JSON.stringify({ pet: { window: { retired: "PRIVATE_WINDOW_CANARY" }, bell: true } }));
+    const changed = await client.request({ t: "settings_reload" });
+    expect(changed).toMatchObject({ ok: true, rejected: [] });
+    expect(changed.applied).toContain("pet.bell"); expect(changed.applied).not.toContain("pet.window");
+    expect(JSON.stringify(changed)).not.toContain("PRIVATE_WINDOW_CANARY");
+    writeFileSync(local, JSON.stringify({ pet: { bell: true, blink: false } }));
+    const removed = await client.request({ t: "settings_reload" });
+    expect(removed).toMatchObject({ ok: true, rejected: [] });
+    expect(removed.applied).toContain("pet.blink"); expect(removed.applied).not.toContain("pet.window");
+    const settings = await client.request({ t: "settings_get" });
+    expect(settings.rows.some((row: { key: string }) => row.key === "pet.window")).toBe(false);
+    expect((await client.request({ t: "settings_set", key: "pet.window", value: true })).ok).toBe(false);
+  } finally { client.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
+});
