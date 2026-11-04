@@ -7332,7 +7332,6 @@ export class Tasks {
   }
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown): Promise<Task> {
-    const reviewObserverTurn = this.reviewObserverTurn(by, Number(id));
     const requestCheck = this.requestCheck(by);
     if (typeof id !== "number" && !(typeof id === "string" && /^\s*\d+\s*$/.test(id))) this.need(id, false, true);
     const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
@@ -7343,7 +7342,9 @@ export class Tasks {
     let conformanceIdentity: string | undefined;
     let reviewRound: number | undefined;
     let withdrawalRevision: number | undefined;
-    const withdrawing = this.need(id, false, true).state === "approved" && verdict === "changes_requested";
+    const before = this.need(id, false, true);
+    const reviewObserverTurn = this.reviewObserverTurn(by, before.id);
+    const withdrawing = before.state === "approved" && verdict === "changes_requested";
     const valid = (): Task => {
       requestCheck();
       const refused = authority?.();
