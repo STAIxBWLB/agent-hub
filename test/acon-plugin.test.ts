@@ -315,7 +315,7 @@ describe("anchored review person bridge (#1056)", () => {
     const preview = await f.provider.action(send, person);
     expect(preview).toMatchObject({ ok: false, needsConfirm: true });
     expect(f.controls).toHaveLength(2);
-    if (!("fingerprint" in preview)) throw new Error("missing review confirmation");
+    if (!("fingerprint" in preview) || typeof preview.fingerprint !== "string") throw new Error("missing review confirmation");
     await f.provider.action({ ...send, confirmed: true, fingerprint: preview.fingerprint }, person);
     expect(f.actions).toEqual([]);
     expect(f.controls.map(row => row.t)).toEqual(["review_comment_put", "review_comment_delete", "review_comment_send"]);

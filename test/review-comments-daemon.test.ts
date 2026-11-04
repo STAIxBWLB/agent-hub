@@ -1,3 +1,4 @@
+import type { ReviewAnchor } from "../src/hub/review-anchor.ts";
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -44,7 +45,7 @@ async function fixture(reviewMaterialsGh?: import("../src/hub/sdlc.ts").SdlcGh) 
   const person = await ControlClient.connect(stateDir, { role: "console", projectRoot: cwd });
   const peer = await ControlClient.connect(stateDir, { role: "tools", peer: "codex", projectRoot: cwd });
   const conductor = await ControlClient.connect(stateDir, { role: "tools", peer: "claude", projectRoot: cwd });
-  const anchor = { path: "report.md", side: "head", contentHash: createHash("sha256").update(text).digest("hex"), selectors: [{ kind: "lineRange", startLine: 1, endLine: 1 }, { kind: "textQuote", exact: "REVIEW_QUOTE_CANARY", prefix: "", suffix: "" }] };
+  const anchor: ReviewAnchor = { path: "report.md", side: "head", contentHash: createHash("sha256").update(text).digest("hex"), selectors: [{ kind: "lineRange", startLine: 1, endLine: 1 }, { kind: "textQuote", exact: "REVIEW_QUOTE_CANARY", prefix: "", suffix: "" }] };
   return { cwd, stateDir, daemon, board, owner, person, peer, conductor, task: row.id, head, anchor,
     stop: async () => { person.close(); peer.close(); conductor.close(); board.close(); await daemon.stop(); rmSync(cwd, { recursive: true, force: true }); } };
 }

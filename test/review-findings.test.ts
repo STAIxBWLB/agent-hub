@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { ReviewAnchor, ReviewSelector } from "@staix/agent-console/contract";
 const findings = () => import("../src/hub/review-findings.ts");
 const item = (id = "bugs:one", severity: "important" | "nit" = "important", disposition: "open" | "fixed" | "false_positive" | "accepted" = "open") => ({ id, pass: "bugs" as const, severity, disposition });
 const options = { person: false, maxNits: 5 };
@@ -129,7 +130,7 @@ test("R1 nits remain head-bound while historical unbound Important carries to kn
 
 test("optional review anchors roundtrip all acon selectors without changing legacy finding bytes", async () => {
   const { parseReviewFindings } = await findings();
-  const selectors = [
+  const selectors: ReviewSelector[] = [
     {kind: "lineRange", startLine: 1, endLine: 2},
     {kind: "textQuote", exact: "quote", prefix: "", suffix: ""},
     {kind: "diffHunk", hunkHeader: "@@ -1 +1 @@"},
@@ -139,7 +140,7 @@ test("optional review anchors roundtrip all acon selectors without changing lega
   const legacy = {...item(), path: "report.md", rationale: "unchanged"};
   expect(JSON.stringify(parseReviewFindings([legacy], options))).toBe(JSON.stringify([legacy]));
   for (const selector of selectors) {
-    const anchor = {path: "report.md", side: "head", contentHash: "a".repeat(64), selectors: [selector]};
+    const anchor: ReviewAnchor = {path: "report.md", side: "head", contentHash: "a".repeat(64), selectors: [selector]};
     const parsed = parseReviewFindings([{...legacy, anchor}], options);
     expect(parsed[0]?.anchor).toEqual(anchor);
     expect(() => parseReviewFindings([{...legacy, path: "other.md", anchor}], options)).toThrow("path and anchor.path differ");

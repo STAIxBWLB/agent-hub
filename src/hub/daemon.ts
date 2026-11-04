@@ -9644,9 +9644,11 @@ export async function startDaemon(opts: DaemonOptions) {
           }
           verified = { identity: personMeta.identity, node: personMeta.node, via: "console" };
         }
-        void Promise.resolve().then(() => msg.t === "review_comment_put" ? tasks.reviewCommentPut(USER, input, verified)
-          : msg.t === "review_comment_delete" ? tasks.reviewCommentDelete(USER, input, verified) : tasks.reviewCommentSend(USER, input, verified))
-          .then(result => reply({ ok: true, ...result }), error => reply({ ok: false, error: (error as Error).message }));
+        void (async () => {
+          if (msg.t === "review_comment_put") return await tasks.reviewCommentPut(USER, input, verified);
+          if (msg.t === "review_comment_delete") return await tasks.reviewCommentDelete(USER, input, verified);
+          return await tasks.reviewCommentSend(USER, input, verified);
+        })().then(result => reply({ ok: true, ...result }), error => reply({ ok: false, error: (error as Error).message }));
         return;
       }
       case "review_comments":

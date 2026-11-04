@@ -7,6 +7,8 @@ import { Bus } from "../src/hub/bus.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
+import type { ReviewAnchor, ReviewSelector } from "@staix/agent-console/contract";
+import type { ReviewFinding } from "../src/hub/review-findings.ts";
 
 const HEAD = "a".repeat(40), cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -28,7 +30,7 @@ const finding = (anchor: unknown, path = "report.md") => ({id: "bounded-anchor",
 
 test("Tasks.review stores every published selector and retains the Important obligation on later heads", async () => {
   const r = rig();
-  const selectors = [
+  const selectors: ReviewSelector[] = [
     {kind: "lineRange", startLine: 1, endLine: 2},
     {kind: "textQuote", exact: "QUOTE_REVIEW_CANARY", prefix: "", suffix: ""},
     {kind: "diffHunk", hunkHeader: "@@ -1 +1 @@"},
@@ -36,7 +38,7 @@ test("Tasks.review stores every published selector and retains the Important obl
     {kind: "region", x: 1, y: 2, width: 10, height: 5},
   ];
   for (const selector of selectors) {
-    const task = r.create(), anchor = {path: "report.md", contentHash: "b".repeat(64), selectors: [selector]};
+    const task = r.create(), anchor: ReviewAnchor = {path: "report.md", contentHash: "b".repeat(64), selectors: [selector]};
     const rejected = await r.tasks.review("claude", task.id, "changes_requested", "synthetic finding", undefined, HEAD, undefined, [finding(anchor)]);
     expect(rejected.history.findLast(entry => entry.reviewFindings)?.reviewFindings?.items[0]?.anchor).toEqual(anchor);
     const nextHead = "c".repeat(40);
@@ -69,10 +71,10 @@ test("Tasks.review rejects malformed anchors before effects and removes private-
 
 test("finding placement rendering never points an outdated or unavailable finding at old lines", async () => {
   const {renderFindingAnchor} = await import("../src/hub/review-brief.ts");
-  const item = {id: "placement", pass: "bugs", severity: "important", disposition: "open", anchor: {path: "report.md", selectors: [
+  const item: ReviewFinding = {id: "placement", pass: "bugs", severity: "important", disposition: "open", anchor: {path: "report.md", selectors: [
     {kind: "lineRange", startLine: 7, endLine: 8}, {kind: "textQuote", exact: "RENDER_QUOTE_CANARY", prefix: "", suffix: ""},
-  ]}} as const;
-  const input = structuredClone(item) as unknown as import("../src/hub/review-findings.ts").ReviewFinding;
+  ]}};
+  const input = structuredClone(item);
   expect(renderFindingAnchor(input, {status: "anchored"})).toContain("report.md:7-8 (anchored)");
   expect(renderFindingAnchor(input, {status: "moved", range: {startLine: 20, endLine: 21}})).toContain("report.md:20-21 (moved)");
   expect(renderFindingAnchor(input, {status: "outdated"})).toContain("report.md (outdated)");
