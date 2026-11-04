@@ -5223,12 +5223,13 @@ built-ins and off for the current console only. `?` lists this under Pet, even
 while drawing is off. The command prompt keeps its original row and width.
 
 `pet.glyphs` selects auto/ascii/blocks; unsupported locales and dumb/linux
-terminals retain the ASCII floor. `pet.blink:false` is static. `pet.palette`
-selects blue, teal (default), violet or ochre (`a`/`b`/`c`/`d`). Both `pet`
+terminals retain the ASCII floor. `pet.blink:false` is static. Both `pet`
 (`false` or an option block) and its fields validate identically at startup and
 reload in `.agenthub/config.json` and `.agenthub/config.local.json`, apply live
 as console-local presentation on an open console's next refresh, and grant no
-authority (#483). A legacy `pet.window` value is ignored with one notice; a
+authority (#483). Legacy `pet.palette` still validates blue, teal, violet or
+ochre (`a`/`b`/`c`/`d`) for configuration compatibility, but has no rendering
+effect after the window retirement. A legacy `pet.window` value is ignored with one notice; a
 window-only local block preserves inherited `pet:false`. Neither
 choosing nor drawing a character changes authority, config files, task state or
 polling. Explicit `ahub pet` and text status use the configured line face; prompt
@@ -5324,8 +5325,9 @@ host, JXA process or network connection. The console's `o` shortcut and automati
 window startup from `ahub up` are retired.
 
 The terminal pet remains available through `ahub pet`, `ahub pet --short` and
-the console's line/mini/full frames. `ahub pet --palette` still changes the
-terminal palette. Existing `pet.window` settings are ignored with one notice;
+the console's line/mini/full frames. `ahub pet --palette <blue|teal|violet|ochre>`
+is also retired: it validates the argument, prints the same Mini pointer and
+writes no configuration. Existing `pet.window` settings are ignored with one notice;
 remove the obsolete key when updating configuration.
 
 The composer already lives in the agent-hub console plugin's **Console message**

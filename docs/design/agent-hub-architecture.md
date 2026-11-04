@@ -49,6 +49,9 @@ Native tools keep their vendor permission and execution boundaries. The local wo
 The floating pet belongs to acon Mini (#1012). The compatibility command
 `ahub pet --window [--close]` prints the `acon ui` pointer and succeeds for
 person, agent and live-test identities, without starting a host or window.
+The retired `ahub pet --palette <value>` validates its argument and prints the
+same pointer without writing configuration. Legacy `pet.palette` remains
+validated compatibility input with no rendering effect.
 Legacy `pet.window` input is ignored with one notice and cannot change authority
 or re-enable an inherited disabled terminal pet by itself. Terminal pet frames
 remain local TUI presentation. The acon plugin's existing **Console message**

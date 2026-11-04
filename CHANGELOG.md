@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Move the floating pet to acon Mini (#1012). `ahub pet --window [--close]` now prints the `acon ui` pointer and exits 0; the standalone JXA host, assets, automatic startup and console `o` shortcut are removed. Existing `pet.window` is ignored with one notice. Terminal line/mini/full pets and palette controls remain, and the existing acon plugin **Console message** view supplies the composer.
+- Move the floating pet to acon Mini (#1012). `ahub pet --window [--close]` and the retired `--palette <value>` now print the `acon ui` pointer and exit 0 without writing configuration; the standalone JXA host, assets, automatic startup and console `o` shortcut are removed. Existing `pet.window` is ignored with one notice, and `pet.palette` remains validated compatibility input with no rendering effect. Terminal line/mini/full pets remain, and the existing acon plugin **Console message** view supplies the composer.
 
 ## 0.30.0
 

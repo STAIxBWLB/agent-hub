@@ -770,9 +770,10 @@ exits successfully; it has no launcher, process-control or network effect and
 is available to agent shells and `--live-test`. Legacy `pet.window` is ignored
 as compatibility input and grants no configuration or conductor authority.
 
-Terminal pet reads and `pet --palette` retain their existing behavior. The
-palette write merges only the closed palette name into
-`.agenthub/config.local.json` using a temporary file and rename.
+Terminal pet reads retain their existing behavior. The retired `pet --palette`
+command validates its argument and prints the same Mini pointer without writing
+`.agenthub/config.local.json`. Existing `pet.palette` values remain validated
+compatibility input and have no rendering effect.
 
 The **Console message** view already exists in the agent-hub acon plugin
 (#935). Its existing `send` action retains message audience, PII and actor

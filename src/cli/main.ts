@@ -44,8 +44,8 @@ import { discoverClaudeHomes } from "./claude-homes.ts";
 import { setupClaudeHomes } from "./setup-homes.ts";
 import { registerAconPlugin } from "./acon-register.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
-import { PET_WINDOW_RETIRED_NOTICE } from "../pet/config.ts";
-import { loadPetConfig, savePetPalette } from "./pet-config.ts";
+import { PET_WINDOW_RETIRED_NOTICE, petPalette } from "../pet/config.ts";
+import { loadPetConfig } from "./pet-config.ts";
 import { projectProfile, resolveProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 import { attachWatch } from "./watch.ts";
@@ -2279,8 +2279,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     if (args.includes("--palette")) {
       if (args.length !== 2 || args[0] !== "--palette") return fail("usage: ahub pet [--short] | --window [--close] | --palette <blue|teal|violet|ochre>");
-      try { return console.log(savePetPalette(cwd, args[1]!)); }
-      catch (error) { return fail((error as Error).message); }
+      if (!petPalette(args[1])) return fail("Unknown pet palette; use blue, teal, violet or ochre (a/b/c/d).");
+      return console.log(PET_WINDOW_RETIRED_NOTICE);
     }
     if (args.some(arg => arg !== "--short")) return fail("usage: ahub pet [--short] | --window [--close] | --palette <blue|teal|violet|ochre>");
     const short = args.includes("--short");

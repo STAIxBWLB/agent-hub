@@ -24,7 +24,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub console [--panels] [--color=auto|always|never]", "enter the human console; P cycles built-in pet characters/off; exiting leaves the daemon running"],
     ["ahub console --no-pet", "turn off attention for this session; combines with --panels and --color"],
     ["ahub pet [--short]", "read attention without connecting; --short prints ahub!N only when action is needed"],
-    ["ahub pet --palette <blue|teal|violet|ochre>", "save pet.palette in .agenthub/config.local.json"],
+    ["ahub pet --palette <blue|teal|violet|ochre>", "retired floating-window option: run acon ui and open Mini"],
     ["ahub sdlc status [task] | explain <task> [--json] [--color=auto|always|never] | export <task> | record <task> <receipt-json>", "read head-bound lifecycle gates and the next actor/action; status and explain are open to any agent as a public view (private tasks stay stubs), export and record are person only; export stays JSON"],
     ["ahub sdlc queue <owner/repo> | release <owner/repo> [live-issue...] [--json] [--color=auto|always|never]", "read-only merge and release evidence; open to any agent as public readback of the checkout's repositories, never an authorization"],
     ["ahub sdlc merge <task> [--dry-run] [--json] [--color=auto|always|never]", "guarded squash merge of an approved task at its approved head after every gate is re-read; follows sdlc.toml auto_merge (off, dry-run, on); --dry-run only reports (person or conductor)"],
