@@ -12,7 +12,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS } from "../hub/control-client.ts";
+import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS, QUESTION_CONTROL_TIMEOUT_MS } from "../hub/control-client.ts";
 import { toolWriteOperation } from "../hub/tool-request.ts";
 import { channelProject } from "../hub/channel-project.ts";
 import { VERSION } from "../version.ts";
@@ -485,6 +485,8 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     if (!hub) return text(offline());
     // #445 C2: a daemon that predates invocations would answer with a generic unknown-operation error; say what is missing instead.
     if (name === "hub_invoke" && !hub.features.includes("invocation")) return { ...text("error: this hub does not support invocations; restart it with the current agent-hub release (ahub restart)"), isError: true };
+    // #1053: a hub that predates questions would answer "unknown operation"; say what is missing, and what to do meanwhile.
+    if (name === "hub_ask" && !hub.features.includes("questions")) return { ...text("error: this hub does not support questions; restart it with the current agent-hub release (ahub restart), or ask the person with hub_send"), isError: true };
     const rawArgs = args ?? {}, operation = toolWriteOperation({ t: "task", op: name });
     let taskArgs = rawArgs, requestId: unknown;
     if (operation && Object.hasOwn(rawArgs, "request_id")) {
@@ -492,7 +494,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
       const { request_id: _requestId, ...withoutRequestId } = rawArgs;
       taskArgs = withoutRequestId;
     }
-    const res = await hub.request({ t: "task", op: name, args: taskArgs, ...(requestId !== undefined ? { requestId } : {}) }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" ? signal : undefined);
+    const res = await hub.request({ t: "task", op: name, args: taskArgs, ...(requestId !== undefined ? { requestId } : {}) }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : name === "hub_ask" ? QUESTION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" || name === "hub_ask" ? signal : undefined);
     if (res.outcome === "unknown") return text(typeof res.error === "string" ? res.error : "Write outcome unknown. Inspect the task before another write; call again only if it is absent, with the same request_id and arguments.");
     return { ...text(res.ok ? res.text : `error: ${res.error}`), ...(res.ok ? {} : { isError: true }) };
   }

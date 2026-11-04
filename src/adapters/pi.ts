@@ -12,6 +12,7 @@ import { PiSessionBookmarkMismatch, validatePiSession } from "../pi/session.ts";
 import { ApprovalWaitStop, toolResultFailed, type ApprovalProvenance } from "../local/tools.ts";
 import { piToolStepCeiling, type PiToolStepCeiling } from "../pi/ceiling.ts";
 import type { ExecutionBudgetDecision, ExecutionUnit } from "../hub/execution-budget.ts";
+import { QuestionWaitDetached } from "../hub/question-detach.ts";
 import type { StartForm } from "./registry-types.ts";
 
 export interface PiModelDescriptor { id: string; name?: string; contextWindow?: number; maxTokens?: number; reasoning?: boolean; }
@@ -329,6 +330,35 @@ export class PiPeer extends BasePeer {
     this.starting = this.startImpl();
     try { await this.starting; } finally { this.starting = undefined; }
   }
+  /** The keepalive period of a long tool reply; well under every timer between the hub and Pi's runtime (60 s Bun idle, 300 s undici). A test shortens it. */
+  toolKeepaliveMs = 15_000;
+  /**
+   * A tool reply that may take minutes (`hub_ask`): the status line and headers go out at once, a space is written every `toolKeepaliveMs`, and the JSON body
+   * follows when the call settles. Whitespace before a JSON value is valid JSON, so the extension's `response.json()` reads it unchanged. When the client goes away
+   * the stream is cancelled and the call is aborted through its own signal with `QuestionWaitDetached`, so the wait ends `pending` and the row stays open for the late envelope;
+   * nothing else about `handleToolRequest` changes.
+   */
+  private streamedToolResponse(body: any, clientGone: AbortSignal): Response {
+    const encoder = new TextEncoder();
+    let timer: ReturnType<typeof setInterval> | undefined, closed = false;
+    const stop = () => { closed = true; if (timer) clearInterval(timer); timer = undefined; };
+    return new Response(new ReadableStream({
+      start: controller => {
+        timer = setInterval(() => { if (!closed) try { controller.enqueue(encoder.encode(" ")); } catch { stop(); } }, this.toolKeepaliveMs);
+        timer.unref?.();
+        const abort = () => { stop(); this.pendingToolGenerations.get(String(body?.toolCallId ?? ""))?.abort.abort(new QuestionWaitDetached()); };
+        clientGone.addEventListener("abort", abort, { once: true });
+        void this.handleToolRequest(body).then(async response => {
+          const text = await response.text();
+          if (closed) return;
+          stop();
+          try { controller.enqueue(encoder.encode(text)); controller.close(); } catch { /* the client already left */ }
+        }, () => { if (closed) return; stop(); try { controller.enqueue(encoder.encode(JSON.stringify({ text: "error: Pi tool call failed", failed: true }))); controller.close(); } catch { /* the client already left */ } });
+      },
+      cancel: () => { stop(); this.pendingToolGenerations.get(String(body?.toolCallId ?? ""))?.abort.abort(new QuestionWaitDetached()); },
+    }), { headers: { "content-type": "application/json" } });
+  }
+
   private async handleToolRequest(body: any): Promise<Response> {
     if (!this.acceptingTools || this.state === "offline") return Response.json({ text: this.rosterDetached ? "error: Pi is off roster" : this.rosterUnownedRun ? "error: Pi native turn is pending" : "error: Pi owner is stopped" }, { status: 409 });
     if (!this.verifiedOwner() || typeof body.sessionId !== "string" || !body.sessionId || body.sessionId !== this.sessionId || !Number.isSafeInteger(body.generation) || body.generation !== this.budgetGeneration) {
@@ -494,7 +524,18 @@ export class PiPeer extends BasePeer {
           : boundRefusal && refusal.kind === "prompt_uncertain" ? new PiPromptUncertain("Pi native prompt insertion is uncertain; inspect its retained terminal before retrying") : new Error(String(body.error ?? "Pi TUI command failed")));
         return Response.json({ ok: true });
       }
-      if (url.pathname === "/tool") return this.handleToolRequest(body);
+      if (url.pathname === "/tool") {
+        // #1053: `hub_ask` holds this request open for the person's wait window. Two timers would cut it: Bun's 60 s bridge idle timeout (lifted for this one call with
+        // `timeout(request, 0)`) and the extension's own fetch, whose undici dispatcher Pi installs with headersTimeout and bodyTimeout of 300 s (Pi 1.4.0
+        // `configureHttpDispatcher`, measured: UND_ERR_HEADERS_TIMEOUT). So the reply is streamed: headers go out at once and a space every 15 s keeps both timers
+        // quiet, then the JSON follows (`response.json()` ignores leading whitespace). A client that gives up anyway cancels the stream, which aborts the call; the
+        // question row stays open and its answer takes the late-envelope path.
+        if (body?.name === "hub_ask") {
+          bridge.timeout(request, 0);
+          return this.streamedToolResponse(body, request.signal);
+        }
+        return this.handleToolRequest(body);
+      }
       if (url.pathname === "/budget") return this.handleBudgetRequest(body);
       return new Response("not found", { status: 404 });
     } });

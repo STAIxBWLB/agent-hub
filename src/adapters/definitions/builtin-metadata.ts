@@ -74,7 +74,7 @@ const CLAUDE_IMPLEMENTER_VARIANT: AdapterDefinition = {
 export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Object.freeze([
   {
     projection: { roleRank: 0, helpRank: 0, plannerEligible: true },
-    api: 1, kind: "claude", displayName: "Claude Code", family: "claude", transport: "claude-channel",
+    api: 1, kind: "claude", questionWaitMs: 45000, displayName: "Claude Code", family: "claude", transport: "claude-channel",
     roles: Object.freeze(["planner", "reviewer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
     start: { forms: Object.freeze(["tui"] as const), defaultForm: "tui", launch: claudeNativeLaunch, version: claudeObservedVersion, ...CLAUDE_LAUNCH_POLICY, conductorStartable: true, upStart: { allowed: true, default: true },
       unattended: true, hubSwitches: switches, ownedFlags: Object.freeze(["--dangerously-load-development-channels", "--dangerously-skip-permissions"]) },
@@ -91,7 +91,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
   {
     reviewerVariant: CODEX_REVIEWER_VARIANT,
     projection: { roleRank: 1, startRank: 1, helpRank: 1, plannerEligible: true },
-    api: 1, kind: "codex", displayName: "Codex", family: "codex", transport: "codex-appserver",
+    api: 1, kind: "codex", questionWaitMs: 45000, displayName: "Codex", family: "codex", transport: "codex-appserver",
     roles: Object.freeze(["implementer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
     start: { create: createCodex, daemonPort: "codex-appserver", forms: dualForms, defaultForm: "tui", launch: codexNativeLaunch, version: codexObservedVersion, ...CODEX_LAUNCH_POLICY, conductorStartable: true, upStart: { allowed: true, default: true },
       unattended: true, hubSwitches: switches, ownedFlags: Object.freeze(["--remote", "--remote-auth-token-env", "--yolo", "--dangerously-bypass-approvals-and-sandbox"]) },
@@ -104,7 +104,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
   {
     reviewerVariant: KIMI_REVIEWER_VARIANT,
     projection: { roleRank: 2, startRank: 2, helpRank: 2, plannerEligible: true },
-    api: 1, kind: "kimi", displayName: "Kimi Code", family: "kimi", transport: "acp",
+    api: 1, kind: "kimi", questionWaitMs: 45000, displayName: "Kimi Code", family: "kimi", transport: "acp",
     roles: implementerRoles, defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
     start: { create: createKimi, acpCommand: kimiAcpCommand, explicitHeadlessMode: true, planCommand: () => "ahub kimi", daemonPort: "acp", forms: dualForms, defaultForm: "tui", conductorStartable: true, upStart: { allowed: true }, hubSwitches: [], ownedFlags: [] },
     // ACP sessions carry headless identity; the existing CLI alone owns the TUI's project MCP entry.
@@ -119,7 +119,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
   },
   {
     projection: { roleRank: 4, startRank: 0, helpRank: 6, plannerEligible: false },
-    api: 1, kind: "pi", title: "hub", titlePersistence: "native", enabledSwitchStartOnly: true, displayName: "Pi", family: "pi", transport: "hub-native",
+    api: 1, kind: "pi", questionWaitMs: 300000, title: "hub", titlePersistence: "native", enabledSwitchStartOnly: true, displayName: "Pi", family: "pi", transport: "hub-native",
     roles: implementerRoles, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: true },
     start: { create: createPi, exclusiveStartRefusal: "Pi start is in progress; inspect status before retrying", refreshTools: true, explicitHeadlessMode: true, daemonPort: "pi-rpc", forms: dualForms, defaultForm: "tui", conductorStartable: true, upStart: { allowed: true }, autoStart: "pi.auto_start", conductorStartArgs: piConductorStartArgs, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env" }, instances: { mode: "headless" },
@@ -132,7 +132,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
   },
   {
     projection: { roleRank: 3, helpRank: 7, plannerEligible: false },
-    api: 1, kind: "local", title: "hub", displayName: "Local worker", family: "local", transport: "hub-native",
+    api: 1, kind: "local", questionWaitMs: 300000, title: "hub", displayName: "Local worker", family: "local", transport: "hub-native",
     roles: implementerRoles, defaultOnRoster: true, trust: { onPrem: true, hubSandboxed: true },
     start: { create: createLocal, reconfigureWhileAttached: true, refreshTools: true, daemonPort: "local-worker", forms: headlessForms, defaultForm: "headless", conductorStartable: true, upStart: { allowed: true }, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env" }, instances: { mode: "headless" },
@@ -145,7 +145,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
   },
   {
     projection: { roleRank: 6, startRank: 3, helpRank: 3, plannerEligible: true },
-    api: 1, kind: "jcode", displayName: "Jcode", family: "jcode", transport: "acp",
+    api: 1, kind: "jcode", questionWaitMs: 45000, displayName: "Jcode", family: "jcode", transport: "acp",
     roles: implementerRoles, optional: true, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: false },
     start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: dualForms, defaultForm: "tui", explicitHeadlessMode: true, conductorStartable: true, upStart: { allowed: true }, hubSwitches: [], ownedFlags: [] },
     // #685: an extra Jcode is a headless instance with its own native home, socket and state (instances.<id>.jcode_home).
