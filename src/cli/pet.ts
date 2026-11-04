@@ -18,7 +18,7 @@ export function parseNeedsSummary(raw: unknown): NeedsSummary | undefined {
   if (row.first !== undefined) {
     if (!row.first || typeof row.first !== "object" || Array.isArray(row.first)) return;
     const item = row.first as Record<string, unknown>;
-    if (typeof item.kind !== "string" || typeof item.level !== "string" || !["approval", "default", "storage", "recovery", "delivery", "review", "budget", "offline"].includes(item.kind) || !["act", "watch"].includes(item.level)) return;
+    if (typeof item.kind !== "string" || typeof item.level !== "string" || !["approval", "default", "question", "storage", "recovery", "delivery", "review", "budget", "offline"].includes(item.kind) || !["act", "watch"].includes(item.level)) return;
     if (item.peer !== undefined && !id(item.peer)) return;
     if (item.id !== undefined && !id(item.id) && !(count(item.id) && item.id > 0)) return;
     if (item.until !== undefined && !count(item.until) || item.since !== undefined && !count(item.since)) return;
@@ -30,7 +30,7 @@ export function parseNeedsSummary(raw: unknown): NeedsSummary | undefined {
   if (row.act > 0 && first?.level !== "act" || row.act === 0 && first?.level === "act") return;
   if (row.act === 0 && ["waiting", "blocked", "review"].includes(row.state) || row.act > 0 && ["working", "idle", "sleeping"].includes(row.state)) return;
   if (first?.level === "watch" && !["recovery", "budget", "offline"].includes(first.kind) || first?.level === "act" && ["budget", "offline"].includes(first.kind)) return;
-  if (row.state === "waiting" && !["approval", "default"].includes(first?.kind ?? "")) return;
+  if (row.state === "waiting" && !["approval", "default", "question"].includes(first?.kind ?? "")) return;
   if (row.state === "blocked" && !["storage", "recovery", "delivery"].includes(first?.kind ?? "")) return;
   if (row.state === "review" && first?.kind !== "review") return;
   return { act: row.act, watch: row.watch, state: row.state as NeedsSummary["state"], ...(first ? { first } : {}) };
@@ -57,7 +57,7 @@ export function petView(status: unknown, reader: PetRecoveryReader = recoveryRea
   const included = base && reported && typeof reported === "object" && (reported as Record<string, unknown>).operationId === operation && base.watch > 0 ? 1 : 0;
   const act = (base?.act ?? 0) + (active ? 0 : 1), watch = (base?.watch ?? 0) - included + (active ? 1 : 0);
   const first = base?.first;
-  const precedes = !active && (!first || first.level === "watch" || !["approval", "default", "storage"].includes(first.kind));
+  const precedes = !active && (!first || first.level === "watch" || !["approval", "default", "question", "storage"].includes(first.kind));
   const selected = precedes || first?.kind === "recovery" && first.id === operation ? item : first ?? item;
   const state = !active && base?.state !== "waiting" ? "blocked" : base?.state ?? "sleeping";
   return { summary: { act, watch, state, first: selected }, unavailable: !base, ...(runner === "unknown" ? { runnerUnknown: true } : {}) };

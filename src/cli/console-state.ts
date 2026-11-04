@@ -9,6 +9,7 @@ import { sanitize } from "../hub/envelope.ts";
 import { DOING_STUB } from "../hub/peer-doing.ts";
 import type { SettingRow, SettingValue } from "../hub/settings.ts";
 import { symbolFields, overlapFields } from "./console-symbols.ts";
+import { flowPrompt, startFlow, stepFlow, type QuestionFlow, type QuestionView } from "./console-question.ts";
 import { choicePrompt, reviewChoiceFor, reviewHint, reviewRefusal, verdictGuide, verdictInput, type ReviewChoice, type Verdict } from "./console-review.ts";
 import { configFormPrompt, reduceConfigForm, type ConfigEditBody, type ConfigForm } from "./console-config.ts";
 import { windowKind } from "../hub/window-kind.ts";
@@ -38,6 +39,8 @@ export interface ConsoleState {
   pendingRestart?: { key: string; reason: string }[];
   retainedConfig?: { key: string; reason: string }[];
   features?: readonly string[];
+  /** #1053 T4: the open questions the hub reported (the person's text, shown here only) and the answer being built; `A` starts it. */
+  questions?: QuestionView[]; questionFlow?: QuestionFlow; questionsSeen?: string[];
   /** Older embedding callers omit choices and retain the original STAI/off toggle. */
   petChoices?: readonly CharacterId[]; petCharacter?: CharacterId; petSize?: PetSize; petGlyphs?: "ascii" | "blocks";
   attentionFacts?: { kind: "review" | "offline" | "stall" | "offer"; id: number; peer?: string }[];
@@ -76,7 +79,7 @@ export interface ConsoleState {
 const roomsVisible = (s: Pick<ConsoleState, "rooms">) => s.rooms === null || Array.isArray(s.rooms) && s.rooms.length > 0;
 /** A detail view: text as the stream shows it, or labeled fields. */
 export type Detail = string | Record<string, unknown>;
-export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; option?: string } |
+export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; option?: string } | { type: "answer"; set: string; answers: { questionId: string; optionIds: string[]; other?: string }[] } |
   { type: "settings_preview"; token: number; key?: string; value?: SettingValue; undo: boolean } |
   { type: "config_preview"; token: number; edit: ConfigEditBody } | { type: "config_write"; edit: ConfigEditBody; reason: string; confirm?: string } |
   { type: "settings_write"; key?: string; value?: SettingValue; undo: boolean; reason: string; confirm?: string; undoDigest?: string } |
@@ -398,7 +401,7 @@ const KEYS: [string, string[]][] = [
   ["Everywhere", ["Tab stream/panels", ": command", "? keys", "Esc back", "q quit"]],
   ["Command", ["Enter run", "Esc cancel", "Up/Down history", "Ctrl-U clear"]],
   ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Home/< first, End/> last", "Enter view", "j/k scroll a view", "w web UI (outside Peers)"]],
-  ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
+  ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select", "A answer an agent's question"]],
   ["Peers", ["p pause", "r resume", "m permission mode", "w WIP limit", "l make planner (then y)", "t rename Pi/local session"]],
   ["Tasks", ["b backlog/open", "n add backlog", "a assign/reserve (then y)", "u unassign (then y)", "r approve or request changes (in review; a or c, then a note)", "p pull, e plan (backlog)", "R return to backlog", "c cancel (then y)"]],
   ["Queue", ["r resolve (reason, then y)", "queued=discard, needs_review=retry", "D discard the peer's whole queued backlog (reason, then y)"]],
@@ -532,6 +535,22 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   const done = () => ({ state: bound(s), effects });
   const answered = (id: string) => { s.approvals = s.approvals.filter(a => a.id !== id); if (s.approvalId === id) s.approvalId = undefined; };
   if (key === "\x03") { effects.push({ type: "exit" }); return done(); }
+  // #1053 T4: a question being answered takes every key until it is sent or left; the hub validates the answers against the stored row.
+  if (s.questionFlow) {
+    const row = s.questions?.find(item => item.set === s.questionFlow!.set);
+    if (!row) { s.questionFlow = undefined; notify(s, "that question is no longer open", now, "attention"); return done(); }
+    const step = stepFlow(s.questionFlow, row, key);
+    if (step.answers) { effects.push({ type: "answer", set: row.set, answers: step.answers }); s.questionFlow = undefined; }
+    else if (step.flow) s.questionFlow = step.flow;
+    else { s.questionFlow = undefined; if (step.notice) notify(s, step.notice, now, "attention"); }
+    return done();
+  }
+  if (key === "A" && !s.settingsEdit && !s.confirm && !s.editing && !s.input && !s.modeChoice && !s.reviewChoice && !s.optionChoice && !s.help && !s.configForm) {
+    const row = s.questions?.[0];
+    if (!row) { notify(s, "no open question; agents ask with hub_ask", now, "attention"); return done(); }
+    s.questionFlow = startFlow(row); s.detail = undefined; s.requestDetail = undefined;
+    return done();
+  }
   if (s.configForm) {
     const step = reduceConfigForm(s.configForm, key, s.configRevisions ?? {});
     s.configForm = step.form;
@@ -698,6 +717,9 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       s.approvalId = String(item.id);
       if (s.mode === "panels") { s.panel = 2; s.selection = s.approvals.findIndex(row => row.id === item.id); }
       navigated = true;
+    } else if (item.kind === "question") {
+      const row = s.questions?.find(question => question.set === item.id);
+      if (row) { s.questionFlow = startFlow(row); s.detail = undefined; s.requestDetail = undefined; navigated = true; }
     } else if (item.kind === "delivery" && s.mode === "panels") {
       const rows = s.queue.filter(row => row.state === "needs_review" || row.state === "queued");
       const selected = item.id === undefined ? -1 : rows.findIndex(row => row.id === item.id);
@@ -1060,7 +1082,8 @@ function panelContext(s: ConsoleState, row: any): string[] {
 }
 /** The footer's key hint: only keys that act in this mode, panel and state. */
 function hint(s: ConsoleState, columns: number): string {
-  const pending = selectedApproval(s) ? ["a allow", "d deny"] : [];
+  if (s.questionFlow) return "number picks  o other  Enter done  Esc cancel";
+  const pending = [...(selectedApproval(s) ? ["a allow", "d deny"] : []), ...(s.questions?.length ? ["A answer"] : [])];
   if (s.mode === "stream") return [...pending, ...(pending.length ? ["v view"] : []), ...(s.approvals.length > (pending.length ? 1 : 0) ? ["[ ] select"] : []), "Tab panels", ": command", "? keys", "q quit"].join("  ");
   if (s.help) return "? or Esc close  q quit";
   const approvals = s.panel === 2 ? pending : [];
@@ -1143,6 +1166,8 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (s.modeChoice) prompt = `permission ${s.modeChoice}: 1 ask  2 ask-when-needed  3 never-ask  Esc cancel`;
   if (s.reviewChoice) prompt = choicePrompt(s.reviewChoice);
   const choice = s.optionChoice ? s.approvals.find(a => a.id === s.optionChoice) : undefined;
+  const asking = s.questionFlow ? s.questions?.find(row => row.set === s.questionFlow!.set) : undefined;
+  if (s.questionFlow && asking) prompt = flowPrompt(s.questionFlow, asking, flat);
   if (choice) prompt = `allow request ${choice.id} (${choice.peer}) with: ${allowOptions(choice).map((o, i) => `${i + 1} ${quoted(o.name)}`).join("  ")}  Esc cancel`;
   const summary: Span[] = [];
   for (const [id, p] of Object.entries(s.peers)) {
@@ -1169,7 +1194,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (s.confirm?.type === "permission_default") prompt = `enable never-ask default for ${s.confirm.peer}? y/n Esc defer`;
   const footer = [fitLine(neverPeer ? [span(permissionBoundary(neverPeer, undefined, createProjectAdapterCatalog()), "attention")] : summary, columns),
     fitLine(defaultSource !== undefined ? [span(`source ${quoted(defaultSource.split(/[\\/]/).at(-1))}; stays ask until y`, "attention")] : s.editing && s.reviewGuide ? [span(s.reviewGuide, "info")] : approvals, columns),
-    fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
+    fitLine([span(prompt, s.confirm || s.optionChoice || asking ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
   if (s.mode === "stream") {
     const counts = s.taskCounts;

@@ -73,6 +73,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub tail", "live stream of messages, states and permission requests"],
     ["ahub permission [<peer> [ask|ask-when-needed|never-ask]] [--yes]", "human only: inspect or set a running peer mode; never-ask requires --yes; config never-ask waits for console y"],
     ["ahub permit <id> <option>", "answer a permission request shown by tail (\"deny\" cancels)"],
+    ["ahub answer [<set> <question>=<option>[,<option>]... [--other [<question>=]<text>]] [--json] [--color=auto|always|never]", "person only: without operands list the questions agents asked with hub_ask; with them answer one set (every question once, known options only, other text only where offered)"],
     ["ahub roster [--json] [--color=auto|always|never]", "every known peer, participation, start mode and retained work"],
     ["ahub roster add <peer> | remove <peer> [--yes] [--now]", "person or configured conductor: change live participation through settings; removal previews retained messages and task handoff; remove also deletes the roster key of an instance no longer declared"],
     ["ahub autonomy on [--all-projects] [--yes] | off [--all-projects] | status [--json]", "person only: apply the autonomy preset and machine default with one confirmation, optionally to every registered project; off removes fixed preset keys (manual edits included); status reports modes, floor enforcement and Claude homes; settings undo restores a live-hub project write"],
