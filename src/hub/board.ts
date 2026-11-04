@@ -364,6 +364,8 @@ export interface Task extends PlanningFields {
   deps?: number[];
   /** Who routing offers the task first once nothing is left to wait for (issue #207); null when nobody was named. */
   reserved?: PeerId | null;
+  /** #1176: only the person can run this leg. Present (true) only when set; no agent is ever offered it, and it counts toward no planner's WIP. */
+  needsPerson?: true;
   signals: string[];
   /** consecutive changes_requested verdicts */
   rejections: number;
@@ -503,6 +505,8 @@ export class Board {
       if (!have.has(col)) this.db.run(`ALTER TABLE tasks ADD COLUMN "${col}" INTEGER`);
     }
     if (!have.has("pinned")) this.db.run("ALTER TABLE tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    // #1176: additive, like `pinned`; an older hub ignores the column.
+    if (!have.has("needs_person")) this.db.run("ALTER TABLE tasks ADD COLUMN needs_person INTEGER NOT NULL DEFAULT 0");
     if (!have.has("draft")) this.db.run("ALTER TABLE tasks ADD COLUMN draft INTEGER NOT NULL DEFAULT 0");
     if (!have.has("planning_revision")) this.db.run("ALTER TABLE tasks ADD COLUMN planning_revision INTEGER NOT NULL DEFAULT 0");
     this.db.run(`CREATE TABLE IF NOT EXISTS releases (
@@ -1493,7 +1497,7 @@ export class Board {
   }
   plannerWip(peer: string, except?: number): number {
     const row = this.db.query(`SELECT COUNT(*) AS n FROM tasks WHERE state NOT IN ('approved', 'cancelled', 'backlog') AND (? IS NULL OR id != ?) AND
-      (owner = ? OR (owner IS NULL AND state = 'proposed' AND reserved = ? AND
+      (owner = ? OR (owner IS NULL AND state = 'proposed' AND reserved = ? AND needs_person = 0 AND
         json_extract((SELECT value FROM json_each(tasks.history) WHERE json_extract(value, '$.event') IN ('backlog pulled', 'backlog returned') ORDER BY CAST(key AS INTEGER) DESC LIMIT 1), '$.planning.pull') = 1))`).get(except ?? null, except ?? null, peer, peer) as { n: number };
     return row.n;
   }
@@ -1507,7 +1511,7 @@ export class Board {
     const rows = this.db.query(`SELECT peer, kind, COUNT(*) AS n FROM (
       SELECT owner AS peer, CASE WHEN state = 'in_review' THEN 'reviewWait' ELSE 'active' END AS kind FROM tasks WHERE state NOT IN ('approved', 'cancelled', 'backlog') AND owner IS NOT NULL
       UNION ALL
-      SELECT reserved AS peer, 'reserved' AS kind FROM tasks WHERE state = 'proposed' AND owner IS NULL AND reserved IS NOT NULL AND
+      SELECT reserved AS peer, 'reserved' AS kind FROM tasks WHERE state = 'proposed' AND owner IS NULL AND reserved IS NOT NULL AND needs_person = 0 AND
         json_extract((SELECT value FROM json_each(tasks.history) WHERE json_extract(value, '$.event') IN ('backlog pulled', 'backlog returned') ORDER BY CAST(key AS INTEGER) DESC LIMIT 1), '$.planning.pull') = 1
     ) GROUP BY peer, kind`).all() as { peer: string; kind: "active" | "reviewWait" | "reserved"; n: number }[];
     const result: Record<string, { active: number; reviewWait: number; reserved: number }> = {};
@@ -1593,6 +1597,11 @@ export class Board {
   }
 
   /** Tasks per state, without parsing a single row: `status.json` is rewritten on every bus event and the board only grows. */
+  /** #1176: ids of open cards only the person can run, for status and the board (ids only, never text). Backlog first, then the rest, by id. */
+  personRunIds(): number[] {
+    return (this.db.query("SELECT id FROM tasks WHERE needs_person = 1 AND state NOT IN ('approved', 'cancelled') ORDER BY id").all() as { id: number }[]).map(row => row.id);
+  }
+
   counts(): Record<string, number> {
     const rows = this.db.query("SELECT state, COUNT(*) AS n FROM tasks GROUP BY state").all() as { state: string; n: number }[];
     return Object.fromEntries(rows.map((r) => [r.state, r.n]));
@@ -1708,10 +1717,10 @@ export class Board {
     const next = { ...task, ...patch, sdlc: receipt ?? task.sdlc };
     if (next.plannedStart != null && next.due != null && next.plannedStart > next.due) throw new Error("planned start must not follow due");
     if (next.release != null && !this.release(next.release)) throw new Error("no such release");
-    const fields = Object.keys(patch) as (keyof PlanningFields)[], previous = Object.fromEntries(fields.map(key => [key, key === "sdlc" ? { repo: task.sdlc?.repo ?? null, issue: task.sdlc?.issue ?? null } : task[key] ?? (key === "pinned" ? false : key === "deps" ? [] : null)])) as PlanningFields;
+    const fields = Object.keys(patch) as (keyof PlanningFields)[], previous = Object.fromEntries(fields.map(key => [key, key === "sdlc" ? { repo: task.sdlc?.repo ?? null, issue: task.sdlc?.issue ?? null } : task[key] ?? (key === "pinned" || key === "needsPerson" ? false : key === "deps" ? [] : null)])) as PlanningFields;
     const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "planned", planning: { revision: revision + 1, fields, previous }, ...(note ? { note } : {}), ...(withheld && note ? { withheld: true as const } : {}) };
-    const result = this.taskWrite(() => this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, deps=?, reserved=?, planning_revision=planning_revision+1, history=?, updated=?, sdlc=? WHERE id=? AND planning_revision=?`)
-      .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, JSON.stringify(next.deps ?? []), next.reserved ?? null, JSON.stringify([...task.history, entry]), now, next.sdlc === undefined ? null : JSON.stringify(next.sdlc), id, revision));
+    const result = this.taskWrite(() => this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, needs_person=?, deps=?, reserved=?, planning_revision=planning_revision+1, history=?, updated=?, sdlc=? WHERE id=? AND planning_revision=?`)
+      .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, next.needsPerson ? 1 : 0, JSON.stringify(next.deps ?? []), next.reserved ?? null, JSON.stringify([...task.history, entry]), now, next.sdlc === undefined ? null : JSON.stringify(next.sdlc), id, revision));
     if (result.changes !== 1) throw new Error("planning revision changed");
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
   }
@@ -1942,6 +1951,8 @@ function parse(row: Record<string, unknown>): Task {
   if (out.planning_revision) out.planningRevision = out.planning_revision;
   delete out.planning_revision;
   if (out.pinned) out.pinned = true; else delete out.pinned;
+  if (out.needs_person) out.needsPerson = true;
+  delete out.needs_person;
   if (out.draft) out.draft = true; else delete out.draft;
   for (const key of ["rank", "priority", "release", "due"]) if (out[key] == null) delete out[key];
   out.planner = row.planner ?? null;

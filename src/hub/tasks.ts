@@ -2580,7 +2580,7 @@ export class Tasks {
   private topReservedReady(peer: PeerId, planner?: PeerId, pullable = false): Task | undefined {
     const now = this.d.now?.() ?? Date.now();
     return this.d.board.list().filter(card => (pullable ? card.state === "backlog" : ["backlog", "proposed"].includes(card.state)) && !card.owner && card.reserved === peer
-      && (planner === undefined || this.taskPlanner(card).includes(planner)) && !plannedStartPending(card, now) && !(pullable && this.isPii(card)) && !card.pinned && !card.draft && taskCanPlan(card) && !this.waitsFor(card).length && !this.excluded(card).includes(peer)
+      && (planner === undefined || this.taskPlanner(card).includes(planner)) && !plannedStartPending(card, now) && !(pullable && this.isPii(card)) && !card.pinned && !card.needsPerson && !card.draft && taskCanPlan(card) && !this.waitsFor(card).length && !this.excluded(card).includes(peer)
       && (card.release == null || ["planning", "active"].includes(this.d.board.release(card.release)?.state ?? ""))).sort(this.readyOrder)[0];
   }
 
@@ -2687,6 +2687,8 @@ export class Tasks {
       const task = this.d.board.get(input.id);
       if (task?.draft) throw new PreEffectToolRefusal(`task #${task.id} is an intake draft; the person approves it first`);
       if (!task || (task.planningRevision ?? 0) !== input.revision || task.state !== "backlog" || task.owner || !taskCanPlan(task) || task.pinned) throw new PreEffectToolRefusal("planner pull changed, pinned or already started");
+      // #1176: the one gate every agent pull passes (a planner's hub_backlog_pull and the opt-in auto pull alike): a person-run leg is never pulled into an agent's To Do.
+      if (task.needsPerson) throw new PreEffectToolRefusal(`task #${task.id} is a person-run leg: it waits on the person (live receipts, their accounts or approvals), so no agent is offered it; the person runs it or clears the mark with ahub backlog plan`);
       this.planningAuthority(planner, task);
       const release = task.release == null ? undefined : this.d.board.release(task.release);
       if (task.release != null && (!release || ["frozen", "shipped", "dropped"].includes(release.state))) throw new PreEffectToolRefusal("planner pull requires unfrozen release scope");
@@ -2915,6 +2917,8 @@ export class Tasks {
       }
       if (isClosedTaskState(task.state)) throw new PreEffectToolRefusal("closed work is final");
       if (by !== USER && (task.state !== "backlog" || !taskCanPlan(task) || task.pinned || Object.hasOwn(patch, "pinned"))) throw new PreEffectToolRefusal("planner changes only unpinned backlog work");
+      // #1176: whether a leg is the person's to run is the person's call, set or cleared: an agent that could clear the mark would put the card back in front of an agent.
+      if (by !== USER && (Object.hasOwn(patch, "needsPerson") || task.needsPerson)) throw new PreEffectToolRefusal("a person-run card is the person's to mark and plan: ask the person (ahub backlog plan <id> <revision> '{\"needsPerson\":true|false}' <reason>)");
       if (by !== USER && patch.rank !== undefined && task.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank"))) throw new PreEffectToolRefusal("a person's backlog order is retained");
       if (by !== USER && Object.hasOwn(patch, "reserved") && this.hasPersonReservation(task)) throw new PreEffectToolRefusal("a person's reservation is retained");
       if (Object.hasOwn(patch, "deps") || Object.hasOwn(patch, "reserved")) {
@@ -4676,6 +4680,7 @@ export class Tasks {
     const haveQueueOrigins = this.queuePressureKnown !== false && this.d.board.queuePressureStallPage(0, 1).afterTask > 0;
     for (const t of [...this.d.board.list("proposed")].sort(this.readyOrder)) {
       if (t.owner) { this.d.board.clearStall(t.id); continue; }
+      if (t.needsPerson) { this.d.board.clearStall(t.id); continue; } // #1176: waiting on the person is the intent, not a stall: no owner is wanted, so none is reported missing
       const cancelledDependency = t.deps?.find(id => this.d.board.get(id)?.state === "cancelled");
       if (cancelledDependency) { this.reportStall(t, { kind: "cancelled-dependency", dependency: cancelledDependency, code: "cancelled" }); continue; }
       const last = t.history.findLast(entry => !QUIET_EVENTS.has(entry.event))?.event, planned = this.plannerPullRecord(t)?.pull === true;
@@ -4706,6 +4711,7 @@ export class Tasks {
     try {
       const t = this.d.board.get(stale.id);
       if (!t || t.state !== "proposed" || t.owner || this.personUnassigned(t) || this.offered.has(t.id)) return;
+      if (t.needsPerson) return; // #1176: a person-run leg is never offered to an agent, whatever made it ready
       if (plannedStartPending(t, this.d.now?.() ?? Date.now())) return;
       const planned = this.plannerPullRecord(t)?.pull === true;
       const selected = planned ? this.plannerAssignment(t, true).owner : undefined;

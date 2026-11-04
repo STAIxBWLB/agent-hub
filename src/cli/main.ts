@@ -1420,12 +1420,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       return shown((data, columns, now) => renderBacklogResult("split", data, columns, now))(taskOp("hub_backlog_split", { id: Number(id), revision: Number(revision), parts, reason: reason.join(" ") }));
     }
     if (sub === "undo" && operands.length === 3) return shown((data, columns, now) => renderBacklogResult("undo", data, columns, now))(taskOp("hub_backlog_undo", { id: Number(id), revision: Number(revision) }));
-    if (!["plan", "pin"].includes(sub ?? "") || !value || !reason.length) fail("planning needs fields and a reason");
+    if (!["plan", "pin", "person"].includes(sub ?? "") || !value || !reason.length) fail("planning needs fields and a reason");
     let fields: unknown;
-    try { fields = sub === "pin" ? { pinned: value === "true" ? true : value === "false" ? false : undefined } : JSON.parse(value); }
+    try { fields = sub === "pin" ? { pinned: value === "true" ? true : value === "false" ? false : undefined } : sub === "person" ? { needsPerson: value === "true" ? true : value === "false" ? false : undefined } : JSON.parse(value); }
     catch { return fail("planning fields must be JSON"); }
-    if (sub === "pin" && value !== "true" && value !== "false") fail("pin must be true or false");
-    return shown((data, columns, now) => renderBacklogResult(sub as "plan" | "pin", data, columns, now))(taskOp("hub_backlog_plan", { id: Number(id), revision: Number(revision), fields, reason: reason.join(" ") }));
+    if ((sub === "pin" || sub === "person") && value !== "true" && value !== "false") fail(`${sub} must be true or false`);
+    return shown((data, columns, now) => renderBacklogResult(sub === "person" ? "plan" : sub as "plan" | "pin", data, columns, now))(taskOp("hub_backlog_plan", { id: Number(id), revision: Number(revision), fields, reason: reason.join(" ") }));
   },
 
   release: async () => {
