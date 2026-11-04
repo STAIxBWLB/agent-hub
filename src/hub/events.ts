@@ -58,6 +58,8 @@ export type HubEvent =
   | { type: "question"; set: string; peer: string; event: "asked" | "answered" | "pending" | "superseded" | "cancelled" | "expired" | "unavailable"; latencyMs?: number; surface?: "terminal" | "console" | "dashboard" | "acon"; reason?: "superseded" | "stopped" | "turn_aborted" | "session_changed" | "expired" | "unattended"; questions?: number; private?: boolean }
   /** Completed native turns that received supervision, not feed enqueues or inferred costs. */
   | { type: "supervision_turn"; peer: string; turn: string; tokens?: number; ms?: number }
+  /** #1054: a run a person started settled (or a restart cut it short). Ids, a closed outcome and a duration only: never the prompt or the reply. */
+  | { type: "completion"; id: string; peer: string; outcome: "done" | "failed" | "limit" | "interrupted"; ms: number }
   | { type: "hook_stats"; peer: string; n: number; startupMs: number; hubMs: number; maxStartupMs: number }
   | { type: "cohort"; id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: string[] }
   | ({ type: "tokens"; peer: string; n: number } & Partial<TaskAttribution>)

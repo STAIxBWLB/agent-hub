@@ -71,6 +71,7 @@ export const QWEN_DEFINITION: AdapterDefinition = {
     },
   },
   turnEnd: "adapter",
+  settle: { signal: "message-stop" },
   budget: { account: "qwen" },
   capabilities: { watch: true },
   cli: { command: "qwen", entry: { lifecycleAdmission: true, execute: runQwenEntry }, preview: previewQwen, usage: [["ahub qwen [--mode headless|tui] [--model <alias>] [--session-id <id>] [--print-command]", `start optional Qwen Code ACP (${describe("qwen")}; roster.qwen, default off); --mode tui runs Qwen's own TUI in this terminal, driven through its dual-output files (${describe("qwen-dual")}); a hub deny ends the turn without an answer and a stalled turn is stopped with Esc in the Qwen terminal`]], launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },

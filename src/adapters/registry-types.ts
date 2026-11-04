@@ -81,6 +81,10 @@ export interface CreateContext<Ports extends DaemonPorts = DaemonPorts> {
   daemon: Ports;
 }
 
+/** `native-stop`: Claude's transcript-verified Stop. `turn-completed`: Codex's `turn/completed` with no active turn. `agent-settled`: Pi's own settled event. `route-outcome`: the local worker's per-decision outcome. `prompt-response`: an ACP `session/prompt` response. `message-stop`: Qwen's TUI `message_stop`. */
+export type SettleSignal = "native-stop" | "turn-completed" | "agent-settled" | "route-outcome" | "prompt-response" | "message-stop";
+export const SETTLE_SIGNALS: readonly SettleSignal[] = Object.freeze(["native-stop", "turn-completed", "agent-settled", "route-outcome", "prompt-response", "message-stop"]);
+
 export interface StartRequest {
   instance: string;
   form?: StartForm;
@@ -210,6 +214,12 @@ export interface AdapterDefinition {
   titlePersistence?: "native";
   /** #1053: how long a `hub_ask` call waits for the person before it answers `pending` (milliseconds). MCP peers 45 s, hub-native peers 300 s; config `questions.wait_ms.<kind>` overrides it. Fixed builtins only. */
   questionWaitMs?: number;
+  /**
+   * #1054: the code-verified signal that ends a peer's logical run, declared per definition. ABSENT means the adapter creates no completion: nothing is guessed (owner
+   * decision 2026-11-04). Fixed builtins only (`assertNativeCapabilityScope`): a project or external definition cannot claim one. A definition with a pull-only form (Kimi's TUI)
+   * declares it for its headless form only, because the daemon starts no run for a peer that attached pull-only.
+   */
+  settle?: { signal: SettleSignal };
   /** External module data-only opt-in. The verified loader derives the internal instances policy from it (#754). */
   headlessInstances?: { form: "headless"; roles: readonly ("implementer" | "verifier" | "reviewer")[] };
   /** Declaration admission only; execution-root and runtime owner proof remain host responsibilities. */

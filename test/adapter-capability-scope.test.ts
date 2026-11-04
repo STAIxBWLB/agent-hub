@@ -3,7 +3,7 @@ import { ADAPTERS, assertDaemonEngine, assertNativeCapabilityScope, definitionOf
 
 function external(): AdapterDefinition {
   // A generic ACP fixture does not inherit the builtin-only catalog or native CLI projections.
-  const { projection: _projection, cli, ...base } = definitionOf("qwen")!;
+  const { projection: _projection, settle: _settle, cli, ...base } = definitionOf("qwen")!; // `settle` (#1054) is a fixed-builtin capability too
   const { entry: _entry, preview: _preview, usage: _usage, ...genericCli } = cli ?? {};
   const { createTui: _createTui, upStart: _upStart, ...start } = base.start; // the Qwen TUI driver (#286 Part 3) and which kinds `ahub up` may start (#608) are fixed-builtin capabilities too
   return { ...base, cli: genericCli, kind: "fixture", family: "fixture", start: { ...start }, session: { idField: base.session.idField, currentId: base.session.currentId } };
@@ -13,6 +13,7 @@ for (const [field, set] of [
   ["title", (definition: AdapterDefinition) => { definition.title = "hub"; }],
   ["titlePersistence", (definition: AdapterDefinition) => { definition.titlePersistence = "native"; }],
   ["questionWaitMs", (definition: AdapterDefinition) => { definition.questionWaitMs = 1000; }],
+  ["settle", (definition: AdapterDefinition) => { definition.settle = { signal: "prompt-response" }; }], // #1054: only a fixed builtin may say its signal ends a logical run
   ["start.acpCommand", (definition: AdapterDefinition) => { definition.start.acpCommand = () => ["fixture"]; }],
   ["attach.admission", (definition: AdapterDefinition) => { definition.attach = { admission: { reservedRefusal: "reserved", watchRefusal: "watch" } }; }],
   ["budget.resetSoftTokensOnResume", (definition: AdapterDefinition) => { definition.budget = { account: "fixture", resetSoftTokensOnResume: true }; }],
