@@ -104,7 +104,9 @@ test("real console drafts are silent, send is one private-observer capsule, and 
     expect(JSON.stringify(snapshot.events)).not.toContain("OWNER_ECHO_CANARY");
     f.owner.onDoing?.("todo", "REVIEW_PLAN_CALLBACK_CANARY");
     expect((await f.person.request({t:"status"})).status.peers.codex.doing.text).toBe(DOING_STUB);
-    expect((await f.peer.request({t:"task",op:"hub_status",args:{}})).text).not.toContain("REVIEW_PLAN_CALLBACK_CANARY");
+    const peerStatus = await f.peer.request({t:"status"});
+    expect(peerStatus.status.peers.codex.doing.text).toBe(DOING_STUB);
+    expect(JSON.stringify(peerStatus)).not.toContain("REVIEW_PLAN_CALLBACK_CANARY");
     f.owner.echo=false;
     const normalDelivered=new Promise<void>(resolve=>{f.owner.afterDelivery=resolve;});
     f.daemon.bus.publish(newEnvelope("user","normal next request",{to:["codex"],priority:"important"}));
