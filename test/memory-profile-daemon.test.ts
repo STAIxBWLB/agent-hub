@@ -120,7 +120,8 @@ test("machine sync screening resolves task paths only for task keys bound to thi
   let foreignAllowed: boolean | undefined, ownDeclined: boolean | undefined;
   const h = await hub(f, { sync_interval_min: 10 }, {
     memorySync: async (_store, options) => {
-      const screen = options.screen!;
+      if (!options?.screen) throw new Error("sync policy screen missing");
+      const screen = options.screen;
       const own = { project: f.project, task: `${f.project}#${taskId}@${created}`, title: null, text: "safe synthetic note", about: [], source: "person" };
       const foreignProject = "foreign.example/repo";
       const foreign = { ...own, project: foreignProject, task: `${foreignProject}#1@${created}` };

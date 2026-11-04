@@ -95,7 +95,8 @@ test("declined person inspection lists only ids and safe rules, and reports prof
 
 test("declined person inspection never presents an incomplete physical scan as an empty list", async () => {
   const f = fixture(), store = await selectGeneration(f.home, f.memoryDir);
-  store.prunePort = () => ({ snapshot: () => { throw new Error("physical scan failed"); } });
+  const prunePort = store.prunePort.bind(store);
+  store.prunePort = () => ({ ...prunePort(), snapshot: () => { throw new Error("physical scan failed"); } });
   const result = JSON.parse(await memoryCommand(["declined", "--json"], f.cwd, { store, person: true }));
   expect(result).toMatchObject({ rows: [], complete: false, reason: "physical memory rows could not be inspected" });
   expect(await memoryCommand(["declined"], f.cwd, { store, person: true })).toContain("inspection incomplete");
@@ -103,7 +104,7 @@ test("declined person inspection never presents an incomplete physical scan as a
 
 test("manual sync does not apply current-project task paths to a foreign project's task note", async () => {
   const f = fixture(), task = "foreign-project#1@1";
-  f.store.note({ op: "note", project: "foreign-project", scope: "project", tier: "long", kind: "finding", peer: "codex", source: "codex", task, text: "safe foreign project note", about: [] });
+  f.store.note({ op: "note", project: "foreign-project", scope: "project", tier: "long", kind: "finding", peer: "codex", source: "hub", task, text: "safe foreign project note", about: [] });
   const stopped = new AbortController(); stopped.abort();
   await expect(memoryCommand(["sync"], f.cwd, { store: f.store, person: true, sync: { signal: stopped.signal } }))
     .rejects.toThrow("stopped");

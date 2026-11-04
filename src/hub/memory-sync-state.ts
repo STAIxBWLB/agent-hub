@@ -63,7 +63,7 @@ export function memorySyncView(state: MemorySyncState, availability: "enabled" |
 }
 
 /** Map the upstream free-form reason into a closed, non-sensitive status cause. */
-export function classifyMemorySyncFailure(error: unknown): { cause: MemorySyncCause; declinedCount?: number } {
+export function classifyMemorySyncFailure(error: unknown): { cause: "declined"; declinedCount: number } | { cause: Exclude<MemorySyncCause, "declined">; declinedCount?: never } {
   const text = typeof error === "string" ? error : "";
   const declined = /^the configured privacy policy declines (\d+) long-term entr(y|ies) \([^()\r\n]*\); fix the entry or the policy, then sync again$/.exec(text);
   if (declined) {
