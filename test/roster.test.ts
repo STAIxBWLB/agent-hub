@@ -332,7 +332,7 @@ test("the same Claude channel client retries removal and reconnects by itself af
   const pushed: any[] = []; client.fallbackNotificationHandler = async notification => { pushed.push(notification); };
   const entry = join(import.meta.dir, "../src/adapters/claude-channel.ts"), wrapper = join(root, "roster-channel-fixture.ts");
   writeFileSync(wrapper, `${syntheticClaudeParentEvidenceSetup()} await import(${JSON.stringify(entry)});`);
-  const env = { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: hub.stateDir, AGENTHUB_PROJECT_DIR: root, AGENTHUB_PEER_ID: "claude", AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "peer" };
+  const env: Record<string, string> = { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: hub.stateDir, AGENTHUB_PROJECT_DIR: root, AGENTHUB_PEER_ID: "claude", AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "peer" };
   for (const name of ["AGENTHUB_LAUNCH_ID", "AGENTHUB_INSTANCE_ID", "AGENTHUB_DELIVERY_ONLY", "CODEX_THREAD_ID"]) delete env[name];
   const transport = new StdioClientTransport({ command: process.execPath, args: [wrapper], env, cwd: root, stderr: "pipe" });
   let diagnostics = ""; transport.stderr!.on("data", chunk => { diagnostics += String(chunk); });

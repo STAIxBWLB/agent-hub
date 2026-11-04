@@ -2293,7 +2293,7 @@ Server.prototype.notification = async function (message, options) {
 await import(${JSON.stringify(join(ROOT, "src/adapters/claude-channel.ts"))});
 `);
   const client = new Client({ name: "fake-claude", version: "0" }, { capabilities: {} });
-  const env = { ...process.env as Record<string,string>, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PEER_ID: "claude", AGENTHUB_PROJECT_DIR: ROOT, AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "" };
+  const env: Record<string, string> = { ...process.env as Record<string,string>, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PEER_ID: "claude", AGENTHUB_PROJECT_DIR: ROOT, AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "" };
   for (const name of ["AGENTHUB_LAUNCH_ID", "AGENTHUB_INSTANCE_ID", "AGENTHUB_DELIVERY_ONLY", "CODEX_THREAD_ID"]) delete env[name];
   const transport = new StdioClientTransport({ command: "bun", args: [wrapper], env, stderr: "pipe" });
   let diagnostics = "";
