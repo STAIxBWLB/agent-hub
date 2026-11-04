@@ -38,7 +38,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub sdlc release-assign <task> <revision> <release-id|none> <reason...>", "assign approved/in-flight work without changing execution"],
     ["ahub sdlc costs [owner/repo] [--json] [--color=auto|always|never]", "read bounded planner cost metrics for linked merged PRs"],
     ["ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>] [--json] [--color=auto|always|never]", "read SDLC metrics and control band tiers from board history (planner or person; read-only)"],
-    ["ahub backlog groom | return <task> <revision> <reason...> [--json] [--color=auto|always|never]", "read grooming findings or return accepted untouched work to backlog (planner/person)"],
+    ["ahub backlog groom | return <task> <revision> <reason...> [--reserved <peer> | --unreserve] [--json] [--color=auto|always|never]", "read grooming findings or return accepted untouched work to backlog (planner/person); --reserved names the peer the card is reserved for as it goes back, --unreserve clears the reservation (a person's reservation needs the person)"],
     ["ahub status [--json] [--full] [--color=auto|always|never]", "the hub, its peers, model backends and task counts, plus a specs line (errors and stale documents) when the project has design specs"],
     ["ahub status --all [--json] [--color=auto|always|never]", "show every registered project"],
     ["ahub logs [-f]", "person: last 100 hub.log lines (-f starts at 10); conductor: bounded public lines and follow while authority remains"],
