@@ -233,3 +233,55 @@ test("the real ahub process marks a leg person-run, lists it as waiting on the p
   expect(last.stdout).not.toContain("(person)"); expect(last.stdout).not.toContain("waiting on you");
   expect((await cli(["status"])).stdout).not.toContain("WAITING ON YOU");
 }, 60_000);
+
+/** A card an agent already holds: pulled to codex as an offer in To Do. */
+const offered = (r: Awaited<ReturnType<typeof rig>>) => {
+  const made = r.board.propose(USER, { title: "an offered leg", detail: "", class: "implement", backlog: true, planner: "claude" });
+  return r.board.update(made.id, USER, "backlog pulled", { state: "proposed", owner: "codex", reviewer: USER });
+};
+
+test("review 1: a planner's split of a person-run card is refused (before the screen and in the board), the person's split marks every child, an unmarked split is unchanged", async () => {
+  const r = await rig();
+  const person = r.card({ reserved: "codex", needsPerson: true }), plain = r.card({ reserved: "codex" });
+  const parts = [{ title: "leg A" }, { title: "leg B" }];
+  await expect(r.tasks.splitBacklog("claude", { id: person.id, revision: r.board.get(person.id)!.planningRevision ?? 0, parts, reason: "split it" })).rejects.toThrow(/children would be unmarked cards an agent could take/);   // the planner-side refusal, ahead of any screen call
+  expect(r.board.list().filter(task => task.title.startsWith("leg "))).toEqual([]);              // no child was written
+  expect(() => r.board.splitBacklog(person.id, "claude", r.board.get(person.id)!.planningRevision ?? 0, parts.map(part => ({ ...part, detail: "", class: "implement" as const, refs: {}, plan: {}, deps: [], afterParts: [] })), "direct")).toThrow(/person's to split/);
+  const own = await r.tasks.splitBacklog(USER, { id: person.id, revision: r.board.get(person.id)!.planningRevision ?? 0, parts, reason: "the person splits it" });
+  expect(own.children.map(child => r.board.get(child.id)!.needsPerson)).toEqual([true, true]);   // the children inherit the mark: person-only work stays person-only
+  const agent = await r.tasks.splitBacklog("claude", { id: plain.id, revision: r.board.get(plain.id)!.planningRevision ?? 0, parts, reason: "split a plain one" });
+  expect(agent.children.map(child => r.board.get(child.id)!.needsPerson)).toEqual([undefined, undefined]);
+});
+
+test("review 2: marking a card an agent already owns is refused with the way out, and marking an unowned proposed card is allowed", async () => {
+  const r = await rig();
+  const held = offered(r);
+  await expect(r.tasks.planBacklog(USER, { id: held.id, revision: held.planningRevision ?? 0, fields: { needsPerson: true }, reason: "mark" })).rejects.toThrow(/already proposed with codex: take it off the agent first/);
+  expect(r.board.get(held.id)!.needsPerson).toBeUndefined();
+  const free = r.board.propose(USER, { title: "unowned", detail: "", class: "implement", backlog: true, planner: "claude" });
+  await r.tasks.planBacklog(USER, { id: free.id, revision: 0, fields: { needsPerson: true }, reason: "mark" });
+  expect(r.board.get(free.id)!.needsPerson).toBe(true);                                          // a backlog card has no owner: unchanged
+});
+
+test("review 2: a card marked behind the guard (an offer made before) cannot be accepted, and its queued offer is dropped at delivery", async () => {
+  const r = await rig();
+  const held = offered(r);
+  r.board.plan(held.id, USER, { needsPerson: true }, held.planningRevision ?? 0);                 // the board write, as a stale or raced mark leaves it
+  expect(() => r.tasks.accept("codex", held.id)).toThrow(/person-run leg: no agent accepts it/);
+  await expect(r.tasks.acceptReviewed("codex", held.id)).rejects.toThrow(/person-run leg: no agent accepts it/);
+  expect(r.board.get(held.id)!.state).toBe("proposed");
+  const offer = { id: "offer-1", from: HUB, to: "codex", kind: "task", body: "offer", refs: { task: String(held.id), taskOffer: 1 }, ts: 1, hops: 0 } as unknown as Envelope;
+  expect(r.tasks.relevant("codex", offer)).toBe(false);
+  const plain = offered(r);
+  expect(r.tasks.relevant("codex", { ...offer, refs: { task: String(plain.id), taskOffer: 1 } } as unknown as Envelope)).toBe(true);   // an unmarked offer is still delivered
+});
+
+test("review 2: hub_task_assign names no agent owner of a person-run card, for the conductor and the person alike, and an unmarked card is assigned as before", async () => {
+  const r = await rig();
+  const made = r.board.propose(USER, { title: "a leg", detail: "", class: "implement", reserved: "codex" });
+  r.board.plan(made.id, USER, { needsPerson: true }, 0);
+  for (const by of ["claude", USER]) await expect(r.tasks.assignTo(made.id, "kimi", by, true)).rejects.toThrow(/person-run leg: no agent is named its owner/);
+  expect(r.board.get(made.id)!.owner ?? null).toBeNull();
+  r.board.plan(made.id, USER, { needsPerson: false }, 1);
+  expect((await r.tasks.assignTo(made.id, "kimi", USER, true)).owner).toBe("kimi");
+});

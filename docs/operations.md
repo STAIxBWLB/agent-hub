@@ -5634,6 +5634,9 @@ A leg only the person can run (live receipts, their accounts, machines or approv
 - `assign()` gives it no owner and no reviewer, whatever its reservation says, and `ahub route explain` prints the same `person-run` line (it is the same function);
 - the idle sweep never escalates it, and a marked card in To Do is not reported as stalled for lacking an owner;
 - it counts toward no planner's WIP;
+- a planner's `hub_backlog_split` of a marked card is refused (its children would be unmarked cards an agent could take); the person's own split marks every child person-run, so person-only work stays person-only until the person clears each mark;
+- an agent's `accept` and `acceptReviewed` of a marked card are refused, a queued offer for a card marked since is dropped at delivery, and `hub_task_assign` names no agent owner of a marked card (the conductor, a planner and the person alike: clear the mark first);
+- marking a card an agent already owns (an offer in its queue, or accepted work) is refused with the way out (the owner declines, or `ahub task cancel`), so a mark never leaves an agent on the card;
 - `ahub backlog list` shows it as `<peer> (person)` and ends with `waiting on you: #N...`, and `ahub status` carries a `WAITING ON YOU  #N` line (ids only).
 
 An unmarked reserved card behaves exactly as before. The column is additive (`needs_person`, default 0): an older hub ignores it, and a card marked by this hub is then offered by the older one as an ordinary reserved card.

@@ -1773,6 +1773,8 @@ export class Board {
       // #334: the hub's own intake split is only ever for a draft. An approval clears the mark without moving the planning revision, so the revision alone cannot tell the
       // person approved the card while the model answered; checked here, in the same transaction as the write, nothing can slip between this and the children.
       if (requireDraft && !parent.draft) throw new Error("split changed or invalid");
+      // #1176: an agent's split of a person-run card, checked in the transaction so nothing slips in between the planner's check and the write.
+      if (by !== USER && parent.needsPerson) throw new Error("a person-run card is the person's to split");
       const children: Task[] = [];
       for (const part of parts) {
         const inherited = part.afterParts?.length ? (part.deps ?? []).filter(dep => !parent.deps?.includes(dep)) : part.deps ?? [];

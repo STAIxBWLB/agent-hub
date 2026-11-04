@@ -86,6 +86,10 @@ import { plannerGrooming, nextSweep, plannedStartPending, taskSweepConfig, type 
 import { CiWatchers, pollCi, type CiOutcome, type CiWatch } from "./ci-watch.ts";
 import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSdlcPrHead, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
 
+/** #1176: refusals for an agent that reaches a person-run card by a path other than the pull gate. */
+const PERSON_RUN_SPLIT = "a person-run card is the person's to split: its children would be unmarked cards an agent could take (the person's own split marks every child person-run)";
+const PERSON_RUN_ACCEPT = (id: number) => `task #${id} is a person-run leg: no agent accepts it (it waits on the person: live receipts, their accounts or approvals). The person runs it or clears the mark with ahub backlog plan`;
+
 function requireLocalTaskPeer(peer: unknown): void {
   if (isRemotePeerId(peer)) throw new PreEffectToolRefusal("remote peers have no local task authority");
 }
@@ -2916,6 +2920,8 @@ export class Tasks {
         if (!this.isPii(task) && !this.publicMetadataText(JSON.stringify(patch.sdlc))) throw new PreEffectToolRefusal("planning identity metadata is private or sensitive");
       }
       if (isClosedTaskState(task.state)) throw new PreEffectToolRefusal("closed work is final");
+      // #1176: marking a card an agent already owns (an offer in its queue, or work it accepted) would leave the agent on it: the offer is not withdrawn by a mark. Refused, with the way out named.
+      if (patch.needsPerson === true && !task.needsPerson && (task.owner || !["backlog", "proposed"].includes(task.state))) throw new PreEffectToolRefusal(`task #${task.id} is already ${task.owner ? `${task.state} with ${task.owner}` : task.state}: take it off the agent first (its owner declines the offer, or ahub task cancel ${task.id} --reason <text>), then mark it person-run`);
       if (by !== USER && (task.state !== "backlog" || !taskCanPlan(task) || task.pinned || Object.hasOwn(patch, "pinned"))) throw new PreEffectToolRefusal("planner changes only unpinned backlog work");
       // #1176: whether a leg is the person's to run is the person's call, set or cleared: an agent that could clear the mark would put the card back in front of an agent.
       if (by !== USER && (Object.hasOwn(patch, "needsPerson") || task.needsPerson)) throw new PreEffectToolRefusal("a person-run card is the person's to mark and plan: ask the person (ahub backlog plan <id> <revision> '{\"needsPerson\":true|false}' <reason>)");
@@ -3042,6 +3048,8 @@ export class Tasks {
     const validate = () => {
       const parent = this.d.board.get(id);
       if (!parent || parent.state !== "backlog" || parent.owner || taskHasStarted(parent) || (parent.planningRevision ?? 0) !== revision || by !== USER && parent.pinned) throw new PreEffectToolRefusal("split changed, pinned or already started");
+      // #1176: children are unmarked cards an agent could take, so an agent's split would turn person-only work into agent work. Checked here, which runs before the screen and again after it, and in the board's transaction.
+      if (by !== USER && parent.needsPerson) throw new PreEffectToolRefusal(PERSON_RUN_SPLIT);
       const release = parent.release == null ? undefined : this.d.board.release(parent.release);
       if (parent.release != null && (!release || ["shipped", "dropped"].includes(release.state) || by !== USER && release.state === "frozen")) throw new PreEffectToolRefusal("split release scope is frozen or final");
       authority(parent);
@@ -3066,6 +3074,7 @@ export class Tasks {
         const draft = { title: part.title.replace(/\s+/g, " ").trim(), detail: part.detail as string | undefined ?? "", class: cls, refs, plan, deps, afterParts: afterParts as number[], ...(parent.role && cls === parent.class ? { role: parent.role } : {}), ...(parent.profile ? { profile: parent.profile, profileClass: given as string, ...(parent.profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
         const fields: PlanningFields = {};
         for (const key of ["priority", "release", "plannedStart", "due"] as const) if (parent[key] !== undefined) fields[key] = parent[key];
+        if (parent.needsPerson) fields.needsPerson = true; // #1176: only the person gets here (above), and each child of a person-run leg is a person-run leg until the person says otherwise
         return { ...draft, fields };
       });
       return { parent, drafts };
@@ -3739,6 +3748,8 @@ export class Tasks {
         catch (e) { this.releaseNotice(`task ${this.publicTitle(task)}: could not record the dropped study offer: ${e instanceof Error ? e.message : String(e)}`); }
         return false;
       }
+      // #1176: an offer queued before the card was marked is dropped at delivery, not handed to the agent.
+      if (env.kind === "task" && env.refs.taskOffer !== undefined && task?.needsPerson && task.owner === peer) return false;
       if (task?.state === "cancelled") return env.kind === "task" && typeof env.refs.taskCancelled === "number" && env.refs.taskCancelled === task.cancelled?.flowRevision;
       if (env.refs.taskRecipient === "planner") return !!task && this.taskPlanner(task).includes(peer);
       if (env.refs.planReview !== undefined) return !!task && !isClosedTaskState(task.state) && (task.planningRevision ?? 0) === env.refs.planReview
@@ -5888,6 +5899,7 @@ export class Tasks {
     const metadata = acceptRefs(refs);
     const task = this.need(id, false, true);
     this.mine(task, by, "owner", true);
+    if (by !== USER && task.needsPerson) throw new PreEffectToolRefusal(PERSON_RUN_ACCEPT(task.id)); // #1176: before any spec or plan-review work is spent on it
     const proposedPlan = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev");
     this.validatePlanSources(proposedPlan && Object.keys(proposedPlan).length ? proposedPlan : task.plan);
     this.acceptanceCapacity(task, 0, "check"); // #1080: an urgent task may still take unaccepted offers; `accept` does that, after its gates
@@ -6020,6 +6032,8 @@ export class Tasks {
     const task = this.need(id, false, true);
     this.mine(task, by, "owner", true);
     this.ready(task, true);
+    // #1176: a person-run leg is never an agent's to accept, whatever offer or owner it carries from before it was marked.
+    if (by !== USER && task.needsPerson) throw new PreEffectToolRefusal(PERSON_RUN_ACCEPT(task.id));
     if (task.state !== "proposed" && task.state !== "changes_requested" && task.state !== "in_progress") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}: cannot move to in_progress`);
     // Models send null or {} for an optional field they leave empty: neither replaces a plan.
     const given = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev");
@@ -7449,6 +7463,8 @@ export class Tasks {
     queueAssignment?.current();
     const task = this.need(id, role === "owner", preEffect);
     this.checkFlowRevision(task, expectedFlowRevision, preEffect);
+    // #1176: routing hands a person-run leg to nobody, so naming an owner would only be a silent no-op plus a stall report. Refused for the conductor and planner (they are agents) and for the person alike: the person clears the mark first.
+    if (role === "owner" && task.needsPerson) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is a person-run leg: no agent is named its owner. Clear the mark first (ahub backlog plan ${task.id} <revision> '{"needsPerson":false}' <reason>), then assign it`);
     if (!this.d.bus.isRostered(peer)) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} is off roster; add it to the roster before assigning work`);
     this.requireCapabilities(task, peer, role, preEffect);
     if (role === "reviewer") {
