@@ -30,6 +30,9 @@ paths:
   - src/hub/task-repository.ts
   - src/hub/no-writes.ts
   - src/hub/review-findings.ts
+  - src/hub/review-anchor.ts
+  - src/hub/review-comments.ts
+  - src/hub/review-material.ts
   - src/hub/workflow.ts
   - src/hub/deliverables.ts
   - src/hub/deliverable-files.ts
@@ -167,3 +170,17 @@ The board stores facts about worktrees and never a verdict. `worktree_override` 
 The PR state has two sources and no others. The board's own evidence says `merged` only through the guarded merge's record (`sdlc.merge`); a cancelled task or a task with no record says nothing about its PR and reads `unknown`. The person's explicit refresh (`worktrees_refresh_prs`, `src/hub/worktree-prs.ts`) reads the PR through `readSdlcPr`, bounded and one at a time, and keeps `open`, `merged` or `closed` with GitHub's own change time in the daemon's memory. `worktree-shelf.ts` holds no GitHub access, so a panel read, `ahub worktrees` and the inbox alert make no GitHub call.
 
 A worktree whose activity could not be read is live and never settled. The shelf reads git asynchronously under a total budget and answers `complete: false` when it is cut; the daemon's event loop is never held. The daemon deletes no worktree and no local branch: its git port allows three read argv shapes, and removal exists only in the person's own `ahub worktrees tidy --confirm`, which is console class and issues `git worktree remove` and `git branch -d`, never `--force` or `-D`. Operations: `docs/operations.md`, "The worktree shelf (#1057)".
+
+## Anchored review packages (#1056)
+
+`ReviewFinding.anchor` uses the published `@staix/agent-console` 0.1.0 contract. The exact shared review fixtures remain unchanged. Contract conformance and hub writes are separate: hub writes allow 1-4 selectors, 512 UTF-8 bytes for an exact quote, 64 each for prefix and suffix, 256 for a hunk header, 2048 for a comment body and 64 comments per task. Unknown fields and selectors refuse before effects. A finding path, when present, must equal its anchor path. Findings without anchors retain the existing head buckets and Important carry-over rule.
+
+All person comment writes go through `Tasks`. The console can put or delete a draft without a peer envelope. An explicit send binds the selected immutable anchors and bodies to one package, changes their lifecycle to sent, appends one count-only task history entry and attempts one review envelope. A failed or uncertain notification never retries automatically. Its receipt distinguishes queued from unconfirmed delivery; neither means the owner read it. Deleting a sent comment dismisses it without rewriting its anchor. An admitted owner completion may claim resolved comment IDs; that claim is not person verification or a review verdict.
+
+The actor is the console person, not a conductor or a peer. acon authorship comes only from the server-built `ActionMeta` argument. Client body fields cannot supply an author, timestamp or authority. The standalone dashboard is read-only; acon's shared `ui.review` kit owns selection and Send. Older acon hosts without the kit retain the read-only view.
+
+Placement is computed before reads and sends, never persisted over the stored anchor. Equal content hashes are anchored; a different hash with a uniquely matching exact quote is moved, with context breaking ties; unresolved changes are outdated. Missing, denied, private or over-budget material is unavailable. Projection identity mismatches are outdated before hash comparison. A display range from moved placement never becomes a new stored selector.
+
+Material comes only from guarded immutable Git snapshots in the task's declared refs, plan paths or sections, or complete same-head verified PR paths. Every operation shares eight distinct files, eight seconds including head/PR preparation and 12000 serialized presentation bytes. Both sides share the budget. Truncated material cannot establish placement. Raw hashes bind bytes; projected hashes bind only UTF-8 projected text. The projection name is `text-projection:<extension>` and its version is the existing configured converter fingerprint. This is an opaque configuration identity, not an upstream semantic version; a converter version protocol would be the upgrade path.
+
+PII comments remain board-local and public views expose counts only. Private paths retain only supplied lineRange or structural selectors; no coordinate is invented when unsafe selectors are removed. Public review packets carry a host-only opaque package marker so their intended owner receives the packet while logs, operational tails, incoming labels, capture and memory observers receive no quote or body. This marker does not turn an ordinary task into a PII turn. Recovery treats an absent comment section as empty and checks the optional section's counts and digest when present.
