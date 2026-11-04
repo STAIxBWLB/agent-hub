@@ -4544,9 +4544,12 @@ export class Tasks {
       const before = context();
       const link = parseEvidenceLink({ ...proposed, id: proposed.id ?? evidenceLinkId(proposed, by), recordedBy: by });
       const canonical = evidenceLinkCanonical(link);
-      let nameable = false;
-      try { nameable = this.publicMetadataText(canonical); } catch { /* unknown privacy is refused */ }
-      if (!nameable) throw new PreEffectToolRefusal("evidence metadata is private or sensitive; remove sensitive metadata before recording a public link");
+      const requirePublicMetadata = () => {
+        let nameable = false;
+        try { nameable = this.publicMetadataText(canonical) === true; } catch { /* unknown privacy is refused */ }
+        if (!nameable) throw new PreEffectToolRefusal("evidence metadata is private or sensitive; remove sensitive metadata before recording a public link");
+      };
+      requirePublicMetadata();
       const known = this.d.board.evidenceLink(this.d.project, link.id, link.revision);
       const replay = known && evidenceLinkCanonical(known) === canonical;
       if (known && !replay) throw new PreEffectToolRefusal("evidence revision already records different content; use a new id or the next revision");
@@ -4558,6 +4561,7 @@ export class Tasks {
       requestCheck();
       const current = context();
       if (current.key !== before.key) throw new PreEffectToolRefusal("evidence task, claim or source changed during admission; refresh ahub task show and source metadata before retrying");
+      requirePublicMetadata();
       const saved = this.d.board.recordEvidenceLink(this.d.project, link, { taskFlowRevision: current.task.history.length, taskCreated: current.task.created, owner: by });
       return { id: saved.id, revision: saved.revision, taskId: saved.taskId };
     });

@@ -9,6 +9,7 @@ import { BasePeer } from "../src/hub/peers.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { SourceRegistry, sha256Of } from "../src/hub/sources.ts";
+import { TaskRepositories } from "../src/hub/task-repository.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import type { EvidenceRecordInput } from "../src/hub/research-evidence.ts";
 
@@ -24,10 +25,11 @@ async function fixture() {
   for (const id of ["claude", "codex", "kimi", "local"]) { const peer = new Peer(id); bus.add(peer); await peer.start(); }
   const first = registry.add({ bytes: Buffer.from("source A α🙂 passage"), kind: "file", origin: "/private-origin-canary/a.txt", private: false, text: "source A α🙂 passage" });
   const second = registry.add({ bytes: Buffer.from("source B counterevidence"), kind: "file", origin: "/private-origin-canary/b.txt", private: false, text: "source B counterevidence" });
-  const control: { privateTurn: boolean; held: boolean; hash?: string; screen?: () => Promise<void>; screenLabel: "clear" | "pii" | "unknown" } = { privateTurn: false, held: false, screenLabel: "clear" };
+  const control: { privateTurn: boolean; held: boolean; hash?: string; screen?: () => Promise<void>; screenLabel: "clear" | "pii" | "unknown"; routingUnavailable?: boolean } = { privateTurn: false, held: false, screenLabel: "clear" };
+  const patterns: string[] = [], piiPaths: string[] = [];
   const roles = { claude: ["planner", "reviewer"], codex: ["implementer"], kimi: ["implementer"], local: ["implementer"] };
   const build = () => new Tasks({ cwd, board, bus, project: "evidence-fixture", profile: "research", roles, notify: line => notices.push(line),
-    routing: () => { const routing = loadRouting(cwd); return control.screen ? { ...routing, signals: { ...routing.signals, pii_screen: "local" as const } } : routing; },
+    routing: () => { if (control.routingUnavailable) throw new Error("POLICY_UNAVAILABLE_CANARY"); const routing = loadRouting(cwd); return { ...routing, signals: { ...routing.signals, pii_patterns: [...routing.signals.pii_patterns, ...patterns], ...(control.screen ? { pii_screen: "local" as const } : {}) } }; }, piiPaths,
     privateTurn: () => control.privateTurn, sweepHeld: () => control.held,
     piiScreen: async () => { await control.screen?.(); return control.screenLabel === "unknown" ? { label: "unknown" as const, miss: "failed" as const, ms: 0 } : { label: control.screenLabel, ms: 0 }; },
     intake: { sourceKnown: id => !!registry.get(id), split: async () => undefined, partsSchema: () => ({}) },
@@ -40,7 +42,7 @@ async function fixture() {
       rawSha256: registry.get(source)!.sha256, projectionSha256: sha256Of(Buffer.from("declared projection")), projectionVersion: "declared-v1",
       locator: { start: 0, end: 3 }, relation: "supports", revision: 1 };
   };
-  return { cwd, file, registry, control, task, first, second, input, notices, get board() { return board; }, get tasks() { return tasks; },
+  return { cwd, file, registry, control, patterns, piiPaths, task, first, second, input, notices, get board() { return board; }, get tasks() { return tasks; },
     restart() { board.close(); board = new Board(file); tasks = build(); } };
 }
 const refused = async (call: Promise<unknown>) => { try { await call; throw new Error("expected a pre-effect refusal"); } catch (error) { expect(error).toBeInstanceOf(PreEffectToolRefusal); return error; } };
@@ -115,7 +117,11 @@ for (const failure of ["foreign owner", "remote actor", "missing task", "person 
       input = f.input(f.board.update(task.id, "codex", "accepted", { state: "in_progress", owner: "codex" }));
     }
     if (failure === "outside project") f.board.update(f.task.id, "codex", "repository changed", { refs: { repo: "example/foreign" } });
-    if (failure === "inactive") f.board.update(f.task.id, "user", "changes_requested", { state: "changes_requested" });
+    if (failure === "inactive") {
+      f.board.update(f.task.id, "codex", "done", { state: "in_review" });
+      f.board.update(f.task.id, "user", "changes_requested", { state: "changes_requested" });
+      expect(f.board.get(f.task.id)?.state).toBe("changes_requested");
+    }
     if (failure === "unknown source") input = { ...f.input(), sourceId: "src:0000000000000000" };
     if (failure === "raw hash") input = { ...f.input(), rawSha256: "f".repeat(64) };
     if (failure === "stale claim") input = { ...f.input(), claimRevision: "f".repeat(16) };
@@ -190,12 +196,15 @@ test("#931 T1 missing and foreign evidence tasks have actionable errors without 
   const f = await fixture(), input = f.input();
   const missing = await refused(f.tasks.evidenceRecord("codex", { ...input, taskId: 999999, claimId: `claim:999999:${f.task.created}:1` }));
   expect((missing as Error).message).toBe("evidence task is unavailable or outside this project; refresh ahub task show and select an active research task in this project");
-  f.board.update(f.task.id, "codex", "repository changed", { refs: { repo: "PRIVATE_OWNER/PRIVATE_FOREIGN_REFERENCE" } });
+  f.board.update(f.task.id, "codex", "repository changed", { refs: { repo: "PRIVATE-OWNER/PRIVATE-FOREIGN-REFERENCE" } });
   const generation = f.board.statusRevision(), before = f.board.get(f.task.id);
+  const repositories = new TaskRepositories(f.cwd);
+  expect(repositories.scope(before!.refs).key).not.toBe(repositories.scope({}).key);
+  expect(before).toMatchObject({ owner: "codex", profile: "research", state: "in_progress" });
   const foreign = await refused(f.tasks.evidenceRecord("codex", input));
   expect((foreign as Error).message).toBe((missing as Error).message);
-  expect(String(foreign)).not.toContain("PRIVATE_OWNER");
-  expect(String(foreign)).not.toContain("PRIVATE_FOREIGN_REFERENCE");
+  expect(String(foreign)).not.toContain("PRIVATE-OWNER");
+  expect(String(foreign)).not.toContain("PRIVATE-FOREIGN-REFERENCE");
   expect(f.board.get(f.task.id)).toEqual(before);
   expect(f.board.statusRevision()).toBe(generation);
   expect(f.board.hasResearchEvidenceState()).toBe(false);
@@ -225,3 +234,23 @@ test("#931 T1 corrupt stored JSON, schema and hashes never echo stored private b
     expect(db.query("SELECT body FROM research_evidence_links WHERE project=? AND id=?").get("evidence-fixture", receipt.id)).toEqual({ body });
   }
 });
+
+for (const policy of ["PII patterns", "private paths", "unavailable policy (throws)"] as const) {
+  test(`#931 T1 metadata policy is revalidated after screening: ${policy}`, async () => {
+    const f = await fixture(), input = { ...f.input(), projectionVersion: "public/evidence.md" };
+    expect(f.tasks.publicMetadataText(JSON.stringify(input))).toBe(true);
+    const before = f.board.get(f.task.id), generation = f.board.statusRevision();
+    f.control.screen = async () => {
+      if (policy === "PII patterns") f.patterns.push("public/evidence.md");
+      if (policy === "private paths") f.piiPaths.push("public/evidence.md");
+      if (policy === "unavailable policy (throws)") f.control.routingUnavailable = true;
+    };
+    const error = await refused(f.tasks.evidenceRecord("codex", input));
+    expect((error as Error).message).toBe("evidence metadata is private or sensitive; remove sensitive metadata before recording a public link");
+    expect(String(error)).not.toContain("POLICY_UNAVAILABLE_CANARY");
+    expect(f.board.get(f.task.id)).toEqual(before);
+    expect(f.board.statusRevision()).toBe(generation);
+    expect(f.board.hasResearchEvidenceState()).toBe(false);
+    expect(f.tasks.studiesPending()).toBe(0);
+  });
+}

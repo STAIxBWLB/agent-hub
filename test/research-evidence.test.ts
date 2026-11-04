@@ -30,7 +30,7 @@ test("evidence proposals default only the first revision and stored links requir
   }
 });
 
-test("support and counterevidence preserve independent provenance without adding judgment or narrative fields", () => {
+test("support and counterevidence preserve distinct source references without adding judgment or narrative fields", () => {
   const support = stored();
   const contrary = parseEvidenceLink({ ...support, id: "ev:" + "c".repeat(32), sourceId: "src:fedcba9876543210", relation: "contradicts", locator: { start: 9, end: 40 } });
   expect(support.claimId).toBe(contrary.claimId);
