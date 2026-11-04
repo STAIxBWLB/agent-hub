@@ -241,6 +241,7 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
   const restricted: [string, boolean][] = [
     ["title", definition.title !== undefined],
     ["titlePersistence", definition.titlePersistence !== undefined],
+    ["questionWaitMs", definition.questionWaitMs !== undefined],
     ["start.acpCommand", declared(definition.start, "acpCommand")],
     ["attach.admission", declared(definition.attach, "admission")],
     ["budget.resetSoftTokensOnResume", declared(definition.budget, "resetSoftTokensOnResume")],

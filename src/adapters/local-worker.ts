@@ -44,7 +44,7 @@ export interface LocalOptions {
   tools: { docRead?: DocReadPort; webFetch?: WebFetchPort; deny: string[]; permit: ToolContext["permit"]; shellExecutionCheck?: ToolContext["shellExecutionCheck"]; bashNetwork?: SandboxNetwork; readAllow?: string[]; readOnly?: string[] };
   capture?: Capture;
   /** Runs a hub task tool (hub_task_*, hub_review, hub_remember) as this peer. Absent = the tools are not offered. */
-  taskTool?: (name: string, args: Record<string, unknown>, turn: { pii: boolean }) => Promise<string>;
+  taskTool?: (name: string, args: Record<string, unknown>, turn: { pii: boolean; signal?: AbortSignal }) => Promise<string>;
   /** Successful provider responses only; usage may be absent when the gateway omits it. Never includes prompt data. */
   onUsage?: (record: { id: string; at: string; usage?: ChatResult["usage"]; requestedModel: string; servedModel?: string; provider?: string; task?: number }) => void;
   /** Atomic task/run admission immediately before every model request or tool execution. */
@@ -301,7 +301,7 @@ export class LocalPeer extends BasePeer {
             await this.requireBudget(envs, "tool_calls");
             if (turnSignal.aborted) throw new ExecutionBudgetStop(this.budgetStopReason || "turn cancelled before tool execution");
           } catch (error) { clearInterval(alive); throw error; }
-          const running = (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii }).catch((e: Error) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
+          const running = (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e: Error) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
           const output = await running.finally(() => clearInterval(alive));
           if (turn !== this.turn) return "";
           this.touch();
@@ -310,7 +310,7 @@ export class LocalPeer extends BasePeer {
           const result: ChatMessage = { role: "tool", tool_call_id: call.id, content: output, is_error: toolResultFailed(name, output) };
           msgs.push(result); results.push(result);
           if (this.approvalStopReason) { this.abort?.abort(); throw new ApprovalWaitStop(this.approvalStopReason); }
-          if (!remoteTurn && !reviewTurn && name !== "hub_set_title" && !reviewCaptureExcluded(name, call.function.arguments)) this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
+          if (!remoteTurn && !reviewTurn && name !== "hub_set_title" && name !== "hub_ask" && !reviewCaptureExcluded(name, call.function.arguments)) this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
           // Hub tool arguments/results are not capture evidence; Tasks owns its screened memory writes.
           // doc_read text is converted document content (a converter can surface hidden text), never memory evidence: not captured, whatever the turn.
           // web_fetch text is a third party's page and its URL is the model's own request: neither is memory evidence either (#515b).

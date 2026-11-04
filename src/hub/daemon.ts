@@ -97,6 +97,8 @@ import { ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEO
 import { BUS_DIGEST_MAX_SETTING, BUS_MAX_ATTEMPTS_SETTING, BUS_NOTES_KEPT_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING, busOperationalReaders, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING } from "./operational-settings.ts";
 import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
+import { QuestionStore, QUESTION_SURFACES } from "./questions.ts";
+import { QuestionDesk } from "./question-desk.ts";
 import type { ScannedFile } from "./schedules.ts";
 import { corpusConfig } from "./corpus-config.ts";
 import { ALL_MACHINE_LOCAL, configRefusal, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
@@ -300,6 +302,8 @@ export interface HubConfig {
   snapshots: { enabled: boolean; keep: number };
   /** #1057: the worktree shelf. `quiet_days` shelves a worktree idle that long (0 = never); `alert_over` is the settled count that raises one inbox alert (0 = never). */
   worktrees: { quiet_days: number; alert_over: number };
+  /** #1053: `ttl_s` expires an unanswered question (default 86400); `wait_ms` overrides an adapter definition's `questionWaitMs` per kind. */
+  questions: { ttl_s: number; wait_ms: Record<string, number> };
   /** #247: opt-in research records of each approved task in ~/.agenthub/research (ids, counts and tokens only). */
   research: { enabled: boolean; runners?: Record<string, RegisteredRunnerV1> };
   /** #251: a project kept for benchmarks: `ahub bench run` resets its work tree between attempts. */
@@ -373,6 +377,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
   snapshots: { enabled: false, keep: 20 },
   worktrees: { quiet_days: 7, alert_over: 10 },
+  questions: { ttl_s: 86_400, wait_ms: {} },
   research: { enabled: false },
   bench: { enabled: false },
   peers: {},
@@ -395,7 +400,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "specs", "checks", "snapshots", "worktrees", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet"];
+const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "specs", "checks", "snapshots", "worktrees", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet", "questions"];
 
 /** Older targets parse raw keys before placement/trust checks, so even an empty or refused declaration needs the floor. */
 function rawResearchRunnersPresent(cwd: string): boolean {
@@ -477,6 +482,14 @@ function retiredRoutingSettings(cwd: string): readonly string[] {
 
 /** #1057: a whole non-negative number of days or alert count; anything else (a negative, a fraction, a string) is the default, so a bad value never changes the shelf. The reload schema refuses it by name. */
 const wholeDays = (value: unknown, fallback: number): number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 100_000 ? value : fallback;
+/** #1053: `questions.ttl_s` (60 s to 30 days) and a per-kind `wait_ms` (1 s to 10 min); anything else keeps the default, so a bad value never changes what the person is asked. */
+const questionsConfig = (value: unknown): HubConfig["questions"] => {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const ttl = typeof raw.ttl_s === "number" && Number.isSafeInteger(raw.ttl_s) && raw.ttl_s >= 60 && raw.ttl_s <= 2_592_000 ? raw.ttl_s : DEFAULT_CONFIG.questions.ttl_s;
+  const wait: Record<string, number> = {};
+  if (raw.wait_ms && typeof raw.wait_ms === "object" && !Array.isArray(raw.wait_ms)) for (const [kind, ms] of Object.entries(raw.wait_ms as Record<string, unknown>)) if (/^[a-z][a-z0-9-]{0,31}$/.test(kind) && typeof ms === "number" && Number.isSafeInteger(ms) && ms >= 1000 && ms <= 600_000) wait[kind] = ms;
+  return { ttl_s: ttl, wait_ms: wait };
+};
 export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routingRetired: readonly string[] = retiredRoutingSettings(cwd), externalDefinitions?: readonly import("../adapters/registry-types.ts").AdapterDefinition[]): HubConfig {
   const captured = layers ?? readInstanceConfigLayers(cwd);
   const instanceConfig = readInstanceConfig(cwd, captured, externalDefinitions);
@@ -629,6 +642,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
       ...(file.checks?.remote !== undefined || file.checks?.runner === "remote" ? { remote: remoteRunnerConfig(file.checks?.remote) } : {}) },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
     worktrees: { quiet_days: wholeDays(file.worktrees?.quiet_days, DEFAULT_CONFIG.worktrees.quiet_days), alert_over: wholeDays(file.worktrees?.alert_over, DEFAULT_CONFIG.worktrees.alert_over) },
+    questions: questionsConfig(file.questions),
     research: { enabled: file.research?.enabled === true, ...(file.research?.runners !== undefined ? { runners: parseResearchRunners(file.research.runners) } : {}) }, // opt-in: anything but true is off
     bench: { enabled: file.bench?.enabled === true }, // opt-in: a run resets this project's work tree
     peers: { ...instanceModes, ...peerStartConfig(file.peers, instances, adapterCatalog) },
@@ -725,6 +739,8 @@ export interface DaemonOptions {
   agentDriftEveryMs?: number;
   /** Test seam: the period of the invocation deadline sweep (#445 C2), default 5 s. */
   invocationSweepMs?: number;
+  /** #1053: how often the question sweep runs (expiry, session change, owed envelopes); tests shorten it. */
+  questionSweepMs?: number;
   /** Test seam: an extra hold on the SDLC band evaluation, like a storage error. */
   bandsHeld?: () => boolean;
   /** Test seam: the schedules clock and the period of the due check (default Date.now and one minute). */
@@ -2445,7 +2461,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const observeProgress = (peer: PeerId, observation: ToolObservation | undefined, taskId?: string): void => {
     if (!observation) return;
     if (bus.lastDeliveredTo(peer).some(isReviewObserverExcluded)) { progress.clearPeer(peer); return; }
-    if (observation.name === "hub_set_title") return;
+    if (observation.name === "hub_set_title" || observation.name === "hub_ask") return; // #1053: a question and its answer are never progress evidence (they may reach an escalation model)
     try {
       const candidates = board.list().filter(task => task.owner === peer && ["in_progress", "changes_requested"].includes(task.state));
       const task = taskId ? candidates.find(task => task.id === Number(taskId)) : candidates.length === 1 ? candidates[0] : undefined;
@@ -3854,6 +3870,14 @@ export async function startDaemon(opts: DaemonOptions) {
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
     const reviewTurn = bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
     if (reviewTurn || op === "hub_review" && reviewCaptureExcluded(op, JSON.stringify(a))) progress.clearPeer(by);
+    if (op === "hub_ask") {
+      // #1053: a structured question for the person. Refused before any row for a read-only instance, a PII turn's own words are marked private by the desk's `isPrivate`.
+      if (by === USER) throw new PreEffectToolRefusal("hub_ask is for the agents of this project; the person answers with the console (ahub status shows open questions)");
+      if (recoveryActive() || stopping) throw new PreEffectToolRefusal("recovery or shutdown is holding questions; ask again once the hub is back");
+      const signal = invocationRequestSignal.getStore()?.signal;
+      const result = await questionDesk.ask(by, a, { ...(signal ? { signal } : {}), piiTurn });
+      return JSON.stringify(result);
+    }
     if (op === "hub_set_title") {
       if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "title")) return JSON.stringify({ ok: false, reason: "invalid", error: "hub_set_title accepts only title; provide a public name of 1-80 normalized characters" });
       return JSON.stringify(await setSessionTitle(by, a.title, true, piiTurn));
@@ -4592,6 +4616,26 @@ export async function startDaemon(opts: DaemonOptions) {
   const unattendedPeers = new Set<string>();
   const startingUnattended = new Map<string, boolean>();
   const nativeUnattended = (peer: string): boolean => startingUnattended.get(peer) ?? unattendedPeers.has(peer);
+  // #1053: questions a peer asks the person. The store is the one record; the desk owns the waiting calls, supersede, cancel, expiry and the late-answer envelope.
+  // Question text lives in hub.db and the envelope to the asking peer only: never a log line, an event, a notice or memory capture.
+  const questionStore = new QuestionStore(join(opts.stateDir, "hub.db"));
+  startupCleanup.push(() => questionStore.close());
+  const questionDesk = new QuestionDesk({
+    store: questionStore, now: () => Date.now(),
+    waitMs: peer => config.questions.wait_ms[definitionOf(peer)?.kind ?? peer] ?? definitionOf(peer)?.questionWaitMs ?? 45_000,
+    ttlMs: () => config.questions.ttl_s * 1000,
+    // A peer that reports no native session (or is offline) is "": unknown never cancels a question. Claude's id comes from its facts hook, the others from `nativeSession`; never `sessionGeneration`, which a reconnect changes.
+    session: peer => { const owner = bus.peers.get(peer); return owner && owner.state !== "offline" ? String(definitionOf(peer)?.transport === "claude-channel" ? claudeSession(peer).sessionId ?? "" : owner.nativeSession ?? "") : ""; },
+    unattended: peer => opts.unattended === true || nativeUnattended(peer) || (definitionOf(peer)?.transport === "claude-channel" && claudeLaunchProof.permissionLaunch(peer)?.unattended === true),
+    isPrivate: (peer, task, piiTurn) => piiTurn === true || contextPii(peer) || (task !== undefined && (() => { const row = board.get(task); return !row || tasks.isPii(row); })()),
+    held: () => stopping || recoveryActive() || bus.isRecoveryHeld,
+    publish: env => { bus.publish(env); },
+    event: e => { event(e); },
+    peerKnown: peer => bus.peers.has(peer) || (bus.knownPeers().includes(peer) && membershipAllowed(peer)),
+  });
+  // #1053: expiry (`questions.ttl_s`), a changed native session, an envelope a refused publish still owes, and old settled rows. Pushed here, after the desk exists, like the other late timers.
+  const questionTimer = setInterval(() => { try { if (!stopping && !recoveryActive()) questionDesk.sweep(); } catch { log("question sweep failed; the rows keep their state"); } }, opts.questionSweepMs ?? 5_000);
+  questionTimer.unref?.(); intervals.push(questionTimer);
   const permissions = new Map<string, { push: string; peer: string; tool?: string; createdAt: number; expiresAt: number; done: (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason?: "expired" | "cancelled") => boolean }>();
   let stopping = false;
   /** Read the default branch for the floor. A newer policy or a stop makes an older read's answer void, and a failed read leaves the branch unknown (every push asks). */
@@ -5362,6 +5406,9 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     // #445 C2: an invocation's request and result, and a callee's answer to one, are handled here and end here: no log line carries a body, no citation reaches memory.
     if (e.t === "envelope" && handleInvocationEnvelope(e.env)) return;
+    // #1053: a person-originated delivery supersedes that peer's open questions (it is delivered as usual). Keyed on the sender USER and the kind, never on the body:
+    // the hub's own `answer` envelope is from the person too and must not supersede the question it answers.
+    if (e.t === "envelope" && e.env.from === USER && e.env.kind !== "answer" && !e.dropped) { try { questionDesk.supersede(e.env.to ?? questionDesk.openPeers()); } catch { log("question supersede failed; the rows keep their state"); } }
     if (e.t === "envelope" && e.env.from !== HUB && e.env.from !== USER && bus.peers.has(e.env.from) && !e.env.private) citeMemory(e.env.from, e.env.body, `message:${e.env.id}`, [e.env]);
     e = redact(e);
     uiEvents.push({ seq: ++uiSequence, event: e });
@@ -5550,7 +5597,8 @@ export async function startDaemon(opts: DaemonOptions) {
         }
       }
     } else {
-      log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} ${e.env.priority} hop=${e.env.hop}${e.dropped ? ` NOT DELIVERED(${e.dropped})` : ""}: ${e.env.body.slice(0, 200)}`);
+      // #1053: an `answer` envelope carries the person's answer text and a question-expiry notice names its set: neither body ever reaches hub.log.
+      log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} ${e.env.priority} hop=${e.env.hop}${e.dropped ? ` NOT DELIVERED(${e.dropped})` : ""}: ${e.env.kind === "answer" || e.env.refs?.question ? `[question ${e.env.refs?.question ?? "answer"}: body not logged]` : e.env.body.slice(0, 200)}`);
       const env = e.env;
       const origin = takeOrigin(env.id) ?? adapterOrigin(env);
       event({ type: "envelope", id: env.id, from: env.from, ...(origin ? { origin } : {}), ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, ...(env.kind ? { kind: env.kind } : {}), ...(env.refs?.task ? { task: env.refs.task } : {}), ...(env.private ? {} : { bytes: Buffer.byteLength(env.body) }), ...(env.private ? { private: true } : {}), ...(e.dropped ? { dropped: e.dropped } : {}) });
@@ -5876,6 +5924,7 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         operational?.current();
         for (const pending of permissions.values()) if (pending.peer === peer) pending.done(undefined);
+        questionDesk.cancelPeer(peer, "stopped"); // #1053: a stop cancels the peer's open questions; their waiting calls are told
         await owner.stop(reason);
         writeStatus();
         const state = bus.stateOf(peer);
@@ -6412,7 +6461,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const result = await piReceipts!.execute(sessionId ?? "", callId, name, humanBash ? { origin: "verified-user-bash", args: raw } : raw, async () => {
             if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "error: invalid tool arguments";
             const nativeTurn = pi.observationTurn;
-            const output = TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name) ? await taskOp(peer, name, raw as Record<string, unknown>, true) : await runTool(name, JSON.stringify(raw), { ...ctx, signal,
+            const output = TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name) ? await (name === "hub_ask" && signal ? invocationRequestSignal.run({ signal, current: () => !signal.aborted }, () => taskOp(peer, name, raw as Record<string, unknown>, true)) : taskOp(peer, name, raw as Record<string, unknown>, true)) : await runTool(name, JSON.stringify(raw), { ...ctx, signal,
               ...(humanBash ? { onProcessExit: (code: number | null) => { exitCode = code; } } : {}),
               shellExecutionCheck: input => signal?.aborted || context?.isCurrent?.() === false || bus.peers.get(peer) !== pi ? "aborted" : humanBash ? "valid" : shellProofs.check(input),
               permit: async (title, tool, toolSignal, path, _observe, originalPath, input, policy) => {
@@ -6597,7 +6646,7 @@ export async function startDaemon(opts: DaemonOptions) {
         profile: resolvedProfile,
         sdlcStages: lifecycleConfig.stages,
         sdlcCriteria: lifecycleConfig.mode !== "off",
-        taskTool: (name, a, turn) => taskOp(peer, name, a, true, turn.pii),
+        taskTool: (name, a, turn) => name === "hub_ask" && turn.signal ? invocationRequestSignal.run({ signal: turn.signal, current: () => !turn.signal!.aborted }, () => taskOp(peer, name, a, true, turn.pii)) : taskOp(peer, name, a, true, turn.pii),
         titlePreface: () => titlePreface(peer),
         turnPolicy: (envs) => {
           const policy = tasks.turnPolicy(envs);
@@ -7608,6 +7657,7 @@ export async function startDaemon(opts: DaemonOptions) {
       bus.rosterChanged(peer); // fence the queue before stopping or detaching the adapter
       if (!after) {
         for (const pending of permissions.values()) if (pending.peer === peer) pending.done(undefined);
+        questionDesk.cancelPeer(peer, "stopped"); // #1053: off the roster ends its open questions too
         const owner = bus.peers.get(peer);
         if (owner?.detachForRoster && owner.form !== "headless") {
           await owner.detachForRoster(config.permission_modes[peer] === "never-ask" ? "ask" : config.permission_modes[peer] ?? "ask");
@@ -8138,6 +8188,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const cancelled = incompatibleCancellationTarget();
       if (cancelled) return cancelled;
       if (invocations.countOpen() && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("invocation"))) return `target lacks invocation; open invocations: ${invocations.countOpen()}`;
+      // #1053: an older daemon ignores the `questions` table, so an open question or an answer still owed would be lost silently.
+      if (questionStore.hasPending() && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("questions"))) return "target lacks questions; open questions or owed answers cannot be kept by that daemon; answer or cancel them (ahub status), or use a target release that has the questions feature";
       if (externalIds.size && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("external_adapter_modules"))) return "target lacks external_adapter_modules; verified external definitions cannot be preserved by that daemon";
       if (configuredIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("configured_acp"))) return "target lacks configured_acp; project adapter definitions cannot be preserved by that daemon";
       if (extraIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("peer_instances"))) return "target lacks peer_instances; declared instance identities cannot be restored by that daemon";
@@ -8263,6 +8315,7 @@ export async function startDaemon(opts: DaemonOptions) {
       recoveryOperationId = op;
       if (!recoveryPhase) recoveryPhase = "preparing";
       armRecoveryLease();
+      questionDesk.endWaits(); // #1053: a waiting hub_ask would hold taskOpsInFlight for its whole window; it answers `pending` now and its row stays open for the late path
       recoveryPeerSnapshot ??= Object.values(recoveryPeers());
       budget.setRecoveryHold(true);
       bus.setRecoveryHold(true, Array.isArray(msg.targetFeatures) && msg.targetFeatures.includes("recovery_deferred_hub"));
@@ -9804,8 +9857,8 @@ export async function startDaemon(opts: DaemonOptions) {
           return;
         }
         let invocation: AbortController | undefined;
-        if (msg.op === "hub_invoke") {
-          if (!Number.isSafeInteger(msg.rid) || msg.rid < 1) return void reply({ t: "task", ok: false, error: "invocation requires a request id" });
+        if (msg.op === "hub_invoke" || msg.op === "hub_ask") {
+          if (!Number.isSafeInteger(msg.rid) || msg.rid < 1) return void reply({ t: "task", ok: false, error: msg.op === "hub_ask" ? "a question requires a request id; call hub_ask through the hub's tool, not a raw message" : "invocation requires a request id" });
           c.invocationRequests ??= new Map();
           const previous = c.invocationRequests.get(msg.rid);
           if (previous) { previous.abort(); return void reply({ t: "task", ok: false, error: "duplicate invocation request id" }); }
@@ -9955,6 +10008,20 @@ export async function startDaemon(opts: DaemonOptions) {
       case "permit":
         if (c.role !== "console") return void reply({ t: "permit", ok: false, error: "permit is a console command" });
         return void reply({ t: "permit", ok: permissions.get(String(msg.id))?.done(msg.option ? String(msg.option) : undefined, msg.surface === "console" ? "console" : "terminal") === true });
+      // #1053: a person's answer to a question a peer asked. Console role ONLY, like `permit`: a peer's connection, a `hub_send` body or a tool result that quotes an answer
+      // is text and never reaches this case. The reply is always sent (rid), and a refusal names the row's terminal state, never its text.
+      case "answer": {
+        if (c.role !== "console") return void reply({ t: "answer", ok: false, error: "answer is a console command: only the person answers a question" });
+        if (recoveryActive() || stopping) return void reply({ t: "answer", ok: false, error: "recovery or shutdown is holding answers; answer again once the hub is back" });
+        const surface = QUESTION_SURFACES.includes(msg.surface as never) ? msg.surface : "console";
+        const result = questionDesk.answer(msg.questionSet, msg.answers, surface);
+        return void reply(result.ok ? { t: "answer", ok: true, questionSet: result.row.set, state: result.row.state } : { t: "answer", ok: false, error: `${result.error}; the questions read lists the open ones (console)`, ...(result.state ? { state: result.state } : {}) });
+      }
+      // The person's read of the open questions (the console, `ahub`, the panel). Question text is the person's surface only: a tools connection is refused.
+      case "questions": {
+        if (c.role !== "console") return void reply({ t: "questions", ok: false, error: "questions are shown to the person: use the console" });
+        return void reply({ t: "questions", ok: true, questions: questionStore.list(msg.state === "all" ? {} : { state: "open" }, 100) });
+      }
       case "kill":
         if (c.role !== "console") return void reply({ ok: false, error: "kill is a console command" });
         if (msg.instanceId !== undefined && msg.instanceId !== instanceId) return void reply({ ok: false, error: "hub restarted; refresh before stopping" });
@@ -10043,6 +10110,7 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const i of intervals) clearInterval(i);
     for (const pending of checkpointWaits.values()) pending.done(undefined);
     for (const p of permissions.values()) p.done(undefined);
+    questionDesk.close(); // #1053: waiting calls end `pending`; every row stays open for the late path after the restart
     try {
       // A schedule or study admission may be inside its PII screen: `stopping` is set, so its fence refuses the write when the screen returns. Wait for it (bounded, the screen has
       // its own timeout) before the peers stop, the board closes and the store closes, so no admission runs against a closed database.
@@ -10117,6 +10185,9 @@ export async function startDaemon(opts: DaemonOptions) {
   budget.restore(); // pauses recorded by an earlier hub run stay in force; unfinished handoffs wait for peers to attach
   bus.onQueues(); // initial restored holds are reported only after the listener is bound; writes status.json too
   log(`${RUN_START}${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
+  // #1053 start repair, once everything the desk's ports read is initialized: an envelope a crash kept from going out is published, and every open row stays open for the late path.
+  // A peer not attached yet reads as session "" (unknown), so a row is cancelled for a changed session only when the peer is back with another one (the sweep decides then).
+  try { questionDesk.repair(); } catch { log("question repair failed; the rows keep their state"); }
   ready = true;
   controlWriteTelemetry?.start();
   handoffCatchUp();

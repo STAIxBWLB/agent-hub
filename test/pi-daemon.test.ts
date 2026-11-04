@@ -1402,3 +1402,56 @@ test("Pi hub_send reports a hop-capped implicit reply instead of sent (#550)", a
   expect(dropped).toEqual(["hop"]);
   expect(result.text).toBe(`not delivered: reply chain reached the hop cap (${MAX_HOP}); send a new message without reply_to`);
 });
+
+// #1053 (review of #700): a hub_ask through Pi's bridge can wait minutes. Pi installs a global undici dispatcher with a headers and body timeout (300 s in Pi 1.4.0, measured
+// UND_ERR_HEADERS_TIMEOUT), and Bun resets a handler that sends no byte at its 60 s idle timeout, so the bridge streams the reply: headers at once, a space on a timer, then the JSON.
+test("a hub_ask through the Pi bridge outlives a short client timeout by streaming keepalive bytes, and the late answer still completes it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-ask-"));
+  const config = { ...DEFAULT_CONFIG, questions: { ttl_s: 86_400, wait_ms: { pi: 6000 } }, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { daemon, console_ } = await hub(config);
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  for (let i = 0; i < 100 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(10);
+  const pi = daemon.bus.peers.get("pi") as PiPeer & { toolKeepaliveMs: number };
+  pi.toolKeepaliveMs = 200;
+  const launch = pi.tuiLaunch!;
+  const sessionId = pi.recoveryMetadata().sessionId;
+  const ask = { questions: [{ id: "q", prompt: "Which?", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] }] };
+  const started = Date.now();
+  // the client's own fetch has no timeout here; the wait is cut by the window (6 s) and the bytes before it keep the connection alive past Bun's idle timer
+  const response = await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ name: "hub_ask", args: ask, toolCallId: "ask-1", sessionId, generation: 0 }) });
+  expect(response.status).toBe(200);
+  const raw = await response.text();
+  expect(raw.startsWith(" ")).toBe(true); // keepalive bytes came first
+  expect(raw.trim().startsWith("{")).toBe(true);
+  const result = JSON.parse(raw) as { text: string };
+  expect(JSON.parse(result.text)).toMatchObject({ status: "pending" });
+  expect(Date.now() - started).toBeGreaterThan(5000);
+}, 30_000);
+
+test("a Pi bridge client that drops a waiting hub_ask leaves the question open for the late-answer envelope", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-ask-drop-"));
+  const config = { ...DEFAULT_CONFIG, questions: { ttl_s: 86_400, wait_ms: { pi: 600_000 } }, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { stateDir, daemon, console_ } = await hub(config);
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  for (let i = 0; i < 100 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(10);
+  const pi = daemon.bus.peers.get("pi") as PiPeer & { toolKeepaliveMs: number };
+  pi.toolKeepaliveMs = 100;
+  const launch = pi.tuiLaunch!, sessionId = pi.recoveryMetadata().sessionId;
+  const ask = { questions: [{ id: "q", prompt: "Which?", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] }] };
+  const controller = new AbortController();
+  const call = fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", signal: controller.signal, headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ name: "hub_ask", args: ask, toolCallId: "ask-2", sessionId, generation: 0 }) }).catch(() => undefined);
+  const { QuestionStore } = await import("../src/hub/questions.ts");
+  const open = () => { const probe = new QuestionStore(join(stateDir, "hub.db")); try { return probe.list({ state: "open" }); } finally { probe.close(); } };
+  for (let i = 0; i < 300 && !open().length; i++) await Bun.sleep(10);
+  expect(open()).toHaveLength(1);
+  const set = open()[0]!.set;
+  await Bun.sleep(300); // the client has been receiving keepalive bytes
+  controller.abort(); await call; // the client goes away mid-wait
+  for (let i = 0; i < 300 && daemon.bus.stateOf("pi") === "busy"; i++) await Bun.sleep(10);
+  // the row is still open: a dropped client is not a cancelled turn
+  expect(open().map(row => row.set)).toEqual([set]);
+  expect(await console_.request({ t: "answer", questionSet: set, answers: [{ questionId: "q", optionIds: ["b"] }] })).toMatchObject({ ok: true });
+  const seen: string[] = [];
+  for (let i = 0; i < 300 && !seen.length; i++) { await Bun.sleep(10); for (const row of daemon.bus.queueList("pi")) for (const env of row.originals) if (env.kind === "answer") seen.push(env.id); }
+  expect(seen).toEqual([`answer-${set}`]);
+}, 30_000);

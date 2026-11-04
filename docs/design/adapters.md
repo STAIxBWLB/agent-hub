@@ -71,6 +71,8 @@ Native CLI compatibility is centralized in `compat.ts`. Each gated operation ask
 
 External adapter modules are an explicit, person-owned, machine-local opt-in. The daemon verifies and pins the captured bundle at startup, then admits only the bounded headless ACP instance contract through host-managed launch and current-owner checks. Module code runs in the daemon trust domain; pinning is integrity evidence, not a sandbox. Modules cannot supply native reviewer engines, proof ports, permission callbacks, provider selectors, or arbitrary recovery authority. This ceiling limits what imported code can claim and prevents live reload from replacing the executable catalog ([#754](https://github.com/STAIxBWLB/agent-hub/issues/754)).
 
+`questionWaitMs` (#1053) is the time a `hub_ask` call waits for the person before it answers `pending`. It is a fixed-builtin field like `title`: `assertNativeCapabilityScope` refuses it on a configured or external definition, and the person overrides it per kind with `questions.wait_ms.<kind>`, never the caller. MCP peers carry 45 s, Pi and the local worker 300 s, provisional until the live timeout measurements of #1053 T1.
+
 ## Session title slots
 
 Only fixed Pi and local definitions opt into `title: "hub"` (#1055). Their

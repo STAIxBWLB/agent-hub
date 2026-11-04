@@ -83,6 +83,11 @@ export function redactBusEvent(e:BusEvent):BusEvent {
     const { refs, ...env } = e.env;
     return { ...e, env: { ...env, refs: { ...(refs?.reviewPackage ? { reviewPackage: refs.reviewPackage } : {}), ...(refs?.reviewResponse ? { reviewResponse: refs.reviewResponse } : {}), ...(refs?.task && /^[0-9]+$/.test(refs.task) ? { task: refs.task } : {}) }, body: "[review package: inspect task review comments]" } };
   }
+  // #1053: the person's answer to a question is theirs and the asking peer's: the console tail and the dashboard feed show a stub, whoever the envelope is private for.
+  if (e.env.kind === "answer" || e.env.refs?.question) {
+    const set = e.env.refs?.question;
+    return { ...e, env: { ...e.env, refs: set ? { question: set } : undefined, body: `[question ${set ?? "answer"}: body shown only to its peer]` } };
+  }
   if (!e.env.private) return e;
   const {refs,...env}=e.env;
   const task=refs?.task && /^[0-9]+$/.test(refs.task)?refs.task:undefined;

@@ -54,6 +54,8 @@ export type HubEvent =
   | { type: "conduct"; peer: string; action: string; task?: number; target?: string }
   | { type: "agent_cli"; peer: string; command: string; refused: boolean; delegated?: true }
   | { type: "permission"; id: string; peer: string; event: "requested" | "answered" | "expired" | "cancelled"; latencyMs?: number; surface?: "console" | "dashboard" | "terminal"; option?: "allow_once" | "allow_always" | "reject_once" | "reject_always" }
+  /** #1053: one question a peer asked the person, and how it ended. Counts, ids and a closed reason only: never a prompt, an option, an answer or other text. */
+  | { type: "question"; set: string; peer: string; event: "asked" | "answered" | "pending" | "superseded" | "cancelled" | "expired" | "unavailable"; latencyMs?: number; surface?: "terminal" | "console" | "dashboard" | "acon"; reason?: "superseded" | "stopped" | "turn_aborted" | "session_changed" | "expired" | "unattended"; questions?: number; private?: boolean }
   /** Completed native turns that received supervision, not feed enqueues or inferred costs. */
   | { type: "supervision_turn"; peer: string; turn: string; tokens?: number; ms?: number }
   | { type: "hook_stats"; peer: string; n: number; startupMs: number; hubMs: number; maxStartupMs: number }
