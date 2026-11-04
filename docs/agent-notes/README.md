@@ -64,6 +64,7 @@ Background behind the 0.18.0 rules:
 Background behind the 0.19.0 rules:
 
 - Code-scope verdicts (#852, tasks.md): two review rounds showed that any classifier reading a `code` reviewer's unmet text files real defects, such as "the CI workflow is missing the trigger", as verification-only, so the evidence-only rule reads only the structured findings.
+- VM closure dependencies (#1056, tests.md): review refresh and durable observer checks added cache, snapshot and scope dependencies to existing functions. Searches for the new dependency names missed fixtures that extracted their callers, causing ReferenceError failures or fail-closed paths that pre-empted the behavior under test.
 - Policy-table fixtures (#843, tests.md): a fixture with a fixed list of keys or versions, which a planned `COMPAT` entry was not in, was reported twice in #843.
 - Suite watchdog (#516, tests.md): a total-time kill cut suites that were still passing tests line by line (hosted ubuntu runs at 1080 s, the macOS leg of PR #857 at 1440 s), so a lost-progress bound became the hang detector and the total bound only its backstop.
 

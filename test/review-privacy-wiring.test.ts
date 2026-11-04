@@ -85,8 +85,11 @@ test("production progress admission clears review-turn observations before an es
   let frames:Envelope[]=[capsule()];
   const source=readFileSync(new URL("../src/hub/daemon.ts",import.meta.url),"utf8"),start=source.indexOf("  const observeProgress ="),end=source.indexOf("  /** Whether facts",start);
   expect(start).toBeGreaterThan(0);expect(end).toBeGreaterThan(start);
+  const scopeStart=source.indexOf("  const reviewObserverHeld ="),scopeEnd=source.indexOf("  const invocations =",scopeStart);
+  expect(scopeStart).toBeGreaterThan(0);expect(scopeEnd).toBeGreaterThan(scopeStart);
   const context={isReviewObserverExcluded,bus:{lastDeliveredTo:()=>frames},board:{list:()=>[task]},progress,extracted:undefined as unknown};
-  runInNewContext(new Bun.Transpiler({loader:"ts"}).transformSync(source.slice(start,end)+"\nglobalThis.extracted=observeProgress;"),context);
+  Object.assign(context,{readReviewObserverScope:()=>undefined});
+  runInNewContext(new Bun.Transpiler({loader:"ts"}).transformSync(source.slice(scopeStart,scopeEnd)+"\n"+source.slice(start,end)+"\nglobalThis.extracted=observeProgress;"),context);
   const observe=context.extracted as (peer:string,input:unknown)=>void;
   for(let i=0;i<9;i++)observe("codex",{name:"exec_command",command:"bun test",resultText:"AssertionError: "+canary,isError:true,turn:"review-"+i});
   await progress.evaluate("codex",7);expect(calls).toEqual([]);
