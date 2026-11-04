@@ -10,10 +10,12 @@ export interface AttentionState {
   recoveryNeed?: { id?: string; running: boolean; since?: number };
   queue?: readonly { id: string; peer?: string; state: string }[];
   attentionFacts?: { kind: "review" | "offline" | "stall" | "offer"; id: number; peer?: string }[];
+  /** #1053: open questions; only the set, the peer and the time reach the model. */
+  questions?: readonly { set: string; peer: string; created: number }[];
 }
 /** Allowlisted adapter between console-owned facts and the shared body-free model. */
 export function consoleNeeds(state: AttentionState, now: number): Needs {
-  const input: NeedsInput = { approvals: state.approvals.map(row => ({ id: row.id, peer: row.peer, expiresAt: row.expiresAt })), defaults: state.permissionDefaults.map(row => ({ peer: row.peer })), peers: Object.fromEntries(Object.entries(state.peers).map(([peer,row]) => [peer,{ state: row.state, attached: row.attached, needsReview: row.needsReview, heldBy: row.heldBy }])), budget: Object.fromEntries(Object.entries(state.budget).map(([peer,row]) => [peer,{ ...(row.paused ? { paused: { since: row.paused.since, resetsAt: row.paused.resetsAt } } : {}) }])), messages: (state.attentionMessages ?? []).map(row => ({ id: row.id, peer: row.peer, important: row.important, since: row.since })), storageBlocked: state.storageBlocked, recovery: state.recoveryNeed };
+  const input: NeedsInput = { approvals: state.approvals.map(row => ({ id: row.id, peer: row.peer, expiresAt: row.expiresAt })), defaults: state.permissionDefaults.map(row => ({ peer: row.peer })), peers: Object.fromEntries(Object.entries(state.peers).map(([peer,row]) => [peer,{ state: row.state, attached: row.attached, needsReview: row.needsReview, heldBy: row.heldBy }])), budget: Object.fromEntries(Object.entries(state.budget).map(([peer,row]) => [peer,{ ...(row.paused ? { paused: { since: row.paused.since, resetsAt: row.paused.resetsAt } } : {}) }])), messages: (state.attentionMessages ?? []).map(row => ({ id: row.id, peer: row.peer, important: row.important, since: row.since })), storageBlocked: state.storageBlocked, recovery: state.recoveryNeed, questions: (state.questions ?? []).map(row => ({ set: row.set, peer: row.peer, since: row.created })) };
   const result = needs({ ...input, facts: state.attentionFacts }, now);
   // Panel snapshots know each held row; enrich only ids, without changing the status-derived count.
   const used = new Set<string | number>();
@@ -60,5 +62,6 @@ export function attentionCommand(item: NeedItem): string {
   if (item.kind === "recovery") return `ahub recovery status${item.id ? ` ${item.id}` : ""}`;
   if (item.kind === "budget") return "ahub budget";
   if (item.kind === "default") return "ahub permission";
+  if (item.kind === "question") return `A answers it here; ahub answer lists it and ${item.id ? `ahub answer ${item.id} <question>=<option>` : "ahub answer <set> <question>=<option>"} answers`;
   return item.peer ? `ahub say @${item.peer} <message>` : "ahub console";
 }

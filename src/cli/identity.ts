@@ -34,7 +34,9 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
     || (command === "specs" && args[0] === "stamp")
     // #1057: removing a worktree and its branch is the person's own act, in their own terminal; no delegation, live-test or otherwise, may confirm a tidy.
     || (command === "worktrees" && args.some(arg => arg === "--confirm" || arg.startsWith("--confirm=")))
-    || (command === "agents" && !args.every(arg => arg === "--json"));
+    || (command === "agents" && !args.every(arg => arg === "--json"))
+    // #1053: an answer is the person's choice, recorded as the person's; an agent that could run it through `--live-test` would answer its own hub_ask as the person. Any operand answers (the set, a pick, --other); a bare listing stays allowed.
+    || (command === "answer" && args.some(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color=")));
 }
 
 export type CliIdentity =
@@ -214,7 +216,7 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   if (command === "specs") return ["list", "check", "covers", "stamp"].includes(args[0] ?? "") ? `specs ${args[0]}` : "specs";
   // #1057: the audit names the subcommand and whether it confirms, never a path, a branch or a fingerprint.
   if (command === "worktrees") return args[0] === "tidy" ? (args.some(arg => arg === "--confirm" || arg.startsWith("--confirm=")) ? "worktrees tidy confirm" : "worktrees tidy") : "worktrees";
-  if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "down", "reset", "doctor", "agents", "source", "broker", "schedule", "intake", "learn", "study"].includes(command)) return "unknown";
+  if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "answer", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "down", "reset", "doctor", "agents", "source", "broker", "schedule", "intake", "learn", "study"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench", "agents", "roster", "settings"].includes(command)) {
     const sub = command === "bench" || command === "memory" || command === "goal" ? args.find((arg) => arg !== "--json") : args[0];
     if (sub && ["propose", "show", "assign", "unassign", "escalate", "cancel", "claim", "label", "list", "add", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "reattach", "setup", "start", "stop", "remove", "discard", "export", "backfill", "addons", "run", "report", "compare", "search", "graph", "promote", "demote", "forget", "supersede", "dedupe", "decay", "rebuild", "sync", "machine", "import", "suggestions", "confirm", "reject", "new", "link", "state", "done", "take", "trust"].includes(sub)) return `${command} ${sub}`;

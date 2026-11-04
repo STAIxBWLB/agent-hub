@@ -5182,6 +5182,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const attentionInput: NeedsInput = {
       approvals: [...permissions].map(([id, row]) => ({ id, peer: row.peer, expiresAt: row.expiresAt, since: row.createdAt })),
       defaults: [...pendingPermissionDefaults.keys()].map(peer => ({ peer })),
+      // #1053 T4: an open question is a need until it settles; the model gets the set id, the asking peer and the time, never a prompt or an option.
+      questions: questionStore.list({ state: "open" }, 64).map(row => ({ set: row.set, peer: row.peer, since: row.created })),
       peers: peerNeeds,
       storageBlocked: !!bus.storageError,
       recovery: recoveryOperationId ? { id: recoveryOperationId, running: true } : undefined,
@@ -7419,6 +7421,8 @@ export async function startDaemon(opts: DaemonOptions) {
               options: req.options.filter((o: { kind: string }) => o.kind === "reject_once").map((o: { optionId: string; kind: string }) => ({ ...o, name: "Deny" })) }
           : req;
       }),
+      // #1053 T4: the open questions, for the person's surfaces (the panel and the acon inbox). A live-test dashboard never gets the text.
+      questions: session?.liveTest ? [] : questionStore.list({ state: "open" }, 64).map(row => ({ set: row.set, peer: row.peer, created: row.created, private: row.private, questions: row.questions })),
       events: uiEvents.filter((e) => e.seq > after),
       cursor: uiSequence,
       ...settingsSnapshot(session),
@@ -10184,7 +10188,9 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "console") return void reply({ t: "answer", ok: false, error: "answer is a console command: only the person answers a question" });
         if (recoveryActive() || stopping) return void reply({ t: "answer", ok: false, error: "recovery or shutdown is holding answers; answer again once the hub is back" });
         const surface = QUESTION_SURFACES.includes(msg.surface as never) ? msg.surface : "console";
-        const result = questionDesk.answer(msg.questionSet, msg.answers, surface);
+        // The verified identity the acon plugin read from its console's `ActionMeta` rides only on the `acon` surface, one line and bounded, never text of the question or the answer.
+        const person = surface === "acon" && typeof msg.person === "string" && msg.person.trim() ? sanitize(msg.person).replace(/\s+/g, " ").trim().slice(0, 200) : undefined;
+        const result = questionDesk.answer(msg.questionSet, msg.answers, surface, person);
         return void reply(result.ok ? { t: "answer", ok: true, questionSet: result.row.set, state: result.row.state } : { t: "answer", ok: false, error: `${result.error}; the questions read lists the open ones (console)`, ...(result.state ? { state: result.state } : {}) });
       }
       // The person's read of the open questions (the console, `ahub`, the panel). Question text is the person's surface only: a tools connection is refused.

@@ -1,4 +1,4 @@
-import type { ActionMeta } from "@staix/agent-console/contract";
+import type { ActionMeta, InboxAnswers } from "@staix/agent-console/contract";
 import { assertExecutableRuntimeRoot } from "./project-runtime-state.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS } from "./planning.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
@@ -159,6 +159,22 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
     } catch (error) { return { ok: false, error: safeError(error) }; }
     finally { client?.close(); }
   };
+  // #1053 T5: the acon plugin's answer to a question a peer asked. A port of its own, never an `act` action: `act` is also what the `ahub ui --all` dashboard page reaches, and an answer needs
+  // the console's verified person meta, which only the server-side provider holds (it checks it before calling this). The hub re-validates every answer against the stored row.
+  const answer = async (target: { projectId: unknown; instanceId: unknown }, payload: { questionSet: string; answers: InboxAnswers; person: string }) => {
+    if (options.stopping?.()) return { ok: false, error: "manager is stopping" };
+    const project = typeof target.projectId === "string" ? registry.get(target.projectId) : undefined;
+    if (!project) return { ok: false, error: "unknown project" };
+    if (typeof target.instanceId !== "string" || !target.instanceId) return { ok: false, error: "expected daemon instance is required" };
+    let client: ControlClient | undefined;
+    try {
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: target.instanceId });
+      const result = await client.request({ t: "answer", surface: "acon", questionSet: payload.questionSet, answers: payload.answers, person: payload.person }, 10_000);
+      const { rid: _rid, t: _t, ...reply } = result as Record<string, unknown>;
+      return reply;
+    } catch (error) { return { ok: false, error: safeError(error) }; }
+    finally { client?.close(); }
+  };
   // #1056: only the server-side acon provider calls this port. Dashboard action bodies
   // cannot select a control operation or manufacture verified person metadata.
   const consoleControl = async (target: { projectId: unknown; instanceId: unknown },
@@ -180,7 +196,7 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
     } catch { return { ok: false, unconfirmed: true as const, text: "Review result is unconfirmed. Refresh and check the task before retrying.", error: "Review result is unconfirmed. Refresh and check the task before retrying." }; }
     finally { client?.close(); }
   };
-  return { list, act, consoleControl };
+  return { list, act, answer, consoleControl };
 }
 
 export async function startManager(options: ManagerOptions = {}): Promise<ManagerHandle> {

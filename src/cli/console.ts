@@ -13,6 +13,7 @@ import { consoleNeeds, attentionFacts } from "./attention.ts";
 import { loadPetConfig } from "./pet-config.ts";
 import { CHARACTER_IDS, petGlyphs, petSize } from "../pet/frame.ts";
 import { activeNotice, consoleFooterRows } from "./console-state.ts";
+import { pasteFlow, questionRows } from "./console-question.ts";
 import { characterAttentionLine } from "./attention.ts";
 import { projectRoomStatus } from "../rooms/status.ts";
 
@@ -208,6 +209,10 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
           ...(usageTask !== undefined ? [client.request({ t: "usage", by: "peer", task: usageTask }, 5000)] : [])]);
       })() : undefined;
       if (!active) return;
+      // #1053 T4: the person's own read of the open questions, asked only of a hub whose status lists the `questions` feature: an older hub is never sent a request it does not know.
+      const hasQuestions = Array.isArray(replies[0]?.status?.features) && replies[0].status.features.includes("questions");
+      const questionReply = hasQuestions ? await client.request({ t: "questions" }, 3000) : undefined;
+      if (!active) return;
       const [status, budget, tasks, queue, ready, settings] = replies;
       captureConsoleSelection(state);
       try {
@@ -219,6 +224,15 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
           state.petCharacter = pet.character ?? "stai"; state.petSize = pet.size; state.petGlyphs = petGlyphs(pet.glyphs);
         }
       } catch { /* retain running console presentation while a config file is unreadable */ }
+      if (questionReply?.ok === true) {
+        const rows = questionRows(questionReply.questions);
+        // A set the person has not been told about gets one stream line with no question text: A answers it, or ahub answer.
+        const seen = new Set(state.questionsSeen ?? []);
+        for (const row of rows) if (!seen.has(row.set) && state.questionsSeen !== undefined) stream({ text: `  ? ${row.peer} asks ${plural(row.questions.length, "question")}: A answers it here, or ahub answer ${row.set}`, peer: row.peer, kind: "question", tone: "attention" });
+        state.questionsSeen = rows.map(row => row.set);
+        state.questions = rows;
+        if (state.questionFlow && !rows.some(row => row.set === state.questionFlow!.set)) { state.questionFlow = undefined; notice("that question is no longer open"); }
+      } else if (questionReply?.ok === false) state.questions = [];
       if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
       if (status.status && status.ok !== false) state.pendingRestart = Array.isArray(status.status.pendingRestart) ? status.status.pendingRestart : [];
       if (status.status && status.ok !== false) state.retainedConfig = Array.isArray(status.status.retainedConfig) ? status.status.retainedConfig : [];
@@ -344,6 +358,13 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       } else stream({ text: `  ${action.peer} never-ask default ${action.confirmed ? "enabled" : "cancelled for this hub"}`, kind: "permission_default", peer: action.peer, tone: "attention" });
       await refresh(); draw(); return;
     }
+    if (action.type === "answer") {
+      const result = await client.request({ t: "answer", surface: "console", questionSet: action.set, answers: action.answers }, 5000);
+      if (!active) return;
+      if (result.ok === false) notice(String(result.error ?? "the answer was refused"));
+      else notify(state, `answered ${action.set}`, Date.now(), "success");
+      await refresh(); draw(); return;
+    }
     if (action.type === "permit") {
       client.send({ t: "permit", surface: "console", id: action.id, ...(action.option ? { option: action.option } : {}) });
       if (!action.option) stream({ text: `  ! denial requested for permission ${action.id}`, kind: "permission", tone: "failure" });
@@ -434,6 +455,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
             state.attentionMessages = []; state.attentionSelection = undefined;
             if (state.help && state.mode === "panels") { draw(); return; }
             if (state.confirm?.type === "permission_default") { draw(); return; }
+            // #1053: while the person types an `o` answer a paste is that answer's text, never the command line's; pasteFlow keeps only printable characters, so a pasted Enter, Esc or digit cannot send, leave or pick.
+            if (state.questionFlow) { state.questionFlow = pasteFlow(state.questionFlow, text.replace(/\x1b\[20[01]~/g, "")); draw(); return; }
             if (state.settingsEdit) {
               const edit = state.settingsEdit;
               if (edit.phase === "value" || edit.phase === "reason") state.settingsEdit = { ...edit, text: (edit.text + terminalText(text.replace(/\x1b\[20[01]~/g, "")).replace(/[\r\n]/g, " ")).slice(0, 1000) };

@@ -16,6 +16,7 @@ import { projectConsole, type Lifecycle, type ManagerOptions } from "../hub/mana
 // lifecycle.ts reaches the whole daemon; it is imported only when a project is inspected, started or stopped.
 import { DASHBOARD_VIEWS, renderDashboard } from "../hub/ui.ts";
 import { officeModel, type OfficeScene } from "./office-model.ts";
+import { personEvidence, questionItem, QUESTION_ITEM, type InboxAnswers, type QuestionRowView } from "./plugin-questions.ts";
 import { mergeSpaces, officeSpace } from "./office-space.ts";
 import { VERSION as version } from "../version.ts";
 
@@ -48,6 +49,8 @@ export interface ConsolePlugin {
 const TITLES: Record<(typeof DASHBOARD_VIEWS)[number], string> = { board: "Board", office: "Office", stream: "Stream", agents: "Agents", message: "Message", memory: "Memory", settings: "Settings" };
 /** The dashboard's own actions plus the inbox verbs; the manager whitelist is still applied to each forwarded call. */
 const FORWARDED = ["start", "stop", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release", "worktree_override_set", "worktree_override_clear", "worktrees_refresh_prs"] as const;
+/** Advertised so acon lets the page send it, never forwarded: `action()` answers it through its own port (`answerVerb`), after the console's person meta is checked (#1053 T5). */
+const QUESTION_ACTIONS = ["answer"] as const;
 const REVIEW_ACTIONS = ["review_comment_put", "review_comment_delete", "review_comment_send"] as const;
 const INBOX_VERBS = ["approve", "deny", "open"] as const;
 /** Outward or destructive: answered needsConfirm first (agent-console AGENTS.md); previews are read-only and stay direct. */
@@ -154,7 +157,7 @@ export function createProvider(options: { home: string; registry?: Registry; lif
   const registry = options.registry ?? new Registry(join(options.home, "registry.db"));
   const owned = !options.registry;
   const lifecycle = options.lifecycle ?? lazyLifecycle();
-  const { list, act, consoleControl } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
+  const { list, act, answer, consoleControl } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
   const assets = panelAssets();
   const seen = new Map<string, string>(); // inbox item id -> first-seen ISO time, so `at` stays stable
 
@@ -178,6 +181,13 @@ export function createProvider(options: { home: string; registry?: Registry; lif
           chip: { text: "approval", tone: "warn" },
           verbs: [...(allow ? [{ id: "approve", label: "Allow once", primary: true }] : []), ...(deny ? [{ id: "deny", label: "Deny", destructive: true }] : [])],
           link: { panel: "agents", params: { project: project.id } } });
+      }
+      // #1053 T5: the open questions peers asked the person. A private question's title is a stub; the form (the person's own answer surface) carries the text.
+      for (const q of (snap.questions as QuestionRowView[] | undefined) ?? []) {
+        if (!q || typeof q.set !== "string" || !Array.isArray(q.questions) || !q.questions.length) continue;
+        const item = questionItem(q, { id: project.id, name }, options.features);
+        seen.set(item.id, item.at);
+        items.push(item);
       }
       // #1057 D4: one alert when the shelf holds more settled worktrees than `worktrees.alert_over` (0 = never). Counts only: no path, branch or title, and no action
       // beyond opening the panel, because removal is the person's `ahub worktrees tidy` and never a button.
@@ -242,10 +252,23 @@ export function createProvider(options: { home: string; registry?: Registry; lif
     return mergeSpaces(scenes);
   }
 
+  /**
+   * #1053 T5: an answer to a question item. Only with the console's own person meta (checked by the caller); the project and set come from the item id, never from the
+   * page. The hub re-validates every answer against the stored row and names a stale or superseded set's terminal state.
+   */
+  async function answerVerb(input: Record<string, unknown>, person: string): Promise<ActionResult> {
+    const m = typeof input.id === "string" ? QUESTION_ITEM.exec(input.id) : null;
+    if (!m) return { ok: false, error: "unknown inbox item" };
+    const project = (await running()).find((p) => p.id === m[1]);
+    if (!project) return { ok: false, error: "project is not running" };
+    const result = await answer({ projectId: project.id, instanceId: project.instanceId }, { questionSet: m[2]!, answers: input.answers as InboxAnswers, person }) as Record<string, unknown>;
+    return result.ok === true ? { ok: true, message: "Answered" } : { ok: false, error: String(result.error ?? "the answer was refused") };
+  }
+
   /** approve/deny resolve to the hub's own `permit` with the request's option; nothing else is reachable from an item. */
   async function inboxVerb(input: Record<string, unknown>): Promise<ActionResult> {
     const m = typeof input.id === "string" ? /^perm:([^:]+):(.+)$/.exec(input.id) : null;
-    if (input.action === "open") return { ok: true, message: typeof input.id === "string" && input.id.startsWith("worktrees:") ? "Open the Agents panel to review the shelf." : "Open the Board panel to review." };
+    if (input.action === "open") return { ok: true, message: typeof input.id === "string" && (input.id.startsWith("worktrees:") || input.id.startsWith("question:")) ? `Open the Agents panel to ${input.id.startsWith("question:") ? "answer" : "review the shelf"}.` : "Open the Board panel to review." };
     if (!m) return { ok: false, error: "unknown inbox item" };
     const project = (await running()).find((p) => p.id === m[1]);
     if (!project) return { ok: false, error: "project is not running" };
@@ -282,6 +305,13 @@ export function createProvider(options: { home: string; registry?: Registry; lif
     },
     async action(input, meta) {
       const name = String(input.action);
+      // #1053 T5: `answer` is accepted only with the console's own verified person meta, and never with page-supplied identity or target fields; anything else is refused before the hub.
+      if (name === "answer") {
+        const evidence = personEvidence(options.features, meta, input);
+        if (!evidence.ok) return { ok: false, error: evidence.error };
+        const { action: _a, confirmed: _c, fingerprint: _f, ...forward } = input;
+        return await answerVerb(forward, evidence.identity);
+      }
       const review = REVIEW_ACTIONS.includes(name as typeof REVIEW_ACTIONS[number]);
       if (review && (!options.features?.includes("action.meta") || !meta || meta.via !== "console" || typeof meta.identity !== "string" || !meta.identity.trim() || typeof meta.node !== "string" || !meta.node.trim())) {
         return { ok: false, error: "Review comments need a console with verified person identity; update acon and reopen this panel." };
@@ -316,7 +346,7 @@ const plugin: ConsolePlugin = {
   manifest: {
     api: 1, tool: "ahub", version, title: "agent-hub", icon: "agents", pollMs: 2000,
     panels: DASHBOARD_VIEWS.map((id, order) => ({ id, title: TITLES[id], order })),
-    capabilities: { actions: [...FORWARDED, ...INBOX_VERBS, ...REVIEW_ACTIONS], confirm: true, multiProject: true, inbox: true, space: true },
+    capabilities: { actions: [...FORWARDED, ...INBOX_VERBS, ...QUESTION_ACTIONS, ...REVIEW_ACTIONS], confirm: true, multiProject: true, inbox: true, space: true },
   },
   async open(ctx) { return createProvider({ home: ctx.home, log: ctx.log, features: ctx.features }); },
 };

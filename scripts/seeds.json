@@ -2316,7 +2316,7 @@
     {
       "id": "pet-first-kind-state-consistency",
       "file": "src/cli/pet.ts",
-      "search": "if (row.state === \"waiting\" && ![\"approval\", \"default\"].includes(first?.kind ?? \"\")) return;",
+      "search": "if (row.state === \"waiting\" && ![\"approval\", \"default\", \"question\"].includes(first?.kind ?? \"\")) return;",
       "replacement": "if (false) return;",
       "testFile": "test/pet-summary-validation.test.ts",
       "testName": "pet snapshot state and level require a consistent first structural item"

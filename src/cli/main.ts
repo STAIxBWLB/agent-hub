@@ -3,6 +3,7 @@ import { assertConductorOperationLocal, authorizeConductorOperation, authorizeCo
 import { runtimePruneHealth } from "../hub/runtime-prune-health.ts";
 import { conductorLocalOperation, conductorOperation, OPERATIONAL_PERSON_GUIDANCE } from "../hub/operational-authority.ts";
 import { sayRecipients } from "./say-input.ts";
+import { parseAnswerArgs } from "./answer-args.ts";
 import type { DeliverableRow } from "../hub/tasks.ts";
 import { kimiSourceRow } from "../hub/budget-notes.ts";
 import { hubGitSync, hubGitEnv } from "../hub/git.ts";
@@ -2270,6 +2271,38 @@ const commands: Record<string, () => Promise<void> | void> = {
     hub.send({ t: "permit", id, ...(option === "deny" ? {} : { option }) });
     await hub.request({ t: "status" }); // flush before closing
     hub.close();
+  },
+
+  // #1053 T4: the person's answer to a question a peer asked with hub_ask. No operands lists the open questions; `<set> <question>=<option>[,<option>] [--other <text>]` answers one.
+  // The hub validates every answer against the stored row and names a refusal by position, never by the offered text. Console role only (classifyPeerCommand's default).
+  answer: async () => {
+    const options = outputOptions();
+    const operands = args.filter(arg => arg !== "--json" && !arg.startsWith("--color=") && arg !== "--full");
+    const hub = await connect();
+    try {
+      if (!operands.length) {
+        const reply = await hub.request({ t: "questions" });
+        if (reply.ok === false) return fail(String(reply.error ?? "questions are unavailable"));
+        const rows = Array.isArray(reply.questions) ? reply.questions : [];
+        if (options.json) return console.log(JSON.stringify(rows, null, 2));
+        if (!rows.length) return console.log("no open questions");
+        for (const row of rows) {
+          console.log(`${row.set}  ${row.peer} asks${row.private ? " (private)" : ""}`);
+          for (const question of row.questions) {
+            console.log(`  ${question.id}: ${terminalText(String(question.prompt))}${question.multi ? "  (choose any)" : ""}${question.allowOther ? "  (or --other <text>)" : ""}`);
+            for (const option of question.options) console.log(`    ${option.id}  ${terminalText(String(option.label))}${option.description ? `  - ${terminalText(String(option.description))}` : ""}`);
+          }
+          console.log(`  answer with: ahub answer ${row.set} ${row.questions.map((question: { id: string; options: { id: string }[] }) => `${question.id}=${question.options[0]?.id ?? "<option>"}`).join(" ")}`);
+        }
+        return;
+      }
+      const parsed = parseAnswerArgs(operands);
+      if (!parsed.ok) return fail(parsed.error);
+      const reply = await hub.request({ t: "answer", surface: "terminal", questionSet: parsed.value.set, answers: parsed.value.answers });
+      if (reply.ok === false) return fail(String(reply.error ?? "the answer was refused"));
+      if (options.json) return console.log(JSON.stringify({ ok: true, questionSet: reply.questionSet, state: reply.state }));
+      console.log(`answered ${reply.questionSet ?? parsed.value.set}`);
+    } finally { hub.close(); }
   },
 
   pet: async () => {
