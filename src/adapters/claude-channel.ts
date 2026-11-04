@@ -194,6 +194,17 @@ const offline = () => detached ?? "hub is not running for this project (start it
 let pendingQueued: { queued: number; important: number } | undefined;
 /** Marks a tool result whose text already states the queued count (#221), so the fresh-count block does not repeat it. Symbol keys never reach the client. */
 const QUEUED_COUNTED = Symbol("queuedCounted");
+/** Marks an inbox result that already renders its own bounded held/accepted delivery metadata. */
+const HELD_HINT_INCLUDED = Symbol("heldHintIncluded");
+const heldMetadataUnavailable = (value: unknown): boolean => !!value && typeof value === "object" && !Array.isArray(value)
+  && Object.keys(value).length === 1 && (value as { unavailable?: unknown }).unavailable === true;
+const heldMetadataNeedsReviewOnly = (value: unknown): boolean => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const held = value as { count?: unknown; rows?: unknown; truncated?: unknown };
+  return Number.isSafeInteger(held.count) && (held.count as number) > 0 && held.truncated === false && Array.isArray(held.rows) && held.rows.length > 0
+    && held.rows.every(row => !!row && typeof row === "object" && !Array.isArray(row)
+      && ((row as { state?: unknown }).state === undefined || (row as { state?: unknown }).state === "needs_review"));
+};
 /** Fresh own-peer counts accompany all tool modes; only old plain sessions use advisory queued nudges. */
 async function withPendingHint<T>(result: T, recommendInbox = true): Promise<T> {
   const r = result as { content?: { type: string; text?: string }[] };
@@ -224,7 +235,7 @@ async function withPendingHint<T>(result: T, recommendInbox = true): Promise<T> 
           appendQueued(counted ? `(${response.important} important hub message(s) waiting${next})` : `(${response.queued} queued hub message(s), ${response.important} important hub message(s) waiting${next})`);
         }
       }
-      if (hint) r.content.push({ type: "text", text: hint });
+      if (hint && (result as { [HELD_HINT_INCLUDED]?: boolean })[HELD_HINT_INCLUDED] !== true) r.content.push({ type: "text", text: hint });
     } catch { /* advisory metadata can never change a saved tool result or its effect classification */ }
     // A pre-#493 daemon sends held rows without counts; the legacy nudge must not advise a read the hold refuses (#221).
     if (!freshCounts && !hint && recommendInbox && !channel && !toolsMode && pendingQueued && pendingQueued.important > 0) {
@@ -451,16 +462,20 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     return text(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && (!toolsMode || permissionTool)) {
-    let remote: string[] = [], notice = "", polling = "", counted = false;
+    let remote: string[] = [], notice = "", polling = "", counted = false, heldHint = "", metadataWarning = "", heldMetadata: unknown;
     if (hub) {
       try {
         const res = await hub.request({ t: "inbox" });
+        heldMetadata = res.held;
+        const metadataUnavailable = heldMetadataUnavailable(res.held);
+        heldHint = renderHeldHint(res.held, Date.now(), !deliveryOnly);
+        if (metadataUnavailable) metadataWarning = `Delivery confirmation metadata is unavailable; inspect ahub queue list --peer ${sanitize(peerId)} before deciding whether anything is waiting.`;
         if (!res.ok) notice = `not read: ${res.error}`;
         else if (!Array.isArray(res.envs)) notice = "not read: malformed daemon inbox response";
         else {
           pendingQueued = { queued: typeof res.waiting === "number" ? res.waiting : 0, important: typeof res.waitingImportant === "number" ? res.waitingImportant : 0 };
           remote = (res.envs as Envelope[]).map(frame);
-          if (Number.isSafeInteger(res.pollingAdvice?.count) && res.pollingAdvice.count >= 3 && Number.isSafeInteger(res.pollingAdvice?.minutes) && res.pollingAdvice.minutes >= 0 && res.pollingAdvice.minutes <= 10) polling = `[polling detected] ${res.pollingAdvice.count} empty reads in ${res.pollingAdvice.minutes} min with no assigned work: end your turn`;
+          if (!heldHint && Number.isSafeInteger(res.pollingAdvice?.count) && res.pollingAdvice.count >= 3 && Number.isSafeInteger(res.pollingAdvice?.minutes) && res.pollingAdvice.minutes >= 0 && res.pollingAdvice.minutes <= 10) polling = `[polling detected] ${res.pollingAdvice.count} empty reads in ${res.pollingAdvice.minutes} min with no assigned work: end your turn`;
           // #713: a pull drains what fits one read; what is left is said plainly, with what to do about it. The count already says how many remain, so the pending hint adds only the important ones (#221).
           if (res.waiting) { notice = `(${res.waiting} more waiting: call hub_inbox again before you start work)`; counted = true; }
         }
@@ -469,9 +484,15 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     // Only pushes without a journal delivery id enter this buffer. Pull completion belongs to the daemon.
     const out = [...inbox.splice(0), ...remote];
     if (notice) out.push(notice);
-    const body = out.length ? out.join("\n\n") : "(no queued hub messages)\nNothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.";
+    if (heldHint) out.push(heldHint);
+    if (metadataWarning) out.push(metadataWarning);
+    let body = out.length ? out.join("\n\n") : "(no queued hub messages)\nNothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.";
+    if (out.length === 1 && out[0] === heldHint && heldHint && heldMetadataNeedsReviewOnly(heldMetadata)) {
+      body = `(no queued hub messages)\n\n${body}`;
+    }
     const result = text(polling ? `${body}\n${polling}` : body);
     if (counted) Object.defineProperty(result, QUEUED_COUNTED, { value: true });
+    if (heldHint || metadataWarning) Object.defineProperty(result, HELD_HINT_INCLUDED, { value: true });
     return result;
   }
   if (name === "hub_send") {

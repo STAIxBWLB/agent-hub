@@ -22,6 +22,7 @@ export type JournalDeliveryState =
 export type JournalResolution = "completed" | "retry" | "discard";
 export const MAX_ENVELOPE_BODY = 1_000_000;
 export const TERMINAL_CAP = 2048;
+export const ACCEPTED_SETTLE_TIMEOUT_REASON = "channel delivery confirmation timed out; inspect effects before resolving";
 const SCHEMA_VERSION = 1,
   MAX_ROWS = 100_000,
   MAX_JSON = 20 * 1024 * 1024;
@@ -51,6 +52,7 @@ export interface JournalDelivery {
   attempt?: number;
   previousId?: string;
 }
+export interface AcceptedDeliveryCandidate { id: string; peer: string; revision: number; updatedAt: number; notifyConductor: boolean }
 export interface DeliveryJournalOptions {
   file: string;
   projectRoot: string;
@@ -839,6 +841,8 @@ export class DeliveryJournal {
       if (!old) throw new Error(`unknown delivery ${id}`);
       if (expectedRevision !== undefined && old.revision !== expectedRevision)
         throw new Error(`stale delivery revision for ${id}`);
+      // A repeated accepted receipt is not fresh evidence and must not renew the settle deadline.
+      if (old.state === state && state === "accepted") return old;
       const revision = this.bump();
       this.db
         .query(
@@ -924,11 +928,29 @@ export class DeliveryJournal {
       : this.db.query("SELECT * FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ('queued', 'dispatching', 'accepted', 'needs_review') ORDER BY created_at, id").all(this.projectId, peer)) as Record<string, unknown>[];
     return rows.map(parseDelivery);
   }
-  heldDeliveryHints(peer: string) {
+  heldDeliveryHints(peer: string, includeAccepted = false) {
     this.ensureOpen();
-    const count = Number((this.db.query("SELECT COUNT(*) AS n FROM deliveries WHERE project_id = ? AND peer = ? AND state = 'needs_review'").get(this.projectId, peer) as { n: number }).n);
-    const rows = this.db.query("SELECT d.id, d.revision, d.created_at, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.from')) FROM json_each(d.originals) env) AS senders, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.kind')) FROM json_each(d.originals) env) AS kinds FROM deliveries d WHERE d.project_id = ? AND d.peer = ? AND d.state = 'needs_review' ORDER BY d.created_at, d.id LIMIT 33").all(this.projectId, peer) as { id: string; revision: number; created_at: number; senders: string; kinds: string }[];
-    return heldDeliveryHints(rows.map(row => ({ id: row.id, revision: row.revision, createdAt: row.created_at, senders: JSON.parse(row.senders) as string[], kinds: JSON.parse(row.kinds) as Kind[] })), count);
+    const states = includeAccepted ? "('needs_review','accepted')" : "('needs_review')";
+    const count = Number((this.db.query(`SELECT COUNT(*) AS n FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ${states}`).get(this.projectId, peer) as { n: number }).n);
+    const rows = this.db.query(`SELECT d.id, d.revision, d.created_at, d.state, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.from')) FROM json_each(d.originals) env) AS senders, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.kind')) FROM json_each(d.originals) env) AS kinds FROM deliveries d WHERE d.project_id = ? AND d.peer = ? AND d.state IN ${states} ORDER BY d.created_at, d.id LIMIT 33`).all(this.projectId, peer) as { id: string; revision: number; created_at: number; state: "accepted" | "needs_review"; senders: string; kinds: string }[];
+    return heldDeliveryHints(rows.map(row => ({ id: row.id, revision: row.revision, createdAt: row.created_at, ...(includeAccepted ? { state: row.state } : {}), senders: JSON.parse(row.senders) as string[], kinds: JSON.parse(row.kinds) as Kind[] })), count);
+  }
+
+  /** Bounded indexed scan; the caller performs a revision-fenced state transition. */
+  expiredAccepted(cutoff: number, peers: readonly string[], limit = 256): AcceptedDeliveryCandidate[] {
+    this.ensureOpen(); integer(cutoff, "accepted cutoff"); integer(limit, "accepted expiry limit", 1, 1024);
+    if (!peers.length) return [];
+    if (peers.length > 4096) fail("accepted expiry peer set is too large");
+    for (const peer of peers) text(peer, "accepted expiry peer", 256);
+    const placeholders = peers.map(() => "?").join(",");
+    const rows = this.db.query(`SELECT d.id,d.peer,d.revision,d.updated_at,EXISTS(SELECT 1 FROM json_each(d.originals) env WHERE json_extract(env.value,'$.priority')='important' OR json_extract(env.value,'$.kind') IN ('review','task')) AS notify_conductor FROM deliveries d WHERE d.project_id = ? AND d.state = 'accepted' AND d.updated_at <= ? AND d.peer IN (${placeholders}) ORDER BY d.updated_at,d.id LIMIT ?`).all(this.projectId, cutoff, ...peers, limit) as { id: unknown; peer: unknown; revision: unknown; updated_at: unknown; notify_conductor: unknown }[];
+    return rows.map(row => ({ id: text(row.id, "accepted expiry id", 256), peer: text(row.peer, "accepted expiry peer", 256), revision: integer(row.revision, "accepted expiry revision"), updatedAt: integer(row.updated_at, "accepted expiry age"), notifyConductor: row.notify_conductor === 1 }));
+  }
+
+  /** Cheap recovery guard for timeout holds; reads no delivery payloads. */
+  hasAcceptedTimeoutHolds(): boolean {
+    this.ensureOpen();
+    return !!this.db.query("SELECT 1 FROM deliveries WHERE project_id = ? AND state = 'needs_review' AND reason = ? LIMIT 1").get(this.projectId, ACCEPTED_SETTLE_TIMEOUT_REASON);
   }
   /** Explicit resolutions, not automatic safe failures, consume the immutable originals' retry lineage. */
   retryEvidence(peer: string, originals: readonly Envelope[]): "unused" | "used" | "unknown" {
@@ -1003,6 +1025,7 @@ export class DeliveryJournal {
     reason: string,
     requestRevision = revision,
     actor: string = "user",
+    allowAcceptedPeerDisposition = false,
   ): JournalDelivery {
     this.ensureOpen();
     text(reason, "resolution reason", 1_000_000);
@@ -1028,7 +1051,7 @@ export class DeliveryJournal {
       if (actor.startsWith("peer:")) {
         const peer = actor.slice(5);
         const recipientRetry = action === "retry" && current.peer === peer && current.state === "needs_review" && this.retryEvidence(current.peer, current.originals) === "unused";
-        const ownerDisposition = (action === "completed" || action === "discard") && current.peer === peer && current.state === "needs_review";
+        const ownerDisposition = (action === "completed" || action === "discard") && current.peer === peer && (current.state === "needs_review" || current.state === "accepted" && allowAcceptedPeerDisposition === true);
         if (!recipientRetry && !ownerDisposition) throw new Error("recipient delivery resolution unavailable; inspect the held delivery or ask the person");
       }
       if (current.revision !== revision)

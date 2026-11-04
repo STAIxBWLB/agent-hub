@@ -184,6 +184,72 @@ test("#221 a hub_inbox result states the queued count once", async () => {
   } finally { await f.close(); }
 });
 
+test("#1172 hub_inbox renders accepted and held metadata once and suppresses stale polling advice", async () => {
+  const f = await client("channel");
+  try {
+    const accepted = { id: "accepted-1", revision: 4, state: "accepted", senders: ["user"], kinds: ["review"], createdAt: Date.now() - 60_000 };
+    const held = { id: "held-1", revision: 7, state: "needs_review", senders: ["codex"], kinds: ["task"], createdAt: Date.now() - 60_000 };
+    f.inbox({ ok: true, envs: [], waiting: 0, waitingImportant: 0, held: { count: 2, rows: [accepted, held], truncated: false }, pollingAdvice: { count: 4, minutes: 3 } });
+    f.holds({ ok: true, held: { count: 1, rows: [held], truncated: false }, queued: 0, important: 0 });
+
+    const shown = output(await f.call("hub_inbox"));
+    expect(shown).toContain("accepted-1");
+    expect(shown).toContain("accepted");
+    expect(shown).toContain("held-1");
+    expect(shown.match(/held-1/g)).toHaveLength(1);
+    expect(shown).not.toContain("(no queued hub messages)");
+    expect(shown).not.toContain("[polling detected]");
+    expect(f.requests.filter(row => row.t === "delivery_holds")).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
+test("#1172 hub_inbox keeps accepted delivery metadata visible when the active push blocks a pull", async () => {
+  const f = await client("channel");
+  try {
+    const accepted = { id: "active-accepted", revision: 9, state: "accepted", senders: ["user"], kinds: ["task"], createdAt: Date.now() };
+    f.inbox({ ok: false, error: "an accepted delivery is awaiting your explicit confirmation", held: { count: 1, rows: [accepted], truncated: false } });
+    f.holds({ ok: true, held: { count: 0, rows: [], truncated: false }, queued: 0, important: 0 });
+
+    const shown = output(await f.call("hub_inbox"));
+    expect(shown).toContain("not read: an accepted delivery is awaiting your explicit confirmation");
+    expect(shown).toContain("active-accepted revision 9 accepted");
+    expect(shown).not.toContain("(no queued hub messages)");
+  } finally { await f.close(); }
+});
+
+test("#1172 unavailable held metadata stays advisory and does not hide pulled messages or duplicate a generic hint", async () => {
+  const f = await client("channel");
+  try {
+    const env = newEnvelope("codex", "already pulled message");
+    const held = { id: "held-after-pull", revision: 3, senders: ["user"], kinds: ["task"], createdAt: Date.now() };
+    f.inbox({ ok: true, envs: [env], waiting: 0, waitingImportant: 0, held: { unavailable: true } });
+    f.holds({ ok: true, held: { count: 1, rows: [held], truncated: false }, queued: 0, important: 0 });
+
+    const shown = output(await f.call("hub_inbox"));
+    expect(shown).toContain(frame(env));
+    expect(shown).toContain("Delivery confirmation metadata is unavailable");
+    expect(shown).toContain("ahub queue list --peer claude");
+    expect(shown.match(/held-after-pull/g)).toBeNull();
+    expect(shown).not.toContain("(no queued hub messages)");
+    expect(shown).not.toContain("raw error");
+  } finally { await f.close(); }
+});
+
+test("#1079 held-only inbox retains its legacy empty-queue header without saying nothing is waiting", async () => {
+  const f = await client("plain");
+  try {
+    const held = { id: "needs-review-only", revision: 2, state: "needs_review", senders: ["codex"], kinds: ["task"], createdAt: Date.now() };
+    f.inbox({ ok: true, envs: [], waiting: 0, waitingImportant: 0, held: { count: 1, rows: [held], truncated: false } });
+    f.holds({ ok: true, held: { count: 1, rows: [held], truncated: false }, queued: 0, important: 0 });
+
+    const shown = output(await f.call("hub_inbox"));
+    expect(shown).toStartWith("(no queued hub messages)");
+    expect(shown).toContain("Held hub deliveries: 1");
+    expect(shown).not.toContain("Nothing is waiting.");
+    expect(shown.match(/needs-review-only/g)).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
 test("#493 actionable notices are not FYI in both session instruction modes, send guidance and template", async () => {
   for (const mode of ["channel", "tools"] as const) {
     const f = await client(mode);
