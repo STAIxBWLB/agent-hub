@@ -1,4 +1,7 @@
-import { parseEvidenceRecord, parseEvidenceLink, evidenceLinkId, evidenceLinkCanonical, type EvidenceRecordInput, type EvidenceReceipt } from "./research-evidence.ts";
+import { parseEvidenceRecord, parseEvidenceLink, evidenceLinkId, evidenceLinkCanonical, type EvidenceRecordInput, type EvidenceReceipt, type EvidenceLinkV1 } from "./research-evidence.ts";
+import { taskShowAllowed } from "./conductor.ts";
+import { evidenceOriginKeys, type EvidenceSourceRead } from "./source-read.ts";
+import type { SourceMeta } from "./sources.ts";
 import { parseAttemptReceipt, parseResearchRunners, verifyAttemptReceipt } from "./research-runner.ts";
 import { approvalBinding, approvalText } from "./task-approval.ts";
 import type { InvocationRow } from "./invocations.ts";
@@ -91,6 +94,9 @@ function requireLocalTaskPeer(peer: unknown): void {
 }
 
 export type TaskAssignmentRole = "owner" | "reviewer" | "planner";
+export type EvidenceReadOrigins = { state: "known"; group: string; groups: number } | { state: "unknown" };
+export type EvidenceReadResult = EvidenceReceipt & ({ status: "private" | "stale" | "unavailable" }
+  | { status: "resolved"; link: EvidenceLinkV1; excerpt: string; excerptSha256: string; locator: EvidenceLinkV1["locator"]; origins: EvidenceReadOrigins });
 
 interface PreparedSpecInspection {
   report?: SpecTaskReport;
@@ -169,6 +175,8 @@ export interface TasksDeps {
   candidateScreen?: MemoryScreen;
   /** Authenticated live turn context, not a model-supplied flag. */
   privateTurn?: (peer: PeerId) => boolean;
+  /** Host-only observer provenance, separate from task/turn authority. Sample before any operation await. */
+  observerExcludedTurn?: (peer: PeerId) => boolean;
   /** #223 R4: the hub's reading of a verdict's context (`fresh` only for a reviewer session started for this review). */
   reviewContext?: (by: PeerId, task: number) => "fresh" | "continuing" | undefined;
   /** #852: what a reviewer reads. `code` (the fixed sandboxed reviewers by default, or a local `review_scope`) reads the code only; unset or `full` also runs tests and reads CI. */
@@ -209,6 +217,10 @@ export interface TasksDeps {
   executionBudget?: ExecutionBudget;
   /** Project-scoped immutable-source metadata, read only before a study transaction. */
   studySource?: (id: string) => { id: string; sha256: string; private: boolean } | undefined;
+  /** Host-owned screened snapshot read, never a public source-read excerpt reconstructed as a projection. */
+  evidenceSourceRead?: (by: PeerId, link: EvidenceLinkV1, current: () => boolean) => Promise<EvidenceSourceRead>;
+  /** Fresh registered metadata for bounded, ephemeral origin grouping; no converter or model call. */
+  evidenceSourceMeta?: (id: string) => SourceMeta | undefined;
   /** Host-only fixture clock; never read from model input or project configuration. */
   studyNow?: () => number;
   /** Host-only reader for this project's check-runner receipts; record inputs never supply a receipt. */
@@ -546,6 +558,9 @@ export class Tasks {
     const authority = this.d.requestAuthority?.(by);
     const check = () => { const reason = authority?.() ?? fence?.(); if (reason) throw new PreEffectToolRefusal(reason); };
     check(); return check;
+  }
+  private observerExcluded(by: PeerId): boolean {
+    try { return this.d.observerExcludedTurn?.(by) === true; } catch { return true; }
   }
 
   private async screenCall(text: string): Promise<PiiVerdict> {
@@ -4525,6 +4540,85 @@ export class Tasks {
     // Advice joins the planner's next delivery; it must not manufacture a turn beside a withheld backlog batch.
     for (const peer of this.taskPlanner(task).filter(peer => this.d.bus.isRostered(peer))) this.releaseNotice(`task #${task.id}: stall notice unavailable`, () => this.d.tell?.(peer, noteLine(HUB, "finding", text)));
   }
+  /** Resolve declared provenance afresh, without manufacturing a #901 judgment or synthesis readiness. */
+  async evidenceRead(by: PeerId, input: unknown): Promise<EvidenceReadResult> {
+    const refuse = () => new PreEffectToolRefusal("evidence read unavailable; use a current evidence id on a research task visible through hub_task_show");
+    try { requireLocalTaskPeer(by); } catch { throw refuse(); }
+    const check = this.requestCheck(by, () => this.studyHold());
+    let id: string, revision: number | undefined;
+    try {
+      const fields = this.studyFields(input, ["id", "revision"]);
+      if (Object.values(Object.getOwnPropertyDescriptors(input)).some(field => !field.enumerable)
+        || typeof fields.id !== "string" || !/^ev:[a-f0-9]{32}$/.test(fields.id)
+        || fields.revision !== undefined && (typeof fields.revision !== "number" || !Number.isSafeInteger(fields.revision) || fields.revision < 1)) throw refuse();
+      id = fields.id; revision = fields.revision as number | undefined;
+    } catch { throw refuse(); }
+    return this.studyWrite(async () => {
+      check(); const link = this.d.board.evidenceLink(this.d.project, id, revision);
+      if (!link) throw refuse();
+      const receipt = { id: link.id, revision: link.revision, taskId: link.taskId };
+      const stub = (status: "private" | "stale" | "unavailable"): EvidenceReadResult => ({ ...receipt, status });
+      const context = () => {
+        check(); let task: Task;
+        try { task = this.studyParent(link.taskId); } catch { throw refuse(); }
+        if (task.profile !== "research" || by !== USER && !taskShowAllowed(by, task, this.d.roles, this.isConfiguredPlanner(by))) throw refuse();
+        let status: "private" | "stale" | "unavailable" | undefined;
+        try {
+          if (this.d.privateTurn?.(by) || task.signals.includes("pii") || task.signals.includes("pii_path") || this.isPii(task)
+            || this.publicMetadataText(evidenceLinkCanonical(link)) !== true) status = "private";
+        } catch { status = "private"; }
+        if (!status) {
+          try { const identity = taskClaimIdentity(task, Number(link.claimId.split(":").at(-1))); if (identity.claimId !== link.claimId || identity.claimRevision !== link.claimRevision) status = "stale"; }
+          catch { status = "stale"; }
+        }
+        const source = this.studySource(link.sourceId);
+        if (source?.private) status = "private";
+        else if (!status && !source) status = "unavailable";
+        else if (!status && source?.sha256 !== link.rawSha256) status = "stale";
+        return { task, status, key: JSON.stringify([task.created, task.history.length, task.owner, task.reviewer, task.plan?.claims, source]) };
+      };
+      const before = context(); if (before.status) return stub(before.status);
+      if (!this.d.evidenceSourceRead) return stub("unavailable");
+      const current = () => { try { const next = context(); return !next.status && next.key === before.key; } catch { return false; } };
+      let read: EvidenceSourceRead;
+      try { read = await this.d.evidenceSourceRead(by, link, current); }
+      catch { check(); const after = context(); return stub(after.status ?? "unavailable"); }
+      check(); const after = context();
+      if (after.status) return stub(after.status);
+      if (after.key !== before.key) return stub("stale");
+      const resolution = read.resolution;
+      if (resolution.status !== "resolved") return stub(resolution.status === "stale" ? "stale" : resolution.cause === "private" ? "private" : "unavailable");
+      const result: EvidenceReadResult = { ...receipt, status: "resolved", link, excerpt: resolution.excerpt, excerptSha256: resolution.excerptSha256, locator: resolution.locator, origins: this.evidenceOrigins(link) };
+      try { if (this.publicMetadataText(JSON.stringify(result)) !== true) return stub("private"); } catch { return stub("private"); }
+      if (!current()) { const final = context(); return stub(final.status ?? "stale"); }
+      return result;
+    });
+  }
+
+  private evidenceOrigins(link: EvidenceLinkV1): EvidenceReadOrigins {
+    const unknown: EvidenceReadOrigins = { state: "unknown" };
+    if (!this.d.evidenceSourceMeta) return unknown;
+    const inventory = this.d.board.latestEvidenceLinks(this.d.project, link.taskId, link.claimId, link.claimRevision, 128);
+    if (!inventory.complete || !inventory.links.some(row => row.id === link.id && row.revision === link.revision)) return unknown;
+    try {
+      const groups: Set<string>[] = [], member: { id: string; keys: readonly string[] }[] = [];
+      for (const row of inventory.links) {
+        const meta = this.d.evidenceSourceMeta(row.sourceId);
+        if (!meta || meta.id !== row.sourceId || meta.private || meta.sha256 !== row.rawSha256 || this.publicMetadataText(JSON.stringify(meta)) !== true) return unknown;
+        const keys = evidenceOriginKeys(meta); if (!keys?.length) return unknown;
+        member.push({ id: row.id, keys });
+        const matches = groups.filter(group => keys.some(key => group.has(key)));
+        const merged = new Set([...keys, ...matches.flatMap(group => [...group])]);
+        for (const group of matches) groups.splice(groups.indexOf(group), 1);
+        groups.push(merged);
+      }
+      const selected = member.find(row => row.id === link.id), group = selected && groups.find(group => selected.keys.some(key => group.has(key)));
+      if (!group) return unknown;
+      // Connected registered origins express provenance grouping only, never independent corroboration or source quality.
+      return { state: "known", group: `origin:${createHash("sha256").update(JSON.stringify([...group].sort())).digest("hex").slice(0, 32)}`, groups: groups.length };
+    } catch { return unknown; }
+  }
+
   /** T1 records declared provenance only; no locator resolution or #901 judgment is manufactured. */
   async evidenceRecord(by: PeerId, input: unknown): Promise<EvidenceReceipt> {
     try { requireLocalTaskPeer(by); }
@@ -6329,6 +6423,7 @@ export class Tasks {
   }
 
   async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs, deliverables?: unknown, specAck?: unknown): Promise<Task> {
+    const observerExcluded = this.observerExcluded(by);
     const requestCheck = this.requestCheck(by);
     const initial = this.need(id, false, true);
     this.mine(initial, by, "owner", true);
@@ -6355,7 +6450,7 @@ export class Tasks {
     // #509a: a bad claim (a claimed hash, an outside or denied path, a missing file) is refused before any effect, with nothing recorded.
     const claims = deliverables === undefined ? undefined : this.deliverableClaims(deliverables, valid());
     // The PII screen reads the summary of a done that passes these checks (issue #198); they run again after it.
-    const withheld = await this.withholds("summary", summary, valid());
+    const withheld = observerExcluded || await this.withholds("summary", summary, valid());
     let task = valid();
     // The hub hashes the files itself, once, here: what the owner delivered is what this read, whatever the file becomes afterwards.
     const records = claims ? await this.hashClaims(claims, task, true) : undefined;
@@ -6558,18 +6653,18 @@ export class Tasks {
         this.tell(task, `Task #${id}: its check passed, but the overlapping work or the files changed while it ran (turn-free integration). Call hub_task_done again.`, pii);
         return;
       }
-      this.d.board.update(id, HUB, "check passed", {}, `${outcome}\n${result.tail}`.trim(), this.checkProvenance(task, result.tail));
+      this.d.board.update(id, HUB, "check passed", {}, `${outcome}\n${result.tail}`.trim(), { ...this.checkProvenance(task, result.tail), ...(withheld ? { withheld: true } : {}) });
       if (refileForSpecs) { this.requestSpecRefile(task); return; }
       // The output goes to the reviewer with the done note, not into shared memory: nobody screened it.
       await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail, withheld, undefined, undefined, undefined, undefined, undefined, undefined, specInspection, true);
       return;
     }
-    this.d.board.update(id, HUB, "check failed", {}, `${outcome}\n${result.tail}`.trim(), this.checkProvenance(task, result.tail));
+    this.d.board.update(id, HUB, "check failed", {}, `${outcome}\n${result.tail}`.trim(), { ...this.checkProvenance(task, result.tail), ...(withheld ? { withheld: true } : {}) });
     this.cohorts.withdraw(id); // open again: its done intent no longer counts (issue #107)
     if (task.owner) this.d.board.recordOutcome(task.owner, task.class, false);
     this.contradict(task);
     this.d.notify(`task ${this.publicTitle(task)}: its check failed (${outcome}); it stays with ${task.owner ?? by}`);
-    this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${result.tail ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii);
+    this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${!withheld && result.tail ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii);
   }
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
@@ -7067,6 +7162,7 @@ export class Tasks {
   }
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown): Promise<Task> {
+    const observerExcluded = this.observerExcluded(by);
     const requestCheck = this.requestCheck(by);
     if (typeof id !== "number" && !(typeof id === "string" && /^\s*\d+\s*$/.test(id))) this.need(id, false, true);
     const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
@@ -7161,7 +7257,7 @@ export class Tasks {
     }
     if (head !== undefined && resolvedHead && findingHead !== resolvedHead) throw new PreEffectToolRefusal(`task #${initial.id}: supplied review head ${findingHead} differs from recorded task head ${resolvedHead}; owner must re-file hub_task_done with refs.commit set to the supplied full SHA before review`);
     // The PII screen reads the note of a review that passes these checks (issue #198); they run again after it.
-    const withheld = await this.withholds("review note", parsed.length ? JSON.stringify({ note, findings: parsed }) : note, valid())
+    const withheld = observerExcluded || await this.withholds("review note", parsed.length ? JSON.stringify({ note, findings: parsed }) : note, valid())
       || parsed.length > 0 && !this.findingTextAllowed(initial, parsed);
     let task = valid();
     let reviewedHead: string | undefined;

@@ -939,6 +939,21 @@ export class Board {
     } catch { throw new Error("evidence storage invalid; stop the hub and restore a trusted hub.db backup; then restart and retry"); }
   }
 
+  /** Bounded current inventory. A task-wide overflow cannot establish complete claim coverage. */
+  latestEvidenceLinks(project: string, taskId: number, claimId: string, claimRevision: string, limit: number): { links: EvidenceLinkV1[]; complete: boolean } {
+    if (!researchText(project) || !researchInteger(taskId) || typeof claimId !== "string" || !/^claim:[1-9][0-9]{0,15}:(?:0|[1-9][0-9]{0,15}):[1-9][0-9]?$/.test(claimId)
+      || !/^[a-f0-9]{16}$/.test(claimRevision) || !researchInteger(limit) || limit > 128) throw new Error("evidence inventory identity is invalid; refresh the task claim binding before retrying");
+    const rows = this.db.query("SELECT id,MAX(revision) AS revision FROM research_evidence_links WHERE project=? AND task_id=? GROUP BY id ORDER BY id LIMIT ?")
+      .all(project, taskId, limit + 1) as { id: string; revision: number }[];
+    const links = rows.slice(0, limit).flatMap(row => {
+      const link = this.evidenceLink(project, row.id, row.revision);
+      if (!link || link.taskId !== taskId) throw new Error("evidence inventory changed; refresh the task review before retrying");
+      return link.claimId === claimId && link.claimRevision === claimRevision ? [link] : [];
+    });
+    // ponytail: the task-wide cap can make a smaller claim inventory unknown; a claim-indexed validated read is the upgrade path.
+    return { links, complete: rows.length <= limit };
+  }
+
   recordEvidenceLink(project: string, input: EvidenceLinkV1, fence: { taskFlowRevision: number; taskCreated: number; owner: PeerId }): EvidenceLinkV1 {
     const link = parseEvidenceLink(input), canonical = evidenceLinkCanonical(link);
     if (!researchText(project) || !researchInteger(fence.taskFlowRevision, 0) || !researchInteger(fence.taskCreated, 0) || fence.owner !== link.recordedBy) throw new Error("evidence write binding is invalid; refresh the task before retrying");

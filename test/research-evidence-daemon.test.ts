@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { projectChain } from "@staix/agent-mem";
@@ -8,15 +8,16 @@ import { Board, taskClaimIdentity, type Task } from "../src/hub/board.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { EVIDENCE_RECORD_TOOL, IMPLEMENTER_HUB_TOOL_NAMES, STUDY_TOOLS, TASK_TOOLS, TASK_TOOL_NAMES, profileTaskTools, projectToolList } from "../src/hub/hub-tools.ts";
-import { SourceRegistry } from "../src/hub/sources.ts";
+import { SourceRegistry, sourceProjectionReceipt } from "../src/hub/sources.ts";
 import { readRestartSnapshot } from "../src/hub/restart.ts";
 import { realPath } from "../src/hub/project.ts";
 import { Capture } from "../src/memory/capture.ts";
 import type { MemoryClient } from "../src/memory/client.ts";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-async function rig(options: { devOwner?: "codex" | "kimi" } = {}) {
+async function rig(options: { devOwner?: "codex" | "kimi"; piiScreen?: Parameters<typeof startDaemon>[0]["piiScreen"] } = {}) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-evidence-daemon-"))), stateDir = join(root, "state"); mkdirSync(stateDir);
+  if(options.piiScreen){mkdirSync(join(root,".agenthub"));writeFileSync(join(root,".agenthub/routing.toml"),readFileSync(new URL("../templates/routing.toml",import.meta.url),"utf8").replaceAll('pi_backend = "mlx"','pi_backend = "dgx"').replace('pii_screen = "off"','pii_screen = "local"').replace(/^pii_patterns = .*$/m,'pii_patterns = ["PRIVATE_POLICY_SENTINEL"]'));}
   const sources = new SourceRegistry(stateDir);
   const registered = [false, false, true].map((privateSource, i) => {
     const text = `공개 fixture passage ${i}`;
@@ -28,7 +29,7 @@ async function rig(options: { devOwner?: "codex" | "kimi" } = {}) {
   const active = board.update(research.id, "user", "fixture accepted", { owner: "codex", state: "in_progress" });
   const dev = board.propose("user", { title: "Development task", class: "test", plan: { claims: ["dev-claim"] } });
   const devActive = board.update(dev.id, "user", "fixture accepted", { owner: options.devOwner ?? "codex", state: "in_progress" });
-  const daemon = await startDaemon({ cwd: root, stateDir, projectId: "evidence-fixture", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
+  const daemon = await startDaemon({ cwd: root, stateDir, projectId: "evidence-fixture", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, piiScreen:options.piiScreen,
     config: { ...DEFAULT_CONFIG, profile: "research", roles: { codex: ["implementer"], claude: ["planner"], kimi: ["implementer"] }, roster: { ...DEFAULT_CONFIG.roster, kimi: true }, batch_ms: 0,
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
       mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, research: { ...DEFAULT_CONFIG.research, enabled: false },
@@ -60,7 +61,11 @@ test("evidence recording is research-only publication, recognized for dispatch/c
   expect(EVIDENCE_RECORD_TOOL.inputSchema.properties).not.toHaveProperty("recordedBy");
   expect(EVIDENCE_RECORD_TOOL.inputSchema.additionalProperties).toBe(false);
   expect(EVIDENCE_RECORD_TOOL.description).toContain("declared");
-  expect(profileTaskTools("research").some(tool => tool.name === "hub_evidence_read")).toBe(false);
+  expect(profileTaskTools("research").some(tool => tool.name === "hub_evidence_read")).toBe(true);
+  expect(projectToolList(profileTaskTools("research"), true).some(tool => tool.name === "hub_evidence_read")).toBe(true);
+  expect(profileTaskTools("dev").some(tool => tool.name === "hub_evidence_read")).toBe(false);
+  expect(TASK_TOOL_NAMES.has("hub_evidence_read")).toBe(true); expect(STUDY_TOOLS.has("hub_evidence_read")).toBe(false);
+  expect(IMPLEMENTER_HUB_TOOL_NAMES).toContain("hub_evidence_read");
 });
 
 test("the real daemon forwards actor and the whole evidence envelope and returns only the Tasks receipt", async () => {
@@ -110,7 +115,7 @@ test("native and namespaced evidence calls never send arguments or results to ca
   const writes: Record<string, unknown>[] = [];
   const client = { appendCapture: async (record: Record<string, unknown>) => { writes.push(record); } } as unknown as MemoryClient;
   const capture = new Capture(client, { project: "evidence-fixture", cwd: import.meta.dir }); capture.init("evidence-session", "public session prompt");
-  for (const tool of ["hub_evidence_record", "mcp__agent-hub__hub_evidence_record"]) capture.observe({ tool, args: "EVIDENCE_ARGS_CANARY", output: "EVIDENCE_RESULT_CANARY", id: tool, paths: [] });
+  for (const tool of ["hub_evidence_record", "mcp__agent-hub__hub_evidence_record", "hub_evidence_read", "mcp__agent-hub__hub_evidence_read"]) capture.observe({ tool, args: "EVIDENCE_ARGS_CANARY", output: "EVIDENCE_RESULT_CANARY", id: tool, paths: [] });
   capture.observe({ tool: "read", args: "public.txt", output: "public control", id: "public-read", paths: ["public.txt"] });
   await Promise.resolve();
   expect(writes.filter(record => record.event === "PostToolUse")).toHaveLength(1);
@@ -138,8 +143,9 @@ test("only stored evidence requires the recovery feature and contributes its con
   }
 }, 20_000);
 
-import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { loadRouting } from "../src/hub/routing.ts";
 import { conductorPeer } from "../src/hub/conductor.ts";
 import { ownerToolEffect } from "../src/hub/no-writes.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
@@ -152,14 +158,21 @@ test("in-process evidence receipts stay JSON when the peer has held-delivery met
   const result = { id: "ev:" + "a".repeat(32), revision: 1, taskId: 7 };
   const unexpected = () => { throw new Error("unrelated authority path reached"); };
   let hints = 0;
-  const context = { Error, PreEffectToolRefusal, conductorPeer, ownerToolEffect, declarations: {}, config: { roles: {} }, turns: new Map(), reviewerToolObservers: new Map(),
-    sourceReadCurrent: unexpected, runningReviewAuthority: unexpected, auditConduct: unexpected,
-    ownHeldHint: () => { hints++; return "held-delivery control metadata"; }, taskOpBody: async () => JSON.stringify(result), extracted: undefined as unknown };
-  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${readOnly}\n${readTools}\nlet taskOpsInFlight=0;\n${source.slice(start, end)}\nglobalThis.extracted=taskOp;`);
+  const cwd=mkdtempSync(join(tmpdir(),"evidence-read-wrapper-")), routing=loadRouting(cwd);
+  const currentStart=source.indexOf("  function sourceReadCurrent("),currentEnd=source.indexOf("  const sourceRegistry =",currentStart);
+  expect(currentStart).toBeGreaterThan(0);expect(currentEnd).toBeGreaterThan(currentStart);
+  const context = { Error, PreEffectToolRefusal, conductorPeer, ownerToolEffect, declarations: {}, config: { roles: {}, pii:{paths:[]}, mlx:{enabled:false} }, turns: new Map(), reviewerToolObservers: new Map(),
+    stopping:false,bus:{peers:new Map([["codex",{}]])},connectionGeneration:()=>1,childToolAuthority:new AsyncLocalStorage(),activeRouting:()=>routing,holdsPii:unexpected,
+    runningReviewAuthority: unexpected, auditConduct: unexpected,
+    ownHeldHint: () => { hints++; return "held-delivery control metadata"; }, taskOpBody: async (_by:string,op:string) => JSON.stringify(op==="hub_evidence_read"?{...result,status:"unavailable"}:result), extracted: undefined as unknown };
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${readOnly}\n${readTools}\n${source.slice(currentStart,currentEnd)}\nlet taskOpsInFlight=0;\n${source.slice(start, end)}\nglobalThis.extracted=taskOp;`);
   runInNewContext(script, context);
   const run = context.extracted as (by: string, op: string, input: unknown, inProcess: boolean) => Promise<string>;
-  expect(JSON.parse(await run("codex", "hub_evidence_record", { taskId: 7 }, true))).toEqual(result); expect(hints).toBe(0);
-  expect(await run("codex", "hub_task_list", {}, true)).toContain("held-delivery control metadata"); expect(hints).toBe(1);
+  try {
+    expect(JSON.parse(await run("codex", "hub_evidence_record", { taskId: 7 }, true))).toEqual(result); expect(hints).toBe(0);
+    expect(JSON.parse(await run("codex", "hub_evidence_read", { id:result.id }, true))).toEqual({...result,status:"unavailable"});expect(hints).toBe(0);
+    expect(await run("codex", "hub_task_list", {}, true)).toContain("held-delivery control metadata"); expect(hints).toBe(1);
+  }finally{rmSync(cwd,{recursive:true,force:true});}
 });
 
 test("an owner reads canonical claim bindings over RPC and a legal plan edit stales the old evidence input", async () => {
@@ -213,4 +226,63 @@ test("owner task reads omit evidence claim bindings for development and private 
     const consolePrivate = await f.person.request({ t: "task", op: "task_show", args: { id: row.id } });
     assertOk(consolePrivate); expect(JSON.parse(consolePrivate.text)).not.toHaveProperty("claims");
   } finally { await f.close(); }
+});
+
+
+test("T2 real RPC resolves scalar excerpts, preserves non-active read scope, and a private upgrade returns ids only", async () => {
+  const f=await rig();
+  try {
+    const excerpt="😀 EVIDENCE_READ_EXCERPT_CANARY café", text="앞"+excerpt+"뒤", bytes=Buffer.from(text);
+    const projection=sourceProjectionReceipt(bytes,text)!;
+    const source=f.sources.add({bytes,text,kind:"file",origin:"PUBLIC_EVIDENCE_ORIGIN_CANARY.txt",private:false,projection});
+    const input={...f.payload(),sourceId:source.id,rawSha256:projection.rawSha256,projectionSha256:projection.projectionSha256,projectionVersion:projection.projectionVersion,locator:{start:1,end:1+Array.from(excerpt).length}};
+    const saved=receipt(await f.record(f.owner,input));
+    const read=(client:ControlClient,input:unknown)=>client.request({t:"task",op:"hub_evidence_read",args:input});
+    const denied=await read(f.other,{id:saved.id});expect(denied.ok).toBe(false);expect(JSON.stringify(denied)).not.toContain(excerpt);
+    const response=await read(f.owner,{id:saved.id});assertOk(response);const resolved=JSON.parse(response.text);
+    expect(resolved).toMatchObject({...saved,status:"resolved",excerpt,locator:input.locator});
+    expect(resolved.link).toMatchObject({sourceId:source.id,rawSha256:projection.rawSha256,projectionVersion:projection.projectionVersion});
+    expect(resolved.excerptSha256).toBe(hash(excerpt));
+    expect(JSON.stringify(resolved)).not.toContain("PUBLIC_EVIDENCE_ORIGIN_CANARY");
+    const audit=readFileSync(join(f.stateDir,"hub.log"),"utf8")+readFileSync(join(f.stateDir,"events.jsonl"),"utf8");
+    expect(audit).not.toContain("EVIDENCE_READ_EXCERPT_CANARY");expect(audit).not.toContain("PUBLIC_EVIDENCE_ORIGIN_CANARY");
+    f.board.update(f.active.id,"user","fixture in review",{state:"in_review",reviewer:"kimi"});
+    expect(JSON.parse((await read(f.other,{id:saved.id,revision:1})).text)).toMatchObject({status:"resolved",excerpt});
+    f.sources.markPrivate(source.id);
+    for(const client of [f.owner,f.other,f.person]){
+      const privateReply=await read(client,{id:saved.id});assertOk(privateReply);const value=JSON.parse(privateReply.text);
+      expect(value).toEqual({...saved,status:"private"});expect(Object.keys(value).sort()).toEqual(["id","revision","status","taskId"]);
+      for(const canary of [excerpt,"PUBLIC_EVIDENCE_ORIGIN_CANARY",projection.rawSha256,projection.projectionSha256])expect(privateReply.text).not.toContain(canary);
+    }
+  } finally {await f.close();}
+});
+
+test("T2 legacy or mismatched projections remain unavailable/stale without widening receipts or mutating evidence",async()=>{
+  const f=await rig();
+  try{
+    const legacy=receipt(await f.record(f.owner,f.payload())),before=f.board.researchEvidenceIntegrity();
+    const old=await f.owner.request({t:"task",op:"hub_evidence_read",args:{id:legacy.id}});assertOk(old);expect(JSON.parse(old.text)).toEqual({...legacy,status:"unavailable"});
+    const text="Public immutable text",bytes=Buffer.from(text),projection=sourceProjectionReceipt(bytes,text)!;
+    const source=f.sources.add({bytes,text,kind:"file",origin:"unchanged.txt",private:false,projection});
+    const wrong=receipt(await f.record(f.owner,{...f.payload(),sourceId:source.id,rawSha256:projection.rawSha256,projectionSha256:projection.projectionSha256,projectionVersion:"different-converter-v1"}));
+    const inventory=f.board.researchEvidenceIntegrity();
+    const read=await f.owner.request({t:"task",op:"hub_evidence_read",args:{id:wrong.id}});assertOk(read);expect(JSON.parse(read.text)).toEqual({...wrong,status:"stale"});
+    expect(f.board.researchEvidenceIntegrity()).toEqual(inventory);expect(before.links).toBe(1);
+  }finally{await f.close();}
+});
+
+
+test("T2 selected evidence becomes private while the real host screen is awaited and releases no cached excerpt",async()=>{
+  const text="EVIDENCE_READ_ASYNC_PRIVATE_CANARY";
+  let entered!:()=>void,release!:()=>void;
+  const began=new Promise<void>(resolve=>{entered=resolve;}),held=new Promise<void>(resolve=>{release=resolve;});
+  const f=await rig({piiScreen:async value=>{if(value===text){entered();await held;}return {label:"clear"};}});
+  try{
+    const bytes=Buffer.from(text),projection=sourceProjectionReceipt(bytes,text)!;
+    const source=f.sources.add({bytes,text,kind:"file",origin:"async-public.txt",private:false,projection});
+    const saved=receipt(await f.record(f.owner,{...f.payload(),sourceId:source.id,rawSha256:projection.rawSha256,projectionSha256:projection.projectionSha256,projectionVersion:projection.projectionVersion,locator:{start:0,end:Array.from(text).length}}));
+    const reading=f.owner.request({t:"task",op:"hub_evidence_read",args:{id:saved.id}});
+    await began;f.sources.markPrivate(source.id);release();
+    const reply=await reading;assertOk(reply);expect(JSON.parse(reply.text)).toEqual({...saved,status:"private"});expect(reply.text).not.toContain(text);
+  }finally{release();await f.close();}
 });

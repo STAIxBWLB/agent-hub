@@ -8,7 +8,7 @@ import { NOTE_KINDS } from "./envelope.ts";
 
 /** Restricted to the fixed current-child tools server, never an ordinary peer tool. */
 /** The fixed MCP surface of a current owned implementer child; independent of broader project roles. */
-export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record"]);
+export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record", "hub_evidence_read"]);
 
 export const IMPLEMENTER_PERMISSION_TOOL = {
   name: "hub_permission_request",
@@ -95,6 +95,9 @@ export const EVIDENCE_RECORD_TOOL = tool("hub_evidence_record", "Record a proven
   locator: { type: "object", properties: { start: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, end: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER } }, required: ["start", "end"], additionalProperties: false, description: "Declared zero-based, half-open Unicode scalar-value offsets; nonempty span <=4096. T2 will resolve the immutable projection." },
   relation: { type: "string", enum: ["supports", "contradicts", "context"] }, revision: { type: "integer", minimum: 1, description: "Default 1; later revisions name the existing link id." },
 }, ["taskId", "claimId", "claimRevision", "sourceId", "rawSha256", "projectionSha256", "projectionVersion", "locator", "relation"]);
+export const EVIDENCE_READ_TOOL = tool("hub_evidence_read", "Read one recorded evidence link, latest revision by default, on a research task visible through hub_task_show. Re-resolves the registered snapshot with current privacy on every read. Resolved means bounded locator provenance only, never entailment, source quality, person judgment or synthesis readiness. Private, stale or unavailable links return ids and status only; refresh the current claim and registered snapshot before retrying. Origin groups denote connected registered-origin provenance, never independent corroboration. Excluded from capture.", {
+  id: { type: "string", pattern: "^ev:[0-9a-f]{32}$" }, revision: { type: "integer", minimum: 1 },
+}, ["id"]);
 /** #604: a handoff's arguments cross to another project, so neither tool's arguments nor result are captured to memory. */
 export const HANDOFF_TOOLS = new Set(["hub_task_handoff", "hub_task_handoffs"]);
 export const BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
@@ -173,7 +176,7 @@ export function sessionTitleTools(tools: HubTool[], allowed = false): HubTool[] 
   const filtered = tools.filter(tool => tool.name !== SESSION_TITLE_TOOL.name);
   return allowed ? [...filtered, SESSION_TITLE_TOOL] : filtered;
 }
-export const TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name, EVIDENCE_RECORD_TOOL.name]);
+export const TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name, EVIDENCE_RECORD_TOOL.name, EVIDENCE_READ_TOOL.name]);
 
 /** Separately published: serving a schema grants no authority, only the daemon's explicit role does. */
 export const CONDUCTOR_TOOLS: HubTool[] = [
@@ -219,7 +222,7 @@ export function configuredToolContext(status: unknown, peer: string): ProjectToo
 const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
 /** Publication restricts exposure only; server-side authority remains mandatory for every call. */
 export function projectToolList<T extends { name: string }>(tools: T[], readOnly = false): T[] {
-  return readOnly ? tools.filter(tool => READ_ONLY_PROJECT_TOOLS.includes(tool.name)) : tools;
+  return readOnly ? tools.filter(tool => READ_ONLY_PROJECT_TOOLS.includes(tool.name) || tool.name === EVIDENCE_READ_TOOL.name) : tools;
 }
 
 
@@ -248,7 +251,7 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
   const customProfile = !(profile === "dev" || profileData(profile) === projectProfile("dev"));
   if (!customStages && !customProfile && !criteria) return TASK_TOOLS;
   const data = profileData(profile);
-  const tools = data.name === "research" ? [...TASK_TOOLS, EVIDENCE_RECORD_TOOL] : TASK_TOOLS;
+  const tools = data.name === "research" ? [...TASK_TOOLS, EVIDENCE_RECORD_TOOL, EVIDENCE_READ_TOOL] : TASK_TOOLS;
   return tools.map(tool => {
     const properties = { ...tool.inputSchema.properties };
     if ((customStages || criteria) && tool.name === "hub_sdlc_record") {

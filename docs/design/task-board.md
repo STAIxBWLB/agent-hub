@@ -143,10 +143,25 @@ Public receipts contain only link ID, revision and task ID. The tool is excluded
 from argument/result capture and from read-only publication; dev-profile tool
 lists retain their existing shape.
 
-Projection hashes/version are caller-declared T1 bindings; only the raw source
-hash is checked against registry metadata. Locator resolution, Unicode offset
-conversion and current-privacy public revalidation are T2. Evidence read/CLI
-surfaces, complete inventory bindings and synthesis readiness remain later work.
+At recording, projection hashes/version remain caller-declared bindings and the
+raw source hash is checked against registry metadata. T2 adds the public
+`hub_evidence_read` projection through the existing task-show authority. It
+re-resolves the current claim revision and screened, complete registered source
+projection on every read, with fresh privacy and authorization fences. Unicode
+scalar-value locators are explicitly converted from source-read ranges. Missing,
+truncated, legacy-unbound or changed material is unavailable or stale; private
+upgrades return IDs only, never a source ID, path/origin, excerpt or narrative.
+Resolved excerpts are capped at 4096 UTF-8 bytes and never cached or captured.
+
+The existing source registry owns an optional projection receipt bound to raw
+SHA-256, complete text SHA-256 and the genuine converter fingerprint (or named
+UTF-8 decoder). This adds no source registration authority or second source
+store. A read does not retrofit a receipt or execute a network fetch. A bounded
+latest-link inventory and current screened metadata collapse overlapping origins
+into opaque connected groups; unknown/private/overflow evidence gives no group
+count. Group counts are provenance, never an independence or truth verdict.
+Study CLI surfaces, complete synthesis inventory bindings and readiness remain
+T3; #901 keeps the sole person-judgment record.
 Stored evidence adds a conditional `research_evidence` recovery feature and
 `{links, revisions, digest}` integrity section. An absent section is the empty
 store, preserving older recovery records; an empty database requires no new

@@ -22,8 +22,8 @@ import { parsePiFlags } from "../adapters/definitions/native-cli-pi.ts";
 import { supportsBoardReleaseFilter, supportsBoardColumnMetadata, readAllTasks } from "./board-read.ts";
 import { matchesPolicy } from "../hub/path-policy.ts";
 import { projectedDiff } from "../hub/projected-diff.ts";
-import { TextProjections } from "../hub/text-projection.ts";
-import { fetchSourceUrl, MAX_SOURCE_BYTES, publicSourceView, screenRegistration, SourceRegistry, validSourceId, type SourceMeta } from "../hub/sources.ts";
+import { TextProjections, type ProjectedText } from "../hub/text-projection.ts";
+import { fetchSourceUrl, MAX_SOURCE_BYTES, publicSourceView, screenRegistration, sourceProjectionReceipt, SourceRegistry, validSourceId, type SourceMeta } from "../hub/sources.ts";
 import { renderSourceAdd, renderSourceList } from "./source-output.ts";
 import { renderScheduleChange, renderScheduleList, renderScheduleRun } from "./schedule-output.ts";
 import { renderIntake, renderIntakeChange } from "./intake-output.ts";
@@ -1535,12 +1535,14 @@ const commands: Record<string, () => Promise<void> | void> = {
     } catch (error) { return fail(`cannot register ${isUrl ? "that URL" : target}: ${(error as Error).message}`); }
     const projections = new TextProjections({ cwd, stateDir, config: config.text_projection ?? {}, deny: config.local.deny, readAllow: config.local.read_allow, log: line => console.error(line) });
     const extension = /\.[A-Za-z0-9]{1,16}$/.exec(isUrl ? new URL(origin).pathname : origin)?.[0] ?? "";
+    let converted: ProjectedText | undefined;
     const verdict = screenRegistration({ bytes, kind, ...(absolute ? { path: absolute, typedPath: resolve(cwd, target) } : {}) }, {
       piiPaths: config.pii?.paths ?? [], piiPatterns: currentRouting(cwd).signals.pii_patterns, cwd, matchesPolicy,
-      project: data => extension ? projections.projectBytes(join(cwd, `source${extension.toLowerCase()}`), data)?.text : undefined,
+      project: data => { converted = extension ? projections.projectBytes(join(cwd, `source${extension.toLowerCase()}`), data) : undefined; return converted?.text; },
     });
+    const projection = sourceProjectionReceipt(bytes, verdict.text, converted ? { extension: extension.toLowerCase(), value: converted } : undefined);
     let added;
-    try { added = registry.add({ bytes, kind, origin, private: verdict.private, ...(verdict.text !== undefined ? { text: verdict.text } : {}) }); }
+    try { added = registry.add({ bytes, kind, origin, private: verdict.private, ...(verdict.text !== undefined ? { text: verdict.text } : {}), ...(projection ? { projection } : {}) }); }
     catch (error) { return fail(`cannot register ${isUrl ? "that URL" : target}: ${(error as Error).message}`); }
     const meta = registry.get(added.id);
     if (!meta) return fail(`the record for ${added.id} cannot be read after it was registered; inspect ${join(stateDir, "sources")}`);

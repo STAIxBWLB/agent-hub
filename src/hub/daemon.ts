@@ -221,7 +221,8 @@ import { looksSecret, DEFAULT_LEASE_MS, memoryHome, SUGGESTED, taskKey, type Can
 import { memoryProjectKey } from "@staix/agent-mem";
 import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, memoryProjectFor, openProfileMemory, openProfileCandidates, MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 import { syncMemory, createIntentBriefSource, createStandalonePolicy } from "@staix/agent-mem";
-import { SourceRegistry } from "./sources.ts";
+import { SourceRegistry, SOURCE_UTF8_PROJECTION_VERSION, type SourceMeta } from "./sources.ts";
+import { readEvidenceSource } from "./source-read.ts";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead, sourceRead, validateSourceRead } from "./read-tools.ts";
 import { nativeRecall } from "../memory/recall.ts";
 import { promotionScreen, withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
@@ -383,7 +384,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_specs"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_evidence_read", "hub_status", "hub_specs"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -2317,6 +2318,16 @@ export async function startDaemon(opts: DaemonOptions) {
     }, sourceKnown: id => sourceRegistry.get(id) !== undefined,
       partsSchema: () => profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off").find(tool => tool.name === "hub_backlog_split")?.inputSchema.properties.parts },
     studySource: id => sourceRegistry.get(id),
+    evidenceSourceMeta: id => sourceRegistry.get(id),
+    evidenceSourceRead: (by, link, current) => {
+      const hostCurrent = sourceReadCurrent(by, false, false);
+      return readEvidenceSource(sourceRegistry, link, {
+        valid: () => hostCurrent() && current(), canReadPrivate: async () => false,
+        screen: screenSourceText,
+        projectionVersion: receipt => receipt.converter
+          ? projections.fingerprint(join(opts.cwd, `source${receipt.converter.extension}`)) : SOURCE_UTF8_PROJECTION_VERSION,
+      });
+    },
     experimentCheck: run => checkRunner.result(run),
     // The PII screen (issue #198): the model on this machine when MLX/Ollama is enabled, else the gateway on campus only.
     piiScreen: (text) => {
@@ -3415,7 +3426,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // Registration is the same two steps `ahub source add` takes (`registerScanned`): one decision about privacy, then the registry. The scan kept no bytes, so the file
         // is read again there and refused if it no longer hashes to what the scan saw. A file under pii.paths or whose text matches a PII pattern is a private source.
         const register = (file: ScannedFile) => registerScanned(file, { registry: sourceRegistry, cwd: opts.cwd, piiPaths: config.pii?.paths ?? [], piiPatterns: () => activeRouting().signals.pii_patterns,
-          project: (extension, data) => projections.projectBytes(join(opts.cwd, `source${extension}`), data)?.text });
+          project: (extension, data) => projections.projectBytes(join(opts.cwd, `source${extension}`), data) });
         for (const run of await tasks.runFolderTriggers(folderStore, config.folder_triggers, entry => scanFolder(entry, policy, (real, size, mtime) => folderStore.known(entry.id, real, size, mtime)), register, scheduleNow(), () => opts.schedulesHeld?.() === true)) {
           if (run.outcome === "ran") log(`folder trigger ${run.id}: proposed ${run.tasks.map(id => `task #${id}`).join(", ")}`);
           else if (run.outcome === "failed" || run.outcome === "refused") log(`folder trigger ${run.id}: ${run.outcome}: ${sanitize(run.reason ?? "").slice(0, 160)}`);
@@ -3443,7 +3454,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const SERVER_JS = join(import.meta.dir, "..", "..", "plugins", "agent-hub", "server.js");
   // What the hub's MCP server offers a native peer. Codex approves them in config, Kimi's requests for exactly these
   // names are answered by the hub; every call still passes daemon role/capability checks before its effects.
-  const HUB_TOOLS = ["hub_send", ...[...TASK_TOOL_NAMES].filter(name => name !== "hub_set_title" && (name !== "hub_evidence_record" || resolvedProfile.name === "research")), ...CONDUCTOR_TOOLS.map((t) => t.name)];
+  const HUB_TOOLS = ["hub_send", ...[...TASK_TOOL_NAMES].filter(name => name !== "hub_set_title" && (!["hub_evidence_record", "hub_evidence_read"].includes(name) || resolvedProfile.name === "research")), ...CONDUCTOR_TOOLS.map((t) => t.name)];
   const HUB_TOOL_TITLES = new Set(HUB_TOOLS.map((name) => `mcp__agent-hub__${name}`));
   const toolEnv = (peer: PeerId, deliveryOnly = false) => ({ ...(deliveryOnly ? { AGENTHUB_DELIVERY_ONLY: "true" } : {}), AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd });
 
@@ -3592,7 +3603,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const taskOp = async (...args: Parameters<typeof taskOpBody>): Promise<string> => {
     const [by, op, input] = args;
     if (readOnlyPeer(by) && !READ_ONLY_HUB_TOOLS.has(op)) throw new PreEffectToolRefusal("read-only instance cannot mutate hub state");
-    const sourceCurrent = op === "hub_source_read" ? sourceReadCurrent(by, args[3] ?? false, args[4] ?? false) : undefined;
+    const sourceCurrent = op === "hub_source_read" || op === "hub_evidence_read" ? sourceReadCurrent(by, args[3] ?? false, args[4] ?? false) : undefined;
     const nativeTurn = turns.get(by);
     const effectful = ownerToolEffect(op, input);
     if (nativeTurn && effectful) nativeTurn.effectsPending = (nativeTurn.effectsPending ?? 0) + 1;
@@ -3614,13 +3625,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const id = Number.isSafeInteger(proposed) && proposed! > 0 ? proposed : admittedId;
         auditConduct({ kind: "conduct", actor: by, action: op.slice(4), ...(id === undefined ? {} : { task: id }) });
       }
-      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" ? ownHeldHint(by) : "";
+      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_evidence_read" ? ownHeldHint(by) : "";
       return hint ? `${text}\n\n${hint}` : text;
     } catch (error) {
       if (reviewTool && traceId !== undefined) reviewerToolObservers.get(by)?.(traceId, reviewTool, error instanceof Error ? error.message : "review tool refused");
       if (nativeTurn && effectful && !(error instanceof PreEffectToolRefusal) && turns.get(by) === nativeTurn) nativeTurn.taskEffect = true;
       // Keep proven pre-effect refusal identity/code for native receipts; only add body-free metadata.
-      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" ? ownHeldHint(by) : "";
+      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_evidence_read" ? ownHeldHint(by) : "";
       if (hint && error instanceof Error) error.message += `\n\n${hint}`;
       throw error;
     } finally {
@@ -3654,6 +3665,15 @@ export async function startDaemon(opts: DaemonOptions) {
       && policyKey === JSON.stringify({ signals: activeRouting().signals, constraints: activeRouting().constraints, paths: config.pii?.paths ?? [], mlx: config.mlx, model: activeRouting().local.fixed_model });
   }
   const sourceRegistry = new SourceRegistry(opts.stateDir);
+  async function screenSourceText(text: string, meta: SourceMeta): Promise<boolean> {
+    if (meta.origins.some(origin => origin.kind === "file" && matchesPolicy(opts.cwd, origin.origin, config.pii?.paths ?? []))) return false;
+    try { if (looksSecret(text) || activeRouting().signals.pii_patterns.some(pattern => new RegExp(pattern).test(text))) return false; }
+    catch { return false; }
+    if (!tasks.screenOn()) return true;
+    // Reuse the bounded host screen. Oversized/unknown is private, never an unscreened excerpt.
+    const verdict = await (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text).catch(() => undefined);
+    return verdict?.label === "clear";
+  }
   const answeringInvocation = (peer: PeerId): boolean => {
     if (invocations.answering(peer)) return true;
     if (!bus.hasInvocationTurn(peer)) return false;
@@ -3849,15 +3869,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const campus = await onCampus().catch(() => false);
           return campus && eligible();
         },
-        screen: async (text, meta) => {
-          if (meta.origins.some(origin => origin.kind === "file" && matchesPolicy(opts.cwd, origin.origin, config.pii?.paths ?? []))) return false;
-          try { if (looksSecret(text) || activeRouting().signals.pii_patterns.some(pattern => new RegExp(pattern).test(text))) return false; }
-          catch { return false; }
-          if (!tasks.screenOn()) return true;
-          // Reuse the bounded host screen. Oversized/unknown is private, never an unscreened excerpt.
-          const verdict = await (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text).catch(() => undefined);
-          return verdict?.label === "clear";
-        },
+        screen: screenSourceText,
       }));
     }
     if (MEMORY_READ_TOOLS.has(op)) {
@@ -4048,6 +4060,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify(await tasks.experimentRecord(by, a));
       case "hub_evidence_record":
         return JSON.stringify(await tasks.evidenceRecord(by, a));
+      case "hub_evidence_read":
+        return JSON.stringify(await tasks.evidenceRead(by, a));
       case "hub_study_handoff":
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "handoff")) throw new PreEffectToolRefusal("study handoff takes only a handoff object");
         return JSON.stringify(await tasks.studyHandoff(by, a.handoff));

@@ -25,7 +25,7 @@
 - Experiment attempts recorded on a study unit are read with `ahub study experiments --campaign <id>` (or `--attempt`, or `--plan` with `--baseline` and `--variant`) and `hub_experiment_show`. Each value shows its source: `declared` is the agent's own word, and only `host-observed`, `runner-attested` or `person-attested` rows are evidence, none of which proves the science. A rerun by a person attaches through an existing check, a hashed output file or a registered runner's signed receipt, as the checklist in `docs/operations.md` ("Experiment readback") says; without one the experiment stays declared and its sealing unverified. The synthetic CPU-only fixture is `test/research-experiments-fixture.test.ts`; no account, GPU or native model has run an experiment here.
 - The deterministic three-source, two-peer example (`test/study-daemon.test.ts`, "three-source, two-peer example"): one contract names sources S0, S1 and S2 and two discovery units, `alpha` (S0 and S1, owned by codex) and `beta` (S2, an independent check, owned by kimi). After `ahub study approve` both units read `none` and `0/2 covered`, `0/1 covered`. A handoff for S0 only moves `alpha` to `incomplete` with `1/2 covered`. A handoff for both S0 and S1, and one for S2, make both `complete` and the discovery round complete. Another peer's handoff for `alpha` is refused. This runs with fake peers: it shows the hub's rules, not that a native model follows the guidance.
 
-# Claim evidence links (#931 T1)
+# Claim evidence links (#931 T1-T2)
 
 An active owner of an in-progress research-profile task can record
 `hub_evidence_record`. The task need not belong to a campaign. Researcher role
@@ -52,13 +52,38 @@ an identical replay writes nothing, while a changed link names its ID and next
 revision. Revisions remain append-only. The public receipt contains only link ID,
 revision and task ID; arguments and results are excluded from memory capture.
 
-T1 checks registered source identity/raw hash and stores a proposed zero-based,
-half-open scalar-value range of at most 4096. Projection hashes/version and
-relation labels remain declared. It stores no claim text, excerpt, origin/path or
-invented page coordinates. Source/Unicode locator resolution and privacy
-revalidation are T2; `hub_evidence_read`, study evidence/check surfaces and
-synthesis-readiness binding remain later slices. Neither a matching citation key
-nor an evidence relation creates a person verdict or proves entailment.
+Recording checks registered source identity/raw hash and stores a proposed
+zero-based, half-open Unicode scalar-value range of at most 4096. It stores no
+claim text, excerpt, origin/path or invented page coordinates. Relation labels
+remain proposals, not entailment or source-quality judgments.
+
+`hub_evidence_read {id, revision?}` resolves the latest link by default, or a named
+immutable revision, under the existing task-show authority. Dev-profile tool
+publication remains unchanged. Each read rechecks the current claim list,
+registered source, full screened projection and privacy after asynchronous work.
+The result is `resolved`, `stale`, `unavailable` or `private`; only `resolved`
+returns the declared link and a sanitized excerpt of at most 4096 UTF-8 bytes.
+The other states carry link/revision/task IDs only. A later private upgrade
+withholds the source ID, hashes, locator, excerpt, origin/path and derived text,
+including from a formerly public link. No excerpt is cached or captured to memory.
+
+Offsets count Unicode scalar values, not UTF-8 bytes, UTF-16 units or sanitized
+presentation characters. The source-read range already counts code points;
+conversion validates scalar boundaries explicitly against the complete immutable
+text, never against its bounded public `[cut]` presentation. Missing, truncated
+or changed projections cannot resolve a link. A converter-backed registration
+binds its actual configured converter fingerprint and full output hash. Plain
+UTF-8 uses a named decoder algorithm. Legacy sources without that receipt remain
+unavailable until an explicit re-registration can bind the same stored bytes and
+text; reads never invent a converter version or page coordinates. An already bound receipt and its stored text remain immutable: re-registering identical bytes does not refresh a changed converter fingerprint. Use the retained matching converter or a genuinely new input snapshot; versioned projection retention is the later upgrade path.
+
+`origins` reports connected groups of overlapping registered origins through
+opaque IDs. Private, unknown or over-bound inventories make that result unknown.
+Repeated copies or a shared origin do not supply another group. These are
+provenance groups, not proof of independent corroboration, semantic support or
+truth. Source revalidation is offline and performs no download. Study CLI,
+synthesis manifests and readiness checks remain T3. A matching citation key,
+resolved passage or evidence relation never creates a #901 person verdict.
 
 # General project example
 

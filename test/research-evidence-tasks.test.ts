@@ -8,10 +8,13 @@ import { Bus } from "../src/hub/bus.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
-import { SourceRegistry, sha256Of } from "../src/hub/sources.ts";
+import { SourceRegistry, sha256Of, sourceProjectionReceipt, SOURCE_UTF8_PROJECTION_VERSION } from "../src/hub/sources.ts";
+import { readEvidenceSource } from "../src/hub/source-read.ts";
 import { TaskRepositories } from "../src/hub/task-repository.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
-import { evidenceLinkCanonical, type EvidenceRecordInput } from "../src/hub/research-evidence.ts";
+import { evidenceLinkCanonical, type EvidenceRecordInput, type EvidenceLinkV1 } from "../src/hub/research-evidence.ts";
+import { EVIDENCE_READ_TOOL, TASK_TOOLS, TASK_TOOL_NAMES, IMPLEMENTER_HUB_TOOL_NAMES, profileTaskTools, projectToolList } from "../src/hub/hub-tools.ts";
+import { MemoryStore, CandidateStore } from "@staix/agent-mem";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -25,7 +28,7 @@ async function fixture() {
   for (const id of ["claude", "codex", "kimi", "local"]) { const peer = new Peer(id); bus.add(peer); await peer.start(); }
   const first = registry.add({ bytes: Buffer.from("source A α🙂 passage"), kind: "file", origin: "/private-origin-canary/a.txt", private: false, text: "source A α🙂 passage" });
   const second = registry.add({ bytes: Buffer.from("source B counterevidence"), kind: "file", origin: "/private-origin-canary/b.txt", private: false, text: "source B counterevidence" });
-  const control: { privateTurn: boolean; held: boolean; hash?: string; screen?: () => Promise<void>; screenLabel: "clear" | "pii" | "unknown"; routingUnavailable?: boolean } = { privateTurn: false, held: false, screenLabel: "clear" };
+  const control: { privateTurn: boolean; held: boolean; hash?: string; screen?: () => Promise<void>; screenLabel: "clear" | "pii" | "unknown"; routingUnavailable?: boolean; evidenceRead?: TasksDeps["evidenceSourceRead"] } = { privateTurn: false, held: false, screenLabel: "clear" };
   const patterns: string[] = [], piiPaths: string[] = [];
   const roles = { claude: ["planner", "reviewer"], codex: ["implementer"], kimi: ["implementer"], local: ["implementer"] };
   const build = () => new Tasks({ cwd, board, bus, project: "evidence-fixture", profile: "research", roles, notify: line => notices.push(line),
@@ -33,6 +36,8 @@ async function fixture() {
     privateTurn: () => control.privateTurn, sweepHeld: () => control.held,
     piiScreen: async () => { await control.screen?.(); return control.screenLabel === "unknown" ? { label: "unknown" as const, miss: "failed" as const, ms: 0 } : { label: control.screenLabel, ms: 0 }; },
     intake: { sourceKnown: id => !!registry.get(id), split: async () => undefined, partsSchema: () => ({}) },
+    evidenceSourceRead: (by, link, current) => control.evidenceRead?.(by, link, current) ?? Promise.resolve({ resolution: { status: "unavailable" as const, cause: "projection_missing" as const } }),
+    evidenceSourceMeta: id => registry.get(id),
     studySource: id => { expect((board as unknown as { db: Database }).db.inTransaction).toBe(false); const source = registry.get(id); return source ? { id: source.id, sha256: control.hash ?? source.sha256, private: source.private } : undefined; } } satisfies TasksDeps);
   let tasks = build();
   const task = await tasks.propose("codex", { title: "Research claims", class: "fact_check", owner: "codex", plan: { claims: CLAIMS } });
@@ -332,4 +337,146 @@ for (const drift of ["revision", "claim association"] as const) test(`#931 T1 ${
   expect(f.board.researchEvidenceIntegrity()).toEqual(expected);
   expect(f.board.statusRevision()).toBe(generation);
   expect(f.board.get(f.task.id)).toEqual(task);
+});
+
+// These host-port fixtures isolate Tasks admission and projections; real immutable resolver/Unicode fixtures live in research-evidence-locator and source-read tests.
+const resolvedRead = (link: EvidenceLinkV1) => ({ resolution: { status: "resolved" as const, locator: link.locator, excerpt: "PASSAGE_CANARY", excerptSha256: sha256Of(Buffer.from("PASSAGE_CANARY")) } });
+
+test("#931 T2 Tasks resolves a real registered scalar projection afresh and withholds later private upgrades", async () => {
+  const f = await fixture(), text = "앞🙂é뒤", bytes = Buffer.from(text);
+  const source = f.registry.add({ bytes, kind: "file", origin: "/real-projection.txt", private: false, text, projection: sourceProjectionReceipt(bytes, text) });
+  const receipt = await f.tasks.evidenceRecord("codex", { ...f.input(f.board.get(f.task.id)!, source.id), projectionSha256: sha256Of(bytes), projectionVersion: SOURCE_UTF8_PROJECTION_VERSION, locator: { start: 1, end: 4 } });
+  let screens = 0;
+  f.control.evidenceRead = (_by, link, current) => readEvidenceSource(f.registry, link, { valid: current, canReadPrivate: async () => false, projectionVersion: () => SOURCE_UTF8_PROJECTION_VERSION, screen: async () => { screens++; return true; } });
+  const resolved = await f.tasks.evidenceRead("codex", { id: receipt.id }); expect(resolved.status).toBe("resolved");
+  if (resolved.status === "resolved") { expect(resolved.excerpt).toBe("🙂é"); expect(resolved.locator).toEqual({ start: 1, end: 4 }); expect(resolved.excerptSha256).toBe(sha256Of(Buffer.from("🙂é"))); }
+  await f.tasks.evidenceRead("codex", { id: receipt.id }); expect(screens).toBe(2);
+  f.registry.markPrivate(source.id);
+  expect(await f.tasks.evidenceRead("codex", { id: receipt.id })).toEqual({ ...receipt, status: "private" });
+});
+
+test("#931 T2 research-only read publication preserves dev schemas and read-only availability", () => {
+  expect(profileTaskTools("dev")).toBe(TASK_TOOLS);
+  expect(TASK_TOOLS.some(tool => tool.name === EVIDENCE_READ_TOOL.name)).toBe(false);
+  expect(profileTaskTools("research").some(tool => tool.name === EVIDENCE_READ_TOOL.name)).toBe(true);
+  expect(projectToolList(profileTaskTools("research"), true).some(tool => tool.name === EVIDENCE_READ_TOOL.name)).toBe(true);
+  expect(TASK_TOOL_NAMES.has(EVIDENCE_READ_TOOL.name)).toBe(true); expect(IMPLEMENTER_HUB_TOOL_NAMES).toContain(EVIDENCE_READ_TOOL.name);
+  expect(EVIDENCE_READ_TOOL.inputSchema.additionalProperties).toBe(false); expect(EVIDENCE_READ_TOOL.inputSchema.properties).not.toHaveProperty("taskId");
+});
+
+test("#931 T2 reads re-resolve every call, retain declared relation and never write task or verdict state", async () => {
+  const f = await fixture(), receipt = await f.tasks.evidenceRecord("codex", f.input()); let reads = 0;
+  f.control.evidenceRead = async (_by, link, current) => { expect(current()).toBe(true); reads++; return resolvedRead(link); };
+  const before = f.board.get(f.task.id), generation = f.board.statusRevision(), integrity = f.board.researchEvidenceIntegrity();
+  for (const by of ["codex", "claude", "user"]) {
+    const result = await f.tasks.evidenceRead(by, { id: receipt.id }); expect(result.status).toBe("resolved");
+    if (result.status === "resolved") { expect(result.link.relation).toBe("supports"); expect(result.excerpt).toBe("PASSAGE_CANARY"); expect(result.origins.state).toBe("known"); }
+    expect(JSON.stringify(result)).not.toMatch(/CLAIM_TEXT_CANARY|private-origin-canary/);
+  }
+  expect(reads).toBe(3); expect(f.board.get(f.task.id)).toEqual(before); expect(f.board.statusRevision()).toBe(generation); expect(f.board.researchEvidenceIntegrity()).toEqual(integrity);
+  expect(JSON.stringify(f.notices)).not.toContain("PASSAGE_CANARY");
+});
+
+for (const change of ["source private", "private turn", "task private", "claims", "metadata policy", "policy unavailable", "owner"] as const) {
+  test(`#931 T2 ${change} during awaited read cannot release an old public excerpt`, async () => {
+    const f = await fixture(), receipt = await f.tasks.evidenceRecord("codex", f.input());
+    let entered!: () => void, release!: () => void; const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+    f.control.evidenceRead = async (_by, link) => { entered(); await gate; return resolvedRead(link); };
+    const reading = f.tasks.evidenceRead("codex", { id: receipt.id }), outcome = reading.then(value => ({ value }), error => ({ error: error as unknown }));
+    await started;
+    if (change === "source private") f.registry.markPrivate(f.first.id);
+    if (change === "private turn") f.control.privateTurn = true;
+    if (change === "task private") f.board.update(f.task.id, "user", "privacy tightened", { signals: ["pii"] });
+    if (change === "claims") f.board.update(f.task.id, "codex", "claims edited", { plan: { claims: ["new claim"] } });
+    if (change === "metadata policy") f.patterns.push("PASSAGE_CANARY");
+    if (change === "policy unavailable") f.control.routingUnavailable = true;
+    if (change === "owner") f.board.update(f.task.id, "user", "reassigned", { owner: "kimi" });
+    const generation = f.board.statusRevision(), integrity = f.board.researchEvidenceIntegrity(); release(); const result = await outcome;
+    if (change === "owner") { expect("error" in result).toBe(true); if ("error" in result) expect(result.error).toBeInstanceOf(PreEffectToolRefusal); }
+    else {
+      expect("value" in result).toBe(true); if ("value" in result) { expect(result.value.status).toBe(change === "claims" ? "stale" : "private"); expect(Object.keys(result.value).sort()).toEqual(["id", "revision", "status", "taskId"]); }
+    }
+    expect(JSON.stringify("error" in result && result.error instanceof Error ? { error: result.error.message } : result)).not.toMatch(/PASSAGE_CANARY|CLAIM_TEXT_CANARY|private-origin-canary|POLICY_UNAVAILABLE_CANARY/);
+    expect(f.board.statusRevision()).toBe(generation); expect(f.board.researchEvidenceIntegrity()).toEqual(integrity);
+  });
+}
+
+test("#931 T2 unknown, foreign, dev and unauthorized reads refuse before consulting the source port", async () => {
+  const f = await fixture(), receipt = await f.tasks.evidenceRecord("codex", f.input()); let reads = 0;
+  f.control.evidenceRead = async (_by, link) => { reads++; return resolvedRead(link); };
+  for (const input of [{ id: `ev:${"0".repeat(32)}` }, { id: receipt.id, revision: 0 }, { id: receipt.id, taskId: f.task.id }, Object.defineProperty({}, "id", { get() { throw new Error("GETTER_CANARY"); } })]) await refused(f.tasks.evidenceRead("codex", input));
+  for (const by of ["kimi", "codex@remote"]) await refused(f.tasks.evidenceRead(by, { id: receipt.id }));
+  f.board.update(f.task.id, "user", "foreign metadata", { refs: { repo: "PRIVATE-OWNER/PRIVATE-FOREIGN-REFERENCE" } });
+  await refused(f.tasks.evidenceRead("codex", { id: receipt.id }));
+  f.board.update(f.task.id, "user", "project metadata restored", { refs: { repo: undefined } });
+  (f.board as unknown as { db: Database }).db.query("UPDATE tasks SET project_profile=NULL WHERE id=?").run(f.task.id);
+  expect(f.board.get(f.task.id)?.profile ?? "dev").toBe("dev"); await refused(f.tasks.evidenceRead("codex", { id: receipt.id }));
+  expect(reads).toBe(0);
+});
+
+test("#931 T2 connected shared registered origins group transitively; private members make groups unknown", async () => {
+  const f = await fixture();
+  const a = await f.tasks.evidenceRecord("codex", f.input());
+  f.registry.add({ bytes: Buffer.from("source A α🙂 passage"), kind: "url", origin: "https://example.test/shared", private: false, text: "source A α🙂 passage" });
+  f.registry.add({ bytes: Buffer.from("source B counterevidence"), kind: "url", origin: "https://example.test/shared", private: false, text: "source B counterevidence" });
+  f.registry.add({ bytes: Buffer.from("source B counterevidence"), kind: "url", origin: "https://example.test/shared-second", private: false, text: "source B counterevidence" });
+  await f.tasks.evidenceRecord("codex", f.input(f.board.get(f.task.id)!, f.second.id));
+  const third = f.registry.add({ bytes: Buffer.from("third distinct passage"), kind: "file", origin: "/third-origin.txt", private: false, text: "third distinct passage" });
+  f.registry.add({ bytes: Buffer.from("third distinct passage"), kind: "url", origin: "https://example.test/shared-second", private: false, text: "third distinct passage" });
+  await f.tasks.evidenceRecord("codex", f.input(f.board.get(f.task.id)!, third.id));
+  const fourth = f.registry.add({ bytes: Buffer.from("fourth passage"), kind: "file", origin: "/fourth-origin.txt", private: false, text: "fourth passage" });
+  await f.tasks.evidenceRecord("codex", f.input(f.board.get(f.task.id)!, fourth.id));
+  f.control.evidenceRead = async (_by, link) => resolvedRead(link);
+  const known = await f.tasks.evidenceRead("codex", { id: a.id }); expect(known.status).toBe("resolved");
+  if (known.status === "resolved") { expect(known.origins.state).toBe("known"); if (known.origins.state === "known") expect(known.origins.groups).toBe(2); }
+  expect(JSON.stringify(known)).not.toMatch(/example.test|third-origin|private-origin-canary/);
+  f.registry.markPrivate(f.second.id);
+  const privateMember = await f.tasks.evidenceRead("codex", { id: a.id }); expect(privateMember.status).toBe("resolved");
+  if (privateMember.status === "resolved") expect(privateMember.origins).toEqual({ state: "unknown" });
+});
+
+test("#931 T2 latest inventory retains one revision per link and overflow never certifies complete groups", async () => {
+  const f = await fixture(), input = f.input(), first = await f.tasks.evidenceRecord("codex", input);
+  await f.tasks.evidenceRecord("codex", { ...input, id: first.id, revision: 2, relation: "context" });
+  const identity = taskClaimIdentity(f.board.get(f.task.id)!, 1), inventory = () => f.board.latestEvidenceLinks("evidence-fixture", f.task.id, identity.claimId, identity.claimRevision, 128);
+  expect(inventory()).toMatchObject({ complete: true }); expect(inventory().links).toHaveLength(1); expect(inventory().links[0]?.revision).toBe(2);
+  for (let index = 1; index <= 128; index++) await f.tasks.evidenceRecord("codex", { ...input, locator: { start: index, end: index + 1 } });
+  expect(inventory().complete).toBe(false); expect(inventory().links).toHaveLength(128);
+  f.control.evidenceRead = async (_by, link) => resolvedRead(link);
+  const read = await f.tasks.evidenceRead("codex", { id: first.id }); if (read.status !== "resolved") throw new Error("expected public selected link"); expect(read.origins).toEqual({ state: "unknown" });
+});
+
+test("#931 T2 observer provenance is latched before done awaits and keeps derived summary/review out of screens and memory sidecars", async () => {
+  const f = await fixture(), home = join(f.cwd, "observer-memory"), store = new MemoryStore({ home, deferPromotions: true }), candidates = new CandidateStore({ home });
+  cleanup.push(() => { candidates.close(); store.close(); });
+  let excluded = true, entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const screens: string[] = [], published: string[] = [];
+  f.bus.tap(event => { if (event.t === "envelope") published.push(event.env.body); });
+  const tasks = new Tasks({ cwd: f.cwd, board: f.board, bus: f.bus, project: "observer-fixture", profile: "research", roles: { codex: ["implementer"], claude: ["planner", "reviewer"] }, notify: line => f.notices.push(line),
+    routing: () => { const routing = loadRouting(f.cwd); return { ...routing, signals: { ...routing.signals, pii_screen: "local" as const } }; },
+    observerExcludedTurn: () => excluded, piiScreen: async text => { screens.push(text); return { label: "clear", ms: 0 }; },
+    prepareReviewBrief: async () => { entered(); await gate; }, store: { store, project: "observer-fixture", repo: "fixture" }, candidates });
+  const summary = "EVIDENCE_DERIVED_SUMMARY_CANARY source origin /derived/private/report.txt";
+  const finishing = tasks.done("codex", f.task.id, summary); await started; excluded = false; release(); await finishing;
+  expect(screens).toEqual([]); const done = f.board.get(f.task.id)!;
+  expect(done.history.findLast(entry => entry.event === "done")).toMatchObject({ note: summary, withheld: true });
+  expect(JSON.stringify(tasks.publicView(done, true))).not.toContain("EVIDENCE_DERIVED_SUMMARY_CANARY");
+  excluded = true;
+  await tasks.review("claude", f.task.id, "changes_requested", "EVIDENCE_DERIVED_REVIEW_CANARY", undefined, undefined, undefined, [{ id: "derived-finding", pass: "bugs", severity: "important", disposition: "open", rationale: "EVIDENCE_DERIVED_FINDING_CANARY" }]);
+  expect(screens).toEqual([]); expect(store.list({ project: "observer-fixture", limit: 100, includeSuperseded: true })).toEqual([]); expect(candidates.list({ project: "observer-fixture" })).toEqual([]);
+  expect(JSON.stringify([published, f.notices, tasks.publicView(f.board.get(f.task.id)!, true)])).not.toMatch(/EVIDENCE_DERIVED_|derived\/private\/report/);
+});
+
+for (const code of [0, 1]) test(`#931 T2 observer exclusion survives asynchronous check exit ${code} and hides raw check tail`, async () => {
+  const f = await fixture(); let excluded = true, entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; }), published: string[] = [];
+  f.bus.tap(event => { if (event.t === "envelope") published.push(event.env.body); });
+  const tasks = new Tasks({ cwd: f.cwd, board: f.board, bus: f.bus, project: "observer-fixture", profile: "research", roles: { codex: ["implementer"], claude: ["planner", "reviewer"] }, routing: () => loadRouting(f.cwd), notify: line => f.notices.push(line),
+    observerExcludedTurn: () => excluded, check: () => "fixture-check", runCheck: async () => { entered(); await gate; return { code, timedOut: false, tail: "EVIDENCE_CHECK_TAIL_CANARY" }; } });
+  await tasks.done("codex", f.task.id, "EVIDENCE_PENDING_SUMMARY_CANARY"); await started; excluded = false; release();
+  await (tasks as unknown as { checkQueue: Promise<void> }).checkQueue;
+  const task = f.board.get(f.task.id)!, check = task.history.findLast(entry => entry.event === (code ? "check failed" : "check passed"));
+  expect(check?.note).toContain("EVIDENCE_CHECK_TAIL_CANARY"); expect(check?.withheld).toBe(true);
+  expect(JSON.stringify([published, f.notices, tasks.publicView(task, true)])).not.toMatch(/EVIDENCE_CHECK_TAIL_CANARY|EVIDENCE_PENDING_SUMMARY_CANARY/);
 });

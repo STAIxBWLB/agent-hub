@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { types } from "node:util";
 import { validSourceId } from "./sources.ts";
+import { sanitize } from "./envelope.ts";
 
 export const EVIDENCE_RELATIONS = ["supports", "contradicts", "context"] as const;
 export const MAX_EVIDENCE_LOCATOR_SPAN = 4096;
@@ -103,4 +104,44 @@ export function evidenceLinkCanonical(value: EvidenceLinkV1): string {
   return JSON.stringify({ id: row.id, claimId: row.claimId, claimRevision: row.claimRevision, sourceId: row.sourceId,
     rawSha256: row.rawSha256, projectionSha256: row.projectionSha256, projectionVersion: row.projectionVersion,
     locator: row.locator, relation: row.relation, recordedBy: row.recordedBy, taskId: row.taskId, revision: row.revision });
+}
+
+export const MAX_EVIDENCE_EXCERPT_BYTES = 4096;
+export interface EvidenceProjectionSnapshot {
+  sourceId: string; rawSha256: string; projectionSha256: string; projectionVersion: string; text: string; complete: boolean;
+}
+export type EvidenceResolution =
+  | { status: "resolved"; locator: EvidenceLocatorV1; excerpt: string; excerptSha256: string }
+  | { status: "stale"; cause: "raw_changed" | "projection_changed" }
+  | { status: "unavailable"; cause: "source_unavailable" | "private" | "projection_missing" | "projection_incomplete" | "locator_invalid" | "excerpt_limit" };
+
+/** Existing source-read offsets count String.iterator code points, not UTF-16 units or sanitized output characters. */
+export function sourceReadRangeToEvidenceLocator(range: { offset: number; length: number }, text: string): EvidenceLocatorV1 | undefined {
+  const end = range.offset + range.length;
+  if (!Number.isSafeInteger(range.offset) || range.offset < 0 || !Number.isSafeInteger(range.length) || range.length < 1 || range.length > MAX_EVIDENCE_LOCATOR_SPAN || !Number.isSafeInteger(end)) return undefined;
+  let scalars = 0;
+  for (const point of text) {
+    const value = point.codePointAt(0)!;
+    if (value >= 0xd800 && value <= 0xdfff) return undefined; // String.iterator also yields lone surrogates; they are not Unicode scalar values.
+    scalars++;
+  }
+  return end <= scalars ? { start: range.offset, end } : undefined;
+}
+
+/** Resolve provenance only from a complete host-screened projection. No source lookup, network, page inference or judgment. */
+export function resolveEvidenceLocator(input: EvidenceLinkV1, snapshot?: EvidenceProjectionSnapshot): EvidenceResolution {
+  let link: EvidenceLinkV1;
+  try { link = parseEvidenceLink(input); } catch { return { status: "unavailable", cause: "locator_invalid" }; }
+  if (!snapshot || typeof snapshot.text !== "string" || snapshot.sourceId !== link.sourceId) return { status: "unavailable", cause: "projection_missing" };
+  if (snapshot.complete !== true) return { status: "unavailable", cause: "projection_incomplete" };
+  if (snapshot.rawSha256 !== link.rawSha256) return { status: "stale", cause: "raw_changed" };
+  const projectionHash = createHash("sha256").update(Buffer.from(snapshot.text, "utf8")).digest("hex");
+  if (snapshot.projectionSha256 !== projectionHash || snapshot.projectionSha256 !== link.projectionSha256 || snapshot.projectionVersion !== link.projectionVersion) return { status: "stale", cause: "projection_changed" };
+  const locator = sourceReadRangeToEvidenceLocator({ offset: link.locator.start, length: link.locator.end - link.locator.start }, snapshot.text);
+  if (!locator) return { status: "unavailable", cause: "locator_invalid" };
+  let index = 0, passage = "";
+  for (const point of snapshot.text) { if (index >= locator.end) break; if (index >= locator.start) passage += point; index++; }
+  const excerpt = sanitize(passage);
+  if (Buffer.byteLength(excerpt, "utf8") > MAX_EVIDENCE_EXCERPT_BYTES) return { status: "unavailable", cause: "excerpt_limit" };
+  return { status: "resolved", locator, excerpt, excerptSha256: createHash("sha256").update(Buffer.from(excerpt, "utf8")).digest("hex") };
 }

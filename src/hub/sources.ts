@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { processLiveness, processSignature } from "@staix/agent-mem/platform";
-import { MAX_PROJECTION_INPUT } from "./text-projection.ts";
+import { types } from "node:util";
+import { MAX_PROJECTION_INPUT, MAX_PROJECTION_TEXT, type ProjectedText } from "./text-projection.ts";
 
 /**
  * #508 (AC1, AC2, AC5): the source registry. A source is a snapshot of bytes a person registered, named by its content, kept under the hub state dir.
@@ -27,8 +28,46 @@ const ID = /^src:[0-9a-f]{16}$/;
 export type SourceKind = "file" | "url";
 export interface SourceOrigin { kind: SourceKind; origin: string; added_at: number; private: boolean }
 /** `meta.json`: the spec's `{id, kind, origin, sha256, bytes, added_at, private}` for the first registration, plus every origin ever registered for these bytes. */
-export interface SourceMeta { id: string; kind: SourceKind; origin: string; sha256: string; bytes: number; added_at: number; private: boolean; origins: SourceOrigin[] }
+export interface SourceMeta { id: string; kind: SourceKind; origin: string; sha256: string; bytes: number; added_at: number; private: boolean; origins: SourceOrigin[]; projection?: SourceProjectionReceiptV1 }
 export interface SourceAdd { id: string; created: boolean; private: boolean; upgraded: boolean; text: boolean }
+/** Full registered projection output, never a source-read presentation window. */
+export interface SourceProjectionReceiptV1 {
+  rawSha256: string; projectionSha256: string; projectionVersion: string; complete: true;
+  converter?: { extension: string; configHash: string };
+}
+export const SOURCE_UTF8_PROJECTION_VERSION = "utf8-v1";
+const SHA256 = /^[a-f0-9]{64}$/;
+function receiptData(value: unknown, fields: readonly string[]): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length) return undefined;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  return Object.keys(descriptors).some(key => !fields.includes(key)) || Object.values(descriptors).some(field => !Object.hasOwn(field, "value") || !field.enumerable) ? undefined : value as Record<string, unknown>;
+}
+export function parseSourceProjectionReceipt(value: unknown): SourceProjectionReceiptV1 | undefined {
+  const row = receiptData(value, ["rawSha256", "projectionSha256", "projectionVersion", "complete", "converter"]);
+  if (!row || typeof row.rawSha256 !== "string" || !SHA256.test(row.rawSha256) || typeof row.projectionSha256 !== "string" || !SHA256.test(row.projectionSha256) || row.complete !== true) return undefined;
+  let converter: SourceProjectionReceiptV1["converter"];
+  if (row.converter !== undefined) {
+    const field = receiptData(row.converter, ["extension", "configHash"]);
+    if (!field || typeof field.extension !== "string" || !/^\.[a-z0-9]{1,16}$/.test(field.extension) || typeof field.configHash !== "string" || !SHA256.test(field.configHash) || row.projectionVersion !== field.configHash) return undefined;
+    converter = { extension: field.extension, configHash: field.configHash };
+  } else if (row.projectionVersion !== SOURCE_UTF8_PROJECTION_VERSION) return undefined;
+  return { rawSha256: row.rawSha256, projectionSha256: row.projectionSha256, projectionVersion: row.projectionVersion as string, complete: true, ...(converter ? { converter } : {}) };
+}
+/** Derive host provenance from the actual, once-produced converter value or the defined UTF-8 decoder. */
+export function sourceProjectionReceipt(bytes: Buffer, text: string | undefined, converted?: { extension: string; value: ProjectedText }): SourceProjectionReceiptV1 | undefined {
+  if (!Buffer.isBuffer(bytes) || bytes.length > MAX_SOURCE_BYTES || typeof text !== "string" || text.includes("\0") || Buffer.byteLength(text, "utf8") > MAX_SOURCE_TEXT
+    || new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(text, "utf8")) !== text) return undefined;
+  const rawSha256 = sha256Of(bytes), projectionSha256 = sha256Of(Buffer.from(text, "utf8"));
+  if (converted) {
+    if (converted.value.inputHash !== rawSha256 || converted.value.text !== text || Buffer.byteLength(text, "utf8") > MAX_PROJECTION_TEXT) return undefined;
+    return parseSourceProjectionReceipt({ rawSha256, projectionSha256, projectionVersion: converted.value.configHash, complete: true, converter: { extension: converted.extension.toLowerCase(), configHash: converted.value.configHash } });
+  }
+  try {
+    if (bytes.includes(0) || new TextDecoder("utf-8", { fatal: true }).decode(bytes) !== text) return undefined;
+    return { rawSha256, projectionSha256, projectionVersion: SOURCE_UTF8_PROJECTION_VERSION, complete: true };
+  } catch { return undefined; }
+}
 
 export const sourceId = (sha256: string): string => {
   if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error("source id needs a SHA-256 hex digest");
@@ -71,7 +110,9 @@ function parseMeta(text: string, id: string): SourceMeta | undefined {
     }
     // The flag is the OR of every registration; a record whose flag is lower than one of its origins is damaged, not trusted.
     if (kept.some(item => item.private) && raw.private !== true) return undefined;
-    return { id, kind: raw.kind as SourceKind, origin: raw.origin as string, sha256: raw.sha256, bytes: raw.bytes as number, added_at: raw.added_at as number, private: raw.private, origins: kept };
+    const projection = raw.projection === undefined ? undefined : parseSourceProjectionReceipt(raw.projection);
+    if (raw.projection !== undefined && (!projection || projection.rawSha256 !== raw.sha256)) return undefined;
+    return { id, kind: raw.kind as SourceKind, origin: raw.origin as string, sha256: raw.sha256, bytes: raw.bytes as number, added_at: raw.added_at as number, private: raw.private, origins: kept, ...(projection ? { projection } : {}) };
   } catch { return undefined; }
 }
 
@@ -178,19 +219,23 @@ export class SourceRegistry {
    * those bytes: re-adding from a private path, or with text the PII screen flags, upgrades the record; re-adding from a public path never
    * downgrades it. Every origin is kept. `text` is the projection of the bytes (undefined when no converter handles them).
    */
-  add(input: { bytes: Buffer; kind: SourceKind; origin: string; private: boolean; text?: string; now?: number }): SourceAdd {
+  add(input: { bytes: Buffer; kind: SourceKind; origin: string; private: boolean; text?: string; projection?: SourceProjectionReceiptV1; now?: number }): SourceAdd {
     if (!Buffer.isBuffer(input.bytes)) throw new Error("a source is bytes");
     if (input.text !== undefined && Buffer.byteLength(input.text) > MAX_SOURCE_TEXT) throw new Error(`the text is over the ${MAX_SOURCE_TEXT} byte cap; nothing was stored`);
     if (input.bytes.length > MAX_SOURCE_BYTES) throw new Error(`source is ${input.bytes.length} bytes, over the ${MAX_SOURCE_BYTES} byte cap (MAX_PROJECTION_INPUT); nothing was stored`);
     if (!cleanOrigin(input.origin)) throw new Error(`source origin must be 1 to ${MAX_ORIGIN_CHARS} printable characters`);
     const sha256 = sha256Of(input.bytes), id = sourceId(sha256), now = input.now ?? Date.now(), directory = this.dir(id);
+    const projection = input.projection === undefined ? undefined : parseSourceProjectionReceipt(input.projection);
+    if (input.projection !== undefined && (!projection || projection.rawSha256 !== sha256 || typeof input.text !== "string" || projection.projectionSha256 !== sha256Of(Buffer.from(input.text, "utf8")))) throw new Error("source projection receipt is invalid; register the full source again with the current converter");
+    if (projection && !projection.converter && sourceProjectionReceipt(input.bytes, input.text)?.projectionSha256 !== projection.projectionSha256) throw new Error("source projection receipt is invalid; register the full source again with the current converter");
+    if (projection?.converter && Buffer.byteLength(input.text!, "utf8") > MAX_PROJECTION_TEXT) throw new Error("source projection receipt is invalid; register the full source again with the current converter");
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
     // One registration at a time per registry, across processes: the read of the record, the decision and the write are one step, so two CLIs adding the
     // same bytes (one private, one public) can never each read the old flag and the later write lose the other's upgrade.
-    return this.locked(() => this.addLocked(input, sha256, id, now, directory));
+    return this.locked(() => this.addLocked({ ...input, projection }, sha256, id, now, directory));
   }
 
-  private addLocked(input: { bytes: Buffer; kind: SourceKind; origin: string; private: boolean; text?: string }, sha256: string, id: string, now: number, directory: string): SourceAdd {
+  private addLocked(input: { bytes: Buffer; kind: SourceKind; origin: string; private: boolean; text?: string; projection?: SourceProjectionReceiptV1 }, sha256: string, id: string, now: number, directory: string): SourceAdd {
     const existing = this.get(id);
     // A directory that exists but whose record cannot be read is DAMAGED, not absent: replacing it could erase a private record and the bytes with it,
     // so a damaged record is refused and left for the person, never silently rebuilt as public.
@@ -201,8 +246,11 @@ export class SourceRegistry {
       if (!known && existing.origins.length >= MAX_ORIGINS) throw new Error(`the source holds ${MAX_ORIGINS} origins already; this registration was refused and the record was left unchanged`);
       const privateNow = existing.private || input.private;
       const origins = known ? existing.origins : [...existing.origins, origin];
-      if (privateNow === existing.private && origins === existing.origins) return { id, created: false, private: existing.private, upgraded: false, text: this.readText(id) !== undefined };
-      atomic(join(directory, "meta.json"), JSON.stringify({ ...existing, private: privateNow, origins }, null, 2) + "\n");
+      // An explicit fresh registration may bind legacy text only when it is byte-for-byte the stored projection.
+      // ponytail: a bound projection stays immutable, so converter drift remains stale; versioned projection retention is the upgrade path.
+      const projection = existing.projection ?? (input.projection && input.text === this.readText(id) ? input.projection : undefined);
+      if (privateNow === existing.private && origins === existing.origins && projection === existing.projection) return { id, created: false, private: existing.private, upgraded: false, text: this.readText(id) !== undefined };
+      atomic(join(directory, "meta.json"), JSON.stringify({ ...existing, private: privateNow, origins, ...(projection ? { projection } : {}) }, null, 2) + "\n");
       return { id, created: false, private: privateNow, upgraded: privateNow && !existing.private, text: this.readText(id) !== undefined };
     }
     // Count validated records, not directory entries or a target's mere existence.
@@ -214,7 +262,7 @@ export class SourceRegistry {
       mkdirSync(staging, { recursive: true, mode: 0o700 });
       writeFileSync(join(staging, "raw"), input.bytes, { mode: 0o600 });
       if (input.text !== undefined) writeFileSync(join(staging, "text"), input.text, { mode: 0o600 });
-      const meta: SourceMeta = { id, kind: input.kind, origin: input.origin, sha256, bytes: input.bytes.length, added_at: now, private: input.private, origins: [{ kind: input.kind, origin: input.origin, added_at: now, private: input.private }] };
+      const meta: SourceMeta = { id, kind: input.kind, origin: input.origin, sha256, bytes: input.bytes.length, added_at: now, private: input.private, origins: [{ kind: input.kind, origin: input.origin, added_at: now, private: input.private }], ...(input.projection ? { projection: input.projection } : {}) };
       writeFileSync(join(staging, "meta.json"), JSON.stringify(meta, null, 2) + "\n", { mode: 0o600 });
       // The directory appears whole or not at all: a reader never sees raw without its meta.
       renameSync(staging, directory);

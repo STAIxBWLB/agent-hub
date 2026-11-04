@@ -2,8 +2,12 @@ import { sanitize } from "./envelope.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { validSourceId } from "./sources.ts";
 import type { SourceMeta } from "./sources.ts";
+import { createHash } from "node:crypto";
+import { MAX_ORIGINS, MAX_ORIGIN_CHARS, parseSourceProjectionReceipt, sha256Of, type SourceProjectionReceiptV1 } from "./sources.ts";
+import { resolveEvidenceLocator, type EvidenceLinkV1, type EvidenceResolution } from "./research-evidence.ts";
 
 export const MAX_SOURCE_READ_BYTES = 32 * 1024;
+export const SOURCE_READ_OFFSET_UNIT = "unicode-code-point";
 const CUT_MARKER = " [cut]";
 const REFUSAL = "source read unavailable";
 
@@ -47,7 +51,7 @@ export function validateSourceRead(value: unknown): SourceReadArgs {
 
 function sameRecord(a: SourceMeta, b: SourceMeta): boolean {
   return a.id === b.id && a.kind === b.kind && a.origin === b.origin && a.sha256 === b.sha256 && a.bytes === b.bytes
-    && a.added_at === b.added_at && a.private === b.private && JSON.stringify(a.origins) === JSON.stringify(b.origins);
+    && a.added_at === b.added_at && a.private === b.private && JSON.stringify(a.origins) === JSON.stringify(b.origins) && JSON.stringify(a.projection) === JSON.stringify(b.projection);
 }
 function sameContent(a: SourceMeta, b: SourceMeta): boolean {
   return a.id === b.id && a.kind === b.kind && a.sha256 === b.sha256 && a.bytes === b.bytes;
@@ -157,4 +161,57 @@ function render(id: string, kind: SourceMeta["kind"], fullText: string, range: S
   if (hasMore) text += CUT_MARKER;
   const next = offset + consumed;
   return isPrivate ? { id, kind, private: true, text, next } : { id, kind, private: false, text, next };
+}
+
+export interface SourceEvidenceRegistry extends SourceReadRegistry { readRaw(id: string): Buffer | undefined }
+export interface EvidenceSourcePolicy extends SourceReadPolicy {
+  /** Current host decoder/converter fingerprint; never read from an evidence caller. No conversion is started here. */
+  projectionVersion(receipt: SourceProjectionReceiptV1): string | undefined;
+}
+export interface EvidenceSourceRead { resolution: EvidenceResolution }
+
+/** Selected-link read through the existing whole-source privacy boundary; full text never leaves this host closure. */
+export async function readEvidenceSource(registry: SourceEvidenceRegistry, link: EvidenceLinkV1, policy: EvidenceSourcePolicy): Promise<EvidenceSourceRead> {
+  const unavailable = (cause: Extract<EvidenceResolution, { status: "unavailable" }>["cause"]): EvidenceSourceRead => ({ resolution: { status: "unavailable", cause } });
+  try {
+    if (!policy.valid()) return unavailable("source_unavailable");
+    const before = registry.get(link.sourceId);
+    if (!before) return unavailable("source_unavailable");
+    if (before.private) return unavailable("private");
+    const receipt = parseSourceProjectionReceipt(before.projection);
+    if (!receipt) return unavailable("projection_missing");
+    const fullText = registry.readText(link.sourceId), raw = registry.readRaw(link.sourceId);
+    if (fullText === undefined || !raw || receipt.rawSha256 !== before.sha256 || sha256Of(raw) !== before.sha256) return unavailable("source_unavailable");
+    const selected = await sourceRead(registry, { id: link.sourceId, range: { offset: link.locator.start, length: link.locator.end - link.locator.start } }, { valid: () => policy.valid(), screen: (text, meta) => policy.screen(text, meta), canReadPrivate: async () => false });
+    if (!policy.valid()) return unavailable("source_unavailable");
+    const current = registry.get(link.sourceId);
+    if (selected.private || current?.private) return unavailable("private");
+    if (!current || !sameRecord(before, current) || registry.readText(link.sourceId) !== fullText) return unavailable("source_unavailable");
+    const currentRaw = registry.readRaw(link.sourceId);
+    if (!currentRaw || sha256Of(currentRaw) !== before.sha256) return unavailable("source_unavailable");
+    const currentVersion = policy.projectionVersion(receipt);
+    if (!currentVersion) return unavailable("projection_missing");
+    if (currentVersion !== receipt.projectionVersion) return { resolution: { status: "stale", cause: "projection_changed" } };
+    const resolution = resolveEvidenceLocator(link, { sourceId: current.id, rawSha256: current.sha256, projectionSha256: receipt.projectionSha256, projectionVersion: receipt.projectionVersion, text: fullText, complete: receipt.complete });
+    if (!policy.valid()) return unavailable("source_unavailable");
+    return { resolution };
+  } catch { return unavailable("source_unavailable"); }
+}
+
+/** Ephemeral duplicate-origin keys, never an assertion of independent corroboration or a public origin projection. */
+export function evidenceOriginKeys(meta: SourceMeta): readonly string[] | undefined {
+  if (meta.private || !Array.isArray(meta.origins) || !meta.origins.length || meta.origins.length > MAX_ORIGINS) return undefined;
+  const keys = new Set<string>();
+  try {
+    for (const origin of meta.origins) {
+      if (origin.private || typeof origin.origin !== "string" || !origin.origin || origin.origin.length > MAX_ORIGIN_CHARS || /[\p{Cc}\p{Cf}]/u.test(origin.origin)) return undefined;
+      let normalized = origin.origin;
+      if (origin.kind === "url") {
+        const url = new URL(normalized); if (url.protocol !== "https:" || url.username || url.password) return undefined;
+        url.hash = ""; normalized = url.toString();
+      } else if (origin.kind !== "file") return undefined;
+      keys.add(createHash("sha256").update(JSON.stringify([origin.kind, normalized])).digest("hex"));
+    }
+    return [...keys].sort();
+  } catch { return undefined; }
 }

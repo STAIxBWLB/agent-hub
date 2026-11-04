@@ -10,7 +10,8 @@ import { profile, sandboxAvailable } from "../local/sandbox.ts";
 export type ProjectionConfig = Record<string, string[]>;
 const EMPTY_ROOT = "/var/empty";
 export const MAX_PROJECTION_INPUT = 16 * 1024 * 1024;
-const MAX_INPUT = MAX_PROJECTION_INPUT, MAX_TEXT = 256 * 1024;
+export const MAX_PROJECTION_TEXT = 256 * 1024;
+const MAX_INPUT = MAX_PROJECTION_INPUT, MAX_TEXT = MAX_PROJECTION_TEXT;
 /** Only machine-local config chooses programs; no implicit shell or command-string parsing. */
 export function projectionConfig(raw: unknown): ProjectionConfig {
   if (raw === undefined) return {};
@@ -67,6 +68,15 @@ export class TextProjections {
   }
   get enabled(): boolean { return Object.keys(this.options.config).length > 0; }
   handles(file: string): boolean { return !!this.options.config[extname(file).toLowerCase()]; }
+  /** Current configured converter identity, without reading a source or running conversion. */
+  fingerprint(file: string): string | undefined {
+    const argv = this.options.config[extname(file).toLowerCase()];
+    if (!argv) return undefined;
+    try {
+      const commandHash = commandFingerprint(this.options.cwd, argv);
+      return this.options.projectRoot === undefined ? commandHash : hash(commandHash + "\nproject-root:" + realPath(this.options.projectRoot));
+    } catch { return undefined; }
+  }
   project(file: string): ProjectedText | undefined {
     const ext = extname(file).toLowerCase(), argv = this.options.config[ext];
     if (!argv) return undefined;
