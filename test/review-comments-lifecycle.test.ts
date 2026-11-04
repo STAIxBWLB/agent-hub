@@ -8,6 +8,7 @@ import { Bus } from "../src/hub/bus.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import type { ReviewAnchor } from "@staix/agent-console/contract";
@@ -22,9 +23,11 @@ class FixturePeer extends BasePeer {
   async deliver(envelopes: Envelope[]) { this.received.push(...envelopes); }
 }
 
-async function fixture(checking = false, screened = false) {
+async function fixture(checking = false, screened = false, durable = false, heldPeer?: string) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-review-lifecycle-"));
-  const database = join(cwd, "hub.db"); let board = new Board(database); const bus = new Bus({ batchMs: 0 });
+  const database = join(cwd, "hub.db"), journal = durable ? new DeliveryJournal({ file: join(cwd, "journal.db"), projectRoot: cwd, projectId: "review-lifecycle", instanceId: "test" }) : undefined;
+  let board = new Board(database);
+  const bus = new Bus({ batchMs: 0, ...(journal ? { journal, deliveryHeld: (peer: string) => peer === heldPeer } : {}) });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
   const owner = new FixturePeer("codex"), observer = new FixturePeer("claude");
   bus.add(owner); bus.add(observer); await owner.start(); await observer.start();
@@ -67,7 +70,7 @@ test("open review scope survives intervening chat, blocks memory, and leaves own
   let refusal: unknown;
   try { await f.tasks.remember("codex", { task: f.task.id, text: "memory attempt" }); } catch (error) { refusal = error; }
   expect(refusal).toBeInstanceOf(PreEffectToolRefusal);
-  expect((refusal as Error).message).toContain("open review scope (sent comments or anchored findings)");
+  expect((refusal as Error).message).toContain("open review scope (sent comments, anchored findings or an unsettled delivery)");
 
   const done = await f.tasks.done("codex", f.task.id, "Addressed review summary", undefined, undefined, undefined, [f.draft.id]);
   const completion = done.history.findLast(entry => entry.event === "done")!;
@@ -91,6 +94,19 @@ test("an owner's unrelated task remains visible while another task has open revi
   expect(completion.note).toContain("Unrelated completion summary");
   expect(completion.withheld).toBeUndefined();
   expect(f.observer.received.some(envelope => envelope.kind === "task" && envelope.body.includes("Summary: Unrelated completion summary"))).toBe(true);
+});
+
+test("a former owner keeps review observer scope for a journaled package until it is delivered", async () => {
+  const f = await fixture(false, false, true, "codex");
+  await f.tasks.reviewCommentSend("user", { task: f.task.id });
+  expect(f.bus.hasUnsettledReviewScope("codex", f.task.id)).toBe(true);
+  const reassigned = await f.tasks.assignTo(f.task.id, "claude", "user");
+  expect(reassigned.owner).toBe("claude");
+  expect(f.bus.hasUnsettledReviewScope("codex", f.task.id)).toBe(true);
+  let refusal: unknown;
+  try { await f.tasks.remember("codex", { task: f.task.id, text: "former owner memory attempt" }); } catch (error) { refusal = error; }
+  expect(refusal).toBeInstanceOf(PreEffectToolRefusal);
+  expect((refusal as Error).message).toContain("open review scope (sent comments, anchored findings or an unsettled delivery)");
 });
 
 test("anchored finding scope survives restart and intervening reviewer chat", async () => {

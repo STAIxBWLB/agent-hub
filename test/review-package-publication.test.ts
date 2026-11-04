@@ -46,3 +46,39 @@ test("#1056 package publication proof includes saved queues and refuses an unava
     ephemeral.closeJournal();
   } finally { bus.closeJournal(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("#1056 unsettled review scope follows the original recipient until explicit disposition across restart", () => {
+  const dir = mkdtempSync(join(tmpdir(), "review-former-recipient-")), file = join(dir, "hub.db");
+  let journal = new DeliveryJournal({ file, projectRoot: dir, projectId: "p", instanceId: "one" });
+  try {
+    const env = newEnvelope("hub", "former reviewer source quote", { to: ["former-reviewer"], kind: "review", refs: { task: "7", reviewPackage: "finding-original-recipient" } });
+    journal.createDelivery({ id: "uncertain-review", peer: "former-reviewer", state: "needs_review", createdAt: env.ts, originals: [env], out: [env] });
+    journal.close();
+    journal = new DeliveryJournal({ file, projectRoot: dir, projectId: "p", instanceId: "two" });
+    const bus = new Bus({ journal, batchMs: 0 });
+    expect(bus.hasUnsettledReviewScope("former-reviewer", 7)).toBe(true);
+    expect(bus.hasUnsettledReviewScope("former-reviewer", 8)).toBe(false);
+    expect(bus.hasUnsettledReviewScope("replacement-reviewer", 7)).toBe(false);
+    const held = journal.get("uncertain-review")!;
+    journal.resolve(held.id, held.revision, "completed", "person confirmed handling");
+    expect(bus.hasUnsettledReviewScope("former-reviewer", 7)).toBe(false);
+    bus.closeJournal();
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("#1056 queued and recovery-deferred review scope retains its actual recipient", () => {
+  const dir = mkdtempSync(join(tmpdir(), "review-pending-recipient-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "one" });
+  const bus = new Bus({ journal, batchMs: 0 });
+  try {
+    const env = newEnvelope("hub", "pending source quote", { to: ["old-owner"], kind: "review", priority: "important", refs: { task: "9", reviewPackage: "finding-pending-recipient" } });
+    const snapshot = { schemaVersion: 1 as const, queues: {}, prefaces: {}, seen: [], attempts: {}, withdrawn: [] };
+    journal.persistBus({ ...snapshot, queues: { "old-owner": [env] } }, []);
+    expect(bus.hasUnsettledReviewScope("old-owner", 9)).toBe(true);
+    expect(bus.hasUnsettledReviewScope("new-owner", 9)).toBe(false);
+    journal.persistBus({ ...snapshot, deferredHub: [env] }, []);
+    expect(bus.hasUnsettledReviewScope("old-owner", 9)).toBe(true);
+    journal.persistBus(snapshot, []);
+    expect(bus.hasUnsettledReviewScope("old-owner", 9)).toBe(false);
+  } finally { bus.closeJournal(); rmSync(dir, { recursive: true, force: true }); }
+});

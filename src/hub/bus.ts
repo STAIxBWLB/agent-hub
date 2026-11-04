@@ -172,6 +172,8 @@ export class Bus {
   /** What each peer was last handed, next to what it stands for: an adapter that reports a failure later hands back the former. */
   private readonly reviewParents = new Map<PeerId, Map<string, string>>();
   private readonly reviewResponses = new Map<string, { peer: PeerId; source: string }>();
+  private reviewScopeRevision = -1;
+  private readonly reviewScopeCache = new Map<string, boolean>();
   private readonly lastDelivery = new Map<PeerId, { out: Envelope[]; originals: Envelope[] }>();
   private readonly failureStreak = new Map<PeerId, number>();
   private readonly lastFailure = new Map<PeerId, string>();
@@ -1223,6 +1225,20 @@ export class Bus {
     if (this.closed || this.storageError || !this.journal) return "unknown";
     try { return this.journal.reviewEnvelopePublished(id) ? "published" : "absent"; }
     catch { return "unknown"; }
+  }
+  hasUnsettledReviewScope(peer: PeerId, task?: number): boolean {
+    if (this.closed || this.storageError) return true;
+    if (!this.journal) return false; // Ephemeral test buses retain the existing delivered-parent scope.
+    try {
+      const revision = this.journal.revision();
+      if (revision !== this.reviewScopeRevision) { this.reviewScopeCache.clear(); this.reviewScopeRevision = revision; }
+      const key = JSON.stringify([peer, task ?? null]), cached = this.reviewScopeCache.get(key);
+      if (cached !== undefined) return cached;
+      const held = this.journal.hasUnsettledReviewScope(peer, task);
+      this.reviewScopeCache.set(key, held);
+      if (this.reviewScopeCache.size > 512) this.reviewScopeCache.delete(this.reviewScopeCache.keys().next().value!);
+      return held;
+    } catch { return true; }
   }
   /** Explicit recovery reuses the immutable package envelope; a durable publication is never replayed. */
   publishReviewEnvelope(env: Envelope): PeerId[] {

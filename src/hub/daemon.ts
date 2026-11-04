@@ -1846,7 +1846,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const inboxPolling = new InboxPolling();
   const board = new Board(join(opts.stateDir, "hub.db"));
-  readReviewObserverScope = peer => board.hasReviewObserverScope(peer) ? "open-review-comments" : undefined;
+  readReviewObserverScope = peer => board.hasReviewObserverScope(peer) || bus.hasUnsettledReviewScope(peer) ? "open-review-comments" : undefined;
   const reviewObserverHeld = (peer: PeerId): boolean => {
     try { return readReviewObserverScope ? readReviewObserverScope(peer) !== undefined : true; }
     catch { return true; }

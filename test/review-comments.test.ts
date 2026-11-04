@@ -171,6 +171,26 @@ test("an explicit retry uses the same durable package and envelope without creat
   expect(f.owner.received[0]?.id).toBe(original.id); expect(f.board.reviewCommentsIntegrity()).toEqual(snapshot);
 });
 
+test("a sent package keeps its original owner scoped after task reassignment and across restart", async () => {
+  const f = await fixture(false, true), draft = await f.draft(); await f.tasks.reviewCommentSend("user", { task: f.task.id, ids: [draft.id] });
+  const beforeMove = f.board.get(f.task.id)!;
+  f.board.update(f.task.id, "user", "reassigned", { owner: "claude" }, undefined, {}, beforeMove.history.length);
+  const reopened = await f.restart();
+  expect(reopened.board.hasOpenReviewCommentsFor("codex", f.task.id)).toBe(true);
+  expect(reopened.board.hasReviewObserverScope("codex", f.task.id)).toBe(true);
+  await refusal(reopened.tasks.remember("codex", { task: f.task.id, text: "must remain scoped after reassignment" }));
+  const sent = reopened.board.reviewComments(f.task.id, f.task.created)[0]!;
+  await reopened.tasks.reviewCommentDelete("user", { task: f.task.id, id: sent.thread.id, revision: sent.revision });
+  expect(reopened.board.hasOpenReviewCommentsFor("codex", f.task.id)).toBe(false);
+  expect(reopened.board.hasReviewObserverScope("codex", f.task.id)).toBe(false);
+  for (const delivery of reopened.bus.queueList("codex").filter(row => row.originals.some(env => env.refs?.reviewPackage))) {
+    if (["queued", "dispatching", "accepted", "needs_review"].includes(delivery.state)) {
+      reopened.bus.resolveDelivery(delivery.id, delivery.revision, "discard", "fixture resolves the pending original package delivery");
+    }
+  }
+  expect(await reopened.tasks.remember("codex", { task: f.task.id, text: "scope cleared after dismissal" })).toContain("memory is disabled");
+});
+
 test("synchronous publish failure leaves a package for explicit same-envelope retry", async () => {
   const f = await fixture(false, true), draft = await f.draft(), publish = f.bus.publishResult.bind(f.bus);
   f.bus.publishResult = (() => { throw new Error("fixture publication failure"); }) as typeof f.bus.publishResult;

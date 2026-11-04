@@ -477,7 +477,7 @@ export class Tasks {
     return placements;
   }
   private reviewObserverTurn(by: PeerId, task?: number): boolean {
-    try { return this.d.board.hasReviewObserverScope(by, task) || this.d.bus.lastDeliveredTo(by).some(env => isReviewObserverExcluded(env) && (task === undefined || env.refs?.task === String(task))); } catch { return true; }
+    try { return this.d.board.hasReviewObserverScope(by, task) || this.d.bus.hasUnsettledReviewScope(by, task) || this.d.bus.lastDeliveredTo(by).some(env => isReviewObserverExcluded(env) && (task === undefined || env.refs?.task === String(task))); } catch { return true; }
   }
   async reviewCommentPut(by: PeerId, input: unknown, meta?: ActionMeta): Promise<ReviewCommentMutation> {
     const author = this.reviewPerson(by, meta), check = this.requestCheck(by, () => this.reviewCommentHold());
@@ -7890,8 +7890,8 @@ export class Tasks {
     const title = String(input.title ?? "").trim();
     if (by !== USER) {
       let scoped = false;
-      try { scoped = this.d.board.hasReviewObserverScope(by); } catch { throw new PreEffectToolRefusal("shared memory is held because the open review scope (sent comments or anchored findings) could not be checked; inspect ahub task list after recovery"); }
-      if (scoped) throw new PreEffectToolRefusal("shared memory is held while an open review scope (sent comments or anchored findings) exists; complete or review the task, ask the person to dismiss sent comments if appropriate, then inspect ahub task list");
+      try { scoped = this.d.board.hasReviewObserverScope(by) || this.d.bus.hasUnsettledReviewScope(by); } catch { throw new PreEffectToolRefusal("shared memory is held because the open review scope (sent comments, anchored findings or an unsettled delivery) could not be checked; inspect ahub task list after recovery"); }
+      if (scoped) throw new PreEffectToolRefusal(`shared memory is held while an open review scope (sent comments, anchored findings or an unsettled delivery) exists; complete or review the task, ask the person to dismiss comments if appropriate, or inspect ahub queue list --peer ${by} and explicitly settle the delivery, then inspect ahub task list`);
     }
     if (this.isPii({ signals: detectSignals({ title, detail: text, refs: {} }, this.d.routing(), this.d.cwd) })) throw new Error("this note matches a PII pattern and is not saved: shared memory excludes private data");
     if (input.horizon !== undefined && input.horizon !== "short" && input.horizon !== "long") throw new Error('horizon is "short" or "long"');

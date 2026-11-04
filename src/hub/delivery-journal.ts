@@ -871,6 +871,22 @@ export class DeliveryJournal {
       throw new Error("saved review envelope differs from its publication evidence; inspect the package and queue before retrying");
     return !!saved;
   }
+  /** Pending review recipients remain quote-bearing even when the task's current roles have moved. */
+  hasUnsettledReviewScope(peer: string, task?: number): boolean {
+    this.ensureOpen();
+    const taskId = task === undefined ? null : String(task);
+    return !!this.db.query(`SELECT 1 FROM deliveries d, json_each(d.originals) e
+        WHERE d.project_id=?1 AND d.peer=?2 AND d.state IN ('queued','dispatching','accepted','needs_review')
+          AND json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
+          AND json_type(e.value,'$.refs.reviewPackage')='text' AND (?3 IS NULL OR json_extract(e.value,'$.refs.task')=?3)
+      UNION ALL SELECT 1 FROM delivery_meta m, json_each(m.bus_snapshot,'$.queues') q, json_each(q.value) e
+        WHERE m.project_id=?1 AND q.key=?2 AND json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
+          AND json_type(e.value,'$.refs.reviewPackage')='text' AND (?3 IS NULL OR json_extract(e.value,'$.refs.task')=?3)
+      UNION ALL SELECT 1 FROM delivery_meta m, json_each(m.bus_snapshot,'$.deferredHub') e, json_each(e.value,'$.to') recipient
+        WHERE m.project_id=?1 AND recipient.value=?2 AND json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
+          AND json_type(e.value,'$.refs.reviewPackage')='text' AND (?3 IS NULL OR json_extract(e.value,'$.refs.task')=?3)
+      LIMIT 1`).get(this.projectId, peer, taskId);
+  }
   /** Hot roster reads never materialize completed envelope history. */
   pendingPeers(): string[] {
     this.ensureOpen();

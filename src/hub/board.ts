@@ -549,8 +549,10 @@ export class Board {
     this.db.run(`CREATE TABLE IF NOT EXISTS review_comments (
       task_id INTEGER NOT NULL,task_created INTEGER NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,lifecycle TEXT NOT NULL,revision INTEGER NOT NULL,
       PRIMARY KEY(task_id,task_created,id))`);
+    this.db.run("CREATE INDEX IF NOT EXISTS review_comments_sent ON review_comments(task_id,task_created,id) WHERE lifecycle='sent'");
     this.db.run(`CREATE TABLE IF NOT EXISTS review_comment_packages (
       id TEXT PRIMARY KEY,task_id INTEGER NOT NULL,task_created INTEGER NOT NULL,body TEXT NOT NULL)`);
+    this.db.run("CREATE INDEX IF NOT EXISTS review_comment_packages_owner ON review_comment_packages(CASE WHEN json_valid(body)=1 THEN json_extract(body,'$.owner') END,task_id,task_created)");
     this.db.run(`CREATE TABLE IF NOT EXISTS research_protocols (
       hash TEXT PRIMARY KEY, project TEXT NOT NULL, campaign_id TEXT NOT NULL, campaign_revision INTEGER NOT NULL, task_id INTEGER NOT NULL, body TEXT NOT NULL,
       by_peer TEXT NOT NULL, at INTEGER NOT NULL, private INTEGER NOT NULL)`);
@@ -1101,9 +1103,19 @@ export class Board {
     });
   }
   hasOpenReviewCommentsFor(owner: string, taskId?: number): boolean {
-    const row = this.db.query(`SELECT EXISTS(SELECT 1 FROM review_comments AS comment JOIN tasks AS task ON task.id=comment.task_id AND task.created=comment.task_created
-      WHERE task.owner=? AND comment.lifecycle='sent'${taskId === undefined ? "" : " AND task.id=?"}) AS present`).get(...(taskId === undefined ? [owner] : [owner, taskId])) as { present: number };
-    return row.present === 1;
+    const taskScope = taskId === undefined ? "" : " AND task.id=?", packetScope = taskId === undefined ? "" : " AND packet.task_id=?";
+    const currentOwner = this.db.query(`SELECT EXISTS(SELECT 1 FROM review_comments AS comment JOIN tasks AS task ON task.id=comment.task_id AND task.created=comment.task_created
+      WHERE task.owner=? AND comment.lifecycle='sent'${taskScope}) AS present`).get(...(taskId === undefined ? [owner] : [owner, taskId])) as { present: number };
+    if (currentOwner.present === 1) return true;
+    const savedOwner = this.db.query(`WITH candidates AS (
+        SELECT packet.id,packet.task_id,packet.task_created FROM review_comment_packages AS packet
+        WHERE CASE WHEN json_valid(packet.body)=1 THEN json_extract(packet.body,'$.owner') END=?${packetScope}
+          AND EXISTS(SELECT 1 FROM json_each(packet.body,'$.ids') AS package_id
+            JOIN review_comments AS comment ON comment.task_id=packet.task_id AND comment.task_created=packet.task_created AND comment.id=package_id.value
+            WHERE comment.lifecycle='sent')
+        LIMIT 501
+      ) SELECT COUNT(*) AS count FROM candidates`).get(...(taskId === undefined ? [owner] : [owner, taskId])) as { count: number };
+    return savedOwner.count > 0;
   }
   /**
    * Durable observer exclusion for sent person comments and anchored findings in the peer's current open review scope.
@@ -1121,9 +1133,11 @@ export class Board {
       if (cached !== undefined) return cached;
       const scope = taskId === undefined ? "" : " AND id=?";
       const params = taskId === undefined ? [peer, peer] : [peer, peer, taskId];
-      const counts = this.db.query(`SELECT COUNT(*) AS tasks, COALESCE(SUM(length(CAST(history AS BLOB))),0) AS bytes,
-          SUM(CASE WHEN json_valid(history)<>1 THEN 1 ELSE 0 END) AS invalid
-        FROM tasks WHERE state NOT IN ('approved','cancelled') AND (owner=? OR reviewer=?)${scope}`).get(...params) as { tasks: number; bytes: number; invalid: number };
+      const counts = this.db.query(`WITH candidate AS (
+          SELECT history FROM tasks WHERE state NOT IN ('approved','cancelled') AND (owner=? OR reviewer=?)${scope} LIMIT 501
+        )
+        SELECT COUNT(*) AS tasks, COALESCE(SUM(length(CAST(history AS BLOB))),0) AS bytes,
+          SUM(CASE WHEN json_valid(history)<>1 THEN 1 ELSE 0 END) AS invalid FROM candidate`).get(...params) as { tasks: number; bytes: number; invalid: number };
       let scoped = counts.tasks > 500 || counts.bytes > 16 * 1024 * 1024 || counts.invalid > 0;
       if (!scoped) {
         const comments = this.hasOpenReviewCommentsFor(peer, taskId);

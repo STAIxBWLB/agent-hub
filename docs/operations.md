@@ -6109,3 +6109,5 @@ An unconfirmed Send keeps its saved package. Inspect `ahub queue list --peer <ow
 Comment IDs resolve only after final successful `hub_task_done`, not while a check runs or after it fails. Until resolution or person dismissal, open sent comments and outstanding anchored findings keep scoped responses out of memory and observer views; this does not hide the summary or check tail from its intended recipient.
 
 Anchored-finding observer scope conservatively lasts until task close, including a finding later marked fixed. Sent-comment scope lasts until resolution or person dismissal. If that scope is unavailable or exceeds its bounded metadata scan, shared-memory capture stays held; inspect the task board before retrying. Public comment edits from another person appear on the next explicit refresh.
+
+An owner/reviewer change does not dispose of an earlier review delivery. Its original recipient remains excluded from shared-memory capture while that delivery is queued or unsettled. Dismissing comments does not dispose of the envelope: inspect `ahub queue list --peer <original-recipient>` and explicitly settle the relevant delivery when appropriate.
