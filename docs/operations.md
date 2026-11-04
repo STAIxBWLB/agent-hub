@@ -5140,6 +5140,15 @@ person/planner, roster, exclusion and capability checks; a planner cannot clear
 or replace a person's reservation. The ordinary `ahub backlog return` form keeps
 its existing reservation-preserving behavior.
 
+The CLI has the same two edits (#1177): `ahub backlog return <task> <revision>
+<reason...> [--reserved <peer> | --unreserve]` sends `fields.reserved` as the peer
+(`--reserved kimi` or `--reserved=kimi`) or `null` (`--unreserve`) with the
+return, so the reservation moves or clears in the same operation and under the
+same checks. The flags may stand anywhere among the reason's words and are not
+part of the reason; at most one of them, and a malformed one is refused before
+anything is sent. With neither flag the command sends exactly what it always
+did and the reservation is kept.
+
 Capacity defaults to one per peer. Each declared instance has its own `tasks.wip_limits.<instance>` key. `ahub settings set tasks.wip_limits.codex 2`
 uses the existing machine-local registry path; integers 0..32 apply live (the next
 admission reads the current value), with 0 disabling planner admission for that
