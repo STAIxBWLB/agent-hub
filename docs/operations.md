@@ -3510,9 +3510,12 @@ Release N-1 is counted in minor versions, separately from this protocol window
 the latest published patch of 0.29.x. Every patch on 0.30.x keeps that release
 baseline. A change that cannot retain it needs a new minor release.
 
-Before each minor release, query the published versions of `@staix/agent-hub`,
+In the minor release PR, together with its `package.json` version bump, query
+the published versions of `@staix/agent-hub`,
 select the latest stable patch of the preceding minor line, and mechanically
-bump `test/fixtures/release-n-1/package.json` and its own `bun.lock`. Update
+bump `test/fixtures/release-n-1/package.json` and its own `bun.lock`. Do not
+merge this bump before or separately from the minor version bump: the guard
+requires the fixture minor to be the package minor minus one. Update
 the corresponding release entry in `test/published-protocol-compat.test.ts`
 with the package version, exact amem dependency and protocol read from that
 published package. Generate the lock with the pinned Bun, then commit it. The gate installs it separately
@@ -3521,13 +3524,18 @@ published runtime, client and plugin in both directions. Keep the separate
 `test/fixtures/protocol-v16` fixture at 0.25.0 while protocol 16 is promised;
 the previous-minor fixture does not replace protocol-floor coverage.
 
-Each minor release's CHANGELOG entry states the selected N-1 version and the
+Each new minor release's CHANGELOG entry states the selected N-1 version and the
 compatibility of each surface: wire/protocol, files and format floors, CLI,
 and MCP tools. State any capability or format ceiling explicitly. Patch release
 entries contain no new N-1 statement and inherit their minor line's baseline.
 `release-prepare` moves the Unreleased text mechanically; the release author
 adds this minor-only statement during preparation and checks the fixture bump
-before the release PR. No compatibility statement grants release consent.
+in that release PR. Never amend a tagged release section. The 0.30.0 N-1
+record added by #1164 is explicitly dated in Unreleased as a post-release note;
+it was not part of the published 0.30.0 tag or tarball. Its MCP ceiling includes
+0.29.0 free-form `plan.sources` values: 0.30.0 requires registered source ids
+and rechecks existing stored plans even when accept sends no new plan.
+No compatibility statement grants release consent.
 
 Guard-aware runtimes read `hub.db` format metadata before startup effects and
 before writable database opens. A newer incompatible format refuses with

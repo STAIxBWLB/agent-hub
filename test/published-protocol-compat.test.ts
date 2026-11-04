@@ -76,9 +76,11 @@ test("release N-1 fixture follows the current release's previous minor independe
   const pin = metadata(join(import.meta.dir, "fixtures", release.directory)).dependencies as Record<string, unknown>;
   expect(pin["@staix/agent-hub"]).toBe(release.version);
   const previous = release.version.split(".").map(Number);
+  // ponytail: this guard covers previous minors within one major; 1.0.0 needs a predecessor policy.
+  // Replace the same-major arithmetic with an explicit predecessor mapping at that boundary.
   expect(previous[0]).toBe(current![0]);
   expect(previous[1]).toBe(current![1] - 1);
-  // Patches retain their minor line's baseline; protocol 16 remains an additional, older promise.
+  // Patches retain their minor line's baseline. The literal wire floor pins the separate protocol-16 promise.
   expect(PROTOCOL_MIN).toBe(16);
   expect(PUBLISHED_FIXTURES.find(entry => entry.role === "protocol floor")?.version).toBe("0.25.0");
 });
@@ -162,7 +164,7 @@ async function plugin(entry: string, f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 for (const entry of PUBLISHED_FIXTURES) {
-  test(`${entry.role}: published${entry.version} client and unchanged plugin bundle connect to the new17 daemon through the16 descriptor floor`, async () => {
+  test(`${entry.role}: published ${entry.version} client and unchanged plugin bundle use protocol ${entry.protocol} with the new v17 daemon (descriptor floor v16)`, async () => {
     const old = await published(entry), f = await fixture(currentDaemon as unknown as DaemonModule);
     let client: ClientPort | undefined, channel: Awaited<ReturnType<typeof plugin>> | undefined;
     try {
