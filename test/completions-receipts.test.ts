@@ -53,10 +53,11 @@ test("mark-all-read clears every unread result once, and mark-unread relights th
   expect(s.markAllSeen(60, "terminal").sort()).toEqual([a.id, c.id].sort());       // b already had its own receipt
   expect(s.unread()).toEqual([]);
   expect(s.markAllSeen(70, "terminal")).toEqual([]);                                // nothing left to mark
-  expect(s.unmarkLast()).toBe(c.id);                                                // the most recently settled read result
+  // by when they were READ: a and c share the latest seen_at (60), so the newer settle (c) breaks the tie; b was read first (50), so it relights last
+  expect(s.unmarkLast()).toBe(c.id);
   expect(s.unread().map(x => x.id)).toEqual([c.id]);
-  expect(s.unmarkLast()).toBe(b.id);
   expect(s.unmarkLast()).toBe(a.id);
+  expect(s.unmarkLast()).toBe(b.id);
   expect(s.unmarkLast()).toBeUndefined();                                           // nothing is read any more
   expect(s.unread()).toHaveLength(3);
 });
@@ -85,6 +86,37 @@ test("retention bounds the table: past the keep line the oldest READ completions
   s.openRun({ peer: "pi", runTurn: "pi#r.1", lastTurn: "pi#r.1", startedAt: 1, private: false, evidence: {}, signalled: false });
   s.prune(0);
   expect(s.openRuns()).toHaveLength(1);
+});
+
+test("unread results are filtered in the query before the limit: an old unread one behind 100 newer read ones is listed, and a listing shorter than the truth says how many it left out", () => {
+  const s = store();
+  const old = settled(s, 1);                                                          // the oldest, and the only unread one
+  const newer = Array.from({ length: 100 }, (_, i) => settled(s, i + 2));
+  for (const c of newer) s.markSeen(c.id, 5000, "terminal");
+  expect(s.listWithState(100, false).map(row => row.id)).not.toContain(old.id);      // an unfiltered newest-100 listing really does hide it ...
+  expect(s.listWithState(100, true).map(row => row.id)).toEqual([old.id]);           // ... and the unread query does not
+  expect(s.unreadCount()).toBe(1);
+  // more unread than the bound: the listing is the newest 100 unread, and the count says how many exist
+  const many = store();
+  for (let i = 0; i < 105; i++) settled(many, i + 1);
+  expect(many.listWithState(100, true)).toHaveLength(100);
+  expect(many.unreadCount()).toBe(105);
+});
+
+test("mark-unread relights the result READ last, not the newest settled: read A (newer) then B (older), and unread-last relights B", () => {
+  const s = store();
+  const older = settled(s, 1), newer = settled(s, 2);
+  s.markSeen(newer.id, 100, "terminal");                                              // A, the newer result, read first
+  s.markSeen(older.id, 200, "terminal");                                              // B, the older result, read last
+  expect(s.unmarkLast()).toBe(older.id);                                              // the latest receipt is B's
+  expect(s.unread().map(c => c.id)).toEqual([older.id]);
+  expect(s.unmarkLast()).toBe(newer.id);
+  expect(s.unmarkLast()).toBeUndefined();
+  // many rows with one seen_at (read-all): settle time and id break the tie, newest first
+  const t = store();
+  const [a, b, c] = [settled(t, 1), settled(t, 2), settled(t, 3)];
+  t.markAllSeen(300, "terminal");
+  expect([t.unmarkLast(), t.unmarkLast(), t.unmarkLast()]).toEqual([c.id, b.id, a.id]);
 });
 
 // --- the pure parts ----------------------------------------------------------------------------------------------------------------------------------------------------

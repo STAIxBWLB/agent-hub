@@ -98,9 +98,15 @@ export class CompletionStore {
     return (this.db.query("SELECT c.* FROM completions c WHERE NOT EXISTS (SELECT 1 FROM completion_receipts r WHERE r.completion_id = c.id) ORDER BY c.settled_at DESC, c.id").all() as RawCompletion[]).map(completionOf);
   }
   /** One completion as the reads show it: the record and whether a receipt exists. Newest first. */
-  listWithState(limit = 100): (Completion & { seenAt?: number; surface?: string })[] {
-    return (this.db.query("SELECT c.*, r.seen_at AS seen_at, r.surface AS surface FROM completions c LEFT JOIN completion_receipts r ON r.completion_id = c.id ORDER BY c.settled_at DESC, c.id LIMIT ?").all(limit) as (RawCompletion & { seen_at: number | null; surface: string | null })[])
+  listWithState(limit = 100, unreadOnly = false): (Completion & { seenAt?: number; surface?: string })[] {
+    // The unread predicate is part of the query, BEFORE the limit: filtering after a LIMIT would hide an old unread result behind newer read ones while status still counts it.
+    return (this.db.query(`SELECT c.*, r.seen_at AS seen_at, r.surface AS surface FROM completions c LEFT JOIN completion_receipts r ON r.completion_id = c.id ${unreadOnly ? "WHERE r.completion_id IS NULL" : ""} ORDER BY c.settled_at DESC, c.id LIMIT ?`).all(limit) as (RawCompletion & { seen_at: number | null; surface: string | null })[])
       .map(raw => ({ ...completionOf(raw), ...(raw.seen_at !== null ? { seenAt: raw.seen_at } : {}), ...(raw.surface ? { surface: raw.surface } : {}) }));
+  }
+
+  /** How many completions have no receipt: the number status counts, so a listing can say when it showed fewer. */
+  unreadCount(): number {
+    return (this.db.query("SELECT COUNT(*) AS n FROM completions c WHERE NOT EXISTS (SELECT 1 FROM completion_receipts r WHERE r.completion_id = c.id)").get() as { n: number }).n;
   }
 
   /**
@@ -121,10 +127,13 @@ export class CompletionStore {
     });
     return write();
   }
-  /** Relight the most recently settled READ completion (the one the person read last): its receipt is deleted. Undefined when nothing is read. */
+  /**
+   * Relight the completion the person read LAST: its receipt, the latest one, is deleted. Ordered by `seen_at`; `markAllSeen` gives many rows one `seen_at`, so settle time and id break the
+   * tie, newest first. Undefined when nothing is read.
+   */
   unmarkLast(): string | undefined {
     const write = this.db.transaction(() => {
-      const row = this.db.query("SELECT r.completion_id AS id FROM completion_receipts r JOIN completions c ON c.id = r.completion_id ORDER BY c.settled_at DESC, c.id DESC LIMIT 1").get() as { id: string } | null;
+      const row = this.db.query("SELECT r.completion_id AS id FROM completion_receipts r JOIN completions c ON c.id = r.completion_id ORDER BY r.seen_at DESC, c.settled_at DESC, c.id DESC LIMIT 1").get() as { id: string } | null;
       if (!row) return undefined;
       this.db.query("DELETE FROM completion_receipts WHERE completion_id = ?").run(row.id);
       return row.id;

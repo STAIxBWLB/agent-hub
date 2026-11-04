@@ -2331,6 +2331,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (options.json) return console.log(JSON.stringify(rows, null, 2));
       if (!rows.length) return console.log(request.unread ? "no unread results" : "no results");
       for (const row of rows) console.log(`${row.read ? " " : "*"} ${row.id}  ${terminalText(String(row.title))}  ${new Date(Number(row.settledAt)).toISOString().replace("T", " ").slice(0, 16)}  ${Math.round(Number(row.ms) / 1000)}s${row.read ? "" : `  ahub results --read ${row.id}`}`);
+      // The listing holds the newest 100. Unread results are never pruned, so when more exist than shown, say how many and how to reach them (status still counts every one).
+      if (Number(reply.more) > 0) console.log(`... and ${Number(reply.more)} older unread; ahub results --read-all marks them all, or read the newest ones first`);
     } finally { hub.close(); }
   },
 

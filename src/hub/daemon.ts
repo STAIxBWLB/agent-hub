@@ -10238,8 +10238,11 @@ export async function startDaemon(opts: DaemonOptions) {
           const relit = completionStore.unmarkLast();
           return void reply(relit ? { t: "results", ok: true, unread: relit } : { t: "results", ok: false, error: "no result has been read, so there is nothing to mark unread" });
         }
-        const rows = completionStore.listWithState(100).map(resultView);
-        return void reply({ t: "results", ok: true, results: msg.unread === true ? rows.filter(row => !row.read) : rows });
+        const unreadOnly = msg.unread === true;
+        const rows = completionStore.listWithState(100, unreadOnly).map(resultView);
+        // Say so when the listing is shorter than the truth, instead of letting "no unread results" hide an older one status still counts.
+        const more = unreadOnly ? Math.max(0, completionStore.unreadCount() - rows.length) : 0;
+        return void reply({ t: "results", ok: true, results: rows, ...(more ? { more } : {}) });
       }
       case "kill":
         if (c.role !== "console") return void reply({ ok: false, error: "kill is a console command" });
