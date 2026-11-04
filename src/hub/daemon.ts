@@ -2805,7 +2805,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!first && owner?.sessionTitle === "" && owner.titleSession && binding?.session === owner.titleSession) {
         try {
           const row = journal.get(binding.delivery), env = row?.originals.find(env => env.id === binding.envelope);
-          if (row?.peer === id && env && !remoteEnvelope(env) && !isReviewObserverExcluded(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(id, first); }
+          if (row?.peer === id && env && !row.originals.some(isReviewObserverExcluded) && !remoteEnvelope(env) && !isReviewObserverExcluded(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(id, first); }
         } catch { /* unknown optional label evidence never fails live status */ }
       }
       if (!view && owner?.sessionTitle === "" && first?.owner === owner && first.session === owner.titleSession) view = unnamedSessionLabel(first.env.body, value => first.env.private === true || titlePrivate(id, value), first.env.ts);
@@ -3014,7 +3014,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const retained = titleBindings[peer];
       if (!first && owner?.titleSession && retained?.session === owner.titleSession) {
         const row = journal.get(retained.delivery), env = row?.originals.find(env => env.id === retained.envelope);
-        if (row?.peer === peer && env && !remoteEnvelope(env) && !isReviewObserverExcluded(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(peer, first); }
+        if (row?.peer === peer && env && !row.originals.some(isReviewObserverExcluded) && !remoteEnvelope(env) && !isReviewObserverExcluded(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(peer, first); }
       }
       if (definitionOf(peer)?.title === "hub" && owner && (!first || first.owner !== owner || first.session !== owner.titleSession)) {
         const env = originals.find(env => !(env.from === HUB && env.kind === "presence") && !remoteEnvelope(env) && !isReviewObserverExcluded(env));
