@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Move the floating pet to acon Mini (#1012). `ahub pet --window [--close]` now prints the `acon ui` pointer and exits 0; the standalone JXA host, assets, automatic startup and console `o` shortcut are removed. Existing `pet.window` is ignored with one notice. Terminal line/mini/full pets and palette controls remain, and the existing acon plugin **Console message** view supplies the composer.
+
 ## 0.30.0
 
 - Worktree shelf (#1057: #1156, #1158, #1159, #1160). The hub derives at read time which worktrees are live and which are settled (its PR merged or closed with no newer work, or quiet for `worktrees.quiet_days`, default 7), and the person can Park or Pin a row. `ahub worktrees [--json]` lists both; `ahub worktrees tidy` previews what is safe to remove, with every refused row's reasons, and `ahub worktrees tidy --confirm <fingerprint>` removes only those, in the person's own CLI process, with `git worktree remove` and `git branch -d` and never a force flag. Dirty, locked, unpushed, unmerged, bound-to-open-task, main and instance worktrees are refused. The dashboard's Agents panel gets a Worktrees section with Park, Pin and an explicit "Refresh PR states" (at most 8 PRs); no read makes a GitHub call, and an inbox alert fires above `worktrees.alert_over` (default 10). The shelf adds no removal to the daemon: it still removes only an empty hub-made task worktree on decline or cancel (0.29.0).

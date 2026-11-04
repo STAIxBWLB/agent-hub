@@ -211,8 +211,7 @@ Home/End sequences is that many key presses, so a held key repeats its move. Hom
 or `<` jumps to a panel's first row and End or `>` to its last; the Events tab
 follows new events while the last row is selected and stays on a row you moved to.
 `w` opens the dashboard outside the Peers tab; in Peers it edits the selected
-peer's WIP limit. `o` opens the pet window; `:ui --all` and `:pet --window --close`
-work on the command line too. In the Peers tab the planner's row reads `(planner)`, and
+peer's WIP limit. `:ui --all` works on the command line too. In the Peers tab the planner's row reads `(planner)`, and
 `l` then `y` makes the selected peer the planner (`ahub settings set planner <peer>`). In the Events
 tab a row's header line is tokenized and coloured exactly as the same event in
 the stream; only the header is tab-flattened before tokenizing. Body lines retain
@@ -5225,12 +5224,12 @@ while drawing is off. The command prompt keeps its original row and width.
 
 `pet.glyphs` selects auto/ascii/blocks; unsupported locales and dumb/linux
 terminals retain the ASCII floor. `pet.blink:false` is static. `pet.palette`
-selects blue, teal (default), violet or ochre (`a`/`b`/`c`/`d`), and `pet.window`
-controls standalone window opt-in; both `pet` (`false` or an option block) and its
-fields validate identically at startup and reload in `.agenthub/config.json` and
-`.agenthub/config.local.json`, apply live as console-local presentation (including
-an open console's next refresh and the standalone pet window), and grant no
-authority (#483). Neither
+selects blue, teal (default), violet or ochre (`a`/`b`/`c`/`d`). Both `pet`
+(`false` or an option block) and its fields validate identically at startup and
+reload in `.agenthub/config.json` and `.agenthub/config.local.json`, apply live
+as console-local presentation on an open console's next refresh, and grant no
+authority (#483). A legacy `pet.window` value is ignored with one notice; a
+window-only local block preserves inherited `pet:false`. Neither
 choosing nor drawing a character changes authority, config files, task state or
 polling. Explicit `ahub pet` and text status use the configured line face; prompt
 tokens remain character-independent. Native glyph width and tmux are unverified.
@@ -5316,45 +5315,22 @@ Release cut audits return exact counts with at most 32 example IDs per category;
 
 Release cards include task states in their refresh key, so completion of an outside prerequisite updates blocked counts even when the release and audit preview are unchanged.
 
-## Standalone macOS pet window (#391)
+## Floating pet in acon Mini (#1012)
 
-From a person's terminal, `ahub pet --window` starts one floating, transparent
-JXA panel per project; `ahub pet --window --close` closes it. Other platforms
-print unsupported and retain `ahub pet` / `ahub pet --short`. An agent-marked
-shell may read the terminal pet but cannot start or close the window.
+Run `acon ui` and open Mini for the floating pet. The former
+`ahub pet --window [--close]` command prints that pointer and exits successfully
+from a person terminal, an agent shell or `--live-test`. It starts no window,
+host, JXA process or network connection. The console's `o` shortcut and automatic
+window startup from `ahub up` are retired.
 
-Set `pet.window: true` in `.agenthub/config.json` or `config.local.json` to start
-it with `ahub up`. A window-only local opt-in preserves inherited `pet:false`
-for terminal/status/dashboard presentation; explicit local character options
-retain their existing presentation override behavior. The
-window uses the configured built-in character, full pixel frame and blink
-choice. Its body opens `ahub ui`; the pencil opens an inline console message
-box (Enter sends through `ahub say`, Esc cancels). Drag the body to move it;
-`pet-window-pos.json` remembers the position, with an on-screen fallback if a
-saved display has disappeared. The panel joins all Spaces without a Dock icon.
-The 150x150 panel keeps the status pill and message composer hidden until the
-pointer is over the character. Deep state colors and a dark rim shadow keep the
-pixel silhouette readable on light backgrounds. `pet.palette` selects the base
-color: teal (default, b), blue (a), violet (c) or ochre (d), each with its own
-rim line; the waiting/blocked/review/offline colors stay fixed. While the
-window is key, 1/2/3/4 switch blue/teal/violet/ochre and save the choice.
-From a terminal, `ahub pet --palette <blue|teal|violet|ochre>` writes the
-choice to `pet.palette` in `.agenthub/config.local.json`.
-While working, the pixel art bobs in a 0.7-second stepped CSS loop; reduced-motion preferences keep it still.
+The terminal pet remains available through `ahub pet`, `ahub pet --short` and
+the console's line/mini/full frames. `ahub pet --palette` still changes the
+terminal palette. Existing `pet.window` settings are ignored with one notice;
+remove the obsolete key when updating configuration.
 
-A detached Bun host refreshes `pet-view.json` once per second using `readPet`
-and `loadPetConfig`. The file contains only state/counts/character/blink and
-built-in pixels. It uses no dashboard session or HTTP listener. An unavailable
-hub displays Offline for two seconds, then the panel and host exit. Closing
-JXA exits the host too. `pet-window.pid` holds the host's process signature;
-an uncertain owner is retained rather than signalled. A stale owner requires
-an explicit `--close` before restarting; a malformed pidfile requires operator
-inspection. A send failure is unconfirmed: check the stream before retrying.
-
-Native transparency/floating and the bridge were verified in the macOS spike.
-Real keystrokes, dragging and persistence, Spaces, message delivery and body
-click need the manual PR checklist before merge; automated fixtures do not
-establish those native results.
+The composer already lives in the agent-hub console plugin's **Console message**
+view (#935), available through `acon ui`. It sends through the existing plugin
+`send` action and retains that action's audience and authority checks.
 
 ## Additional headless peer instances
 
@@ -5656,7 +5632,7 @@ The selected project's configured conductor may run the commands below through i
 | logs / export | Bounded daemon projections, with unsupported/private records withheld; logs -f ends when authority ends |
 | settings set | Only the thirteen existing live registry keys listed below |
 
-The exact settings keys are `task_sweep.enabled`, `task_sweep.auto_reassign`, `task_sweep.no_writes_turns`, `task_sweep.interval_s`, `task_sweep.unaccepted_min`, `task_sweep.idle_min`, `task_sweep.review_min`, `task_sweep.ready_min`, `task_sweep.ladder_min`, `snapshots.enabled`, `research.enabled`, `approvals.notify` and `tasks.escalate_after`. New keys receive no authority by prefix. Generic roster setting writes still use the dedicated roster lifecycle. Conductor setting records name the initiating peer, and conductor writes preserve the person's pending undo record. An intervening write can still invalidate that undo through the existing file-digest guard; preserving the record does not bypass that guard. Permission modes, roles, `pet.window`, `models start|stop`, arbitrary configuration reload and undo remain person commands. `task cancel` remains a separate own-task `hub_task_cancel` permission, not a conductor operation.
+The exact settings keys are `task_sweep.enabled`, `task_sweep.auto_reassign`, `task_sweep.no_writes_turns`, `task_sweep.interval_s`, `task_sweep.unaccepted_min`, `task_sweep.idle_min`, `task_sweep.review_min`, `task_sweep.ready_min`, `task_sweep.ladder_min`, `snapshots.enabled`, `research.enabled`, `approvals.notify` and `tasks.escalate_after`. New keys receive no authority by prefix. Generic roster setting writes still use the dedicated roster lifecycle. Conductor setting records name the initiating peer, and conductor writes preserve the person's pending undo record. An intervening write can still invalidate that undo through the existing file-digest guard; preserving the record does not bypass that guard. Permission modes, roles, `models start|stop`, arbitrary configuration reload and undo remain person commands. `task cancel` remains a separate own-task `hub_task_cancel` permission, not a conductor operation.
 
 Log history is limited to the last 100 retained lines and export to the last 1000 retained events, each within a 128 KiB read. Truncation is explicit. An incomplete public projection reports one bounded reason on stderr, preserving export JSON on stdout. The complete privacy inventory has no 500-task cutoff and is cached until board or privacy/config revisions change, so log-follow does not rebuild it for every line. Export accepts closed metadata shapes; unknown fields and nested records are withheld rather than copied. Task titles, paths and private delivery bodies are not part of this projection. It does not change the person's ordinary logs/export output.
 

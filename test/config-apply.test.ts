@@ -8,7 +8,7 @@ import { parseConfigSources, configSourceTexts } from "../src/hub/config-reload.
 import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { runConsole, type ConsoleTerminal } from "../src/cli/console.ts";
-import { savePetPalette } from "../src/pet/config.ts";
+import { savePetPalette, loadPetConfig, PET_WINDOW_RETIRED_NOTICE } from "../src/pet/config.ts";
 import { init } from "../src/cli/init.ts";
 import { SETTINGS, writeConfigSetting } from "../src/hub/settings.ts";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -186,16 +186,17 @@ test("#483 A1-A6: pet config block validates at startup and reload, applies live
   // A1: schema, apply class and leaf authorization for pet
   expect(() => validateRawConfig({ pet: false })).not.toThrow();
   expect(() => validateRawConfig({ pet: { character: "gyul", size: "mini", glyphs: "blocks", blink: false, bell: true, palette: "c", window: true } })).not.toThrow();
-  const invalidPetConfigs = [{ pet: true }, { pet: "stai" }, { pet: [] }, { pet: { unknown: true } }, { pet: { character: "dragon" } }, { pet: { size: "huge" } }, { pet: { glyphs: "emoji" } }, { pet: { palette: "red" } }, { pet: { blink: "yes" } }, { pet: { bell: 1 } }, { pet: { window: "true" } }];
+  const invalidPetConfigs = [{ pet: true }, { pet: "stai" }, { pet: [] }, { pet: { unknown: true } }, { pet: { character: "dragon" } }, { pet: { size: "huge" } }, { pet: { glyphs: "emoji" } }, { pet: { palette: "red" } }, { pet: { blink: "yes" } }, { pet: { bell: 1 } }];
   for (const bad of invalidPetConfigs) {
     expect(() => validateRawConfig(bad)).toThrow();
   }
-  for (const key of ["pet", "pet.character", "pet.size", "pet.glyphs", "pet.blink", "pet.bell", "pet.palette", "pet.window"]) {
+  for (const key of ["pet", "pet.character", "pet.size", "pet.glyphs", "pet.blink", "pet.bell", "pet.palette"]) {
     expect(configApply(key)).toEqual({ applies: "live" });
     expect(authorize({ ...ordinary, key, before: undefined, after: "teal", tracked: true })).toMatchObject({ key, allowed: true, guarded: false });
     expect(authorize({ ...ordinary, key, before: "teal", after: undefined, tracked: false })).toMatchObject({ key, allowed: true, guarded: false });
   }
   expect(() => configApply("pet.typo")).toThrow();
+  expect(() => configApply("pet.window")).toThrow("unknown configuration key");
 
   // A4 & A5: round-trip every config writer and verify startup (loadConfig) and reload (parseConfigSources) reject invalid pet values identically
   const root = mkdtempSync(join(tmpdir(), "ahub-pet-reload-"));
@@ -336,3 +337,54 @@ test("#546 DaemonOptions.configWatch false leaves the file watcher off, so the e
     rmSync(root, { recursive: true, force: true });
   }
 }, 15_000);
+
+test("#1012 retired pet.window accepts arbitrary legacy values but creates no setting or authority", () => {
+  for (const window of [true, false, null, 1, "PRIVATE_LEGACY_WINDOW", { private: "PRIVATE_LEGACY_WINDOW" }, ["PRIVATE_LEGACY_WINDOW"]]) {
+    expect(() => validateRawConfig({ pet: { window, character: "gyul", size: "mini", blink: false } })).not.toThrow();
+    expect(() => validateRawConfig({ pet: { window, character: "dragon" } })).toThrow();
+    for (const authority of ["ordinary", "terminal", "settings", "conductor"]) {
+      const decision = authorize({ ...ordinary, authority, key: "pet.window", before: undefined, after: window, confirmed: true });
+      expect(decision.allowed).toBe(false);
+      expect(decision.reason).toBe(PET_WINDOW_RETIRED_NOTICE);
+    }
+  }
+  expect(() => configApply("pet.window")).toThrow("unknown configuration key");
+  expect(SETTINGS.some(row => row.key === "pet.window")).toBe(false);
+});
+
+test("#1012 legacy window-only layers are inert over pet:false at startup and reload", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-retired-pet-")); mkdirSync(join(root, ".agenthub"));
+  try {
+    writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ pet: false }));
+    for (const window of [true, false, null, "PRIVATE_LEGACY_WINDOW", { text: "PRIVATE_LEGACY_WINDOW" }]) {
+      writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ pet: { window } }));
+      const raw = readFileSync(join(root, ".agenthub/config.local.json"), "utf8");
+      expect(loadPetConfig(root)).toEqual({ enabled: false, blink: true, bell: false, notice: PET_WINDOW_RETIRED_NOTICE });
+      expect(loadConfig(root).pet).toBe(false);
+      expect(loadConfig(root).retired?.filter(notice => notice === PET_WINDOW_RETIRED_NOTICE)).toHaveLength(1);
+      const sources = parseConfigSources(configSourceTexts(root));
+      expect(sources.layers.find(layer => layer.name === "config.local.json")?.raw).not.toHaveProperty("pet");
+      expect(sources.trustLayers.find(layer => layer.name === "config.local.json")?.raw).not.toHaveProperty("pet");
+      expect(readFileSync(join(root, ".agenthub/config.local.json"), "utf8")).toBe(raw);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#1012 legacy window removal preserves mixed terminal presentation and emits one public notice", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-retired-pet-mixed-")); mkdirSync(join(root, ".agenthub"));
+  try {
+    writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ pet: { window: { canary: "PRIVATE_LEGACY_WINDOW" }, size: "full", blink: false, bell: true } }));
+    writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ pet: { window: "PRIVATE_LEGACY_WINDOW", character: "gyul", glyphs: "ascii", palette: "violet" } }));
+    const pet = loadPetConfig(root);
+    expect(pet).toEqual({ enabled: true, character: "gyul", size: "full", glyphs: "ascii", palette: "violet", blink: false, bell: true, notice: PET_WINDOW_RETIRED_NOTICE });
+    expect(pet).not.toHaveProperty("window");
+    expect(JSON.stringify(pet)).not.toContain("PRIVATE_LEGACY_WINDOW");
+    const config = loadConfig(root);
+    expect(config.pet).toEqual({ size: "full", blink: false, bell: true, character: "gyul", glyphs: "ascii", palette: "violet" });
+    expect(config.retired?.filter(notice => notice === PET_WINDOW_RETIRED_NOTICE)).toHaveLength(1);
+    const sources = parseConfigSources(configSourceTexts(root));
+    expect(sources.layers.every(layer => !layer.raw.pet || !Object.hasOwn(layer.raw.pet, "window"))).toBe(true);
+    writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ pet: false }));
+    expect(loadPetConfig(root)).toEqual({ enabled: true, character: "gyul", glyphs: "ascii", palette: "violet", blink: true, bell: false, notice: PET_WINDOW_RETIRED_NOTICE });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

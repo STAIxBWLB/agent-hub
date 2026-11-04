@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateRawConfig, type ConfigLayer, type ConfigIdentitySnapshot } from "./config-apply.ts";
+import { stripLegacyPetWindow } from "../pet/config.ts";
 import { parseOverlay, parseRouting, type Routing } from "./routing.ts";
 import { CLASSES } from "./board.ts";
 import { readInstanceConfig, withoutInertInstancePolicy, type DeclaredExternalInstance } from "./instance-config.ts";
@@ -134,6 +135,11 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
       continue;
     }
     if (name === "config.json" || name === "config.local.json") {
+      const pet = stripLegacyPetWindow(raw.pet);
+      if (pet !== raw.pet) {
+        if (pet && typeof pet === "object" && !Object.keys(pet).length) delete raw.pet;
+        else raw.pet = pet;
+      }
       raw = withoutInertInstancePolicy(raw, inertInstances);
       if (!fallbackRouting) {
         try {

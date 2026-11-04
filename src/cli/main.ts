@@ -44,7 +44,7 @@ import { discoverClaudeHomes } from "./claude-homes.ts";
 import { setupClaudeHomes } from "./setup-homes.ts";
 import { registerAconPlugin } from "./acon-register.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
-import { startPetWindow, closePetWindow } from "../pet/window.ts";
+import { PET_WINDOW_RETIRED_NOTICE } from "../pet/config.ts";
 import { loadPetConfig, savePetPalette } from "./pet-config.ts";
 import { projectProfile, resolveProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
@@ -1162,8 +1162,6 @@ const commands: Record<string, () => Promise<void> | void> = {
     const status = await startProject(registeredProject(), { unattended, liveTest, ...(recoveryLauncherCurrent ? { current: recoveryLauncherCurrent, env: { ...personEnv(process.env), AGENTHUB_RECOVERY_OPERATION: continuationId, AGENTHUB_PEER_ID: continuationPeer, AGENTHUB_RECOVERY_CONDUCTOR: continuationPeer, AGENTHUB_RECOVERY_CONTINUATION: continuationId } } : {}) });
     console.log(`ahub up (ws://127.0.0.1:${status.controlPort}), state in ${stateDir}`);
     if (recoveryLauncherCurrent) { recoveryLauncherCurrent(); return; }
-    try { if (loadPetConfig(cwd).window) console.log(await startPetWindow(stateDir, cwd)); }
-    catch { console.error("Pet window was not started; run ahub pet --window to inspect it."); }
     // #608: the default agent set, only for a person's own `ahub up` (never an agent's, a live test's, or an upgrade or recovery relaunch, which set AGENTHUB_RECOVERY_OPERATION).
     if (!args.includes("--no-agents") && !liveTest && caller.role === "console" && identity.role === "console" && !process.env.AGENTHUB_RECOVERY_OPERATION) {
       try {
@@ -2277,7 +2275,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   pet: async () => {
     if (args.includes("--window")) {
       if (args.some(arg => !["--window", "--close"].includes(arg))) return fail("usage: ahub pet --window [--close]");
-      return console.log(await (args.includes("--close") ? closePetWindow(stateDir) : startPetWindow(stateDir, cwd)));
+      return console.log(PET_WINDOW_RETIRED_NOTICE);
     }
     if (args.includes("--palette")) {
       if (args.length !== 2 || args[0] !== "--palette") return fail("usage: ahub pet [--short] | --window [--close] | --palette <blue|teal|violet|ochre>");

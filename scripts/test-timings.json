@@ -125,7 +125,6 @@
   "test/conductor-daemon.test.ts": 2440,
   "test/jcode-usage.test.ts": 2322,
   "test/doctor-model-aliases.test.ts": 2306,
-  "test/pet-window.test.ts": 2297,
   "test/conformance/codex.test.ts": 2272,
   "test/instance-pi-daemon.test.ts": 2244,
   "test/sdlc-merge.test.ts": 2240,

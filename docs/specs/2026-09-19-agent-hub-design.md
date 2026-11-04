@@ -3945,6 +3945,8 @@ run has no hub command lineage.
 
 ## Amendment: standalone attention window (#391 Task B, supersedes #280 dashboard pet)
 
+Historical surface, retired by #1012. Current presentation contract: [console surfaces](../design/agent-hub-architecture.md#console-presentation-surfaces).
+
 The #280 phase-4 dashboard pet is replaced by an optional standalone macOS JXA
 window. Task B adds the window first; #391 Task A removes the existing in-page
 character and retains shared attention counts/navigation. Terminal characters

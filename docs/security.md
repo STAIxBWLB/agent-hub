@@ -362,7 +362,7 @@ as that peer in tools mode. Messages and task changes retain that actor;
 capability. Conflicting or malformed markers fail closed. Refusals name only the marker variable names actually present, never their values. There is no `--as-user`.
 By default, console operations are refused before connecting, including permission answers
 and permission modes, agent version trust, budget overrides, role assignment, `--as-user`, recovery
-operations, the interactive terminals (`watch`, `pet --window`, a launcher's person-only flags), and `ask`
+operations, the interactive terminals (`watch`, a launcher's person-only flags), and `ask`
 (#933 keeps the person's class to trust, money, attribution and interactive terminals).
 For live verification explicitly authorized by the user, an agent may invoke
 `ahub --live-test [--project <path|id>] <command> [args...]`. The flag delegates
@@ -466,8 +466,8 @@ while amem records their actor as the user. `task unassign` is a conductor form;
 it keeps the conductor as the board actor. `task cancel` remains separately
 available through `hub_task_cancel` only on the caller's own eligible task
 (#933), not as a conductor operation; `task role`, `task label` and
-`ahub deliverables` retain their own-task checks. `models start|stop` and
-`pet --window` remain Console. `restart --yes`,
+`ahub deliverables` retain their own-task checks. `models start|stop` remains
+Console. `restart --yes`,
 `upgrade --yes --to <exact-version>` and `recovery resume|abort` have the
 separate continuity proof described below. Each conductor operation is admitted
 after a recheck of role and project membership; effectful operations and history
@@ -762,30 +762,21 @@ Short-term segments, machine identity and the derived index are excluded from
 sync. Suggested graph edges are off by default and are not evidence until a
 person confirms them. Operational details and limits: [hub memory](memory.md).
 
-## Standalone pet window (#391)
+## Floating pet retirement (#1012)
 
-The macOS window reads local files only. Its detached host reuses `readPet`,
-including signed-daemon liveness and recovery-lock handling, and publishes an
-atomic counts-only `pet-view.json` (state, act/watch, known character, blink,
-palette from the closed list, built-in pixel frame). It excludes item ids,
-task titles/text, refs, paths,
-notices and approval prose. Missing or unconfirmed status produces only
-`{offline:true}`. Process and position files are separate from this view.
+The standalone JXA host, WKWebView, window bridge and its packaged assets are
+removed. `ahub pet --window [--close]` only prints the `acon ui` Mini pointer and
+exits successfully; it has no launcher, process-control or network effect and
+is available to agent shells and `--live-test`. Legacy `pet.window` is ignored
+as compatibility input and grants no configuration or conductor authority.
 
-The local WKWebView has a deny-by-default CSP, with only its shipped inline
-script/style allowed and network connections forbidden. Text never becomes
-HTML or executable source. The retained JXA bridge accepts fixed drag/send/
-palette/open/close operations; `NSTask` invokes the host-supplied Bun/CLI/project argv
-and appends `say`, `--` and a single message argument, or `pet`, `--palette`
-and one closed palette name. It does not evaluate a
-shell string. Message text is never logged by the window/host; command stdout
-and stderr go to the null device. `ahub say` keeps its existing console-message
-authority and recording behavior, and `ahub ui` opens its existing session.
-The CLI restricts `pet --window` (including close) to console identity, while
-plain terminal pet reads and `pet --palette` remain available to agent shells;
-the palette write merges only the closed name into `.agenthub/config.local.json`,
-validated and replaced by temp file and rename. Signed pidfiles
-fence instance ownership and close; unknown owners are never signalled.
+Terminal pet reads and `pet --palette` retain their existing behavior. The
+palette write merges only the closed palette name into
+`.agenthub/config.local.json` using a temporary file and rename.
+
+The **Console message** view already exists in the agent-hub acon plugin
+(#935). Its existing `send` action retains message audience, PII and actor
+checks; the retired window adds no alternative composer path.
 
 ## Planner, cancellation and delivery authority
 

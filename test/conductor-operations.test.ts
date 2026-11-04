@@ -46,7 +46,8 @@ test("operational command classification preserves actor path and deferred perso
     expect(conductorOperation(cmd,args)).toBeDefined();expect(classifyPeerCommand(cmd,args)).toBe("conductor");expect(classifyPeerCommand(cmd,[...args,"--as-user"])).toBe("console");
   }
   for(const [cmd,args] of [["restart",["--yes"]],["upgrade",["--yes","--to","0.18.1"]],["recovery",["resume"]],["recovery",["abort"]],["task",["unassign","1"]]] as [string,string[]][])expect(classifyPeerCommand(cmd,args)).toBe("conductor");
-  for(const [cmd,args] of [["recovery-run",["op-1"]],["models",["start"]],["models",["stop"]],["pet",["--window"]],["permission",["pi","never-ask"]]] as [string,string[]][])expect(classifyPeerCommand(cmd,args)).toBe("console");
+  for(const [cmd,args] of [["recovery-run",["op-1"]],["models",["start"]],["models",["stop"]],["permission",["pi","never-ask"]]] as [string,string[]][])expect(classifyPeerCommand(cmd,args)).toBe("console");
+  for(const args of [["--window"],["--window","--close"]]){expect(classifyPeerCommand("pet",args)).toBe("allowed");expect(liveTestRefusal("pet",args)).toBe(false);}
   expect(classifyPeerCommand("task",["cancel","1"])).toBe("allowed"); // #933: own task only, refused by Tasks.cancel otherwise
   expect(liveTestRefusal("task",["cancel","1"])).toBe(true);expect(liveTestRefusal("permission",["pi","ask"])).toBe(false);
 });

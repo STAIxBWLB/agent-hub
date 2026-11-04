@@ -17,6 +17,7 @@ export const LIVE_TEST_PERSON_REFUSAL = "live-test cannot write person-attribute
 export function liveTestRefusal(command: string, args: readonly string[], context: { repairedFresh?: boolean } = {}): boolean {
   if (command === "sdlc" && (args[0] === "authorize-release" || args[0] === "plan-review" || args[0] === "release-assign" || args[0] === "merge" || args[0] === "train" && args[1] !== "report")) return true;
   if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
+  if (command === "pet" && args.includes("--window")) return false;
   const sub = command === "recovery" ? recoveryAction(args) : args.find(arg => arg !== "--json");
   return ["task", "role", "goal", "deliverables", "source", "broker", "schedule", "intake"].includes(command)
     || (command === "room" && !["list", "status"].includes(sub ?? ""))
@@ -139,9 +140,9 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (command === "recovery" && recoveryAction(args) === "reattach") return "console";
   const native = catalog?.definitionOf(command) ?? definitionOf(command);
   if (native?.cli.personOnlyFlags?.some(flag => args.includes(flag))) return "console";
-  if (command === "pet" && args.includes("--window")) return "console";
   if (command === "permission" || command === "watch") return "console";
   if (args.some((arg) => arg === "--as-user" || arg.startsWith("--as-user="))) return "console";
+  if (command === "pet" && args.includes("--window")) return "allowed";
   if (conductorOperation(command,args)) return "conductor";
   if (command === "stop") return "console";
   if (command === "sdlc" && ["release-guard", "release-guard-hook"].includes(args[0] ?? "")) return "allowed";
