@@ -181,6 +181,32 @@ test("the planner's own hub_backlog_split on the draft makes children that inher
   for (const child of ordinary.children) expect(r.board.get(child.id)!.draft).toBeUndefined();
 });
 
+test("#1161 a split part naming an unregistered plan source is refused before the board write, a registered one splits", async () => {
+  const r = await rig({ planner: true });
+  const card = r.board.propose(USER, { title: "plain card", class: "plan", backlog: true });
+  const before = { parent: r.board.get(card.id)!, count: r.board.list().length };
+  const bad = [{ title: "first", plan: { sources: [SRC] } }, { title: "second", plan: { sources: [OTHER] } }];
+  expect(await refusal(() => r.tasks.splitBacklog("claude", { id: card.id, revision: 0, parts: bad, reason: "split" }))).toBe(`unknown source ${OTHER}; list registered ids with ahub source list`);
+  expect(r.board.get(card.id)).toEqual(before.parent);
+  expect(r.board.get(card.id)!.planningRevision ?? 0).toBe(before.parent.planningRevision ?? 0);
+  expect(r.board.list()).toHaveLength(before.count);
+  const good = await r.tasks.splitBacklog("claude", { id: card.id, revision: 0, parts: [{ title: "first", plan: { sources: [SRC] } }, { title: "second" }], reason: "split" });
+  expect(good.children).toHaveLength(2);
+  expect(r.board.get(good.children[0]!.id)!.plan?.sources).toEqual([SRC]);
+});
+
+test("#1161 the hub's intake split refuses an unregistered plan source with the draft unchanged", async () => {
+  const r = await rig();
+  const { draft } = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
+  const before = r.board.get(draft.id)!, count = r.board.list().length;
+  const bad = [{ title: "first", plan: { sources: [OTHER] } }, { title: "second" }];
+  expect(await refusal(() => r.tasks.splitBacklog("hub", { id: draft.id, revision: draft.planningRevision ?? 0, parts: bad, reason: "x" }, { intake: true }))).toContain(`unknown source ${OTHER}`);
+  expect(r.board.get(draft.id)).toEqual(before);
+  expect(r.board.list()).toHaveLength(count);
+  const ok = await r.tasks.splitBacklog("hub", { id: draft.id, revision: draft.planningRevision ?? 0, parts: [{ title: "first", plan: { sources: [SRC] } }, { title: "second" }], reason: "x" }, { intake: true });
+  expect(ok.children).toHaveLength(2);
+});
+
 test("a planner that is not reachable leaves the draft to the hub model", async () => {
   const r = await rig({ planner: true, answer: JSON.stringify(GOOD) });
   await r.planner.stop();

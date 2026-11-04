@@ -3039,6 +3039,8 @@ export class Tasks {
         if (direct.length + afterParts.length > 64) throw new PreEffectToolRefusal("split child dependencies exceed the 64-edge cap");
         while (pending.length) { const dependency = pending.pop()!; if (dependency === id) throw new PreEffectToolRefusal("split dependency reaches its parent"); if (seen.has(dependency)) continue; seen.add(dependency); const task = this.d.board.get(dependency); if (!task) throw new PreEffectToolRefusal("split dependency is missing"); pending.push(...(task.deps ?? [])); }
         const refs = part.refs === undefined ? parent.refs : cleanRefs(part.refs), plan = cleanPlan(part.plan, storedProfile);
+        // #1161: a part's plan sources are registered ids, as at propose and accept (#1144); refused before any screen or board write.
+        this.validatePlanSources(plan);
         const draft = { title: part.title.replace(/\s+/g, " ").trim(), detail: part.detail as string | undefined ?? "", class: cls, refs, plan, deps, afterParts: afterParts as number[], ...(parent.role && cls === parent.class ? { role: parent.role } : {}), ...(parent.profile ? { profile: parent.profile, profileClass: given as string, ...(parent.profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
         const fields: PlanningFields = {};
         for (const key of ["priority", "release", "plannedStart", "due"] as const) if (parent[key] !== undefined) fields[key] = parent[key];
