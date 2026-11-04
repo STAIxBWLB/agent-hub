@@ -316,3 +316,138 @@ test("review P2: the spec issue the caller named is kept in the target task and 
   const read = boardOf(b);
   try { expect(read.board.get(sent.task)!.detail).toContain("spec issue: #12"); } finally { read.close(); }
 }, 60_000);
+
+// #1175 ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+const conductorRoles = { claude: ["planner"], codex: ["implementer"], kimi: ["conductor"] };
+const onBoard = async (project: Project, op: string, args: Record<string, unknown>, peer = "kimi") => { const client = await project.connect({ role: "tools", peer }); return task(client, op, args); };
+const proposed = (reply: any) => { expect(reply.ok, JSON.stringify(reply)).toBe(true); return Number(/task #(\d+)/.exec(String(reply.text))![1]); };
+const rowsOf = (project: Project) => { const handle = boardOf(project); try { return handle.board.list(); } finally { handle.close(); } };
+
+test("#1175 AC1: a handoff for a spec issue that already has an open task is refused with those ids and writes nothing; duplicate_ok files it with the reason kept", async () => {
+  const { a, b } = await pair({ b: { roles: conductorRoles } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const first = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Questions for the person", issue: 1053 }));
+  const second = await task(planner, "hub_task_handoff", { project: b.id, title: "Questions for the person again", issue: 1053 });
+  expect(second.ok).toBe(false);
+  expect(String(second.error)).toContain(`#${first.task}`);
+  expect(String(second.error)).toContain("duplicate_ok");
+  expect(String(second.error)).toContain("spec issue #1053");
+  expect(String(second.error)).not.toContain("Questions for the person");                                          // an id, never a title
+  expect(rowsOf(b)).toHaveLength(1);                                                                              // nothing was stored in the target
+  expect(body(await task(planner, "hub_task_handoffs")).handoffs).toHaveLength(1);                               // nor recorded at the origin
+  // another issue is not a duplicate, and a task of the same issue by bare title reference also counts
+  expect(body(await task(planner, "hub_task_handoff", { project: b.id, title: "Other spec", issue: 1054 })).task).toBe(first.task + 1);
+  const person = proposed(await task(b.person, "hub_task_propose", { title: "#1060 the person's own task", class: "implement" }));
+  expect(String((await task(planner, "hub_task_handoff", { project: b.id, title: "Chore", issue: 1060 })).error)).toContain(`#${person}`);
+  // the explicit reason files it, and the task keeps the sender's reason as its own line
+  const ok = body(await task(planner, "hub_task_handoff", { project: b.id, title: "A separate part of the same issue", issue: 1053, duplicate_ok: "covers only the privacy leg" }));
+  expect(ok.task).toBeGreaterThan(first.task);
+  expect(rowsOf(b).find(row => row.id === ok.task)!.detail).toContain("duplicate acknowledged by the sender: covers only the privacy leg");
+  // no issue named: nothing to compare, nothing refused
+  expect(body(await task(planner, "hub_task_handoff", { project: b.id, title: "A mechanical chore" })).task).toBeGreaterThan(ok.task);
+}, 60_000);
+
+test("#1175 AC1: a closed task does not block a handoff, and a [pii] task's id is never named to another project", async () => {
+  const { a, b } = await pair({ b: { roles: conductorRoles } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const first = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Spec work", issue: 2001 }));
+  expect((await task(b.person, "hub_task_cancel", { id: first.task, reason: "not needed" })).ok).toBe(true);
+  expect(body(await task(planner, "hub_task_handoff", { project: b.id, title: "Spec work again", issue: 2001 })).task).toBeGreaterThan(first.task);   // the cancelled one is closed
+  // a task whose text is private carries the issue too, but the sender is not told its id
+  const secret = await task(b.person, "hub_task_propose", { title: "#3001 patient 900101-1234567 follow-up", class: "implement" });
+  expect(secret.ok).toBe(true);
+  const sent = await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for 3001", issue: 3001 });
+  expect(sent.ok, JSON.stringify(sent)).toBe(true);                                                              // the private task is invisible to the check: it is not named, so it cannot block
+}, 60_000);
+
+test("#1175 AC2 and AC4: the receiving conductor cancels an unaccepted handoff with a reason and the origin hears it; its text never crosses", async () => {
+  const { a, b } = await pair({ b: { roles: conductorRoles } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const received: Envelope[] = [];
+  const listening = await a.connect({ role: "peer", peer: "claude", channel: true });
+  listening.onPush = message => { if (message.t === "deliver") received.push(...(message.envs ?? [message.env])); };
+  { const kimi = new FixturePeer("kimi"); b.daemon.bus.add(kimi); await kimi.start(); }                           // the conductor must be on the roster
+  const sent = body(await task(planner, "hub_task_handoff", { project: b.id, title: "A duplicate of open work", duplicate_ok: "test" }));
+  const cancelled = await onBoard(b, "hub_task_cancel", { id: sent.task, reason: "SECRET-REASON duplicate of #700" });
+  expect(cancelled.ok, JSON.stringify(cancelled)).toBe(true);
+  const row = rowsOf(b).find(r => r.id === sent.task)!;
+  expect(row.state).toBe("cancelled");
+  expect(row.history.findLast(h => h.event === "cancelled")).toMatchObject({ by: "kimi" });                       // the real actor, not the person
+  await until(() => received.some(env => env.kind === "task" && env.body === `agent-hub task ${sent.task} cancelled`), "cancel reached A");
+  expect(received.every(env => !env.body.includes("SECRET-REASON"))).toBe(true);
+  expect(body(await task(planner, "hub_task_handoffs")).handoffs).toMatchObject([{ remoteTask: sent.task, state: "cancelled" }]);
+}, 60_000);
+
+test("#1175 AC2: only the configured conductor, only for a handed-off task nobody has accepted; every other cancel keeps today's refusal", async () => {
+  const { a, b } = await pair({ b: { roles: conductorRoles } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  for (const id of ["kimi", "codex", "claude"]) { const peer = new FixturePeer(id); b.daemon.bus.add(peer); await peer.start(); }
+  const handed = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" }));
+  const localId = proposed(await task(b.person, "hub_task_propose", { title: "A task proposed in B itself", class: "implement" }));
+  // a peer without the conductor role, and the conductor on a task B proposed itself, are refused as before
+  for (const [peer, id, rule] of [["codex", handed.task, /planning requires a person or configured planner role/], ["claude", handed.task, /planner may cancel only its own/], ["kimi", localId, /the conductor may cancel only a task another project handed off.*`ahub task cancel <id> --reason <text>`/]] as const) {
+    const refused = await onBoard(b, "hub_task_cancel", { id, reason: "not mine" }, peer);
+    expect(refused.ok, `${peer} #${id}`).toBe(false);
+    expect(String(refused.error), `${peer} #${id}`).toMatch(rule);
+  }
+  expect(rowsOf(b).find(r => r.id === handed.task)!.state).not.toBe("cancelled");
+  // once an owner accepted it, the conductor's special path is gone
+  expect((await task(b.person, "task_assign", { id: handed.task, peer: "codex", role: "owner" })).ok).toBe(true);
+  const implementer = await b.connect({ role: "tools", peer: "codex" });
+  expect((await task(implementer, "hub_task_accept", { id: handed.task })).ok).toBe(true);
+  const late = await onBoard(b, "hub_task_cancel", { id: handed.task, reason: "too late" });
+  expect(late.ok).toBe(false);
+  expect(rowsOf(b).find(r => r.id === handed.task)!.state).toBe("in_progress");
+  // the person still can
+  expect((await task(b.person, "hub_task_cancel", { id: handed.task, reason: "person decides" })).ok).toBe(true);
+}, 60_000);
+
+test("#1175 AC3: a refused duplicate leaves no row to offer or escalate, and a task the check admits is offered as before", async () => {
+  const { a, b } = await pair({ b: { roles: conductorRoles } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const first = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Spec", issue: 4001 }));
+  const before = rowsOf(b).map(row => `${row.id}:${row.state}:${row.history.length}`);
+  expect((await task(planner, "hub_task_handoff", { project: b.id, title: "Spec duplicate", issue: 4001 })).ok).toBe(false);
+  expect(rowsOf(b).map(row => `${row.id}:${row.state}:${row.history.length}`)).toEqual(before);                   // no new row and no history entry on the existing one
+  expect(rowsOf(b)).toHaveLength(1);
+  expect(first.task).toBe(1);
+}, 60_000);
+
+test("#1175 AC1: an imported backlog row that carries its issue only as external {repo, issue} is a duplicate, and a closed one is not", async () => {
+  const { a, b } = await pair({ b: { roles: conductorRoles } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const write = boardOf(b);
+  let open: number, closed: number;
+  try {
+    open = write.board.propose("user", { title: "The issue's own words", class: "implement", backlog: true, external: { provider: "github", repo: "acme/hub", issue: 6001, url: "https://github.com/acme/hub/issues/6001" } }).id;
+    closed = write.board.propose("user", { title: "An earlier import", class: "implement", backlog: true, external: { provider: "github", repo: "acme/hub", issue: 6002, url: "https://github.com/acme/hub/issues/6002" } }).id;
+    
+  } finally { write.close(); }
+  expect((await task(b.person, "hub_task_cancel", { id: closed, reason: "done elsewhere" })).ok).toBe(true);
+  const refused = await task(planner, "hub_task_handoff", { project: b.id, title: "Spec", issue: 6001 });
+  expect(refused.ok).toBe(false); expect(String(refused.error)).toContain(`#${open}`);
+  expect(rowsOf(b)).toHaveLength(2);                                                                              // nothing was written by the refusal
+  expect((await task(planner, "hub_task_handoff", { project: b.id, title: "Spec", issue: 6002 })).ok).toBe(true);   // a cancelled import is not open work
+}, 60_000);
+
+test("#1175 the real ahub process passes --duplicate-ok, refuses a duplicate naming the open ids, and admits it with a reason", async () => {
+  const { a, b } = await pair({ b: { roles: conductorRoles } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const first = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Spec", issue: 5001 }));
+  const cli = async (...args: string[]) => {
+    const env = { ...process.env, NO_COLOR: "1", COLUMNS: "120" } as Record<string, string>;
+    for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") && key !== "AGENTHUB_HOME" || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CODEX_THREAD_ID", "KIMI_CODE"].includes(key)) delete env[key];
+    const proc = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", a.root, "task", "handoff", "--project", b.id, ...args], { cwd: a.root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    return { code: await proc.exited, stdout, stderr };
+  };
+  const refused = await cli("Spec", "--issue", "5001");
+  expect(refused.code).toBe(1); expect(refused.stderr).toContain(`#${first.task}`); expect(refused.stderr).toContain("--duplicate-ok");
+  expect(rowsOf(b)).toHaveLength(1);                                                                              // the refusal wrote nothing
+  const missing = await cli("Spec", "--issue", "5001", "--duplicate-ok");
+  expect(missing.code).toBe(1); expect(missing.stderr).toContain("usage: ahub task handoff");
+  const admitted = await cli("Spec", "--issue", "5001", "--duplicate-ok", "separate leg");
+  expect(admitted.code, admitted.stderr).toBe(0); expect(admitted.stdout).toContain(`Handed off to project ${b.id}`);
+  expect(rowsOf(b)).toHaveLength(2);
+  expect(rowsOf(b)[1]!.detail).toContain("duplicate acknowledged by the sender: separate leg");
+}, 60_000);

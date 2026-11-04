@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { frame, newEnvelope } from "../src/hub/envelope.ts";
 import { TASK_TOOLS } from "../src/hub/hub-tools.ts";
+import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 
 async function client(mode: "channel" | "plain" | "tools", failPush = false) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-channel-inbox-client-")));
@@ -29,12 +30,13 @@ async function client(mode: "channel" | "plain" | "tools", failPush = false) {
   if (mode === "channel") env.AGENTHUB_CHANNEL = "1";
   if (mode === "tools") env.AGENTHUB_MODE = "tools";
   const entry = join(import.meta.dir, "../src/adapters/claude-channel.ts");
-  let program = entry;
+  let program = join(root, "channel-client-fixture.ts");
+  const evidence = mode === "channel" ? `${syntheticClaudeParentEvidenceSetup()}\n` : "";
   if (failPush) {
     // A deterministic transport failure exercises the legacy nonjournal fallback without closing MCP stdout.
     program = join(root, "failed-notification.ts");
-    writeFileSync(program, `import { Server } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/index.js"))}; const original = Server.prototype.notification; Server.prototype.notification = function(message, options) { if (message.method === "notifications/claude/channel") return Promise.reject(new Error("synthetic channel push failure")); return original.call(this, message, options); }; await import(${JSON.stringify(entry)});`);
-  }
+    writeFileSync(program, `${evidence}import { Server } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/index.js"))}; const original = Server.prototype.notification; Server.prototype.notification = function(message, options) { if (message.method === "notifications/claude/channel") return Promise.reject(new Error("synthetic channel push failure")); return original.call(this, message, options); }; await import(${JSON.stringify(entry)});`);
+  } else writeFileSync(program, `${evidence}await import(${JSON.stringify(entry)});`);
   const child = Bun.spawn([process.execPath, program], { cwd: root, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const stderr = (async () => { for await (const data of child.stderr) diagnostics = (diagnostics + Buffer.from(data).toString()).slice(-16384); })();
   const stdout = (async () => {

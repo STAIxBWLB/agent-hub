@@ -20,6 +20,7 @@ import { factsHook } from "../src/cli/facts-hook.ts";
 import { parse as parseOverlaps } from "../scripts/overlaps.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
+import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const cleanup: (() => unknown)[] = [];
@@ -155,10 +156,13 @@ async function dashboardClient(console_: ControlClient, settings = false) {
 }
 
 /** MCP initialization does not imply that the plugin has processed its control welcome (#287). */
-async function connectPlugin(client: Client, env: Record<string, string>, peer: string, expectConnected = true) {
+async function connectPlugin(client: Client, env: Record<string, string>, peer: string, expectConnected = true, syntheticParentEvidence = true) {
+  const wrapper = join(mkdtempSync(join(tmpdir(), "ahub-claude-channel-")), "plugin.ts");
+  cleanup.push(() => rmSync(join(wrapper, ".."), { recursive: true, force: true }));
+  if (syntheticParentEvidence) writeFileSync(wrapper, `import { claudeParentCommandPort } from ${JSON.stringify(join(ROOT, "src/adapters/claude-channel-evidence.ts"))};\nclaudeParentCommandPort.read = () => "claude --dangerously-load-development-channels plugin:agent-hub@agent-hub";\nawait import(${JSON.stringify(join(ROOT, "src/adapters/claude-channel.ts"))});\n`);
   const transport = new StdioClientTransport({
     command: "bun",
-    args: [join(ROOT, "plugins/agent-hub/server.js")], // the shipped bundle, not the source
+    args: [syntheticParentEvidence ? wrapper : join(ROOT, "plugins/agent-hub/server.js")], // only positive fixtures synthesize the raw parent row
     env,
     stderr: "pipe",
   });
@@ -174,14 +178,15 @@ async function connectPlugin(client: Client, env: Record<string, string>, peer: 
   if (expectConnected) await waitConnected();
   return waitConnected;
 }
-/** A fake Claude Code: an MCP client that spawns the channel server and records channel pushes. `channelEvidence`: AGENTHUB_CHANNEL, "1" as `ahub claude` sets it, null for none (#205). */
-async function fakeClaude(stateDir: string, channelEvidence: string | null = "1", expectConnected = true) {
+/** A fake Claude Code MCP host. Positive fixtures inject a synthetic direct-parent argv row; the issue #1171 regression uses the real Bun parent. */
+async function fakeClaude(stateDir: string, channelEvidence: string | null = "1", expectConnected = true, syntheticParentEvidence = true) {
   const client = new Client({ name: "fake-claude", version: "0" }, { capabilities: {} });
   const channel: any[] = [];
   client.fallbackNotificationHandler = async (n) => void channel.push(n);
-  const env: Record<string, string> = { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir };
+  const env: Record<string, string> = { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: ROOT, AGENTHUB_PEER_ID: "claude", AGENTHUB_MODE: "" };
+  for (const name of ["AGENTHUB_LAUNCH_ID", "AGENTHUB_INSTANCE_ID", "AGENTHUB_DELIVERY_ONLY", "CODEX_THREAD_ID"]) delete env[name];
   if (channelEvidence === null) delete env.AGENTHUB_CHANNEL; else env.AGENTHUB_CHANNEL = channelEvidence;
-  const waitConnected = await connectPlugin(client, env, "claude", expectConnected);
+  const waitConnected = await connectPlugin(client, env, "claude", expectConnected, syntheticParentEvidence);
   return { client, channel, waitConnected };
 }
 
@@ -260,6 +265,23 @@ test("claude without channel evidence attaches tools-only: nothing is pushed or 
   await until(() => flagged.channel.length === 1, "push to the channel session");
   expect(flagged.channel[0].params.content).toBe("still waiting");
   expect((await console_.request({ t: "status" })).status.peers.claude.toolsOnly).toBeUndefined();
+});
+
+test("Claude marker inherited by a non-channel parent stays tools-only and queued for hub_inbox (#1171)", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const plain = await fakeClaude(stateDir, "1", true, false); // actual parent is Bun, not an ahub claude TUI
+  expect(plain.client.getServerCapabilities()?.experimental?.["claude/channel"]).toBeUndefined();
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  const status = (await console_.request({ t: "status" })).status.peers.claude;
+  expect(status).toMatchObject({ attachMode: "tools-only", attachEvidence: "launch-unverified" });
+  expect((await console_.request({ t: "send", body: "kept for inbox", to: ["claude"] })).targets).toEqual(["claude"]);
+  await until(() => daemon.bus.queued("claude") === 1, "queued delivery");
+  expect(daemon.bus.queueList("claude").some((row) => row.state === "accepted" || row.state === "dispatching")).toBe(false);
+  const read: any = await plain.client.callTool({ name: "hub_inbox", arguments: {} });
+  expect(read.content[0].text).toContain("kept for inbox");
+  await plain.client.close();
+  await until(() => daemon.bus.peers.get("claude")?.state === "offline", "claude detach");
+  expect((await console_.request({ t: "status" })).status.peers.claude).not.toHaveProperty("attachMode");
 });
 
 test("a paused tools-only claude reads nothing through hub_inbox: the budget pause and the console pause name themselves and nothing is journaled (#205)", async () => {
@@ -2261,7 +2283,8 @@ test("AC1: an unseen push safely requeues originals for hub_inbox (#434)", async
 test("AC1: a thrown notification keeps needs_review because a write may already have left (#434)", async () => {
   const { stateDir, daemon, console_ } = await hub();
   const wrapper = join(stateDir, "throw-notification.ts");
-  writeFileSync(wrapper, `import { Server } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/index.js"))};
+  writeFileSync(wrapper, `${syntheticClaudeParentEvidenceSetup()}
+import { Server } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/index.js"))};
 const notification = Server.prototype.notification;
 Server.prototype.notification = async function (message, options) {
   if (message.method === "notifications/claude/channel") throw new Error("fixture notification write threw");
@@ -2270,7 +2293,9 @@ Server.prototype.notification = async function (message, options) {
 await import(${JSON.stringify(join(ROOT, "src/adapters/claude-channel.ts"))});
 `);
   const client = new Client({ name: "fake-claude", version: "0" }, { capabilities: {} });
-  const transport = new StdioClientTransport({ command: "bun", args: [wrapper], env: { ...process.env as Record<string,string>, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PEER_ID: "claude", AGENTHUB_PROJECT_DIR: ROOT, AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "" }, stderr: "pipe" });
+  const env: Record<string, string> = { ...process.env as Record<string,string>, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PEER_ID: "claude", AGENTHUB_PROJECT_DIR: ROOT, AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "" };
+  for (const name of ["AGENTHUB_LAUNCH_ID", "AGENTHUB_INSTANCE_ID", "AGENTHUB_DELIVERY_ONLY", "CODEX_THREAD_ID"]) delete env[name];
+  const transport = new StdioClientTransport({ command: "bun", args: [wrapper], env, stderr: "pipe" });
   let diagnostics = "";
   transport.stderr!.on("data", chunk => { diagnostics += chunk.toString(); });
   await client.connect(transport); cleanup.push(() => client.close());

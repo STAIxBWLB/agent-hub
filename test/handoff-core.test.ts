@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { HANDOFF_LIMITS, HandoffRefusal, type HandoffRefusalCode, checkTarget, followBackLine, handoffEventFor, parseHandoff, resolveTarget } from "../src/hub/handoff.ts";
+import { HANDOFF_LIMITS, HandoffRefusal, type HandoffRefusalCode, checkTarget, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, resolveTarget } from "../src/hub/handoff.ts";
 
 const refusal = (run: () => unknown): HandoffRefusal => { try { run(); } catch (error) { if (error instanceof HandoffRefusal) return error; throw error; } throw new Error("expected a refusal"); };
 const good = { project: "p_aaaa", title: "Raise the exact pin", class: "implement", detail: "to 0.16.0", paths: ["package.json", "bun.lock"], issue: 12 };
@@ -87,4 +87,60 @@ test("a distinct session (#1036) cannot hand a task off or read the handoff list
   const { sessionGate } = await import("../src/hub/session-identity.ts");
   for (const op of ["hub_task_handoff", "hub_task_handoffs"]) expect(sessionGate("claude~a1b2", { t: "task", op })).toContain("this session is claude~a1b2");
   for (const t of ["task_handoff", "task_handoff_event", "task_handoff_states"]) expect(sessionGate("claude~a1b2", { t })).toContain("this session is claude~a1b2");
+});
+
+test("#1175 duplicate_ok is a bounded reason: normalised, optional, and refused when empty or oversized", () => {
+  expect(parseHandoff({ ...good, duplicate_ok: "  separate   work on the same issue " }).duplicate_ok).toBe("separate work on the same issue");
+  expect(parseHandoff(good)).not.toHaveProperty("duplicate_ok");
+  expect(parseHandoff({ ...good, duplicate_ok: undefined })).not.toHaveProperty("duplicate_ok");
+  expect(refusal(() => parseHandoff({ ...good, duplicate_ok: "   " })).code).toBe("invalid");
+  expect(refusal(() => parseHandoff({ ...good, duplicate_ok: "x".repeat(HANDOFF_LIMITS.duplicateOk + 1) })).code).toBe("too_large");
+  expect(refusal(() => parseHandoff({ ...good, duplicate_ok: 5 })).code).toBe("invalid");
+  expect(refusal(() => parseHandoff({ ...good, duplicate_ok: "a\u0007b" })).code).toBe("invalid");
+});
+
+const row = (id: number, state: string, title: string, extra: { detail?: string; refs?: { repo?: string }; external?: { repo: string; issue: number }; sdlc?: { issue?: number; repo?: string } } = {}) => ({ id, state, title, ...extra });
+test("#1175 an open task names the issue by its receipt, a bare or own-repository title reference, or a handoff's spec-issue line; closed tasks and other repositories never count", () => {
+  const board = [
+    row(700, "in_progress", "#1053 T2+T3: questions store"),
+    row(702, "proposed", "Implement it", { sdlc: { issue: 1053 } }),
+    row(703, "backlog", "Questions", { detail: "context\n\nspec issue: #1053 in this repository\n\n[handed off from project p by claude]" }),
+    row(704, "approved", "#1053 already merged"),
+    row(705, "cancelled", "#1053 dropped"),
+    row(706, "proposed", "Other repo work agent-mem#1053"),
+    row(707, "proposed", "Mine acme/hub#1053"),
+    row(708, "proposed", "#1054 a different issue"),
+    row(709, "proposed", "mentions #10530 and #105"),
+    row(710, "in_review", "Linked elsewhere #1053", { sdlc: { issue: 77 } }),
+    row(711, "proposed", "Detail only", { detail: "see #1053 for the story" }),
+  ];
+  expect(duplicateIssueTasks(board, 1053, "acme/hub")).toEqual([700, 702, 703, 707]);
+  expect(duplicateIssueTasks(board, 1053)).toEqual([700, 702, 703]);   // without a repository slug only bare titles, receipts and handoff lines count
+  expect(duplicateIssueTasks(board, 1054, "acme/hub")).toEqual([708]);
+  expect(duplicateIssueTasks(board, 4242, "acme/hub")).toEqual([]);
+  expect(duplicateIssueTasks([], 1, "acme/hub")).toEqual([]);
+});
+
+test("#1175 the refusal names the open tasks and both ways forward, never a task title", () => {
+  const text = duplicateRefusalText(1053, [700, 702]);
+  expect(text).toContain("#700, #702");
+  expect(text).toContain("duplicate_ok");
+  expect(text).toContain("spec issue #1053");
+  expect(duplicateRefusalText(7, [1])).toContain("already has open task here: #1");
+  expect(duplicateRefusalText(7, [1, 2, 3, 4, 5, 6, 7, 8])).toContain("and 2 more");
+});
+
+test("#1175 an issue number only identifies work together with its repository: another repository's #N is no duplicate, an imported row is found by its external identity", () => {
+  const board = [
+    row(800, "proposed", "Other repository work", { sdlc: { issue: 12, repo: "acme/mem" } }),
+    row(801, "proposed", "Own repository work", { sdlc: { issue: 12, repo: "Acme/Hub" } }),
+    row(802, "in_progress", "#12 sibling shorthand", { refs: { repo: "acme/mem" } }),
+    row(803, "proposed", "#12 in a checkout path", { refs: { repo: "/work/dev/agent-mem" } }),
+    row(804, "backlog", "The issue's own title", { external: { repo: "ACME/hub", issue: 12 } }),
+    row(805, "backlog", "Another repository's import", { external: { repo: "acme/mem", issue: 12 } }),
+    row(806, "approved", "Closed import", { external: { repo: "acme/hub", issue: 12 } }),
+    row(807, "backlog", "Import of another number", { external: { repo: "acme/hub", issue: 13 } }),
+  ];
+  expect(duplicateIssueTasks(board, 12, "acme/hub")).toEqual([801, 803, 804]);
+  expect(duplicateIssueTasks(board, 12, "acme/mem")).toEqual([800, 802, 803, 805]);   // a checkout path names no slug, so the bare #12 still counts
 });

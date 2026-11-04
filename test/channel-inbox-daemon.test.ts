@@ -1,6 +1,6 @@
 import { realPath } from "../src/hub/project.ts";
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -8,6 +8,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { frame, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
+import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 
 async function until(check: () => boolean) {
   for (let i = 0; i < 200 && !check(); i++) await Bun.sleep(5);
@@ -179,8 +180,11 @@ test("real channel MCP inbox pulls a busy daemon queue and later idle sends no d
   const client = new Client({ name: "busy-channel-fixture", version: "0" }, { capabilities: {} });
   const notifications: unknown[] = [];
   client.fallbackNotificationHandler = async notification => { notifications.push(notification); };
-  const transport = new StdioClientTransport({ command: process.execPath, cwd: f.dir, args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")],
-    env: { ...process.env as Record<string, string>, AGENTHUB_PROJECT_DIR: f.dir, AGENTHUB_STATE_DIR: f.dir, AGENTHUB_PEER_ID: "claude", AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "peer" }, stderr: "pipe" });
+  const entry = join(import.meta.dir, "../src/adapters/claude-channel.ts"), wrapper = join(f.dir, "channel-inbox-parent.ts");
+  writeFileSync(wrapper, `${syntheticClaudeParentEvidenceSetup()} await import(${JSON.stringify(entry)});`);
+  const env: Record<string, string> = { ...process.env as Record<string, string>, AGENTHUB_PROJECT_DIR: f.dir, AGENTHUB_STATE_DIR: f.dir, AGENTHUB_PEER_ID: "claude", AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "peer" };
+  for (const name of ["AGENTHUB_LAUNCH_ID", "AGENTHUB_INSTANCE_ID", "AGENTHUB_DELIVERY_ONLY", "CODEX_THREAD_ID"]) delete env[name];
+  const transport = new StdioClientTransport({ command: process.execPath, cwd: f.dir, args: [wrapper], env, stderr: "pipe" });
   let diagnostic = "";
   transport.stderr!.on("data", chunk => { diagnostic += chunk.toString(); });
   try {

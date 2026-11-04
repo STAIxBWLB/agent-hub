@@ -2782,6 +2782,12 @@ push `accepted` and show none of them.
   sources add protocol 15 (0.12.17 through 0.12.19); the transition from a real
   0.12.19 hub is not yet proven.
 
+## Amendment: inherited Claude channel marker requires direct-parent evidence (issue #1171)
+
+- `AGENTHUB_CHANNEL=1` alone does not enable push. Claude Code child processes, including `daemon run` and `bg-spare`, inherit it without the development-channel flag. The plugin's direct parent must have a bounded, readable `ps -ww` row whose leading argv tokens are `claude --dangerously-load-development-channels` and one exact supported target (`plugin:agent-hub@agent-hub` or `server:agent-hub`). Print/background/daemon forms, a repeated development-channel flag, unreadable or malformed output, a changed parent pid, and unknown targets fail closed to tools-only.
+- The classifier is conservative because `ps` renders a flattened command line; matching is restricted to the prefix and remaining tokens are checked for known mode-changing forms. This is same-user process observation, not authentication. No client-side Claude channel capability was found in the inspected Claude Code 2.1.318 client path, and the server's own advertised capability is not proof. Unknown evidence keeps messages queued for `hub_inbox`.
+- `status.json` reports `attachMode` and a closed `attachEvidence` label for an attached Claude peer; human `ahub status` shows the same pair. Older clients that omit the evidence field retain their prior attachment behavior and display `unreported`.
+
 ## Amendment: channel queue visibility and explicit pull (issue #493)
 
 - A channel session's `hub_inbox` reads the daemon queue through the same

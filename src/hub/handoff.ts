@@ -6,11 +6,11 @@ import { CLASSES, type TaskClass } from "./board.ts";
  * What crosses projects, and nothing else: no memory, evidence, turn content or task history (#1030 design 5). The per-field limits alone allow about 13 KB, so `bodyBytes` is the real
  * ceiling on the whole request: a body that fills several fields is refused whole, and no partial task is built from it.
  */
-export const HANDOFF_LIMITS = Object.freeze({ title: 300, detail: 4000, paths: 16, path: 512, issue: 2_000_000_000, bodyBytes: 8 * 1024 });
-export const HANDOFF_FIELDS = Object.freeze(["project", "title", "class", "detail", "paths", "issue", "task"] as const);
+export const HANDOFF_LIMITS = Object.freeze({ title: 300, detail: 4000, paths: 16, path: 512, issue: 2_000_000_000, bodyBytes: 8 * 1024, duplicateOk: 300 });
+export const HANDOFF_FIELDS = Object.freeze(["project", "title", "class", "detail", "paths", "issue", "task", "duplicate_ok"] as const);
 
 export type HandoffRefusalCode =
-  | "invalid" | "too_large" | "unregistered" | "same_project" | "not_running" | "older_target" | "pii_turn" | "pii_task" | "no_authority";
+  | "invalid" | "too_large" | "unregistered" | "same_project" | "not_running" | "older_target" | "pii_turn" | "pii_task" | "no_authority" | "duplicate";
 
 /** A refusal always names its reason, and for the person-fixable ones the action. The code is for tests and logs, the message for the caller. */
 export class HandoffRefusal extends Error {
@@ -18,7 +18,9 @@ export class HandoffRefusal extends Error {
 }
 
 /** `task` is the caller's OWN task this handoff comes from, so a `[pii]` one is refused and the target can name it in the follow-back. It never crosses as text. */
-export interface HandoffRequest { title: string; class: TaskClass; detail: string; paths: string[]; issue?: number; task?: number }
+export interface HandoffRequest { title: string; class: TaskClass; detail: string; paths: string[]; issue?: number; task?: number;
+  /** #1175: the sender's reason for filing a second task on a spec issue that already has an open one on the target's board. Absent means the target refuses a duplicate. */
+  duplicate_ok?: string }
 
 const hasControl = (text: string): boolean => /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text);
 
@@ -71,7 +73,9 @@ export function parseHandoff(input: unknown): HandoffRequest & { project: string
     task = typeof rawTask === "string" && /^[1-9]\d{0,9}$/.test(rawTask) ? Number(rawTask) : rawTask as number;
     if (typeof task !== "number" || !Number.isSafeInteger(task) || task < 1 || task > HANDOFF_LIMITS.issue) throw new HandoffRefusal("invalid", "handoff task must be a positive task id of this project");
   }
-  const request = { project, title, class: cls as TaskClass, detail, paths, ...(issue === undefined ? {} : { issue }), ...(task === undefined ? {} : { task }) };
+  const duplicateOk = text(field("duplicate_ok"), "duplicate_ok", HANDOFF_LIMITS.duplicateOk, false).replace(/\s+/g, " ").trim();
+  if (field("duplicate_ok") !== undefined && field("duplicate_ok") !== null && field("duplicate_ok") !== "" && !duplicateOk) throw new HandoffRefusal("invalid", "handoff duplicate_ok needs a reason");
+  const request = { project, title, class: cls as TaskClass, detail, paths, ...(issue === undefined ? {} : { issue }), ...(task === undefined ? {} : { task }), ...(duplicateOk ? { duplicate_ok: duplicateOk } : {}) };
   if (Buffer.byteLength(JSON.stringify(request), "utf8") > HANDOFF_LIMITS.bodyBytes) throw new HandoffRefusal("too_large", `handoff is over ${HANDOFF_LIMITS.bodyBytes} bytes`);
   return request;
 }
@@ -123,4 +127,43 @@ export function followBackLine(remoteTask: number, event: HandoffEvent, evidence
   const pr = typeof evidence.pr === "number" && Number.isSafeInteger(evidence.pr) && evidence.pr > 0 ? ` PR #${evidence.pr}` : "";
   const head = typeof evidence.head === "string" && SHA.test(evidence.head) ? ` at ${evidence.head}` : "";
   return `agent-hub task ${remoteTask} ${event.replace("_", " ")}${pr || head ? `:${pr}${head}` : ""}`;
+}
+
+export interface DuplicateRow { id: number; state: string; title: string; detail?: string; refs?: { repo?: string }; external?: { repo: string; issue: number } | undefined; sdlc?: { issue?: number; repo?: string } | undefined }
+
+/**
+ * #1175: the ids of tasks already open on THIS board for the spec issue a handoff names. Pure: the caller passes the board's rows (a `[pii]` row is the caller's to leave out, so no
+ * private task id is ever named to another project) and the project's own repository slug. A task counts when it is not closed and one of these names the issue: its lifecycle
+ * receipt, a bare `#N` or an `owner/repo#N` of this repository in its title, or the `spec issue: #N in this repository` line a handoff keeps in its detail. A reference qualified
+ * with another repository never counts, and a number that appears in a title as another kind of reference (a PR) is the one false positive: the sender's `duplicate_ok` answers it.
+ */
+export function duplicateIssueTasks(tasks: readonly DuplicateRow[], issue: number, repository?: string): number[] {
+  const slug = (value: string | undefined): string | undefined => value !== undefined && /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(value) ? value.toLowerCase() : undefined;
+  // A project with no GitHub remote has a path, not a slug, for its repository: nothing can then be compared, so no row is foreign and no qualified reference matches.
+  const own = slug(repository);
+  const names = (text: string, bare: boolean): boolean => {
+    for (const match of text.matchAll(/(?<![A-Za-z0-9_./-])(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9][0-9]*)\b|#([1-9][0-9]*)\b)/g)) {
+      const qualified = match[1];
+      if (Number(match[2] ?? match[3]) !== issue) continue;
+      if (qualified ? qualified.toLowerCase() === own : bare) return true;
+    }
+    return false;
+  };
+  return tasks.filter(task => {
+    if (task.state === "approved" || task.state === "cancelled") return false;
+    // The repository each identity belongs to: `sdlc.repo`, `external.repo` (an imported issue) and a slug `refs.repo` (a checkout path says nothing). One naming another repository
+    // than this project's keeps its `#N` out: an issue number is only an identity together with its repository. With no own slug nothing can be compared, so the number counts and `duplicate_ok` answers.
+    const foreign = (repo: string | undefined): boolean => own !== undefined && slug(repo) !== undefined && slug(repo) !== own;
+    if (task.external?.issue === issue && !foreign(task.external.repo)) return true;
+    if (task.sdlc?.issue !== undefined) return task.sdlc.issue === issue && !foreign(task.sdlc.repo) && !foreign(task.refs?.repo);
+    if (foreign(task.external?.repo) || foreign(task.refs?.repo)) return false;
+    const line = /(^|\n)spec issue: #([1-9][0-9]*) in this repository/.exec(task.detail ?? "");
+    return names(task.title, true) || line !== null && Number(line[2]) === issue;
+  }).map(task => task.id).sort((a, b) => a - b);
+}
+
+/** One refusal sentence that names the open tasks and both ways forward. The ids are this board's own; no title or text from a task is repeated. */
+export function duplicateRefusalText(issue: number, ids: readonly number[]): string {
+  const named = ids.slice(0, 6).map(id => `#${id}`).join(", ") + (ids.length > 6 ? ` and ${ids.length - 6} more` : "");
+  return `spec issue #${issue} already has open ${ids.length === 1 ? "task" : "tasks"} here: ${named}. Use ${ids.length === 1 ? "it" : "them"} (ask the conductor there), or hand off again with duplicate_ok: <reason> (--duplicate-ok <reason> in the CLI) if this is genuinely separate work`;
 }

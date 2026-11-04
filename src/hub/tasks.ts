@@ -20,7 +20,7 @@ import { parseExperimentProtocol, parseExperimentAttempt, parseExperimentEvent, 
 import { parseComparisonPlan, comparisonPlanHash, comparisonProjection, evaluatorIdentityHash, protocolApprovalBindingMatches, type ComparisonPlanV1 } from "./research-experiments.ts";
 import { parseResearchHandoff, studyProjection, campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus } from "./research-campaign.ts";
 import type { ResearchCampaignRecord, ResearchUnitBinding, PreparedResearchUnit, HandoffOutboundRow } from "./board.ts";
-import { HANDOFF_EVENTS, HandoffRefusal, followBackLine, handoffEventFor, parseHandoff, type HandoffEvent } from "./handoff.ts";
+import { HANDOFF_EVENTS, HandoffRefusal, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, type HandoffEvent } from "./handoff.ts";
 import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-command.ts";
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
@@ -2063,7 +2063,7 @@ export class Tasks {
     held();
     // The spec issue the caller named is kept in the task itself, as its own line: the target's planner reads it from the detail, and `ahub task show` shows it there.
     const issueLine = request.issue === undefined ? "" : `spec issue: #${request.issue} in this repository`;
-    const detail = sanitize([request.detail, issueLine, `[handed off from project ${origin.projectId} by ${origin.peer}${origin.taskId === undefined ? "" : ` (their task #${origin.taskId})`}]`].filter(Boolean).join("\n\n"));
+    const detail = sanitize([request.detail, issueLine, request.duplicate_ok === undefined ? "" : `duplicate acknowledged by the sender: ${request.duplicate_ok}`, `[handed off from project ${origin.projectId} by ${origin.peer}${origin.taskId === undefined ? "" : ` (their task #${origin.taskId})`}]`].filter(Boolean).join("\n\n"));
     const refs: TaskRefs = { ...(request.paths.length ? { paths: request.paths } : {}) };
     const signals = this.signalsFor({ title: request.title, detail, refs, plan: {} });
     if (signals.includes("pii")) throw new HandoffRefusal("pii_task", "the handed-off text matches a PII pattern; it is not stored here");
@@ -2071,6 +2071,12 @@ export class Tasks {
     const screened = screening ? await this.screenCall(screenText({ title: request.title, detail: [detail, ...request.paths].join("\n"), plan: {} })) : undefined;
     held();
     if (screening && (!screened || screened.label !== "clear")) throw new HandoffRefusal("pii_task", "the handed-off text could not be cleared by the PII screen; it is not stored here");
+    // #1175: a spec issue that already has open work here is refused before any row exists, so a duplicate is never offered to an owner or escalated by the sweep. This runs after the last
+    // await and writes nothing before it, so the check and the proposal below see one board; a `[pii]` task is left out, so no private task id is named to another project.
+    if (request.issue !== undefined && request.duplicate_ok === undefined) {
+      const open = duplicateIssueTasks(this.d.board.list().filter(row => !this.isPii(row)).map(row => ({ id: row.id, state: row.state, title: row.title, detail: row.detail, refs: row.refs, external: row.external, sdlc: row.sdlc })), request.issue, this.d.repository);
+      if (open.length) throw new HandoffRefusal("duplicate", duplicateRefusalText(request.issue, open));
+    }
     let task = this.d.board.propose(HUB, { title: request.title, detail, class: request.class, refs, plan: {}, signals });
     this.d.board.setHandoffOrigin(task.id, { projectId: origin.projectId, peer: origin.peer, ...(origin.taskId === undefined ? {} : { originTask: origin.taskId as number }) });
     // From here the task and its origin are saved, so nothing below may fail the handoff: the origin must learn the task id, or the target keeps work nobody can track.
@@ -4775,7 +4781,10 @@ export class Tasks {
       this.checkFlowRevision(task, input.expectedFlowRevision, true);
       if (isClosedTaskState(task.state)) throw new PreEffectToolRefusal(`task #${task.id} is already ${task.state}`);
       if (by !== USER && this.d.privateTurn?.(by) && !this.isPii(task)) throw new PreEffectToolRefusal("cancellation on ordinary work is unavailable during a private turn");
-      if (by !== USER) {
+      if (by !== USER && this.conductorHandoffCancel(by, task)) { /* #1175: the receiving conductor's own authority over a handed-off task nobody accepted; the board write below records it as the actor */ }
+      else if (by !== USER) {
+        // The conductor without the planner role is refused with its own rule (#1175): the planner sentence below would point it at a role it does not hold.
+        if (this.configuredManualConductor(by) && !this.d.roles?.[by]?.includes("planner")) throw new PreEffectToolRefusal("the conductor may cancel only a task another project handed off that nobody has accepted (no owner, branch, commit, PR, check, done or verdict) while the conductor is on the roster; for any other task the person runs `ahub task cancel <id> --reason <text>`");
         this.planningAuthority(by, task);
         const proposer = task.history.find(h => h.event === "proposed" || h.event === "backlogged")?.by;
         // #812 AC5: back in proposed or backlog with no execution evidence (the `hub_backlog_return_untouched` test: no branch, commit, PR, local check, done, verdict or reopen), an accepted-then-declined task is cancellable; any such evidence keeps today's refusal.
@@ -4803,6 +4812,16 @@ export class Tasks {
       for (const dependent of this.d.board.list()) if (!isClosedTaskState(dependent.state) && !dependent.owner && dependent.deps?.includes(task.id)) this.releaseNotice(`task #${dependent.id}: cancellation stall advice unavailable`, () => this.reportStall(dependent, { kind: "cancelled-dependency", dependency: task.id, code: "cancelled" }));
     });
     return next;
+  }
+
+  /**
+   * #1175: the receiving project's configured conductor may cancel a task another project handed it, while nobody has accepted it and it has no execution evidence (the same bar as the
+   * planner's own-work rule, `taskHasStarted` and `taskHasWorkEvidence`). It is re-asked inside both validations of `cancel`, so authority that ended during the privacy screen writes
+   * nothing. The origin hears the cancel through the existing follow-back, which reads the history entry and carries no text.
+   */
+  private conductorHandoffCancel(by: PeerId, task: Task): boolean {
+    return this.configuredManualConductor(by) && this.d.bus.isRostered(by) && this.d.board.handoffOrigin(task.id) !== undefined && ["proposed", "backlog"].includes(task.state)
+      && !taskHasStarted(task) && !taskHasWorkEvidence(task) && !this.isPii(task);
   }
 
   /** A slot freed for `peer` (cancel, untouched return): its held ready tasks are offered in priority order, and the cap stops the offers (#655). */
