@@ -285,3 +285,39 @@ test("a failed completion write leaves the run open and a later settle succeeds;
   failing = false;
   expect(f.completions()).toHaveLength(1);
 }, 30_000);
+
+test("a hub restart while a budget-paused peer still has pending work drops its run without a completion, instead of reading it as interrupted", async () => {
+  const f = await rig();
+  await f.say("codex");
+  await until(() => f.peers.codex!.state === "busy", "the turn");
+  await f.say("codex", "queued behind the busy turn");                          // pending work the paused peer cannot drain
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(join(f.stateDir, "hub.db"));
+  db.run("INSERT OR REPLACE INTO budget_pauses (peer, since, resets_at, reason, summary, handed_off, moved) VALUES ('codex', ?, ?, 'five_hour window', '', 0, '[]')", [Date.now(), Date.now() + 3_600_000]);
+  db.close();
+  f.peers.codex!.end();                                                         // the turn ends, but the queued message keeps the run working, so it does not settle
+  await Bun.sleep(200);
+  expect(f.completions()).toEqual([]);
+  const open = () => { const s = new CompletionStore(join(f.stateDir, "hub.db")); try { return s.openRuns().length; } finally { s.close(); } };
+  expect(open()).toBe(1);                                                       // the row survives until the restart decides
+  const { cwd } = f;
+  await f.close(); cleanup.length = 0;
+  const again = await rig({ keep: { cwd } });
+  await Bun.sleep(250);
+  expect(again.completions()).toEqual([]);                                      // no interrupted result for a budget need
+  const probe = new CompletionStore(join(again.stateDir, "hub.db"));
+  try { expect(probe.openRuns()).toEqual([]); expect(probe.list()).toEqual([]); } finally { probe.close(); }
+  await again.close(); cleanup.length = 0;
+}, 30_000);
+
+test("a restart without a budget pause still settles the open run interrupted, once (the pause rule does not swallow ordinary runs)", async () => {
+  const f = await rig();
+  await f.say("codex");
+  await until(() => f.peers.codex!.state === "busy", "the turn");
+  const { cwd } = f;
+  await f.close(); cleanup.length = 0;
+  const again = await rig({ keep: { cwd } });
+  await until(() => again.completions().length === 1, "the interrupted completion");
+  expect(again.completions()[0]).toMatchObject({ peer: "codex", outcome: "interrupted" });
+  await again.close(); cleanup.length = 0;
+}, 30_000);

@@ -4905,12 +4905,27 @@ export async function startDaemon(opts: DaemonOptions) {
       runs.close(peer);
     } catch { log(`completion settle check for ${peer} failed; the run stays open`); }
   };
+  /** Completions with no receipt, ids, peers and times only (the need and the count carry no text). A read that fails reads as none: a need is advice. */
+  const unreadResults = () => { try { return completionStore.unread(); } catch { return []; } };
+  /** The title of a result, computed at display: the peer and outcome, with the starting prompt never stored or shown; a private result is a stub. */
+  const resultView = (row: ReturnType<CompletionStore["listWithState"]>[number]) => ({
+    id: row.id, peer: row.peer, outcome: row.outcome, settledAt: row.settledAt, startedAt: row.startedAt, ms: row.settledAt - row.startedAt, private: row.private,
+    title: row.private ? `${row.peer}: a private result` : `${row.peer}: ${row.outcome === "done" ? "finished" : row.outcome === "failed" ? "failed" : row.outcome === "limit" ? "stopped at a limit" : "interrupted"}`,
+    read: row.seenAt !== undefined, ...(row.seenAt !== undefined ? { seenAt: row.seenAt, surface: row.surface } : {}),
+  });
   /** An explicit stop by the person: the run ends and creates nothing. */
   const quietStop = (peer: PeerId): void => { try { const run = runs.get(peer); if (run) { completionStore.dropRun(run.runTurn); runs.quietStop(peer); } } catch { log(`completion quiet stop for ${peer} failed; its run stays open`); } };
   /** Restart reconstruction: an open run row whose process is gone settles `interrupted`, once. The unique run turn makes any number of restarts yield one completion per run. */
   const reconstructRuns = (): void => {
-    try { for (const open of completionStore.openRuns()) completionDone(open.peer, { ...open, evidence: {}, signalled: false }, "interrupted"); }
-    catch { log("completion reconstruction failed; the open runs stay recorded"); }
+    // A peer under a budget pause ends its run WITHOUT a completion (a pause stays a budget need, `ahub budget`), whatever work is still pending: the paused peer cannot drain it, and a restart
+    // must not turn it into an `interrupted` result. Persist before remove, one run at a time, so a write that throws leaves that run's row for the next start.
+    for (const open of completionStore.openRuns()) {
+      try {
+        if (budget.record(open.peer)) completionStore.dropRun(open.runTurn);
+        else completionDone(open.peer, { ...open, evidence: {}, signalled: false }, "interrupted");
+      } catch { log(`completion reconstruction for ${open.peer} failed; its run stays recorded`); }
+    }
+    try { completionStore.prune(); } catch { log("completion retention pass failed; the table keeps its rows"); }
   };
   const permissions = new Map<string, { push: string; peer: string; tool?: string; createdAt: number; expiresAt: number; done: (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason?: "expired" | "cancelled") => boolean }>();
   let stopping = false;
@@ -5345,6 +5360,7 @@ export async function startDaemon(opts: DaemonOptions) {
       storageBlocked: !!bus.storageError,
       recovery: recoveryOperationId ? { id: recoveryOperationId, running: true } : undefined,
       tasks: taskNeeds,
+      results: unreadResults().map(result => ({ id: result.id, peer: result.peer, since: result.settledAt })),
       facts: [...taskStalls.map(stall => ({ kind: "stall" as const, id: stall.task })), ...pendingTaskOffers.map(offer => ({ kind: "offer" as const, id: offer.task, peer: offer.peer }))],
       budget: Object.fromEntries(Object.entries(budget.status()).map(([peer, row]) => [peer, row.paused ? { paused: { since: row.paused.since, resetsAt: row.paused.resetsAt } } : {}])),
     };
@@ -8510,7 +8526,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // #1053: an older daemon ignores the `questions` table, so an open question or an answer still owed would be lost silently.
       if (questionStore.hasPending() && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("questions"))) return "target lacks questions; open questions or owed answers cannot be kept by that daemon; answer or cancel them (ahub status), or use a target release that has the questions feature";
       // #1054: an older daemon ignores the completion tables, so an open run or a completion nobody has seen would be lost silently.
-      if (completionStore.hasPending() && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("completions"))) return "target lacks completions; open runs or unread completions cannot be kept by that daemon; let the runs settle, or use a supporting release";
+      if (completionStore.hasPending() && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("completions"))) return `target lacks completions; ${completionStore.openRuns().length ? "open runs cannot be kept by that daemon: let them settle (ahub status), then retry; " : ""}unread results cannot be kept by that daemon: read them (ahub results --read-all), or use a supporting release`;
       if (externalIds.size && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("external_adapter_modules"))) return "target lacks external_adapter_modules; verified external definitions cannot be preserved by that daemon";
       if (configuredIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("configured_acp"))) return "target lacks configured_acp; project adapter definitions cannot be preserved by that daemon";
       if (extraIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("peer_instances"))) return "target lacks peer_instances; declared instance identities cannot be restored by that daemon";
@@ -10377,6 +10393,36 @@ export async function startDaemon(opts: DaemonOptions) {
       case "questions": {
         if (c.role !== "console") return void reply({ t: "questions", ok: false, error: "questions are shown to the person: use the console" });
         return void reply({ t: "questions", ok: true, questions: questionStore.list(msg.state === "all" ? {} : { state: "open" }, 100) });
+      }
+      // #1054: a person's receipt for a result. Console role ONLY, like `permit`: a peer's connection, a `hub_send` body or a tool result that quotes a receipt is text and never reaches
+      // the store. A snapshot or a `results` read never writes one. Every message gets a reply (rid), a refusal included.
+      case "result_seen": {
+        if (c.role !== "console") return void reply({ t: "result_seen", ok: false, error: "result_seen is a console command: only the person marks a result read" });
+        if (recoveryActive() || stopping) return void reply({ t: "result_seen", ok: false, error: "recovery or shutdown is holding receipts; mark it read again once the hub is back" });
+        const surface = (["terminal", "console", "dashboard", "acon"] as const).find(known => known === msg.surface) ?? "console";
+        if (typeof msg.id !== "string") return void reply({ t: "result_seen", ok: false, error: "result_seen needs the result id (ahub results lists them)" });
+        const marked = completionStore.markSeen(msg.id, Date.now(), surface);
+        if (marked.ok) event({ type: "completion_seen", id: msg.id, surface });
+        return void reply(marked.ok ? { t: "result_seen", ok: true, id: msg.id } : { t: "result_seen", ok: false, error: marked.error });
+      }
+      case "results": {
+        if (c.role !== "console") return void reply({ t: "results", ok: false, error: "results are shown to the person: use the console" });
+        if (msg.action === "read-all" || msg.action === "unread-last") {
+          if (recoveryActive() || stopping) return void reply({ t: "results", ok: false, error: "recovery or shutdown is holding receipts; try again once the hub is back" });
+          const surface = (["terminal", "console", "dashboard", "acon"] as const).find(known => known === msg.surface) ?? "console";
+          if (msg.action === "read-all") {
+            const ids = completionStore.markAllSeen(Date.now(), surface);
+            for (const id of ids) event({ type: "completion_seen", id, surface });
+            return void reply({ t: "results", ok: true, marked: ids.length });
+          }
+          const relit = completionStore.unmarkLast();
+          return void reply(relit ? { t: "results", ok: true, unread: relit } : { t: "results", ok: false, error: "no result has been read, so there is nothing to mark unread" });
+        }
+        const unreadOnly = msg.unread === true;
+        const rows = completionStore.listWithState(100, unreadOnly).map(resultView);
+        // Say so when the listing is shorter than the truth, instead of letting "no unread results" hide an older one status still counts.
+        const more = unreadOnly ? Math.max(0, completionStore.unreadCount() - rows.length) : 0;
+        return void reply({ t: "results", ok: true, results: rows, ...(more ? { more } : {}) });
       }
       case "kill":
         if (c.role !== "console") return void reply({ ok: false, error: "kill is a console command" });

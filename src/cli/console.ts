@@ -9,7 +9,7 @@ import { reviewResult } from "./console-review.ts";
 import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap, captureConsoleSelection, selectedPanelRow, appendEvent, FIRST_KEYS, LAST_KEYS } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
-import { consoleNeeds, attentionFacts } from "./attention.ts";
+import { consoleNeeds, attentionFacts, attentionResults } from "./attention.ts";
 import { loadPetConfig } from "./pet-config.ts";
 import { CHARACTER_IDS, petGlyphs, petSize } from "../pet/frame.ts";
 import { activeNotice, consoleFooterRows } from "./console-state.ts";
@@ -255,6 +255,12 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (status.status && status.ok !== false) {
         state.taskWip = status.status.taskWip ?? {};
         state.attentionFacts = attentionFacts(status.status.attentionItems);
+        // #1054: unread results (a run a person started that settled), ids and peers only. A result the person has not been told about gets one stream line with no text.
+        const unread = attentionResults(status.status.attentionItems);
+        const seenResults = new Set(state.resultsSeen ?? []);
+        for (const result of unread) if (!seenResults.has(result.id) && state.resultsSeen !== undefined) stream({ text: `  ✓ ${result.peer ?? "a peer"} finished a run you started: ahub results --read ${result.id}`, ...(result.peer ? { peer: result.peer } : {}), kind: "result", tone: "info" });
+        state.resultsSeen = unread.map(result => result.id);
+        state.results = unread;
         state.storageBlocked = !!status.status.deliveryError;
         state.recoveryNeed = status.status.recovery ? { id: status.status.recovery.operationId, running: true } : undefined;
       }
