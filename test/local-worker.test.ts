@@ -7,6 +7,7 @@ import { Board } from "../src/hub/board.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { readEvents } from "../src/hub/events.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { MAX_HOP, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
@@ -53,18 +54,20 @@ async function setup(script: Script, extra: Partial<LocalOptions> = {}, permit =
     if (e.t === "envelope" && e.env.from === "local") said.push(e.env);
   });
   const asked: string[] = [];
+  const limits: string[] = [];
   const peer = new WatchdogLocalPeer("local", {
     cwd,
     omni,
     fixedModel: "vllm/fixed",
     tools: { deny: [], permit: async (t) => (asked.push(t), permit) },
     log,
+    onLimit: kind => limits.push(kind),
     ...extra,
   });
   bus.add(peer);
   await peer.start();
   cleanup.push(model.stop, () => peer.stop());
-  return { cwd, model, omni, bus, peer, said, asked, lines, events, log };
+  return { cwd, model, omni, bus, peer, said, asked, lines, events, log, limits };
 }
 
 test("a bulk edit: tool calls run in the project, one conclusion is shared, the provider is recorded, no reasoning or key leaks", async () => {
@@ -121,12 +124,14 @@ test("a refused approval and a malformed tool call come back to the model as tex
   refused.bus.publish(newEnvelope("user", "edit it", { priority: "important" }));
   await until(() => refused.said.length === 1, "answer after refusal");
   expect(refused.said[0]!.body).toBe("done: error: the user did not approve this edit");
+  expect(refused.limits).toEqual([]);                                               // a turn that concludes on its own reports no ceiling
   expect(readFileSync(join(refused.cwd, "a.txt"), "utf8")).toBe("one\ntwo\n");
 
   const looping = await setup(() => ({ content: "still working", tool_calls: [toolCall("read", "{broken json")] }), { maxSteps: 3 });
   looping.bus.publish(newEnvelope("user", "loop", { priority: "important" }));
   await until(() => looping.said.length === 1, "step limit");
   expect(looping.said[0]!.body).toBe("(stopped after 3 steps) still working");
+  expect(looping.limits).toEqual(["steps"]);                                          // #1054: the ceiling is reported as a closed fact, not left for a caller to parse from the text
   expect(looping.model.requests).toHaveLength(3);
   expect(JSON.stringify(looping.model.requests[2]!.body.messages)).toContain("not valid JSON");
 });
@@ -607,6 +612,9 @@ test("daemon local expiry text and N2 stop use real approval timeout without rep
   expect(daemon.bus.queueSummary("local").heldBy).toBeUndefined();
   expect(answers).toHaveLength(1);
   expect(answers[0]!.body).toContain("two unanswered approvals");
+  // #1054: the delivery settles `completed` so nothing replays, but the work was stopped without its approvals: the person's run ends `failed`, never `done`
+  await until(() => readEvents(join(stateDir, "events.jsonl")).some(e => e.type === "completion"), "the run's completion");
+  expect(readEvents(join(stateDir, "events.jsonl")).filter(e => e.type === "completion")).toEqual([expect.objectContaining({ peer: "local", outcome: "failed" })]);
 
   const second = newEnvelope("user", nextTurn, { to: ["local"] });
   daemon.bus.publish(second);

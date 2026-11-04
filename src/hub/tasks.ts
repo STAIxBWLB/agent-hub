@@ -209,6 +209,8 @@ export interface TasksDeps {
   /** Hands one peer a line that rides on its next delivery, without a turn of its own (issue #6). */
   tell?: (peer: PeerId, line: string) => void;
   /** Structured overlap records for telemetry (issue #40); the notice line stays for the human. */
+  /** #1054: a completion check this peer owned just ended (its ownership is already cleared), so a run that waited on it may settle. Advisory: a throw is ignored. */
+  checkEnded?: (owner: PeerId) => void;
   recordOverlap?: (task: number, owner: PeerId, others: { task: number; owner: PeerId; paths: string[]; symbols?: string[] }[]) => void;
   /** Quota per peer from fresh readings (issue #36): routing drains the windows that reset soonest first. */
   quota?: () => Record<PeerId, { headroom: number; resetsAt?: number }>;
@@ -6517,6 +6519,9 @@ export class Tasks {
   /** Checks queued or running, until their result is on the board: a recovery commit waits for them. */
   checksPending = () => this.pendingChecks;
 
+  /** #1054: completion checks queued or running for work this peer owns, so a run is not settled while its own check is still going. */
+  checksOwnedBy = (peer: PeerId): number => { let n = 0; for (const owner of this.checking.values()) if (owner === peer) n++; return n; };
+
   /** Whether a completion check is still running for this task. */
   isChecking = (id: number) => this.checking.has(id);
 
@@ -6782,7 +6787,9 @@ export class Tasks {
 
   private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }, withheld: boolean, specInspection: PreparedSpecInspection, resolvedReviewComments?: string[], reviewObserverExcluded = false): Promise<void> {
     const result = await this.d.runCheck!(command).catch((e: Error) => ({ code: null, timedOut: false, interrupted: false, tail: e.message }));
+    const checkOwner = this.checking.get(id);
     this.checking.delete(id);
+    if (checkOwner) { try { queueMicrotask(() => { try { this.d.checkEnded?.(checkOwner); } catch { /* advisory */ } }); } catch { /* advisory */ } }
     const task = this.d.board.get(id);
     if (!task) return;
     const outcome = `${command} -> ${result.interrupted ? "interrupted by a hub stop" : result.timedOut ? "timed out" : `exit ${result.code ?? "?"}`}`;

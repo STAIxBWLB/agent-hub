@@ -37,6 +37,11 @@ export interface LocalOptions {
   onRoute?: (event: RouteEvent) => void;
   onAdvisor?: (event: AdvisorEvent) => void;
   onRouteOutcome?: (event: RouteLabelEvent) => void;
+  /**
+   * #1054: the worker ended its turn at a ceiling it enforces itself, as a closed fact and never its text: `steps` (it ran out of `maxSteps`, or the review asked for more at the last
+   * step) or `budget` (an execution budget stopped it). The daemon records it as the run's `limit` evidence; a turn that reports none is `done`.
+   */
+  onLimit?: (kind: "steps" | "budget") => void;
   /** The daemon turn id created synchronously on busy, shared with turn_start/end. */
   turnId?: () => string | undefined;
   onApprovalStop?: (reason: string) => void;
@@ -319,6 +324,7 @@ export class LocalPeer extends BasePeer {
       } finally { if (results.length) this.routes.observeResults(res.routeDecision, res.message, results); }
     }
     if (usedTools) turnCapture?.summarize(progress.last);
+    this.opts.onLimit?.("steps");
     return `(stopped after ${maxSteps} steps) ${progress.last}`.trim();
   }
 
@@ -376,6 +382,7 @@ export class LocalPeer extends BasePeer {
   }
 
   private reportBudgetStop(e: Error, msgs: ChatMessage[], progress: { sideEffects: number; last: string }, reply: EnvelopeOpts, privateHistory: boolean, deliveryId?: string, remoteTurn = false, reviewTurn = false): void {
+    this.opts.onLimit?.("budget");
     const message = remoteTurn ? "remote turn failed" : reviewTurn ? "review turn failed" : e.message;
     this.completeMissingToolResults(msgs, `not run: ${message}`);
     const detail = remoteTurn || reviewTurn ? message : progress.sideEffects
@@ -479,6 +486,7 @@ export class LocalPeer extends BasePeer {
     const feedback = await this.routes.review(route, config, messages, this.routeScope(!!policy?.pii, turn), !!policy?.pii, signal, decisionId);
     if (turn !== this.turn || !feedback) return answer;
     msgs.push({ role: "user", content: feedback });
+    if (step + 1 >= maxSteps) this.opts.onLimit?.("steps");
     return step + 1 < maxSteps ? undefined : `(review requested changes; step limit reached) ${answer}`;
   }
 

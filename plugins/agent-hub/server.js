@@ -13622,6 +13622,7 @@ var init_local_worker = __esm(() => {
       }
       if (usedTools)
         turnCapture?.summarize(progress.last);
+      this.opts.onLimit?.("steps");
       return `(stopped after ${maxSteps} steps) ${progress.last}`.trim();
     }
     toolSchemas() {
@@ -13693,6 +13694,7 @@ var init_local_worker = __esm(() => {
       };
     }
     reportBudgetStop(e, msgs, progress, reply, privateHistory, deliveryId, remoteTurn = false, reviewTurn = false) {
+      this.opts.onLimit?.("budget");
       const message = remoteTurn ? "remote turn failed" : reviewTurn ? "review turn failed" : e.message;
       this.completeMissingToolResults(msgs, `not run: ${message}`);
       const detail = remoteTurn || reviewTurn ? message : progress.sideEffects ? `(execution budget stopped after ${progress.sideEffects} tool call(s) with side effects; partial work may exist and needs review) ${progress.last}`.trim() : `(execution budget stopped before any tool side effects; no work was repeated) ${progress.last}`.trim();
@@ -13808,6 +13810,8 @@ var init_local_worker = __esm(() => {
       if (turn !== this.turn || !feedback)
         return answer;
       msgs.push({ role: "user", content: feedback });
+      if (step + 1 >= maxSteps)
+        this.opts.onLimit?.("steps");
       return step + 1 < maxSteps ? undefined : `(review requested changes; step limit reached) ${answer}`;
     }
     observeTool(call, output, policy, nativeTurn) {
@@ -16155,6 +16159,7 @@ var init_builtin_metadata = __esm(() => {
     permission: { grants: { ask: "every write, edit and shell command asks", "ask-when-needed": "file tools, proven read-only shell commands and bound task commands inside the owned worktree may run automatically; protected paths and other commands ask" } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: false, launchKind: "claude-implementer", crashPlan: () => ({ resume: {}, how: "Claude implementer resumes its recorded per-task sessions" }) },
     turnEnd: "adapter",
+    settle: { signal: "prompt-response" },
     budget: { account: "claude" },
     cli: { command: "claude", startWords: () => ["claude"] },
     display: CLAUDE_DISPLAY
@@ -16193,6 +16198,7 @@ var init_builtin_metadata = __esm(() => {
       } },
       session: { idField: "sessionId", currentId: sessionId("sessionId"), configDirEnv: "CLAUDE_CONFIG_DIR", zeroTurnFresh: true, launchKind: "claude-channel", launchRecord: true, ...CLAUDE_RECOVERY_SESSION, crashPlan: claudeCrashPlan, unrecordedTerminal: "always" },
       turnEnd: "native-hook",
+      settle: { signal: "native-stop" },
       budget: { account: "claude", checkpoint: true, reader: { source: "claude status line", read: claudeWindows }, context: { source: "claude_statusline", read: claudeContext } },
       cli: { command: "claude", entry: { lifecycleAdmission: true, execute: runClaudeEntry }, preview: previewClaude, usage: [["ahub claude [--print-command] [--unattended] [args...]", "launch Claude Code with the hub channel"]], retainedTerminalNotice: claudeRetainedTerminalNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["claude"] },
       display: CLAUDE_DISPLAY,
@@ -16231,6 +16237,7 @@ var init_builtin_metadata = __esm(() => {
       permission: { trackUnattended: true, grants: { ask: "the session's own approval policy applies again", "ask-when-needed": "approval policy on-request on every turn", "never-ask": "approval policy never on every turn: nothing asks" } },
       session: { nativeRevert: true, idField: "threadId", currentId: sessionId("threadId"), configDirEnv: "CODEX_HOME", zeroTurnFresh: true, launchKind: "codex", launchRecord: true, ...CODEX_RECOVERY_SESSION, crashPlan: codexCrashPlan, unrecordedTerminal: "always" },
       turnEnd: "adapter",
+      settle: { signal: "turn-completed" },
       budget: { account: "codex", checkpoint: true, reader: { source: "codex rateLimits", read: codexWindows }, context: { source: "codex_token_usage", read: codexContext } },
       cli: { command: "codex", entry: { lifecycleAdmission: true, execute: runCodexEntry }, preview: previewCodex, usage: [["ahub codex [--print-command] [--unattended] [args...]", "start the Codex adapter and attach the TUI"]], launchConfigKeys: ["codex_bin"], retainedTerminalNotice: codexRetainedTerminalNotice, rosterReturnNotice: codexRosterReturnNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["codex"] },
       display: CODEX_DISPLAY,
@@ -16265,6 +16272,7 @@ var init_builtin_metadata = __esm(() => {
       },
       session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "acp", ...KIMI_RECOVERY_SESSION, crashPlan: kimiCrashPlan },
       turnEnd: "adapter",
+      settle: { signal: "prompt-response" },
       budget: { account: "kimi", resetSoftTokensOnResume: true, context: { source: "acp_usage_update", read: acpContextValue } },
       capabilities: { watch: true },
       hooks: { recallPlatform: "kimi", recallSource: "kimi" },
@@ -16291,6 +16299,7 @@ var init_builtin_metadata = __esm(() => {
       permission: { grants: { ...hubGrants } },
       session: { idField: "sessionId", currentId: sessionId("sessionId"), restoreOnStart: true, launchKind: "pi", launchRecord: true, ...PI_RECOVERY_SESSION, crashPlan: piCrashPlan, unrecordedTerminal: "tui", continuityBookmark: piRecoveryContinuity, continuity: { key: "pi", parse: parsePiContinuity } },
       turnEnd: "adapter",
+      settle: { signal: "agent-settled" },
       budget: { account: "pi", instrumented: true, noQuotaReason: "on-prem backends have no provider quota" },
       reporting: { tokensNotReported: true },
       configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
@@ -16316,6 +16325,7 @@ var init_builtin_metadata = __esm(() => {
       permission: { grants: { ...hubGrants } },
       session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "local", ...LOCAL_RECOVERY_SESSION, crashPlan: localCrashPlan },
       turnEnd: "adapter",
+      settle: { signal: "route-outcome" },
       budget: { account: "local", quotaExempt: true, instrumented: true, noQuotaReason: "on-prem gateway has no provider quota" },
       configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
       routing: { localAllowedRefusal: "local_allowed = false for this class", longContext: "skip-owner", preferredTier: true, handoffPriority: 1, trace: "route" },
@@ -16344,6 +16354,7 @@ var init_builtin_metadata = __esm(() => {
       } },
       session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan },
       turnEnd: "adapter",
+      settle: { signal: "prompt-response" },
       budget: { account: "jcode", context: { source: "jcode_usage_update", read: jcodeContextValue } },
       cli: { command: "jcode", entry: { lifecycleAdmission: true, execute: runJcodeEntry }, preview: previewJcode, usage: [["ahub jcode [--mode tui|headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>] [--print-command]", "optional Jcode (roster.jcode, default off): its TUI on the hub-owned ACP session, opened once that session is saved; --mode headless for ACP only; native policy unmanaged, no hub sandbox"]], authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: (mode) => ["jcode", "--mode", mode] },
       display: JCODE_DISPLAY,
@@ -16537,6 +16548,7 @@ var init_qwen = __esm(() => {
       }
     },
     turnEnd: "adapter",
+    settle: { signal: "message-stop" },
     budget: { account: "qwen" },
     capabilities: { watch: true },
     cli: { command: "qwen", entry: { lifecycleAdmission: true, execute: runQwenEntry }, preview: previewQwen, usage: [["ahub qwen [--mode headless|tui] [--model <alias>] [--session-id <id>] [--print-command]", `start optional Qwen Code ACP (${describe("qwen")}; roster.qwen, default off); --mode tui runs Qwen's own TUI in this terminal, driven through its dual-output files (${describe("qwen-dual")}); a hub deny ends the turn without an answer and a stalled turn is stopped with Esc in the Qwen terminal`]], launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
@@ -16915,6 +16927,7 @@ function assertNativeCapabilityScope(definition) {
     ["title", definition.title !== undefined],
     ["titlePersistence", definition.titlePersistence !== undefined],
     ["questionWaitMs", definition.questionWaitMs !== undefined],
+    ["settle", definition.settle !== undefined],
     ["start.acpCommand", declared(definition.start, "acpCommand")],
     ["attach.admission", declared(definition.attach, "admission")],
     ["budget.resetSoftTokensOnResume", declared(definition.budget, "resetSoftTokensOnResume")],

@@ -65,7 +65,7 @@ const CLAUDE_IMPLEMENTER_VARIANT: AdapterDefinition = {
   identity: { mcp: "env", currentChild: true }, instances: { mode: "headless", roles: ["implementer", "verifier"], modelSelect: true },
   permission: { grants: { ask: "every write, edit and shell command asks", "ask-when-needed": "file tools, proven read-only shell commands and bound task commands inside the owned worktree may run automatically; protected paths and other commands ask" } },
   session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: false, launchKind: "claude-implementer", crashPlan: () => ({ resume: {}, how: "Claude implementer resumes its recorded per-task sessions" }) },
-  turnEnd: "adapter", budget: { account: "claude" },
+  turnEnd: "adapter", settle: { signal: "prompt-response" }, budget: { account: "claude" },
   cli: { command: "claude", startWords: () => ["claude"] }, display: CLAUDE_DISPLAY,
 };
 
@@ -84,7 +84,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
       "ask-when-needed": "file tools on project files run without asking, outside .agenthub, .git and agent configuration; other tools keep Claude's own rules",
       "never-ask": "every tool runs without asking" } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), configDirEnv: "CLAUDE_CONFIG_DIR", zeroTurnFresh: true, launchKind: "claude-channel", launchRecord: true, ...CLAUDE_RECOVERY_SESSION, crashPlan: claudeCrashPlan, unrecordedTerminal: "always" },
-    turnEnd: "native-hook", budget: { account: "claude", checkpoint: true, reader: { source: "claude status line", read: claudeWindows }, context: { source: "claude_statusline", read: claudeContext } },
+    turnEnd: "native-hook", settle: { signal: "native-stop" }, budget: { account: "claude", checkpoint: true, reader: { source: "claude status line", read: claudeWindows }, context: { source: "claude_statusline", read: claudeContext } },
     cli: { command: "claude", entry: { lifecycleAdmission: true, execute: runClaudeEntry }, preview: previewClaude, usage: [["ahub claude [--print-command] [--unattended] [args...]", "launch Claude Code with the hub channel"]], retainedTerminalNotice: claudeRetainedTerminalNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["claude"] }, display: CLAUDE_DISPLAY, hooks: { recallPlatform: "claude", recallSource: "claude", recallInjected: true, pluginInventory: claudePluginInventory },
     reviewerVariant: CLAUDE_REVIEWER_VARIANT, headlessVariant: CLAUDE_IMPLEMENTER_VARIANT,
   },
@@ -98,7 +98,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     identity: { mcp: "env" }, instances: { mode: "headless" },
     permission: { trackUnattended: true, grants: { ask: "the session's own approval policy applies again", "ask-when-needed": "approval policy on-request on every turn", "never-ask": "approval policy never on every turn: nothing asks" } },
     session: { nativeRevert: true, idField: "threadId", currentId: sessionId("threadId"), configDirEnv: "CODEX_HOME", zeroTurnFresh: true, launchKind: "codex", launchRecord: true, ...CODEX_RECOVERY_SESSION, crashPlan: codexCrashPlan, unrecordedTerminal: "always" },
-    turnEnd: "adapter", budget: { account: "codex", checkpoint: true, reader: { source: "codex rateLimits", read: codexWindows }, context: { source: "codex_token_usage", read: codexContext } },
+    turnEnd: "adapter", settle: { signal: "turn-completed" }, budget: { account: "codex", checkpoint: true, reader: { source: "codex rateLimits", read: codexWindows }, context: { source: "codex_token_usage", read: codexContext } },
     cli: { command: "codex", entry: { lifecycleAdmission: true, execute: runCodexEntry }, preview: previewCodex, usage: [["ahub codex [--print-command] [--unattended] [args...]", "start the Codex adapter and attach the TUI"]], launchConfigKeys: ["codex_bin"], retainedTerminalNotice: codexRetainedTerminalNotice, rosterReturnNotice: codexRosterReturnNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["codex"] }, display: CODEX_DISPLAY, hooks: { recallPlatform: "codex", recallSource: "codex", recallInjected: true, pluginInventory: codexPluginInventory, classifyTool: codexToolSemantic },
   },
   {
@@ -114,7 +114,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     permission: { grants: { ask: "Kimi asks as it does on its own", "ask-when-needed": "Kimi's yolo mode: it asks only where it judges it must", "never-ask": "Kimi's auto mode: nothing asks" },
       unmanagedForms: Object.freeze(["tui"] as const), unmanagedStatusNote: "Kimi approves tools in its own TUI; no hub permission mode", unmanagedNote: "Kimi approves tools and selects its permission mode in its own TUI; no hub permission mode" },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "acp", ...KIMI_RECOVERY_SESSION, crashPlan: kimiCrashPlan },
-    turnEnd: "adapter", budget: { account: "kimi", resetSoftTokensOnResume: true, context: { source: "acp_usage_update", read: acpContextValue } }, capabilities: { watch: true }, hooks: { recallPlatform: "kimi", recallSource: "kimi" },
+    turnEnd: "adapter", settle: { signal: "prompt-response" }, budget: { account: "kimi", resetSoftTokensOnResume: true, context: { source: "acp_usage_update", read: acpContextValue } }, capabilities: { watch: true }, hooks: { recallPlatform: "kimi", recallSource: "kimi" },
     cli: { command: "kimi", entry: { lifecycleAdmission: true, execute: runKimiEntry }, preview: previewKimi, usage: [["ahub kimi [--print-command] [--mode tui|headless] [--model <alias>]", "default: Kimi's own TUI, pull-only via hub_inbox; no push, steer, watchdog, console approvals or automatic quota handoff. Select headless for ACP"]], launchConfigKeys: ["kimi_cmd", "peers.kimi.start_mode"], stopNotice: form => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: form => ["kimi", "--mode", form] }, display: KIMI_DISPLAY,
   },
   {
@@ -126,7 +126,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     // Approval enforcement belongs to the verified native transport and host permission gate.
     permission: { grants: { ...hubGrants } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), restoreOnStart: true, launchKind: "pi", launchRecord: true, ...PI_RECOVERY_SESSION, crashPlan: piCrashPlan, unrecordedTerminal: "tui", continuityBookmark: piRecoveryContinuity, continuity: { key: "pi", parse: parsePiContinuity } },
-    turnEnd: "adapter", budget: { account: "pi", instrumented: true, noQuotaReason: "on-prem backends have no provider quota" }, reporting: { tokensNotReported: true }, configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
+    turnEnd: "adapter", settle: { signal: "agent-settled" }, budget: { account: "pi", instrumented: true, noQuotaReason: "on-prem backends have no provider quota" }, reporting: { tokensNotReported: true }, configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
     routing: { localAllowedRefusal: "local_allowed = false also excludes pi for this class", longContext: "backend-limit", preferredTier: true, handoffPriority: 0, trace: "backend", backendLabel: "pi" },
     cli: { command: "pi", entry: { lifecycleAdmission: false, execute: runPiEntry }, preview: previewPi, usage: [["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id>] [--session-file <path>] [--replace-session]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how"]], launchConfigKeys: ["pi.cmd", "pi.backend", "pi.dgx_coding", "pi.dgx_fast", "pi.max_steps", "routing.pi", "peers.pi.start_mode"], previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: form => ["pi", "--mode", form] }, display: PI_DISPLAY,
   },
@@ -139,7 +139,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     // Approval enforcement belongs to the verified native transport and host permission gate.
     permission: { grants: { ...hubGrants } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "local", ...LOCAL_RECOVERY_SESSION, crashPlan: localCrashPlan },
-    turnEnd: "adapter", budget: { account: "local", quotaExempt: true, instrumented: true, noQuotaReason: "on-prem gateway has no provider quota" }, configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
+    turnEnd: "adapter", settle: { signal: "route-outcome" }, budget: { account: "local", quotaExempt: true, instrumented: true, noQuotaReason: "on-prem gateway has no provider quota" }, configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
     routing: { localAllowedRefusal: "local_allowed = false for this class", longContext: "skip-owner", preferredTier: true, handoffPriority: 1, trace: "route" },
     cli: { command: "local", entry: { lifecycleAdmission: false, execute: runLocalEntry }, usage: [["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"]], launchConfigKeys: ["local.deny", "local.bash_network", "local.network_allow", "local.max_steps", "local.read_allow", "routing.local"], startWords: () => ["local"] }, display: LOCAL_DISPLAY,
   },
@@ -152,7 +152,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     identity: { mcp: "project-file" }, instances: { mode: "headless", nativeHome: true },
     permission: { unmanaged: "Jcode native policy is unmanaged; no hub mode mapping", grants: {
       ask: "no verified hub mode mapping; native policy only", "ask-when-needed": "no verified hub mode mapping; native policy only", "never-ask": "no verified hub mode mapping; native policy only" } },
-    session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan }, turnEnd: "adapter", budget: { account: "jcode", context: { source: "jcode_usage_update", read: jcodeContextValue } },
+    session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan }, turnEnd: "adapter", settle: { signal: "prompt-response" }, budget: { account: "jcode", context: { source: "jcode_usage_update", read: jcodeContextValue } },
     // Jcode has no dedicated CSS swatch today: retain peer-palette.ts's existing 'other' fallback.
     cli: { command: "jcode", entry: { lifecycleAdmission: true, execute: runJcodeEntry }, preview: previewJcode, usage: [["ahub jcode [--mode tui|headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>] [--print-command]", "optional Jcode (roster.jcode, default off): its TUI on the hub-owned ACP session, opened once that session is saved; --mode headless for ACP only; native policy unmanaged, no hub sandbox"]], authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: mode => ["jcode", "--mode", mode] }, display: JCODE_DISPLAY, hooks: { recallPlatform: "jcode" },
   },
