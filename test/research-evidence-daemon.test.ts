@@ -15,7 +15,7 @@ import { Capture } from "../src/memory/capture.ts";
 import type { MemoryClient } from "../src/memory/client.ts";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-async function rig() {
+async function rig(options: { devOwner?: "codex" | "kimi" } = {}) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-evidence-daemon-"))), stateDir = join(root, "state"); mkdirSync(stateDir);
   const sources = new SourceRegistry(stateDir);
   const registered = [false, false, true].map((privateSource, i) => {
@@ -27,7 +27,7 @@ async function rig() {
   const research = board.propose("user", { title: "Standalone public evidence task", class: "test", profile: "research", profileClass: "fact_check", plan: { claims: ["bounded-claim-a", "bounded-claim-b"] } });
   const active = board.update(research.id, "user", "fixture accepted", { owner: "codex", state: "in_progress" });
   const dev = board.propose("user", { title: "Development task", class: "test", plan: { claims: ["dev-claim"] } });
-  const devActive = board.update(dev.id, "user", "fixture accepted", { owner: "codex", state: "in_progress" });
+  const devActive = board.update(dev.id, "user", "fixture accepted", { owner: options.devOwner ?? "codex", state: "in_progress" });
   const daemon = await startDaemon({ cwd: root, stateDir, projectId: "evidence-fixture", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
     config: { ...DEFAULT_CONFIG, profile: "research", roles: { codex: ["implementer"], claude: ["planner"], kimi: ["implementer"] }, roster: { ...DEFAULT_CONFIG.roster, kimi: true }, batch_ms: 0,
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
@@ -163,7 +163,8 @@ test("in-process evidence receipts stay JSON when the peer has held-delivery met
 });
 
 test("an owner reads canonical claim bindings over RPC and a legal plan edit stales the old evidence input", async () => {
-  const f = await rig();
+  const f = await rig({ devOwner: "kimi" });
+  expect(f.board.list().filter(task => task.owner === "codex" && task.state === "in_progress")).toHaveLength(1);
   const show = async (id: number) => {
     const response = await f.owner.request({ t: "task", op: "hub_task_show", args: { id } });
     assertOk(response);
