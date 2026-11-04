@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 export type MemorySyncCause = "declined" | "remote" | "binding" | "stopped" | "transport" | "unknown";
 export type MemorySyncOutcome =
   | { state: "notrun" }
-  | { state: "not-configured" | "stopped"; at: number }
+  | { state: "not-configured"; at: number }
+  | { state: "stopped"; at: number }
   | { state: "ok"; at: number }
   | { state: "failed"; at: number; cause: MemorySyncCause; declinedCount?: number; declinedIdsKnown?: false };
 
