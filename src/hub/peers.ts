@@ -29,6 +29,8 @@ export interface FrontendProxyPort {
 
 export interface PeerAdapter {
   readonly id: PeerId;
+  /** The explicit own-delivery settlement surface; only a live push channel session opts in. */
+  readonly acceptedSettlement?: "explicit";
   /** Host-owned room transport binding; remote ids never gain local role/console authority. */
   readonly remoteRoom?: string;
   /** Verified roster fingerprint, pinned separately from the reusable display label. */

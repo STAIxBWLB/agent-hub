@@ -162,7 +162,7 @@ async function connectPlugin(client: Client, env: Record<string, string>, peer: 
   if (syntheticParentEvidence) writeFileSync(wrapper, `import { claudeParentCommandPort } from ${JSON.stringify(join(ROOT, "src/adapters/claude-channel-evidence.ts"))};\nclaudeParentCommandPort.read = () => "claude --dangerously-load-development-channels plugin:agent-hub@agent-hub";\nawait import(${JSON.stringify(join(ROOT, "src/adapters/claude-channel.ts"))});\n`);
   const transport = new StdioClientTransport({
     command: "bun",
-    args: [syntheticParentEvidence ? wrapper : join(ROOT, "plugins/agent-hub/server.js")], // only positive fixtures synthesize the raw parent row
+    args: syntheticParentEvidence ? [wrapper] : [join(ROOT, "test/fakes/mcp-stdio-parent.ts"), join(ROOT, "plugins/agent-hub/server.js")], // real ordinary parent stays short even when --changed lists many files
     env,
     stderr: "pipe",
   });

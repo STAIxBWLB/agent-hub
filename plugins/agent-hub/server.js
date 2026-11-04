@@ -33337,13 +33337,22 @@ function renderHeldHint(value, now = Date.now(), recipientRetry = true) {
   } catch {
     return "";
   }
-  const rows = held.rows.map((row) => `${sanitize(row.id)}${Number.isSafeInteger(row.revision) && row.revision >= 0 ? ` revision ${row.revision}` : ""} from ${row.senders.map(sanitize).join(",")} kind ${row.kinds.join(",")} age ${Math.max(0, Math.floor((now - row.createdAt) / 1000))}s`);
-  const resolvable = held.rows.some((row) => Number.isSafeInteger(row.revision) && row.revision >= 0);
+  if (held.rows.some((row) => row.state !== undefined && row.state !== "accepted" && row.state !== "needs_review"))
+    return "";
+  const rows = held.rows.map((row) => `${sanitize(row.id)}${Number.isSafeInteger(row.revision) && row.revision >= 0 ? ` revision ${row.revision}` : ""}${row.state === "accepted" ? " accepted" : ""} from ${row.senders.map(sanitize).join(",")} kind ${row.kinds.join(",")} age ${Math.max(0, Math.floor((now - row.createdAt) / 1000))}s`);
+  const acceptedRows = held.rows.filter((row) => row.state === "accepted");
+  const heldRows = held.rows.filter((row) => row.state !== "accepted");
+  const resolvable = heldRows.some((row) => Number.isSafeInteger(row.revision) && row.revision >= 0);
+  const awaiting = acceptedRows.length > 0;
   const action = resolvable ? `Use hub_delivery_resolve {delivery_id, revision, action, reason} to confirm completion or discard your own held row. ${recipientRetry ? "Use hub_delivery_retry only to request its one uncertain redelivery; check for earlier effects." : "Retry remains person-only for this delivery mode."}` : `Ask the person to resolve these held deliveries because this hint has no usable revision. ${recipientRetry ? "A retry may be requested with hub_delivery_retry {delivery_id}; check for earlier effects." : "Retry remains person-only for this delivery mode."}`;
-  const out = `Held hub deliveries: ${held.count}${held.truncated ? " (metadata truncated)" : ""}
+  const acceptedMissingRevision = acceptedRows.some((row) => !Number.isSafeInteger(row.revision) || row.revision < 0);
+  const acceptedGuidance = awaiting ? `Accepted rows are unconfirmed; do not retry or replay them. For an accepted row listed above, use hub_delivery_resolve {delivery_id: "<shown id>", revision: <shown revision>, action: "completed" or "discard", reason: "<your reason>"}. This records your disposition only, not native-read or task-approval proof.${acceptedMissingRevision ? " An accepted row without a usable revision must be resolved by the person." : ""}` : "";
+  const status = `${awaiting ? "Unconfirmed" : "Held"} hub deliveries: ${held.count}${held.truncated ? " (metadata truncated)" : ""}`;
+  const guidance = [acceptedGuidance, ...heldRows.length ? [action] : []].filter(Boolean).join(" ");
+  const out = `${status}
 ${rows.join(`
 `)}
-${action}`;
+${guidance}`;
   return Buffer.byteLength(out, "utf8") <= 4096 ? out : `Held hub deliveries: ${held.count} (metadata truncated; ask the person to inspect the queue).`;
 }
 
@@ -33624,6 +33633,14 @@ var detached;
 var offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
 var pendingQueued;
 var QUEUED_COUNTED = Symbol("queuedCounted");
+var HELD_HINT_INCLUDED = Symbol("heldHintIncluded");
+var heldMetadataUnavailable = (value) => !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && value.unavailable === true;
+var heldMetadataNeedsReviewOnly = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const held = value;
+  return Number.isSafeInteger(held.count) && held.count > 0 && held.truncated === false && Array.isArray(held.rows) && held.rows.length > 0 && held.rows.every((row) => !!row && typeof row === "object" && !Array.isArray(row) && (row.state === undefined || row.state === "needs_review"));
+};
 async function withPendingHint(result, recommendInbox = true) {
   const r = result;
   const appendQueued = (hint) => {
@@ -33654,7 +33671,7 @@ ${hint}`;
           appendQueued(counted ? `(${response.important} important hub message(s) waiting${next})` : `(${response.queued} queued hub message(s), ${response.important} important hub message(s) waiting${next})`);
         }
       }
-      if (hint)
+      if (hint && result[HELD_HINT_INCLUDED] !== true)
         r.content.push({ type: "text", text: hint });
     } catch {}
     if (!freshCounts && !hint && recommendInbox && !channel && !toolsMode && pendingQueued && pendingQueued.important > 0) {
@@ -33899,10 +33916,15 @@ async function callTool(req, signal) {
     return text5(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && (!toolsMode || permissionTool)) {
-    let remote = [], notice = "", polling = "", counted = false;
+    let remote = [], notice = "", polling = "", counted = false, heldHint = "", metadataWarning = "", heldMetadata;
     if (hub) {
       try {
         const res = await hub.request({ t: "inbox" });
+        heldMetadata = res.held;
+        const metadataUnavailable = heldMetadataUnavailable(res.held);
+        heldHint = renderHeldHint(res.held, Date.now(), !deliveryOnly);
+        if (metadataUnavailable)
+          metadataWarning = `Delivery confirmation metadata is unavailable; inspect ahub queue list --peer ${sanitize(peerId)} before deciding whether anything is waiting.`;
         if (!res.ok)
           notice = `not read: ${res.error}`;
         else if (!Array.isArray(res.envs))
@@ -33910,7 +33932,7 @@ async function callTool(req, signal) {
         else {
           pendingQueued = { queued: typeof res.waiting === "number" ? res.waiting : 0, important: typeof res.waitingImportant === "number" ? res.waitingImportant : 0 };
           remote = res.envs.map(frame);
-          if (Number.isSafeInteger(res.pollingAdvice?.count) && res.pollingAdvice.count >= 3 && Number.isSafeInteger(res.pollingAdvice?.minutes) && res.pollingAdvice.minutes >= 0 && res.pollingAdvice.minutes <= 10)
+          if (!heldHint && Number.isSafeInteger(res.pollingAdvice?.count) && res.pollingAdvice.count >= 3 && Number.isSafeInteger(res.pollingAdvice?.minutes) && res.pollingAdvice.minutes >= 0 && res.pollingAdvice.minutes <= 10)
             polling = `[polling detected] ${res.pollingAdvice.count} empty reads in ${res.pollingAdvice.minutes} min with no assigned work: end your turn`;
           if (res.waiting) {
             notice = `(${res.waiting} more waiting: call hub_inbox again before you start work)`;
@@ -33925,14 +33947,25 @@ async function callTool(req, signal) {
     const out = [...inbox.splice(0), ...remote];
     if (notice)
       out.push(notice);
-    const body = out.length ? out.join(`
+    if (heldHint)
+      out.push(heldHint);
+    if (metadataWarning)
+      out.push(metadataWarning);
+    let body = out.length ? out.join(`
 
 `) : `(no queued hub messages)
 Nothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.`;
+    if (out.length === 1 && out[0] === heldHint && heldHint && heldMetadataNeedsReviewOnly(heldMetadata)) {
+      body = `(no queued hub messages)
+
+${body}`;
+    }
     const result = text5(polling ? `${body}
 ${polling}` : body);
     if (counted)
       Object.defineProperty(result, QUEUED_COUNTED, { value: true });
+    if (heldHint || metadataWarning)
+      Object.defineProperty(result, HELD_HINT_INCLUDED, { value: true });
     return result;
   }
   if (name === "hub_send") {
