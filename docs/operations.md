@@ -5259,8 +5259,9 @@ receive fixed structural guidance, with no peer or first-row fallback. No
 workflow action is issued and no filter is changed by attention navigation.
 Invalid/legacy attention hides its badge and restores the base title.
 
-The in-page pet, its SVG and character/pixel payload are removed. The standalone
-macOS window owns character presentation. Existing snapshot poll, session,
+The in-page pet, its SVG and character/pixel payload are removed. Floating pet
+presentation belongs to acon Mini; the standalone macOS host is retired (#1012).
+Existing snapshot poll, session,
 request types and CSP hashes remain; no route, request or timer is added.
 Browser screenshots/CSP-console verification are separate manual evidence on
 the implementation PR; VM/HTTP fixtures do not establish human visual results.
