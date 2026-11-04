@@ -1,13 +1,16 @@
 import { isReviewObserverExcluded } from "../src/hub/memory-policy.ts";
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { randomUUID } from "node:crypto";
 import { definitionOf } from "../src/adapters/registry.ts";
 import { isWsPeer } from "../src/adapters/channel-peer.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { HUB, newEnvelope, remoteEnvelope } from "../src/hub/envelope.ts";
-import { isClosedTaskState } from "../src/hub/board.ts";
+import { Board, isClosedTaskState } from "../src/hub/board.ts";
+import { Bus } from "../src/hub/bus.ts";
 import { SESSION_TITLE_HINT, DOING_STUB, sessionTitleBindings, unnamedSessionLabel } from "../src/hub/peer-doing.ts";
 
 class NativeTitlePeer extends BasePeer {
@@ -21,29 +24,43 @@ class NativeTitlePeer extends BasePeer {
 
 test("a failing optional title journal read cannot skip invocation, pending task or supervision ACK bookkeeping", async () => {
   const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8");
-  const start = source.indexOf("  bus.onDelivered ="), end = source.indexOf("  bus.onDeliveryFailed =", start);
+  const start = source.indexOf("  bus.onDelivered ="), end = source.indexOf("  bus.onPulled =", start);
   const sessionStart = source.indexOf("  const contextSession ="), sessionEnd = source.indexOf("  const activityRings", sessionStart);
+  const reviewHeldStart = source.indexOf("  const reviewObserverHeld ="), reviewHeldEnd = source.indexOf("  const invocations =", reviewHeldStart);
+  const presenceStart = source.indexOf("  const presenceOnlyDelivery ="), presenceEnd = source.indexOf("\n", presenceStart);
+  const deliveryKeyStart = source.indexOf("  const reviewObserverDeliveryKey ="), deliveryKeyEnd = source.indexOf("\n", deliveryKeyStart);
+  const inputScopeStart = source.indexOf("  const reviewInputHeld ="), inputScopeEnd = source.indexOf("  const notePulledReviewInput =", inputScopeStart);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start); expect(sessionEnd).toBeGreaterThan(sessionStart);
-  const peer = new NativeTitlePeer(); await peer.start();
+  expect(reviewHeldStart).toBeGreaterThan(0); expect(reviewHeldEnd).toBeGreaterThan(reviewHeldStart);
+  expect(presenceStart).toBeGreaterThan(0); expect(deliveryKeyStart).toBeGreaterThan(0); expect(inputScopeStart).toBeGreaterThan(0); expect(inputScopeEnd).toBeGreaterThan(inputScopeStart);
+  const peer = new NativeTitlePeer(), bus = new Bus({}), stateRoot = mkdtempSync(join(tmpdir(), "session-title-observer-")), board = new Board(join(stateRoot, "hub.db"));
+  bus.add(peer); await peer.start();
+  const currentReviewObserverInputs = new Map<string, { held: boolean }>(), pendingReviewObserverInputs = new Map<string, { held: boolean }>();
+  const readReviewObserverScope = (id: string) => pendingReviewObserverInputs.get(id)?.held === true || currentReviewObserverInputs.get(id)?.held === true ? "open-review-comments" : undefined;
   const pendingDeliveryTask = new Map([["pi", 7]]), supervisionTurns = new Map(), delivered: string[] = [];
   let reads = 0;
   const unexpected = () => { throw new Error("unrelated policy/effect path reached"); };
   const context = {
     Buffer, HUB, randomUUID, definitionOf, isWsPeer, remoteEnvelope, sessionTitleBindings, isReviewObserverExcluded, progress:{clearPeer(){}},
-    bus: { peers: new Map([["pi", peer]]), onDelivered: undefined as unknown },
+    bus, board, currentReviewObserverInputs, pendingReviewObserverInputs, readReviewObserverScope,
+    currentReviewObserverInputs: new Map(), pendingReviewObserverInputs: new Map(),
     firstTitleMessages: new Map(), titleBindings: { pi: { session: "native-session", delivery: "old-delivery", envelope: "old-envelope" } },
     journal: { get: () => { reads++; throw new Error("journal unavailable"); } },
     titleBindingFile: "unused", atomicPrivateJSON: unexpected, claudeSession: unexpected,
     invocations: { markDelivered: (id: string) => delivered.push(id) }, pendingDeliveryTask, supervisionTurns,
     turns: new Map([["pi", { id: "active-turn", start: 123, tokens: 7 }]]),
   };
-  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(sessionStart, sessionEnd) + source.slice(start, end));
-  runInNewContext(script, context);
-  const invoke = newEnvelope(HUB, "invocation", { kind: "invocation" }); invoke.refs = { invocation: invoke.id };
-  const supervision = newEnvelope(HUB, "supervision", { kind: "task", refs: { supervision: true } });
-  (context.bus.onDelivered as (peer: string, envs: unknown[], id: string) => void)("pi", [invoke, supervision], "new-delivery");
-  expect(reads).toBe(1); expect(delivered).toEqual([invoke.id]); expect(pendingDeliveryTask.has("pi")).toBe(false);
-  expect(supervisionTurns.get("pi")).toMatchObject({ id: "active-turn", at: 123, tokens: 7 });
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(
+    `${source.slice(presenceStart, presenceEnd)}\n${source.slice(deliveryKeyStart, deliveryKeyEnd)}\n${source.slice(inputScopeStart, inputScopeEnd)}\n`
+    + source.slice(sessionStart, sessionEnd) + source.slice(reviewHeldStart, reviewHeldEnd) + source.slice(start, end));
+  try {
+    runInNewContext(script, context);
+    const invoke = newEnvelope(HUB, "invocation", { kind: "invocation" }); invoke.refs = { invocation: invoke.id };
+    const supervision = newEnvelope(HUB, "supervision", { kind: "task", refs: { supervision: true } });
+    (context.bus.onDelivered as (peer: string, envs: unknown[], id: string) => void)("pi", [invoke, supervision], "new-delivery");
+    expect(reads).toBe(1); expect(delivered).toEqual([invoke.id]); expect(pendingDeliveryTask.has("pi")).toBe(false);
+    expect(supervisionTurns.get("pi")).toMatchObject({ id: "active-turn", at: 123, tokens: 7 });
+  } finally { board.close(); bus.closeJournal(); rmSync(stateRoot, { recursive: true, force: true }); }
 });
 
 test("unknown optional journal evidence does not fail live DOING projection", async () => {
