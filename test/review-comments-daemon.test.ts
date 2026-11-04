@@ -1,7 +1,7 @@
 import type { ReviewAnchor } from "../src/hub/review-anchor.ts";
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
@@ -18,11 +18,21 @@ class ReviewOwner extends BasePeer {
   got: Envelope[] = [];
   echo = false;
   afterDelivery?: () => void;
+  deliveryGate?: Promise<void>;
+  steerGate?: Promise<void>;
+  steered: Envelope[] = [];
+  constructor(id: string, readonly pullOnly = false) { super(id); }
   async start() { this.setState("idle"); }
   async stop() { this.setState("offline"); }
-  async deliver(envs: Envelope[]) { this.got.push(...envs); if (this.echo) this.onMessage?.("OWNER_ECHO_CANARY " + envs[0]!.body, { to: ["user"], inReplyTo: envs[0] }); this.afterDelivery?.(); }
+  async deliver(envs: Envelope[], deliveryId?: string) { this.got.push(...envs); if (this.echo) this.onMessage?.("OWNER_ECHO_CANARY " + envs[0]!.body, { to: ["user"], inReplyTo: envs[0] }); this.afterDelivery?.(); if (this.deliveryGate) await this.deliveryGate; if (deliveryId) this.delivery({ id: deliveryId, state: "completed", reason: "synthetic owner consumed delivery" }); }
+  async steer(envs: Envelope[], deliveryId?: string) { this.steered.push(...envs); this.afterDelivery?.(); if (this.steerGate) await this.steerGate; if (deliveryId) this.delivery({ id: deliveryId, state: "completed", reason: "synthetic owner consumed steer" }); }
 }
-async function fixture(reviewMaterialsGh?: import("../src/hub/sdlc.ts").SdlcGh) {
+class PiTitleOwner extends ReviewOwner {
+  constructor() { super("pi"); }
+  get titleSession() { return "pi-title-session"; }
+  get sessionTitle() { return ""; }
+}
+async function fixture(reviewMaterialsGh?: import("../src/hub/sdlc.ts").SdlcGh, pullOnly = false) {
   const cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-review-comments-"))), stateDir = join(cwd, "state");
   gitProject(cwd);
   const text = "REVIEW_QUOTE_CANARY\nSecond paragraph\n";
@@ -41,7 +51,7 @@ async function fixture(reviewMaterialsGh?: import("../src/hub/sdlc.ts").SdlcGh) 
   const board = new Board(join(stateDir, "hub.db"));
   const row = board.propose("user", { title: "Review document", class: "test", refs: { paths: ["report.md"], commit: head } });
   board.update(row.id, "user", "fixture", { owner: "codex", state: "in_progress" });
-  const owner = new ReviewOwner("codex"); daemon.bus.add(owner); await owner.start();
+  const owner = new ReviewOwner("codex", pullOnly); daemon.bus.add(owner); await owner.start();
   const person = await ControlClient.connect(stateDir, { role: "console", projectRoot: cwd });
   const peer = await ControlClient.connect(stateDir, { role: "tools", peer: "codex", projectRoot: cwd });
   const conductor = await ControlClient.connect(stateDir, { role: "tools", peer: "claude", projectRoot: cwd });
@@ -237,33 +247,304 @@ test("review material never substitutes the current worktree HEAD for a missing 
   } finally { await f.stop(); }
 });
 
-test("an owner's ordinary echo stays observer-excluded after review delivery provenance is cleared", async () => {
+test("an ordinary Task B input releases Task A review provenance without clearing Task A's named scope", async () => {
   const f = await fixture();
   try {
     const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "durable observer scope" });
+    let reviewDelivered!: () => void;
+    const reviewDelivery = new Promise<void>(resolve => { reviewDelivered = resolve; });
+    f.owner.afterDelivery = reviewDelivered;
     const sent = await f.person.request({ t: "review_comment_send", task: f.task, ids: [saved.id] });
     expect(sent).toMatchObject({ ok: true, delivery: "queued" });
+    await reviewDelivery;
+    f.owner.afterDelivery = undefined;
+    f.owner.onDoing?.("todo", "REVIEW_SCOPE_PROGRESS_CANARY");
+    expect((await f.person.request({ t: "status" })).status.peers.codex.doing.text).toBe(DOING_STUB);
+
+    const taskB = f.board.propose("user", { title: "ordinary Task B", class: "test", owner: "codex", refs: { paths: ["outside.md"], commit: f.head } });
 
     let delivered!: () => void;
     const ordinaryDelivery = new Promise<void>(resolve => { delivered = resolve; });
     f.owner.afterDelivery = delivered;
-    f.daemon.bus.publish(newEnvelope("user", "intervening ordinary request", { to: ["codex"], priority: "important" }));
+    f.daemon.bus.publish(newEnvelope("user", "ordinary Task B request", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
     await ordinaryDelivery;
     f.owner.afterDelivery = undefined;
-    f.owner.onDoing?.("reset", ""); // clears in-memory reviewParents/reviewResponses provenance
+    await new Promise<void>(resolve => setImmediate(resolve)); // let the accepted delivery observer replace Task A's input scope
+    f.owner.onDoing?.("reset", "");
+
+    const scopedA = await f.peer.request({ t: "task", op: "hub_remember", args: { task: f.task, text: "Task A remains scoped", kind: "finding" } });
+    expect(scopedA.ok).toBe(false);
+    const ordinaryB = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "Task B is ordinary", kind: "finding" } });
+    expect(ordinaryB.ok).toBe(true);
 
     let echo: Envelope | undefined;
     let saw!: () => void;
     const seen = new Promise<void>(resolve => { saw = resolve; });
     f.daemon.bus.tap(event => {
-      if (event.t === "envelope" && event.env.from === "codex" && event.env.body === "DURABLE_REVIEW_ECHO_CANARY") { echo = event.env; saw(); }
+      if (event.t === "envelope" && event.env.from === "codex" && event.env.body === "ORDINARY_REPLY_CANARY") { echo = event.env; saw(); }
     });
-    f.owner.onMessage?.("DURABLE_REVIEW_ECHO_CANARY", { to: ["user"] });
+    f.owner.onMessage?.("ORDINARY_REPLY_CANARY", { to: ["user"] });
     await seen;
-    expect(echo!.refs?.reviewResponse).toBe("open-review-comments");
-    f.owner.onDoing?.("todo", "DURABLE_REVIEW_PROGRESS_CANARY");
-    expect((await f.person.request({ t: "status" })).status.peers.codex.doing.text).toBe(DOING_STUB);
+    expect(echo!.refs).not.toHaveProperty("reviewResponse");
+    f.owner.onDoing?.("todo", "ORDINARY_PROGRESS_CANARY");
+    expect((await f.person.request({ t: "status" })).status.peers.codex.doing.text).toBe("ORDINARY_PROGRESS_CANARY");
     const audit = readFileSync(join(f.stateDir, "hub.log"), "utf8") + readFileSync(join(f.stateDir, "events.jsonl"), "utf8");
-    expect(audit).not.toContain("DURABLE_REVIEW_ECHO_CANARY"); expect(audit).not.toContain("DURABLE_REVIEW_PROGRESS_CANARY");
+    expect(audit).toContain("ORDINARY_REPLY_CANARY");
+  } finally { await f.stop(); }
+});
+
+test("a review pull holds global observer scope, while an ordinary pull replaces it", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "pulled review scope" });
+    const sent = await f.person.request({ t: "review_comment_send", task: f.task, ids: [saved.id] });
+    expect(sent).toMatchObject({ ok: true, delivery: "queued" });
+
+    const reviewInput = f.daemon.bus.pull("codex");
+    expect(reviewInput?.some(env => env.refs?.reviewPackage !== undefined)).toBe(true);
+    f.owner.setState("busy");
+    const taskB = f.board.propose("user", { title: "ordinary pulled task B", class: "test", owner: "codex", refs: { paths: ["outside.md"], commit: f.head } });
+    const blocked = await f.peer.request({ t: "task", op: "hub_remember", args: { text: "not captured from review pull", kind: "finding", task: taskB.id } });
+    expect(blocked.ok).toBe(false);
+
+    f.daemon.bus.publish(newEnvelope("user", "ordinary pulled Task B", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
+    const sameTurnInput = f.daemon.bus.pull("codex");
+    expect(sameTurnInput?.some(env => env.refs?.task === String(taskB.id))).toBe(true);
+    const sameTurnBlocked = await f.peer.request({ t: "task", op: "hub_remember", args: { text: "same review turn remains private", kind: "finding", task: taskB.id } });
+    expect(sameTurnBlocked.ok).toBe(false);
+
+    f.owner.setState("idle");
+    f.daemon.bus.publish(newEnvelope("user", "ordinary Task B next turn", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
+    const ordinaryInput = f.daemon.bus.pull("codex");
+    expect(ordinaryInput?.some(env => env.refs?.task === String(taskB.id))).toBe(true);
+    const allowed = await f.peer.request({ t: "task", op: "hub_remember", args: { text: "Task B uses ordinary input", kind: "finding", task: taskB.id } });
+    expect(allowed.ok).toBe(true);
+    const namedA = await f.peer.request({ t: "task", op: "hub_remember", args: { text: "Task A remains scoped", kind: "finding", task: f.task } });
+    expect(namedA.ok).toBe(false);
+  } finally { await f.stop(); }
+});
+
+test("presence-only pushes and pulls do not replace the held review input", async () => {
+  const f = await fixture();
+  try {
+    const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "presence review scope" });
+    f.owner.setState("busy");
+    expect((await f.person.request({ t: "review_comment_send", task: f.task, ids: [saved.id] })).delivery).toBe("queued");
+    expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.reviewPackage !== undefined)).toBe(true);
+    const taskB = f.board.propose("user", { title: "presence Task B", class: "test", owner: "codex", refs: { paths: ["outside.md"], commit: f.head } });
+
+    f.owner.setState("idle");
+    let pushed!: () => void;
+    const presencePush = new Promise<void>(resolve => { pushed = resolve; });
+    f.owner.afterDelivery = pushed;
+    f.daemon.bus.publish(newEnvelope("hub", "presence update", { to: ["codex"], kind: "presence", priority: "status" }));
+    await presencePush;
+    f.owner.afterDelivery = undefined;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const heldAfterPush = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "still in review context", kind: "finding" } });
+    expect(heldAfterPush.ok).toBe(false);
+
+    f.owner.setState("busy");
+    f.daemon.bus.preface("codex", "another presence-only update");
+    expect(f.daemon.bus.pull("codex")?.every(env => env.kind === "presence")).toBe(true);
+    const heldAfterPull = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "still in review context", kind: "finding" } });
+    expect(heldAfterPull.ok).toBe(false);
+  } finally { await f.stop(); }
+});
+
+test("a mixed quote and ordinary batch does not persist an ordinary session-title binding", async () => {
+  const f = await fixture();
+  const titleOwner = new PiTitleOwner(); f.daemon.bus.add(titleOwner); await titleOwner.start();
+  const bindingFile = join(f.stateDir, "session-title-inputs.json");
+  try {
+    titleOwner.setState("busy");
+    f.daemon.bus.publish(newEnvelope("hub", "REVIEW_TITLE_QUOTE_CANARY", { to: ["pi"], kind: "review", priority: "important", refs: { task: String(f.task), reviewPackage: "review:title-fixture" } }));
+    f.daemon.bus.publish(newEnvelope("user", "MIXED_ORDINARY_TITLE_CANARY", { to: ["pi"], kind: "chat", priority: "important" }));
+    let mixedDelivered!: () => void;
+    const mixedDelivery = new Promise<void>(resolve => { mixedDelivered = resolve; });
+    titleOwner.afterDelivery = mixedDelivered;
+    titleOwner.setState("idle");
+    await mixedDelivery;
+    titleOwner.afterDelivery = undefined;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(titleOwner.got).toHaveLength(2);
+    expect(existsSync(bindingFile)).toBe(false);
+
+    let ordinaryDelivered!: () => void;
+    const ordinaryDelivery = new Promise<void>(resolve => { ordinaryDelivered = resolve; });
+    titleOwner.afterDelivery = ordinaryDelivered;
+    f.daemon.bus.publish(newEnvelope("user", "CLEAN_TITLE_INPUT_CANARY", { to: ["pi"], kind: "chat", priority: "important" }));
+    titleOwner.setState("idle");
+    await ordinaryDelivery;
+    titleOwner.afterDelivery = undefined;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(existsSync(bindingFile)).toBe(true);
+    const bindings = readFileSync(bindingFile, "utf8");
+    expect(bindings).toContain('"pi"');
+    expect(bindings).not.toContain("MIXED_ORDINARY_TITLE_CANARY");
+  } finally { await f.stop(); }
+});
+
+test("an ordinary steer within a held review turn cannot bind a title", async () => {
+  const f = await fixture();
+  const titleOwner = new PiTitleOwner(); f.daemon.bus.add(titleOwner); await titleOwner.start();
+  const bindingFile = join(f.stateDir, "session-title-inputs.json");
+  try {
+    let reviewDelivered!: () => void;
+    const reviewDelivery = new Promise<void>(resolve => { reviewDelivered = resolve; });
+    titleOwner.afterDelivery = reviewDelivered;
+    f.daemon.bus.publish(newEnvelope("hub", "REVIEW_STEER_QUOTE_CANARY", { to: ["pi"], kind: "review", priority: "important", refs: { task: String(f.task), reviewPackage: "review:steer-fixture" } }));
+    await reviewDelivery;
+    titleOwner.afterDelivery = undefined;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    titleOwner.setState("busy");
+
+    let steerStarted!: () => void, releaseSteer!: () => void;
+    const started = new Promise<void>(resolve => { steerStarted = resolve; });
+    titleOwner.steerGate = new Promise<void>(resolve => { releaseSteer = resolve; });
+    titleOwner.afterDelivery = steerStarted;
+    f.daemon.bus.publish(newEnvelope("user", "STEERED_ORDINARY_TITLE_CANARY", { to: ["pi"], kind: "chat", priority: "important" }));
+    await started;
+    releaseSteer();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    titleOwner.steerGate = undefined;
+    titleOwner.afterDelivery = undefined;
+    expect(titleOwner.steered).toHaveLength(1);
+    expect(existsSync(bindingFile)).toBe(false);
+
+    titleOwner.setState("idle");
+    let ordinaryDelivered!: () => void;
+    const ordinaryDelivery = new Promise<void>(resolve => { ordinaryDelivered = resolve; });
+    titleOwner.afterDelivery = ordinaryDelivered;
+    f.daemon.bus.publish(newEnvelope("user", "NEXT_TURN_TITLE_CANARY", { to: ["pi"], kind: "chat", priority: "important" }));
+    await ordinaryDelivery;
+    titleOwner.afterDelivery = undefined;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(existsSync(bindingFile)).toBe(true);
+    const bindings = readFileSync(bindingFile, "utf8");
+    expect(bindings).toContain('"pi"');
+    expect(bindings).not.toContain("STEERED_ORDINARY_TITLE_CANARY");
+  } finally { await f.stop(); }
+});
+
+test("a staged ordinary push preserves prior review scope until its positive acknowledgement", async () => {
+  const f = await fixture();
+  try {
+    const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "staged review scope" });
+    f.owner.setState("busy");
+    expect((await f.person.request({ t: "review_comment_send", task: f.task, ids: [saved.id] })).delivery).toBe("queued");
+    expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.reviewPackage !== undefined)).toBe(true);
+    f.owner.setState("idle");
+
+    const taskB = f.board.propose("user", { title: "staged ordinary Task B", class: "test", owner: "codex", refs: { paths: ["outside.md"], commit: f.head } });
+    let delivered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { delivered = resolve; });
+    f.owner.deliveryGate = new Promise<void>(resolve => { release = resolve; });
+    f.owner.afterDelivery = delivered;
+    f.daemon.bus.publish(newEnvelope("user", "ordinary Task B input", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
+    await started;
+
+    const whilePending = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "review scope remains until delivery acknowledgement", kind: "finding" } });
+    expect(whilePending.ok).toBe(false);
+
+    release();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    f.owner.deliveryGate = undefined;
+    f.owner.afterDelivery = undefined;
+    const afterAck = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary input replaced review scope", kind: "finding" } });
+    expect(afterAck.ok).toBe(true);
+  } finally { await f.stop(); }
+});
+
+test("a quote-bearing steer latches observer scope before its positive acknowledgement", async () => {
+  const f = await fixture();
+  try {
+    f.owner.setState("busy");
+    const taskB = f.board.propose("user", { title: "steered ordinary Task B", class: "test", owner: "codex", refs: { paths: ["outside.md"], commit: f.head } });
+    let steered!: () => void, release!: () => void;
+    const steerStarted = new Promise<void>(resolve => { steered = resolve; });
+    f.owner.steerGate = new Promise<void>(resolve => { release = resolve; });
+    f.owner.afterDelivery = steered;
+    f.daemon.bus.publish(newEnvelope("hub", "review quote to a busy peer", { to: ["codex"], kind: "review", priority: "important", refs: { task: String(f.task), reviewPackage: "review:steer-scope" } }));
+    await steerStarted;
+    const beforeAck = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "steered review input is current", kind: "finding" } });
+    expect(beforeAck.ok).toBe(false);
+
+    release();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    f.owner.steerGate = undefined;
+    f.owner.afterDelivery = undefined;
+    const afterAck = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "review steer stays scoped", kind: "finding" } });
+    expect(afterAck.ok).toBe(false);
+
+    f.owner.setState("idle");
+    let ordinaryDelivered!: () => void;
+    const ordinaryDelivery = new Promise<void>(resolve => { ordinaryDelivered = resolve; });
+    f.owner.afterDelivery = ordinaryDelivered;
+    f.daemon.bus.publish(newEnvelope("user", "ordinary next turn", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
+    await ordinaryDelivery;
+    f.owner.afterDelivery = undefined;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const ordinary = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary next turn replaces review input", kind: "finding" } });
+    expect(ordinary.ok).toBe(true);
+  } finally { await f.stop(); }
+});
+
+test("an anchor-bearing review refusal during a pending delivery keeps its latch after delivery failure", async () => {
+  const f = await fixture();
+  try {
+    const taskB = f.board.propose("user", { title: "pending ordinary Task B", class: "test", owner: "codex", refs: { paths: ["outside.md"], commit: f.head } });
+    let delivered!: () => void, rejectDelivery!: (reason: Error) => void;
+    const started = new Promise<void>(resolve => { delivered = resolve; });
+    f.owner.deliveryGate = new Promise<void>((_resolve, reject) => { rejectDelivery = reject; });
+    f.owner.afterDelivery = delivered;
+    f.daemon.bus.publish(newEnvelope("user", "ordinary Task B input", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
+    await started;
+
+    const refused = await f.peer.request({ t: "task", op: "hub_review", args: { id: 99999, verdict: "approved", findings: [{ id: "refused-anchor", pass: "bugs", severity: "important", disposition: "fixed", path: "report.md", anchor: f.anchor }] } });
+    expect(refused.ok).toBe(false);
+    rejectDelivery(new Error("synthetic uncertain transport failure"));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    f.owner.deliveryGate = undefined;
+    f.owner.afterDelivery = undefined;
+    const stillHeld = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "anchor input stays private after uncertain delivery", kind: "finding" } });
+    expect(stillHeld.ok).toBe(false);
+  } finally { await f.stop(); }
+});
+
+test("an anchored approved hub_review latches its input until a new ordinary delivery", async () => {
+  const f = await fixture();
+  const reviewer = new ReviewOwner("claude");
+  f.daemon.bus.add(reviewer); await reviewer.start();
+  try {
+    f.board.update(f.task, "user", "prepare anchored review", { reviewer: "claude", state: "in_review" });
+    let reviewDelivered!: () => void;
+    const reviewDelivery = new Promise<void>(resolve => { reviewDelivered = resolve; });
+    reviewer.afterDelivery = reviewDelivered;
+    f.daemon.bus.publish(newEnvelope("hub", "Review the report", { to: ["claude"], kind: "review", priority: "important", refs: { task: String(f.task) } }));
+    await reviewDelivery;
+    reviewer.afterDelivery = undefined;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    reviewer.setState("busy");
+
+    const taskB = f.board.propose("user", { title: "ordinary Task B", class: "test", owner: "claude", refs: { paths: ["outside.md"], commit: f.head } });
+    const finding = { id: "latched-anchor", pass: "bugs", severity: "important", disposition: "fixed", path: "report.md", anchor: f.anchor };
+    const approved = await f.conductor.request({ t: "task", op: "hub_review", args: { id: f.task, head: f.head, verdict: "approved", note: "fixed at the reviewed head", findings: [finding] } });
+    expect(approved.ok).toBe(true);
+    expect(f.board.get(f.task)!.state).toBe("approved");
+
+    const held = await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "must stay local to the review turn", kind: "finding" } });
+    expect(held.ok).toBe(false);
+
+    let ordinaryDelivered!: () => void;
+    const ordinaryDelivery = new Promise<void>(resolve => { ordinaryDelivered = resolve; });
+    reviewer.setState("idle"); // finish the review turn before the next ordinary input
+    reviewer.afterDelivery = ordinaryDelivered;
+    f.daemon.bus.publish(newEnvelope("user", "ordinary Task B input", { to: ["claude"], priority: "important", refs: { task: String(taskB.id) } }));
+    await ordinaryDelivery;
+    reviewer.afterDelivery = undefined;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const allowed = await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary Task B note", kind: "finding" } });
+    expect(allowed.ok).toBe(true);
   } finally { await f.stop(); }
 });

@@ -13473,17 +13473,15 @@ var init_local_worker = __esm(() => {
       const requestedPolicy = this.opts.turnPolicy?.(envs);
       const policy = envs.some((env) => env.private) ? { ...requestedPolicy, pii: true } : requestedPolicy;
       const remoteTurn = envs.some(remoteEnvelope);
-      const reviewTurn = envs.some(isReviewObserverExcluded);
-      const sensitiveTurn = remoteTurn || reviewTurn;
+      const reviewScope = { excluded: envs.some(isReviewObserverExcluded) };
       const preserveHistory = !policy?.pii && !remoteTurn;
-      const retainHistory = preserveHistory && !reviewTurn;
       const labelTurn = this.beginRouteTurn(turn, !!policy?.pii || envs.some((env) => env.private), policy?.task);
       let completed = false;
       const reply = { inReplyTo: replyParent(envs), to: replyAudience(envs), ...policy?.pii ? { to: [USER], private: true, priority: "important", ...policy.task ? { refs: { task: policy.task } } : {} } : {} };
-      this.run(envs, turn, msgs, progress, policy, reply).then((answer) => {
+      this.run(envs, turn, msgs, progress, policy, reply, reviewScope).then((answer) => {
         if (turn !== this.turn)
           return;
-        if (retainHistory)
+        if (preserveHistory && !reviewScope.excluded)
           this.commit(msgs);
         if (answer)
           this.onMessage?.(answer, reply);
@@ -13494,10 +13492,10 @@ var init_local_worker = __esm(() => {
         if (turn !== this.turn)
           return;
         if (e instanceof ApprovalWaitStop) {
-          const message = remoteTurn ? "remote turn failed" : reviewTurn ? "review turn failed" : e.message;
+          const message = remoteTurn ? "remote turn failed" : reviewScope.excluded ? "review turn failed" : e.message;
           this.completeMissingToolResults(msgs, "not run: turn ended after unanswered approvals");
           msgs.push({ role: "assistant", content: message });
-          if (retainHistory)
+          if (preserveHistory && !reviewScope.excluded)
             this.commit(msgs);
           this.onMessage?.(message, reply);
           if (deliveryId && this.activeDeliveryId === deliveryId)
@@ -13506,10 +13504,10 @@ var init_local_worker = __esm(() => {
         }
         if (this.budgetStopReason && !(e instanceof ExecutionBudgetStop))
           e = new ExecutionBudgetStop(this.budgetStopReason);
-        const message = remoteTurn ? "remote turn failed" : reviewTurn ? "review turn failed" : e.message;
+        const message = remoteTurn ? "remote turn failed" : reviewScope.excluded ? "review turn failed" : e.message;
         this.opts.log?.(`[${this.id}] turn failed: ${message}`);
         if (e instanceof ExecutionBudgetStop) {
-          this.reportBudgetStop(e, msgs, progress, reply, !retainHistory, deliveryId, remoteTurn, reviewTurn);
+          this.reportBudgetStop(e, msgs, progress, reply, !preserveHistory || reviewScope.excluded, deliveryId, remoteTurn, reviewScope.excluded);
           return;
         }
         if (!progress.sideEffects) {
@@ -13519,9 +13517,9 @@ var init_local_worker = __esm(() => {
             this.onFailed?.(envs);
           return;
         }
-        const note = sensitiveTurn ? message : `(turn failed after ${progress.sideEffects} tool call(s) with side effects: ${message.slice(0, 200)}. The work may be partial; check before repeating it.) ${progress.last}`.trim();
+        const note = remoteTurn || reviewScope.excluded ? message : `(turn failed after ${progress.sideEffects} tool call(s) with side effects: ${message.slice(0, 200)}. The work may be partial; check before repeating it.) ${progress.last}`.trim();
         msgs.push({ role: "assistant", content: note });
-        if (retainHistory)
+        if (preserveHistory && !reviewScope.excluded)
           this.commit(msgs);
         this.onMessage?.(note, reply);
         if (deliveryId && this.activeDeliveryId === deliveryId)
@@ -13549,13 +13547,11 @@ var init_local_worker = __esm(() => {
       this.abort?.abort();
       super.onWatchdog();
     }
-    async run(envs, turn, msgs, progress, policy, reply) {
+    async run(envs, turn, msgs, progress, policy, reply, reviewScope) {
       const { maxSteps = 30 } = this.opts;
       const turnSignal = this.abort.signal;
       const remoteTurn = envs.some(remoteEnvelope);
       const capture = policy?.pii || remoteTurn ? undefined : this.opts.capture;
-      const reviewTurn = envs.some(isReviewObserverExcluded);
-      const turnCapture = reviewTurn ? undefined : capture;
       if (policy?.pii && !await this.opts.omni.onCampus()) {
         return "Refused: this is a PII task and the only reachable gateway is off campus (Cloudflare Access). Connect the VPN and assign it again.";
       }
@@ -13578,10 +13574,12 @@ var init_local_worker = __esm(() => {
             return "";
           if (concluded === undefined)
             continue;
-          if (usedTools)
-            turnCapture?.summarize(concluded);
+          if (usedTools && !reviewScope.excluded)
+            capture?.summarize(concluded);
           return concluded;
         }
+        if (res.message.tool_calls.some((call) => call.function.name.replace(/^mcp__[^ ]+__/, "") === "hub_review" && reviewCaptureExcluded(call.function.name, call.function.arguments)))
+          reviewScope.excluded = true;
         const results = [];
         try {
           for (const call of res.message.tool_calls) {
@@ -13610,18 +13608,18 @@ var init_local_worker = __esm(() => {
               this.abort?.abort();
               throw new ApprovalWaitStop(this.approvalStopReason);
             }
-            if (!remoteTurn && !reviewTurn && name !== "hub_set_title" && name !== "hub_ask" && !reviewCaptureExcluded(name, call.function.arguments))
+            if (!remoteTurn && !reviewScope.excluded && name !== "hub_set_title" && name !== "hub_ask" && !reviewCaptureExcluded(name, call.function.arguments))
               this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
-            if (name !== "hub_send" && name !== "doc_read" && name !== "web_fetch" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name))
-              turnCapture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
+            if (!reviewScope.excluded && name !== "hub_send" && name !== "doc_read" && name !== "web_fetch" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name))
+              capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
           }
         } finally {
           if (results.length)
             this.routes.observeResults(res.routeDecision, res.message, results);
         }
       }
-      if (usedTools)
-        turnCapture?.summarize(progress.last);
+      if (usedTools && !reviewScope.excluded)
+        capture?.summarize(progress.last);
       this.opts.onLimit?.("steps");
       return `(stopped after ${maxSteps} steps) ${progress.last}`.trim();
     }

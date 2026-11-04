@@ -1127,21 +1127,21 @@ export class Board {
     return savedOwner.count > 0;
   }
   /**
-   * Durable observer exclusion for sent person comments and anchored findings in the peer's current open review scope.
-   * ponytail: scope is conservative until task close; upgrade to a persisted review-package epoch for precise closure. Scans cap at 500
+   * Durable task-scoped exclusion for sent person comments and anchored findings; resolved/dismissed comments no longer hold memory.
+   * ponytail: anchored-finding scope is conservative until task close; upgrade to a persisted review-package epoch for precise closure. Scans cap at 500
    * tasks and 16 MiB aggregate history; corrupt or over-limit state fails closed. A stamp over local total_changes and cross-connection
    * data_version makes repeated progress reads O(1) until the board changes.
    */
-  hasReviewObserverScope(peer: string, taskId?: number): boolean {
+  hasReviewObserverScope(peer: string, taskId: number): boolean {
     try {
       const dataVersion = this.db.query("PRAGMA data_version").get() as { data_version: number };
       const totalChanges = this.db.query("SELECT total_changes() AS changes").get() as { changes: number };
       const stamp = `${dataVersion.data_version}:${totalChanges.changes}`;
       if (stamp !== this.reviewObserverCacheStamp) { this.reviewObserverScopeCache.clear(); this.reviewObserverCacheStamp = stamp; }
-      const cacheKey = JSON.stringify([peer, taskId ?? null]), cached = this.reviewObserverScopeCache.get(cacheKey);
+      const cacheKey = JSON.stringify([peer, taskId]), cached = this.reviewObserverScopeCache.get(cacheKey);
       if (cached !== undefined) return cached;
-      const scope = taskId === undefined ? "" : " AND id=?";
-      const params = taskId === undefined ? [peer, peer] : [peer, peer, taskId];
+      const scope = " AND id=?";
+      const params = [peer, peer, taskId];
       const counts = this.db.query(`WITH candidate AS (
           SELECT history FROM tasks WHERE state NOT IN ('approved','cancelled') AND (owner=? OR reviewer=?)${scope} LIMIT 501
         )
@@ -1153,7 +1153,7 @@ export class Board {
         const reviewerCommentScope = this.db.query(`WITH candidate AS (
             SELECT id,created FROM tasks WHERE state='in_review' AND reviewer=?${scope} LIMIT 501
           ) SELECT EXISTS(SELECT 1 FROM candidate JOIN review_comments AS comment ON comment.task_id=candidate.id AND comment.task_created=candidate.created
-            WHERE comment.lifecycle IN ('sent','resolved','dismissed')) AS present`).get(...(taskId === undefined ? [peer] : [peer, taskId])) as { present: number };
+            WHERE comment.lifecycle='sent') AS present`).get(peer, taskId) as { present: number };
         const findings = this.db.query(`WITH candidate AS (
             SELECT id,history FROM tasks WHERE state NOT IN ('approved','cancelled') AND (owner=? OR reviewer=?)${scope} LIMIT 501
           )

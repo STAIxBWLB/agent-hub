@@ -230,6 +230,10 @@ export class Bus {
 
   /** Actual transport admission, using originals even when a digest was condensed. Never an enqueue metric. */
   onDelivered?: (peer: PeerId, originals: Envelope[], deliveryId?: string) => void;
+  /** Metadata-only current-input observation after a successful inbox handout; never a transport ACK. */
+  onPulled?: (peer: PeerId, originals: Envelope[]) => void;
+  /** Metadata-only observation when an important message actually begins a steer; never a transport ACK. */
+  onSteering?: (peer: PeerId, originals: Envelope[]) => void;
   /** Before deliver's synchronous busy transition, with originals rather than a condensed digest. */
   onDeliver?: (peer: PeerId, originals: Envelope[]) => void;
   /** Final rendered journal payload, and its first positive acknowledgement. Observation cannot alter settlement. */
@@ -1239,6 +1243,7 @@ export class Bus {
           const deliveryId = crypto.randomUUID();
           this.activeDeliveries.set(deliveryId, id);
           if (this.journal) this.durableHandoff(id, deliveryId, [env], [env]);
+          this.noteSteering(id, [env]);
           const steerResult = this.journal ? peer.steer([env], deliveryId) : peer.steer([env]);
           steerResult.then(() => { this.delivered(id, [env]); }).catch(() => {
             this.deliveryFailed(id);
@@ -1297,9 +1302,13 @@ export class Bus {
     return this.seen.get(id) ?? this.deferredHub.get(id);
   }
   /** Only newly saved versioned review packages may interpret absent as permission for explicit publication. */
-  reviewEnvelopeStatus(id: string): "published" | "absent" | "unknown" {
+  reviewEnvelopeStatus(id: string): "published" | "absent" | "unknown" | "failed" | "discarded" {
     if (this.closed || this.storageError || !this.journal) return "unknown";
-    try { return this.journal.reviewEnvelopePublished(id) ? "published" : "absent"; }
+    try {
+      const state = this.journal.reviewEnvelopeState(id);
+      if (state === "failed" || state === "discarded") return state;
+      return state ? "published" : "absent";
+    }
     catch { return "unknown"; }
   }
   hasUnsettledReviewScope(peer: PeerId, task?: number): boolean {
@@ -1324,6 +1333,8 @@ export class Bus {
       this.journal!.reviewEnvelopePublished(env.id, env);
       return [...env.to];
     }
+    if (status === "failed" || status === "discarded")
+      throw new Error(`saved review package delivery is ${status}; inspect ahub queue list --peer ${env.to[0]} and ahub queue show <delivery-id> before retrying`);
     if (status !== "absent") throw new Error("review package publication evidence is unavailable; inspect ahub queue list before retrying");
     // A pre-checkpoint observer may have thrown after remembering the id but before any durable enqueue or native effect.
     this.seen.delete(env.id);
@@ -1408,18 +1419,26 @@ export class Bus {
     try { this.onMemoryDelivery?.(peer, id, out, field); } catch { /* optional telemetry never alters delivery */ }
   }
 
-  private delivered(peer: PeerId, originals: Envelope[], deliveryId?: string): void {
-    for (const env of originals) if (!this.closed && this.peers.has(peer) && this.stateOf(peer) !== "offline" && isReviewObserverExcluded(env)) {
+  private rememberReviewParents(peer: PeerId, originals: Envelope[], requireAttached = true): void {
+    for (const env of originals) if ((!requireAttached || !this.closed && this.peers.has(peer) && this.stateOf(peer) !== "offline") && isReviewObserverExcluded(env)) {
       const parents = this.reviewParents.get(peer) ?? new Map<string, string>();
       parents.set(env.id, (env.refs?.reviewPackage ?? env.refs?.reviewResponse)!);
       if (parents.size > 128) parents.delete(parents.keys().next().value!);
       this.reviewParents.set(peer, parents);
     }
+  }
+
+  private delivered(peer: PeerId, originals: Envelope[], deliveryId?: string): void {
+    this.rememberReviewParents(peer, originals);
     try { this.onDelivered?.(peer, originals, deliveryId); } catch { /* observation must never affect delivery settlement */ }
   }
 
   private deliveryFailed(peer: PeerId): void {
     try { this.onDeliveryFailed?.(peer); } catch { /* observation must never affect delivery settlement */ }
+  }
+
+  private noteSteering(peer: PeerId, originals: Envelope[]): void {
+    try { this.onSteering?.(peer, originals); } catch { /* metadata observation cannot alter the steer attempt */ }
   }
 
   private markWithdrawn(id: string): void {
@@ -1589,6 +1608,7 @@ export class Bus {
       this.durableHandoff(id, deliveryId, [env], out);
       handedOff = true;
       this.activeDeliveries.set(deliveryId, id);
+      this.noteSteering(id, [env]);
       try { await peer.steer(out, deliveryId); }
       catch { this.uncertain(id, deliveryId, "steering outcome is uncertain"); }
     } catch {
@@ -1661,6 +1681,9 @@ export class Bus {
       this.memoryDelivery(id, deliveryId, out, "rendered", batch);
       this.memoryDelivery(id, deliveryId, out, "delivered", batch);
     }
+    this.lastDelivery.set(id, { out, originals: batch });
+    this.rememberReviewParents(id, batch, false);
+    if (batch.length) { try { this.onPulled?.(id, batch); } catch { /* metadata observation cannot change a committed inbox result */ } }
     this.failureStreak.delete(id); this.lastFailure.delete(id); // read, as a completed push receipt clears them
     try { this.onQueues?.(); } catch { /* a committed inbox result must still reach its caller */ }
     return out;

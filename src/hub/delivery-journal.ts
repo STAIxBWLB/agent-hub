@@ -861,11 +861,12 @@ export class DeliveryJournal {
     return row ? parseDelivery(row) : undefined;
   }
   /** Explicit package recovery reads durable publication evidence, not the bounded in-memory reply cache. */
-  reviewEnvelopePublished(id: string, expected?: Envelope): boolean {
+  reviewEnvelopeState(id: string, expected?: Envelope): JournalDeliveryState | undefined {
     this.ensureOpen();
-    const published = this.db.query(`SELECT e.value AS envelope FROM deliveries d, json_each(d.originals) e
+    const published = this.db.query(`SELECT d.state AS state, e.value AS envelope FROM deliveries d, json_each(d.originals) e
       WHERE d.project_id=? AND json_extract(e.value,'$.id')=? AND json_extract(e.value,'$.from')='hub'
-      AND json_extract(e.value,'$.kind')='review' AND json_extract(e.value,'$.refs.reviewPackage') GLOB 'review-*' LIMIT 1`).get(this.projectId, id) as { envelope: string } | null;
+      AND json_extract(e.value,'$.kind')='review' AND json_extract(e.value,'$.refs.reviewPackage') GLOB 'review-*'
+      ORDER BY d.updated_at DESC, d.revision DESC LIMIT 1`).get(this.projectId, id) as { state: JournalDeliveryState; envelope: string } | null;
     // A queued/deferred publication can precede its first physical delivery row.
     const saved = published ?? this.db.query(`SELECT e.value AS envelope FROM delivery_meta m, json_tree(m.bus_snapshot) e
       WHERE m.project_id=? AND e.type='object' AND json_extract(e.value,'$.id')=?
@@ -873,7 +874,10 @@ export class DeliveryJournal {
       AND json_extract(e.value,'$.refs.reviewPackage') GLOB 'review-*' LIMIT 1`).get(this.projectId, id) as { envelope: string } | null;
     if (saved && expected && !isDeepStrictEqual(validateEnvelope(JSON.parse(saved.envelope), "saved review package"), validateEnvelope(expected, "review package")))
       throw new Error("saved review envelope differs from its publication evidence; inspect the package and queue before retrying");
-    return !!saved;
+    return published?.state ?? (saved ? "queued" : undefined);
+  }
+  reviewEnvelopePublished(id: string, expected?: Envelope): boolean {
+    return this.reviewEnvelopeState(id, expected) !== undefined;
   }
   /** Pending review recipients remain quote-bearing even when the task's current roles have moved. */
   hasUnsettledReviewScope(peer: string, task?: number): boolean {
