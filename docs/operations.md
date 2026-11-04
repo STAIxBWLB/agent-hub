@@ -3500,10 +3500,34 @@ version is older than the selected running daemon; it installs nothing.
 | 0.12.20 through 0.25.0 | 16 only | `protocol: 16` |
 | 0.26.0 through 0.30.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
 
-New clients choose the highest common protocol. The runtime supports N-1, so the
-published protocol-16 client and channel plugin remain usable; unrelated feature
+New clients choose the highest common protocol. The protocol window remains 16
+through 17, so the published protocol-16 client and channel plugin remain usable; unrelated feature
 capabilities still require their own labels. A disjoint window refuses with 4426.
 The compatibility-floor `protocol` field remains readable by old clients.
+
+Release N-1 is counted in minor versions, separately from this protocol window
+(#1164, family contract entelecheia/ai-workspace#70). For 0.30.x, N-1 is 0.29.0,
+the latest published patch of 0.29.x. Every patch on 0.30.x keeps that release
+baseline. A change that cannot retain it needs a new minor release.
+
+Before each minor release, query the published versions of `@staix/agent-hub`,
+select the latest stable patch of the preceding minor line, and mechanically
+bump `test/fixtures/release-n-1/package.json` and its own `bun.lock`. Update
+the corresponding release entry in `test/published-protocol-compat.test.ts`
+with the package version, exact amem dependency and protocol read from that
+published package. Generate the lock with the pinned Bun, then commit it. The gate installs it separately
+with `bun install --frozen-lockfile`; the compatibility test uses its unchanged
+published runtime, client and plugin in both directions. Keep the separate
+`test/fixtures/protocol-v16` fixture at 0.25.0 while protocol 16 is promised;
+the previous-minor fixture does not replace protocol-floor coverage.
+
+Each minor release's CHANGELOG entry states the selected N-1 version and the
+compatibility of each surface: wire/protocol, files and format floors, CLI,
+and MCP tools. State any capability or format ceiling explicitly. Patch release
+entries contain no new N-1 statement and inherit their minor line's baseline.
+`release-prepare` moves the Unreleased text mechanically; the release author
+adds this minor-only statement during preparation and checks the fixture bump
+before the release PR. No compatibility statement grants release consent.
 
 Guard-aware runtimes read `hub.db` format metadata before startup effects and
 before writable database opens. A newer incompatible format refuses with

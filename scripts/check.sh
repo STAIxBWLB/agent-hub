@@ -47,8 +47,10 @@ fi
 
 if [ -z "$shard" ] || [ "${shard%%/*}" = "1" ]; then node scripts/check-docs.mjs; fi
 bun install --frozen-lockfile >/dev/null
-# The published N-1 runtime is an isolated, exact-locked test fixture, never a root CLI dependency.
-if [ -f test/fixtures/protocol-v16/package.json ]; then (cd test/fixtures/protocol-v16 && bun install --frozen-lockfile >/dev/null); fi
+# Release N-1 and the older supported protocol floor are separately exact-locked test fixtures, never root CLI dependencies.
+for fixture_dir in test/fixtures/protocol-v16 test/fixtures/release-n-1; do
+  if [ -f "$fixture_dir/package.json" ]; then (cd "$fixture_dir" && bun install --frozen-lockfile >/dev/null); fi
+done
 if [ -z "$shard" ] || [ "${shard%%/*}" = "1" ]; then
   bun x tsc --noEmit
   bun scripts/check-roles.ts
