@@ -6,7 +6,7 @@ import { initialConsoleState, reduceConsole, renderConsoleLines, paint, keyTable
 import { questionRows, startFlow, stepFlow, type QuestionView } from "../src/cli/console-question.ts";
 import { parseAnswerArgs } from "../src/cli/answer-args.ts";
 import { HELP, helpCommands } from "../src/cli/help.ts";
-import { classifyPeerCommand, cliCommandLabel } from "../src/cli/identity.ts";
+import { classifyPeerCommand, cliCommandLabel, liveTestRefusal } from "../src/cli/identity.ts";
 
 // #1053 T4: the question need, `ahub answer`, and the console's decision keys. The daemon-backed legs are in questions-console-daemon.test.ts.
 const now = 1000;
@@ -113,6 +113,9 @@ test("ahub help documents answer, the dispatch table has it, and an agent shell 
   expect(classifyPeerCommand("answer", ["qs-0123456789ab", "db=pg"])).toBe("console");
   expect(classifyPeerCommand("answer", [])).toBe("console");
   expect(cliCommandLabel("answer", ["qs-0123456789ab", "db=SECRET"])).toBe("answer"); // the audit never names a set or an option
+  // a delegated `--live-test` run is promoted to console identity unless refused here: every invocation that answers is refused, a bare listing is not
+  for (const args of [["qs-0123456789ab", "db=pg"], ["qs-0123456789ab", "db=pg", "--other", "text"], ["qs-0123456789ab", "extras=", "--other=text"], ["--other", "x"], ["qs-0123456789ab"], ["--json", "qs-0123456789ab", "db=pg"]]) expect(liveTestRefusal("answer", args), args.join(" ")).toBe(true);
+  for (const args of [[], ["--json"], ["--color=never"], ["--json", "--color=always"]]) expect(liveTestRefusal("answer", args), args.join(" ")).toBe(false);
   expect(keyTable(120).flat().map(span => span.text).join(" ")).toContain("A answer");
 });
 

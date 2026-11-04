@@ -34,7 +34,9 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
     || (command === "specs" && args[0] === "stamp")
     // #1057: removing a worktree and its branch is the person's own act, in their own terminal; no delegation, live-test or otherwise, may confirm a tidy.
     || (command === "worktrees" && args.some(arg => arg === "--confirm" || arg.startsWith("--confirm=")))
-    || (command === "agents" && !args.every(arg => arg === "--json"));
+    || (command === "agents" && !args.every(arg => arg === "--json"))
+    // #1053: an answer is the person's choice, recorded as the person's; an agent that could run it through `--live-test` would answer its own hub_ask as the person. Any operand answers (the set, a pick, --other); a bare listing stays allowed.
+    || (command === "answer" && args.some(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color=")));
 }
 
 export type CliIdentity =

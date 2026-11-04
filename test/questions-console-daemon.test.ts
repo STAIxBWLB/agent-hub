@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { LIVE_TEST_PERSON_REFUSAL } from "../src/cli/identity.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,6 +119,19 @@ test("an agent shell is refused ahub answer before it reaches the hub, and its a
   const audits = readEvents(join(f.stateDir, "events.jsonl")).filter(e => e.type === "agent_cli");
   expect(JSON.stringify(audits)).not.toContain(set);
   expect(JSON.stringify(audits)).not.toContain("db=pg");
+});
+
+test("a delegated --live-test ahub answer from an agent shell is refused as a person-attributed write and answers nothing, and so is every ordinary agent-shell form", async () => {
+  const f = await rig(30_000);
+  void f.ask(TWO);
+  const set = await f.setOf();
+  for (const args of [["--live-test", "answer", set, "db=pg", "extras=a"], ["--live-test", "answer", set, "db=pg", "--other", "x"], ["answer", set, "db=pg", "extras=a"], ["answer", set, "db=pg", "--other=x"]]) {
+    const denied = await f.cli(args, { AGENTHUB_PEER_ID: "codex" });
+    expect(denied.code, args.join(" ")).toBe(1);
+    // the delegated form is refused for being a person-attributed write, not merely for want of an audit outbox
+    if (args[0] === "--live-test") expect(denied.stderr, args.join(" ")).toContain(LIVE_TEST_PERSON_REFUSAL);
+    expect(f.rows()[0]!.state, args.join(" ")).toBe("open");
+  }
 });
 
 test("the dashboard snapshot carries the open question for the person", async () => {
