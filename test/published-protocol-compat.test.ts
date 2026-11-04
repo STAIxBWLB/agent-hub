@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,6 +9,7 @@ import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
 import { packageDigest, preserveRuntimePackage } from "../src/cli/recovery-package.ts";
 import { parseVersion } from "../scripts/lib/release-plan.ts";
+import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 
 // Installed separately by the gate with its own frozen lock. No fixture package is installed or fetched by a test.
 // The bounded preservation helper copies unchanged executable assets and each release's exact amem dependency to unique
@@ -110,7 +111,14 @@ function object(input: unknown): Record<string, unknown> {
   return input as Record<string, unknown>;
 }
 async function plugin(entry: string, f: Awaited<ReturnType<typeof fixture>>) {
-  const child = Bun.spawn([process.execPath, entry], { cwd: f.root, env: f.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  let program = entry;
+  if (entry === join(CURRENT_ROOT, "src/adapters/claude-channel.ts")) {
+    // Current positive source-client leg uses an explicit synthetic native host;
+    // the published self-contained plugins remain completely unchanged.
+    program = join(f.root, "current-channel-parent.ts");
+    writeFileSync(program, `${syntheticClaudeParentEvidenceSetup()} await import(${JSON.stringify(entry)});`);
+  }
+  const child = Bun.spawn([process.execPath, program], { cwd: f.root, env: f.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const replies = new Map<number, (value: Record<string, unknown>) => void>(), notifications: Record<string, unknown>[] = [];
   let sequence = 0, diagnostics = "", outputBytes = 0, failure: unknown;
   const track = (bytes: Uint8Array) => { outputBytes += bytes.length; if (outputBytes > 1024 * 1024) throw new Error("plugin fixture output exceeded1MiB"); };

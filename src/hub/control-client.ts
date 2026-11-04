@@ -58,6 +58,8 @@ export interface Hello {
   peer?: string;
   /** `peer` only: false when the session cannot show channel pushes; its queue then waits for `inbox` (issue #205). */
   channel?: boolean;
+  /** Closed, display-only evidence for Claude's channel attachment decision. */
+  channelEvidence?: "development-channel-launch" | "inherited-marker" | "launch-unverified" | "unknown" | "unreported";
   /** Managed Claude launch identity; absent for plain or pre-daemon sessions. */
   launchId?: string;
   /** Optional canonical native execution cwd; ownership requires independent host proof. */

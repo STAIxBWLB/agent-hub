@@ -33419,6 +33419,56 @@ function buildNativePermissionProbe(request) {
   }
 }
 
+// src/adapters/claude-channel-evidence.ts
+import { spawnSync as spawnSync5 } from "child_process";
+var claudeParentCommandPort = { read: readClaudeParentCommand };
+var TARGETS = new Set(["plugin:agent-hub@agent-hub", "server:agent-hub"]);
+var DISABLING = new Set(["-p", "--print", "--output-format", "--background", "--detach", "--daemon", "daemon", "bg", "bg-spare"]);
+function classifyClaudeParentCommand(command) {
+  if (!command || command.length > 4096 || /[\n\r\0]/.test(command))
+    return "launch-unverified";
+  const argv = command.trim().split(/\s+/);
+  const executable = argv[0]?.split("/").at(-1);
+  if (executable !== "claude" || argv.length < 3 || argv[1] !== "--dangerously-load-development-channels" || !TARGETS.has(argv[2]))
+    return "launch-unverified";
+  if (argv.slice(3).some((arg) => DISABLING.has(arg) || arg.startsWith("--print=") || arg.startsWith("--output-format=") || arg.startsWith("-p") || arg === "--dangerously-load-development-channels" || arg.startsWith("--dangerously-load-development-channels=")))
+    return "launch-unverified";
+  return "development-channel-launch";
+}
+function readClaudeParentCommand(ppid) {
+  try {
+    const result = spawnSync5("/bin/ps", ["-ww", "-p", String(ppid), "-o", "command="], {
+      encoding: "utf8",
+      timeout: 1500,
+      maxBuffer: 4096,
+      env: { PATH: "/usr/bin:/bin", LC_ALL: "C" }
+    });
+    if (result.error || result.status !== 0 || typeof result.stdout !== "string" || !result.stdout.trim() || result.stdout.trim().includes(`
+`))
+      return;
+    return result.stdout.trim();
+  } catch {
+    return;
+  }
+}
+function claudeChannelEvidence(env = process.env, ppid = process.ppid, read = claudeParentCommandPort.read) {
+  if (env.AGENTHUB_CHANNEL !== "1")
+    return "unknown";
+  if (!Number.isSafeInteger(ppid) || ppid <= 1)
+    return "unknown";
+  try {
+    const command = read(ppid);
+    if (!command || process.ppid !== ppid)
+      return "unknown";
+    return classifyClaudeParentCommand(command);
+  } catch {
+    return "unknown";
+  }
+}
+function currentClaudeChannelEvidence() {
+  return claudeChannelEvidence();
+}
+
 // src/adapters/claude-channel.ts
 var own3 = channelProject(process.cwd(), process.env, (root) => {
   const read = (name) => {
@@ -33444,7 +33494,8 @@ var unidentified = toolsMode && !process.env.AGENTHUB_PEER_ID;
 var peerId = process.env.AGENTHUB_PEER_ID ?? (toolsMode ? "" : "claude");
 var UNIDENTIFIED = "agent-hub tools refused: this process was not started by the hub (no AGENTHUB_PEER_ID), so it has no peer identity. Start the agent with ahub jcode (or the hub's own start) to use hub tools.";
 var deliveryOnly = process.env.AGENTHUB_DELIVERY_ONLY === "true";
-var channel = !toolsMode && process.env.AGENTHUB_CHANNEL === "1";
+var channelEvidence = !toolsMode ? currentClaudeChannelEvidence() : "unknown";
+var channel = !toolsMode && channelEvidence === "development-channel-launch";
 function roles2() {
   const read = (name) => {
     try {
@@ -33676,7 +33727,7 @@ async function connectLoop() {
       const client = await ControlClient.connect(stateDir, {
         role: toolsMode || sessionJoin ? "tools" : "peer",
         peer: peerId,
-        ...toolsMode || sessionJoin ? {} : { channel },
+        ...toolsMode || sessionJoin ? {} : { channel, channelEvidence },
         ...sessionJoin ? { session: sessionJoin.label } : {},
         ...process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {},
         ...executionCwd !== undefined ? { cwd: executionCwd } : {},

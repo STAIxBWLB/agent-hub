@@ -2,6 +2,7 @@ import { BasePeer, type PeerAdapter } from "../hub/peers.ts";
 import type { Envelope } from "../hub/envelope.ts";
 import { definitionOf } from "./registry.ts";
 import type { StartForm } from "./registry-types.ts";
+import type { ClaudeChannelEvidence } from "./claude-channel-evidence.ts";
 
 /** Only the control socket operations the peer owns; authentication remains in the daemon. */
 export interface ChannelSocket {
@@ -29,9 +30,12 @@ export class WsPeer extends BasePeer {
   private nativeActive = false;
   /** The attached session said it cannot show channel pushes (issue #205): the bus keeps its queue for `inbox`. */
   pullOnly = false;
+  attachMode: "channel" | "tools-only" = "tools-only";
+  attachEvidence: ClaudeChannelEvidence = "unknown";
   steer: PeerAdapter["steer"] = undefined;
   lastInboxAt: number | undefined;
   private claimedPullOnly = false;
+  private claimedEvidence: ClaudeChannelEvidence = "unknown";
   private readonly attachmentWaiters: { generation: string; resolve: (attached: boolean) => void }[] = [];
   private settleAttachmentWaiters(attached: boolean): void {
     for (const waiter of this.attachmentWaiters.splice(0)) waiter.resolve(attached && waiter.generation === this.claimGeneration);
@@ -42,11 +46,12 @@ export class WsPeer extends BasePeer {
     return new Promise(resolve => { this.attachmentWaiters.push({ generation, resolve }); });
   }
   /** Called at hello, before the async preface: the newest hello wins even if an older one's recall finishes last. */
-  claim(sock: ChannelSocket, pullOnly = false): void {
+  claim(sock: ChannelSocket, pullOnly = false, evidence: ClaudeChannelEvidence = "unknown"): void {
     this.settleAttachmentWaiters(false);
     this.claimGeneration = crypto.randomUUID();
     this.claimed = sock;
     this.claimedPullOnly = pullOnly;
+    this.claimedEvidence = evidence;
   }
   /** Host transport observation, distinct from the peer's activity state. */
   get attached(): boolean { return !!this.sock && this.sock.readyState === WebSocket.OPEN && !this.claiming; }
@@ -75,6 +80,8 @@ export class WsPeer extends BasePeer {
     this.nativeTurnSession = undefined;
     this.nativeActive = false;
     this.pullOnly = this.claimedPullOnly; // before idle: the idle transition drains
+    this.attachMode = this.pullOnly ? "tools-only" : "channel";
+    this.attachEvidence = this.claimedEvidence;
     // Native TUI readback in #493 proves important channel input can be consumed before the turn ends.
     // Pull-only transports expose no steer capability; the bus keeps their important work queued.
     this.steer = this.pullOnly ? undefined : async (envs, deliveryId) => {

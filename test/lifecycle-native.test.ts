@@ -12,6 +12,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
 import { startFakeModelServer } from "./fakes/model-server.ts";
+import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 const cleanup: (() => unknown)[] = []; afterEach(async () => { for (const f of cleanup.splice(0).reverse()) await f(); });
 const ids = ["question", "draft", "approve", "publish"];
 function root() {
@@ -40,9 +41,18 @@ test("every managed MCP surface advertises the project lifecycle ids in its real
     Object.assign(env, { AGENTHUB_PROJECT_DIR: dir, AGENTHUB_STATE_DIR: join(dir, "state"), AGENTHUB_PEER_ID: peer });
     if (mode === "channel") env.AGENTHUB_CHANNEL = "1"; if (mode === "tools") env.AGENTHUB_MODE = "tools";
     const client = new Client({ name: "lifecycle-schema-fixture", version: "1" });
-    const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, entry)], cwd: dir, env, stderr: "pipe" });
+    let program = join(import.meta.dir, entry);
+    const syntheticChannel = mode === "channel" && entry === "../src/adapters/claude-channel.ts";
+    if (syntheticChannel) {
+      program = join(dir, "lifecycle-channel-parent.ts");
+      writeFileSync(program, `${syntheticClaudeParentEvidenceSetup()} await import(${JSON.stringify(join(import.meta.dir, entry))});`);
+    }
+    // The bundled marker-only leg remains pull-only; only the source host injects native launch evidence.
+    const transport = new StdioClientTransport({ command: process.execPath, args: [program], cwd: dir, env, stderr: "pipe" });
     try {
-      await client.connect(transport); const tools = await client.listTools();
+      await client.connect(transport);
+      expect(!!client.getServerCapabilities()?.experimental?.["claude/channel"]).toBe(syntheticChannel);
+      const tools = await client.listTools();
       const schema = tools.tools.find(t => t.name === "hub_sdlc_record")?.inputSchema.properties?.receipt as { properties: { stage: { enum: string[] } } };
       expect(schema.properties.stage.enum).toEqual(ids);
     } finally { await client.close(); }

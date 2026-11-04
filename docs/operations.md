@@ -5716,6 +5716,8 @@ restoration uses the target-owned snapshot through a tools connection.
 
 An unmanaged reconnect-only Claude channel may reattach itself without a native launch. The source keeps a SHA-256 fingerprint of its observed session identity separate from restoration metadata (the raw unmanaged session id is omitted from the plan) and verifies the exact peer, kind and attachment against the live channel. This exception requires no terminal or restoration arguments, no managed launch proof, and an absent or confirmed-ended launcher; unknown launcher evidence refuses. Other peer identities still compare exactly.
 
+Claude channel push mode also requires the plugin's direct parent process row to begin with the exact `claude --dangerously-load-development-channels <plugin-or-server-target>` argv prefix. The inherited `AGENTHUB_CHANNEL=1` marker alone is insufficient: Claude's `daemon run` and `bg-spare` children inherit it but do not load the development channel, and print forms ignore it. The bounded `ps -ww` read is display/attachment evidence, not authentication; unreadable, truncated, changed-parent or unrecognized rows attach tools-only and keep messages for `hub_inbox`. `ahub status` shows the attach mode and the closed evidence label.
+
 
 Only the conductor that created the restart or authorized upgrade may run
 `recovery resume|abort` for that operation. A different conductor cannot take

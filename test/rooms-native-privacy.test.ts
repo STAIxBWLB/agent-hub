@@ -10,6 +10,7 @@ import { realPath } from "../src/hub/project.ts";
 import type { Capture } from "../src/memory/capture.ts";
 import type { ChatMessage, ChatResult, OmniRoute } from "../src/omniroute/client.ts";
 import { toolCall } from "./fakes/model-server.ts";
+import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -36,7 +37,9 @@ async function channel() {
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, AGENTHUB_HOME: join(root, "hub-home"), AMEM_HOME: join(root, "memory-home"), CLAUDE_CONFIG_DIR: join(root, "claude-home") };
   for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
   Object.assign(env, { AGENTHUB_HOME: join(root, "hub-home"), AGENTHUB_STATE_DIR: root, AGENTHUB_PROJECT_DIR: root, AGENTHUB_PEER_ID: "claude", AGENTHUB_CHANNEL: "1" });
-  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/adapters/claude-channel.ts")], { cwd: root, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const entry = join(import.meta.dir, "../src/adapters/claude-channel.ts"), wrapper = join(root, "channel-fixture.ts");
+  writeFileSync(wrapper, `${syntheticClaudeParentEvidenceSetup()} await import(${JSON.stringify(entry)});`);
+  const child = Bun.spawn([process.execPath, wrapper], { cwd: root, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const stderr = (async () => { for await (const bytes of child.stderr) diagnostics = (diagnostics + Buffer.from(bytes).toString()).slice(-8192); })();
   const stdout = (async () => {
     let pending = "";

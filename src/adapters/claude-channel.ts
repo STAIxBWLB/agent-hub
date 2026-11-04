@@ -20,6 +20,7 @@ import { IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MES
 import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
 import { renderHeldHint } from "../hub/delivery-hints.ts";
 import { acceptsNativePermissionRequest, buildNativePermissionProbe, NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH } from "../hub/native-permission-request.ts";
+import { currentClaudeChannelEvidence } from "./claude-channel-evidence.ts";
 
 // A native session is pinned at launch. Unlike a new CLI invocation after `cd`,
 // its MCP server must not silently move to another hub (including while offline).
@@ -56,12 +57,14 @@ const UNIDENTIFIED = "agent-hub tools refused: this process was not started by t
 // Exposure hint only; the daemon verifies the actual adapter before any retry mutation.
 const deliveryOnly = process.env.AGENTHUB_DELIVERY_ONLY === "true";
 /**
- * Channel evidence (issue #205): `ahub claude` sets AGENTHUB_CHANNEL=1 beside the development-channel flag. Without the
- * flag Claude Code drops channel notifications without an error, so a Claude session without the marker attaches
+ * Channel evidence (issue #1171): the marker alone is inherited by background and nested Claude processes. The direct
+ * parent argv must also prove the native development-channel launch. Without that proof Claude may drop notifications,
+ * so the session attaches
  * "tools-only" (as status calls it; unrelated to toolsMode): no channel capability, its messages wait at the hub for
  * hub_inbox, and it never reports a delivery `accepted`.
  */
-const channel = !toolsMode && process.env.AGENTHUB_CHANNEL === "1";
+const channelEvidence = !toolsMode ? currentClaudeChannelEvidence() : "unknown";
+const channel = !toolsMode && channelEvidence === "development-channel-launch";
 
 function roles(): Record<string, string[]> {
   // The machine's own file overrides the shared one, as in loadConfig (issue #17).
@@ -287,7 +290,7 @@ async function connectLoop(): Promise<void> {
         try { executionCwd = realPath(process.cwd()); }
         catch { /* A removed native cwd revokes root evidence, never the messaging connection. */ }
       }
-      const client = await ControlClient.connect(stateDir, { role: toolsMode || sessionJoin ? "tools" : "peer", peer: peerId, ...(toolsMode || sessionJoin ? {} : { channel }),
+      const client = await ControlClient.connect(stateDir, { role: toolsMode || sessionJoin ? "tools" : "peer", peer: peerId, ...(toolsMode || sessionJoin ? {} : { channel, channelEvidence }),
         ...(sessionJoin ? { session: sessionJoin.label } : {}),
         ...(process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {}),
         ...(executionCwd !== undefined ? { cwd: executionCwd } : {}),
