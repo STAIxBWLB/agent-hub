@@ -5165,6 +5165,7 @@ export async function startDaemon(opts: DaemonOptions) {
     isolatedChecks: { pending: checkPending.size, orphans: orphanChecks, unknownReceipts: checkRunner.unknownReceipts ?? [], maintenanceUnavailable: checkRunner.maintenanceUnavailable === true },
     taskCapabilities: peerCapabilities(),
     tasks: board.counts(),
+    ...(board.personRunIds().length ? { personRun: board.personRunIds() } : {}), // #1176: cards waiting on the person (ids only)
     ...(includeAttentionItems && controlWriteTelemetry ? { controlWriteTiming: controlWriteTelemetry.status() } : {}),
     taskStalls, pendingTaskOffers,
     ...(bus.storageError ? { deliveryError: bus.storageError } : {}),

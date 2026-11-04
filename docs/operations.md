@@ -5626,6 +5626,21 @@ Native launcher connections retry transport timeouts/unclean closes with bounded
 
 The hub exact-pins @staix/agent-mem 0.20.1 for recall, curated evidence and local deterministic capture. No runtime call reaches a claude-mem worker; `memory.worker_url` is ignored. The person's `ahub memory import claude-mem` remains explicit and off by default. Existing profile, alias, PII and private-turn fences still apply. `ask --remember` and context checkpoints propose machine-local candidates, never automatic curated evidence. See [memory integration](memory.md#in-process-recall-and-capture-agent-mem13-p4) for changed behavior and bounded-view ceilings.
 
+## Person-run backlog legs (#1176)
+
+A leg only the person can run (live receipts, their accounts, machines or approvals) is marked with `ahub backlog person <id> <revision> true <reason...>` (`false` clears it; `ahub backlog plan <id> <revision> '{"needsPerson":true}' <reason...>` is the same write). The mark is the person's alone: a planner or any agent that sends `fields.needsPerson`, or plans a marked card, is refused with the reason. A marked card keeps its `reserved` peer as the "who will run it" hint, and:
+
+- `tasks.auto_pull` and a planner's `hub_backlog_pull` never pull it (the pull refuses with "person-run leg"), and the planner notice never names it as ready;
+- `assign()` gives it no owner and no reviewer, whatever its reservation says, and `ahub route explain` prints the same `person-run` line (it is the same function);
+- the idle sweep never escalates it, and a marked card in To Do is not reported as stalled for lacking an owner;
+- it counts toward no planner's WIP;
+- a planner's `hub_backlog_split` of a marked card is refused (its children would be unmarked cards an agent could take); the person's own split marks every child person-run, so person-only work stays person-only until the person clears each mark;
+- an agent's `accept` and `acceptReviewed` of a marked card are refused, a queued offer for a card marked since is dropped at delivery, and `hub_task_assign` names no agent owner of a marked card (the conductor, a planner and the person alike: clear the mark first);
+- marking a card an agent already owns (an offer in its queue, or accepted work) is refused with the way out (the owner declines, or `ahub task cancel`), so a mark never leaves an agent on the card;
+- `ahub backlog list` shows it as `<peer> (person)` and ends with `waiting on you: #N...`, and `ahub status` carries a `WAITING ON YOU  #N` line (ids only).
+
+An unmarked reserved card behaves exactly as before. The column is additive (`needs_person`, default 0): an older hub ignores it, and a card marked by this hub is then offered by the older one as an ordinary reserved card.
+
 ## Backlog issue identity and notes
 
 The card's effective planner or the person can relink an unstarted backlog card through `hub_backlog_plan`, using `fields: {sdlc: {repo: "owner/repo", issue: 525}}`. The change is one planning revision and clears the old spec acceptance. Stage, reviewed heads, checklists and other lifecycle evidence cannot be supplied through this path; `hub_sdlc_record` still refuses backlog work.

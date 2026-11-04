@@ -34,7 +34,7 @@ export interface StatusOutput {
   taskWip?: Record<string, { wip: number; wipLimit: number; active?: number; reviewWait?: number; reserved?: number }>;
   pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; actionPolicyInfo?: Record<string, { note: string; enforceable: boolean }>; budget?: Record<string, any>; planner?: { peers?: string[]; source?: string };
   ownerIsolation?: Record<string, boolean>; ownerIsolationNotes?: Record<string, string>;
-  tasks?: Record<string, number>; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; crash?: string[];
+  tasks?: Record<string, number>; personRun?: number[]; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; crash?: string[];
 }
 /** `peers`: one note per peer that shows no number, and why (no quota, nothing read yet); absent from an older hub. */
 export interface BudgetOutput { budget: Record<string, any>; gate?: number; peers?: { peer: string; kind?: string; note: string }[] }
@@ -323,6 +323,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   }
   const counts = Object.entries(data.tasks ?? {}).map(([state, count]) => `${count} ${state}`).join(", ");
   if (counts) out.push([], ...lines(`TASKS  ${counts} (ahub board)`, columns));
+  if (data.personRun?.length) out.push(...lines(`WAITING ON YOU  ${data.personRun.map(id => `#${id}`).join(", ")} (person-run: no agent is offered it; ahub backlog list)`, columns, "attention"));
   return out;
 }
 // #724: short next-step codes for the compact board, keyed on the blocker texts of src/hub/sdlc.ts; the full advice stays in --full and ahub task show.
@@ -346,7 +347,7 @@ export function renderBacklog(cards: any[], columns?: number, now = Date.now(), 
   let table: OutputCell[][] = sorted.map(card => {
     const deps: number[] = Array.isArray(card.deps) ? card.deps : [];
     return [span(typeof card.rank === "number" ? card.rank : "-", "muted", true), span(`#${card.id}`, "info", true), span(typeof card.priority === "number" ? `P${card.priority}` : "-", undefined, true),
-      span(card.reserved ?? "-", peerTone(card.reserved ?? ""), true), span(deps.length ? (full || columns === undefined ? deps.map(id => `#${id}`).join(",") : `#${deps[0]}${deps.length > 1 ? `,+${deps.length - 1}` : ""}`) : "-", undefined, true), span(card.class ?? "-", undefined, true),
+      span(card.needsPerson === true ? `${card.reserved ?? ""}${card.reserved ? " " : ""}(person)` : card.reserved ?? "-", card.needsPerson === true ? "attention" : peerTone(card.reserved ?? ""), true), span(deps.length ? (full || columns === undefined ? deps.map(id => `#${id}`).join(",") : `#${deps[0]}${deps.length > 1 ? `,+${deps.length - 1}` : ""}`) : "-", undefined, true), span(card.class ?? "-", undefined, true),
       span(typeof card.created === "number" ? duration(now - card.created) : "-", "muted", true), span(flat(card.title))];
   });
   if (!full && columns !== undefined) {
@@ -358,8 +359,10 @@ export function renderBacklog(cards: any[], columns?: number, now = Date.now(), 
     table = table.map(row => [...row.slice(0, -1), { ...row[row.length - 1]!, text: ellipsis(row[row.length - 1]!.text, titleRoom) }]);
   }
   const owners = new Map<string, number>();
-  for (const card of sorted) owners.set(card.reserved ?? "unreserved", (owners.get(card.reserved ?? "unreserved") ?? 0) + 1);
-  const summary = `${plural(sorted.length, "backlog card")}; reserved: ${[...owners].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([owner, n]) => `${owner} ${n}`).join(", ")}`;
+  const person = sorted.filter(card => card.needsPerson === true);
+  for (const card of sorted.filter(card => card.needsPerson !== true)) owners.set(card.reserved ?? "unreserved", (owners.get(card.reserved ?? "unreserved") ?? 0) + 1);
+  const summary = `${plural(sorted.length, "backlog card")}; reserved: ${[...owners].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([owner, n]) => `${owner} ${n}`).join(", ") || "none"}`
+    + (person.length ? `; waiting on you: ${person.map(card => `#${card.id}`).join(", ")} (a person-run leg; no agent is offered it)` : "");
   return [...rows(names, table, columns), [], ...lines(summary, columns)];
 }
 /** #724: one line per task. TITLE goes last and is cut to the room left; at a narrow width REVIEWER, CLASS and AGE give way first. */
