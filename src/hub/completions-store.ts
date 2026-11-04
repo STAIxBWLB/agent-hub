@@ -45,8 +45,9 @@ export class CompletionStore {
       outcome TEXT NOT NULL CHECK (outcome IN (${OUTCOMES.map(outcome => `'${outcome}'`).join(",")})),
       settled_at INTEGER NOT NULL, started_at INTEGER NOT NULL, prompt_envelope TEXT, reply_envelope TEXT, private INTEGER NOT NULL DEFAULT 0)`);
     this.db.run("CREATE INDEX IF NOT EXISTS completions_by_peer ON completions(peer, settled_at)");
-    // Created for the receipts task, so one feature label covers all three; nothing writes it here.
+    // Unread means no receipt. One receipt per completion at most (UNIQUE), so a double mark is one write and a mark-unread has exactly one row to delete.
     this.db.run("CREATE TABLE IF NOT EXISTS completion_receipts (completion_id TEXT NOT NULL, seen_at INTEGER NOT NULL, surface TEXT NOT NULL)");
+    this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS completion_receipts_by_completion ON completion_receipts(completion_id)");
   }
   close(): void { try { this.db.close(); } catch { /* already closed */ } }
 
@@ -96,6 +97,41 @@ export class CompletionStore {
   unread(): Completion[] {
     return (this.db.query("SELECT c.* FROM completions c WHERE NOT EXISTS (SELECT 1 FROM completion_receipts r WHERE r.completion_id = c.id) ORDER BY c.settled_at DESC, c.id").all() as RawCompletion[]).map(completionOf);
   }
+  /** One completion as the reads show it: the record and whether a receipt exists. Newest first. */
+  listWithState(limit = 100): (Completion & { seenAt?: number; surface?: string })[] {
+    return (this.db.query("SELECT c.*, r.seen_at AS seen_at, r.surface AS surface FROM completions c LEFT JOIN completion_receipts r ON r.completion_id = c.id ORDER BY c.settled_at DESC, c.id LIMIT ?").all(limit) as (RawCompletion & { seen_at: number | null; surface: string | null })[])
+      .map(raw => ({ ...completionOf(raw), ...(raw.seen_at !== null ? { seenAt: raw.seen_at } : {}), ...(raw.surface ? { surface: raw.surface } : {}) }));
+  }
+
+  /**
+   * Mark exactly one completion read. A compare-and-set on "no receipt yet": a completion that does not exist, or is already read, is refused with the reason, and of two callers
+   * racing on one completion exactly one writes. Never infers "seen" from anything but this call.
+   */
+  markSeen(id: string, now: number, surface: string): { ok: true } | { ok: false; error: string } {
+    if (!this.get(id)) return { ok: false, error: "no such result" };
+    const made = this.db.query("INSERT OR IGNORE INTO completion_receipts(completion_id, seen_at, surface) VALUES(?, ?, ?)").run(id, now, surface);
+    return made.changes === 1 ? { ok: true } : { ok: false, error: "that result is already read" };
+  }
+  /** Mark every unread completion of the project read, in one transaction. Returns the ids it marked. */
+  markAllSeen(now: number, surface: string): string[] {
+    const write = this.db.transaction(() => {
+      const ids = (this.db.query("SELECT c.id FROM completions c WHERE NOT EXISTS (SELECT 1 FROM completion_receipts r WHERE r.completion_id = c.id) ORDER BY c.settled_at, c.id").all() as { id: string }[]).map(row => row.id);
+      for (const id of ids) this.db.query("INSERT OR IGNORE INTO completion_receipts(completion_id, seen_at, surface) VALUES(?, ?, ?)").run(id, now, surface);
+      return ids;
+    });
+    return write();
+  }
+  /** Relight the most recently settled READ completion (the one the person read last): its receipt is deleted. Undefined when nothing is read. */
+  unmarkLast(): string | undefined {
+    const write = this.db.transaction(() => {
+      const row = this.db.query("SELECT r.completion_id AS id FROM completion_receipts r JOIN completions c ON c.id = r.completion_id ORDER BY c.settled_at DESC, c.id DESC LIMIT 1").get() as { id: string } | null;
+      if (!row) return undefined;
+      this.db.query("DELETE FROM completion_receipts WHERE completion_id = ?").run(row.id);
+      return row.id;
+    });
+    return write();
+  }
+
   /** What an older daemon would silently orphan: an open run, or a completion nobody has seen. */
   hasPending(): boolean {
     return (this.db.query(`SELECT (EXISTS(SELECT 1 FROM completion_runs)

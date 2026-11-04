@@ -31,6 +31,7 @@ import { renderIntake, renderIntakeChange } from "./intake-output.ts";
 import { renderLearnChange, renderLearnList } from "./learn-output.ts";
 import { renderCapabilities } from "./capabilities-output.ts";
 import { parseStudyArgs } from "./study.ts";
+import { parseResultsArgs } from "./results-args.ts";
 import { renderExperiments, renderStudyList, renderStudyReceipt, renderStudyShow } from "./study-output.ts";
 import { renderHandoffReceipt, renderHandoffs } from "./handoff-output.ts";
 import { parseHandoffArgs } from "./handoff-args.ts";
@@ -2302,6 +2303,34 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (reply.ok === false) return fail(String(reply.error ?? "the answer was refused"));
       if (options.json) return console.log(JSON.stringify({ ok: true, questionSet: reply.questionSet, state: reply.state }));
       console.log(`answered ${reply.questionSet ?? parsed.value.set}`);
+    } finally { hub.close(); }
+  },
+
+  // #1054 T4: the results a run a person started left behind. A person's command (an agent shell is refused before the hub); reads change nothing, and only an explicit flag writes a receipt.
+  results: async () => {
+    const options = outputOptions();
+    const parsed = parseResultsArgs(args.filter(arg => arg !== "--json" && !arg.startsWith("--color=") && arg !== "--full"));
+    if (!parsed.ok) return fail(parsed.error);
+    const request = parsed.value;
+    const hub = await connect();
+    try {
+      if (request.action === "read") {
+        const reply = await hub.request({ t: "result_seen", id: request.id, surface: "terminal" });
+        if (reply.ok === false) return fail(String(reply.error ?? "the result could not be marked read"));
+        return options.json ? console.log(JSON.stringify({ ok: true, id: request.id, read: true })) : console.log(`marked ${request.id} read`);
+      }
+      if (request.action === "read-all" || request.action === "unread-last") {
+        const reply = await hub.request({ t: "results", action: request.action, surface: "terminal" });
+        if (reply.ok === false) return fail(String(reply.error ?? "the receipt could not be written"));
+        if (options.json) return console.log(JSON.stringify(request.action === "read-all" ? { ok: true, marked: reply.marked } : { ok: true, unread: reply.unread }));
+        return console.log(request.action === "read-all" ? `marked ${reply.marked} ${reply.marked === 1 ? "result" : "results"} read` : `marked ${reply.unread} unread again`);
+      }
+      const reply = await hub.request({ t: "results", unread: request.unread });
+      if (reply.ok === false) return fail(String(reply.error ?? "results are unavailable"));
+      const rows = Array.isArray(reply.results) ? reply.results : [];
+      if (options.json) return console.log(JSON.stringify(rows, null, 2));
+      if (!rows.length) return console.log(request.unread ? "no unread results" : "no results");
+      for (const row of rows) console.log(`${row.read ? " " : "*"} ${row.id}  ${terminalText(String(row.title))}  ${new Date(Number(row.settledAt)).toISOString().replace("T", " ").slice(0, 16)}  ${Math.round(Number(row.ms) / 1000)}s${row.read ? "" : `  ahub results --read ${row.id}`}`);
     } finally { hub.close(); }
   },
 

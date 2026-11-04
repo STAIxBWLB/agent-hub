@@ -6103,6 +6103,16 @@ ahub worktrees tidy --confirm <fingerprint>    # the person's own terminal: re-r
 - **The daemon deletes nothing.** The shelf's git port runs only `worktree list --porcelain -z`, `log -1 --format=%ct HEAD` and `rev-parse --absolute-git-dir`, and refuses any other argv before spawning. Removal exists only in the CLI process (`src/cli/worktree-tidy.ts`), which the daemon never imports; `test/worktree-shelf.test.ts` greps the daemon-reachable modules for a removal.
 - **Limits.** At most 256 worktrees are listed and 1024 overrides read; git reads run 4 at a time under a 3 s total budget (5 s per call), asynchronously, so a slow git never holds the daemon. The quiet threshold is the owner's call after a week of use.
 
+## Results: what a run you started left behind (#1054)
+
+A run you started (a message you sent to a peer, from the console, `ahub say` or acon) settles into one **result** when the adapter's own signal says it ended and nothing else is pending: no queued continuation, open permission or question, owned child, running check or held delivery. Peers whose adapter declares no settle signal (Kimi in its own TUI, agy, person-typed Codex turns) leave none. Outcomes are `done`, `failed`, `limit` and `interrupted` (the hub restarted mid-run); an explicit stop by you and a budget pause leave no result. A result is **unread** until you mark it read; nothing a snapshot, `ahub status` or `ahub results` reads ever marks one.
+
+- `ahub results [--unread]` lists them, newest first, unread ones marked `*`: id, `<peer>: <outcome word>` (a private result is `a private result`), when it settled and how long it ran. It prints no prompt and no reply.
+- `ahub results --read <id>` marks one read (it must exist and be unread). `--read-all` marks every unread result of the project. `--unread-last` lights the most recent read one again by deleting its receipt.
+- An unread result is a `result` need at level `watch` in `ahub status` and `ahub console` (ids, the peer and the time only): it never makes the state read as waiting, blocked or review. The console stream tells you once, with no text.
+- `result_seen` and `results` are console-role control messages that always reply; an agent's connection and an agent shell (`ahub results` is the person's command) are refused, and nothing a peer writes counts as a receipt.
+- Recovery: a hub from before this feature ignores the tables, so a target without the `completions` label is refused while a run is open (let it settle) or a result is unread (`ahub results --read-all`, or use a supporting release).
+
 ## Questions for the person: `hub_ask` (#1053)
 
 A peer asks with `hub_ask` (the same tool for Claude, Codex, Kimi, Jcode, Pi and the local worker). The call waits for the person, then answers one of:

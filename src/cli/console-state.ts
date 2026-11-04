@@ -44,6 +44,8 @@ export interface ConsoleState {
   /** Older embedding callers omit choices and retain the original STAI/off toggle. */
   petChoices?: readonly CharacterId[]; petCharacter?: CharacterId; petSize?: PetSize; petGlyphs?: "ascii" | "blocks";
   attentionFacts?: { kind: "review" | "offline" | "stall" | "offer"; id: number; peer?: string }[];
+  /** #1054: unread results from the hub, and the ids the stream has already told the person about. */
+  results?: readonly { id: string; peer?: string; since?: number }[]; resultsSeen?: string[];
   attentionFingerprint?: string;
   petEnabled?: boolean; petBlink?: boolean; attentionMessages?: { id?: string; peer?: string; important: boolean; since?: number }[]; storageBlocked?: boolean; recoveryNeed?: { id?: string; running: boolean; since?: number }; attentionSelection?: number;
   mode: "stream" | "panels"; panel: number; selection: number;

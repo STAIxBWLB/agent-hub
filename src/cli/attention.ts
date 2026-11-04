@@ -12,11 +12,13 @@ export interface AttentionState {
   attentionFacts?: { kind: "review" | "offline" | "stall" | "offer"; id: number; peer?: string }[];
   /** #1053: open questions; only the set, the peer and the time reach the model. */
   questions?: readonly { set: string; peer: string; created: number }[];
+  /** #1054: unread results from the hub (ids, peers and settle times only). */
+  results?: readonly { id: string; peer?: string; since?: number }[];
 }
 /** Allowlisted adapter between console-owned facts and the shared body-free model. */
 export function consoleNeeds(state: AttentionState, now: number): Needs {
   const input: NeedsInput = { approvals: state.approvals.map(row => ({ id: row.id, peer: row.peer, expiresAt: row.expiresAt })), defaults: state.permissionDefaults.map(row => ({ peer: row.peer })), peers: Object.fromEntries(Object.entries(state.peers).map(([peer,row]) => [peer,{ state: row.state, attached: row.attached, needsReview: row.needsReview, heldBy: row.heldBy }])), budget: Object.fromEntries(Object.entries(state.budget).map(([peer,row]) => [peer,{ ...(row.paused ? { paused: { since: row.paused.since, resetsAt: row.paused.resetsAt } } : {}) }])), messages: (state.attentionMessages ?? []).map(row => ({ id: row.id, peer: row.peer, important: row.important, since: row.since })), storageBlocked: state.storageBlocked, recovery: state.recoveryNeed, questions: (state.questions ?? []).map(row => ({ set: row.set, peer: row.peer, since: row.created })) };
-  const result = needs({ ...input, facts: state.attentionFacts }, now);
+  const result = needs({ ...input, facts: state.attentionFacts, results: state.results }, now);
   // Panel snapshots know each held row; enrich only ids, without changing the status-derived count.
   const used = new Set<string | number>();
   for (const item of result.items) if (item.kind === "delivery") {
@@ -52,7 +54,17 @@ export function attentionFacts(raw: unknown): NonNullable<AttentionState["attent
   });
 }
 
+/** The unread results in the authenticated status reply's attention items: a `result` item at level `watch` with a completion id, never any text. */
+export function attentionResults(raw: unknown): NonNullable<AttentionState["results"]> {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap<NonNullable<AttentionState["results"]>[number]>(row => {
+    if (!row || typeof row !== "object" || row.kind !== "result" || row.level !== "watch" || typeof row.id !== "string" || !/^cmp-[a-f0-9]{12}$/.test(row.id)) return [];
+    return [{ id: row.id, ...(typeof row.peer === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(row.peer) ? { peer: row.peer } : {}), ...(Number.isSafeInteger(row.since) && row.since >= 0 ? { since: row.since } : {}) }];
+  });
+}
+
 export function attentionCommand(item: NeedItem): string {
+  if (item.kind === "result") return `ahub results${item.id ? ` --read ${item.id}` : ""}`;
   if (item.kind === "offer") return `open ${item.peer}: task #${item.id} is waiting for it; ahub task show ${item.id}`;
   if (item.kind === "stall") return `ahub task show ${item.id}; configure the peer or ahub task assign ${item.id} <peer>, or ahub task cancel ${item.id} --reason <text>`;
   if (item.kind === "delivery") return `ahub queue list${item.id ? `; ahub queue show ${item.id}` : ""}`;
