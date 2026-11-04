@@ -54,7 +54,7 @@ test("evidence recording is research-only publication, recognized for dispatch/c
   expect(profileTaskTools("dev", ["custom"], true).some(tool => tool.name === "hub_evidence_record")).toBe(false);
   expect(profileTaskTools("research").some(tool => tool.name === "hub_evidence_record")).toBe(true);
   expect(projectToolList(profileTaskTools("research"), true).some(tool => tool.name === "hub_evidence_record")).toBe(false);
-  expect(TASK_TOOL_NAMES.has("hub_evidence_record")).toBe(true); expect(STUDY_TOOLS.has("hub_evidence_record")).toBe(true);
+  expect(TASK_TOOL_NAMES.has("hub_evidence_record")).toBe(true); expect(STUDY_TOOLS.has("hub_evidence_record")).toBe(false);
   expect(IMPLEMENTER_HUB_TOOL_NAMES).toContain("hub_evidence_record");
   expect(EVIDENCE_RECORD_TOOL.inputSchema.properties).not.toHaveProperty("recordedBy");
   expect(EVIDENCE_RECORD_TOOL.inputSchema.additionalProperties).toBe(false);

@@ -84,7 +84,7 @@ const tool = (name: string, description: string, properties: Record<string, unkn
 });
 
 /** #601: a campaign's contract and handoff are model-written text about its sources. The write tools' arguments and every study result stay out of memory capture. */
-export const STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_evidence_record"]);
+export const STUDY_TOOLS = new Set(["hub_study_draft", "hub_study_revise", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff"]);
 /** Research-only publication. Recognized globally for dispatch/capture, never added to the dev schemas. */
 export const EVIDENCE_RECORD_TOOL = tool("hub_evidence_record", "Record a provenance link for a claim on your current in-progress research task. Projection hash/version and scalar locator are declared metadata in T1, not resolved or verified. A relation proposes supports, contradicts or context; it never creates a person verdict. Private turns, tasks and sources refuse. The actor is host-stamped; no fetch, resolver or synthesis check runs.", {
   id: { type: "string", pattern: "^ev:[0-9a-f]{32}$" }, taskId: id,
