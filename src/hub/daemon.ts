@@ -1,3 +1,8 @@
+import { repoGitArgs, repoGitEnv } from "./snapshots.ts";
+import { createReviewMaterialReader, type ReviewReadRequest, type ReviewMaterialBatch } from "./review-material.ts";
+import { readSdlcPr } from "./sdlc.ts";
+import type { ActionMeta } from "@staix/agent-console/contract";
+import { isReviewObserverExcluded, reviewCaptureExcluded } from "./memory-policy.ts";
 import { RoomStoreError } from "../rooms/store.ts";
 import { RoomCommands, type RoomPreview } from "../rooms/commands.ts";
 import { queueBackpressurePolicy, type QueueBackpressurePolicy } from "./queue-backpressure.ts";
@@ -691,6 +696,8 @@ export interface DaemonOptions {
   worktreeShelfGit?: import("./worktree-shelf.ts").ShelfGitPort;
   /** Host-only test seam: the `gh` runner the explicit PR refresh uses. Never read from configuration or a request. */
   worktreeShelfGh?: import("./sdlc.ts").SdlcGh;
+  /** Host-only bounded PR evidence seam for review reads; never config or control input. */
+  reviewMaterialsGh?: import("./sdlc.ts").SdlcGh;
   /** Host-only bounds of the per-head CI watcher (#785 P1b); tests shorten them, never read from config or a tool. */
   ciWatch?: { deadlineMs?: number; pollMs?: number };
   checkoutBranch?: typeof mainCheckoutBranch;
@@ -1452,6 +1459,7 @@ export async function startDaemon(opts: DaemonOptions) {
   if (staleOff()) log("experiment: stale notices are delivered as before 0.12.4 (the issue #106 ablation)");
   const requestedPeerStops = new Set<string>();
   const queuePolicy = () => queueBackpressurePolicy(config.tasks.queue_backpressure);
+  let readReviewObserverScope: ((peer: PeerId) => string | undefined) | undefined;
   let remotePending = (_room: string): readonly string[] => [];
   let remoteQueueChanged = () => {};
   const bus: Bus = new Bus({ rostered: membershipAllowed, ...busReaders, trackQueuePressure: () => { const policy = queuePolicy(); return policy.max_queued > 0 || policy.max_oldest_s > 0; }, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
@@ -1466,6 +1474,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return sender === USER ? false : !bus.peers.has(sender) || !!turns.get(sender)?.private || contextPii(sender);
     },
     doing: (peer, kind, text) => observeDoing(peer, kind, text),
+    reviewObserverScope: peer => readReviewObserverScope ? readReviewObserverScope(peer) : "review-scope-unavailable",
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (isWsPeer(p)) p.notifyQueued(counts); } });
   startupCleanup.push(() => bus.closeJournal());
   const claudeLaunchProof = createClaudeLaunchProof({ stateDir: opts.stateDir, cwd: opts.cwd, instanceId, definitionOf, peer: peer => bus.peers.get(peer) });
@@ -1843,6 +1852,11 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const inboxPolling = new InboxPolling();
   const board = new Board(join(opts.stateDir, "hub.db"));
+  readReviewObserverScope = peer => board.hasReviewObserverScope(peer) || bus.hasUnsettledReviewScope(peer) ? "open-review-comments" : undefined;
+  const reviewObserverHeld = (peer: PeerId): boolean => {
+    try { return readReviewObserverScope ? readReviewObserverScope(peer) !== undefined : true; }
+    catch { return true; }
+  };
   const invocations = new InvocationLedger(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => invocations.close());
   bus.canRetryInvocation = id => invocations.get(id)?.class === "read" && !invocations.relay(id);
@@ -2226,6 +2240,7 @@ export async function startDaemon(opts: DaemonOptions) {
     catalog,
     sessionRoles: peer => bus.peers.has(peer) && bus.stateOf(peer) !== "offline" ? preparedSessionRoles.get(peer) ?? [] : [],
     projectedReview: task => reviewProjection(task),
+    reviewMaterials: (task, requests) => reviewMaterials(task, requests),
     ownerWrites: (task, since) => ownerWriteEvidence(task, since),
     ownerAccepted: task => captureOwnerWriteStart(task),
     prepareReviewBrief: async task => {
@@ -2459,6 +2474,7 @@ export async function startDaemon(opts: DaemonOptions) {
   });
   const observeProgress = (peer: PeerId, observation: ToolObservation | undefined, taskId?: string): void => {
     if (!observation) return;
+    if (reviewObserverHeld(peer) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded)) { progress.clearPeer(peer); return; }
     if (observation.name === "hub_set_title" || observation.name === "hub_ask") return; // #1053: a question and its answer are never progress evidence (they may reach an escalation model)
     try {
       const candidates = board.list().filter(task => task.owner === peer && ["in_progress", "changes_requested"].includes(task.state));
@@ -2675,7 +2691,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const privateTitleWrites = new Map<PeerId, PeerAdapter>();
   const titleWrites = new Map<PeerId, Promise<unknown>>();
   const titlePrivate = (peer: PeerId, text?: string): boolean => {
-    try { return contextPii(peer) || text !== undefined && !tasks.publicMetadataText(text); } catch { return true; }
+    try { return reviewObserverHeld(peer) || contextPii(peer) || text !== undefined && !tasks.publicMetadataText(text); } catch { return true; }
   };
   const titlePreface = (peer: PeerId): string | undefined => definitionOf(peer)?.title === "hub" && bus.peers.get(peer)?.sessionTitle === "" && !titlePrivate(peer) ? SESSION_TITLE_HINT : undefined;
   type TitleResult = { ok: true } | { ok: false; reason: "already_named" | "private" | "invalid"; error: string; mayHaveApplied?: true };
@@ -2717,7 +2733,7 @@ export async function startDaemon(opts: DaemonOptions) {
     let tracker = doings.get(peer);
     if (!tracker) doings.set(peer, tracker = new DoingTracker());
     // Private when learned or observed in a PII context or refused by the public metadata screen; a throw is private too.
-    tracker.observe(kind, text, value => learnedPrivate || contextPii(peer) || !tasks.publicMetadataText(value));
+    tracker.observe(kind, text, value => learnedPrivate || reviewObserverHeld(peer) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded) || contextPii(peer) || !tasks.publicMetadataText(value));
   };
   /** Shown only for an attached peer; a stub while it owns or reviews a PII task or is in a private turn. */
   const doingRows = (ids: string[], includeIncomingLabels = false): Record<string, PeerDoing> => {
@@ -2725,7 +2741,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!live.length) return {};
     const pii = board.list().filter(t => !isClosedTaskState(t.state) && tasks.isPii(t));
     return Object.fromEntries(live.flatMap(id => {
-      const owner = bus.peers.get(id), privateNow = !!turns.get(id)?.private || pii.some(t => t.owner === id || t.reviewer === id);
+      const owner = bus.peers.get(id), privateNow = !!turns.get(id)?.private || reviewObserverHeld(id) || bus.lastDeliveredTo(id).some(isReviewObserverExcluded) || pii.some(t => t.owner === id || t.reviewer === id);
       if (definitionOf(id)?.title === "hub" && (privateNow || privateTitleWrites.get(id) === owner)) return [[id, { text: DOING_STUB, source: "title" as const, at: 0 }]];
       let view = doings.get(id)?.view(privateNow, value => titlePrivate(id, value));
       let first = firstTitleMessages.get(id);
@@ -2733,7 +2749,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!first && owner?.sessionTitle === "" && owner.titleSession && binding?.session === owner.titleSession) {
         try {
           const row = journal.get(binding.delivery), env = row?.originals.find(env => env.id === binding.envelope);
-          if (row?.peer === id && env && !remoteEnvelope(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(id, first); }
+          if (row?.peer === id && env && !remoteEnvelope(env) && !isReviewObserverExcluded(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(id, first); }
         } catch { /* unknown optional label evidence never fails live status */ }
       }
       if (!view && owner?.sessionTitle === "" && first?.owner === owner && first.session === owner.titleSession) view = unnamedSessionLabel(first.env.body, value => first.env.private === true || titlePrivate(id, value), first.env.ts);
@@ -2914,16 +2930,17 @@ export async function startDaemon(opts: DaemonOptions) {
     if (task !== undefined) pendingDeliveryTask.set(peer, task);
   };
   bus.onDelivered = (peer, originals, deliveryId) => {
+    if (originals.some(isReviewObserverExcluded)) progress.clearPeer(peer);
     if (peer.includes("@")) return;
     try {
       const owner = bus.peers.get(peer); let first = firstTitleMessages.get(peer);
       const retained = titleBindings[peer];
       if (!first && owner?.titleSession && retained?.session === owner.titleSession) {
         const row = journal.get(retained.delivery), env = row?.originals.find(env => env.id === retained.envelope);
-        if (row?.peer === peer && env && !remoteEnvelope(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(peer, first); }
+        if (row?.peer === peer && env && !remoteEnvelope(env) && !isReviewObserverExcluded(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(peer, first); }
       }
       if (definitionOf(peer)?.title === "hub" && owner && (!first || first.owner !== owner || first.session !== owner.titleSession)) {
-        const env = originals.find(env => !(env.from === HUB && env.kind === "presence") && !remoteEnvelope(env));
+        const env = originals.find(env => !(env.from === HUB && env.kind === "presence") && !remoteEnvelope(env) && !isReviewObserverExcluded(env));
         if (env) {
           firstTitleMessages.set(peer, { owner, session: owner.titleSession, env });
           if (definitionOf(peer)?.titlePersistence === "native" && deliveryId && owner.titleSession && (Object.hasOwn(titleBindings, peer) || Object.keys(titleBindings).length < 128)) {
@@ -2957,7 +2974,7 @@ export async function startDaemon(opts: DaemonOptions) {
   /** Whether a peer has a PII task open in any state: assigned and not yet accepted counts. */
   const holdsPii = (peer: PeerId) => !!turns.get(peer)?.private || board.list().some((t) => t.owner === peer && !isClosedTaskState(t.state) && t.state !== "in_review" && tasks.isPii(t));
   const memoryObservations = memoryTelemetry ? new MemoryObservations(memoryTelemetry, (peer, envs) => {
-    if (turns.get(peer)?.private || contextPii(peer) || envs.some(env => env.private)) return;
+    if (turns.get(peer)?.private || contextPii(peer) || reviewObserverHeld(peer) || envs.some(env => env.private || isReviewObserverExcluded(env)) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded)) return;
     for (const env of envs) {
       const task = env.refs?.task ? board.get(Number(env.refs.task)) : undefined;
       if (task && tasks.isPii(task)) return;
@@ -2969,7 +2986,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }) : undefined;
   bus.onMemoryDelivery = (peer, id, out, field) => { if (!peer.includes("@") && !out.some(env => remoteEnvelope(env) || env.to?.some(id => id.includes("@")) || env.refs?.boundedCheck)) memoryObservations?.delivery(peer, id, out, field); };
   const citeMemory = (peer: PeerId, text: string, id: string, envs: readonly Envelope[] = []) => {
-    if (peer.includes("@") || envs.some(env => remoteEnvelope(env) || env.to?.some(id => id.includes("@")))) return;
+    if (peer.includes("@") || reviewObserverHeld(peer) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded) || envs.some(env => isReviewObserverExcluded(env) || remoteEnvelope(env) || env.to?.some(id => id.includes("@")))) return;
     if (!tasks.nameable(text) || looksSecret(text) || !screenMemory([{ title: null, text }]).length) return;
     memoryObservations?.cite(peer, text, id, envs);
   };
@@ -3226,6 +3243,63 @@ export async function startDaemon(opts: DaemonOptions) {
       if (canonical && canonicalWriteScope(current.repo, current.budget) !== true) return undefined;
       return false;
     } catch { return undefined; } // Unknown is never evidence of no writes, including a missing/pruned tree.
+  }
+  async function reviewMaterials(task: Task, requests: readonly ReviewReadRequest[]): Promise<ReviewMaterialBatch> {
+    const budget: SnapshotBudget = { deadline: Infinity };
+    budget.deadline = budgetNow(budget) + 8000;
+    const deadline = budget.deadline;
+    let head = "";
+    const fingerprint = (row: Task) => JSON.stringify([row.created, row.owner, row.history.length, row.refs, row.plan, row.signals, row.sdlc]);
+    const identity = (row: Task) => JSON.stringify([row.id, row.created, row.owner, row.history.length, row.plan, row.signals]);
+    const baseline = board.get(task.id), original = baseline && fingerprint(baseline);
+    // Tasks may stage validated completion refs/sdlc before its Board write. Fence against
+    // the actual Board baseline, while requiring the staged task's non-ref identity to match.
+    const staged = !!baseline && identity(task) === identity(baseline);
+    const currentTask = () => {
+      const latest = board.get(task.id);
+      return staged && !!latest && fingerprint(latest) === original;
+    };
+    const unavailable = (): ReviewMaterialBatch => ({ head, materials: requests.map(request => ({ state: "unavailable", path: request.path, side: request.side ?? "head" })) });
+    try {
+      if (!currentTask()) return unavailable();
+      const owner = task.owner ?? "", root = executionRoot(owner);
+      const repository = repoFor(owner, budget);
+      if (!repository) return unavailable();
+      // Review material is bound to the task's recorded review head. A moving
+      // worktree HEAD is not a substitute when that commit is absent locally.
+      const taskHead = task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead;
+      if (typeof taskHead === "string" && /^[a-f0-9]{40}$/.test(taskHead)
+        && hubGitSync(repoGitArgs(repository, ["cat-file", "-e", `${taskHead}^{commit}`]), { encoding: "utf8", maxBuffer: 1024, timeout: Math.ceil(Math.max(1, deadline - budgetNow(budget))), env: repoGitEnv(repository) }).status === 0) head = taskHead;
+      if (!head || budgetNow(budget) >= deadline || (tasks.isPii(task) || task.signals.includes("pii") || task.signals.includes("pii_path")) || privateSnapshotWindow()) return unavailable();
+      const scopes = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.sections ?? []).map(section => section.split("#")[0]!)].map(path => {
+        const scoped = relative(root, resolve(root, path));
+        if (root === opts.cwd || scoped !== ".." && !scoped.startsWith("../")) return scoped;
+        const canonical = relative(opts.cwd, resolve(root, path));
+        return canonical !== ".." && !canonical.startsWith("../") && !canonical.startsWith(".worktrees/") ? canonical : scoped;
+      });
+      let base = "";
+      // Only complete PR metadata at this exact head expands scope. A declared PR link
+      // or a locally guessed merge base is never an inventory of its changed files.
+      if (task.sdlc?.repo && task.sdlc.pr) {
+        const pr = await readSdlcPr(task.sdlc, (args, timeout, _cwd, bound) => {
+          const remaining = deadline - budgetNow(budget);
+          return remaining <= 0 ? Promise.resolve({ code: 1, stdout: "" }) : (opts.reviewMaterialsGh ?? sdlcGh)(args, Math.ceil(Math.min(timeout ?? remaining, remaining)), root, bound);
+        });
+        if (!currentTask()) return unavailable();
+        if (pr?.head === head && pr.pathsComplete) { scopes.push(...pr.paths); base = pr.baseHead ?? ""; }
+      }
+      if (!base && turnLog) {
+        const created = taskProposalAt(task);
+        base = created === undefined ? "" : turnLog.taskStart(task.id, created) ?? "";
+      }
+      if (!currentTask() || root !== executionRoot(owner) || tasks.isPii(board.get(task.id)!) || privateSnapshotWindow()) return unavailable();
+      const reader = createReviewMaterialReader({ repo: repository, base, head, paths: scopes,
+        projections: projectionsFor(owner), deny: config.local.deny, deadline,
+        privatePath: path => matchesPolicy(root, path, config.pii?.paths ?? [], true), nameable: tasks.nameable });
+      const materials = requests.map(request => reader.read(request.path, request.side));
+      if (!currentTask() || root !== executionRoot(owner) || tasks.isPii(board.get(task.id)!) || privateSnapshotWindow()) return unavailable();
+      return { head, materials };
+    } catch { return unavailable(); }
   }
   function reviewProjection(task: Task): string | undefined {
     const owner = task.owner ?? "", root = executionRoot(owner);
@@ -3845,6 +3919,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify({ invocation: row.id, state: "queued", note: "the result arrives later as one message from the hub, addressed to you only; do not wait for it in this turn" });
   }
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
+    const reviewTurn = reviewObserverHeld(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
+    if (reviewTurn || op === "hub_review" && reviewCaptureExcluded(op, JSON.stringify(a))) progress.clearPeer(by);
     if (op === "hub_ask") {
       // #1053: a structured question for the person. Refused before any row for a read-only instance, a PII turn's own words are marked private by the desk's `isPrivate`.
       if (by === USER) throw new PreEffectToolRefusal("hub_ask is for the agents of this project; the person answers with the console (ahub status shows open questions)");
@@ -4168,9 +4244,9 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_task_done": {
         // #1115: a hub-sandboxed peer's worktree is staged, committed and pushed by the hub first, so the done carries the real head and branch.
         const handed = await tasks.worktreeHandoff(by, a.id, a.refs);
-        const t = await tasks.done(by, a.id, a.summary, handed ?? a.refs, a.deliverables, a.spec_ack);
+        const t = await tasks.done(by, a.id, a.summary, handed ?? a.refs, a.deliverables, a.spec_ack, a.resolved);
         const completion = t.history.findLast(h => h.by === by && (h.event === "done" || h.event === "done (checking)"));
-        if (!piiTurn && !tasks.isPii(t) && completion && !completion.withheld && typeof a.summary === "string" && completion.note?.startsWith(a.summary)) {
+        if (!piiTurn && !reviewTurn && !tasks.isPii(t) && completion && !completion.withheld && typeof a.summary === "string" && completion.note?.startsWith(a.summary)) {
           citeMemory(by, a.summary, `summary:${t.id}:${t.history.indexOf(completion)}`, [newEnvelope(by, "", { refs: { task: String(t.id) } })]);
         }
         // A silent cohort (issue #107): the member that integrates is asked to check its work first; no done yet.
@@ -4790,6 +4866,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (tasks.queuePressureRechecksPending() !== 0) return false;
     if (tasks.schedulesPending() !== 0) return false; // #512a: a scheduled run mid-admission (its PII screen is awaited) would write after the commit's digest; the hold fence refuses its write, and this waits for it to end
     if (tasks.studiesPending() !== 0) return false;
+    if (tasks.reviewCommentsPending() !== 0) return false;
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
     return recoveryPeerSnapshot.every((saved) => {
@@ -4946,7 +5023,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const researchComparisons = board.researchComparisonIntegrity();
     const researchRunners = board.runnerReceiptIntegrity();
     const researchEvidence = board.researchEvidenceIntegrity();
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    const reviewComments = board.reviewCommentsIntegrity();
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -6509,6 +6587,7 @@ export async function startDaemon(opts: DaemonOptions) {
         relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? (config.mlx.enabled === false ? 8192 : Math.min(config.mlx.maxTokens ?? 2048, 8192)) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
         tools: [...TOOL_SCHEMAS.map((t) => t.function), ...sessionTitleTools([...profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off"), ...CONDUCTOR_TOOLS], adapter?.title === "hub").map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId, signal, context) => {
+          const reviewToolTurn = reviewObserverHeld(peer) || pi.budgetEnvelopes.some(isReviewObserverExcluded) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded);
           if (MEMORY_READ_TOOLS.has(name)) validateMemoryRead(name, raw as Record<string, unknown>);
           if (signal?.aborted) return "error: turn cancelled before tool effects";
           if (stopping || (recoveryActive() && recoveryPhase !== "preparing")) return "error: recovery is holding tool effects";
@@ -6525,7 +6604,7 @@ export async function startDaemon(opts: DaemonOptions) {
                 return picked; // never turn a nonempty expiry/abort string into authorization
               },
             });
-            if (!signal?.aborted && bus.peers.get(peer) === pi) {
+            if (!signal?.aborted && bus.peers.get(peer) === pi && !reviewToolTurn && !reviewCaptureExcluded(name, JSON.stringify(raw ?? {}))) {
               const taskId = pi.budgetEnvelopes.find(env => env.refs?.task)?.refs?.task;
               observeProgress(peer, { name, ...(typeof (raw as any)?.command === "string" ? { command: (raw as any).command } : {}), resultText: output, isError: toolResultFailed(name, output), source: "pi", ...(nativeTurn ? { turn: nativeTurn } : {}) }, taskId);
             }
@@ -7227,6 +7306,11 @@ export async function startDaemon(opts: DaemonOptions) {
         && (!search || (() => { const row = memoryStore?.get(note.id.slice(4), memoryProject); return !!row && `${row.title ?? ""} ${row.text}`.toLowerCase().includes(search); })()));
       Object.assign(snapshot.memory, { code: published });
     }
+    if (input?.reviewRefresh === true && Number.isSafeInteger(input?.reviewTask) && Number(input?.reviewTask) > 0) {
+      const task = Number(input.reviewTask);
+      try { return { ...snapshot, reviewComments: await tasks.reviewCommentList(USER, { task }) }; }
+      catch { return { ...snapshot, reviewComments: { task, unavailable: true } }; }
+    }
     return snapshot;
   }
   function uiSnapshot(after: number, _input?: Record<string, unknown>, session?: DashboardSession) {
@@ -7254,6 +7338,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const attentionStatus = status(false, true, true, true);
     let pet; try { const config = loadPetConfig(opts.cwd); pet = { enabled: config.enabled, character: config.character ?? "stai", blink: config.blink }; } catch { pet = { enabled: false }; }
     const peerView = Object.fromEntries(Object.entries(attentionStatus.peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])), boardTasks = board.list();
+    const reviewPrivacyKey = createHash("sha256").update(JSON.stringify([config.pii?.paths ?? [], config.local.deny, activeRouting().signals.pii_patterns, privateSnapshotWindow()])).digest("hex");
     const usageView = (open: boolean) => {
       // #683 U4: the roll-up runs only while the Agents view that shows it is open, never on a hidden view's 1 s poll.
       if (!open) return undefined;
@@ -7316,7 +7401,12 @@ export async function startDaemon(opts: DaemonOptions) {
       tasks: boardTasks.map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, planner: view.planner ?? null, reviewer: task.reviewer, ...holderReasons(view), deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.codeSymbols ? { codeSymbols: view.codeSymbols } : {}), ...(() => { const group = codeGroup(task, view.codeSymbols, task.plan?.symbols, tasks.publicMetadataText, tasks.isPii(task)); return group ? { codeGroup: group } : {}; })(), ...(view.cancelled ? { cancelled: view.cancelled } : {}), ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}), ...(() => { const deliverables = tasks.deliverableBadge(task); return deliverables ? { deliverables } : {}; })() };
+        const reviewHead = task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead;
+        const reviewStateKey = createHash("sha256").update(JSON.stringify([
+          task.id, task.created, reviewHead ?? null, tasks.isPii(task), task.signals.includes("pii"), task.signals.includes("pii_path"), task.owner, task.history.length,
+          reviewPrivacyKey,
+        ])).digest("hex");
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, planner: view.planner ?? null, reviewer: task.reviewer, ...holderReasons(view), deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.codeSymbols ? { codeSymbols: view.codeSymbols } : {}), ...(() => { const group = codeGroup(task, view.codeSymbols, task.plan?.symbols, tasks.publicMetadataText, tasks.isPii(task)); return group ? { codeGroup: group } : {}; })(), ...(view.cancelled ? { cancelled: view.cancelled } : {}), ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, flowRevision: task.history.length, reviewStateKey, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}), ...(() => { const deliverables = tasks.deliverableBadge(task); return deliverables ? { deliverables } : {}; })() };
       }),
       links: links.filter(link => link.tasks.every(id => { const task = board.get(id); return task && !tasks.isPii(task); })),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[accountOf(id)] ?? { windows: [] }), ...(budgetNoteOf.get(id) ? { note: budgetNoteOf.get(id)!.note, noteKind: budgetNoteOf.get(id)!.kind } : {}), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
@@ -8210,6 +8300,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ...(tasks.queuePressureRechecksPending() !== 0 ? ["a queue-pressure assignment recheck in flight"] : []),
       ...(tasks.schedulesPending() !== 0 ? ["a scheduled task proposal in flight"] : []),
       ...(tasks.studiesPending() !== 0 ? ["a research campaign admission in flight"] : []),
+      ...(tasks.reviewCommentsPending() !== 0 ? ["a review comment write in flight"] : []),
       ...(checkPending.size !== 0 ? ["isolated checks queued or running"] : []),
       ...(piCallsInFlight() !== 0 ? ["Pi tool calls in flight"] : []),
       ...(releasing ? ["ready tasks being released"] : []),
@@ -8296,6 +8387,8 @@ export async function startDaemon(opts: DaemonOptions) {
       // #604: a handoff row in either direction (a task another project handed us, or one we handed over) needs a target that knows `task_handoff`; without it the origin is silently lost.
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("task_handoff")) && board.hasHandoffState())
         return "target lacks task_handoff; stored handoffs require a supporting daemon";
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("review_comments")) && board.hasReviewCommentsState())
+        return "target lacks review_comments; stored anchored comments require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_experiments")) && board.hasResearchExperimentState())
         return "target lacks research_experiments; persisted experiment records require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_comparisons")) && board.hasResearchComparisonState())
@@ -9240,6 +9333,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // Built first: limits count the audience it really has (a reply goes to the parent's sender).
         let env = newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) });
         if (c.session) env = { ...env, session: true };   // agent-hub#1036: sent by a distinct session; `from` is its minted id, and the header a recipient reads shows it as is
+        env = bus.reviewResponse(env, inReplyTo?.id);
         rememberOrigin(env.id, originOf({ role: c.role, peer: c.peer, launchId: c.launchId, ...(c.session ? { session: true } : {}) })); // the connection that sent it, for events.jsonl (never a path or text)
         try { bus.checkRemotePublication(env); }
         catch (error) { return void reply({ t: "sent", ok: false, error: error instanceof Error && /^(?:room|remote) /.test(error.message) ? sanitize(error.message).slice(0, 8192) : "message admission unavailable" }); }
@@ -9488,7 +9582,7 @@ export async function startDaemon(opts: DaemonOptions) {
             queueMicrotask(() => tally(peer)); // after this call's own work below
           }
           if (!factsOn()) return void reply({ t: "facts", ok: true, ...permissionReply });
-          if (definitionOf(peer)?.transport === "claude-channel" && phase === "pre") observeProgress(peer, normalizeClaudeObservation(tool, input));
+          if (definitionOf(peer)?.transport === "claude-channel" && phase === "pre" && !reviewCaptureExcluded(tool, JSON.stringify(input ?? {}))) observeProgress(peer, normalizeClaudeObservation(tool, input));
           factSession(peer, sessionId);
           const transcript = claudeTranscript(sessionId, msg.transcriptPath, peer);
           if (phase === "post") {
@@ -9757,10 +9851,51 @@ export async function startDaemon(opts: DaemonOptions) {
         catch { return void reply({ ok: false, error: "CLI audit was not retained" }); }
         return void reply({ ok: retainedCliAudits.has(msg.auditId), auditId: msg.auditId, instanceId });
       }
+      case "review_comment_put":
+      case "review_comment_delete":
+      case "review_comment_send": {
+        if (c.role !== "console") return void reply({ ok: false, error: "review comments are person-only; open the task in acon" });
+        if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding review comments; refresh after it finishes" });
+        if (msg.instanceId !== undefined && msg.instanceId !== instanceId) return void reply({ ok: false, error: "hub restarted; refresh before acting" });
+        const { t: _op, rid: _rid, instanceId: _instance, personMeta, ...input } = msg;
+        let verified: ActionMeta | undefined;
+        if (personMeta !== undefined) {
+          if (!personMeta || typeof personMeta !== "object" || Array.isArray(personMeta)
+            || Object.keys(personMeta).some(key => !["identity", "node", "via"].includes(key))
+            || personMeta.via !== "console" || typeof personMeta.identity !== "string" || !personMeta.identity.trim()
+            || Buffer.byteLength(personMeta.identity) > 256 || typeof personMeta.node !== "string" || !personMeta.node.trim() || Buffer.byteLength(personMeta.node) > 256) {
+            return void reply({ ok: false, error: "verified console identity is invalid; reopen acon and retry" });
+          }
+          verified = { identity: personMeta.identity, node: personMeta.node, via: "console" };
+        }
+        void (async () => {
+          if (msg.t === "review_comment_put") return await tasks.reviewCommentPut(USER, input, verified);
+          if (msg.t === "review_comment_delete") return await tasks.reviewCommentDelete(USER, input, verified);
+          return await tasks.reviewCommentSend(USER, input, verified);
+        })().then(result => reply({ ok: true, ...result }), error => reply({ ok: false, error: (error as Error).message }));
+        return;
+      }
+      case "review_comments":
+        if (c.role !== "console") return void reply({ ok: false, error: "review comment details are a console read" });
+        if (msg.instanceId !== undefined && msg.instanceId !== instanceId) return void reply({ ok: false, error: "hub restarted; refresh before reading" });
+        void tasks.reviewCommentList(USER, { task: msg.task }).then(result => reply({ ok: true, ...result }), () => reply({ ok: false, error: "review comments unavailable; refresh the task" }));
+        return;
+      case "review_blob": {
+        if (c.role !== "console") return void reply({ ok: false, error: "review material is a console read" });
+        if (msg.instanceId !== undefined && msg.instanceId !== instanceId) return void reply({ ok: false, error: "hub restarted; refresh before reading" });
+        const task = Number.isSafeInteger(msg.task) ? board.get(msg.task) : undefined;
+        if (!task || (tasks.isPii(task) || task.signals.includes("pii") || task.signals.includes("pii_path")) || typeof msg.path !== "string" || Buffer.byteLength(msg.path) > 4096 || msg.side !== undefined && !["base", "head"].includes(msg.side)) return void reply({ ok: false, error: "review material unavailable for this task scope; refresh and select a declared public task file" });
+        void reviewMaterials(task, [{ path: msg.path, side: msg.side ?? "head" }]).then(batch => {
+          const material = batch.materials[0];
+          if (!material || material.state !== "available") return reply({ ok: false, error: "review material unavailable for this task scope; refresh and select a declared public task file" });
+          return reply({ ok: true, task: task.id, head: batch.head, doc: { kind: "text", path: material.path, text: material.text, contentHash: material.contentHash, ...(material.projection ? { projection: material.projection } : {}) } });
+        }, () => reply({ ok: false, error: "review material unavailable; refresh the task" }));
+        return;
+      }
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });
-        void uiMemorySnapshot(msg.after ?? 0, msg.memory !== undefined || dashboardView(msg.view) ? { ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined).then(value => reply(value), () => reply({ ok: false, error: "memory view unavailable" }));
+        void uiMemorySnapshot(msg.after ?? 0, msg.memory !== undefined || msg.reviewRefresh === true || dashboardView(msg.view) ? { ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(msg.reviewRefresh === true && msg.reviewTask !== undefined ? { reviewTask: msg.reviewTask, reviewRefresh: true } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined).then(value => reply(value), () => reply({ ok: false, error: "memory view unavailable" }));
         return;
       case "ui_action":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_action is a console command" });
@@ -10122,6 +10257,7 @@ export async function startDaemon(opts: DaemonOptions) {
     roomCommands.stop();
     tasks.stopQueuePressureRechecks();
     const studiesStopped = tasks.stopStudies();
+    const reviewCommentsStopped = tasks.stopReviewComments();
     let implementerShellCleanupFailed = false;
     const implementerShellStopped = implementerShellStart?.then(wrapper => wrapper.close()).catch(() => { implementerShellCleanupFailed = true; log("host shell cleanup failed during shutdown"); });
     terminalLaunches.clear();
@@ -10147,9 +10283,9 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       // A schedule or study admission may be inside its PII screen: `stopping` is set, so its fence refuses the write when the screen returns. Wait for it (bounded, the screen has
       // its own timeout) before the peers stop, the board closes and the store closes, so no admission runs against a closed database.
-      if (schedulesPass || manualSchedulePasses.size || tasks.studiesPending() !== 0) {
+      if (schedulesPass || manualSchedulePasses.size || tasks.studiesPending() !== 0 || tasks.reviewCommentsPending() !== 0) {
         let timer: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([Promise.all([schedulesPass?.catch(() => undefined), ...manualSchedulePasses, studiesStopped]), new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); timer.unref?.(); })]);
+        await Promise.race([Promise.all([schedulesPass?.catch(() => undefined), ...manualSchedulePasses, studiesStopped, reviewCommentsStopped]), new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); timer.unref?.(); })]);
         clearTimeout(timer);
       }
       await Promise.all([terminalReadsStopped, codeFactsStopped, implementerShellStopped]);

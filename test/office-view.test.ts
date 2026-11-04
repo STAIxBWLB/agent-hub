@@ -99,7 +99,7 @@ function startOfficeRuntime(view: () => string, measurement?: (text:string,font:
     let stopped=false, managerMode=false, selectedProjectId='', selectedInstanceId='', snapshotValid=true, viewGeneration=0, lastSnapshot=null, eventCount=0, cursor=0, draftChoicesPending=false, officePrev=null;
     let currentView="office";const dashboardCookie={get(){return ""},set(){}};const applyDashboardView=()=>{get("office-section").hidden=currentView!=="office"},switchView=view=>{currentView=view};const pendingButtons=new WeakSet(), pendingStarts=new Map(), signatures=new Map();
     const peerRows=new Map(), taskRows=new Map(), officeDesks=new Map(), officeCards=new Map();
-    const $=get;
+    const $=get, reviewKit=null;
     const update=(id,data,render)=>{const signature=JSON.stringify(data);if(signatures.get(id)===signature)return;signatures.set(id,signature);const target=$(id);target.replaceChildren();render(target);};
     const empty=(target,text)=>target.append(el('p',text));
     const badge=(text)=>el('span',text),dot=()=>el('span'),peerDot={},taskBadge={};
@@ -277,7 +277,7 @@ test("resetView clears the scene's previous snapshot", () => {
   const context = { get };
   runInNewContext(`
     let selectedProjectId='p1',selectedInstanceId='i1',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev={slots:{codex:1}},officeScene={els:new Map([['desk:codex',1]])};
-    const officeDesks=new Map([['codex',1]]),officeCards=new Map([[4,1]]);
+    const officeDesks=new Map([['codex',1]]),officeCards=new Map([[4,1]]),reviewCommentsCache=new Map();
     const managerMode=true,signatures=new Map(),$=get;
     const closeTaskDetail=()=>{},renderNeedsAttention=()=>{},applyDashboardView=()=>{}; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{};
     const empty=(node,text)=>{node.textContent=text};
@@ -576,7 +576,7 @@ test("project reset removes old office SVG and prevents view changes replaying t
   const control=new Node();let rendered=0,applied=0,activeView="board",mode="flat";
   const reset=html.slice(html.indexOf("function resetView("),html.indexOf("function projectName("));
   const start=html.indexOf("officeControl.addEventListener('change'");const change=html.slice(start,html.indexOf("\n",start));
-  const api=runInNewContext(`let selectedProjectId='old',selectedInstanceId='old',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev={},officeScene={},lastSnapshot={projectId:'old'};const officeDesks=new Map(),officeCards=new Map(),signatures=new Map();const managerMode=true,$=get;const closeTaskDetail=()=>{},renderNeedsAttention=()=>{},applyDashboardView=applyView; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{},empty=(node,text)=>{node.textContent=text};${reset};${change};({reset:resetView,snapshot:()=>lastSnapshot})`,{
+  const api=runInNewContext(`let selectedProjectId='old',selectedInstanceId='old',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev={},officeScene={},lastSnapshot={projectId:'old'};const officeDesks=new Map(),officeCards=new Map(),signatures=new Map(),reviewCommentsCache=new Map();const managerMode=true,$=get;const closeTaskDetail=()=>{},renderNeedsAttention=()=>{},applyDashboardView=applyView; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{},empty=(node,text)=>{node.textContent=text};${reset};${change};({reset:resetView,snapshot:()=>lastSnapshot})`,{
     get,officeControl:control,officeView:{get:()=>mode,set:(value:string)=>{mode=value}},applyView:()=>{applied++;get("office-section").hidden=activeView!=="office"},document:{getElementById:get},render:()=>{rendered++;},
   });
   api.reset("stopped","next");expect(get("office").children).toHaveLength(0);expect(api.snapshot()).toBeNull();

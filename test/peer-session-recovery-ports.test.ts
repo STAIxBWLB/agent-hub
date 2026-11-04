@@ -17,6 +17,7 @@ import { OmniRoute } from "../src/omniroute/client.ts";
 import { isClosedTaskState } from "../src/hub/board.ts";
 import { deliveryTask } from "../src/hub/attribution.ts";
 import { MemoryObservations } from "../src/hub/memory-observations.ts";
+import { isReviewObserverExcluded } from "../src/hub/memory-policy.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { restartPath } from "../src/hub/restart.ts";
 
@@ -137,12 +138,15 @@ test("#625 local memory provenance stays unbound even when its other native sess
   expect("nativeSession" in local).toBe(false);
   const bus = new Bus({ batchMs: 0 }); bus.add(local); cleanup.push(() => bus.closeJournal());
   const recorded: { session: unknown }[] = [];
-  const { contextSession, memoryObservations } = hostVariables(["contextSession", "contextPii", "memoryObservations"], {
+  const { contextSession, contextPii, reviewObserverHeld, memoryObservations } = hostVariables(["contextSession", "contextPii", "reviewObserverHeld", "memoryObservations"], {
     bus, isWsPeer, definitionOf, claudeSession: () => { throw new Error("local must not read Claude state"); },
     turns: new Map(), board: { list: () => [], peerTaskSignals: () => [], get: () => undefined }, isClosedTaskState, deliveryTask, taskKey, memoryProject: "fixture",
-    tasks: { isPii: () => { throw new Error("fixture has no tasks to screen"); } }, MemoryObservations,
+    readReviewObserverScope: () => undefined,
+    tasks: { isPii: () => { throw new Error("fixture has no tasks to screen"); } }, MemoryObservations, isReviewObserverExcluded,
     memoryTelemetry: { record: (_text: string, context: { session: unknown }) => recorded.push(context) },
   });
+  expect(reviewObserverHeld(local.id)).toBe(false);
+  expect(contextPii(local.id)).toBe(false);
   expect(contextSession(local.id)).toBeUndefined();
   memoryObservations.cite(local.id, `mem:${"a".repeat(32)} fixture`, "message:fixture", [newEnvelope("user", "fixture")]);
   expect(recorded).toHaveLength(1); expect(recorded[0]!.session).toBeNull();

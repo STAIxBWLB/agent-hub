@@ -125,6 +125,22 @@ test("S3 a second task with the same finding proposes one durable backlog amendm
   expect(r.board.list("backlog").map(card => card.id)).toEqual(cards.map(card => card.id));
 });
 
+test("anchored findings recur using safe identifier metadata while their source quote stays out of the proposal", async () => {
+  const r = rig(), quote = "SOURCE_QUOTE_CANARY";
+  const anchoredFinding = { ...finding("anchored-recur", { pass: "bugs" }), anchor: {
+    path: "src/server.ts", side: "head" as const,
+    selectors: [{ kind: "textQuote" as const, exact: quote, prefix: "", suffix: "" }],
+  } };
+  const one = r.create(), two = r.create();
+  await submit(r.tasks, one.id, [anchoredFinding]);
+  await submit(r.tasks, two.id, [anchoredFinding]);
+  const cards = r.board.list("backlog");
+  expect(cards).toHaveLength(1);
+  expect(cards[0]?.detail).toContain("Review finding key: bugs:anchored-recur");
+  expect(cards[0]?.detail).not.toContain(quote);
+  expect(JSON.stringify(cards[0])).not.toContain(quote);
+});
+
 test("S3 an asynchronous screen cannot commit findings after ownership or privacy changed", async () => {
   let enter!: () => void, release!: () => void;
   let started = false;

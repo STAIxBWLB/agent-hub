@@ -6460,3 +6460,9 @@ Each pack supplies criterion ids in its rubric and exactly one advisory check en
 ## Amendment: research campaigns, experiment receipts and runner attestation (#930, #932, #1018)
 
 The implementation contract for #929 R1 and R3 and for #1018 is `docs/specs/2026-11-01-research-campaigns-design.md`: campaign, protocol, attempt and receipt schemas and bounds; the provenance levels `declared`, `host-observed`, `runner-attested` and `person-attested`; the Board tables; the person-only activation, attestation and runner registration; the `ahub study` and `hub_study_*` / `hub_experiment_*` wire names; the `research_records` recovery feature; and the delivery slices (#596 to #602). Slices that must differ amend that document in their own PR.
+
+## Amendment: anchored review packages (#1056)
+
+The current contract is recorded in [Task Board](../design/task-board.md#anchored-review-packages-1056). Optional finding anchors use the published acon review shape, with stricter hub UTF-8 write bounds. Person drafts are board-local until one explicit console-authorized Send creates one immutable package and one count-only history entry. Owner completion can claim sent comment IDs resolved without claiming person verification. Placement is recomputed over guarded task-scoped Git/projection material; stored anchors never move.
+
+The acon plugin uses `ActionMeta` and `host.ui.review` from the published DOM-free 0.1.3 contract as types only; there is no new runtime dependency or renderer. A private/PII view withholds text, and trusted package markers exclude quote/body content from logs, tails, incoming labels and memory capture without making a public task private. Recovery sections are optional for older snapshots. The owner's live document package-format confirmation remains a separate manual check; fixture and code evidence do not claim that confirmation.

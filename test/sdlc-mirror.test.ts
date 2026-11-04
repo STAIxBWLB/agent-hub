@@ -10,6 +10,7 @@ import { Tasks } from "../src/hub/tasks.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { assertMirrorArgv, mirrorArgv, mirrorBody, mirrorHeadline, mirrorVerdict, MIRROR_NOTE_MAX, type MirrorInput } from "../src/hub/sdlc-mirror.ts";
 import type { SdlcGh } from "../src/hub/sdlc.ts";
+import type { ReviewAnchor } from "@staix/agent-console/contract";
 
 // agent-hub#786 T3 (AC1): one COMMENT review per (task, head, verdict), never at a stale head, never a duplicate, PII stub only. A fake gh stands for GitHub.
 const A = "a".repeat(40), B = "b".repeat(40);
@@ -186,12 +187,14 @@ test("invalid input posts nothing and reads nothing", async () => {
 });
 
 // ---- the wiring in Tasks.review: both verdicts, gated by auto_merge, never blocking or failing the verdict ----
-function rig(autoMerge: "off" | "dry-run" | "on" | undefined, ghState: Parameters<typeof fakeGh>[0], pii = false, ghOverride?: (inner: SdlcGh, order: string[]) => SdlcGh) {
+function rig(autoMerge: "off" | "dry-run" | "on" | undefined, ghState: Parameters<typeof fakeGh>[0], pii = false, ghOverride?: (inner: SdlcGh, order: string[]) => SdlcGh, screen?: (text: string) => void) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-mirror-")), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 }), notices: string[] = [], order: string[] = [];
   cleanups.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
   const gh = fakeGh(ghState);
   const run: SdlcGh = async (args, ...rest) => { order.push(args[0] === "api" && args.includes("event=COMMENT") ? "mirror" : args.some(a => a.includes("statusCheckRollup")) ? "merge-read" : "read"); return gh.run(args, ...rest); };
-  const tasks = new Tasks({ board, bus, cwd: dir, project: "mirror", repository: "owner/repo", roles: { claude: ["conductor"] }, routing: () => loadRouting(dir), notify: text => notices.push(text),
+  const routing = loadRouting(dir);
+  if (screen) { routing.signals.pii_screen = "local"; routing.constraints.pii = "local_only"; }
+  const tasks = new Tasks({ board, bus, cwd: dir, project: "mirror", repository: "owner/repo", roles: { claude: ["conductor"] }, routing: () => routing, ...(screen ? { piiScreen: async text => { screen(text); return { label: "clear" as const, ms: 1 }; } } : {}), notify: text => notices.push(text),
     sdlc: { config: () => sdlcConfig({ mode: "off", required_checks: ["gate"], ...(autoMerge ? { auto_merge: autoMerge } : {}) }), gh: ghOverride ? ghOverride(run, order) : run } });
   const made = board.propose(USER, { title: "secret-title-marker", class: "implement" });
   board.update(made.id, USER, "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });
@@ -268,6 +271,23 @@ test("PII: a private task's mirror is its headline alone, and neither its title 
   const ordinary = rig("on", { head: A });
   await ordinary.tasks.done("codex", ordinary.id, "done"); await ordinary.tasks.review(USER, ordinary.id, "approved", "contact 900101-1234567 about it", undefined, A); await settle();
   expect(ordinary.gh.posts()).toHaveLength(1); expect(ordinary.gh.posts()[0]![7]).not.toContain("900101");
+});
+
+test("anchored review screens prose without source quotes and mirrors only its verdict headline", async () => {
+  const screened: string[] = [], r = rig("on", { head: A }, false, undefined, text => screened.push(text));
+  await r.tasks.done("codex", r.id, "done");
+  screened.length = 0;
+  const quote = "SOURCE_QUOTE_CANARY";
+  const anchor: ReviewAnchor = { path: "src/quoted.ts", side: "head", contentHash: "c".repeat(64), selectors: [{ kind: "textQuote", exact: quote, prefix: "", suffix: "" }] };
+  await r.tasks.review(USER, r.id, "approved", "Public review note", undefined, A, undefined,
+    [{ id: "quoted-finding", pass: "bugs", severity: "nit", disposition: "fixed", rationale: "The implementation changed", anchor }]);
+  await settle();
+  expect(screened).toHaveLength(1);
+  expect(screened[0]).toContain("Public review note");
+  expect(screened.join("\n")).not.toContain(quote);
+  const expected = `body=agent-hub verdict: approved (task #${r.id}, reviewer user)`;
+  expect(r.gh.posts()).toHaveLength(1);
+  expect(r.gh.posts()[0]![7]).toBe(expected);
 });
 
 test("the verdict is saved and returned whatever the mirror does: gh throws, gh fails, the post fails", async () => {

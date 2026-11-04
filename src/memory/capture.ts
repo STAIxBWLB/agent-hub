@@ -1,3 +1,4 @@
+import { reviewCaptureExcluded } from "../hub/memory-policy.ts";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { defaultCapturePeer } from "../adapters/definitions/native-identity-defaults.ts";
 import { BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, HANDOFF_TOOLS, QUESTION_TOOLS, STUDY_TOOLS } from "../hub/hub-tools.ts";
@@ -38,7 +39,7 @@ export class Capture {
   }
 
   observe(call: { tool: string; args: string; output: string; id: string; paths: string[]; sourceId?: string }): void {
-    if (!this.sessionId || ((MEMORY_READ_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || BOUNDED_TASK_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || CAPABILITY_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || STUDY_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || HANDOFF_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, ""))) || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_memory_correct") || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_source_read" || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_set_title" || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_evidence_record" || this.opts.skip?.includes(call.tool)) return;
+    if (!this.sessionId || reviewCaptureExcluded(call.tool, call.args) || ((MEMORY_READ_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || BOUNDED_TASK_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || CAPABILITY_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || STUDY_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || HANDOFF_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, ""))) || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_memory_correct") || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_source_read" || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_set_title" || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_evidence_record" || this.opts.skip?.includes(call.tool)) return;
     // #1053: a question and its answer are the person's and the peer's words: never memory evidence, whatever the call's paths say.
     if (QUESTION_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, ""))) return;
     // Anything that names a denylisted path is kept out of memory entirely, input and output alike.

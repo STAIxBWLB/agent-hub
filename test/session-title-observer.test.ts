@@ -1,3 +1,4 @@
+import { isReviewObserverExcluded } from "../src/hub/memory-policy.ts";
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
@@ -28,7 +29,7 @@ test("a failing optional title journal read cannot skip invocation, pending task
   let reads = 0;
   const unexpected = () => { throw new Error("unrelated policy/effect path reached"); };
   const context = {
-    Buffer, HUB, randomUUID, definitionOf, isWsPeer, remoteEnvelope, sessionTitleBindings,
+    Buffer, HUB, randomUUID, definitionOf, isWsPeer, remoteEnvelope, sessionTitleBindings, isReviewObserverExcluded, progress:{clearPeer(){}},
     bus: { peers: new Map([["pi", peer]]), onDelivered: undefined as unknown },
     firstTitleMessages: new Map(), titleBindings: { pi: { session: "native-session", delivery: "old-delivery", envelope: "old-envelope" } },
     journal: { get: () => { reads++; throw new Error("journal unavailable"); } },
@@ -50,16 +51,18 @@ test("unknown optional journal evidence does not fail live DOING projection", as
   const start = source.indexOf("  const doingRows ="), end = source.indexOf("  // A Claude session's title", start);
   const privacy = source.split("\n").find(line => line.startsWith("  const contextPii ="))!;
   const titleStart = source.indexOf("  const titlePrivate ="), titleEnd = source.indexOf("  type TitleResult", titleStart);
+  const scopeStart = source.indexOf("  const reviewObserverHeld ="), scopeEnd = source.indexOf("  const invocations =", scopeStart);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  expect(scopeStart).toBeGreaterThan(0); expect(scopeEnd).toBeGreaterThan(scopeStart);
   const peer = new NativeTitlePeer(); await peer.start();
   const unexpected = () => { throw new Error("unexpected privacy port call"); };
-  const context = { definitionOf, remoteEnvelope, isClosedTaskState, DOING_STUB, SESSION_TITLE_HINT, unnamedSessionLabel,
-    bus: { peers: new Map([["pi", peer]]), stateOf: () => peer.state }, board: { list: () => [], peerTaskSignals: () => [] },
+  const context = { definitionOf, remoteEnvelope, isReviewObserverExcluded, isClosedTaskState, DOING_STUB, SESSION_TITLE_HINT, unnamedSessionLabel,
+    bus: { peers: new Map([["pi", peer]]), stateOf: () => peer.state, lastDeliveredTo:()=>[] }, board: { list: () => [], peerTaskSignals: () => [] },
     tasks: { isPii: unexpected, publicMetadataText: unexpected }, turns: new Map(), doings: new Map(), privateTitleWrites: new Map(),
-    firstTitleMessages: new Map(), titleBindings: { pi: { session: "native-session", delivery: "d1", envelope: "e1" } },
+    firstTitleMessages: new Map(), titleBindings: { pi: { session: "native-session", delivery: "d1", envelope: "e1" } }, readReviewObserverScope: () => undefined,
     journal: { get: () => { throw new Error("journal unavailable"); } }, extracted: undefined as unknown,
   };
-  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${privacy}\n${source.slice(titleStart, titleEnd)}\n${source.slice(start, end)}\nglobalThis.extracted=doingRows;`);
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${privacy}\n${source.slice(scopeStart, scopeEnd)}\n${source.slice(titleStart, titleEnd)}\n${source.slice(start, end)}\nglobalThis.extracted=doingRows;`);
   runInNewContext(script, context);
   expect((context.extracted as (ids: string[]) => unknown)(["pi"])).toEqual({});
 });

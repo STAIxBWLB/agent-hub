@@ -147,15 +147,17 @@ import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 test("in-process evidence receipts stay JSON when the peer has held-delivery metadata", async () => {
   const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8");
   const start = source.indexOf("  const conductedMutations ="), end = source.indexOf("  const deliveryRetryAllowed =", start);
+  const scopeStart = source.indexOf("  const reviewObserverHeld ="), scopeEnd = source.indexOf("  const invocations =", scopeStart);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  expect(scopeStart).toBeGreaterThan(0); expect(scopeEnd).toBeGreaterThan(scopeStart);
   const readOnly = source.split("\n").find(line => line.startsWith("  const readOnlyPeer ="))!, readTools = source.split("\n").find(line => line.startsWith("const READ_ONLY_HUB_TOOLS ="))!;
   const result = { id: "ev:" + "a".repeat(32), revision: 1, taskId: 7 };
   const unexpected = () => { throw new Error("unrelated authority path reached"); };
   let hints = 0;
   const context = { Error, PreEffectToolRefusal, conductorPeer, ownerToolEffect, declarations: {}, config: { roles: {} }, turns: new Map(), reviewerToolObservers: new Map(),
-    sourceReadCurrent: unexpected, runningReviewAuthority: unexpected, auditConduct: unexpected,
+    sourceReadCurrent: unexpected, runningReviewAuthority: unexpected, auditConduct: unexpected, readReviewObserverScope: () => undefined,
     ownHeldHint: () => { hints++; return "held-delivery control metadata"; }, taskOpBody: async () => JSON.stringify(result), extracted: undefined as unknown };
-  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${readOnly}\n${readTools}\nlet taskOpsInFlight=0;\n${source.slice(start, end)}\nglobalThis.extracted=taskOp;`);
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${readOnly}\n${readTools}\nlet taskOpsInFlight=0;\n${source.slice(scopeStart, scopeEnd)}\n${source.slice(start, end)}\nglobalThis.extracted=taskOp;`);
   runInNewContext(script, context);
   const run = context.extracted as (by: string, op: string, input: unknown, inProcess: boolean) => Promise<string>;
   expect(JSON.parse(await run("codex", "hub_evidence_record", { taskId: 7 }, true))).toEqual(result); expect(hints).toBe(0);

@@ -188,12 +188,14 @@ test("a thrown metadata screen and a PII turn refuse before the title setter (pr
   const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8");
   const begin = source.indexOf("  const titleWrites ="), end = source.indexOf("  const observeDoing =", begin);
   const contextLine = source.split("\n").find(line => line.startsWith("  const contextPii ="))!;
+  const scopeStart = source.indexOf("  const reviewObserverHeld ="), scopeEnd = source.indexOf("  const invocations =", scopeStart);
+  expect(scopeStart).toBeGreaterThan(0); expect(scopeEnd).toBeGreaterThan(scopeStart);
   const peer = new TitlePeer(); await peer.start();
   const privateTitleWrites = new Map(), bus = { peers: new Map([["local", peer]]) };
-  const context = { privateTitleWrites, bus, stopping: false, recoveryActive: () => false, definitionOf,
+  const context = { privateTitleWrites, bus, stopping: false, recoveryActive: () => false, definitionOf, readReviewObserverScope: () => undefined,
     sessionTitleText, SESSION_TITLE_HINT, observeDoing: () => {}, turns: new Map(), board: { peerTaskSignals: () => [] }, isClosedTaskState,
     tasks: { publicMetadataText: (): boolean => { throw new Error("metadata screen unavailable"); }, isPii: (task: { signals: string[] }) => task.signals.includes("pii") }, extracted: undefined as unknown };
-  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${contextLine}\n${source.slice(begin, end)}\nglobalThis.extracted=setSessionTitle;`);
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${contextLine}\n${source.slice(scopeStart, scopeEnd)}\n${source.slice(begin, end)}\nglobalThis.extracted=setSessionTitle;`);
   runInNewContext(script, context);
   const set = context.extracted as (peer: string, title: unknown, only: boolean, privateTurn?: boolean) => Promise<unknown>;
   expect(await set("local", "do not write", true)).toMatchObject({ ok: false, reason: "private", error: expect.any(String) });

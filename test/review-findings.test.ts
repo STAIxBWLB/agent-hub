@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { ReviewAnchor, ReviewSelector } from "@staix/agent-console/contract";
 const findings = () => import("../src/hub/review-findings.ts");
 const item = (id = "bugs:one", severity: "important" | "nit" = "important", disposition: "open" | "fixed" | "false_positive" | "accepted" = "open") => ({ id, pass: "bugs" as const, severity, disposition });
 const options = { person: false, maxNits: 5 };
@@ -124,4 +125,27 @@ test("R1 nits remain head-bound while historical unbound Important carries to kn
   expect(findingTally(findingsForHead(sets))).toMatchObject({ openImportant: 1, openNit: 1 });
   const settled = [...sets, { head: "B", items: [{ ...important, disposition: "fixed" as const }] }];
   expect(findingTally(findingsForHead(settled)).openImportant).toBe(0);
+});
+
+
+test("optional review anchors roundtrip all acon selectors without changing legacy finding bytes", async () => {
+  const { parseReviewFindings } = await findings();
+  const selectors: ReviewSelector[] = [
+    {kind: "lineRange", startLine: 1, endLine: 2},
+    {kind: "textQuote", exact: "quote", prefix: "", suffix: ""},
+    {kind: "diffHunk", hunkHeader: "@@ -1 +1 @@"},
+    {kind: "structural", scheme: "heading", ref: "Methods"},
+    {kind: "region", x: 1, y: 2, width: 10, height: 5, page: 1},
+  ];
+  const legacy = {...item(), path: "report.md", rationale: "unchanged"};
+  expect(JSON.stringify(parseReviewFindings([legacy], options))).toBe(JSON.stringify([legacy]));
+  for (const selector of selectors) {
+    const anchor: ReviewAnchor = {path: "report.md", side: "head", contentHash: "a".repeat(64), selectors: [selector]};
+    const parsed = parseReviewFindings([{...legacy, anchor}], options);
+    expect(parsed[0]?.anchor).toEqual(anchor);
+    expect(() => parseReviewFindings([{...legacy, path: "other.md", anchor}], options)).toThrow("path and anchor.path differ");
+  }
+  const anchor = {path: "report.md", selectors: [{kind: "textQuote", exact: "가".repeat(171), prefix: "", suffix: ""}]};
+  expect(() => parseReviewFindings([{...legacy, anchor}], options)).toThrow("hub bound");
+  expect(() => parseReviewFindings([{...legacy, anchor: {...anchor, surprise: true}}], options)).toThrow();
 });

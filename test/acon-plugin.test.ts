@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,11 +20,12 @@ afterEach(() => { for (const s of servers.splice(0)) s.stop(true); for (const d 
 const PERMISSION = { t: "permission", id: "perm-1", peer: "kimi", title: "execute: fixture command", createdAt: 1_790_000_000_000, expiresAt: Date.now() + 60_000,
   options: [{ optionId: "yes", kind: "allow_once", name: "Allow" }, { optionId: "no", kind: "reject_once", name: "Deny" }] };
 
-function fixture(o: { stallSnapshots?: boolean; spaceBudgetMs?: number } = {}) {
+function fixture(o: { stallSnapshots?: boolean; spaceBudgetMs?: number; features?: readonly string[]; stallReview?: boolean; forwardTimeoutMs?: (action:string, nominalMs:number)=>number } = {}) {
   const home = mkdtempSync(join(tmpdir(), "ahub-acon-")); dirs.push(home);
   const project: ProjectRecord = { id: "p1", root: "/tmp/acon-project", stateDir: join(home, "state"), basePort: 4700, instanceId: "i1", pid: 42 };
   const registry = { get: (id: string) => id === project.id ? project : undefined, list: () => [project], close() {} } as any;
   const lifecycle: Lifecycle = { inspectProject: async () => ({ state: "running", status: { instanceId: "i1", peers: {} } }), startProject: async () => ({}), stopProject: async () => {} };
+  const controls: Record<string, unknown>[] = [];
   const actions: Record<string, unknown>[] = [], snapshots: Record<string, unknown>[] = [];
   let permissions = [PERMISSION];
   const hub = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { if (server.upgrade(req)) return; return new Response("no", { status: 400 }); }, websocket: {
@@ -35,6 +37,7 @@ function fixture(o: { stallSnapshots?: boolean; spaceBudgetMs?: number } = {}) {
         status: { peers: { kimi: { state: "busy", queued: 2, permissionMode: "default" }, codex: { state: "idle" } } },
         events: [{ seq: 1, event: { t: "envelope", env: { from: "codex", to: ["kimi"], kind: "chat", priority: "status", ts: Date.now(), body: "MARKER-1012 body", refs: { task: "7" } } } }],
         tasks: [{ id: 7, title: "Review the parser", detail: "MARKER-1012 detail", class: "implement", state: "in_review", owner: "codex", reviewer: "user" }, { id: 8, title: "Other", state: "in_review", owner: "codex", reviewer: "claude" }, { id: 9, title: "Wire the space", class: "implement", state: "in_progress", owner: "kimi" }] })); }
+      if (["review_comment_put", "review_comment_delete", "review_comment_send", "review_comments", "review_blob"].includes(m.t)) { controls.push(m); if(o.stallReview)return; return void ws.send(JSON.stringify({ rid: m.rid, ok: true })); }
       if (m.t === "ui_action") { actions.push(m.action); if (m.action.action === "permit") permissions = []; return void ws.send(JSON.stringify({ rid: m.rid, ok: true })); }
     },
   } });
@@ -42,8 +45,8 @@ function fixture(o: { stallSnapshots?: boolean; spaceBudgetMs?: number } = {}) {
   mkdirSync(project.stateDir, { recursive: true });
   writeFileSync(join(project.stateDir, "status.json"), JSON.stringify({ pid: process.pid, controlPort: hub.port, protocol: PROTOCOL, cwd: project.root, projectId: project.id, instanceId: "i1" }));
   writeFileSync(join(project.stateDir, "control-token"), "scripted-token");
-  const provider = createProvider({ home, registry, lifecycle, ...(o.spaceBudgetMs ? { spaceBudgetMs: o.spaceBudgetMs } : {}) });
-  return { home, provider, actions, snapshots };
+  const provider = createProvider({ home, registry, lifecycle, features: o.features, forwardTimeoutMs:o.forwardTimeoutMs, ...(o.spaceBudgetMs ? { spaceBudgetMs: o.spaceBudgetMs } : {}) });
+  return { home, provider, actions, snapshots, controls };
 }
 
 describe("acon plugin manifest", () => {
@@ -298,4 +301,68 @@ describe("ahub setup registration", () => {
     expect(registerAconPlugin(home, join(home, "missing.ts"))).toHaveProperty("error");
     expect(existsSync(`${aconManifestPath(home)}.${process.pid}.tmp`)).toBe(false);
   });
+});
+
+
+describe("anchored review person bridge (#1056)", () => {
+  const person = { identity: "access:verified-person", node: "fixture-node", via: "console" as const };
+  const target = { projectId: "p1", instanceId: "i1", task: 7 };
+  test("review writes use direct console control and only second-argument person metadata", async () => {
+    const f = fixture({ features: ["action.meta"] });
+    await f.provider.action({ ...target, action: "review_comment_put", body: "review body" }, person);
+    const remove = { ...target, action: "review_comment_delete", id: "comment-1", revision: 1 };
+    const removePreview = await f.provider.action(remove, person);
+    expect(removePreview).toMatchObject({ ok: false, needsConfirm: true, preview: ["Delete or dismiss this review comment on task #7."] });
+    if (!("fingerprint" in removePreview) || typeof removePreview.fingerprint !== "string") throw new Error("missing delete confirmation");
+    await f.provider.action({ ...remove, confirmed: true, fingerprint: removePreview.fingerprint }, person);
+    const send = { ...target, action: "review_comment_send", ids: ["comment-2"] };
+    const preview = await f.provider.action(send, person);
+    expect(preview).toMatchObject({ ok: false, needsConfirm: true });
+    expect(f.controls).toHaveLength(2);
+    if (!("fingerprint" in preview) || typeof preview.fingerprint !== "string") throw new Error("missing review confirmation");
+    await f.provider.action({ ...send, confirmed: true, fingerprint: preview.fingerprint }, person);
+    expect(f.actions).toEqual([]);
+    expect(f.controls.map(row => row.t)).toEqual(["review_comment_put", "review_comment_delete", "review_comment_send"]);
+    for (const row of f.controls) expect(row.personMeta).toEqual(person);
+    expect(f.controls[0]).toMatchObject({ instanceId: "i1", task: 7, body: "review body" });
+    expect(f.controls[0]).not.toHaveProperty("action");
+    await f.provider.close?.();
+  });
+  test("old consoles, absent metadata and page-supplied identity never reach a write", async () => {
+    const old = fixture();
+    expect(await old.provider.action({ ...target, action: "review_comment_put" }, person)).toMatchObject({ ok: false });
+    expect(old.controls).toEqual([]);
+    const f = fixture({ features: ["action.meta"] });
+    expect(await f.provider.action({ ...target, action: "review_comment_put" })).toMatchObject({ ok: false });
+    for (const key of ["author", "meta", "personMeta", "at", "state", "sentAt"]) {
+      expect(await f.provider.action({ ...target, action: "review_comment_put", [key]: "forged" }, person)).toMatchObject({ ok: false });
+    }
+    expect(await f.provider.action({ ...target, projectId: "missing", action: "review_comment_put" }, person)).toMatchObject({ ok: false });
+    expect(await f.provider.action({ ...target, instanceId: "stale-instance", action: "review_comment_put" }, person)).toMatchObject({ ok: false });
+    expect(f.controls).toEqual([]);
+    expect(f.actions).toEqual([]);
+    await old.provider.close?.(); await f.provider.close?.();
+  });
+  test("review material is a pinned read without accepting page person metadata", async () => {
+    const f = fixture();
+    expect(await f.provider.snapshot({ after: 0, panel: "review_blob", ...target, path: "draft.md", side: "head", personMeta: person })).toMatchObject({ ok: true });
+    expect(f.controls).toHaveLength(1);
+    expect(f.controls[0]).toMatchObject({ t: "review_blob", instanceId: "i1", task: 7, path: "draft.md", side: "head" });
+    expect(f.controls[0]).not.toHaveProperty("personMeta");
+    expect(f.actions).toEqual([]);
+    await f.provider.close?.();
+  });
+});
+
+
+test("review timeout stays unconfirmed and the production dashboard shows task readback guidance",async()=>{
+  const f=fixture({features:["action.meta"],stallReview:true,forwardTimeoutMs:()=>5});
+  try{
+    const result=await f.provider.action({action:"review_comment_put",projectId:"p1",instanceId:"i1",task:7,body:"bounded"},{identity:"local",node:"fixture",via:"console"});
+    expect(result).toMatchObject({ok:false,unconfirmed:true,text:"Review result is unconfirmed. Refresh and check the task before retrying."});
+    const html=readFileSync(new URL("../src/ui/index.html",import.meta.url),"utf8"),start=html.indexOf("async function action("),end=html.indexOf("function button(",start),notices:unknown[]=[];
+    const action=runInNewContext(html.slice(start,end)+";action",{stopped:false,managerMode:false,canMutate:()=>true,context:()=>({generation:1}),post:async()=>result,notice:(text:unknown)=>notices.push(text)} ) as (payload:unknown)=>Promise<boolean>;
+    expect(await action({action:"review_comment_put"})).toBe(false);
+    expect(notices).toEqual(["Review result is unconfirmed. Refresh and check the task before retrying."]);
+  }finally{await f.provider.close?.();}
 });

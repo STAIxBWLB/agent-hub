@@ -1,5 +1,7 @@
 import { types } from "node:util";
 import { sanitize } from "./envelope.ts";
+import { parseReviewAnchor } from "./review-anchor.ts";
+import type { ReviewAnchor } from "@staix/agent-console/contract";
 
 export interface ReviewFinding {
   id: string;
@@ -8,6 +10,7 @@ export interface ReviewFinding {
   path?: string;
   disposition: "open" | "fixed" | "false_positive" | "accepted";
   rationale?: string;
+  anchor?: ReviewAnchor;
 }
 export interface ReviewFindingSet { head?: string; items: ReviewFinding[] }
 export interface ReviewFindingTally { important: number; nit: number; openImportant: number; openNit: number; fixed: number; falsePositive: number; accepted: number }
@@ -19,7 +22,7 @@ function fields(raw: unknown): Record<string, PropertyDescriptor> {
     || ![Object.prototype, null].includes(Object.getPrototypeOf(raw)) || Object.getOwnPropertySymbols(raw).length) return fail("plain own-data finding required");
   const descriptors: Record<string, PropertyDescriptor> = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(raw));
   if (Object.values(descriptors).some(field => !Object.hasOwn(field, "value") || !field.enumerable)) return fail("accessors and hidden fields refused");
-  if (Object.keys(descriptors).some(key => !["id", "pass", "severity", "path", "disposition", "rationale"].includes(key))) return fail("unknown finding field");
+  if (Object.keys(descriptors).some(key => !["id", "pass", "severity", "path", "disposition", "rationale", "anchor"].includes(key))) return fail("unknown finding field");
   return descriptors;
 }
 function text(raw: unknown, max: number, path: boolean): string {
@@ -50,8 +53,10 @@ export function parseReviewFindings(raw: unknown, options: { person: boolean; ma
     if (disposition !== "open" && disposition !== "fixed" && disposition !== "false_positive" && disposition !== "accepted") return fail("invalid finding disposition");
     const path = item.path ? text(item.path.value, 512, true) : undefined;
     const rationale = item.rationale ? text(item.rationale.value, 2048, false) : undefined;
+    const anchor = item.anchor ? parseReviewAnchor(item.anchor.value) : undefined;
+    if (path !== undefined && anchor && path !== anchor.path) return fail("path and anchor.path differ; use the same task-scoped file path");
     if (disposition === "accepted" && (!options.person || !rationale)) return fail("accepted findings require a person and rationale");
-    return { id, pass, severity, disposition, ...(path !== undefined ? { path } : {}), ...(rationale !== undefined ? { rationale } : {}) };
+    return { id, pass, severity, disposition, ...(path !== undefined ? { path } : {}), ...(rationale !== undefined ? { rationale } : {}), ...(anchor ? { anchor } : {}) };
   });
   if (result.filter(item => item.severity === "nit").length > options.maxNits) return fail("nit limit exceeded");
   if (Buffer.byteLength(JSON.stringify(result)) > MAX_BYTES) return fail("finding report exceeds 64 KiB");
