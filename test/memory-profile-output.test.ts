@@ -16,3 +16,15 @@ test("human shared-v1 status omits a zero malformed count and older status remai
   expect(text).toContain("shared-v1"); expect(text).not.toContain("malformed");
   expect(plain({ peers: {} })).toContain("agent-hub");
 });
+
+test("human memory status reports automatic sync state without leaking error details", () => {
+  const canary = "private-memory-entry-id-DO-NOT-SHOW";
+  const text = renderStatus({ peers: {}, memoryProfile: { profile: "shared-v1", state: "ready", skippedRows: 0, agentMemVersion: "0.20.1",
+    sync: { state: "failed", at: Date.parse("2026-11-05T00:00:00Z"), cause: "declined", declinedCount: 4, nextStep: canary } } })
+    .map(row => row.map(span => span.text).join(" ")).join("\n");
+  expect(text).toContain("memory sync");
+  expect(text).toContain("automatic");
+  expect(text).toContain("failed (declined, 4 declined)");
+  expect(text).toContain("ahub memory declined");
+  expect(text).not.toContain(canary);
+});

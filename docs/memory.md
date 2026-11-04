@@ -1,6 +1,6 @@
 # Hub memory integration
 
-Agent-hub consumes the exact-pinned first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library (current pin `0.18.0`, initial pin `0.1.1`). The package owns portable storage, tiers, graph, goals, sync, import and raw commands. Agent-hub owns caller authority, current project privacy policy, task lifecycle integration and presentation. Claude-mem is an optional, explicit import source only; runtime recall and capture make no worker HTTP requests.
+Agent-hub consumes the exact-pinned first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library (the exact pin is in [package.json](../package.json); initial pin `0.1.1`). The package owns portable storage, tiers, graph, goals, sync, import and raw commands. Agent-hub owns caller authority, current project privacy policy, task lifecycle integration and presentation. Claude-mem is an optional, explicit import source only; runtime recall and capture make no worker HTTP requests.
 
 ## Portable core and data directory
 
@@ -260,3 +260,15 @@ Only an open, visible Memory view requests dashboard code work. Console task det
 Machine-local `corpus.paths` can supply public `note:<path>#heading` evidence to `ahub ask` and task briefs. It is separate from durable amem notes: the hub writes no corpus body into the index or store, never reads an Obsidian vault from disk, and applies deny/`pii.paths` before reads and full-note screening before excerpts. Native memory counts exclude corpus rows. Existing brief item caps and priority fail notes remain in force.
 
 PII questions and private task contexts do not query the corpus or shared observers. PII ask inference requires a positive `onCampus()` result, the pinned local fixed model and `onCampusOnly: true` through dispatch; unknown locality returns evidence without a model answer. Task/privacy/policy changes across awaits discard a brief before observation. Ask answers recheck the PII and note-PII verdicts of their gathered task rows and the caller-private context before dispatch and publication; unrelated board activity does not discard an answer. Corpus paths may be enabled with memory off; they are never exported as persistent memory automatically.
+
+## Automatic sync health (#1173)
+
+Profile readiness and sync health are separate. `ahub status` and the dashboard Memory row show the current daemon's last automatic sync attempt: not run, ok, or failed with a closed cause, declined count when known, and a next step. Upstream error text, remote URLs, row IDs and private patterns do not enter this status. This state is process-local; a restart starts at not run until its first attempt. A successful attempt resets the failure episode.
+
+Sync uses the configured agent-mem standalone policy, narrowed by the hub's current deny paths, PII patterns and project-private paths. Direct long-term writes clear that same policy before append. The core promotion callback rechecks each authored note payload: a declined note stays short while allowed notes can promote. Source logs are not rewritten. A policy is captured per attempt; the existing profile/selector and hub policy-version fences still apply, without claiming an atomic cross-process policy transaction.
+
+An unchanged failure emits one safe log line per episode. Where complete physical inspection is available, the signature covers every declined ID rather than the error's first-eight-ID excerpt. Counts or IDs changing cause a new line.
+
+`ahub memory declined [--json]` is a person-only, read-only inspection. It reports physical outbound row IDs and safe policy categories, never title, body, path nodes or literal private patterns. Reads defer promotions and recheck the profile binding. Forgotten originals still matter: `forget` changes materialized visibility but leaves the source row in append-only history. Do not use it as a promise to clear a sync refusal.
+
+The pinned 0.20.1 public API supports generation snapshots but has no bounded shared-v1 physical inspection API. Shared-v1 inspection therefore reports incomplete, not an empty set; complete legacy ID listing and exact complete-set failure dedupe remain blocked on [agent-mem#260](https://github.com/STAIxBWLB/agent-mem/issues/260). The hub does not import private package helpers or duplicate its log reader. Per-row local placement that avoids a whole-sync refusal belongs to [agent-mem#261](https://github.com/STAIxBWLB/agent-mem/issues/261); this hub-side work does not implement that core protocol or alter live memory.

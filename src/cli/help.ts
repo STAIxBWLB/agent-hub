@@ -158,6 +158,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub memory sync [--remote <private git url>] | machine [--label <name>]", "sync hub memory with your other machines through a private git remote (a person's), or show or name this machine"],
     ["ahub memory import claude-mem [--db <path>] [--limit N] [--restart] | dedupe [--apply] | suggestions | confirm|reject <id>", "copy the hub's notes from claude-mem into hub memory (a person's); review the model's suggested edges"],
     ["ahub memory decay [--days N] [--json]", "person only: list long-term entries older than N days (default 90) that no open goal links; review only, nothing is changed"],
+    ["ahub memory declined [--json]", "person only: list declined physical outbound row ids and safe rule labels; never shows row text; reports incomplete scans explicitly"],
     ["ahub memory profile-check [--json]", "read-only check of the running hubs' memory bindings against their memory profiles; exits 1 when one is not ready"],
     ["ahub goal [list] [--all] | show <id> [--json]", "long-term tasks: state, which machine holds each and until when, linked board tasks"],
     ["ahub goal new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task> | state <id> <state> | done <id> | take <id> [--force]", "a person's changes to long-term tasks (link also the configured conductor's); take --force voids other machines' claims"],

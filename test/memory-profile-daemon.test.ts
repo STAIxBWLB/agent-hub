@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CandidateStore, MemoryStore, memoryProjectKey, migrate, realPath, type SyncResult } from "@staix/agent-mem";
+import { Board } from "../src/hub/board.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon, type DaemonOptions, type HubConfig } from "../src/hub/daemon.ts";
+import { USER } from "../src/hub/envelope.ts";
 import { MemoryTelemetry } from "../src/hub/memory-candidates.ts";
 
 // Real daemon/control transports and the installed package, with synthetic homes only.
@@ -37,10 +39,12 @@ function legacyRows(memoryDir: string): Record<string, string> {
   }));
 }
 
-async function hub(f: ReturnType<typeof fixture>, memory: Partial<HubConfig["memory"]> = {}, options: Partial<DaemonOptions> = {}) {
+async function hub(f: ReturnType<typeof fixture>, memory: Partial<HubConfig["memory"]> = {}, options: Partial<DaemonOptions> = {}, configOverrides: Partial<HubConfig> = {}) {
+  let syncNow: (() => Promise<void>) | undefined;
   const daemon = await startDaemon({ cwd: f.cwd, stateDir: f.stateDir, projectId: "p-profile", instanceId: "i-profile",
     controlPort: 0, codexAppPort: 0, codexProxyPort: 0, ...options,
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
+    memorySyncTrigger: run => { syncNow = run; options.memorySyncTrigger?.(run); },
+    config: { ...DEFAULT_CONFIG, ...configOverrides, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: true, sync_interval_min: 0, ...memory } } });
   cleanup.push(() => daemon.stop());
   const person = await ControlClient.connect(f.stateDir, { role: "console" }); cleanup.push(() => person.close());
@@ -59,7 +63,7 @@ async function hub(f: ReturnType<typeof fixture>, memory: Partial<HubConfig["mem
     expect(reply.status.memoryProfile).not.toBeNull();
     return reply.status.memoryProfile;
   };
-  return { daemon, person, peer, tools, task, status };
+  return { daemon, person, peer, tools, task, status, syncNow: async () => { if (!syncNow) throw new Error("sync trigger was not bound"); await syncNow(); } };
 }
 
 async function packageCli(argv: string[], cwd: string): Promise<string> {
@@ -77,6 +81,57 @@ test("daemon default binding is shared v1 at AMEM_HOME independently of project 
   expect(store.list({ project: f.project }).some(note => note.text === "shared default synthetic note")).toBe(true);
   expect(existsSync(join(f.stateDir, "memory"))).toBe(false);
   expect(existsSync(join(f.memoryDir, "profile.json"))).toBe(false);
+});
+
+test("real daemon publishes automatic machine sync outcomes and logs one line per failure episode", async () => {
+  const f = fixture();
+  const outcomes: SyncResult[] = [
+    { ok: false, pushed: false, entries: 0, error: "push failed: https://secret.invalid/remote" },
+    { ok: false, pushed: false, entries: 0, error: "push failed: https://secret.invalid/remote" },
+    { ok: true, pushed: false, entries: 0 },
+    { ok: false, pushed: false, entries: 0, error: "push failed: https://secret.invalid/remote" },
+  ];
+  const h = await hub(f, { sync_interval_min: 10 }, { memorySync: async () => outcomes.shift()! });
+  expect((await h.status()).sync).toEqual({ state: "notrun" });
+  await h.syncNow();
+  expect((await h.status()).sync).toMatchObject({ state: "failed", cause: "transport", nextStep: "run ahub memory sync as a person" });
+  await h.syncNow();
+  expect((await h.status()).sync.state).toBe("failed");
+  const firstLog = readFileSync(join(f.stateDir, "hub.log"), "utf8");
+  expect(firstLog.match(/hub memory sync failed: transport/g)).toHaveLength(1);
+  expect(firstLog).not.toContain("secret.invalid");
+  await h.syncNow();
+  expect((await h.status()).sync).toMatchObject({ state: "ok" });
+  await h.syncNow();
+  const finalLog = readFileSync(join(f.stateDir, "hub.log"), "utf8");
+  expect(finalLog.match(/hub memory sync failed: transport/g)).toHaveLength(2);
+  const snapshot = await h.person.request({ t: "ui_snapshot", after: 0, view: "memory" });
+  expect(snapshot.memorySync).toMatchObject({ state: "failed", cause: "transport" });
+  expect(JSON.stringify(snapshot.memorySync)).not.toContain("secret.invalid");
+});
+
+test("machine sync screening resolves task paths only for task keys bound to this project", async () => {
+  const f = fixture();
+  // Seed a pre-existing public board row before the private-path policy is loaded by the daemon.
+  const board = new Board(join(f.stateDir, "hub.db"));
+  const seededTask = board.propose(USER, { title: "pre-existing task with private ref", class: "implement", refs: { paths: ["private/own-task.txt"] } });
+  board.close();
+  const taskId = seededTask.id, created = seededTask.created;
+  let foreignAllowed: boolean | undefined, ownDeclined: boolean | undefined;
+  const h = await hub(f, { sync_interval_min: 10 }, {
+    memorySync: async (_store, options) => {
+      const screen = options.screen!;
+      const own = { project: f.project, task: `${f.project}#${taskId}@${created}`, title: null, text: "safe synthetic note", about: [], source: "person" };
+      const foreignProject = "foreign.example/repo";
+      const foreign = { ...own, project: foreignProject, task: `${foreignProject}#1@${created}` };
+      foreignAllowed = screen(foreign);
+      ownDeclined = !screen(own);
+      return { ok: true, pushed: false, entries: 0 };
+    },
+  }, { pii: { paths: ["private/own-task.txt"] } });
+  await h.syncNow();
+  expect(foreignAllowed).toBe(true);
+  expect(ownDeclined).toBe(true);
 });
 
 test("migrated daemon bridges legacy and package CLI and tools cross-read and cross-write only the generation", async () => {

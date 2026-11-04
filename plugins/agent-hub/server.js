@@ -24581,6 +24581,12 @@ init_tool_refusal();
 
 // src/hub/tasks.ts
 init_memory_policy();
+
+// src/hub/memory-sync-policy.ts
+init_src();
+var GENERATED2 = new Set(["id", "schema", "op", "at", "machine", "actor", "target", "promotedFrom", "supersedes", "expires", "by", "tier", "scope", "kind", "source"]);
+
+// src/hub/tasks.ts
 init_profiles();
 init_workflow();
 

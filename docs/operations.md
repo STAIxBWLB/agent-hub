@@ -6138,3 +6138,11 @@ Anchored-finding observer scope conservatively lasts until task close, including
 An owner/reviewer change does not dispose of an earlier review delivery. Its original recipient remains excluded from shared-memory capture while that delivery is queued or unsettled. Dismissing comments does not dispose of the envelope: inspect `ahub queue list --peer <original-recipient>` and explicitly settle the relevant delivery when appropriate.
 
 Comment resolution does not end the current review input. Manual shared-memory writes remain held until ordinary new input arrives. A reviewer still receives the owner's completion summary, but its review envelope remains observer-excluded and reviewer scope persists through the active review.
+
+## Memory sync diagnosis (#1173)
+
+A ready memory profile does not prove a successful sync. Read the separate automatic-sync result and timestamp in `ahub status` or Memory. It resets to not run after daemon restart; it is not a machine-global record of manual CLI attempts.
+
+For a privacy refusal, a person runs `ahub memory declined --json` to inspect IDs and safe rule categories. `complete:false` means the scan is unavailable or over its diagnostic bound; it does not mean zero declined rows. The pinned shared-v1 API currently lacks a bounded physical inspection path (agent-mem#260), so that profile remains incomplete until a published core API is adopted. No migration or policy edit is performed automatically.
+
+For a transport or unknown failure, run `ahub memory sync` as a person to see the local diagnostic. Logs keep only the cause class and known declined count, once per unchanged failure episode. Review the offending source or approved policy; a forget operation does not remove its original text from physical history. Keeping declined rows local while allowing other publication is the separate agent-mem#261 handoff.
