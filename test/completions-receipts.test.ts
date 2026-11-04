@@ -69,6 +69,24 @@ test("two callers racing to mark one result read produce one receipt", () => {
   expect(s.listWithState()[0]).toMatchObject({ seenAt: 1, surface: "terminal" });
 });
 
+test("retention bounds the table: past the keep line the oldest READ completions go with their receipts, and an unread one or an open run is never deleted", () => {
+  const s = store();
+  const made = Array.from({ length: 8 }, (_, i) => settled(s, i + 1));
+  // read the five oldest, leave the three newest unread
+  for (const c of made.slice(0, 5)) s.markSeen(c.id, 1000, "terminal");
+  expect(s.prune(2)).toBe(3);                                                       // the three oldest read ones beyond the two kept
+  const left = s.listWithState().map(row => row.id).sort();
+  expect(left).toEqual([...made.slice(3).map(c => c.id)].sort());                    // 2 read + 3 unread remain
+  expect(s.unread().map(c => c.id).sort()).toEqual(made.slice(5).map(c => c.id).sort());
+  expect(s.prune(2)).toBe(0);                                                       // nothing more to prune
+  expect(s.prune(0)).toBe(2);                                                       // keep zero read ones: the two read go, the unread stay
+  expect(s.unread()).toHaveLength(3);
+  // an open run is untouched by retention
+  s.openRun({ peer: "pi", runTurn: "pi#r.1", lastTurn: "pi#r.1", startedAt: 1, private: false, evidence: {}, signalled: false });
+  s.prune(0);
+  expect(s.openRuns()).toHaveLength(1);
+});
+
 // --- the pure parts ----------------------------------------------------------------------------------------------------------------------------------------------------
 test("ahub results parses one closed request and refuses a malformed or combined one", () => {
   expect(parseResultsArgs([])).toEqual({ ok: true, value: { action: "list", unread: false } });

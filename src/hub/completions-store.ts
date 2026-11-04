@@ -132,6 +132,20 @@ export class CompletionStore {
     return write();
   }
 
+  /**
+   * Retention (#1054 review nit): the table is bounded. Past `keep` completions the oldest READ ones go, with their receipts; an unread completion is never deleted, so a person who has
+   * not looked yet loses nothing, and neither does an open run. A pruned completion's first-turn id could be settled again only by a replay of a run that ended long ago, which no code path makes.
+   * Returns how many completions it deleted.
+   */
+  prune(keep = 500): number {
+    const write = this.db.transaction(() => {
+      const doomed = (this.db.query(`SELECT c.id FROM completions c JOIN completion_receipts r ON r.completion_id = c.id ORDER BY c.settled_at DESC, c.id DESC LIMIT -1 OFFSET ?`).all(Math.max(0, keep)) as { id: string }[]).map(row => row.id);
+      for (const id of doomed) { this.db.query("DELETE FROM completion_receipts WHERE completion_id = ?").run(id); this.db.query("DELETE FROM completions WHERE id = ?").run(id); }
+      return doomed.length;
+    });
+    return write();
+  }
+
   /** What an older daemon would silently orphan: an open run, or a completion nobody has seen. */
   hasPending(): boolean {
     return (this.db.query(`SELECT (EXISTS(SELECT 1 FROM completion_runs)

@@ -6111,6 +6111,7 @@ A run you started (a message you sent to a peer, from the console, `ahub say` or
 - `ahub results --read <id>` marks one read (it must exist and be unread). `--read-all` marks every unread result of the project. `--unread-last` lights the most recent read one again by deleting its receipt.
 - An unread result is a `result` need at level `watch` in `ahub status` and `ahub console` (ids, the peer and the time only): it never makes the state read as waiting, blocked or review. The console stream tells you once, with no text.
 - `result_seen` and `results` are console-role control messages that always reply; an agent's connection and an agent shell (`ahub results` is the person's command) are refused, and nothing a peer writes counts as a receipt.
+- Retention: the table is bounded. At each start the hub keeps the newest 500 READ results and deletes older read ones with their receipts; an unread result is never deleted, and neither is an open run. A hub restart while a peer is under a budget pause ends its open run with no result (a pause stays a budget need, `ahub budget`), whatever work was still pending; any other open run settles `interrupted`, once.
 - Recovery: a hub from before this feature ignores the tables, so a target without the `completions` label is refused while a run is open (let it settle) or a result is unread (`ahub results --read-all`, or use a supporting release).
 
 ## Questions for the person: `hub_ask` (#1053)

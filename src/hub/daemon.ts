@@ -4760,8 +4760,15 @@ export async function startDaemon(opts: DaemonOptions) {
   const quietStop = (peer: PeerId): void => { try { const run = runs.get(peer); if (run) { completionStore.dropRun(run.runTurn); runs.quietStop(peer); } } catch { log(`completion quiet stop for ${peer} failed; its run stays open`); } };
   /** Restart reconstruction: an open run row whose process is gone settles `interrupted`, once. The unique run turn makes any number of restarts yield one completion per run. */
   const reconstructRuns = (): void => {
-    try { for (const open of completionStore.openRuns()) completionDone(open.peer, { ...open, evidence: {}, signalled: false }, "interrupted"); }
-    catch { log("completion reconstruction failed; the open runs stay recorded"); }
+    // A peer under a budget pause ends its run WITHOUT a completion (a pause stays a budget need, `ahub budget`), whatever work is still pending: the paused peer cannot drain it, and a restart
+    // must not turn it into an `interrupted` result. Persist before remove, one run at a time, so a write that throws leaves that run's row for the next start.
+    for (const open of completionStore.openRuns()) {
+      try {
+        if (budget.record(open.peer)) completionStore.dropRun(open.runTurn);
+        else completionDone(open.peer, { ...open, evidence: {}, signalled: false }, "interrupted");
+      } catch { log(`completion reconstruction for ${open.peer} failed; its run stays recorded`); }
+    }
+    try { completionStore.prune(); } catch { log("completion retention pass failed; the table keeps its rows"); }
   };
   const permissions = new Map<string, { push: string; peer: string; tool?: string; createdAt: number; expiresAt: number; done: (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason?: "expired" | "cancelled") => boolean }>();
   let stopping = false;
