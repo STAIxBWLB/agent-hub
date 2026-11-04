@@ -46,7 +46,7 @@ async function rig() {
     project: projectChain(root).at(-1)!, close: async () => { for (const client of clients) client.close(); board.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); } };
 }
 
-function receipt(response: any) { expect(response.ok, response.error).toBe(true); const result = JSON.parse(response.text); expect(Object.keys(result).sort()).toEqual(["id", "revision", "taskId"]); return result; }
+function receipt(response: { ok?: boolean; error?: string; text?: string }) { expect(response.ok, response.error).toBe(true); const result = JSON.parse(response.text ?? ""); expect(Object.keys(result).sort()).toEqual(["id", "revision", "taskId"]); return result; }
 
 test("evidence recording is research-only publication, recognized for dispatch/capture and absent from readonly/dev tools", () => {
   expect(profileTaskTools("dev")).toBe(TASK_TOOLS);
