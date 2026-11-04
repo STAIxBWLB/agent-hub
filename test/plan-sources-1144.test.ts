@@ -133,3 +133,32 @@ test("#1144 PII plan sources remain stored but are absent from public views and 
   expect(r.tells).toEqual([]);
   expect(r.notices.join("\n")).not.toContain(r.other);
 });
+
+test("#1161 splitBacklog refuses a part naming an unregistered source before the board write, and a registered one splits", async () => {
+  const r = await rig();
+  const card = await r.tasks.propose(USER, { title: "split me", class: "implement", backlog: true });
+  const before = r.board.get(card.id)!, count = r.board.list().length;
+  r.effects.length = 0; r.notices.length = 0;
+  const bad = [{ title: "first", plan: { sources: [r.source] } }, { title: "second", plan: { sources: [r.source, unknown] } }];
+  await expect(r.tasks.splitBacklog(USER, { id: card.id, revision: before.planningRevision ?? 0, parts: bad, reason: "parts" })).rejects.toThrow(new PreEffectToolRefusal(`unknown source ${unknown}; list registered ids with ahub source list`).message);
+  await expect(r.tasks.splitBacklog(USER, { id: card.id, revision: before.planningRevision ?? 0, parts: bad, reason: "parts" })).rejects.toBeInstanceOf(PreEffectToolRefusal);
+  expect(r.board.get(card.id)).toEqual(before);
+  expect(r.board.get(card.id)!.planningRevision ?? 0).toBe(before.planningRevision ?? 0);
+  expect(r.board.list()).toHaveLength(count);
+  expect(r.notices).toEqual([]);
+  const good = await r.tasks.splitBacklog(USER, { id: card.id, revision: before.planningRevision ?? 0, parts: [{ title: "first", plan: { sources: [r.source] } }, { title: "second", plan: { sources: [r.source, r.other] } }], reason: "parts" });
+  expect(good.children).toHaveLength(2);
+  expect(r.board.get(good.children[1]!.id)?.plan?.sources).toEqual([r.source, r.other]);
+});
+
+test("#1161 the hub's intake split refuses an unregistered part source the same way, leaving the draft whole", async () => {
+  const r = await rig();
+  const draft = await r.tasks.propose(USER, { title: "intake draft", class: "implement", backlog: true, draft: true });
+  const before = r.board.get(draft.id)!, count = r.board.list().length;
+  const bad = [{ title: "first" }, { title: "second", plan: { sources: [unknown] } }];
+  await expect(r.tasks.splitBacklog("hub", { id: draft.id, revision: before.planningRevision ?? 0, parts: bad, reason: "intake: split by the hub model" }, { intake: true })).rejects.toThrow(`unknown source ${unknown}; list registered ids with ahub source list`);
+  expect(r.board.get(draft.id)).toEqual(before);
+  expect(r.board.list()).toHaveLength(count);
+  const ok = await r.tasks.splitBacklog("hub", { id: draft.id, revision: before.planningRevision ?? 0, parts: [{ title: "first" }, { title: "second", plan: { sources: [r.other] } }], reason: "intake: split by the hub model" }, { intake: true });
+  expect(ok.children).toHaveLength(2);
+});
