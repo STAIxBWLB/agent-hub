@@ -20,7 +20,7 @@ function rig() {
     sdlc: {config: () => sdlcConfig({mode: "off", required_checks: []}), gh: async args => { observers.push(JSON.stringify(args)); return {code: 1, stdout: ""}; }} });
   cleanup.push(() => {tasks.stopCiWatchers(); bus.closeJournal(); board.close(); rmSync(cwd, {recursive: true, force: true});});
   const create = () => {
-    const task = board.propose("user", {title: "synthetic anchored review", class: "implement", refs: {paths: ["report.md", "private/report.md"], commit: HEAD}});
+    const task = board.propose("user", {title: "synthetic anchored review", class: "implement", refs: {paths: ["report.md"], commit: HEAD}});
     board.update(task.id, "user", "accepted", {state: "in_progress", owner: "codex", reviewer: "claude"});
     return board.update(task.id, "codex", "done", {state: "in_review"});
   };

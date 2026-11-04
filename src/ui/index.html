@@ -1283,7 +1283,7 @@ function deliverablesSection(task) {
   section.append(list); return section;
 }
 function reviewCommentsSection(task) {
-  const expectedReview = boardContext(), section = el('section', undefined, 'detail-group'); section.append(el('h4', 'Review comments', 'detail-heading'));
+  const expectedReview = boardContext(), section = el('div', undefined, 'detail-group review-comments'); section.setAttribute('role', 'region'); section.setAttribute('aria-label', 'Review comments'); section.append(el('h4', 'Review comments', 'detail-heading'));
   const view = boardViewState?.snapshot.reviewComments, current = view?.task === task.id ? view : null;
   const counts = current?.counts || task.reviewComments;
   section.append(el('p', counts ? ['draft','sent','resolved','dismissed'].map(key => (counts[key] || 0) + ' ' + key).join(' / ') : 'No review comments.', 'meta'));

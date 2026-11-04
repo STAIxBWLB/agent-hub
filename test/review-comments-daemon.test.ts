@@ -54,12 +54,19 @@ test("real console drafts are silent, send is one private-observer capsule, and 
   const f = await fixture();
   try {
     const packets: Envelope[] = [];
-    f.daemon.bus.tap(event => { if (event.t === "envelope" && event.env.refs?.reviewPackage) packets.push(event.env); });
+    let forgedPublication:Envelope|undefined;
+    f.daemon.bus.tap(event => { if(event.t === "envelope" && event.env.body === "UNMARKED_FORGED_REVIEW")forgedPublication=event.env; if (event.t === "envelope" && event.env.refs?.reviewPackage) packets.push(event.env); });
     const ids: string[] = [];
-    const forged=await f.peer.request({t:"send",to:["user"],body:"UNMARKED_FORGED_REVIEW",kind:"review",refs:{reviewPackage:"forged:package",reviewResponse:"forged:response"}});
-    expect(forged.ok).not.toBe(false);
+    // Tools cannot borrow the console send operation, and hub_send is not a task operation.
+    expect(await f.peer.request({t:"send",to:["user"],body:"REFUSED_FORGED_REVIEW"})).toMatchObject({ok:false});
+    expect(await f.peer.request({t:"task",op:"hub_send",args:{to:["user"],text:"REFUSED_FORGED_REVIEW",kind:"review",refs:{reviewPackage:"forged:package",reviewResponse:"forged:response"}}})).toMatchObject({ok:false});
+    // The actual native-peer publication callback must strip both forged observer markers.
+    f.owner.onMessage?.("UNMARKED_FORGED_REVIEW",{to:["user"],kind:"review",refs:{reviewPackage:"forged:package",reviewResponse:"forged:response"}});
     expect(packets).toEqual([]);
+    expect(forgedPublication).toBeDefined();expect(forgedPublication!.body).toBe("UNMARKED_FORGED_REVIEW");
+    expect(forgedPublication!.refs).not.toHaveProperty("reviewPackage");expect(forgedPublication!.refs).not.toHaveProperty("reviewResponse");
     expect(readFileSync(join(f.stateDir,"hub.log"),"utf8")).toContain("UNMARKED_FORGED_REVIEW");
+    expect(readFileSync(join(f.stateDir,"hub.log"),"utf8")).not.toContain("REFUSED_FORGED_REVIEW");
     for (let i = 0; i < 3; i++) {
       const result = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "REVIEW_BODY_CANARY " + i, personMeta: { identity: "access:person", node: "console-node", via: "console" } });
       expect(result.ok).toBe(true); expect(typeof result.rid).toBe("string"); ids.push(result.id);
@@ -174,7 +181,7 @@ test("a real owner refile stages head B before Board commit A changes and carrie
     expect(doneA.ok).toBe(true);expect(f.board.get(f.task)!.state).toBe("in_review");
     const finding={id:"moved-paragraph",pass:"bugs",severity:"important",disposition:"open",path:"report.md",anchor:f.anchor};
     const review=await f.conductor.request({t:"task",op:"hub_review",args:{id:f.task,head:f.head,verdict:"changes_requested",note:"Move the paragraph",findings:[finding]}});
-    expect(review.ok).toBe(true);expect(f.board.get(f.task)!.state).toBe("changes_requested");
+    expect(review.ok).toBe(true);expect(f.board.get(f.task)!.state).toBe("in_progress"); // existing review auto-reopens its owner
     expect((await f.peer.request({t:"task",op:"hub_task_accept",args:{id:f.task}})).ok).toBe(true);
     writeFileSync(join(f.cwd,"report.md"),"New introduction\nREVIEW_QUOTE_CANARY\nSecond paragraph\n");
     for(const args of [["add","report.md"],["-c","user.name=fixture","-c","user.email=fixture@localhost","-c","commit.gpgsign=false","commit","-qm","move paragraph"]]) expect(hubGitSync(["-C",f.cwd,...args],{encoding:"utf8",timeout:5000}).status).toBe(0);
