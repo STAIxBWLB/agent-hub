@@ -36,7 +36,9 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
     || (command === "worktrees" && args.some(arg => arg === "--confirm" || arg.startsWith("--confirm=")))
     || (command === "agents" && !args.every(arg => arg === "--json"))
     // #1053: an answer is the person's choice, recorded as the person's; an agent that could run it through `--live-test` would answer its own hub_ask as the person. Any operand answers (the set, a pick, --other); a bare listing stays allowed.
-    || (command === "answer" && args.some(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color=")));
+    || (command === "answer" && args.some(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color=")))
+    // #1054: a receipt is the person's record that they read a result and clears their unread need; no delegation, live-test or otherwise, may write one. A plain listing stays allowed.
+    || (command === "results" && args.some(arg => arg === "--read" || arg.startsWith("--read=") || arg === "--read-all" || arg === "--unread-last"));
 }
 
 export type CliIdentity =

@@ -12,7 +12,7 @@ import { needs, summarizeNeeds } from "../src/ui/needs.ts";
 import { attentionCommand, attentionResults, consoleNeeds } from "../src/cli/attention.ts";
 import { parseResultsArgs } from "../src/cli/results-args.ts";
 import { HELP, helpCommands } from "../src/cli/help.ts";
-import { classifyPeerCommand, cliCommandLabel } from "../src/cli/identity.ts";
+import { classifyPeerCommand, cliCommandLabel, LIVE_TEST_PERSON_REFUSAL, liveTestRefusal } from "../src/cli/identity.ts";
 import { realPath } from "../src/hub/project.ts";
 import { gitProject } from "./fakes/git-project.ts";
 
@@ -137,6 +137,9 @@ test("the help line matches the command, which is the person's and never an agen
   expect(cliCommandLabel("results", ["--read", "cmp-0123456789ab"])).toBe("results read");     // the audit never names the id
   expect(cliCommandLabel("results", ["--read-all"])).toBe("results read-all");
   expect(cliCommandLabel("results", [])).toBe("results");
+  // a delegated `--live-test` run is promoted to console identity unless refused here: every receipt-writing form is refused, a listing is not
+  for (const args of [["--read", "cmp-0123456789ab"], ["--read=cmp-0123456789ab"], ["--read-all"], ["--unread-last"], ["--json", "--read-all"], ["--unread", "--read-all"]]) expect(liveTestRefusal("results", args), args.join(" ")).toBe(true);
+  for (const args of [[], ["--unread"], ["--json"], ["--unread", "--json"]]) expect(liveTestRefusal("results", args), args.join(" ")).toBe(false);
 });
 
 test("an unread result is a watch need: it never makes the state waiting, blocked or review, and carries ids only", () => {
@@ -318,6 +321,16 @@ test("the real ahub process lists, marks read, marks all read and relights, prin
   const refused = await f.cli(["results", "--read-all"], { AGENTHUB_PEER_ID: "codex" });
   expect(refused.code).toBe(1);
   expect(JSON.stringify((await f.person.request({ t: "results" })).results)).toBe(before);
+  // the delegated form: `--live-test` from an agent shell would be promoted to console identity unless refused, so every receipt-writing form is refused and writes nothing; the ordinary agent-shell forms too
+  const target = ((await f.person.request({ t: "results" })).results as { id: string }[])[0]!.id;
+  for (const args of [["--live-test", "results", "--read-all"], ["--live-test", "results", "--read", target], ["--live-test", "results", `--read=${target}`], ["--live-test", "results", "--unread-last"],
+    ["results", "--read", target], ["results", `--read=${target}`], ["results", "--unread-last"]]) {
+    const denied = await f.cli(args, { AGENTHUB_PEER_ID: "codex" });
+    expect(denied.code, args.join(" ")).toBe(1);
+    // the delegated form must be refused as a person-attributed write, not merely fail later for want of an audit outbox
+    if (args[0] === "--live-test") expect(denied.stderr, args.join(" ")).toContain(LIVE_TEST_PERSON_REFUSAL);
+    expect(JSON.stringify((await f.person.request({ t: "results" })).results), args.join(" ")).toBe(before);
+  }
 });
 
 // --- the console ---------------------------------------------------------------------------------------------------------------------------------------------------------
