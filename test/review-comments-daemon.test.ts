@@ -420,6 +420,24 @@ test("recovery refuses an old target when persisted review input state cannot be
   } finally { await f.stop(); }
 });
 
+test("a failed review-hold write keeps pull-only scope held and raises the recovery feature floor", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "failed persistence review scope" });
+    expect((await f.person.request({ t: "review_comment_send", task: f.task, ids: [saved.id] })).delivery).toBe("queued");
+    const db = new Database(join(f.stateDir, "hub.db"));
+    try { db.run("CREATE TRIGGER reject_review_input_hold BEFORE INSERT ON review_input_holds BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END"); } finally { db.close(); }
+    expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.reviewPackage !== undefined)).toBe(true);
+    const taskB = proposeOwnedTask(f.board, "codex", { title: "ordinary after failed hold write", class: "test", refs: { paths: ["outside.md"], commit: f.head } });
+    const held = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "write failure cannot release pull scope", kind: "finding" } });
+    expect(held.ok).toBe(false);
+    const status = await f.person.request({ t: "status" });
+    const olderTarget = DAEMON_FEATURES.filter(feature => feature !== "review_observer_input_state");
+    const recovery = await f.person.request({ t: "recovery", op: "inspect", expectedInstanceId: status.status.instanceId, targetFeatures: olderTarget });
+    expect(recovery).toMatchObject({ ok: false, error: expect.stringContaining("review_observer_input_state") });
+  } finally { await f.stop(); }
+});
+
 test("an anchored finding submission remains latched across a daemon restart until ordinary input is acknowledged", async () => {
   const f = await fixture();
   try {
@@ -476,6 +494,29 @@ test("a review pull holds global observer scope, while an ordinary pull replaces
     expect(allowed.ok).toBe(true);
     const namedA = await f.peer.request({ t: "task", op: "hub_remember", args: { text: "Task A remains scoped", kind: "finding", task: f.task } });
     expect(namedA.ok).toBe(false);
+  } finally { await f.stop(); }
+});
+
+test("an ordinary pull inside a restarted active turn cannot release unknown review scope", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "active pull review scope" });
+    expect((await f.person.request({ t: "review_comment_send", task: f.task, ids: [saved.id] })).delivery).toBe("queued");
+    expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.reviewPackage !== undefined)).toBe(true);
+    const taskB = proposeOwnedTask(f.board, "codex", { title: "ordinary active-turn task", class: "test", refs: { paths: ["outside.md"], commit: f.head } });
+
+    await f.restartNative();
+    f.owner.markBusy();
+    f.daemon.bus.publish(newEnvelope("user", "ordinary input within active turn", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
+    expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.task === String(taskB.id))).toBe(true);
+    const stillHeld = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "active turn remains held", kind: "finding" } });
+    expect(stillHeld.ok).toBe(false);
+
+    f.owner.markIdle();
+    f.daemon.bus.publish(newEnvelope("user", "ordinary input after active turn", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
+    expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.task === String(taskB.id))).toBe(true);
+    const released = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "idle ordinary pull releases", kind: "finding" } });
+    expect(released.ok).toBe(true);
   } finally { await f.stop(); }
 });
 

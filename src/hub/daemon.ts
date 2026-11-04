@@ -1493,8 +1493,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const heldHash = journal.readReviewInput(peer, sessionHash);
       const ordinary = ordinaryReviewObserverInputs.get(peer);
       if (ordinary?.sessionHash === sessionHash) return heldHash !== undefined;
-      // A project with retained review state has no durable ordinary proof for a new or changed native session.
-      return heldHash !== undefined || journal.hasReviewInputState() || !!bus.peers.get(peer) || !!definitionOf(peer);
+      // Without matching ordinary proof, this native session remains unknown until it observes new input.
+      return true;
     } catch { return true; }
   };
   const presenceOnlyDelivery = (envs: readonly Envelope[]): boolean => envs.length === 0 || envs.every(env => env.from === HUB && env.kind === "presence");
@@ -1905,7 +1905,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const deliveryKey = reviewObserverDeliveryKey(envs), prior = pendingReviewObserverInputs.get(peer) ?? currentReviewObserverInputs.get(peer), turnId = turns.get(peer)?.id;
     const reviewInputScoped = reviewInputHeld(peer, envs);
     const sameTurnHeld = turnId !== undefined && prior?.turnId === turnId && prior.held;
-    const held = reviewInputScoped || sameTurnHeld;
+    const durableHeld = reviewObserverDurableHeld(peer);
+    const held = reviewInputScoped || sameTurnHeld || turnId !== undefined && durableHeld;
+    if (held) ordinaryReviewObserverInputs.delete(peer);
     if (held) persistReviewObserverHold(peer, envs, turnId);
     if (held) progress.clearPeer(peer);
     currentReviewObserverInputs.set(peer, { deliveryKey, outputKey: reviewObserverDeliveryKey(bus.lastDeliveredTo(peer)), ...(turnId ? { turnId } : {}), ...(turnId === undefined ? { awaitingTurn: true } : {}), held,
@@ -8582,7 +8584,8 @@ export async function startDaemon(opts: DaemonOptions) {
         try { heldReviewInput = journal.hasReviewInputState(); } catch { return "review observer input compatibility is unknown; retained privacy state could not be read"; }
         const hasOrdinaryProof = (id: PeerId): boolean => {
           const sessionHash = reviewObserverStableSessionHash(id), ordinary = ordinaryReviewObserverInputs.get(id);
-          return !!sessionHash && !!ordinary && ordinary.sessionHash === sessionHash;
+          const current = currentReviewObserverInputs.get(id), pending = pendingReviewObserverInputs.get(id);
+          return !!sessionHash && !!ordinary && ordinary.sessionHash === sessionHash && current?.held !== true && current?.reviewInputScoped !== true && pending?.held !== true && pending?.reviewInputScoped !== true;
         };
         const unprovenNative = [...bus.peers].some(([id, peer]) => !id.includes("@") && peer.state !== "offline" && !!definitionOf(id) && !hasOrdinaryProof(id));
         const snapshotUnproven = recoveryPeerSnapshot?.some(saved => {
