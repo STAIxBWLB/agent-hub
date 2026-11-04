@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 export type PeerId = string;
 export type PeerState = "idle" | "busy" | "paused" | "offline";
 export type Priority = "important" | "status" | "fyi";
-/** Every envelope kind, once: the journal, the restart reader, the deferred-notice check and the held-delivery hints all read this list. `invocation` and `invocation_result` are #445 C2. */
-export const KINDS = ["chat", "task", "review", "status", "budget", "presence", "invocation", "invocation_result"] as const;
+/** Every envelope kind, once: the journal, the restart reader, the deferred-notice check and the held-delivery hints all read this list. `invocation` and `invocation_result` are #445 C2, `answer` is #1053: a hub-built late answer (or expiry notice) to a question, `refs.question` names the set. */
+export const KINDS = ["chat", "task", "review", "status", "budget", "presence", "invocation", "invocation_result", "answer"] as const;
 export type Kind = (typeof KINDS)[number];
 
 export interface Envelope {
@@ -16,7 +16,7 @@ export interface Envelope {
   kind: Kind;
   priority: Priority;
   body: string; // agent conclusions only, never tool noise
-  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string; reviewRevision?: string; taskOffer?: number; taskCancelled?: number; taskRecipient?: "owner" | "reviewer" | "planner"; planReview?: number; planReviewFlow?: number; planAuthor?: string; backlog?: number[]; supervision?: boolean; supervisionKey?: string; completedFor?: number; boundedCheck?: string; budgetResume?: string; budgetResumeMoves?: { id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]; budgetResumeEarlier?: string[]; invocation?: string; invocationRemote?: true };
+  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string; reviewRevision?: string; taskOffer?: number; taskCancelled?: number; taskRecipient?: "owner" | "reviewer" | "planner"; planReview?: number; planReviewFlow?: number; planAuthor?: string; backlog?: number[]; supervision?: boolean; supervisionKey?: string; completedFor?: number; boundedCheck?: string; budgetResume?: string; budgetResumeMoves?: { id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]; budgetResumeEarlier?: string[]; invocation?: string; invocationRemote?: true; question?: string };
   /** The body must not be shown outside its recipients: console tail and log print a stub instead (PII tasks). */
   private?: boolean;
   /** Sent by a distinct session (`<peer>~<origin>`, agent-hub#1036): a connection that named a peer id but is not that peer's current session. It grants nothing; it marks the sender for the log. */

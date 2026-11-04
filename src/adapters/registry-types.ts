@@ -208,6 +208,8 @@ export interface AdapterDefinition {
   title?: "native" | "hub";
   /** Fixed builtins only: the title slot survives native-session restoration. Absent means ephemeral. */
   titlePersistence?: "native";
+  /** #1053: how long a `hub_ask` call waits for the person before it answers `pending` (milliseconds). MCP peers 45 s, hub-native peers 300 s; config `questions.wait_ms.<kind>` overrides it. Fixed builtins only. */
+  questionWaitMs?: number;
   /** External module data-only opt-in. The verified loader derives the internal instances policy from it (#754). */
   headlessInstances?: { form: "headless"; roles: readonly ("implementer" | "verifier" | "reviewer")[] };
   /** Declaration admission only; execution-root and runtime owner proof remain host responsibilities. */

@@ -21,7 +21,7 @@ export const PROTOCOL = 17;
 /** The descriptor's legacy protocol field remains this floor for previous published clients. */
 export const PROTOCOL_MIN = 16;
 // Literal metadata is read without executing a recovery target; consistency is pinned in tests.
-export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "research_runners", "task_handoff", "session_identity", "schema_guard", "design_specs", "queue_discard_states", "tool_write_idempotency", "research_evidence"] as const;
+export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "research_runners", "task_handoff", "session_identity", "schema_guard", "design_specs", "queue_discard_states", "tool_write_idempotency", "research_evidence", "questions"] as const;
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
 export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, 16, PROTOCOL] as const;
 
@@ -117,9 +117,16 @@ const instancePins = new Map<string, { instanceId: string }>();
 /** Maximum supported 3600 s approval plus admission/transport margin; applies to every hub_invoke client path. */
 export const INVOCATION_CONTROL_TIMEOUT_MS = 3_665_000;
 export function controlRequestTimeout(msg: Record<string, unknown>, requested = 30_000): number {
+  if (msg.t === "task" && msg.op === "hub_ask" && requested !== 0) return Math.max(Number.isFinite(requested) ? requested : 0, QUESTION_CONTROL_TIMEOUT_MS);
   return msg.t === "task" && msg.op === "hub_invoke" && requested !== 0
     ? Math.max(Number.isFinite(requested) ? requested : 0, INVOCATION_CONTROL_TIMEOUT_MS) : requested;
 }
+/**
+ * #1053: `hub_ask` holds its request open for the daemon's bounded wait (at most `QUESTION_WAIT_MAX_MS`) plus a margin, so the client's own 30 s cap never turns a
+ * working wait into "no answer from the hub". The daemon, not this bound, decides when the wait ends.
+ */
+export const QUESTION_WAIT_MAX_MS = 600_000;
+export const QUESTION_CONTROL_TIMEOUT_MS = QUESTION_WAIT_MAX_MS + 15_000;
 
 
 /** One authenticated control connection. `request` correlates replies by `rid`; everything else goes to `onPush`. */
@@ -237,7 +244,7 @@ export class ControlClient {
 
   private requestBody(msg: Record<string, unknown>, timeoutMs: number, signal?: AbortSignal): Promise<any> {
     if (this.ws.readyState !== WebSocket.OPEN || this.closing && msg.t !== "request_cancel") return Promise.resolve({ ok: false, error: "hub connection is not open" });
-    const invocation = msg.t === "task" && msg.op === "hub_invoke";
+    const invocation = msg.t === "task" && (msg.op === "hub_invoke" || msg.op === "hub_ask");
     const operation = toolWriteOperation(msg), write = operation !== undefined;
     const keyedWrite = write && operation !== "hub_delivery_done";
     if (keyedWrite && msg.args && typeof msg.args === "object" && !Array.isArray(msg.args) && Object.hasOwn(msg.args, "request_id")) {
@@ -273,7 +280,7 @@ export class ControlClient {
         if (invocation && this.ws.readyState === WebSocket.OPEN) {
           try { this.ws.send(JSON.stringify({ t: "request_cancel", request: rid })); } catch { /* Socket close also withdraws admission. */ }
         }
-        done(write ? uncertain(error) : { ok: false, error: invocation ? `${error}; invocation admission unconfirmed, inspect before retrying` : error });
+        done(write ? uncertain(error) : { ok: false, error: invocation ? `${error}; ${msg.op === "hub_ask" ? "the question may still be open: it is answered later as a message of kind answer, or never" : "invocation admission unconfirmed, inspect before retrying"}` : error });
       };
       const aborted = () => abandon("hub request cancelled");
       this.pending.set(rid, done);

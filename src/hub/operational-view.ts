@@ -77,6 +77,11 @@ function metadataValue(type:string,key:string,value:unknown):boolean {
 
 /** Shared by the daemon's existing console stream and operational projection tests. */
 export function redactBusEvent(e:BusEvent):BusEvent {
+  // #1053: the person's answer to a question is theirs and the asking peer's: the console tail and the dashboard feed show a stub, whoever the envelope is private for.
+  if ("env" in e && (e.env.kind==="answer" || e.env.refs?.question)) {
+    const set=e.env.refs?.question;
+    return {...e,env:{...e.env,refs:set?{question:set}:undefined,body:`[question ${set ?? "answer"}: body shown only to its peer]`}};
+  }
   if (!("env" in e) || !e.env.private) return e;
   const {refs,...env}=e.env;
   const task=refs?.task && /^[0-9]+$/.test(refs.task)?refs.task:undefined;
