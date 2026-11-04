@@ -1,7 +1,7 @@
 import { repoGitArgs, repoGitEnv } from "./snapshots.ts";
 import { createReviewMaterialReader, type ReviewReadRequest, type ReviewMaterialBatch } from "./review-material.ts";
 import { readSdlcPr } from "./sdlc.ts";
-import type { ActionMeta } from "./acon-review-contract.d.ts";
+import type { ActionMeta } from "@staix/agent-console/contract";
 import { isReviewObserverExcluded, reviewCaptureExcluded } from "./memory-policy.ts";
 import { RoomStoreError } from "../rooms/store.ts";
 import { RoomCommands, type RoomPreview } from "../rooms/commands.ts";
@@ -1453,6 +1453,7 @@ export async function startDaemon(opts: DaemonOptions) {
   if (staleOff()) log("experiment: stale notices are delivered as before 0.12.4 (the issue #106 ablation)");
   const requestedPeerStops = new Set<string>();
   const queuePolicy = () => queueBackpressurePolicy(config.tasks.queue_backpressure);
+  let readReviewObserverScope: ((peer: PeerId) => string | undefined) | undefined;
   let remotePending = (_room: string): readonly string[] => [];
   let remoteQueueChanged = () => {};
   const bus: Bus = new Bus({ rostered: membershipAllowed, ...busReaders, trackQueuePressure: () => { const policy = queuePolicy(); return policy.max_queued > 0 || policy.max_oldest_s > 0; }, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
@@ -1467,6 +1468,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return sender === USER ? false : !bus.peers.has(sender) || !!turns.get(sender)?.private || contextPii(sender);
     },
     doing: (peer, kind, text) => observeDoing(peer, kind, text),
+    reviewObserverScope: peer => readReviewObserverScope ? readReviewObserverScope(peer) : "review-scope-unavailable",
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (isWsPeer(p)) p.notifyQueued(counts); } });
   startupCleanup.push(() => bus.closeJournal());
   const claudeLaunchProof = createClaudeLaunchProof({ stateDir: opts.stateDir, cwd: opts.cwd, instanceId, definitionOf, peer: peer => bus.peers.get(peer) });
@@ -1844,6 +1846,11 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const inboxPolling = new InboxPolling();
   const board = new Board(join(opts.stateDir, "hub.db"));
+  readReviewObserverScope = peer => board.hasReviewObserverScope(peer) ? "open-review-comments" : undefined;
+  const reviewObserverHeld = (peer: PeerId): boolean => {
+    try { return readReviewObserverScope ? readReviewObserverScope(peer) !== undefined : true; }
+    catch { return true; }
+  };
   const invocations = new InvocationLedger(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => invocations.close());
   bus.canRetryInvocation = id => invocations.get(id)?.class === "read" && !invocations.relay(id);
@@ -2460,7 +2467,7 @@ export async function startDaemon(opts: DaemonOptions) {
   });
   const observeProgress = (peer: PeerId, observation: ToolObservation | undefined, taskId?: string): void => {
     if (!observation) return;
-    if (bus.lastDeliveredTo(peer).some(isReviewObserverExcluded)) { progress.clearPeer(peer); return; }
+    if (reviewObserverHeld(peer) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded)) { progress.clearPeer(peer); return; }
     if (observation.name === "hub_set_title" || observation.name === "hub_ask") return; // #1053: a question and its answer are never progress evidence (they may reach an escalation model)
     try {
       const candidates = board.list().filter(task => task.owner === peer && ["in_progress", "changes_requested"].includes(task.state));
@@ -2677,7 +2684,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const privateTitleWrites = new Map<PeerId, PeerAdapter>();
   const titleWrites = new Map<PeerId, Promise<unknown>>();
   const titlePrivate = (peer: PeerId, text?: string): boolean => {
-    try { return contextPii(peer) || text !== undefined && !tasks.publicMetadataText(text); } catch { return true; }
+    try { return reviewObserverHeld(peer) || contextPii(peer) || text !== undefined && !tasks.publicMetadataText(text); } catch { return true; }
   };
   const titlePreface = (peer: PeerId): string | undefined => definitionOf(peer)?.title === "hub" && bus.peers.get(peer)?.sessionTitle === "" && !titlePrivate(peer) ? SESSION_TITLE_HINT : undefined;
   type TitleResult = { ok: true } | { ok: false; reason: "already_named" | "private" | "invalid"; error: string; mayHaveApplied?: true };
@@ -2719,7 +2726,7 @@ export async function startDaemon(opts: DaemonOptions) {
     let tracker = doings.get(peer);
     if (!tracker) doings.set(peer, tracker = new DoingTracker());
     // Private when learned or observed in a PII context or refused by the public metadata screen; a throw is private too.
-    tracker.observe(kind, text, value => learnedPrivate || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded) || contextPii(peer) || !tasks.publicMetadataText(value));
+    tracker.observe(kind, text, value => learnedPrivate || reviewObserverHeld(peer) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded) || contextPii(peer) || !tasks.publicMetadataText(value));
   };
   /** Shown only for an attached peer; a stub while it owns or reviews a PII task or is in a private turn. */
   const doingRows = (ids: string[], includeIncomingLabels = false): Record<string, PeerDoing> => {
@@ -2727,7 +2734,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!live.length) return {};
     const pii = board.list().filter(t => !isClosedTaskState(t.state) && tasks.isPii(t));
     return Object.fromEntries(live.flatMap(id => {
-      const owner = bus.peers.get(id), privateNow = !!turns.get(id)?.private || bus.lastDeliveredTo(id).some(isReviewObserverExcluded) || pii.some(t => t.owner === id || t.reviewer === id);
+      const owner = bus.peers.get(id), privateNow = !!turns.get(id)?.private || reviewObserverHeld(id) || bus.lastDeliveredTo(id).some(isReviewObserverExcluded) || pii.some(t => t.owner === id || t.reviewer === id);
       if (definitionOf(id)?.title === "hub" && (privateNow || privateTitleWrites.get(id) === owner)) return [[id, { text: DOING_STUB, source: "title" as const, at: 0 }]];
       let view = doings.get(id)?.view(privateNow, value => titlePrivate(id, value));
       let first = firstTitleMessages.get(id);
@@ -2951,7 +2958,7 @@ export async function startDaemon(opts: DaemonOptions) {
   /** Whether a peer has a PII task open in any state: assigned and not yet accepted counts. */
   const holdsPii = (peer: PeerId) => !!turns.get(peer)?.private || board.list().some((t) => t.owner === peer && !isClosedTaskState(t.state) && t.state !== "in_review" && tasks.isPii(t));
   const memoryObservations = memoryTelemetry ? new MemoryObservations(memoryTelemetry, (peer, envs) => {
-    if (turns.get(peer)?.private || contextPii(peer) || envs.some(env => env.private || isReviewObserverExcluded(env)) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded)) return;
+    if (turns.get(peer)?.private || contextPii(peer) || reviewObserverHeld(peer) || envs.some(env => env.private || isReviewObserverExcluded(env)) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded)) return;
     for (const env of envs) {
       const task = env.refs?.task ? board.get(Number(env.refs.task)) : undefined;
       if (task && tasks.isPii(task)) return;
@@ -2963,7 +2970,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }) : undefined;
   bus.onMemoryDelivery = (peer, id, out, field) => { if (!peer.includes("@") && !out.some(env => remoteEnvelope(env) || env.to?.some(id => id.includes("@")) || env.refs?.boundedCheck)) memoryObservations?.delivery(peer, id, out, field); };
   const citeMemory = (peer: PeerId, text: string, id: string, envs: readonly Envelope[] = []) => {
-    if (peer.includes("@") || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded) || envs.some(env => isReviewObserverExcluded(env) || remoteEnvelope(env) || env.to?.some(id => id.includes("@")))) return;
+    if (peer.includes("@") || reviewObserverHeld(peer) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded) || envs.some(env => isReviewObserverExcluded(env) || remoteEnvelope(env) || env.to?.some(id => id.includes("@")))) return;
     if (!tasks.nameable(text) || looksSecret(text) || !screenMemory([{ title: null, text }]).length) return;
     memoryObservations?.cite(peer, text, id, envs);
   };
@@ -3242,9 +3249,11 @@ export async function startDaemon(opts: DaemonOptions) {
       const owner = task.owner ?? "", root = executionRoot(owner);
       const repository = repoFor(owner, budget);
       if (!repository) return unavailable();
-      const current = headState(repository, budget);
-      if (typeof task.refs.commit === "string" && /^[a-f0-9]{40}$/.test(task.refs.commit) && hubGitSync(repoGitArgs(repository, ["cat-file", "-e", `${task.refs.commit}^{commit}`]), { encoding: "utf8", maxBuffer: 1024, timeout: Math.ceil(Math.max(1, deadline - budgetNow(budget))), env: repoGitEnv(repository) }).status === 0) head = task.refs.commit;
-      else if (current?.head && /^[a-f0-9]{40}$/.test(current.head)) head = current.head;
+      // Review material is bound to the task's recorded review head. A moving
+      // worktree HEAD is not a substitute when that commit is absent locally.
+      const taskHead = task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead;
+      if (typeof taskHead === "string" && /^[a-f0-9]{40}$/.test(taskHead)
+        && hubGitSync(repoGitArgs(repository, ["cat-file", "-e", `${taskHead}^{commit}`]), { encoding: "utf8", maxBuffer: 1024, timeout: Math.ceil(Math.max(1, deadline - budgetNow(budget))), env: repoGitEnv(repository) }).status === 0) head = taskHead;
       if (!head || budgetNow(budget) >= deadline || (tasks.isPii(task) || task.signals.includes("pii") || task.signals.includes("pii_path")) || privateSnapshotWindow()) return unavailable();
       const scopes = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.sections ?? []).map(section => section.split("#")[0]!)].map(path => {
         const scoped = relative(root, resolve(root, path));
@@ -3873,7 +3882,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify({ invocation: row.id, state: "queued", note: "the result arrives later as one message from the hub, addressed to you only; do not wait for it in this turn" });
   }
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
-    const reviewTurn = bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
+    const reviewTurn = reviewObserverHeld(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
     if (reviewTurn || op === "hub_review" && reviewCaptureExcluded(op, JSON.stringify(a))) progress.clearPeer(by);
     if (op === "hub_ask") {
       // #1053: a structured question for the person. Refused before any row for a read-only instance, a PII turn's own words are marked private by the desk's `isPrivate`.
@@ -6457,7 +6466,7 @@ export async function startDaemon(opts: DaemonOptions) {
         relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? (config.mlx.enabled === false ? 8192 : Math.min(config.mlx.maxTokens ?? 2048, 8192)) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
         tools: [...TOOL_SCHEMAS.map((t) => t.function), ...sessionTitleTools([...profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off"), ...CONDUCTOR_TOOLS], adapter?.title === "hub").map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId, signal, context) => {
-          const reviewToolTurn = pi.budgetEnvelopes.some(isReviewObserverExcluded) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded);
+          const reviewToolTurn = reviewObserverHeld(peer) || pi.budgetEnvelopes.some(isReviewObserverExcluded) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded);
           if (MEMORY_READ_TOOLS.has(name)) validateMemoryRead(name, raw as Record<string, unknown>);
           if (signal?.aborted) return "error: turn cancelled before tool effects";
           if (stopping || (recoveryActive() && recoveryPhase !== "preparing")) return "error: recovery is holding tool effects";
@@ -7172,8 +7181,10 @@ export async function startDaemon(opts: DaemonOptions) {
         && (!search || (() => { const row = memoryStore?.get(note.id.slice(4), memoryProject); return !!row && `${row.title ?? ""} ${row.text}`.toLowerCase().includes(search); })()));
       Object.assign(snapshot.memory, { code: published });
     }
-    if (Number.isSafeInteger(input?.reviewTask) && Number(input?.reviewTask) > 0) {
-      return { ...snapshot, reviewComments: await tasks.reviewCommentList(USER, { task: input!.reviewTask }) };
+    if (input?.reviewRefresh === true && Number.isSafeInteger(input?.reviewTask) && Number(input?.reviewTask) > 0) {
+      const task = Number(input.reviewTask);
+      try { return { ...snapshot, reviewComments: await tasks.reviewCommentList(USER, { task }) }; }
+      catch { return { ...snapshot, reviewComments: { task, unavailable: true } }; }
     }
     return snapshot;
   }
@@ -7202,6 +7213,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const attentionStatus = status(false, true, true, true);
     let pet; try { const config = loadPetConfig(opts.cwd); pet = { enabled: config.enabled, character: config.character ?? "stai", blink: config.blink }; } catch { pet = { enabled: false }; }
     const peerView = Object.fromEntries(Object.entries(attentionStatus.peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])), boardTasks = board.list();
+    const reviewPrivacyKey = createHash("sha256").update(JSON.stringify([config.pii?.paths ?? [], config.local.deny, activeRouting().signals.pii_patterns, privateSnapshotWindow()])).digest("hex");
     const usageView = (open: boolean) => {
       // #683 U4: the roll-up runs only while the Agents view that shows it is open, never on a hidden view's 1 s poll.
       if (!open) return undefined;
@@ -7264,7 +7276,12 @@ export async function startDaemon(opts: DaemonOptions) {
       tasks: boardTasks.map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, planner: view.planner ?? null, reviewer: task.reviewer, ...holderReasons(view), deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.codeSymbols ? { codeSymbols: view.codeSymbols } : {}), ...(() => { const group = codeGroup(task, view.codeSymbols, task.plan?.symbols, tasks.publicMetadataText, tasks.isPii(task)); return group ? { codeGroup: group } : {}; })(), ...(view.cancelled ? { cancelled: view.cancelled } : {}), ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}), ...(() => { const deliverables = tasks.deliverableBadge(task); return deliverables ? { deliverables } : {}; })() };
+        const reviewHead = task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead;
+        const reviewStateKey = createHash("sha256").update(JSON.stringify([
+          task.id, task.created, reviewHead ?? null, tasks.isPii(task), task.signals.includes("pii"), task.signals.includes("pii_path"), task.owner, task.history.length,
+          reviewPrivacyKey,
+        ])).digest("hex");
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, planner: view.planner ?? null, reviewer: task.reviewer, ...holderReasons(view), deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.codeSymbols ? { codeSymbols: view.codeSymbols } : {}), ...(() => { const group = codeGroup(task, view.codeSymbols, task.plan?.symbols, tasks.publicMetadataText, tasks.isPii(task)); return group ? { codeGroup: group } : {}; })(), ...(view.cancelled ? { cancelled: view.cancelled } : {}), ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, flowRevision: task.history.length, reviewStateKey, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}), ...(() => { const deliverables = tasks.deliverableBadge(task); return deliverables ? { deliverables } : {}; })() };
       }),
       links: links.filter(link => link.tasks.every(id => { const task = board.get(id); return task && !tasks.isPii(task); })),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[accountOf(id)] ?? { windows: [] }), ...(budgetNoteOf.get(id) ? { note: budgetNoteOf.get(id)!.note, noteKind: budgetNoteOf.get(id)!.kind } : {}), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
@@ -9732,7 +9749,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });
-        void uiMemorySnapshot(msg.after ?? 0, msg.memory !== undefined || msg.reviewTask !== undefined || dashboardView(msg.view) ? { ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(msg.reviewTask !== undefined ? { reviewTask: msg.reviewTask } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined).then(value => reply(value), () => reply({ ok: false, error: "memory view unavailable" }));
+        void uiMemorySnapshot(msg.after ?? 0, msg.memory !== undefined || msg.reviewRefresh === true || dashboardView(msg.view) ? { ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(msg.reviewRefresh === true && msg.reviewTask !== undefined ? { reviewTask: msg.reviewTask, reviewRefresh: true } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined).then(value => reply(value), () => reply({ ok: false, error: "memory view unavailable" }));
         return;
       case "ui_action":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_action is a console command" });

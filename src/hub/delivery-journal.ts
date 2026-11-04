@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { Database } from "./db-schema.ts";
 import { openHubDatabase } from "./db-schema.ts";
 import type { BusSnapshot } from "./bus.ts";
@@ -855,6 +856,21 @@ export class DeliveryJournal {
       .get(id, this.projectId) as Record<string, unknown> | null;
     return row ? parseDelivery(row) : undefined;
   }
+  /** Explicit package recovery reads durable publication evidence, not the bounded in-memory reply cache. */
+  reviewEnvelopePublished(id: string, expected?: Envelope): boolean {
+    this.ensureOpen();
+    const published = this.db.query(`SELECT e.value AS envelope FROM deliveries d, json_each(d.originals) e
+      WHERE d.project_id=? AND json_extract(e.value,'$.id')=? AND json_extract(e.value,'$.from')='hub'
+      AND json_extract(e.value,'$.kind')='review' AND json_extract(e.value,'$.refs.reviewPackage') GLOB 'review-*' LIMIT 1`).get(this.projectId, id) as { envelope: string } | null;
+    // A queued/deferred publication can precede its first physical delivery row.
+    const saved = published ?? this.db.query(`SELECT e.value AS envelope FROM delivery_meta m, json_tree(m.bus_snapshot) e
+      WHERE m.project_id=? AND e.type='object' AND json_extract(e.value,'$.id')=?
+      AND json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
+      AND json_extract(e.value,'$.refs.reviewPackage') GLOB 'review-*' LIMIT 1`).get(this.projectId, id) as { envelope: string } | null;
+    if (saved && expected && !isDeepStrictEqual(validateEnvelope(JSON.parse(saved.envelope), "saved review package"), validateEnvelope(expected, "review package")))
+      throw new Error("saved review envelope differs from its publication evidence; inspect the package and queue before retrying");
+    return !!saved;
+  }
   /** Hot roster reads never materialize completed envelope history. */
   pendingPeers(): string[] {
     this.ensureOpen();
@@ -1071,9 +1087,11 @@ export class DeliveryJournal {
       ).n,
     );
     if (count <= terminalCap) return;
+    // ponytail: person-package receipts retain their terminal payload alongside the saved board package.
+    // A future package archival transaction can replace both with an IDs-only publication tombstone.
     this.db
       .query(
-        "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded','failed') AND d.id != ? AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
+        "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded','failed') AND d.id != ? AND NOT EXISTS (SELECT 1 FROM json_each(d.originals) e WHERE json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review' AND json_extract(e.value,'$.refs.reviewPackage') GLOB 'review-*') AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
       )
       .run(this.projectId, currentId, count - terminalCap);
   }

@@ -1,7 +1,7 @@
 import { parseAttemptReceipt, parseResearchRunners, verifyAttemptReceipt, type AttemptReceiptV1 } from "./research-runner.ts";
 import { canonicalJson } from "./packs.ts";
 import { parseEvidenceLink, evidenceLinkCanonical, MAX_EVIDENCE_RECORD_BYTES, type EvidenceLinkV1 } from "./research-evidence.ts";
-import { parseStoredReviewComment, reviewCommentIds, emptyReviewCommentCounts, REVIEW_COMMENT_LIMIT, type ReviewCommentRecord, type ReviewCommentFence, type ReviewCommentCounts, type ReviewCommentPackage } from "./review-comments.ts";
+import { parseStoredReviewComment, reviewCommentIds, emptyReviewCommentCounts, REVIEW_COMMENT_LIMIT, type ReviewCommentRecord, type ReviewCommentFence, type ReviewCommentCounts, type ReviewCommentPackage, type ReviewCommentPackageView } from "./review-comments.ts";
 import { parseComparisonPlan, comparisonPlanHash, evaluatorIdentityHash, parseExperimentProtocol, protocolHash, parseExperimentAttempt, parseExperimentEvent, parseExperimentHostEvidence, experimentStatus, projectExperimentWithObservations, declaredExperimentEvents,
   type ComparisonPlanV1, type ExperimentProtocolRecord, type ExperimentAttemptRecord, type ExperimentEventRecord, type ExperimentWriteFence, type DeclaredExperimentEventInput, type ExperimentHostEvidence, type ExperimentStatus } from "./research-experiments.ts";
 import type { InvocationRow } from "./invocations.ts";
@@ -418,6 +418,8 @@ const TASK_SELECT = "SELECT tasks.*, (SELECT CASE WHEN length(CAST(payload AS BL
 /** Task board in `.agenthub/state/hub.db`. It outlives the hub process: `ahub kill` leaves the file. */
 export class Board {
   private readonly db: Database;
+  private reviewObserverCacheStamp = "";
+  private readonly reviewObserverScopeCache = new Map<string, boolean>();
   private pendingChanges: { task: Task; entry: HistoryEntry }[] | undefined;
   /** Every recorded change, as it lands (telemetry, issue #40). */
   onChange?: (task: Task, entry: HistoryEntry) => void;
@@ -1058,6 +1060,86 @@ export class Board {
       this.taskWrite(() => this.db.query("INSERT INTO review_comment_packages(id,task_id,task_created,body) VALUES(?,?,?,?)").run(packet.id, task.id, task.created, JSON.stringify(packet)));
       return this.update(task.id, "user", `person review comments sent (${selected.length})`, {}, undefined, {}, task.history.length);
     });
+  }
+  reviewCommentPackages(task: number, created: number): ReviewCommentPackageView[] {
+    const rows = this.db.query("SELECT id,CASE WHEN length(CAST(body AS BLOB))<=32768 THEN body END AS body FROM review_comment_packages WHERE task_id=? AND task_created=? ORDER BY id LIMIT 65").all(task, created) as { id: string; body: string | null }[];
+    if (rows.length > 64) throw new Error("review comment package storage limit invalid; restore a trusted hub.db backup before retrying");
+    return rows.map(row => {
+      try {
+        if (typeof row.body !== "string") throw new Error();
+        const packet = JSON.parse(row.body) as ReviewCommentPackage;
+        if (!packet || packet.id !== row.id || packet.task !== task || packet.taskCreated !== created || !Array.isArray(packet.ids) || packet.ids.length < 1 || packet.ids.length > REVIEW_COMMENT_LIMIT) throw new Error();
+        const delivery = packet.delivery ?? "unconfirmed";
+        if (delivery !== "queued" && delivery !== "unconfirmed") throw new Error();
+        return { id: row.id, count: packet.ids.length, delivery: packet.body && packet.envelopeId && packet.trace && packet.ts !== undefined && packet.publicationEvidenceVersion === 1 ? delivery : "unavailable" };
+      } catch { throw new Error("review comment package storage invalid; stop the hub and restore a trusted hub.db backup, then restart and retry"); }
+    });
+  }
+  reviewCommentPackage(id: string): ReviewCommentPackage | undefined {
+    const row = this.db.query("SELECT CASE WHEN length(CAST(body AS BLOB))<=32768 THEN body END AS body FROM review_comment_packages WHERE id=?").get(id) as { body: string | null } | null;
+    if (!row) return undefined;
+    try {
+      if (typeof row.body !== "string") throw new Error();
+      const packet = JSON.parse(row.body) as ReviewCommentPackage;
+      if (!packet || packet.id !== id || !Number.isSafeInteger(packet.task) || !Number.isSafeInteger(packet.taskCreated) || !Array.isArray(packet.ids)
+        || packet.ids.length < 1 || packet.ids.length > REVIEW_COMMENT_LIMIT || reviewCommentIds(packet.ids).length !== packet.ids.length
+        || typeof packet.owner !== "string" || typeof packet.head !== "string" || typeof packet.at !== "string"
+        || packet.delivery !== undefined && packet.delivery !== "queued" && packet.delivery !== "unconfirmed"
+        || packet.publicationEvidenceVersion !== undefined && packet.publicationEvidenceVersion !== 1
+        || packet.body !== undefined && (typeof packet.body !== "string" || Buffer.byteLength(packet.body, "utf8") > 12000)
+        || packet.envelopeId !== undefined && !/^[a-f0-9-]{36}$/.test(packet.envelopeId)
+        || packet.trace !== undefined && !/^[a-f0-9-]{36}$/.test(packet.trace)
+        || packet.ts !== undefined && (!Number.isSafeInteger(packet.ts) || packet.ts < 0)) throw new Error();
+      return packet;
+    } catch { throw new Error("review comment package storage invalid; stop the hub and restore a trusted hub.db backup, then restart and retry"); }
+  }
+  markReviewCommentPackageQueued(id: string): void {
+    this.taskWrite(() => {
+      const packet = this.reviewCommentPackage(id);
+      if (!packet || !packet.body || !packet.envelopeId || !packet.trace || packet.ts === undefined) throw new Error("review comment package is unavailable for retry; inspect the task review before sending a new comment");
+      this.db.query("UPDATE review_comment_packages SET body=? WHERE id=?").run(JSON.stringify({ ...packet, delivery: "queued" }), id);
+    });
+  }
+  hasOpenReviewCommentsFor(owner: string, taskId?: number): boolean {
+    const row = this.db.query(`SELECT EXISTS(SELECT 1 FROM review_comments AS comment JOIN tasks AS task ON task.id=comment.task_id AND task.created=comment.task_created
+      WHERE task.owner=? AND comment.lifecycle='sent'${taskId === undefined ? "" : " AND task.id=?"}) AS present`).get(...(taskId === undefined ? [owner] : [owner, taskId])) as { present: number };
+    return row.present === 1;
+  }
+  /**
+   * Durable observer exclusion for sent person comments and anchored findings in the peer's current open review scope.
+   * ponytail: scope is conservative until task close; upgrade to a persisted review-package epoch for precise closure. Scans cap at 500
+   * tasks and 16 MiB aggregate history; corrupt or over-limit state fails closed. A stamp over local total_changes and cross-connection
+   * data_version makes repeated progress reads O(1) until the board changes.
+   */
+  hasReviewObserverScope(peer: string, taskId?: number): boolean {
+    try {
+      const dataVersion = this.db.query("PRAGMA data_version").get() as { data_version: number };
+      const totalChanges = this.db.query("SELECT total_changes() AS changes").get() as { changes: number };
+      const stamp = `${dataVersion.data_version}:${totalChanges.changes}`;
+      if (stamp !== this.reviewObserverCacheStamp) { this.reviewObserverScopeCache.clear(); this.reviewObserverCacheStamp = stamp; }
+      const cacheKey = JSON.stringify([peer, taskId ?? null]), cached = this.reviewObserverScopeCache.get(cacheKey);
+      if (cached !== undefined) return cached;
+      const scope = taskId === undefined ? "" : " AND id=?";
+      const params = taskId === undefined ? [peer, peer] : [peer, peer, taskId];
+      const counts = this.db.query(`SELECT COUNT(*) AS tasks, COALESCE(SUM(length(CAST(history AS BLOB))),0) AS bytes,
+          SUM(CASE WHEN json_valid(history)<>1 THEN 1 ELSE 0 END) AS invalid
+        FROM tasks WHERE state NOT IN ('approved','cancelled') AND (owner=? OR reviewer=?)${scope}`).get(...params) as { tasks: number; bytes: number; invalid: number };
+      let scoped = counts.tasks > 500 || counts.bytes > 16 * 1024 * 1024 || counts.invalid > 0;
+      if (!scoped) {
+        const comments = this.hasOpenReviewCommentsFor(peer, taskId);
+        const findings = this.db.query(`WITH candidate AS (
+            SELECT id,history FROM tasks WHERE state NOT IN ('approved','cancelled') AND (owner=? OR reviewer=?)${scope} LIMIT 501
+          )
+          SELECT EXISTS(SELECT 1 FROM candidate, json_each(candidate.history) AS history,
+            json_each(json_extract(history.value,'$.reviewFindings.items')) AS item
+            WHERE json_type(history.value,'$.reviewFindings.items')='array'
+              AND json_type(item.value,'$.anchor')='object') AS present`).get(...params) as { present: number };
+        scoped = comments || findings.present === 1;
+      }
+      this.reviewObserverScopeCache.set(cacheKey, scoped);
+      if (this.reviewObserverScopeCache.size > 512) this.reviewObserverScopeCache.delete(this.reviewObserverScopeCache.keys().next().value as string);
+      return scoped;
+    } catch { return true; }
   }
   reviewCommentResolution(task: Task, ids: readonly string[]): string[] {
     const parsed = reviewCommentIds(ids), records = this.reviewComments(task.id, task.created);

@@ -1,17 +1,45 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { ACON_REVIEW_TYPES, generateAconReviewTypes, installedAconReviewTypes } from "../scripts/acon-review-types.ts";
+import { expandReviewCase, reviewAnchorProblems, reviewProblems, reviewThreadProblems } from "@staix/agent-console/conformance";
+import type { ActionMeta, ReviewAnchor, ReviewDoc, ReviewSelector, ReviewThread } from "@staix/agent-console/contract";
+import { reviewAnchorContractProblems, reviewThreadContractProblems, reviewThreadsContractProblems } from "../src/hub/review-anchor.ts";
 
-test("DOM-free review bridge exactly regenerates from the installed canonical acon declarations", () => {
-  const generated = installedAconReviewTypes();
-  expect(readFileSync(ACON_REVIEW_TYPES, "utf8")).toBe(generated);
-  expect(generated).not.toContain('reference lib="dom"');
-  for (const name of ["ReviewSelector", "ReviewAnchor", "ReviewThread", "ReviewDoc", "ActionMeta"]) expect(generated).toContain("export " + (name === "ReviewSelector" || name === "ReviewDoc" ? "type " : "interface ") + name);
-});
+type FixtureCase = { name: string; field?: string; value?: unknown; repeat?: { count: number; of: unknown; idPrefix: string } };
+type SharedFixture = { version: number; anchors: { valid: FixtureCase[]; invalid: FixtureCase[] }; threads: { valid: FixtureCase[]; invalid: FixtureCase[]; lists: { invalid: FixtureCase[] } } };
+const shared = JSON.parse(readFileSync(new URL("./fixtures/review/cases.json", import.meta.url), "utf8")) as SharedFixture;
+const hubValue = (entry: FixtureCase): unknown => entry.repeat ? Array.from({ length: entry.repeat.count }, (_, index) => ({ ...expandReviewCase(entry.repeat.of) as object, id: entry.repeat.idPrefix + index })) : expandReviewCase(entry.value);
 
-test("bridge generation refuses missing, duplicate or external type dependencies instead of creating any types", () => {
-  const source = readFileSync(new URL("../node_modules/@staix/agent-console/src/contract.ts", import.meta.url), "utf8");
-  expect(() => generateAconReviewTypes(source.replace("export interface ReviewAnchor", "export interface RemovedAnchor"), "0.1.0")).toThrow();
-  expect(() => generateAconReviewTypes(source + "\nexport interface ReviewAnchor {}", "0.1.0")).toThrow();
-  expect(() => generateAconReviewTypes(source.replace("selectors: ReviewSelector[]", "selectors: HTMLElement[]"), "0.1.0")).toThrow("external type dependency");
+// These assignments make the compile-time dependency on the published, DOM-free contract explicit.
+const contractTypes: [ReviewSelector | undefined, ReviewAnchor | undefined, ReviewThread | undefined, ReviewDoc | undefined, ActionMeta | undefined] = [undefined, undefined, undefined, undefined, undefined];
+
+test("published acon contract exports the review shapes and its own shared conformance accepts/rejects the fixture", () => {
+  expect(contractTypes).toHaveLength(5);
+  expect(shared.version).toBe(1);
+  for (const entry of shared.anchors.valid) {
+    const value = hubValue(entry);
+    expect(reviewAnchorProblems(value), entry.name).toEqual([]);
+    expect(reviewAnchorContractProblems(value), entry.name).toEqual([]);
+  }
+  for (const entry of shared.anchors.invalid) {
+    const value = hubValue(entry);
+    expect(reviewAnchorProblems(value).some(problem => problem.includes(entry.field!)), entry.name).toBe(true);
+    expect(reviewAnchorContractProblems(value).some(problem => problem.includes(entry.field!)), entry.name).toBe(true);
+  }
+  for (const entry of shared.threads.valid) {
+    const value = hubValue(entry);
+    expect(reviewThreadProblems(value), entry.name).toEqual([]);
+    expect(reviewThreadContractProblems(value), entry.name).toEqual([]);
+  }
+  for (const entry of shared.threads.invalid) {
+    const value = hubValue(entry);
+    expect(reviewThreadProblems(value).some(problem => problem.includes(entry.field!)), entry.name).toBe(true);
+    expect(reviewThreadContractProblems(value).some(problem => problem.includes(entry.field!)), entry.name).toBe(true);
+  }
+  for (const entry of shared.threads.lists.invalid) {
+    expect(reviewProblems(hubValue(entry)).length).toBeGreaterThan(0);
+    expect(reviewThreadsContractProblems(hubValue(entry)).length).toBeGreaterThan(0);
+  }
+  const validThreads = shared.threads.valid.map(hubValue);
+  expect(reviewProblems(validThreads)).toEqual([]);
+  expect(reviewThreadsContractProblems(validThreads)).toEqual([]);
 });

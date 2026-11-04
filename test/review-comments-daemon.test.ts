@@ -96,7 +96,7 @@ test("real console drafts are silent, send is one private-observer capsule, and 
     expect(packets).toHaveLength(1); expect(packets[0]).toMatchObject({ from: "hub", kind: "review", to: ["codex"] });
     expect(packets[0]!.private).not.toBe(true);
     for (let i = 0; i < 3; i++) expect(packets[0]!.body).toContain("REVIEW_BODY_CANARY " + i);
-    const snapshot = await f.person.request({ t: "ui_snapshot", view: "board", reviewTask: f.task });
+    const snapshot = await f.person.request({ t: "ui_snapshot", view: "board", reviewTask: f.task, reviewRefresh: true });
     expect(snapshot.reviewComments.counts).toMatchObject({ draft: 0, sent: 3 });
     const audit = readFileSync(join(f.stateDir, "hub.log"), "utf8") + readFileSync(join(f.stateDir, "events.jsonl"), "utf8");
     expect(audit).not.toContain("REVIEW_BODY_CANARY"); expect(audit).not.toContain("REVIEW_QUOTE_CANARY"); expect(audit).not.toContain("OWNER_ECHO_CANARY");
@@ -197,4 +197,73 @@ test("a real owner refile stages head B before Board commit A changes and carrie
     const retained=f.board.get(f.task)!.history.findLast(entry=>entry.reviewFindings)?.reviewFindings?.items.find(item=>item.id===finding.id);
     expect(retained!.anchor).toEqual(f.anchor);
   } finally {await f.stop();}
+});
+
+test("periodic snapshots do not resolve review comments; explicit refresh isolates a comment-list race", async () => {
+  let enter!: () => void, release!: () => void, holdOnce = true;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+  let f!: Awaited<ReturnType<typeof fixture>>;
+  f = await fixture(async args => {
+    if (args[0] === "pr" && holdOnce) { holdOnce = false; enter(); await held; }
+    if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ headRefOid: f.head, state: "OPEN", statusCheckRollup: [], files: [{ path: "report.md", changeType: "MODIFIED" }], changedFiles: 1, baseRefOid: f.head }) };
+    return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: f.head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) };
+  });
+  try {
+    const draft = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "snapshot race" });
+    expect(draft.ok).toBe(true);
+    f.board.update(f.task, "user", "fixture PR", { sdlc: { stage: "review", repo: "fixture/repository", pr: 1 } });
+    const periodic = await f.person.request({ t: "ui_snapshot", view: "board", reviewTask: f.task });
+    expect(periodic).toHaveProperty("status");
+    expect(periodic).not.toHaveProperty("reviewComments");
+
+    const pending = f.person.request({ t: "ui_snapshot", view: "board", reviewTask: f.task, reviewRefresh: true });
+    await entered;
+    const edited = await f.person.request({ t: "review_comment_put", task: f.task, id: draft.id, revision: 1, commit: f.head, anchor: f.anchor, body: "snapshot race edited" });
+    expect(edited.ok).toBe(true);
+    release();
+    const refreshed = await pending;
+    expect(refreshed).toHaveProperty("status");
+    expect(refreshed.reviewComments).toMatchObject({ task: f.task, unavailable: true });
+  } finally { release(); await f.stop(); }
+});
+
+test("review material never substitutes the current worktree HEAD for a missing task head", async () => {
+  const f = await fixture();
+  try {
+    f.board.update(f.task, "user", "missing task commit", { refs: { paths: ["report.md"], commit: "0000000000000000000000000000000000000000" } });
+    const result = await f.person.request({ t: "review_blob", task: f.task, path: "report.md", side: "head" });
+    expect(result).toMatchObject({ ok: false });
+    expect(result).not.toHaveProperty("doc");
+  } finally { await f.stop(); }
+});
+
+test("an owner's ordinary echo stays observer-excluded after review delivery provenance is cleared", async () => {
+  const f = await fixture();
+  try {
+    const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "durable observer scope" });
+    const sent = await f.person.request({ t: "review_comment_send", task: f.task, ids: [saved.id] });
+    expect(sent).toMatchObject({ ok: true, delivery: "queued" });
+
+    let delivered!: () => void;
+    const ordinaryDelivery = new Promise<void>(resolve => { delivered = resolve; });
+    f.owner.afterDelivery = delivered;
+    f.daemon.bus.publish(newEnvelope("user", "intervening ordinary request", { to: ["codex"], priority: "important" }));
+    await ordinaryDelivery;
+    f.owner.afterDelivery = undefined;
+    f.owner.onDoing?.("reset", ""); // clears in-memory reviewParents/reviewResponses provenance
+
+    let echo: Envelope | undefined;
+    let saw!: () => void;
+    const seen = new Promise<void>(resolve => { saw = resolve; });
+    f.daemon.bus.tap(event => {
+      if (event.t === "envelope" && event.env.from === "codex" && event.env.body === "DURABLE_REVIEW_ECHO_CANARY") { echo = event.env; saw(); }
+    });
+    f.owner.onMessage?.("DURABLE_REVIEW_ECHO_CANARY", { to: ["user"] });
+    await seen;
+    expect(echo!.refs?.reviewResponse).toBe("open-review-comments");
+    f.owner.onDoing?.("todo", "DURABLE_REVIEW_PROGRESS_CANARY");
+    expect((await f.person.request({ t: "status" })).status.peers.codex.doing.text).toBe(DOING_STUB);
+    const audit = readFileSync(join(f.stateDir, "hub.log"), "utf8") + readFileSync(join(f.stateDir, "events.jsonl"), "utf8");
+    expect(audit).not.toContain("DURABLE_REVIEW_ECHO_CANARY"); expect(audit).not.toContain("DURABLE_REVIEW_PROGRESS_CANARY");
+  } finally { await f.stop(); }
 });

@@ -26,6 +26,8 @@ export type BusEvent =
   | { t: "state"; peer: PeerId; state: PeerState };
 
 export interface BusOptions {
+  /** Durable host-only comment provenance; no peer-supplied marker or task authority. */
+  reviewObserverScope?: (peer: PeerId) => string | undefined;
   /** Durable application outbox ids; the bus combines them with its own pending ids without recursion. */
   remotePending?: (room: string) => readonly string[];
   /** Host provenance at enqueue, never a body screen; unknown/throw marks the original private. */
@@ -1099,9 +1101,12 @@ export class Bus {
     const active = this.lastDelivery.get(env.from)?.originals ?? [];
     const parent = parentId ? active.find(item => item.id === parentId && isReviewObserverExcluded(item)) : active.find(isReviewObserverExcluded);
     const known = this.reviewResponses.get(env.id);
+    let durableScope: string | undefined;
+    try { durableScope = this.opts.reviewObserverScope?.(env.from); }
+    catch { durableScope = "review-scope-unavailable"; } // Unknown provenance cannot clear an observer exclusion.
     const source = parent?.refs?.reviewPackage ?? parent?.refs?.reviewResponse
       ?? (parentId ? this.reviewParents.get(env.from)?.get(parentId) : undefined)
-      ?? (known?.peer === env.from ? known.source : undefined);
+      ?? (known?.peer === env.from ? known.source : undefined) ?? durableScope;
     const { reviewPackage: _package, reviewResponse: _response, ...refs } = env.refs ?? {};
     if (source && (env.kind === "chat" || env.kind === "status")) {
       this.reviewResponses.set(env.id, { peer: env.from, source });
@@ -1212,6 +1217,25 @@ export class Bus {
   /** A recently published envelope, for resolving `reply_to`. */
   get(id: string): Envelope | undefined {
     return this.seen.get(id) ?? this.deferredHub.get(id);
+  }
+  /** Only newly saved versioned review packages may interpret absent as permission for explicit publication. */
+  reviewEnvelopeStatus(id: string): "published" | "absent" | "unknown" {
+    if (this.closed || this.storageError || !this.journal) return "unknown";
+    try { return this.journal.reviewEnvelopePublished(id) ? "published" : "absent"; }
+    catch { return "unknown"; }
+  }
+  /** Explicit recovery reuses the immutable package envelope; a durable publication is never replayed. */
+  publishReviewEnvelope(env: Envelope): PeerId[] {
+    if (env.from !== HUB || env.kind !== "review" || !env.refs?.reviewPackage || !env.to?.length) throw new Error("review package envelope is invalid; refresh the saved package before retrying");
+    const status = this.reviewEnvelopeStatus(env.id);
+    if (status === "published") {
+      this.journal!.reviewEnvelopePublished(env.id, env);
+      return [...env.to];
+    }
+    if (status !== "absent") throw new Error("review package publication evidence is unavailable; inspect ahub queue list before retrying");
+    // A pre-checkpoint observer may have thrown after remembering the id but before any durable enqueue or native effect.
+    this.seen.delete(env.id);
+    return this.publish(env);
   }
 
   /**

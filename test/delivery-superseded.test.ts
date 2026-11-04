@@ -1,10 +1,24 @@
 import { expect, test } from "bun:test";
 import { newEnvelope } from "../src/hub/envelope.ts";
-import { supersededDeliveryReason } from "../src/hub/delivery-superseded.ts";
+import { deliveryTaskContext, supersededDeliveryReason } from "../src/hub/delivery-superseded.ts";
 
 const task = { id: 42, owner: "codex", reviewer: "claude", state: "approved" as const };
 const board = { get: (id: number) => id === 42 ? task : undefined };
 const notice = (kind: "task" | "review" = "task", from = "hub", taskRecipient?: "owner" | "reviewer" | "planner") => newEnvelope(from, "private title must never appear", { kind, refs: { task: "42", ...(taskRecipient ? { taskRecipient } : {}) } });
+test("#1056 owner-addressed review packages and verdicts stay uncertain across task and reviewer moves", () => {
+  for (const state of ["in_progress", "in_review", "changes_requested", "approved", "cancelled"] as const) {
+    const current = { get: () => ({ ...task, state }) };
+    for (const reviewPackage of ["review-person-package", "finding-owner-verdict"]) {
+      const ownerReview = notice("review", "hub", "owner");
+      ownerReview.refs!.reviewPackage = reviewPackage;
+      expect(supersededDeliveryReason([ownerReview], current, "codex")).toBeUndefined();
+      expect(supersededDeliveryReason([notice(), ownerReview], current, "codex")).toBeUndefined();
+      if (state !== "approved" && state !== "cancelled") expect(deliveryTaskContext([ownerReview], current, "codex")).toBeUndefined();
+    }
+  }
+  const moved = { get: () => ({ ...task, owner: "pi", state: "in_progress" as const }) };
+  expect(supersededDeliveryReason([notice("review", "hub", "owner")], moved, "codex")).toBeUndefined();
+});
 test("AC2: only wholly moot hub notices settle, reasons are ids-only", () => {
   const presence = newEnvelope("hub", "private memory", { kind: "presence" });
   expect(supersededDeliveryReason([notice(), notice("review"), presence], board, "claude")).toBe("superseded: task #42 approved; presence");

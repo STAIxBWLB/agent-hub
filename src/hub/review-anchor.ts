@@ -1,9 +1,9 @@
 import { types } from "node:util";
-import type { ReviewAnchor, ReviewSelector } from "./acon-review-contract.d.ts";
+import type { ReviewAnchor, ReviewSelector } from "@staix/agent-console/contract";
 import { sanitize } from "./envelope.ts";
 import { projectionPath } from "./projected-diff.ts";
 import type { ReviewMaterial } from "./review-material.ts";
-export type { ReviewAnchor, ReviewSelector, ReviewThread } from "./acon-review-contract.d.ts";
+export type { ReviewAnchor, ReviewSelector, ReviewThread } from "@staix/agent-console/contract";
 
 /** Conformance bounds belong to the published acon contract; hub write byte bounds are a separate layer below. */
 const CONTRACT = { exact: 2000, context: 64, body: 4000, threads: 200, selectors: 4 };
@@ -81,28 +81,70 @@ export function reviewThreadsContractProblems(value: unknown): string[] {
   return problems;
 }
 
-const fail = (field: string): never => { throw new Error(`review anchor ${field} is invalid or over its hub bound; select a contained public path and bounded selectors, then retry`); };
+export class ReviewAnchorError extends Error {
+  constructor(readonly field: string, readonly maxBytes?: number, readonly shapeFields?: readonly string[]) {
+    super("review anchor validation failed");
+    this.name = "ReviewAnchorError";
+    Object.freeze(this);
+  }
+  get safeMessage(): string {
+    if (this.shapeFields) return `review anchor fields ${this.shapeFields.join(", ")} do not match the acon contract; correct those fields and retry`;
+    if (this.maxBytes !== undefined) return `review anchor ${this.field} exceeds ${this.maxBytes} UTF-8 bytes; shorten that field and retry`;
+    return `review anchor ${this.field} is invalid; correct that field and retry`;
+  }
+}
+/** Returns only messages assembled by the anchor validator; arbitrary caught errors are never reflected. */
+export function reviewAnchorErrorMessage(error: unknown): string {
+  return error instanceof ReviewAnchorError ? error.safeMessage : "review anchor is invalid; correct its fields and retry";
+}
+function fail(field: string, maxBytes?: number): never { throw new ReviewAnchorError(field, maxBytes); }
+function contractField(problem: string): string {
+  const selector = /^anchor\.selectors\[(\d+)\]/.exec(problem);
+  if (selector) {
+    const prefix = `anchor.selectors[${selector[1]}]`;
+    const member = /^\.([A-Za-z]+)/.exec(problem.slice(prefix.length))?.[1];
+    if (member) return `selectors[${selector[1]}].${member}`;
+    if (problem.includes("startLine/endLine")) return `selectors[${selector[1]}].startLine/endLine`;
+    if (problem.includes("exact/prefix/suffix")) return `selectors[${selector[1]}].exact/prefix/suffix`;
+    if (problem.includes("region coordinates or page")) return `selectors[${selector[1]}].x/y/width/height/page`;
+    if (problem.includes("scheme and ref")) return `selectors[${selector[1]}].scheme/ref`;
+    return `selectors[${selector[1]}]`;
+  }
+  const field = /^anchor\.(path|side|contentHash|projection|selectors)\b/.exec(problem)?.[1];
+  return field ?? "anchor";
+}
+function failShape(problems: readonly string[]): never {
+  const fields = [...new Set(problems.map(contractField))];
+  throw new ReviewAnchorError("anchor", undefined, fields.length ? fields : ["anchor"]);
+}
+function writeQuoteText(value: string, maxBytes: number, field: string): string {
+  if (value.includes("\0")) return fail(field);
+  if (Buffer.byteLength(value, "utf8") > maxBytes) return fail(field, maxBytes);
+  return value;
+}
 function writeText(value: string, maxBytes: number, field: string): string {
-  if (value.includes("\0") || Buffer.byteLength(value, "utf8") > maxBytes) return fail(field);
+  if (value.includes("\0")) return fail(field);
+  if (Buffer.byteLength(value, "utf8") > maxBytes) return fail(field, maxBytes);
   const safe = sanitize(value);
-  if (Buffer.byteLength(safe, "utf8") > maxBytes) return fail(field);
+  if (Buffer.byteLength(safe, "utf8") > maxBytes) return fail(field, maxBytes);
   return safe;
 }
-/** The hub write boundary. It returns an owned copy and sanitizes only here, never while placing stored anchors. */
+/** The hub write boundary. Quote selector text stays byte-bounded and exact; other stored text is sanitized here. */
 export function parseReviewAnchor(value: unknown): ReviewAnchor {
-  if (reviewAnchorContractProblems(value).length) return fail("shape");
+  const problems = reviewAnchorContractProblems(value);
+  if (problems.length) return failShape(problems);
   const row = value as ReviewAnchor, path = writeText(row.path, 4096, "path");
   if (/[\p{Cc}\p{Cf}\\]/u.test(path) || /^[a-z]:/i.test(path) || !projectionPath({ top: "", dir: "", prefix: "" }, path)) return fail("path");
-  const selectors = row.selectors.map((selector): ReviewSelector => {
+  const selectors = row.selectors.map((selector, index): ReviewSelector => {
     switch (selector.kind) {
       case "lineRange":
-        if (!Number.isSafeInteger(selector.startLine) || !Number.isSafeInteger(selector.endLine)) return fail("lineRange");
+        if (!Number.isSafeInteger(selector.startLine) || !Number.isSafeInteger(selector.endLine)) return fail(`selectors[${index}].startLine/endLine`);
         return { ...selector };
-      case "textQuote": return { kind: "textQuote", exact: writeText(selector.exact, 512, "exact"), prefix: writeText(selector.prefix, 64, "prefix"), suffix: writeText(selector.suffix, 64, "suffix") };
-      case "diffHunk": return { kind: "diffHunk", hunkHeader: writeText(selector.hunkHeader, 256, "hunkHeader") };
-      case "structural": return { kind: "structural", scheme: writeText(selector.scheme, 128, "scheme"), ref: writeText(selector.ref, 512, "ref") };
+      case "textQuote": return { kind: "textQuote", exact: writeQuoteText(selector.exact, 512, `selectors[${index}].exact`), prefix: writeQuoteText(selector.prefix, 64, `selectors[${index}].prefix`), suffix: writeQuoteText(selector.suffix, 64, `selectors[${index}].suffix`) };
+      case "diffHunk": return { kind: "diffHunk", hunkHeader: writeText(selector.hunkHeader, 256, `selectors[${index}].hunkHeader`) };
+      case "structural": return { kind: "structural", scheme: writeText(selector.scheme, 128, `selectors[${index}].scheme`), ref: writeText(selector.ref, 512, `selectors[${index}].ref`) };
       case "region":
-        if (selector.page !== undefined && !Number.isSafeInteger(selector.page)) return fail("page");
+        if (selector.page !== undefined && !Number.isSafeInteger(selector.page)) return fail(`selectors[${index}].page`);
         return { ...selector };
     }
   });

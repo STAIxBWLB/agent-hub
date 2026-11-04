@@ -8,7 +8,7 @@
  *
  * Contract: @staix/agent-console api 1, declared structurally below so agent-hub keeps zero runtime dependencies.
  */
-import type { ActionMeta } from "../hub/acon-review-contract.d.ts";
+import type { ActionMeta } from "@staix/agent-console/contract";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { Registry } from "../hub/registry.ts";
@@ -51,7 +51,7 @@ const FORWARDED = ["start", "stop", "send", "pause", "resume", "permit", "propos
 const REVIEW_ACTIONS = ["review_comment_put", "review_comment_delete", "review_comment_send"] as const;
 const INBOX_VERBS = ["approve", "deny", "open"] as const;
 /** Outward or destructive: answered needsConfirm first (agent-console AGENTS.md); previews are read-only and stay direct. */
-const CONFIRMED = new Set(["review_comment_send", "stop", "permit", "setting", "setting_undo", "setting_reload", "config_edit_apply", "start_peer", "backlog_split", "send", "approve", "deny", "worktree_override_set", "worktrees_refresh_prs"]);
+const CONFIRMED = new Set(["review_comment_delete", "review_comment_send", "stop", "permit", "setting", "setting_undo", "setting_reload", "config_edit_apply", "start_peer", "backlog_split", "send", "approve", "deny", "worktree_override_set", "worktrees_refresh_prs"]);
 const fingerprintOf = (input: Record<string, unknown>) => {
   const { confirmed: _c, fingerprint: _f, reason: _r, ...rest } = input;
   return createHash("sha256").update(JSON.stringify(Object.keys(rest).sort().map((key) => [key, rest[key]]))).digest("hex");
@@ -293,7 +293,8 @@ export function createProvider(options: { home: string; registry?: Registry; lif
       const fingerprint = fingerprintOf(input);
       if (CONFIRMED.has(name) && !(input.confirmed === true && input.fingerprint === fingerprint)) {
         const target = typeof input.projectId === "string" ? registry.get(input.projectId)?.root.split("/").filter(Boolean).pop() : undefined;
-        const preview = name === "approve" || name === "deny" ? [`${name === "approve" ? "Allow" : "Deny"} this tool request once.`]
+        const preview = name === "review_comment_delete" ? [`Delete or dismiss this review comment on task #${String(input.task ?? "?")}.`]
+          : name === "approve" || name === "deny" ? [`${name === "approve" ? "Allow" : "Deny"} this tool request once.`]
           : name === "send" ? [`Send a message as you${target ? ` in ${target}` : ""}.`]
           : [`Run ${name}${target ? ` in ${target}` : ""}.`];
         return { ok: false, needsConfirm: true, preview, fingerprint, verb: name === "approve" ? "Allow once" : name === "deny" ? "Deny" : name };

@@ -1,4 +1,4 @@
-import type { ActionMeta } from "./acon-review-contract.d.ts";
+import type { ActionMeta } from "@staix/agent-console/contract";
 import { assertExecutableRuntimeRoot } from "./project-runtime-state.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS } from "./planning.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
@@ -143,7 +143,7 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
       else if (input.action === "worktrees_refresh_prs") nominalMs = 40_000; // up to 25 s of bounded gh reads plus two git passes
       const timeoutMs = options.forwardTimeoutMs?.(String(input.action), nominalMs) ?? nominalMs;
       const result = await client.request(input.action === "snapshot"
-        ? { t: "ui_snapshot", after: input.after ?? 0, ...(input.reviewTask !== undefined ? { reviewTask: input.reviewTask } : {}), ...(input.memory !== undefined ? { memory: input.memory } : {}), ...(dashboardView(input.view) ? { view: input.view } : {}) }
+        ? { t: "ui_snapshot", after: input.after ?? 0, ...(input.reviewRefresh === true && input.reviewTask !== undefined ? { reviewTask: input.reviewTask, reviewRefresh: true } : {}), ...(input.memory !== undefined ? { memory: input.memory } : {}), ...(dashboardView(input.view) ? { view: input.view } : {}) }
         : { t: "ui_action", action: input, instanceId: input.instanceId }, timeoutMs);
       // ControlClient resolves its deadline as this exact sentinel; a hub refusal stays a known failure.
       if (input.action === "intake" && result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) {

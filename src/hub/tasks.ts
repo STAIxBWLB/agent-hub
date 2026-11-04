@@ -1,6 +1,6 @@
 import { parseEvidenceRecord, parseEvidenceLink, evidenceLinkId, evidenceLinkCanonical, type EvidenceRecordInput, type EvidenceReceipt } from "./research-evidence.ts";
-import type { ActionMeta, ReviewAnchor } from "./acon-review-contract.d.ts";
-import { parseReviewAnchor, anchorStatus, type ReviewAnchorStatus } from "./review-anchor.ts";
+import type { ActionMeta, ReviewAnchor } from "@staix/agent-console/contract";
+import { parseReviewAnchor, reviewAnchorErrorMessage, anchorStatus, type ReviewAnchorStatus } from "./review-anchor.ts";
 import type { ReviewMaterialBatch } from "./review-material.ts";
 import { isReviewObserverExcluded } from "./memory-policy.ts";
 import { renderFindingAnchor } from "./review-brief.ts";
@@ -476,8 +476,8 @@ export class Tasks {
     } catch { guard(); } // Optional placement failure is unavailable, never invented coordinates.
     return placements;
   }
-  private reviewObserverTurn(by: PeerId): boolean {
-    try { return this.d.bus.lastDeliveredTo(by).some(isReviewObserverExcluded); } catch { return true; }
+  private reviewObserverTurn(by: PeerId, task?: number): boolean {
+    try { return this.d.board.hasReviewObserverScope(by, task) || this.d.bus.lastDeliveredTo(by).some(env => isReviewObserverExcluded(env) && (task === undefined || env.refs?.task === String(task))); } catch { return true; }
   }
   async reviewCommentPut(by: PeerId, input: unknown, meta?: ActionMeta): Promise<ReviewCommentMutation> {
     const author = this.reviewPerson(by, meta), check = this.requestCheck(by, () => this.reviewCommentHold());
@@ -487,16 +487,28 @@ export class Tasks {
       taskId = reviewCommentNumber(fields.task, "task"); id = fields.id === undefined ? `comment-${crypto.randomUUID()}` : reviewCommentId(fields.id);
       expected = fields.id === undefined ? undefined : reviewCommentNumber(fields.revision, "revision");
       if (fields.id === undefined && fields.revision !== undefined) throw new Error("unexpected revision");
-      commit = reviewCommentHead(fields.commit); anchor = parseReviewAnchor(fields.anchor); body = reviewCommentBody(fields.body);
-    } catch { throw new PreEffectToolRefusal("review draft fields are invalid; use a current full commit, safe anchor and nonempty body of at most 2048 UTF-8 bytes"); }
+    } catch { throw new PreEffectToolRefusal("review task, comment id or revision is invalid; refresh the task review and use its current id and revision, or omit both for a new draft"); }
+    try { commit = reviewCommentHead(fields.commit); }
+    catch { throw new PreEffectToolRefusal("review commit must be a current full lowercase SHA; refresh the task review before saving"); }
+    try { anchor = parseReviewAnchor(fields.anchor); }
+    catch (error) { throw new PreEffectToolRefusal(`${reviewAnchorErrorMessage(error)}; refresh the review and recreate the draft`); }
+    try { body = reviewCommentBody(fields.body); }
+    catch { throw new PreEffectToolRefusal("review comment body must be nonempty and at most 2048 UTF-8 bytes; edit the body before saving"); }
     return this.commentWrite(async () => {
       check(); const before = this.reviewContext(taskId), rows = this.d.board.reviewComments(taskId, before.task.created), old = rows.find(row => row.thread.id === id);
       if (expected !== undefined && (!old || old.lifecycle !== "draft" || old.revision !== expected)) throw new PreEffectToolRefusal("review draft changed or was sent; refresh the draft list before editing");
+      if (old && old.commit !== commit) throw new PreEffectToolRefusal("draft is anchored to an earlier head; delete it and create a new draft against the current task head");
       if (expected === undefined && rows.length >= REVIEW_COMMENT_LIMIT) throw new PreEffectToolRefusal("task review already has 64 comments; remove an unused draft before adding another");
       const strip = () => { if (this.reviewPathPrivate(anchor.path)) { try { anchor = privateReviewAnchor(anchor); } catch { throw new PreEffectToolRefusal("private review path needs an existing lineRange or structural selector; select a safe anchor before retrying"); } } };
-      strip(); const batch = await this.reviewBatch(before.task, [anchor]);
+      strip(); const privateRecord = this.reviewTaskPrivate(before.task) || this.reviewPathPrivate(anchor.path), batch = privateRecord ? undefined : await this.reviewBatch(before.task, [anchor]);
+      if (batch && batch.head !== commit) throw new PreEffectToolRefusal("review task head moved; delete this draft and recreate it against the current full commit");
+      if (!privateRecord) {
+        const material = batch!.materials.find(row => row.path === anchor.path && row.side === (anchor.side ?? "head"));
+        if (!material || material.state !== "available") throw new PreEffectToolRefusal("review anchor material is unavailable; refresh the task review and choose a currently available file before saving");
+        if (anchor.contentHash !== material.contentHash || JSON.stringify(anchor.projection ?? null) !== JSON.stringify(material.projection ?? null)) throw new PreEffectToolRefusal("review anchor content hash or projection differs from the immutable file; refresh the review and recreate the draft on the current material");
+      }
       check(); const current = this.reviewContext(taskId);
-      if (current.key !== before.key || batch.head !== commit) throw new PreEffectToolRefusal("review task or head changed; refresh the review before saving the draft");
+      if (current.key !== before.key || this.reviewHead(current.task) !== commit || batch && batch.head !== commit) throw new PreEffectToolRefusal("review task head changed; delete this draft and recreate it against the current head before saving");
       strip(); const record: ReviewCommentRecord = { task: taskId, taskCreated: current.task.created, commit, lifecycle: "draft", revision: (old?.revision ?? 0) + 1, private: false,
         thread: { id, anchor, body, author, at: new Date(this.d.now?.() ?? Date.now()).toISOString() } };
       record.private = this.reviewRecordPrivate(current.task, record);
@@ -516,16 +528,17 @@ export class Tasks {
       return { task, id, revision: result.record.revision, ...(result.deleted ? { deleted: true as const } : { lifecycle: result.record.lifecycle }) };
     });
   }
-  async reviewCommentList(by: PeerId, input: unknown): Promise<{ task: number; counts: ReviewCommentCounts; comments: ReviewCommentView[] }> {
+  async reviewCommentList(by: PeerId, input: unknown): Promise<{ task: number; counts: ReviewCommentCounts; comments: ReviewCommentView[]; packages: import("./review-comments.ts").ReviewCommentPackageView[] }> {
     if (this.commentsStopped) throw new PreEffectToolRefusal("review comments are stopping; reopen the task review after the hub restarts");
     this.reviewPerson(by); const fields = this.reviewInput(input, ["task"]), taskId = reviewCommentNumber(fields.task, "task"), before = this.reviewContext(taskId);
     const counts = this.d.board.reviewCommentCounts(taskId, before.task.created), records = this.d.board.reviewComments(taskId, before.task.created);
-    if (this.reviewTaskPrivate(before.task)) return { task: taskId, counts, comments: [] };
+    const packages = this.d.board.reviewCommentPackages(taskId, before.task.created);
+    if (this.reviewTaskPrivate(before.task)) return { task: taskId, counts, comments: [], packages };
     const candidates = records.filter(row => !this.reviewRecordPrivate(before.task, row));
-    if (!candidates.length) return { task: taskId, counts, comments: [] };
+    if (!candidates.length) return { task: taskId, counts, comments: [], packages };
     let batch: ReviewMaterialBatch;
     try { batch = await this.reviewBatch(before.task, candidates.map(row => row.thread.anchor)); } catch { batch = { head: "", materials: [] }; }
-    if (this.commentsStopped) return { task: taskId, counts, comments: [] };
+    if (this.commentsStopped) return { task: taskId, counts, comments: [], packages };
     const current = this.reviewContext(taskId);
     if (current.key !== before.key) throw new PreEffectToolRefusal("review task changed while reading; refresh the task review");
     const latest = this.d.board.reviewComments(taskId, current.task.created);
@@ -533,33 +546,68 @@ export class Tasks {
     const comments = candidates.flatMap<ReviewCommentView>(record => {
       const placement = this.reviewPlacement(record.thread.anchor, batch);
       if (this.reviewRecordPrivate(current.task, record)) return [];
-      if (placement.status === "unavailable") return [{ id: record.thread.id, task: taskId, commit: record.commit, lifecycle: record.lifecycle, revision: record.revision, ...(record.sentAt ? { sentAt: record.sentAt } : {}), placement: { status: "unavailable" } }];
+      if (placement.status === "unavailable") return [{ thread: reviewThreadProjection(record), task: taskId, commit: record.commit, lifecycle: record.lifecycle, revision: record.revision, ...(record.sentAt ? { sentAt: record.sentAt } : {}), placement: { status: "unavailable" } }];
       return [{ thread: reviewThreadProjection(record), task: taskId, commit: record.commit, lifecycle: record.lifecycle, revision: record.revision, ...(record.sentAt ? { sentAt: record.sentAt } : {}), placement }];
     });
-    return { task: taskId, counts, comments };
+    return { task: taskId, counts, comments, packages };
   }
   async reviewCommentSend(by: PeerId, input: unknown, meta?: ActionMeta): Promise<{ task: number; packageId: string; count: number; delivery: "queued" | "unconfirmed" }> {
-    this.reviewPerson(by, meta); const check = this.requestCheck(by, () => this.reviewCommentHold()), fields = this.reviewInput(input, ["task", "ids"]), taskId = reviewCommentNumber(fields.task, "task");
+    this.reviewPerson(by, meta); const check = this.requestCheck(by, () => this.reviewCommentHold()), fields = this.reviewInput(input, ["task", "ids", "packageId"]), taskId = reviewCommentNumber(fields.task, "task");
+    if (fields.packageId !== undefined) {
+      if (fields.ids !== undefined) throw new PreEffectToolRefusal("choose either saved packageId or draft ids; refresh the person review and retry one operation");
+      let packageId: string;
+      try { if (typeof fields.packageId !== "string" || !/^review-[a-f0-9-]{36}$/.test(fields.packageId)) throw new Error(); packageId = fields.packageId; }
+      catch { throw new PreEffectToolRefusal("review package id is invalid; select a saved package from the current person review list"); }
+      return this.commentWrite(async () => {
+        check(); const context = this.reviewContext(taskId), packet = this.d.board.reviewCommentPackage(packageId);
+        if (!packet || packet.task !== taskId || packet.taskCreated !== context.task.created || packet.owner !== context.task.owner) throw new PreEffectToolRefusal("saved review package is unavailable for this task owner; refresh the task review and inspect the existing package history");
+        if (!packet.body || !packet.envelopeId || !packet.trace || packet.ts === undefined) throw new PreEffectToolRefusal(`saved review package ${packageId} predates recoverable delivery; inspect the owner's queue and sent comments before drafting a new package`);
+        if (packet.publicationEvidenceVersion !== 1) throw new PreEffectToolRefusal(`saved review package ${packageId} has no retained delivery proof; inspect the owner's queue and sent comments before retrying`);
+        if (!context.task.owner || context.task.owner === USER || context.task.owner === HUB) throw new PreEffectToolRefusal("saved review package has no current agent owner; assign the open task before retrying");
+        if (isClosedTaskState(context.task.state)) throw new PreEffectToolRefusal("review package cannot be sent because the task is closed; reopen the task review before sending");
+        const env = { id: packet.envelopeId, trace: packet.trace, hop: 0, from: HUB, to: [packet.owner], kind: "review" as const, priority: "important" as const, body: packet.body,
+          refs: { task: String(taskId), taskRecipient: "owner" as const, reviewPackage: packageId }, ts: packet.ts };
+        check();
+        try {
+          const targets = this.d.bus.publishReviewEnvelope(env);
+          if (!targets.includes(packet.owner)) throw new Error("owner not queued");
+        } catch { throw new PreEffectToolRefusal("saved review package delivery history is unavailable or publication failed; inspect ahub queue list --peer " + packet.owner + " and sent comments before retrying"); }
+        this.d.board.markReviewCommentPackageQueued(packageId);
+        return { task: taskId, packageId, count: packet.ids.length, delivery: "queued" };
+      });
+    }
     let ids: string[] | undefined;
     try { ids = fields.ids === undefined ? undefined : reviewCommentIds(fields.ids); } catch { throw new PreEffectToolRefusal("review send ids are invalid; select current distinct draft ids"); }
     return this.commentWrite(async () => {
       check(); const before = this.reviewContext(taskId), owner = before.task.owner;
       if (!owner || owner === USER || owner === HUB) throw new PreEffectToolRefusal("review package needs an agent owner; assign the task before sending comments");
+      if (isClosedTaskState(before.task.state)) throw new PreEffectToolRefusal("review comments can only be sent while the task is open; reopen the task review before sending");
       const records = this.d.board.reviewComments(taskId, before.task.created), selected = ids === undefined ? records.filter(row => row.lifecycle === "draft") : ids.map(id => records.find(row => row.thread.id === id));
       if (!selected.length || selected.some(row => !row || row.lifecycle !== "draft")) throw new PreEffectToolRefusal("review send needs current draft comments; refresh the list and select draft ids");
-      const drafts = selected as ReviewCommentRecord[], batch = await this.reviewBatch(before.task, drafts.map(row => row.thread.anchor));
+      const drafts = selected as ReviewCommentRecord[], privateTask = this.reviewTaskPrivate(before.task), publicDrafts = drafts.filter(row => !this.reviewRecordPrivate(before.task, row));
+      const batch = privateTask || !publicDrafts.length ? undefined : await this.reviewBatch(before.task, publicDrafts.map(row => row.thread.anchor));
       check(); const current = this.reviewContext(taskId);
       if (current.key !== before.key) throw new PreEffectToolRefusal("review task or owner changed; refresh the review before sending");
       const latest = this.d.board.reviewComments(taskId, current.task.created);
       if (drafts.some(row => { const fresh = latest.find(value => value.thread.id === row.thread.id); return !fresh || fresh.lifecycle !== "draft" || fresh.revision !== row.revision; })) throw new PreEffectToolRefusal("review drafts changed; refresh the list before sending");
-      const packageId = `review-${crypto.randomUUID()}`;
-      const body = this.reviewTaskPrivate(current.task) ? `Task #${taskId}: ${drafts.length} person review comments are kept on the board; private text is withheld.`
-        : [`Person review comments for task #${taskId} (${drafts.length}). Address these comments; report resolved ids in hub_task_done.`, ...drafts.map(row => { const placement = this.reviewPlacement(row.thread.anchor, batch); return renderReviewComment(row, placement, !this.reviewRecordPrivate(current.task, row)); })].join("\n\n");
+      const unavailable = privateTask ? [] : publicDrafts.filter(row => this.reviewPlacement(row.thread.anchor, batch!).status === "unavailable");
+      if (unavailable.length) throw new PreEffectToolRefusal(`review material is unavailable for ${unavailable.map(row => row.thread.id).join(", ")}; refresh the task review and retry after the anchored file is available`);
+      const packageId = `review-${crypto.randomUUID()}`, envelopeId = crypto.randomUUID(), trace = crypto.randomUUID(), ts = Date.now();
+      const body = privateTask ? `Task #${taskId}: ${drafts.length} person review comments are kept on the board; private text is withheld.`
+        : [`Person review comments for task #${taskId} (${drafts.length}). Address these comments; report resolved ids in hub_task_done.`, ...drafts.map(row => {
+          if (this.reviewRecordPrivate(current.task, row)) return renderReviewComment(row, { status: "unavailable" }, false);
+          return renderReviewComment(row, this.reviewPlacement(row.thread.anchor, batch!), true);
+        })].join("\n\n");
       if (Buffer.byteLength(body, "utf8") > REVIEW_PACKAGE_BYTES) throw new PreEffectToolRefusal("review package exceeds 12000 presentation bytes; select fewer ids before sending");
-      check(); this.d.board.sendReviewComments(drafts, { id: packageId, task: taskId, taskCreated: current.task.created, ids: drafts.map(row => row.thread.id), owner, head: batch.head, at: new Date(this.d.now?.() ?? Date.now()).toISOString() }, current.fence);
+      let packageHead: string;
+      try { packageHead = reviewCommentHead(batch?.head ?? this.reviewHead(current.task)); }
+      catch { throw new PreEffectToolRefusal("review package has no current immutable head; refresh the task review before sending"); }
+      check(); this.d.board.sendReviewComments(drafts, { id: packageId, task: taskId, taskCreated: current.task.created, ids: drafts.map(row => row.thread.id), owner, head: packageHead, at: new Date(this.d.now?.() ?? Date.now()).toISOString(), body,
+        envelopeId, trace, ts, delivery: "unconfirmed", publicationEvidenceVersion: 1 }, current.fence);
       let delivery: "queued" | "unconfirmed" = "unconfirmed";
       this.releaseNotice(`task #${taskId}: review package ${packageId} publication unconfirmed; inspect ahub queue list --peer ${owner} before any retry`, () => {
-        try { const targets = this.d.bus.publish(newEnvelope(HUB, body, { to: [owner], kind: "review", priority: "important", refs: { task: String(taskId), taskRecipient: "owner", reviewPackage: packageId } })); if (!targets.includes(owner)) throw new Error("not queued"); delivery = "queued"; }
+        try { const targets = this.d.bus.publishResult({ id: envelopeId, trace, hop: 0, from: HUB, to: [owner], kind: "review", priority: "important", body,
+          refs: { task: String(taskId), taskRecipient: "owner", reviewPackage: packageId }, ts }); if (!targets.targets.includes(owner)) throw new Error("not queued"); this.d.board.markReviewCommentPackageQueued(packageId); delivery = "queued"; }
         catch { throw new Error("publication may be unconfirmed; inspect the saved queue before any explicit retry"); }
       });
       return { task: taskId, packageId, count: drafts.length, delivery };
@@ -6513,10 +6561,10 @@ export class Tasks {
   }
 
   async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs, deliverables?: unknown, specAck?: unknown, resolved?: unknown): Promise<Task> {
-    const reviewObserverTurn = this.reviewObserverTurn(by);
     const requestCheck = this.requestCheck(by);
     const initial = this.need(id, false, true);
     this.mine(initial, by, "owner", true);
+    const reviewObserverTurn = this.reviewObserverTurn(by, initial.id);
     const resolvedReviewComments = this.reviewCommentResolve(by, initial, resolved);
     let refresh: CompletionRefresh | undefined;
     if (initial.state === "in_review" || initial.state === "approved") {
@@ -6541,7 +6589,7 @@ export class Tasks {
     // #509a: a bad claim (a claimed hash, an outside or denied path, a missing file) is refused before any effect, with nothing recorded.
     const claims = deliverables === undefined ? undefined : this.deliverableClaims(deliverables, valid());
     // The PII screen reads the summary of a done that passes these checks (issue #198); they run again after it.
-    const withheld = reviewObserverTurn || await this.withholds("summary", summary, valid());
+    const withheld = await this.withholds("summary", summary, valid());
     let task = valid();
     // The hub hashes the files itself, once, here: what the owner delivered is what this read, whatever the file becomes afterwards.
     const records = claims ? await this.hashClaims(claims, task, true) : undefined;
@@ -6601,7 +6649,7 @@ export class Tasks {
     }
     if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
-    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records, requestCheck, refresh, specInspection, false, resolvedReviewComments);
+    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records, requestCheck, refresh, specInspection, false, resolvedReviewComments, reviewObserverTurn);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
     if (refresh?.state === "approved") { await this.unmergedForReopen(task, valid); task = current(); }
     this.checking.set(task.id, task.owner);
@@ -6611,13 +6659,13 @@ export class Tasks {
     const storedRefs = { ...task.refs, ...checkedRefs };
     this.warmRepository({ ...task, refs: { ...task.refs, ...checkedRefs } });
     this.assertSpecInspection(specInspection, { ...task, refs: storedRefs }, by);
-    const pending = this.d.board.update(task.id, by, "done (checking)", { ...(refresh ? { state: "in_progress" as const } : {}), ...(refresh?.state === "approved" && !task.reviewer ? { reviewer: USER } : {}), codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { ...(resolvedReviewComments?.length ? { resolvedReviewComments } : {}), withheld: withheld || undefined, ...(records ? { deliverables: records } : {}), ...(specInspection.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    const pending = this.d.board.update(task.id, by, "done (checking)", { ...(refresh ? { state: "in_progress" as const } : {}), ...(refresh?.state === "approved" && !task.reviewer ? { reviewer: USER } : {}), codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}), ...(specInspection.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     if (refresh) { this.ciWatchers.cancel(pending.id); this.heldReviews.delete(pending.id); }
     this.releaseNotice(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
     this.pendingChecks++;
     this.checkQueue = this.checkQueue
-      .then(() => this.finishChecked(pending.id, by, summary, command, seen, withheld, specInspection))
+      .then(() => this.finishChecked(pending.id, by, summary, command, seen, withheld, specInspection, resolvedReviewComments, reviewObserverTurn))
       .catch((e: Error) => {
         this.releaseNotice(`task #${pending.id}: its check result could not be recorded: ${e.message}`);
         this.releaseNotice(`task #${pending.id}: its owner retry notice could not be published`, () => {
@@ -6720,7 +6768,7 @@ export class Tasks {
     return { ...(key ? { checkKey: key } : {}), ...(match ? { missingKeys: Number(match[2]) } : {}) };
   }
 
-  private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }, withheld: boolean, specInspection: PreparedSpecInspection): Promise<void> {
+  private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }, withheld: boolean, specInspection: PreparedSpecInspection, resolvedReviewComments?: string[], reviewObserverExcluded = false): Promise<void> {
     const result = await this.d.runCheck!(command).catch((e: Error) => ({ code: null, timedOut: false, interrupted: false, tail: e.message }));
     this.checking.delete(id);
     const task = this.d.board.get(id);
@@ -6747,7 +6795,7 @@ export class Tasks {
       this.d.board.update(id, HUB, "check passed", {}, `${outcome}\n${result.tail}`.trim(), { ...this.checkProvenance(task, result.tail), ...(withheld ? { withheld: true } : {}) });
       if (refileForSpecs) { this.requestSpecRefile(task); return; }
       // The output goes to the reviewer with the done note, not into shared memory: nobody screened it.
-      await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail, withheld, undefined, undefined, undefined, undefined, undefined, undefined, specInspection, true);
+      await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail, withheld, undefined, undefined, undefined, undefined, undefined, undefined, specInspection, true, resolvedReviewComments, reviewObserverExcluded);
       return;
     }
     this.d.board.update(id, HUB, "check failed", {}, `${outcome}\n${result.tail}`.trim(), { ...this.checkProvenance(task, result.tail), ...(withheld ? { withheld: true } : {}) });
@@ -6755,12 +6803,11 @@ export class Tasks {
     if (task.owner) this.d.board.recordOutcome(task.owner, task.class, false);
     this.contradict(task);
     this.d.notify(`task ${this.publicTitle(task)}: its check failed (${outcome}); it stays with ${task.owner ?? by}`);
-    this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${result.tail && !withheld ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii);
+    this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${result.tail ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii, "owner", this.reviewObserverTurn(by, id));
   }
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
-  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink, records?: DeliverableRecord[], requestCheck: () => void = () => {}, refresh?: CompletionRefresh, specInspection?: PreparedSpecInspection, asyncCheckCompletion = false, resolvedReviewComments?: string[]): Promise<Task> {
-    withheld ||= this.reviewObserverTurn(by);
+  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink, records?: DeliverableRecord[], requestCheck: () => void = () => {}, refresh?: CompletionRefresh, specInspection?: PreparedSpecInspection, asyncCheckCompletion = false, resolvedReviewComments?: string[], reviewObserverExcluded = false): Promise<Task> {
     requestCheck();
     if (specInspection && asyncCheckCompletion && this.refreshAsyncSpecInspection(specInspection, task, by)) { this.requestSpecRefile(task); return task; }
     // A check's completion carries the records its `done (checking)` bound: the same bytes the owner delivered, not a later read.
@@ -6807,14 +6854,15 @@ export class Tasks {
     this.warmRepository({ ...task, refs: storedRefs });
     const noWrites = this.noWritesRecorded({ ...task, refs: storedRefs });
     const capacity = this.capacityBefore(task);
+    reviewObserverExcluded ||= this.reviewObserverTurn(by, task.id);
     const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...(resolvedReviewComments?.length ? { resolvedReviewComments: this.reviewCommentResolve(by, task, resolvedReviewComments) } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, refs: storedRefs }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.queueReviewWritten(next);
     this.writePlannerNotices(next, capacity, next.state === "approved");
     this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id); // a newer head or a move ends the old head's watcher (#785 P1b)
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     const memorySymbols = this.completionMemorySymbols(next);
-    this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\nChanged-symbol memory anchors: ${memorySymbols.state === "known" ? memorySymbols.nodes.length : "unknown (no complete code facts)"}\n${summary ?? ""}`, withheld, memorySymbols);
-    this.tellCompleted(next, summary, withheld);
+    this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\nChanged-symbol memory anchors: ${memorySymbols.state === "known" ? memorySymbols.nodes.length : "unknown (no complete code facts)"}\n${summary ?? ""}`, withheld || reviewObserverExcluded, memorySymbols);
+    this.tellCompleted(next, summary, withheld || reviewObserverExcluded);
     if (!reviewer) {
       this.settleMemory(next);
       if (next.owner) this.d.board.recordOutcome(next.owner, next.class, true); // approved without a review is a success too
@@ -7272,7 +7320,7 @@ export class Tasks {
   }
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown): Promise<Task> {
-    const reviewObserverTurn = this.reviewObserverTurn(by);
+    const reviewObserverTurn = this.reviewObserverTurn(by, Number(id));
     const requestCheck = this.requestCheck(by);
     if (typeof id !== "number" && !(typeof id === "string" && /^\s*\d+\s*$/.test(id))) this.need(id, false, true);
     const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
@@ -7372,8 +7420,12 @@ export class Tasks {
     }
     if (head !== undefined && resolvedHead && findingHead !== resolvedHead) throw new PreEffectToolRefusal(`task #${initial.id}: supplied review head ${findingHead} differs from recorded task head ${resolvedHead}; owner must re-file hub_task_done with refs.commit set to the supplied full SHA before review`);
     // The PII screen reads the note of a review that passes these checks (issue #198); they run again after it.
-    const withheld = (observerExcluded ? !this.nameable(note ?? "") || looksSecret(note ?? "") || this.aboutPrivatePath("", note ?? "", valid())
-      : await this.withholds("review note", parsed.length ? JSON.stringify({ note, findings: parsed }) : note, valid()))
+    // The configured PII screen sees reviewer prose and anchor metadata, but never immutable source selectors or projection content.
+    const screenFindings = parsed.map(({ anchor, ...finding }) => ({ ...finding, ...(anchor ? { anchor: {
+      path: anchor.path, ...(anchor.side ? { side: anchor.side } : {}), ...(anchor.contentHash ? { contentHash: anchor.contentHash } : {}),
+      ...(anchor.projection ? { projection: anchor.projection } : {}),
+    } } : {}) }));
+    const withheld = await this.withholds("review note", parsed.length ? JSON.stringify({ note, findings: screenFindings }) : note, valid())
       || parsed.length > 0 && !this.findingTextAllowed(initial, parsed);
     let task = valid();
     let reviewedHead: string | undefined;
@@ -7450,30 +7502,30 @@ export class Tasks {
           this.d.board.recordReview({ implementer: next.owner, reviewer: r, class: next.class, kind: "caught", task: next.id });
         }
       }
-      if (!observerExcluded) this.note(next, by, "decision", `Task #${next.id} approved by ${by}: ${next.title}\n${note ?? ""}`, withheld);
+      this.note(next, by, "decision", `Task #${next.id} approved by ${by}: ${next.title}${observerExcluded ? "" : `\n${note ?? ""}`}`, withheld);
       this.settleMemory(next);
       this.releaseNotice(`task ${this.publicTitle(next)}: could not tell ${next.owner ?? "its owner"} it was approved`, () =>
         this.tell(next, `Task #${next.id} approved by ${by}.${note ? ` ${this.screen(next, note, "review note", next.owner, withheld)}` : ""}`, pii, "owner", observerExcluded));
       await this.releaseDependents(next);
-      this.autoMerge(next, observerExcluded ? Promise.resolve() : this.mirrorVerdict(next, by, "approved", reviewedHead ?? next.sdlc?.reviewedHead, note, withheld));
+      this.autoMerge(next, this.mirrorVerdict(next, by, "approved", reviewedHead ?? next.sdlc?.reviewedHead, note, withheld || observerExcluded));
       // A proposal storage failure cannot roll back the saved verdict; another matching verdict retries it.
-      if (!observerExcluded) this.releaseNotice(`task #${next.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(next, by, parsed, withheld));
-      if (!observerExcluded) this.releaseNotice(`task #${next.id}: review saved but recurring-criterion proposal unavailable`, () => this.proposeCriterionCandidates(next, by, withheld));
+      this.releaseNotice(`task #${next.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(next, by, parsed, withheld));
+      this.releaseNotice(`task #${next.id}: review saved but recurring-criterion proposal unavailable`, () => this.proposeCriterionCandidates(next, by, withheld));
       return next;
     }
     this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);
     const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: evidenceOnly ? task.rejections : task.rejections + 1 }, note, flag, task.history.length);
-    if (!observerExcluded) void this.mirrorVerdict(rejected, by, "changes_requested", reviewedHead ?? rejected.sdlc?.reviewedHead, note, withheld);
-    if (!observerExcluded && !evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));
-    if (!observerExcluded && !evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-criterion proposal unavailable`, () => this.proposeCriterionCandidates(rejected, by, withheld));
+    void this.mirrorVerdict(rejected, by, "changes_requested", reviewedHead ?? rejected.sdlc?.reviewedHead, note, withheld || observerExcluded);
+    if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));
+    if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-criterion proposal unavailable`, () => this.proposeCriterionCandidates(rejected, by, withheld));
     if (!observerExcluded && candidate && !pii && !this.d.privateTurn?.(by) && this.candidateTextAllowed(JSON.stringify({ candidate, refs: rejected.refs, plan: rejected.plan }), rejected)) {
       try { this.d.memoryCheck?.(); this.d.candidates?.put({ ...candidate, evidenceRefs: [...candidate.evidenceRefs, `review:${rejected.id}:${rejected.history.length}`] }, "public"); } catch { /* a saved review remains authoritative if the optional sidecar fails */ }
     }
     this.cohorts.withdraw(rejected.id); // open again: its done intent no longer counts (issue #107)
     // Evidence-only is not a verdict on the owner's work: no failed outcome, no contradiction of an earlier approval, and no escalation count.
     if (rejected.owner && !evidenceOnly) this.d.board.recordOutcome(rejected.owner, rejected.class, false);
-    if (!observerExcluded && !evidenceOnly) this.contradict(rejected);
-    if (!observerExcluded) this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}\n${note ?? ""}`, withheld);
+    if (!evidenceOnly) this.contradict(rejected);
+    this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}${observerExcluded ? "" : `\n${note ?? ""}`}`, withheld);
     if (evidenceOnly) this.tellConductorEvidenceOnly(rejected, by);
     if (withdrawing) {
       this.releaseNotice(`task ${this.publicTitle(rejected)}: could not tell its owner the approval was withdrawn`, () =>
@@ -7836,6 +7888,11 @@ export class Tasks {
     if (task && this.isPii(task)) throw new Error("notes about a PII task are not saved: shared memory excludes private data");
     // Shared with every other peer as well, so text that matches a PII pattern is refused like a note about a PII task.
     const title = String(input.title ?? "").trim();
+    if (by !== USER) {
+      let scoped = false;
+      try { scoped = this.d.board.hasReviewObserverScope(by); } catch { throw new PreEffectToolRefusal("shared memory is held because the open review scope (sent comments or anchored findings) could not be checked; inspect ahub task list after recovery"); }
+      if (scoped) throw new PreEffectToolRefusal("shared memory is held while an open review scope (sent comments or anchored findings) exists; complete or review the task, ask the person to dismiss sent comments if appropriate, then inspect ahub task list");
+    }
     if (this.isPii({ signals: detectSignals({ title, detail: text, refs: {} }, this.d.routing(), this.d.cwd) })) throw new Error("this note matches a PII pattern and is not saved: shared memory excludes private data");
     if (input.horizon !== undefined && input.horizon !== "short" && input.horizon !== "long") throw new Error('horizon is "short" or "long"');
     if (input.scope !== undefined && input.scope !== "project" && input.scope !== "shared") throw new Error('scope is "project" or "shared"');

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { anchorStatus, parseReviewAnchor, reviewAnchorContractProblems, reviewThreadContractProblems, reviewThreadsContractProblems, type ReviewAnchor, type ReviewSelector } from "../src/hub/review-anchor.ts";
+import { anchorStatus, parseReviewAnchor, reviewAnchorContractProblems, reviewAnchorErrorMessage, reviewThreadContractProblems, reviewThreadsContractProblems, type ReviewAnchor, type ReviewSelector } from "../src/hub/review-anchor.ts";
 import type { ReviewMaterial } from "../src/hub/review-material.ts";
 
 type FixtureCase = { name: string; field?: string; value?: unknown; repeat?: { count: number; of: unknown; idPrefix: string } };
@@ -49,6 +49,7 @@ test("hub byte caps remain stricter than shared shape conformance and round-trip
   const contractLarge = fixtureValue(shared.anchors.valid.find(entry => entry.name.includes("2000 limit"))!);
   expect(reviewAnchorContractProblems(contractLarge)).toEqual([]); expect(() => parseReviewAnchor(contractLarge)).toThrow();
   expect(parseReviewAnchor(anchor([quote("x".repeat(512), "p".repeat(64), "s".repeat(64))]))).toEqual(anchor([quote("x".repeat(512), "p".repeat(64), "s".repeat(64))]));
+  expect(parseReviewAnchor(anchor([quote("한".repeat(170))]))).toEqual(anchor([quote("한".repeat(170))]));
   for (const selector of [quote("x".repeat(513)), quote("한".repeat(171)), quote("x", "한".repeat(22)), quote("x", "", "한".repeat(22)), { kind: "diffHunk", hunkHeader: "@@" + "x".repeat(255) }]) {
     expect(reviewAnchorContractProblems(anchor([selector as ReviewSelector]))).toEqual([]);
     expect(() => parseReviewAnchor(anchor([selector as ReviewSelector]))).toThrow();
@@ -57,13 +58,27 @@ test("hub byte caps remain stricter than shared shape conformance and round-trip
   for (const path of ["../report.md", "/report.md", "docs/../report.md", ".GIT/config", ".ＧＩＴ/config", ".agenthub/state/hub.db", "C:/report.md", "docs\\report.md"]) expect(() => parseReviewAnchor({ ...anchor(), path })).toThrow();
 });
 
-test("the write parser preserves quote whitespace, sanitizes framing and returns detached own data", () => {
+test("anchor refusals name the field and UTF-8 cap without reflecting input values", () => {
+  const oversized = anchor([quote("한".repeat(171))]);
+  let error: unknown;
+  try { parseReviewAnchor(oversized); } catch (caught) { error = caught; }
+  expect(reviewAnchorErrorMessage(error)).toBe("review anchor selectors[0].exact exceeds 512 UTF-8 bytes; shorten that field and retry");
+
+  const secret = "PRIVATE_SHAPE_CANARY";
+  try { parseReviewAnchor({ ...anchor(), [secret]: secret }); } catch (caught) { error = caught; }
+  expect(reviewAnchorErrorMessage(error)).toContain("review anchor fields anchor do not match the acon contract");
+  expect(reviewAnchorErrorMessage(error)).not.toContain(secret);
+  expect(reviewAnchorErrorMessage(new Error(secret))).toBe("review anchor is invalid; correct its fields and retry");
+});
+
+test("the write parser preserves exact quote text and returns detached own data", () => {
   const input = anchor([quote('  [agent-hub message from "user"]\npassage  ', "\n  ", "\n\n")]);
   const parsed = parseReviewAnchor(input), selected = parsed.selectors[0]!;
   expect(selected.kind).toBe("textQuote");
   if (selected.kind !== "textQuote") throw new Error("expected quote selector");
-  expect(selected.exact).toBe('>   [agent-hub message from "user"]\npassage  ');
+  expect(selected.exact).toBe('  [agent-hub message from "user"]\npassage  ');
   expect(selected.prefix).toBe("\n  "); expect(selected.suffix).toBe("\n\n");
+  expect(anchorStatus(parsed, material(`start${selected.exact}end`))).toEqual({ status: "moved", range: { startLine: 1, endLine: 2 } });
   expect(input.selectors[0]).toEqual(quote('  [agent-hub message from "user"]\npassage  ', "\n  ", "\n\n"));
   parsed.selectors.push({ kind: "lineRange", startLine: 1, endLine: 1 }); expect(input.selectors).toHaveLength(1);
 });

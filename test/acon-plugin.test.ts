@@ -310,7 +310,11 @@ describe("anchored review person bridge (#1056)", () => {
   test("review writes use direct console control and only second-argument person metadata", async () => {
     const f = fixture({ features: ["action.meta"] });
     await f.provider.action({ ...target, action: "review_comment_put", body: "review body" }, person);
-    await f.provider.action({ ...target, action: "review_comment_delete", id: "comment-1", revision: 1 }, person);
+    const remove = { ...target, action: "review_comment_delete", id: "comment-1", revision: 1 };
+    const removePreview = await f.provider.action(remove, person);
+    expect(removePreview).toMatchObject({ ok: false, needsConfirm: true, preview: ["Delete or dismiss this review comment on task #7."] });
+    if (!("fingerprint" in removePreview) || typeof removePreview.fingerprint !== "string") throw new Error("missing delete confirmation");
+    await f.provider.action({ ...remove, confirmed: true, fingerprint: removePreview.fingerprint }, person);
     const send = { ...target, action: "review_comment_send", ids: ["comment-2"] };
     const preview = await f.provider.action(send, person);
     expect(preview).toMatchObject({ ok: false, needsConfirm: true });

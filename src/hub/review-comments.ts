@@ -1,4 +1,4 @@
-import type { ActionMeta, ReviewAnchor, ReviewThread } from "./acon-review-contract.d.ts";
+import type { ActionMeta, ReviewAnchor, ReviewThread } from "@staix/agent-console/contract";
 import { types } from "node:util";
 import { sanitize } from "./envelope.ts";
 import { parseReviewAnchor, type ReviewAnchorStatus as AnchorPlacement } from "./review-anchor.ts";
@@ -19,7 +19,12 @@ export type ReviewCommentView = {
   revision: number; sentAt?: string; placement: { status: "unavailable" } };
 export interface ReviewCommentFence { task: number; taskCreated: number; flow: number; head?: string; owner: string | null }
 export interface ReviewCommentMutation { task: number; id: string; revision: number; lifecycle?: ReviewCommentLifecycle; deleted?: true }
-export interface ReviewCommentPackage { task: number; taskCreated: number; id: string; ids: string[]; owner: string; head: string; at: string }
+export interface ReviewCommentPackage {
+  task: number; taskCreated: number; id: string; ids: string[]; owner: string; head: string; at: string;
+  /** Immutable delivery payload. Missing on pre-recovery packages; those require explicit manual inspection. */
+  body?: string; envelopeId?: string; trace?: string; ts?: number; delivery?: "unconfirmed" | "queued"; publicationEvidenceVersion?: 1;
+}
+export interface ReviewCommentPackageView { id: string; count: number; delivery: "queued" | "unconfirmed" | "unavailable" }
 export const emptyReviewCommentCounts = (): ReviewCommentCounts => ({ draft: 0, sent: 0, resolved: 0, dismissed: 0 });
 
 function fail(cause: string): never { throw new Error(`review comments ${cause}; refresh the task review and retry with a current bounded comment`); }
@@ -104,5 +109,5 @@ export function renderReviewComment(record: ReviewCommentRecord, placement: Anch
   const range = placement.status === "outdated" ? undefined : placement.range ?? anchor.selectors.find(selector => selector.kind === "lineRange");
   const location = sanitize(anchor.path) + (range ? `:${range.startLine}-${range.endLine}` : "");
   const quotes = anchor.selectors.filter(selector => selector.kind === "textQuote").map(selector => sanitize(selector.exact));
-  return [`[${record.thread.id}] ${location} (${placement.status})`, ...quotes.map(quote => `> ${quote.replace(/\n/g, "\n> ")}`), sanitize(record.thread.body)].join("\n");
+  return [`[${record.thread.id}] ${location} (${placement.status}) at ${record.commit}`, ...quotes.map(quote => `> ${quote.replace(/\n/g, "\n> ")}`), sanitize(record.thread.body)].join("\n");
 }

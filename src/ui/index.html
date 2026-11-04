@@ -662,6 +662,10 @@ async function action(payload, button, managerAction = false) {
       return false;
     }
     if (key && pendingStarts.get(key) === pending) clearPendingStart(key);
+    if (['review_comment_put','review_comment_delete','review_comment_send'].includes(payload.action)) {
+      reviewCommentsCache.delete(reviewCommentsCacheKey(boardViewState?.snapshot.tasks?.find(task => task.id === payload.task), captured));
+      if (taskDetailId === payload.task) void refreshReviewComments(taskDetailId);
+    }
     if (!managerMode || captured.generation === viewGeneration) notice(result.text || 'Action accepted.');
     if ((payload.action === 'sdlc_queue' || payload.action === 'sdlc_release') && (stopped || captured.generation !== viewGeneration || captured.projectId !== selectedProjectId || captured.instanceId !== selectedInstanceId)) return false;
     return (payload.action === 'sdlc_queue' || payload.action === 'sdlc_release') ? result.report : true;
@@ -696,7 +700,7 @@ const firstLoad = Object.fromEntries(['tasks', 'peers'].map((name) => [name, [..
 function resetView(id, instance) {
   saveDraft();
   selectedProjectId = id || ''; selectedInstanceId = instance || ''; snapshotValid = false; cursor = 0; eventCount = 0; viewGeneration++;
-  lastSnapshot = null;
+  lastSnapshot = null; reviewCommentsCache.clear();
   officePrev = null; officeDesks.clear(); officeCards.clear(); officeScene = null;
   $('office').replaceChildren(); $('office-section').hidden = true;
   closeTaskDetail(); renderNeedsAttention(null); applyDashboardView();
@@ -1103,6 +1107,7 @@ function keyedStart(name, enter = false) {
 }
 const BOARD_FOCUS_COLUMNS = ['backlog','todo','progress','review','done'];
 let columnFocus, taskDetailId = null;
+const reviewCommentsCache = new Map();
 let planningEdit = null, releaseEdit = null;
 function isClosedTaskState(state) { return state === 'approved' || state === 'cancelled'; }
 const loadedPlanningDates = new Map();
@@ -1288,6 +1293,13 @@ function reviewCommentsSection(task) {
   const counts = current?.counts || task.reviewComments;
   section.append(el('p', counts ? ['draft','sent','resolved','dismissed'].map(key => (counts[key] || 0) + ' ' + key).join(' / ') : 'No review comments.', 'meta'));
   const writable = !!reviewKit && boardViewState?.snapshot.reviewWritable === true;
+  const refresh = el('button', 'Refresh review comments'); refresh.type = 'button'; refresh.onclick = () => void refreshReviewComments(task.id); section.append(refresh);
+  if (current?.unavailable) section.append(el('p', 'Review comments unavailable. Refresh to try again.', 'meta warn'));
+  if (writable) for (const pkg of current?.packages || []) if (pkg.delivery === 'unconfirmed') {
+    const retry = el('button', 'Retry saved package (' + pkg.count + ' comments)'); retry.type = 'button'; retry.dataset.mutation = 'project';
+    retry.onclick = () => sameBoardContext(expectedReview) && void action({action:'review_comment_send',task:task.id,packageId:pkg.id},retry);
+    section.append(retry);
+  }
   for (const comment of current?.comments || []) {
     const thread = comment.thread, id = thread?.id || comment.id, item = el('article', undefined, 'detail-group');
     const placement = comment.placement?.status || 'unavailable', range = thread && (placement === 'anchored' || placement === 'moved') ? comment.placement?.range || thread.anchor.selectors.find(selector => selector.kind === 'lineRange') : undefined;
@@ -1414,7 +1426,7 @@ function setColumnFocus(column) {
   if (boardViewState) renderBoard(boardViewState.snapshot, boardViewState.peers, boardViewState.ids);
 }
 function closeTaskDetail() {
-  taskDetailId = null; const dialog = $('task-detail-dialog'); if (dialog.open) dialog.close();
+  taskDetailId = null; reviewCommentsCache.clear(); const dialog = $('task-detail-dialog'); if (dialog.open) dialog.close();
   $('task-detail-content').replaceChildren(); signatures.delete('task-detail-content');
 }
 function refreshTaskDetail() {
@@ -1429,8 +1441,24 @@ function refreshTaskDetail() {
 }
 function openTaskDetail(id) {
   if (stopped || !Number.isSafeInteger(id) || !snapshotValid || !boardViewState?.cards.has(id)) return;
-  switchView('board'); taskDetailId = id; refreshTaskDetail();
+  if (taskDetailId !== id) reviewCommentsCache.clear();
+  switchView('board'); taskDetailId = id; refreshTaskDetail(); void refreshReviewComments(id);
   const dialog = $('task-detail-dialog'); if (taskDetailId !== null && !dialog.open) dialog.showModal();
+}
+function reviewCommentsCacheKey(task, ctx = context()) {
+  return JSON.stringify([ctx.projectId,ctx.instanceId,ctx.generation,task?.id ?? null,task?.reviewStateKey ?? null]);
+}
+async function refreshReviewComments(id) {
+  if (stopped || taskDetailId !== id || !snapshotValid) return;
+  const captured = context(), task = lastSnapshot?.tasks?.find(row => row.id === id), cacheKey = reviewCommentsCacheKey(task, captured), input = {after:cursor, view:'board', reviewTask:id, reviewRefresh:true};
+  if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
+  try {
+    const result = await post('/snapshot', input);
+    if (taskDetailId !== id || captured.generation !== viewGeneration || (managerMode && (result.projectId !== captured.projectId || result.instanceId !== captured.instanceId))
+      || reviewCommentsCacheKey(lastSnapshot?.tasks?.find(row => row.id === id), captured) !== cacheKey) return;
+    reviewCommentsCache.set(cacheKey, result.reviewComments || {task:id, unavailable:true});
+    if (lastSnapshot) { lastSnapshot = {...lastSnapshot, reviewComments:reviewCommentsCache.get(cacheKey)}; render(lastSnapshot); }
+  } catch (error) { if (taskDetailId === id) notice('Review comments unavailable: ' + error.message, true); }
 }
 function renderBoard(snapshot, peers, ids) {
   if (columnFocus === undefined) {
@@ -1931,9 +1959,12 @@ async function poll() {
   const captured = context();
   if (managerMode && (!captured.projectId || !captured.instanceId)) { if (!stopped) timer = setTimeout(poll, 1000); return; }
   try {
-    const input = {after:cursor, memory:memoryInput(), view:currentView, ...(taskDetailId !== null ? {reviewTask:taskDetailId} : {})}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
+    const input = {after:cursor, memory:memoryInput(), view:currentView}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
     const result = await post('/snapshot', input);
     if (!managerMode || (result.projectId === captured.projectId && result.instanceId === captured.instanceId && captured.generation === viewGeneration)) {
+      const detailTask = taskDetailId === null ? undefined : result.tasks?.find(task => task.id === taskDetailId), detailKey = reviewCommentsCacheKey(detailTask, captured);
+      if (taskDetailId !== null && reviewCommentsCache.has(detailKey)) result.reviewComments = reviewCommentsCache.get(detailKey);
+      else if (taskDetailId !== null) reviewCommentsCache.clear();
       snapshotValid = true; lastSnapshot = result; lastSnapshotAt = Date.now(); render(result); setConnection('Live / updated ' + new Date().toLocaleTimeString(), 'live'); setDisconnected(false);
     }
   }

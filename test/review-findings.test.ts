@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { ReviewAnchor, ReviewSelector } from "../src/hub/acon-review-contract.d.ts";
+import type { ReviewAnchor, ReviewSelector } from "@staix/agent-console/contract";
 const findings = () => import("../src/hub/review-findings.ts");
 const item = (id = "bugs:one", severity: "important" | "nit" = "important", disposition: "open" | "fixed" | "false_positive" | "accepted" = "open") => ({ id, pass: "bugs" as const, severity, disposition });
 const options = { person: false, maxNits: 5 };

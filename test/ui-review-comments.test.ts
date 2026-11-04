@@ -33,9 +33,21 @@ function page(acon = false, privateTask = false, unavailable = false) {
 }
 
 test("standalone task details list lifecycle/placement and remain read-only, with count-only private data", () => {
-  const f=page();expect(f.section.text()).toContain("draft.md:3-4 (moved) / draft");expect(f.section.text()).toContain("Person comment");expect(f.section.text()).toContain("Read-only here");expect(f.section.all().filter(node=>node.tag==="button")).toEqual([]);
+  const f=page();expect(f.section.text()).toContain("draft.md:3-4 (moved) / draft");expect(f.section.text()).toContain("Person comment");expect(f.section.text()).toContain("Read-only here");
+  const readButtons=f.section.all().filter(node=>node.tag==="button");expect(readButtons.map(node=>node.textContent)).toEqual(["Refresh review comments"]);expect(readButtons.every(node=>!node.dataset.mutation)).toBe(true);
   const pii=page(false,true);expect(pii.section.text()).toContain("1 draft");expect(pii.section.text()).not.toContain("Person comment");expect(pii.section.text()).not.toContain("draft.md");
   expect(f.html).toContain("const reviewKit = null;");
+});
+
+test("review comment cache is scoped to project, daemon instance, generation and opaque task review state", () => {
+  const html=readFileSync(new URL("../src/ui/index.html",import.meta.url),"utf8"),start=html.indexOf("function reviewCommentsCacheKey("),end=html.indexOf("async function refreshReviewComments(",start);
+  expect(start).toBeGreaterThan(0);expect(end).toBeGreaterThan(start);
+  const key=runInNewContext(`${html.slice(start,end)};reviewCommentsCacheKey`,{context:()=>({projectId:"p1",instanceId:"i1",generation:1})}) as (task:unknown,ctx?:unknown)=>string;
+  const task={id:7,reviewStateKey:"head-a-owner-a-public-flow-1"},base=key(task,{projectId:"p1",instanceId:"i1",generation:1});
+  expect(key(task,{projectId:"p2",instanceId:"i1",generation:1})).not.toBe(base);
+  expect(key(task,{projectId:"p1",instanceId:"i2",generation:1})).not.toBe(base);
+  expect(key(task,{projectId:"p1",instanceId:"i1",generation:2})).not.toBe(base);
+  expect(key({...task,reviewStateKey:"head-b-owner-a-public-flow-1"},{projectId:"p1",instanceId:"i1",generation:1})).not.toBe(base);
 });
 
 test("acon selection uses immutable material head, sends via host action, and rejects stale panel callbacks", async () => {
