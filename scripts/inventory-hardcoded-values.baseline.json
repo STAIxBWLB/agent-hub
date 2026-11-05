@@ -468,7 +468,6 @@
   "src/hub/daemon.ts:startDaemon:inline:st.size <= 64 * 1024=64 * 1024#0",
   "src/hub/daemon.ts:taskOpBody:inline:a.reason.length > 1000=1000#0",
   "src/hub/daemon.ts:taskOpBody:inline:a.reason.trim().length > 1000=1000#0",
-  "src/hub/daemon.ts:tasks:inline:ids.slice=200#0",
   "src/hub/daemon.ts:text:inline:sanitize(String(reply.error ?? the target refused the handoff)).slice=300#0",
   "src/hub/daemon.ts:timeout:inline:input.timeout ?? 120_000=120_000#0",
   "src/hub/daemon.ts:timeoutMs:inline:input.timeout ?? 120_000=120_000#0",
