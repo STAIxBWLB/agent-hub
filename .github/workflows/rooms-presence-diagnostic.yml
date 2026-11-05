@@ -2,6 +2,9 @@ name: rooms presence diagnosis (temporary 742)
 on:
   push:
     branches: [fix/742-rooms-presence-cost]
+    paths:
+      - .github/workflows/rooms-presence-diagnostic.yml
+      - scripts/diagnose-presence-cost-742.ts
 permissions:
   contents: read
 concurrency:
