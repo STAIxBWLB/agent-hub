@@ -1285,8 +1285,9 @@ Bus journal. A crash or failure in that cross-DB publication window becomes
 `needs_review`, with no automatic receiver republish or fabricated receipt.
 Sender `dispatching`/`accepted` rows recover from validated durable intent under
 the same application and delivery ids, retaining their original queue expiry.
-A valid late signed receipt may settle an unresolved sender hold; person
-dispositions and invalidated recipient bindings remain authoritative. Signed
+A valid late signed receipt may settle an unresolved ordinary sender hold;
+invocation uncertainty remains person-settled. Person dispositions and invalidated
+recipient bindings remain authoritative. Signed
 remote safe refusals are terminal; native poison-envelope policy is unchanged.
 
 Signed seq/floors are the permanent primary replay protection. Duplicate seqs
@@ -6512,5 +6513,6 @@ Room application retries preserve the application id, canonical delivery id and
 original queue TTL, using a fresh authenticated ciphertext sequence where needed.
 The ACK timeout schedules resend rather than uncertainty; queue expiry or a
 permanent refusal remains inspectable. A signed late receipt may settle an
-unresolved remote hold once without overriding a person disposition. Receiver
-application deduplication, current identity/privacy fences and all caps remain.
+unresolved ordinary remote hold once without overriding a person disposition.
+Invocation uncertainty retains its person-only ledger hold. Receiver application
+deduplication, current identity/privacy fences and all caps remain.

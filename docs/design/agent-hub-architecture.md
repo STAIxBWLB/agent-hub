@@ -69,8 +69,8 @@ Room applications add bounded at-least-once sending with receiver admission
 deduplicated by immutable application id under the existing retention and cap
 contract. Retry and restart retain the original queue
 TTL and revalidate current membership and privacy. ACK deadlines trigger resend;
-late signed recipient receipts may settle unresolved remote holds but never a
-person-disposed row. Receipt ciphertext is locally durable before chat transport
+late signed recipient receipts may settle unresolved ordinary remote holds but
+never a person-disposed row. Invocation uncertainty keeps its person-only ledger hold. Receipt ciphertext is locally durable before chat transport
 ACK, and remains in its outbox until broker storage confirmation. These room-only
 transitions do not grant native completion or task-offer read evidence ([#1204](https://github.com/STAIxBWLB/agent-hub/issues/1204)).
 

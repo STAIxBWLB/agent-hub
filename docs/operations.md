@@ -5945,9 +5945,11 @@ Offline queues are capped at 200 per room. In untracked config.local.json, optio
 `rooms.ack_timeout_s` defaults to 600 and `rooms.queue_ttl_h` to 24. The ACK
 deadline schedules another attempt under the same application id, while the
 original queue TTL stays fixed. Active sends resume after restart. Only queue
-expiry or a permanent refusal ends automatic sending; a remote `needs_review`
-row does not hold the rest of that peer's queue. A valid late signed receipt can
-settle an unresolved remote row once, with an ids-only event. The person's prior
+expiry or a permanent refusal ends automatic sending; an ordinary remote chat
+`needs_review` row does not hold the rest of that peer's queue. A valid late signed
+receipt can settle an unresolved ordinary remote row once, with an ids-only event.
+Invocation uncertainty keeps its person-only hold; a late transport receipt is
+advisory and does not assert the invoked operation's outcome. The person's prior
 disposition is never overridden. Old text cannot be
 retried to a replacement fingerprint reusing a label. An unproved terminal retry
 refuses and requires a deliberately authored new message.
