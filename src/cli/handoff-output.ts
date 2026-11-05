@@ -33,6 +33,6 @@ export function renderHandoffs(data: unknown, columns?: number): Span[][] {
     // The cause of each unreachable or moved target, once per target and with its next step, so the column stays narrow and the person still learns what to run.
     ...[...new Map(down.map(row => [String(row.remoteProject), String(row.cause)])).entries()].map(([project, cause]) => [s(`${String(project).slice(0, 24)}: ${cause.slice(0, 200)}`, "attention")]),
     // A sync that did not finish in time: the pass keeps running, so the list above is the state so far and the person is told what to run to read the rest.
-    ...(typeof (data as any)?.cause === "string" && (data as any)?.synced === false ? [[s(String((data as any).cause).slice(0, 200), "attention")]] : []),
+    ...(typeof (data as any)?.cause === "string" && (data as any)?.synced === false ? [[s(String((data as any).cause), "attention")]] : []),
     ...((data as any)?.syncing === true ? [[s(`catch-up still running for ${num((data as any).pending)} target${(data as any).pending === 1 ? "" : "s"}: run \`ahub task handoff --list\` in a minute`, "attention")]] : [])];
 }
