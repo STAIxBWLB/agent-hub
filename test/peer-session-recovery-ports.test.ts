@@ -219,6 +219,22 @@ test("first stable SID binding clears only the peer marker and preserves other-s
   expect(journal.reviewInputEvidence(peer.id, oldSessionHash)).toMatchObject({ sessionState: "held", retainedSessionHold: true });
 });
 
+test("first confirmed SID binding clears a marker-only unknown without a RAM quote origin", () => {
+  const cwd = scratch(), file = join(cwd, "hub.db"), hash = (value: string) => createHash("sha256").update(value).digest("hex");
+  const peer = ports(new PlainPeer("codex"), { nativeSession: "fresh-confirmed-session" });
+  const journal = new DeliveryJournal({ file, projectRoot: cwd, projectId: "marker-only-binding", instanceId: "first" });
+  cleanup.push(() => journal.close()); journal.markReviewInputIncomplete(peer.id);
+  const bus = new Bus({ batchMs: 0 }); bus.add(peer); cleanup.push(() => bus.closeJournal());
+  const maps = { currentReviewObserverInputs: new Map(), pendingReviewObserverInputs: new Map(), ordinaryReviewObserverInputs: new Map(), stagedSessionlessOrdinaryInputs: new Map(),
+    reviewObserverSessionBindings: new Map(), currentDaemonReviewObserverHolds: new Map(), restoredPullOnlyReviewHolds: new Map(), ownedObserverInputs: new Map(), localObserverSessionIds: new WeakMap() };
+  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
+    bus, journal, isWsPeer, definitionOf, claudeSession: () => ({}), createHash, ...maps,
+  });
+  const sessionHash = hash("fresh-confirmed-session");
+  host.resetReviewObserverSessionIfChanged(peer.id);
+  expect(journal.reviewInputEvidence(peer.id, sessionHash)).toMatchObject({ provenance: "available", incompletePeer: false, sessionState: "clean", retainedSessionHold: false });
+});
+
 test("first stable SID binding persists a current RAM quote before clearing its peer marker", () => {
   const cwd = scratch(), file = join(cwd, "hub.db"), hash = (value: string) => createHash("sha256").update(value).digest("hex");
   const peer = ports(new PlainPeer("codex"), { nativeSession: "confirmed-session-c" });
@@ -228,7 +244,7 @@ test("first stable SID binding persists a current RAM quote before clearing its 
   journal.holdReviewInput({ peer: peer.id, sessionHash: oldSessionHash, inputHash: hash("older-review") });
   journal.markReviewInputIncomplete(peer.id);
   const bus = new Bus({ batchMs: 0 }); bus.add(peer); cleanup.push(() => bus.closeJournal());
-  const currentReviewObserverInputs = new Map([[peer.id, { deliveryKey: JSON.stringify(["review-envelope"]), held: true, reviewInputScoped: true, anchoredSubmission: true, reviewHoldTurnId: "source-turn" }]]);
+  const currentReviewObserverInputs = new Map([[peer.id, { deliveryKey: JSON.stringify(["review-envelope"]), held: true, reviewInputScoped: true, anchoredSubmission: true, unboundReviewInput: true, reviewHoldTurnId: "source-turn" }]]);
   const pendingReviewObserverInputs = new Map(), ordinaryReviewObserverInputs = new Map(), stagedSessionlessOrdinaryInputs = new Map();
   const reviewObserverSessionBindings = new Map(), currentDaemonReviewObserverHolds = new Map(), restoredPullOnlyReviewHolds = new Map();
   const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
@@ -241,6 +257,30 @@ test("first stable SID binding persists a current RAM quote before clearing its 
   host.resetReviewObserverSessionIfChanged(peer.id);
   expect(currentReviewObserverInputs.get(peer.id)).toMatchObject({ held: true, reviewInputScoped: true, anchoredSubmission: true });
   expect(journal.reviewInputEvidence(peer.id, sessionHash)).toMatchObject({ provenance: "available", incompletePeer: false, sessionState: "held", retainedSessionHold: true });
+  expect(journal.reviewInputEvidence(peer.id, oldSessionHash)).toMatchObject({ sessionState: "held", retainedSessionHold: true });
+});
+
+test("a changed SID persists an unbound RAM quote before clearing its peer marker", () => {
+  const cwd = scratch(), file = join(cwd, "hub.db"), hash = (value: string) => createHash("sha256").update(value).digest("hex");
+  const peer = ports(new PlainPeer("codex"), { nativeSession: "confirmed-session-b" });
+  const journal = new DeliveryJournal({ file, projectRoot: cwd, projectId: "changed-binding", instanceId: "first" });
+  cleanup.push(() => journal.close());
+  const oldSessionHash = hash("confirmed-session-a"), newSessionHash = hash("confirmed-session-b");
+  journal.holdReviewInput({ peer: peer.id, sessionHash: oldSessionHash, inputHash: hash("older-review") });
+  journal.markReviewInputIncomplete(peer.id);
+  const bus = new Bus({ batchMs: 0 }); bus.add(peer); cleanup.push(() => bus.closeJournal());
+  const currentReviewObserverInputs = new Map([[peer.id, { deliveryKey: JSON.stringify(["new-sessionless-review"]), held: true, reviewInputScoped: true, unboundReviewInput: true, reviewHoldTurnId: "unbound-turn" }]]);
+  const pendingReviewObserverInputs = new Map(), ordinaryReviewObserverInputs = new Map(), stagedSessionlessOrdinaryInputs = new Map();
+  const reviewObserverSessionBindings = new Map([[peer.id, oldSessionHash]]), currentDaemonReviewObserverHolds = new Map([[peer.id, oldSessionHash]]), restoredPullOnlyReviewHolds = new Map();
+  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
+    bus, isWsPeer, definitionOf, claudeSession: () => ({}), createHash,
+    currentReviewObserverInputs, pendingReviewObserverInputs, ordinaryReviewObserverInputs, stagedSessionlessOrdinaryInputs,
+    reviewObserverSessionBindings, currentDaemonReviewObserverHolds, restoredPullOnlyReviewHolds,
+    ownedObserverInputs: new Map(), localObserverSessionIds: new WeakMap(),
+  });
+
+  host.resetReviewObserverSessionIfChanged(peer.id);
+  expect(journal.reviewInputEvidence(peer.id, newSessionHash)).toMatchObject({ provenance: "available", incompletePeer: false, sessionState: "held", retainedSessionHold: true });
   expect(journal.reviewInputEvidence(peer.id, oldSessionHash)).toMatchObject({ sessionState: "held", retainedSessionHold: true });
 });
 
