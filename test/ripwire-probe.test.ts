@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { foldCalls, freshShimReading, installFakeRipwire, withProbe } from "./helpers/ripwire-probe.ts";
@@ -59,11 +59,17 @@ test("the report decomposes each call into the four gaps and says when a call ne
   f.probe.markCall();
   f.run("--callers=x");
   const hung = Bun.spawn([join(f.bin, "ripwire"), "--hang"], { env: { ...process.env, PATH: `${f.bin}:${process.env.PATH}` }, stdout: "ignore", stderr: "ignore" });
-  await Bun.sleep(1500); hung.kill(); await hung.exited;
+  // Readiness barrier, not a fixed sleep (docs/agent-notes/tests.md): Bun's start-up on a loaded runner can pass any fixed time. Kill only once the fake has stamped its own `script` mark for --hang.
+  const marks = join(f.root, "ripwire-marks.log"), deadline = Date.now() + 15_000;
+  const started = () => existsSync(marks) && readFileSync(marks, "utf8").split("\n").some(line => line.includes('"event":"script"') && line.includes('"argv":"--hang"'));
+  while (!started() && Date.now() < deadline) await Bun.sleep(25);
+  const ready = started();
+  hung.kill(); await hung.exited;
+  if (!ready) throw new Error("the --hang fake never wrote its script mark within 15 s, so the never-finished call could not be observed");
   const text = await f.probe.diagnose();
   expect(text).toMatch(/#1 --callers=x: before-shim \d+ ms \| shim->script \(Bun start-up\) \d+ ms \| script->first output \d+ ms \| output->exit \d+ ms/);
   expect(text).toMatch(/#2 --hang: .*output->exit never \(no exit mark: it never finished\)/);
-});
+}, 30_000);   // the readiness barrier above waits up to 15 s
 
 test("the three explanations are told apart by the fresh-shim pair, and a middling pair says so", () => {
   expect(freshShimReading(5200, 300)).toContain("scan of newly written executables");
@@ -91,9 +97,12 @@ test("the watchdog is silent when disarmed in time and prints the report once wh
   try {
     const disarm = f.probe.watch(80, "quiet"); disarm(); await Bun.sleep(200);
     expect(lines).toEqual([]);
-    const late = f.probe.watch(50, "late"); await Bun.sleep(900); late();
+    const late = f.probe.watch(50, "late");
+    const deadline = Date.now() + 15_000;   // barrier, not a fixed sleep: the report runs two fresh shim execs, which a loaded runner can slow past any fixed time
+    while (lines.length === 0 && Date.now() < deadline) await Bun.sleep(25);
+    await Bun.sleep(100); late();                // a short grace so a duplicate print would show
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("late: still running 50 ms in, before the test's own timeout.");
     expect(lines[0]).toContain("[#723 ripwire diagnostics]");
   } finally { console.error = real; }
-});
+}, 30_000);
