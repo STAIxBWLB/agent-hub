@@ -974,14 +974,13 @@ export class Bus {
   }
 
   pause(id: PeerId): void {
+    // Transient holds are not in BusSnapshot; their owners persist durable policy.
     this.paused.add(id);
-    this.persist();
     this.emit({ t: "state", peer: id, state: this.stateOf(id) });
   }
 
   resume(id: PeerId): void {
     if (!this.paused.delete(id)) return;
-    this.persist();
     this.emit({ t: "state", peer: id, state: this.stateOf(id) });
     void this.drain(id);
   }
