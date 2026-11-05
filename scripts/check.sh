@@ -54,6 +54,7 @@ done
 if [ -z "$shard" ] || [ "${shard%%/*}" = "1" ]; then
   bun x tsc --noEmit
   bun scripts/check-roles.ts
+  bun scripts/inventory-hardcoded-values.ts --check   # #719 (#1180): unknown keys may only shrink, never grow
   bun scripts/build.mjs --check
   node scripts/check-package.mjs # includes the standalone pet host, JXA and HTML assets
 fi
