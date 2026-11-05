@@ -1060,7 +1060,6 @@ export class RoomStore {
       if (row.state !== "dispatching" && row.state !== "accepted") return outgoing(row);
       if (now < row.expires_at) return outgoing(row);
       this.db.query("UPDATE application_outbox SET state='needs_review' WHERE room=? AND delivery_id=?").run(row.room, row.delivery_id);
-      this.db.query("DELETE FROM outbox WHERE room=? AND digest IN (SELECT digest FROM application_attempts WHERE room=? AND delivery_id=?)").run(row.room, row.room, row.delivery_id);
       return outgoing({ ...row, state: "needs_review" });
     });
   }
@@ -1101,7 +1100,6 @@ export class RoomStore {
       if (!Number.isSafeInteger(row.ack_deadline)) fail("corrupt");
       if (now >= row.expires_at) {
         this.db.query("UPDATE application_outbox SET state='needs_review' WHERE room=? AND delivery_id=?").run(row.room, row.delivery_id);
-        this.db.query("DELETE FROM outbox WHERE room=? AND digest IN (SELECT digest FROM application_attempts WHERE room=? AND delivery_id=?)").run(row.room, row.room, row.delivery_id);
         return outgoing({ ...row, state: "needs_review" });
       }
       if (row.state === "accepted") return outgoing(row);
@@ -1173,7 +1171,6 @@ export class RoomStore {
       const rows = this.db.query<OutgoingRow, [string, number]>("SELECT * FROM application_outbox WHERE room=? AND state IN ('dispatching','accepted') AND expires_at<=? ORDER BY rowid").all(state.current.room, now);
       for (const row of rows) {
         this.db.query("UPDATE application_outbox SET state='needs_review' WHERE room=? AND delivery_id=?").run(row.room, row.delivery_id);
-        this.db.query("DELETE FROM outbox WHERE room=? AND digest IN (SELECT digest FROM application_attempts WHERE room=? AND delivery_id=?)").run(row.room, row.room, row.delivery_id);
       }
       return rows.map(row => outgoing({ ...row, state: "needs_review" }));
     });
@@ -1469,7 +1466,7 @@ export class RoomStore {
       for (const row of lateRows) if (this.lateReceiptProof(row) === "valid") {
         this.db.query("UPDATE application_outbox SET state=late_outcome,reason=late_reason WHERE room=? AND delivery_id=? AND disposition IS NULL AND reason IS NULL").run(row.room, row.delivery_id);
       }
-      this.db.query("DELETE FROM outbox WHERE EXISTS (SELECT 1 FROM application_attempts t JOIN application_outbox a ON a.room=t.room AND a.delivery_id=t.delivery_id WHERE t.room=outbox.room AND t.digest=outbox.digest AND (a.state IN ('completed','failed_safe') OR a.state='needs_review' AND (a.reason IS NOT NULL OR a.disposition IS NOT NULL OR a.late_outcome IS NOT NULL OR a.expires_at<=?)))").run(now);
+      this.db.query("DELETE FROM outbox WHERE EXISTS (SELECT 1 FROM application_attempts t JOIN application_outbox a ON a.room=t.room AND a.delivery_id=t.delivery_id WHERE t.room=outbox.room AND t.digest=outbox.digest AND (a.state IN ('completed','failed_safe') OR a.state='needs_review' AND (a.reason IS NOT NULL OR a.disposition IS NOT NULL OR a.late_outcome IS NOT NULL)))").run();
       this.db.query("UPDATE applications SET state='needs_review' WHERE state='dispatching'").run();
       this.db.query("UPDATE inbox SET plaintext=NULL WHERE EXISTS (SELECT 1 FROM application_frames f JOIN applications a ON a.room=f.room AND a.sender=f.sender AND a.application=f.application WHERE f.room=inbox.room AND f.digest=inbox.digest AND a.state='needs_review')").run();
       for (const state of this.rooms.values()) this.pruneInbox(state.current.room);

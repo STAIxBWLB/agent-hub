@@ -163,13 +163,14 @@ test("cap one ACKs after receipt commit and sends the unchanged sealed receipt w
     f.internal.retireFrame(f.session, incoming.frame, incoming.digest);
     expect(JSON.parse(new TextDecoder().decode(f.sent.at(-1)!))).toEqual({ v: 1, type: "received", digest: incoming.digest });
     expect(f.sent).toHaveLength(2); // The head frame and transport ACK; the receipt waits for capacity.
-    expect(f.session.outbound.map(frame => frame.digest)).toEqual([headDigest]);
+    expect(f.session.outbound.map(frame => frame.digest)).toEqual([headDigest, receipt.digest]);
     f.guest.markStored("work", headDigest);
     f.internal.storedFrame(f.session, headDigest);
     f.internal.restoreReceipts(f.session);
     expect(f.sent).toHaveLength(3);
     expect(encodeBase64url(await sha256(f.sent[2]!))).toBe(receipt.digest);
     expect(f.sent[2]).toEqual(receipt.stored.wire);
+    f.guest.markStored("work", receipt.digest, decodeFrame(receipt.stored.wire).seq);
     expect(f.guest.receiptStored("work", incoming.digest)).toMatchObject({ digest: receipt.digest, state: "accepted" });
   } finally { f.link.stop(); }
 });

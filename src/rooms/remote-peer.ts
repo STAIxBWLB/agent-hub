@@ -49,10 +49,13 @@ export class RemotePeer extends BasePeer {
   }
   private quarantine(id: string, reason?: "not_exposed" | "boundary_refused" | "invalid_message"): void { try { this.ports.quarantine?.(id, reason); } catch { /* The durable application remains for TTL review if local storage is unavailable. */ } }
   private notSent(id: string): void {
+    try { this.ports.notSent?.(id); } catch { /* Keep uncertainty handling on the state transition below. */ }
+    // An expired requeue may have completed the Bus row synchronously. In that
+    // case its receipt already removed this ID and drained the following FIFO item.
+    if (!this.pending.has(id)) { this.update(); return; }
     this.blockedNotSent = true;
     this.pending.delete(id);
     this.update();
-    try { this.ports.notSent?.(id); } catch { /* Durable journal state remains available for the next real wake-up. */ }
   }
   presence(state: PeerState, online: boolean): void {
     if (online && (!this.online || state !== this.observed)) this.blockedNotSent = false;

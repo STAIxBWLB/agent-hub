@@ -336,10 +336,12 @@ test("a locally stored signed receipt replays after receiver restart before brok
   await f.event.wait(() => !!inboundDigest && f.control.entered && f.b.store?.receiptStored("work", inboundDigest) !== undefined, "signed receipt durably stored before broker ACK");
   expect(oldReceiver.got.filter(row => row.id === env.id)).toHaveLength(1);
   await f.restart("b");
+  await f.event.wait(() => f.b.store?.receiptStored("work", inboundDigest!) !== undefined, "restarted receiver binds the durable receipt outbox");
   expect(f.b.store!.receiptStored("work", inboundDigest!)).toBeDefined();
   f.control.hold = false; f.control.gate.release(); f.b.link!.refresh(); f.event.notify();
   await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "replayed receipt settles sender delivery");
-  expect(oldReceiver.got.filter(row => row.id === env.id).length + f.b.peer.got.filter(row => row.id === env.id).length).toBe(1);
+  const receiverInstances = new Set([oldReceiver, f.b.peer]);
+  expect([...receiverInstances].reduce((count, peer) => count + peer.got.filter(row => row.id === env.id).length, 0)).toBe(1);
   expect(f.b.store!.receiptStored("work", inboundDigest!)).toBeUndefined();
 });
 
@@ -363,7 +365,8 @@ test("a signed TTL receipt reconciles when its store commit beats the Bus CAS an
   expect(f.a.journal.get(deliveryId)?.state).toBe("accepted");
   await f.restart("a");
   await f.event.wait(() => f.a.journal.get(deliveryId)?.state === "completed", "online reconciliation settles the saved signed outcome");
-  expect(oldReceiver.got.filter(row => row.id === env.id).length + f.b.peer.got.filter(row => row.id === env.id).length).toBe(1);
+  const receiverInstances = new Set([oldReceiver, f.b.peer]);
+  expect([...receiverInstances].reduce((count, peer) => count + peer.got.filter(row => row.id === env.id).length, 0)).toBe(1);
   expect(f.b.store!.receiptStored("work", inboundDigest!)).toBeUndefined();
 });
 
@@ -835,7 +838,8 @@ test("room status never reconciles person dispositions, while the explicit tick 
   try {
     f.a.bus.publish(env);
     await f.event.wait(() => f.control.entered, "recipient signed receipt held before clock advance");
-    await acknowledgementDeadline(f, f.a, env.id);
+    const saved = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+    f.control.now = saved.expiresAt + 1; f.a.chat.tick(); f.event.notify();
     await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "known uncertainty awaiting person");
     const row = (await outbound(f.a, env.id))!, id = String(row.id), before = f.a.journal.get(id)!;
     f.a.bus.resolveDelivery(id, before.revision, "discard", "person discards known uncertainty");

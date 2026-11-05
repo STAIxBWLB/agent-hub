@@ -1276,12 +1276,14 @@ export class Bus {
         this.remoteQueueRooms.get(peer) !== source.remoteRoom || this.remoteQueueMembers.get(peer) !== source.remoteMember) return false;
     const row = this.journal.get(deliveryId), env = row?.originals[0], expiry = env && this.remoteQueueExpires.get(peer)?.get(env.id);
     if (!row || row.peer !== peer || !["dispatching", "accepted", "needs_review"].includes(row.state) || row.originals.length !== 1 || env?.to?.includes(peer) !== true || this.journal.resolution(deliveryId) || !env || expiry === undefined || expiry <= Date.now()) return false;
-    if (row.state === "needs_review" ? state === "needs_review" : state !== row.state) return false;
+    if (state === "needs_review") return false;
     if ([...(this.queues.get(peer) ?? [])].some(item => item.id === env.id)) return false;
     if ([...this.activeDeliveries].some(([id, owner]) => owner === peer && id !== deliveryId)) return false;
     if ([...this.remoteTransport].some(([id, active]) => active.peer === peer && id !== deliveryId)) return false;
     try { if (currentGuard() !== true) return false; } catch { return false; }
     try {
+      // Store and journal commit independently. An already-active journal row is
+      // authoritative; a different Store state must not strand or downgrade it.
       if (row.state === "needs_review") this.journal.transition(deliveryId, state, "room outbox proof confirmed pending", row.revision);
     }
     catch {

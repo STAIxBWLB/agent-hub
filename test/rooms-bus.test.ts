@@ -251,8 +251,8 @@ test("a typed room not-sent outcome requeues the original without consuming retr
   target.accepted = async (_envs, id) => {
     if (first) {
       first = false;
-      target.set("offline");
       expect(bus.requeueRemoteNotSent(target, id!)).toBe(true);
+      target.set("offline");
       requeuedDeadline = bus.snapshot(false).remoteQueueExpires![remote]![env.id];
       setTimeout(() => target.set("idle"), 0);
     } else target.onDelivery?.({ id: id!, state: "completed" });
@@ -281,6 +281,30 @@ test("authenticated room outbox proof resumes the same row without local deliver
   expect(journal.get(row.id)?.state).toBe("completed");
   expect(delivered).toBe(0); expect(journal.offerRead(remote, env.id)).toBe(false);
   expect(bus.queueIds(remote)).toEqual([]);
+});
+
+test("resume keeps an active journal state when the Store proof reports a different active state", async () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room); bus.add(target);
+  target.accepted = async (_envs, id) => target.onDelivery?.({ id: id!, state: "needs_review" });
+  await target.start();
+
+  const acceptedEnv = newEnvelope("user", "Store accepted before Bus ACK", { to: [remote] }); bus.publish(acceptedEnv);
+  await until(() => journal.list(remote).some(row => row.state === "needs_review" && row.originals.some(env => env.id === acceptedEnv.id)) && !bus.hasInFlight(remote));
+  const accepted = journal.list(remote).find(row => row.originals.some(env => env.id === acceptedEnv.id))!;
+  journal.transition(accepted.id, "accepted", "Store broker receipt committed first");
+  expect(bus.resumeRemotePending(target, accepted.id, "dispatching", () => true)).toBe(true);
+  expect(journal.get(accepted.id)?.state).toBe("accepted");
+  target.onDelivery?.({ id: accepted.id, state: "completed" });
+  expect(journal.get(accepted.id)?.state).toBe("completed");
+
+  const dispatchingEnv = newEnvelope("user", "Bus dispatch committed before Store retry", { to: [remote] }); bus.publish(dispatchingEnv);
+  await until(() => journal.list(remote).some(row => row.state === "needs_review" && row.originals.some(env => env.id === dispatchingEnv.id)) && !bus.hasInFlight(remote));
+  const dispatching = journal.list(remote).find(row => row.originals.some(env => env.id === dispatchingEnv.id))!;
+  journal.transition(dispatching.id, "dispatching", "Store retry intent committed first");
+  expect(bus.resumeRemotePending(target, dispatching.id, "accepted", () => true)).toBe(true);
+  expect(journal.get(dispatching.id)?.state).toBe("dispatching");
+  target.onDelivery?.({ id: dispatching.id, state: "completed" });
+  expect(journal.get(dispatching.id)?.state).toBe("completed");
 });
 
 test("terminal receipts clear remote transport ownership after an out-of-drain resume", async () => {
