@@ -69,7 +69,7 @@ interface OutgoingRow {
   room: string; digest: string; delivery_id: string; application: string; remote_peer: string; recipient: string; peer: string;
   created_at: number; expires_at: number; ack_timeout: number; ack_deadline: number | null; state: RoomOutgoing["state"];
   reason: RoomReceiptReason | null; late_outcome: "completed" | "failed_safe" | null; late_reason: RoomReceiptReason | null; receipt_digest: string | null;
-  disposition: "completed" | "retry" | "discard" | null;
+  disposition: "completed" | "retry" | "discard" | null; content_hash: string | null;
 }
 const APPLICATION_REASONS: readonly RoomReceiptReason[] = ["admitted", "not_exposed", "boundary_refused", "invalid_message", "rate_limited", "hop", "person_inbox_unsupported", "inbox_admitted", "inbox_full", "inbox_oversize", "inbox_expired", "inbox_age_unavailable"];
 const PERMANENT_OUTGOING_REFUSALS: readonly RoomReceiptReason[] = ["not_exposed", "boundary_refused", "invalid_message"];
@@ -208,7 +208,7 @@ export class RoomStore {
         PRAGMA user_version=2;
       `);
       const applicationColumns: Record<string, string[]> = {
-        application_outbox: ["room", "digest", "delivery_id", "application", "remote_peer", "recipient", "peer", "created_at", "expires_at", "ack_timeout", "ack_deadline", "state", "reason", "late_outcome", "late_reason", "receipt_digest", "disposition"],
+        application_outbox: ["room", "digest", "delivery_id", "application", "remote_peer", "recipient", "peer", "created_at", "expires_at", "ack_timeout", "ack_deadline", "state", "reason", "late_outcome", "late_reason", "receipt_digest", "disposition", ...(version === 5 ? ["content_hash"] : [])],
         applications: ["room", "sender", "application", "content_hash", "primary_digest", "peer", "trace", "hop", "state", "reason", "created_at", "settled_at", "disposition", "disposed_at", "disposed_by"],
         application_frames: ["room", "digest", "sender", "application"],
       };
@@ -234,6 +234,7 @@ export class RoomStore {
         PRAGMA user_version=4;
       `);
       if (version! < 5) db.exec(`
+        ALTER TABLE application_outbox ADD COLUMN content_hash TEXT;
         CREATE TABLE application_attempts (room TEXT NOT NULL, digest TEXT NOT NULL, delivery_id TEXT NOT NULL, application TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(room,digest)) WITHOUT ROWID;
         CREATE INDEX application_attempts_delivery ON application_attempts(room,delivery_id);
         CREATE TABLE receipt_outbox (room TEXT NOT NULL, inbound_digest TEXT NOT NULL, receipt_digest TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, state TEXT NOT NULL, recipient TEXT NOT NULL, epoch TEXT NOT NULL, roster_digest TEXT NOT NULL, PRIMARY KEY(room,inbound_digest,receipt_digest)) WITHOUT ROWID;
@@ -242,6 +243,8 @@ export class RoomStore {
         PRAGMA user_version=5;
       `);
       const attemptColumns = ["room", "digest", "delivery_id", "application", "created_at"];
+      const outgoingColumns = ["room", "digest", "delivery_id", "application", "remote_peer", "recipient", "peer", "created_at", "expires_at", "ack_timeout", "ack_deadline", "state", "reason", "late_outcome", "late_reason", "receipt_digest", "disposition", "content_hash"];
+      if (db.query<{ name: string }, []>("PRAGMA table_info(application_outbox)").all().map(row => row.name).join(",") !== outgoingColumns.join(",")) fail("unsupported");
       for (const table of ["application_attempts", "receipt_outbox"]) {
         if (db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map(row => row.name).join(",") !== (table === "application_attempts" ? attemptColumns.join(",") : "room,inbound_digest,receipt_digest,created_at,expires_at,state,recipient,epoch,roster_digest")) fail("unsupported");
       }
@@ -433,7 +436,7 @@ export class RoomStore {
     }
     if (this.db.query("SELECT room FROM application_outbox WHERE state IN ('completed','failed_safe') OR disposition IS NOT NULL GROUP BY room HAVING COUNT(*)>1000 LIMIT 1").get()
       || this.db.query("SELECT room FROM applications WHERE state IN ('pending','dispatching') GROUP BY room HAVING COUNT(*)>200 LIMIT 1").get()
-      || this.db.query("SELECT 1 FROM application_outbox WHERE length(room)>43 OR length(digest)>43 OR length(delivery_id)>256 OR length(application)>256 OR length(remote_peer)>65 OR length(recipient)>64 OR length(peer)>32 OR length(state)>16 OR length(reason)>32 OR length(late_outcome)>16 OR length(late_reason)>32 OR length(receipt_digest)>43 OR length(disposition)>16 LIMIT 1").get()
+      || this.db.query("SELECT 1 FROM application_outbox WHERE length(room)>43 OR length(digest)>43 OR length(delivery_id)>256 OR length(application)>256 OR length(remote_peer)>65 OR length(recipient)>64 OR length(peer)>32 OR length(state)>16 OR length(reason)>32 OR length(late_outcome)>16 OR length(late_reason)>32 OR length(receipt_digest)>43 OR length(disposition)>16 OR length(content_hash)>43 LIMIT 1").get()
       || this.db.query("SELECT 1 FROM applications WHERE length(room)>43 OR length(sender)>64 OR length(application)>256 OR length(content_hash)>43 OR length(primary_digest)>43 OR length(peer)>32 OR length(trace)>36 OR length(state)>16 OR length(reason)>32 OR length(disposition)>8 OR length(disposed_by)>4 LIMIT 1").get()
       || this.db.query("SELECT 1 FROM application_frames WHERE length(room)>43 OR length(digest)>43 OR length(sender)>64 OR length(application)>256 LIMIT 1").get()) fail("corrupt");
     const applications = new Map<string, ApplicationRow>();
@@ -473,7 +476,8 @@ export class RoomStore {
         || !["dispatching", "accepted", "completed", "failed_safe", "needs_review"].includes(row.state)
         || !Number.isSafeInteger(row.created_at) || row.created_at <= 0 || row.created_at > now || !Number.isSafeInteger(row.expires_at)
         || row.expires_at <= row.created_at || row.expires_at - row.created_at > 604_800_000
-        || !Number.isSafeInteger(row.ack_timeout) || row.ack_timeout < 1 || row.ack_timeout > 86_400_000) fail("corrupt");
+        || !Number.isSafeInteger(row.ack_timeout) || row.ack_timeout < 1 || row.ack_timeout > 86_400_000
+        || row.content_hash !== null && !validDigest(row.content_hash)) fail("corrupt");
       if (!Number.isSafeInteger(row.ack_deadline) || row.ack_deadline! < row.created_at || row.ack_deadline! > row.expires_at) fail("corrupt");
       if (isTerminal(row.state) ? !validOutcome(row.state, row.reason, row.peer)
         : row.state === "needs_review" && row.reason !== null ? !PERMANENT_OUTGOING_REFUSALS.includes(row.reason)
@@ -814,6 +818,32 @@ export class RoomStore {
     const publicRoster = await verifyPublicRoster({ wire: state.wire, pin: { room: state.current.room, owner: roster.owner, minEpoch: state.current.epoch, digest: state.current.digest } });
     const frame = await verifyPublicFrame({ wire, roster: publicRoster });
     if (frame.sender !== this.identity.public.fingerprint) fail("untrusted");
+    let contentHash: string | undefined;
+    let legacyContentHash: string | undefined;
+    let legacyDeliveryId: string | undefined;
+    let legacyAttemptDigest: string | undefined;
+    if (application) {
+      const plaintext = await openOwnFrame({ wire, identity: this.identity, epoch: state.current });
+      let message: RoomMessage; try { message = decodeRoomMessage(plaintext); } catch { fail("invalid"); }
+      if (message.type !== "chat" || message.envelope.id !== application.application || message.envelope.to !== application.peer) fail("state_changed");
+      contentHash = await digest(encodeRoomMessage(message));
+      const saved = this.db.query<OutgoingRow, [string, string]>("SELECT * FROM application_outbox WHERE room=? AND application=? ORDER BY rowid").all(frame.room, application.application);
+      const legacy = saved.filter(row => row.content_hash === null);
+      if (legacy.length) {
+        if (saved.length !== 1 || legacy[0]!.delivery_id !== application.deliveryId
+          || legacy[0]!.state !== "dispatching" && legacy[0]!.state !== "accepted" || legacy[0]!.disposition !== null
+          || legacy[0]!.reason !== null || legacy[0]!.expires_at <= this.now()) fail("state_changed");
+        legacyDeliveryId = legacy[0]!.delivery_id;
+        legacyAttemptDigest = this.db.query<{ digest: string }, [string, string]>("SELECT t.digest FROM application_attempts t JOIN outbox o ON o.room=t.room AND o.digest=t.digest WHERE t.room=? AND t.delivery_id=? ORDER BY t.created_at DESC,o.rowid DESC LIMIT 1").get(frame.room, legacyDeliveryId)?.digest;
+        if (!legacyAttemptDigest) fail("state_changed");
+        const previous = await this.outgoingMessage(name, application.application, current);
+        if (!previous || previous.type !== "chat") fail("state_changed");
+        legacyContentHash = await digest(encodeRoomMessage(previous));
+        if (legacyContentHash !== contentHash) fail("state_changed");
+        const afterReadDigest = this.db.query<{ digest: string }, [string, string]>("SELECT t.digest FROM application_attempts t JOIN outbox o ON o.room=t.room AND o.digest=t.digest WHERE t.room=? AND t.delivery_id=? ORDER BY t.created_at DESC,o.rowid DESC LIMIT 1").get(frame.room, legacyDeliveryId)?.digest;
+        if (afterReadDigest !== legacyAttemptDigest) fail("state_changed");
+      }
+    }
     return this.transaction(now => {
       assertCurrent(current);
       if (!this.isCurrent({ room: frame.room, sender: frame.sender, epoch: frame.epoch, rosterDigest: frame.rosterDigest })) fail("state_changed");
@@ -821,6 +851,27 @@ export class RoomStore {
         const recipient = roomMembers(state.current).find(member => member.fingerprint === application.recipient);
         if (!recipient || application.recipient === this.identity.public.fingerprint || frame.recipients.length !== 1
           || frame.recipients[0] !== application.recipient || application.remotePeer !== `${application.peer}@${recipient.label}`) fail("untrusted");
+      }
+      const applicationRows = application ? this.db.query<OutgoingRow, [string, string]>("SELECT * FROM application_outbox WHERE room=? AND application=? ORDER BY created_at,rowid").all(frame.room, application.application) : [];
+      if (application) {
+        if (contentHash === undefined) fail("corrupt");
+        for (const prior of applicationRows) {
+          if (prior.remote_peer !== application.remotePeer || prior.recipient !== application.recipient || prior.peer !== application.peer
+            || prior.ack_timeout !== application.ackTimeoutMs || prior.expires_at - prior.created_at !== application.ttlMs
+            || prior.expires_at <= now || prior.disposition !== null || prior.state === "needs_review"
+            || prior.reason !== null && PERMANENT_OUTGOING_REFUSALS.includes(prior.reason)) fail("state_changed");
+          if (prior.content_hash !== null && prior.content_hash !== contentHash) fail("state_changed");
+          if (prior.content_hash === null && (legacyContentHash !== contentHash || prior.delivery_id !== legacyDeliveryId)) fail("state_changed");
+        }
+        if (legacyContentHash === contentHash && legacyDeliveryId) {
+          const attempt = this.db.query<{ digest: string }, [string, string]>("SELECT t.digest FROM application_attempts t JOIN outbox o ON o.room=t.room AND o.digest=t.digest WHERE t.room=? AND t.delivery_id=? ORDER BY t.created_at DESC,o.rowid DESC LIMIT 1").get(frame.room, legacyDeliveryId);
+          if (attempt?.digest !== legacyAttemptDigest) fail("state_changed");
+          const update = this.db.query("UPDATE application_outbox SET content_hash=? WHERE room=? AND delivery_id=? AND content_hash IS NULL").run(contentHash, frame.room, legacyDeliveryId);
+          if (update.changes !== 1) {
+            const currentHash = this.db.query<{ content_hash: string | null }, [string, string]>("SELECT content_hash FROM application_outbox WHERE room=? AND delivery_id=?").get(frame.room, legacyDeliveryId)?.content_hash;
+            if (currentHash !== contentHash) fail("state_changed");
+          }
+        }
       }
       const existing = this.db.query<{ wire: Uint8Array }, [string]>("SELECT wire FROM outbox WHERE digest=?").get(frame.digest);
       const saved = this.db.query<OutgoingRow, [string]>("SELECT * FROM application_outbox WHERE digest=?").get(frame.digest);
@@ -832,18 +883,14 @@ export class RoomStore {
         const row = saved ?? (alias ? this.db.query<OutgoingRow, [string, string]>("SELECT * FROM application_outbox WHERE room=? AND delivery_id=?").get(frame.room, alias.delivery_id) : undefined);
         if (!row || row.delivery_id !== application.deliveryId || row.application !== application.application
           || row.remote_peer !== application.remotePeer || row.recipient !== application.recipient || row.peer !== application.peer
-          || row.ack_timeout !== application.ackTimeoutMs || row.expires_at - row.created_at !== application.ttlMs) fail("state_changed");
+          || row.ack_timeout !== application.ackTimeoutMs || row.expires_at - row.created_at !== application.ttlMs || row.content_hash !== contentHash) fail("state_changed");
         return { ...outgoing(row), frameDigest: frame.digest };
       }
       const row = application ? this.db.query<OutgoingRow, [string, string]>("SELECT * FROM application_outbox WHERE room=? AND delivery_id=?").get(frame.room, application.deliveryId) : undefined;
       if (application && this.db.query("SELECT 1 FROM application_attempts WHERE room=? AND digest=?").get(frame.room, frame.digest)) fail("state_changed");
-      if (application) {
-        const sameApplication = this.db.query<{ delivery_id: string }, [string, string]>("SELECT delivery_id FROM application_outbox WHERE room=? AND application=?").get(frame.room, application.application);
-        if (sameApplication && sameApplication.delivery_id !== application.deliveryId) fail("state_changed");
-      }
       if (row && (row.application !== application!.application || row.remote_peer !== application!.remotePeer || row.recipient !== application!.recipient || row.peer !== application!.peer
         || row.ack_timeout !== application!.ackTimeoutMs || row.expires_at - row.created_at !== application!.ttlMs || row.disposition !== null
-        || row.state !== "dispatching" && row.state !== "accepted" || now >= row.expires_at)) fail("state_changed");
+        || row.state !== "dispatching" && row.state !== "accepted" || now >= row.expires_at || row.content_hash !== contentHash)) fail("state_changed");
       const aliasCount = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM application_attempts WHERE room=?").get(frame.room)?.n ?? 0;
       if (application && aliasCount >= ROOM_APPLICATION_RETENTION.aliasesPerRoom) fail("limit");
       if (row) this.db.query("DELETE FROM outbox WHERE room=? AND digest IN (SELECT digest FROM application_attempts WHERE room=? AND delivery_id=?)").run(frame.room, frame.room, row.delivery_id);
@@ -860,10 +907,12 @@ export class RoomStore {
         const updated = this.db.query<OutgoingRow, [string, string]>("SELECT * FROM application_outbox WHERE room=? AND delivery_id=?").get(frame.room, row.delivery_id)!;
         return { ...outgoing(updated), frameDigest: frame.digest };
       }
-      const expires = now + application.ttlMs, deadline = Math.min(now + application.ackTimeoutMs, expires);
+      const canonical = applicationRows[0];
+      const expires = canonical?.expires_at ?? now + application.ttlMs, deadline = Math.min(now + application.ackTimeoutMs, expires);
       if (!Number.isSafeInteger(expires) || !Number.isSafeInteger(deadline)) fail("invalid");
       this.db.query("INSERT INTO application_outbox(room,digest,delivery_id,application,remote_peer,recipient,peer,created_at,expires_at,ack_timeout,ack_deadline,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,'dispatching')")
         .run(frame.room, frame.digest, application.deliveryId, application.application, application.remotePeer, application.recipient, application.peer, now, expires, application.ackTimeoutMs, deadline);
+      this.db.query("UPDATE application_outbox SET created_at=?,content_hash=? WHERE room=? AND delivery_id=?").run(canonical?.created_at ?? now, contentHash!, frame.room, application.deliveryId);
       this.db.query("INSERT INTO application_attempts(room,digest,delivery_id,application,created_at) VALUES(?,?,?,?,?)").run(frame.room, frame.digest, application.deliveryId, application.application, now);
       return { ...outgoing(this.db.query<OutgoingRow, [string]>("SELECT * FROM application_outbox WHERE digest=?").get(frame.digest)!), frameDigest: frame.digest };
     });
@@ -1039,6 +1088,7 @@ export class RoomStore {
     const plaintext = await openOwnFrame({ wire: sealed.wire, identity: this.identity, epoch });
     let message: RoomMessage; try { message = decodeRoomMessage(plaintext); } catch { fail("corrupt"); }
     if (message.type !== "chat" || message.envelope.id !== row.application || message.envelope.to !== row.peer) fail("corrupt");
+    if (row.content_hash !== null && await digest(encodeRoomMessage(message)) !== row.content_hash) fail("corrupt");
     assertCurrent(current);
     const latest = this.get(name), latestRow = this.db.query<{ state: RoomOutgoing["state"]; disposition: string | null; expires_at: number }, [string, string, string]>("SELECT state,disposition,expires_at FROM application_outbox WHERE room=? AND delivery_id=? AND application=?").get(row.room, row.delivery_id, application);
     if (!latest || latest.left || latest.current.digest !== state.current.digest || !latestRow

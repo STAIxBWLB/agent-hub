@@ -112,6 +112,49 @@ test("retry uses a fresh cipher frame, keeps its canonical delivery and settles 
   expect(f.owner.outbox("work")).toEqual([]);
 });
 
+test("a new root delivery ID reuses only the same immutable application before its original TTL", async () => {
+  const f = await pair(), envelope = chat(), original = await queued(f, envelope, { ackTimeoutMs: 100, ttlMs: 1000 });
+  const signed = await receipt(f.guest, f.owner, { v: 1, type: "receipt", frame: original.frameDigest, application: envelope.id, peer: "claude", outcome: "completed", reason: "admitted" });
+  expect(f.owner.applyApplicationReceipt("work", signed)).toMatchObject({ state: "completed" });
+  f.advance(10);
+  const duplicateWire = await sealed(f.owner, f.guest, { v: 1, type: "chat", envelope });
+  const duplicateInput = { ...original.input, deliveryId: crypto.randomUUID() };
+  const duplicate = await f.owner.queueApplication("work", duplicateWire, duplicateInput);
+  expect(duplicate).toMatchObject({ deliveryId: duplicateInput.deliveryId, application: envelope.id, createdAt: original.outgoing.createdAt, expiresAt: original.outgoing.expiresAt, frameDigest: await hash(duplicateWire) });
+  expect(f.owner.outbox("work").map(row => row.digest)).toEqual([duplicate.frameDigest!]);
+  const changedWire = await sealed(f.owner, f.guest, { v: 1, type: "chat", envelope: { ...envelope, body: "changed body" } });
+  await expect(f.owner.queueApplication("work", changedWire, { ...duplicateInput, deliveryId: crypto.randomUUID() })).rejects.toMatchObject({ code: "state_changed" });
+  expect(f.owner.applicationOutbox("work").find(row => row.deliveryId === duplicateInput.deliveryId)).toMatchObject({ state: "dispatching", expiresAt: original.outgoing.expiresAt });
+  f.owner.quarantineOutgoingPermanent("work", duplicateInput.deliveryId, "boundary_refused", () => true);
+  const laterWire = await sealed(f.owner, f.guest, { v: 1, type: "chat", envelope });
+  await expect(f.owner.queueApplication("work", laterWire, { ...duplicateInput, deliveryId: crypto.randomUUID() })).rejects.toMatchObject({ code: "state_changed" });
+});
+
+test("legacy null content hash permits same-delivery reseal only when retained wire proves the payload", async () => {
+  const f = await pair(), envelope = chat(), original = await queued(f, envelope, { ackTimeoutMs: 100, ttlMs: 1000 }), room = f.owner.get("work")!.current.room;
+  const dir = locations.get(f.owner)!; f.owner.close();
+  const db = new Database(join(dir, "rooms.db"));
+  db.query("UPDATE application_outbox SET content_hash=NULL WHERE room=? AND delivery_id=?").run(room, original.input.deliveryId);
+  db.close();
+  f.owner = await opened(f.clock, dir);
+  const retryWire = await sealed(f.owner, f.guest, { v: 1, type: "chat", envelope });
+  const retry = await f.owner.queueApplication("work", retryWire, original.input);
+  expect(retry).toMatchObject({ digest: original.outgoing.digest, deliveryId: original.input.deliveryId, application: envelope.id, frameDigest: await hash(retryWire) });
+});
+
+test("legacy null content hash refuses cross-delivery reuse after its ciphertext is retired", async () => {
+  const f = await pair(), envelope = chat(), original = await queued(f, envelope, { ackTimeoutMs: 100, ttlMs: 1000 }), room = f.owner.get("work")!.current.room;
+  const signed = await receipt(f.guest, f.owner, { v: 1, type: "receipt", frame: original.frameDigest, application: envelope.id, peer: "claude", outcome: "completed", reason: "admitted" });
+  expect(f.owner.applyApplicationReceipt("work", signed)).toMatchObject({ state: "completed" });
+  const dir = locations.get(f.owner)!; f.owner.close();
+  const db = new Database(join(dir, "rooms.db"));
+  db.query("UPDATE application_outbox SET content_hash=NULL WHERE room=? AND delivery_id=?").run(room, original.input.deliveryId);
+  db.close();
+  f.owner = await opened(f.clock, dir);
+  const duplicateWire = await sealed(f.owner, f.guest, { v: 1, type: "chat", envelope });
+  await expect(f.owner.queueApplication("work", duplicateWire, { ...original.input, deliveryId: crypto.randomUUID() })).rejects.toMatchObject({ code: "state_changed" });
+});
+
 test("receipt ciphertext commits before chat ACK, replays until stored and retires on its own queue ACK", async () => {
   const f = await pair(), item = await incoming(f), dir = locations.get(f.guest)!;
   expect(f.guest.claimApplication("work", item.digest)).toBe(true);
