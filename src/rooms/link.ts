@@ -45,7 +45,14 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const DIGEST = /^[A-Za-z0-9_-]{43}$/;
 const STATES: readonly string[] = ["idle", "busy", "paused", "offline"];
+interface PendingFrame { wire: Uint8Array; digest: string; ephemeral: boolean; requestReply: boolean; current: () => boolean }
 interface Session {
+  outbound: PendingFrame[];
+  outboundBytes: number;
+  frameSent: boolean;
+  retryAttempt: number;
+  frameRetry?: ReturnType<typeof setTimeout>;
+  lastPresence?: string;
   ws: WebSocket;
   generation: number;
   room: string;
@@ -233,6 +240,8 @@ export class RoomLink {
     this.republish = undefined;
     if (session) {
       clearTimeout(session.handshake);
+      if (session.frameRetry) clearTimeout(session.frameRetry);
+      session.outbound.length = 0; session.outboundBytes = 0;
       session.queue.length = 0; session.queuedBytes = 0; session.deferredFrame = undefined;
       try { session.ws.close(1000, "disconnected"); } catch { /* already closed */ }
     }
@@ -262,7 +271,7 @@ export class RoomLink {
     try { ws = new WebSocket(url.href); } catch { this.retry(); return; }
     ws.binaryType = "arraybuffer";
     const generation = ++this.generation;
-    const session: Session = { ws, generation, room: row.current.room, broker: row.broker, phase: "challenge", queue: [], queuedBytes: 0, processing: false, initialRoster: true, requestPresenceReply: true,
+    const session: Session = { ws, generation, room: row.current.room, broker: row.broker, phase: "challenge", outbound: [], outboundBytes: 0, frameSent: false, retryAttempt: 0, queue: [], queuedBytes: 0, processing: false, initialRoster: true, requestPresenceReply: true,
       handshake: setTimeout(() => this.retry(session), LIMITS.handshakeMs) };
     session.handshake.unref?.();
     this.session = session;
@@ -275,6 +284,54 @@ export class RoomLink {
     this.current(session);
     if (bytes.length > LIMITS.packetBytes || session.ws.bufferedAmount > LIMITS.backpressure) fail("limit");
     session.ws.send(bytes);
+  }
+  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true): void {
+    this.current(session);
+    const ephemeral = decodeFrame(wire).ephemeral === true;
+    // Only an unsent observation may be replaced. Never reorder an attempted frame.
+    if (ephemeral) {
+      const at = session.outbound.findIndex((frame, index) => frame.ephemeral && (!frame.requestReply || requestReply) && (index > 0 || !session.frameSent && !session.frameRetry));
+      if (at >= 0) session.outboundBytes -= session.outbound.splice(at, 1)[0]!.wire.byteLength;
+    }
+    if (session.outbound.length >= LIMITS.packets || session.outboundBytes + wire.byteLength > LIMITS.queuedBytes) fail("limit");
+    session.outbound.push({ wire, digest, ephemeral, requestReply, current }); session.outboundBytes += wire.byteLength;
+    this.pumpFrames(session);
+  }
+  private pumpFrames(session: Session): void {
+    if (session.frameSent || session.frameRetry || !session.outbound.length) return;
+    this.current(session);
+    const frame = session.outbound[0]!;
+    if (!frame.current()) {
+      if (!frame.ephemeral) fail("state_changed");
+      session.outbound.shift(); session.outboundBytes -= frame.wire.byteLength; session.lastPresence = undefined;
+      this.pumpFrames(session);
+      void this.publishPresence().catch(() => this.retry(session));
+      return;
+    }
+    this.send(session, frame.wire); session.frameSent = true;
+    if (frame.requestReply) {
+      session.requestPresenceReply = false;
+      if (this.retiredPresenceBytes && this.options.store.ordinaryInboxAvailable(this.options.name, this.retiredPresenceBytes)) this.retiredPresenceBytes = 0;
+    }
+  }
+  private storedFrame(session: Session, digest: string): void {
+    if (session.outbound[0]?.digest !== digest) return;
+    const frame = session.outbound.shift()!; session.outboundBytes -= frame.wire.byteLength;
+    session.frameSent = false; session.retryAttempt = 0;
+    if (session.frameRetry) clearTimeout(session.frameRetry);
+    session.frameRetry = undefined;
+    this.pumpFrames(session);
+  }
+  private backoffFrame(session: Session, digest: string): void {
+    if (session.outbound[0]?.digest !== digest || session.frameRetry) return;
+    session.frameSent = false;
+    const delay = Math.min(30_000, 250 * 2 ** Math.min(session.retryAttempt++, 7));
+    session.frameRetry = setTimeout(() => {
+      session.frameRetry = undefined;
+      if (this.session !== session || !this.running || session.phase !== "ready") return;
+      try { this.pumpFrames(session); } catch { this.retry(session); }
+    }, delay);
+    session.frameRetry.unref?.();
   }
   private receive(session: Session, data: unknown): void {
     if (this.session !== session || !this.running) return;
@@ -365,6 +422,7 @@ export class RoomLink {
     if (message.type === "stored") {
       const row = exact(message, ["v", "type", "digest", "seq", "duplicate"]);
       if (typeof row.digest !== "string" || !DIGEST.test(row.digest) || typeof row.seq !== "string" || !/^[1-9][0-9]{0,19}$/.test(row.seq) || typeof row.duplicate !== "boolean") fail();
+      this.storedFrame(session, row.digest);
       this.options.application?.stored(this.context(session, local.current.digest), { digest: row.digest, seq: row.seq });
       return; // Broker storage is not a signed recipient application-completion receipt.
     }
@@ -381,10 +439,17 @@ export class RoomLink {
       return;
     }
     if (message.type === "error") {
-      const error = exact(message, ["v", "type", "code"]);
+      const error = exact(message, Object.hasOwn(message, "digest") ? ["v", "type", "code", "digest"] : ["v", "type", "code"]);
+      if (error.digest !== undefined && (error.code !== "queue_full" || typeof error.digest !== "string" || !DIGEST.test(error.digest))) fail();
+      if (error.code === "queue_full") {
+        // Older brokers omit correlation; one frame in flight makes its head unambiguous.
+        const digest = typeof error.digest === "string" ? error.digest : session.outbound[0]?.digest;
+        if (digest) this.backoffFrame(session, digest);
+        return;
+      }
       // X2 declares these refusal controls nonterminal. Their unsigned control
       // cannot settle any application; its local ACK deadline records uncertainty.
-      if (error.code === "queue_full" || error.code === "replay_refused" || error.code === "unexpected_ack") return;
+      if (error.code === "replay_refused" || error.code === "unexpected_ack") return;
       fail("unavailable");
     }
     fail();
@@ -523,7 +588,7 @@ export class RoomLink {
       const record = metadata ? await this.options.store.queueApplication(this.options.name, wire, metadata, allowed) : undefined;
       const frameDigest = record?.digest ?? await this.frameDigest(wire);
       if (!allowed()) fail("state_changed");
-      this.send(session, wire);
+      this.queueFrame(session, wire, frameDigest, false, allowed);
       return frameDigest;
     });
   }
@@ -549,17 +614,17 @@ export class RoomLink {
       await this.serialSend(async () => {
         if (!this.publicationCurrent(session, row.current.digest)) return;
         const requestReply = !response && session.requestPresenceReply;
-        const wire = await sealFrame({ epoch: row.current, identity, recipients, plaintext: canonicalBytes({ v: 1, type: "presence", peers, ...(requestReply ? { requestReply: true } : {}) }), sequence: this.options.store.sequence });
+        const presenceKey = JSON.stringify([row.current.digest, recipients, peers]);
+        if (!requestReply && !response && session.lastPresence === presenceKey) return;
+        const wire = await sealFrame({ epoch: row.current, identity, recipients, plaintext: canonicalBytes({ v: 1, type: "presence", peers, ...(requestReply ? { requestReply: true } : {}) }), ephemeral: true, sequence: this.options.store.sequence });
         if (!this.publicationCurrent(session, row.current.digest)) return;
         // Machine-local exposure can change during reserve/encryption/signing even
         // when the signed roster is unchanged. Never emit an id it now withholds.
+        const frameDigest = await this.frameDigest(wire);
+        if (!this.publicationCurrent(session, row.current.digest)) return;
         const allowed = new Set(this.currentPresence(own.exposedPeers).map(peer => peer.id));
         if (peers.some(peer => !allowed.has(peer.id))) return;
-        this.send(session, wire); sent = true;
-        if (requestReply) {
-          session.requestPresenceReply = false;
-          if (this.retiredPresenceBytes && this.options.store.ordinaryInboxAvailable(this.options.name, this.retiredPresenceBytes)) this.retiredPresenceBytes = 0;
-        }
+        this.queueFrame(session, wire, frameDigest, requestReply, () => this.publicationCurrent(session, row.current.digest) && peers.every(peer => this.currentPresence(own.exposedPeers).some(value => value.id === peer.id))); session.lastPresence = presenceKey; sent = true;
       });
     } catch (error) {
       this.retry(session); // Existing bounded reconnect, never a self-polling refresh retry.

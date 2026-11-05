@@ -125,7 +125,7 @@ async function command(side: Hub, action: string, input: unknown) { return (awai
 async function rows(side: Hub): Promise<Record<string, unknown>[]> { return ((await side.commands.rows("work"))[0]?.deliveries ?? []) as Record<string, unknown>[]; }
 async function outbound(side: Hub, application: string) { return (await rows(side)).find(row => row.direction === "outbound" && row.application === application); }
 interface Mesh {
-  root: string; broker: BrokerRuntime; event: Signal; control: Control; frames: { sender: string; digest: string; phase: string }[];
+  root: string; broker: BrokerRuntime; event: Signal; control: Control; frames: { sender: string; digest: string; phase: string; ephemeral: boolean }[];
   brokerEvents: { event: BrokerEvent; member?: string; code?: string }[]; a: Hub; b: Hub; owner: string; guest: string;
   restart(which: "a" | "b"): Promise<Hub>; close(): Promise<void>;
 }
@@ -154,7 +154,7 @@ async function mesh(ackSeconds = 600, brokerQueueCap?: number): Promise<Mesh> {
   const broker = await startBroker({ stateDir: brokerRoot, port: 0, ...(brokerQueueCap ? { limits: { queuedPerRoom: brokerQueueCap } } : {}) }, {
     log: (kind, ids) => { brokerEvents.push({ event: kind, ...(ids.member ? { member: ids.member } : {}), ...(ids.code ? { code: ids.code } : {}) }); event.notify(); },
     verifyFrame: async input => {
-      const proof = await verifyPublicFrame(input); frames.push({ sender: proof.sender, digest: proof.digest, phase: control.phase });
+      const proof = await verifyPublicFrame(input); frames.push({ sender: proof.sender, digest: proof.digest, phase: control.phase, ephemeral: proof.ephemeral === true });
       if (control.hold && control.holdSender === proof.sender) { control.entered = true; event.notify(); await control.gate.promise; }
       event.notify(); return proof;
     },
@@ -428,13 +428,15 @@ test("a frame held before broker storage reaches the local acknowledgement deadl
   } finally { f.control.hold = false; f.control.gate.release(); }
 });
 
-test("a real broker queue_full refusal is nonterminal and an un-stored application still times out", async () => {
-  const f = await mesh(1, 1);
+test("queue_full keeps the durable frame and retries its digest after broker capacity returns", async () => {
+  const f = await mesh(600, 1);
   await f.event.wait(() => f.broker.stats().queuedFrames === 0, "initial ciphertext queues drained");
   const at = f.brokerEvents.length; await f.b.close();
   await f.event.wait(() => f.brokerEvents.slice(at).some(row => row.event === "disconnected" && row.member === f.guest), "recipient link offline");
-  f.a.bus.pause("codex");
-  await f.event.wait(() => f.broker.stats().queuedFrames === 1, "signed presence fills offline broker queue");
+  // Presence is ephemeral now; use durable ciphertext to occupy the unchanged cap.
+  const blocker: RoomMessage = { v: 1, type: "chat", envelope: { id: crypto.randomUUID(), trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", kind: "chat", priority: "status", body: "durable broker capacity blocker", ts: f.control.now } };
+  await f.a.link!.publishApplication(blocker, f.guest);
+  await f.event.wait(() => f.broker.stats().queuedFrames === 1, "durable chat fills offline broker queue");
   const env = newEnvelope("user", "queue full before stored", { to: ["codex@beta"] });
   const refusalAt = f.brokerEvents.length; f.a.bus.publish(env);
   await f.event.wait(() => {
@@ -443,13 +445,56 @@ test("a real broker queue_full refusal is nonterminal and an un-stored applicati
       && f.frames.some(frame => frame.sender === f.owner && frame.digest === target.digest)
       && f.brokerEvents.slice(refusalAt).some(row => row.event === "refused" && row.member === f.owner && row.code === "queue_full");
   }, "fresh wire queue_full after this application reached broker verification");
+  const target = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
   expect(f.broker.stats().queuedFrames).toBe(1);
-  expect(f.a.store!.applicationOutbox("work").find(row => row.application === env.id)?.state).toBe("dispatching");
-  await acknowledgementDeadline(f, f.a, env.id);
-  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "queue-refused application acknowledgement deadline");
-  expect((await f.a.commands.rows("work"))[0]?.state).toBe("online");
+  expect(target.state).toBe("dispatching");
+  expect(f.a.store!.outbox("work").some(row => row.digest === target.digest)).toBe(true);
   expect(f.b.peer.got.some(row => row.id === env.id)).toBe(false);
+  await f.restart("b");
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "backoff retries after offline broker capacity drains");
+  expect(f.frames.filter(frame => frame.sender === f.owner && frame.digest === target.digest).length).toBeGreaterThanOrEqual(2);
+  expect(f.a.store!.applicationOutbox("work").filter(row => row.application === env.id).map(row => row.digest)).toEqual([target.digest]);
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+  expect(f.a.journal.unresolved("codex@beta").some(row => row.originals.some(item => item.id === env.id))).toBe(false);
+  expect((await f.a.commands.rows("work"))[0]?.state).toBe("online");
 });
+
+test("1000 presence flips with an offline member leave online chat usable and identical presence dedupes", async () => {
+  const f = await mesh();
+  const c = await hub(f.root, "gamma", f.event, f.control, 600);
+  try {
+    const invitation = await command(f.a, "invite", { name: "work" });
+    const request = await command(c, "join", { name: "work", token: invitation.artifact, label: "gamma" });
+    const roster = await command(f.a, "invite", { name: "work", request: request.artifact });
+    await command(c, "join", { name: "work", roster: roster.artifact });
+    await f.event.wait(() => f.a.bus.stateOf("codex@gamma") === "idle" && f.b.bus.stateOf("codex@gamma") === "idle", "third member roster/presence reaches both online hubs");
+    const at = f.brokerEvents.length; await c.close();
+    await f.event.wait(() => f.brokerEvents.slice(at).some(row => row.event === "disconnected" && row.member === request.member), "third member offline");
+    f.control.phase = "presence-flips";
+    let flips = 0;
+    for (; flips < 1000; flips++) {
+      if (flips % 2 === 0) f.a.bus.pause("codex"); else f.a.bus.resume("codex");
+      await f.a.link!.publishPresence();
+    }
+    expect(flips).toBe(1000);
+    // Coalescing is part of the presence contract. A forward chat fences the
+    // actual sends without forcing 1,000 crypto/receiver-storage round trips.
+    const env = newEnvelope("user", "online chat after presence flood", { to: ["codex@beta"] });
+    f.a.bus.publish(env);
+    await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "online chat admits after 1000 offline-member presence flips");
+    expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+    expect(f.b.bus.stateOf("codex@alpha")).toBe("idle");
+    expect(f.frames.filter(frame => frame.sender === f.owner && frame.ephemeral && frame.phase === "presence-flips").length).toBeGreaterThan(0);
+    await f.event.wait(() => f.broker.stats().queuedFrames === 0, "online presence drains despite offline member");
+    const before = f.frames.filter(frame => frame.sender === f.owner && frame.ephemeral).length;
+    for (let n = 0; n < 20; n++) await f.a.link!.publishPresence();
+    const barrier = newEnvelope("user", "unchanged presence transport barrier", { to: ["codex@beta"] });
+    f.a.bus.publish(barrier);
+    await f.event.wait(async () => (await outbound(f.a, barrier.id))?.state === "completed (admitted)", "unchanged presence calls precede the forward transport barrier");
+    expect(f.frames.filter(frame => frame.sender === f.owner && frame.ephemeral).length).toBe(before);
+    expect(f.brokerEvents.some(row => row.event === "refused" && row.code === "queue_full")).toBe(false);
+  } finally { await c.close(); }
+}, 20000);
 
 test("room status never reconciles person dispositions, while the explicit tick does", async () => {
   const f = await mesh(1), env = newEnvelope("user", "disposition read purity", { to: ["codex@beta"] });

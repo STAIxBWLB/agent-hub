@@ -47,6 +47,25 @@ async function fixture(brokerOffsetMs = 0) {
   await guest.install({ name: "test", broker: broker.publicUrl, wire: joined.wire, expectedDigest: null });
   return { root, owner, guest, broker };
 }
+async function requestFreshPresence(f: Awaited<ReturnType<typeof fixture>>, guest: FakeBrokerClient): Promise<void> {
+  const row = f.guest.get("test")!;
+  guest.send(await sealFrame({ epoch: row.current, identity: f.guest.identity,
+    recipients: [f.owner.identity.public.fingerprint], ephemeral: true,
+    plaintext: canonicalBytes({ v: 1, type: "presence", peers: [], requestReply: true }), sequence: f.guest.sequence }));
+  await guest.take("stored");
+}
+async function freshPresenceFrame(f: Awaited<ReturnType<typeof fixture>>, guest: FakeBrokerClient): Promise<Uint8Array> {
+  // A connection-time request may already be in flight. Drain it before the
+  // explicit request's response, preserving the same final queue assertions.
+  for (let n = 0; n < 8; n++) {
+    const wire = await guest.take("frame");
+    const opened = await openFrame({ wire, identity: f.guest.identity, current: f.guest.get("test")!.current,
+      replay: { accept: async () => ({ status: "accepted", gap: "0" }) } });
+    if (opened.status === "accepted" && JSON.parse(new TextDecoder().decode(opened.plaintext)).requestReply !== true) return wire;
+    await guest.ack(encodeBase64url(await sha256(wire)));
+  }
+  throw new Error("fresh presence response not received");
+}
 function linked(store: RoomStore, extra: { presence?: () => readonly { id: string; state: string }[]; onPresence?: (value: { member: string; peers: readonly RoomPresencePeer[] }) => void } = {}) {
   const online = deferred(), offline = deferred(), states: RoomLinkState[] = [];
   const link = new RoomLink({ store, name: "test", ...extra, onState: state => { states.push(state); if (state === "online") online.resolve(); if (state === "offline") offline.resolve(); } });
@@ -189,6 +208,7 @@ test("a presence exposure removed while encryption waits is withheld before the 
     await owner.link.publishPresence(); // Coalesced while the prior snapshot still awaits encryption.
     release.resolve();
     await publishing;
+    guest.link.refresh(); // Explicit refresh requests an unchanged observation after the withheld seal.
     await bounded(final.promise);
     expect(observations.every(peers => peers.length === 0)).toBe(true);
   } finally { release.resolve(); f.owner.sequence.reserve = reserve; }
@@ -273,7 +293,8 @@ test("a failed durable refusal write retains the broker packet without transport
   await owner.link.start(); await owner.online();
   const row = f.guest.get("test")!, guest = await FakeBrokerClient.connect(f.broker.publicUrl, row.current.room); clients.push(guest);
   await guest.authenticate(f.guest.identity);
-  const initial = await guest.take("frame"); await guest.ack(encodeBase64url(await sha256(initial)));
+  await requestFreshPresence(f, guest);
+  const initial = await freshPresenceFrame(f, guest); await guest.ack(encodeBase64url(await sha256(initial)));
   expect(f.broker.stats().queuedFrames).toBe(0);
   const record = f.owner.recordRefused;
   f.owner.recordRefused = () => { throw new Error("fixture storage unavailable"); };
@@ -290,7 +311,8 @@ test("a failed durable refusal write retains the broker packet without transport
 test("a new local epoch cannot publish ciphertext before that socket verifies the same roster", async () => {
   const f = await fixture(), owner = linked(f.owner); await owner.link.start(); await owner.online();
   const guest = await FakeBrokerClient.connect(f.broker.publicUrl, f.guest.get("test")!.current.room); clients.push(guest); await guest.authenticate(f.guest.identity);
-  const initial = await guest.take("frame"); await guest.ack(encodeBase64url(await sha256(initial)));
+  await requestFreshPresence(f, guest);
+  const initial = await freshPresenceFrame(f, guest); await guest.ack(encodeBase64url(await sha256(initial)));
   const before = f.owner.get("test")!;
   // Keep the guest so an unfenced publisher has a real recipient and would reserve/send.
   await f.owner.rotate("test", roomMembers(before.current), before.current.digest);
@@ -303,7 +325,8 @@ test("a new local epoch cannot publish ciphertext before that socket verifies th
 test("a runtime capacity metadata failure cannot become a safe presence drop or transport ACK", async () => {
   const f = await fixture(), owner = linked(f.owner); await owner.link.start(); await owner.online();
   const row = f.guest.get("test")!, guest = await FakeBrokerClient.connect(f.broker.publicUrl, row.current.room); clients.push(guest); await guest.authenticate(f.guest.identity);
-  const initial = await guest.take("frame"); await guest.ack(encodeBase64url(await sha256(initial)));
+  await requestFreshPresence(f, guest);
+  const initial = await freshPresenceFrame(f, guest); await guest.ack(encodeBase64url(await sha256(initial)));
   const available = f.owner.ordinaryInboxAvailable;
   f.owner.ordinaryInboxAvailable = () => { throw new Error("fixture metadata read failed"); };
   try {

@@ -3564,8 +3564,8 @@
     {
       "id": "broker-frame-generation",
       "file": "src/broker/server.ts",
-      "search": "active(client);\n      const result = store.enqueue(proof, client.member!);",
-      "replacement": "void client;\n      const result = store.enqueue(proof, client.member!);",
+      "search": "active(client);\n        const result = store.enqueue(proof, client.member!, onlineRecipients);",
+      "replacement": "void client;\n        const result = store.enqueue(proof, client.member!, onlineRecipients);",
       "testFile": "test/broker-server.test.ts",
       "testName": "socket replacement and shutdown fence a verified packet waiting before store effects"
     },

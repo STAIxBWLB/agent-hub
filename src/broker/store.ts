@@ -303,6 +303,8 @@ export class BrokerStore {
         fail("corrupt");
       }
     }
+    // No recipient is connected when a broker opens. Ephemeral presence never survives that boundary.
+    this.transaction(() => { this.removeEphemeral(); });
     // Recover only structurally valid public/ciphertext queue rows, then enforce the current caps.
     this.sweep();
     const stats = this.stats();
@@ -358,7 +360,7 @@ export class BrokerStore {
     return { changed: true, revoked };
   }
 
-  enqueue(proof: VerifiedPublicFrame, authorizedSender: string): { digest: string; duplicate: boolean } {
+  enqueue(proof: VerifiedPublicFrame, authorizedSender: string, onlineRecipients: readonly string[] = []): { digest: string; duplicate: boolean } {
     this.assertOpen();
     const wire = checkedProofFrame(proof);
     if (authorizedSender !== proof.sender) fail("untrusted");
@@ -402,16 +404,21 @@ export class BrokerStore {
         }
         if (order < 0n) fail("conflict");
       }
+      if (proof.ephemeral) {
+        this.removeEphemeral(proof.room, proof.sender);
+        const connected = new Set(onlineRecipients);
+        recipients = recipients.filter(recipient => connected.has(recipient));
+      }
       const counts = this.db.query<{ count: number; bytes: number }, []>("SELECT COUNT(*) AS count, COALESCE(SUM(length(wire)),0) AS bytes FROM queued_frames").get();
       const room = this.db.query<{ count: number; bytes: number }, [string]>("SELECT COUNT(*) AS count, COALESCE(SUM(length(wire)),0) AS bytes FROM queued_frames WHERE room=?").get(proof.room);
-      if (byteLength > this.limits.packetBytes || byteLength > this.limits.queuedBytesPerRoom || (room?.count ?? 0) >= this.limits.queuedPerRoom ||
+      if (byteLength > this.limits.packetBytes || byteLength > this.limits.queuedBytesPerRoom || recipients.length > 0 && ((room?.count ?? 0) >= this.limits.queuedPerRoom ||
           (room?.bytes ?? 0) + byteLength > this.limits.queuedBytesPerRoom || (counts?.count ?? 0) >= this.limits.queuedGlobal ||
-          (counts?.bytes ?? 0) + byteLength > this.limits.packetBytes) fail("full");
+          (counts?.bytes ?? 0) + byteLength > this.limits.packetBytes)) fail("full");
       const expiresAt = writeNow + this.limits.queueTtlMs;
       if (!Number.isSafeInteger(expiresAt)) fail("invalid");
       this.db.query("INSERT INTO sender_floors(room,sender,seq,digest) VALUES(?,?,?,?) ON CONFLICT(room,sender) DO UPDATE SET seq=excluded.seq,digest=excluded.digest")
         .run(proof.room, proof.sender, proof.seq, proof.digest);
-      this.db.query("INSERT INTO queued_frames(room,sender,seq,digest,wire,recipients,created_at,expires_at,epoch) VALUES(?,?,?,?,?,?,?,?,?)")
+      if (recipients.length) this.db.query("INSERT INTO queued_frames(room,sender,seq,digest,wire,recipients,created_at,expires_at,epoch) VALUES(?,?,?,?,?,?,?,?,?)")
         .run(proof.room, proof.sender, proof.seq, proof.digest, wire, JSON.stringify(recipients), writeNow, expiresAt, proof.epoch);
       result = { digest: proof.digest, duplicate: false };
     });
@@ -421,6 +428,23 @@ export class BrokerStore {
     }
     if (result) return result;
     return fail("invalid");
+  }
+
+  /** A disconnected member never retains ephemeral presence, while durable work stays queued. */
+  disconnect(room: string, recipient: string): void {
+    this.transaction(() => { this.removeEphemeral(room, undefined, recipient); });
+  }
+
+  private removeEphemeral(room?: string, sender?: string, recipient?: string): void {
+    const rows = this.db.query<{ rowid: number; wire: Uint8Array; recipients: string }, [string | null, string | null, string | null, string | null]>(
+      "SELECT rowid,wire,recipients FROM queued_frames WHERE (? IS NULL OR room=?) AND (? IS NULL OR sender=?)",
+    ).all(room ?? null, room ?? null, sender ?? null, sender ?? null);
+    for (const row of rows) {
+      if (!decodeFrame(row.wire).ephemeral) continue;
+      const remaining = recipient === undefined ? [] : parseRecipients(row.recipients).filter(id => id !== recipient);
+      if (remaining.length) this.db.query("UPDATE queued_frames SET recipients=? WHERE rowid=?").run(JSON.stringify(remaining), row.rowid);
+      else this.db.query("DELETE FROM queued_frames WHERE rowid=?").run(row.rowid);
+    }
   }
 
   next(room: string, recipient: string): { digest: string; wire: Uint8Array } | undefined {

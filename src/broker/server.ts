@@ -105,7 +105,10 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
     if (client.phase === "closed") return;
     client.phase = "closed";
     queuedBytes -= client.inboxBytes; client.inboxBytes = 0; client.inbox.length = 0;
-    if (client.member && members.get(memberKey(client)) === client) members.delete(memberKey(client));
+    if (client.member && members.get(memberKey(client)) === client) {
+      members.delete(memberKey(client));
+      try { store.disconnect(client.room, client.member); } catch { emit("refused", client, "state_unavailable"); }
+    }
     if (client.ws) { try { client.ws.close(4403, code); } catch { /* already closed */ } }
     else clients.delete(client);
   }
@@ -117,9 +120,9 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
     close(client, "backpressure"); return false;
   }
   const control = (client: Client, value: unknown) => send(client, canonicalBytes(value));
-  function refused(client: Client, code: string, terminal = true): void {
+  function refused(client: Client, code: string, terminal = true, digest?: string): void {
     emit("refused", client, code);
-    control(client, { v: 1, type: "error", code });
+    control(client, { v: 1, type: "error", code, ...(code === "queue_full" && digest ? { digest } : {}) });
     if (terminal) close(client, code);
   }
   function active(client: Client): VerifiedPublicRoster {
@@ -195,9 +198,16 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
       const selected = state && (header.epoch === state.current.epoch ? state.current : state.previous?.roster);
       if (!selected) throw new BrokerServerError("wrong_epoch");
       const proof = await (ports.verifyFrame ?? verifyPublicFrame)({ wire: bytes, roster: selected });
-      active(client);
-      const result = store.enqueue(proof, client.member!); // latest membership/grace/caps checked transactionally.
-      control(client, { v: 1, type: "stored", digest: result.digest, seq: proof.seq, duplicate: result.duplicate });
+      const onlineRecipients = proof.recipients.filter(recipient => members.get(`${client.room}|${recipient}`)?.phase === "ready");
+      try {
+        active(client);
+        const result = store.enqueue(proof, client.member!, onlineRecipients); // latest membership/grace/caps checked transactionally.
+        control(client, { v: 1, type: "stored", digest: result.digest, seq: proof.seq, duplicate: result.duplicate });
+      } catch (error) {
+        if (errorCode(error) !== "queue_full") throw error;
+        refused(client, "queue_full", false, proof.digest);
+        return;
+      }
       for (const recipient of proof.recipients) {
         const target = members.get(`${client.room}|${recipient}`);
         if (target) safePump(target);

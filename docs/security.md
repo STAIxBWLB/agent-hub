@@ -165,6 +165,14 @@ enrollment and X4 privacy/framing/role boundaries are in their own sections belo
 traffic metadata, availability, malicious owners and same-user compromise remain
 outside the encryption boundary.
 
+Room presence uses a signed `ephemeral: true` header (#1204 T1). This reveals
+presence traffic class to the blind broker, not peer state or body text. Only the
+latest sender observation is retained for connected, ready recipients; offline
+recipients and broker restart do not retain presence. Durable queue limits and
+receiver replay/admission checks are unchanged. A `queue_full` storage refusal
+names the verified frame digest; local bounded backoff retries that same sealed
+frame and grants no completion authority.
+
 ## What is not defended
 
 - **A malicious local process running as you.** It can read the control token, `hub.db`, the project and your home directory without the hub's help. The token keeps web pages and other users out, not your own processes.

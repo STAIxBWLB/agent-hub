@@ -78,3 +78,20 @@ Legacy coverage becomes complete only when journal evidence shows no unsettled p
 Once coverage is complete, NULL clean-session receipts may be pruned because complete absence preserves clean state. Positive and uncertain holds are not evicted to satisfy the 4096-row bound. Integrity metadata and counts are updated atomically with these changes. Public status names unavailable provenance and its next step without exposing note text or raw database errors. There is no automatic corrupt-state reset. Recovery preserves the receipts, integrity metadata and session-bound exclusion.
 
 Role reassignment cannot clear the original recipient's observer exclusion while a review envelope remains queued, recovery-deferred or unsettled. The journal supplies recipient/task-scoped metadata independently of current task roles; explicit disposition ends that delivery scope. Sent person comments independently retain their saved package recipient until resolution or person dismissal.
+
+## Room presence and broker backpressure (#1204 T1)
+
+Presence carries a signed optional `ephemeral: true` frame header. The broker can
+read this metadata but cannot decrypt the presence body. It retains only the
+latest ephemeral frame per sender for currently connected, ready recipients;
+disconnect and broker restart remove ephemeral recipients. Durable frames keep
+the existing queue caps, TTL and exactly-once receiver admission.
+
+A link skips an unchanged local presence snapshot, except explicit peer refresh
+requests/responses and a fresh connection. One sealed frame is sent at a time
+until its broker storage response, so a refused sequence cannot be overtaken.
+A correlated `queue_full` retains the frame (applications remain in the local
+outbox) and retries after 250 ms, doubling to a 30 s ceiling. Stop/refresh clears
+connection timers; no recipient receipt or application completion is inferred.
+T1 does not change acknowledgement deadlines, restart replay or receipt outbox
+persistence, which belong to T2. Existing layer caps remain authoritative.

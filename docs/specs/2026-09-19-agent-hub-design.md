@@ -803,7 +803,9 @@ atomically install that candidate against its persisted pin. Replaying an old
 candidate must never reset the minimum epoch or a grace deadline.
 
 A frame's public header is `{v,type,room,epoch,sender,recipients,seq}` plus nonce,
-ciphertext and signature. Recipients are hub fingerprints, not local peer ids.
+ciphertext and signature. Presence may add the signed optional `ephemeral: true`
+header (#1204 T1); every other value for that optional field refuses. Recipients
+are hub fingerprints, not local peer ids.
 The body is opaque encrypted bytes, including any eventual local addressing,
 kind, trace and text. Frame AAD is exactly UTF-8 `room|epoch|sender|seq`. A
 sender-specific AES key is HKDF-derived from the epoch root and room/epoch/sender/
@@ -974,7 +976,14 @@ survive queue ACKs/restart: the last accepted digest or an identical retained ol
 packet is idempotent without requeueing; conflicting or
 unknown lower sequences refuse. FIFO uses SQLite admission row order, never lexical
 sequence strings or clock ties. Full queues refuse new packets without evicting
-accepted ones. Prior-epoch grace may expire a packet before its ordinary TTL.
+accepted durable ones. Ephemeral presence replaces only prior ephemeral rows of
+that sender and retains only currently ready recipients; disconnect/restart
+removes those recipients, while sender floors and durable work remain. The same
+queue/byte caps still apply. A frame-level `queue_full` includes its verified
+digest. Links retain the sealed frame and retry after 250 ms, doubling to 30 s,
+with one frame awaiting storage acceptance so later sequences cannot overtake it.
+Applications stay in the local outbox; T2 owns receipt persistence and deadline/
+restart replay changes. Prior-epoch grace may expire a packet before its ordinary TTL.
 
 One packet per recipient socket is in flight. `{v:1,type:"received",digest}` removes
 only that identity from the packet's remaining recipients, then returns
@@ -1154,7 +1163,8 @@ all awaited work by link generation.
 
 Presence is an encrypted, signed frame containing only exposed peer ids and closed
 idle/busy/paused/offline states. It is sent on connection and coalesced peer-state
-changes, never titles, bodies, private task context or credentials. Unknown payload
+changes, skipping identical snapshots except explicit peer refresh exchanges,
+never titles, bodies, private task context or credentials. Unknown payload
 types and unexposed ids refuse before replay commit. Broker ACKs are transport
 facts only. A canonical room/recipient-bound frame that is refused or stale is
 recorded in a durable metadata-only drop ledger before transport retirement ACK.

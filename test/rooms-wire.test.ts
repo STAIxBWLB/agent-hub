@@ -287,3 +287,15 @@ test("enrollment refuses a correctly authenticated low-order agreement key befor
   await expect(acceptJoin({ issuedInvite: inviteBytes, wire, owner: f.owner, nowMs: 2, enrollment: { consume: async () => { consumed = true; return "accepted"; } } })).rejects.toMatchObject({ code: "invalid_key" });
   expect(consumed).toBe(false);
 });
+
+test("ephemeral frame header is strict and authenticated before receiver admission", async () => {
+  const f = await fixture(), replay = inbox(f.guestEpoch);
+  const wire = await sealFrame({ epoch: f.epoch, identity: f.owner, recipients: [f.guest.public.fingerprint], plaintext: text.encode("presence"), sequence: sequence(), ephemeral: true });
+  const frame = decodeFrame(wire);
+  expect(frame.ephemeral).toBe(true);
+  for (const bad of [false, 1, "true", null]) expect(() => decodeFrame(canonicalBytes({ ...frame, ephemeral: bad }))).toThrow();
+  const { ephemeral: _ephemeral, ...durable } = frame;
+  await expect(openFrame({ wire: canonicalBytes(durable), identity: f.guest, current: f.guestEpoch, replay: replay.port })).rejects.toThrow();
+  expect(replay.commits).toHaveLength(0);
+  expect((await openFrame({ wire, identity: f.guest, current: f.guestEpoch, replay: replay.port })).status).toBe("accepted");
+});

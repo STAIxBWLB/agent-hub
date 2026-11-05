@@ -77,8 +77,12 @@ test("auth rejects nonmembers, cross-socket challenge replay, expired proofs and
 test("queue capacity refuses without evicting an accepted offline frame and forged sender traffic closes", async () => {
   const f = await fixture({ limits: { queuedPerRoom: 1 } });
   f.ownerClient.send(await seal(f.epoch, f.owner, f.guest.public.fingerprint, "one", f.seq)); await f.ownerClient.take("stored");
-  f.ownerClient.send(await seal(f.epoch, f.owner, f.guest.public.fingerprint, "two", f.seq));
-  expect(packetObject(await f.ownerClient.take("error")).code).toBe("queue_full"); expect(f.server.stats().queuedFrames).toBe(1);
+  const refusedWire = await seal(f.epoch, f.owner, f.guest.public.fingerprint, "two", f.seq);
+  f.ownerClient.send(refusedWire);
+  const refusal = packetObject(await f.ownerClient.take("error"));
+  expect(refusal.code).toBe("queue_full");
+  expect(refusal.digest).toBe(encodeBase64url(await roomCrypto.sha256(refusedWire)));
+  expect(f.server.stats().queuedFrames).toBe(1);
   f.ownerClient.send(await seal(f.epoch, f.guest, f.owner.public.fingerprint, "forged socket sender"));
   expect((await f.ownerClient.closed).code).toBe(4403);
   expect(f.server.stats().queuedFrames).toBe(1);
