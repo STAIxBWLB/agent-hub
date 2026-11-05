@@ -7,7 +7,7 @@ import type { Database } from "bun:sqlite";
 import { Bus, type PublishResult } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { HUB, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
+import { HUB, isInvocationKind, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { parseRouting } from "../src/hub/routing.ts";
 import { RoomCommands } from "../src/rooms/commands.ts";
 import { RoomChat } from "../src/rooms/service.ts";
@@ -90,7 +90,7 @@ async function hub(root: string, label: string, event: Signal, control: Control,
   const routing = parseRouting('[local]\nfixed_model="fixture"\n');
   chat = new RoomChat({ bus, cwd, now: () => control.now, routing: () => routing, piiPaths: () => [], senderPrivate: () => false, taskPrivate: () => false, modelScreenOn: () => control.modelScreen === true,
     screen: async () => { if (control.screenHold) { control.screenEntered = true; event.notify(); await control.screenGate?.promise; } return { label: control.screenLabel ?? "clear", ms: 0 }; }, policyVersion: () => control.policyVersion ?? 1,
-    invocationAuthorization: (env, identity) => control.authorizeInvocation ? authorizeRoomInvocation(env, "codex", {
+    invocationAuthorization: (env, identity) => control.authorizeInvocation && isInvocationKind(env) ? authorizeRoomInvocation(env, "codex", {
       invocation: env.id, capability: "command:probe", digest: `sha256:${"0".repeat(64)}`, class: "read", depth: 1, args: {},
     }, identity.current) : undefined,
     roster: ids => { roster.clear(); roster.add("codex"); for (const id of ids) roster.add(id); event.notify(); }, changed: event.notify, notice: value => { notices.push({ ...value }); event.notify(); } });
