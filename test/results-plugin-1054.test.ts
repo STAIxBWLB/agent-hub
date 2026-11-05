@@ -5,6 +5,7 @@ import { join } from "node:path";
 import plugin, { createProvider } from "../src/ui/plugin.ts";
 import type { Lifecycle, ProjectRecord } from "../src/hub/manager.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
+import { inboxItemProblems, stableAtProblems } from "@staix/agent-console/conformance";
 import { canPublishResults, receiptEvidence, resultItem, RESULT_ACTIONS, RESULT_ITEM } from "../src/ui/plugin-results.ts";
 
 // #1054 T6: the acon inbox item for an unread result, its fallback when the console lacks the features, a forwarded receipt with the console's person meta, and a refusal without it.
@@ -166,4 +167,19 @@ test("the receipt actions are in no forwarding list: the dashboard's own whiteli
   // an ordinary dashboard action named like a receipt is not forwarded to ui_action by the plugin: it is answered by receiptVerb (with evidence) or refused
   expect(await provider.action({ action: "result_seen", id: "cmp-0123456789ab", projectId: "p1" })).toMatchObject({ ok: false, error: expect.stringContaining("verified person identity") });
   expect(received.some(m => m.t === "ui_action")).toBe(false);
+});
+
+test("the published item and the plugin's snapshot pass acon's own conformance checks, for every outcome, a private result and a result with no detail, and `at` is stable across polls", async () => {
+  const rows = [RESULT, { ...RESULT, id: "cmp-aaaaaaaaaaaa", outcome: "failed", detail: { kind: "none" } }, { ...RESULT, id: "cmp-bbbbbbbbbbbb", outcome: "limit", private: true, detail: { kind: "stub", text: "a private request" } },
+    { ...RESULT, id: "cmp-cccccccccccc", outcome: "interrupted", detail: { kind: "stub", text: "request withheld by the privacy screen" } }];
+  const { provider } = fixture({ features: FEATURES, unread: rows });
+  const first = await inboxOf(provider), second = await inboxOf(provider);
+  expect(first).toHaveLength(4);
+  for (const item of first) expect(inboxItemProblems(item), item.id).toEqual([]);          // acon's published checker, not this project's idea of the shape
+  expect(stableAtProblems(first, second)).toEqual([]);
+  expect(first.every(item => item.group === "result" && item.seen?.action === "result_seen")).toBe(true);
+  // the checker does reject a malformed result item, so the assertion above is not vacuous
+  expect(inboxItemProblems({ ...first[0], seen: { action: "" } }).length).toBeGreaterThan(0);
+  expect(inboxItemProblems({ ...first[0], group: "results" }).length).toBeGreaterThan(0);
+  expect(inboxItemProblems({ ...first[0], link: {} }).length).toBeGreaterThan(0);
 });
