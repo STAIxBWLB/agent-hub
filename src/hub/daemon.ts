@@ -147,7 +147,6 @@ import { hostShellEnvironment } from "../local/shell-environment.ts";
 import { hubGitArgv, hubGitEnv, hubGitSync } from "./git.ts";
 import { isLocalPeer, type LocalPeer } from "../adapters/local-worker.ts";
 import { isReviewerPrintPeer, reviewerNoVerdictLine, reviewerUnavailableReason, ReviewerUnavailableError, REVIEWER_FALLBACK_UNCONFIRMED, type ReviewerPrintPeer } from "../adapters/reviewer-print.ts";
-import { isClaudeImplementerPeer } from "../adapters/claude-implementer.ts";
 import type { OwnedInputContext } from "../adapters/claude-print-child.ts";
 import { createReviewerMcpSession, type ReviewerToolName } from "../adapters/reviewer-mcp.ts";
 import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
@@ -2110,7 +2109,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const sessionHash = reviewObserverHash(context.sessionId), deliveryKey = reviewObserverDeliveryKey(envs), inputHash = ownedObserverInputHash(context, envs);
     const priorOwned = ownedObserverInputs.get(peer);
     if (reviewerEphemeral && priorOwned?.owner === owner && priorOwned.reviewerEphemeral && priorOwned.closed && !priorOwned.reviewScoped && priorOwned.sessionHash !== sessionHash) {
-      try { journal.forgetClosedObserverInput(peer, priorOwned.sessionHash, null); } catch { /* clean-receipt pruning is best-effort; clean identity remains explicit */ }
+      try { journal.forgetClosedObserverInput(peer, priorOwned.sessionHash, null); } catch { /* clean-receipt pruning is best-effort; the current SID remains explicit */ }
     }
     bindReviewObserverSessionHash(peer, sessionHash, true);
     const reviewScoped = reviewInputHeld(peer, envs), pending = pendingReviewObserverInputs.get(peer), prior = currentReviewObserverInputs.get(peer);
@@ -7319,6 +7318,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const selected = permissionMode(peer);
       if (selected !== "ask" && selected !== "ask-when-needed") return { ok: false, error: "Claude implementer refuses never-ask" };
       startCurrent?.();
+      const isClaudeImplementerPeer = (await import("../adapters/claude-implementer.ts")).isClaudeImplementerPeer;
       const implementer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: selected, mcpServers: [], daemon: DAEMON_PORTS["claude-implementer"]({
         cwd: executionCwd, stateDir: opts.stateDir, projectRoot: opts.cwd, instanceId, server: SERVER_JS,
         factsHook: join(import.meta.dir, "..", "cli", "facts-hook.ts"), systemPrompt: sessionRoleContract(peer), mode: selected, watchdogMs: config.watchdog_ms, ...(declarations[peer]?.model ? { model: declarations[peer].model } : {}),

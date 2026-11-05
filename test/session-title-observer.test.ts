@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { definitionOf } from "../src/adapters/registry.ts";
 import { isWsPeer } from "../src/adapters/channel-peer.ts";
 import { BasePeer } from "../src/hub/peers.ts";
@@ -30,6 +30,7 @@ test("a failing optional title journal read cannot skip invocation, pending task
   const presenceStart = source.indexOf("  const presenceOnlyDelivery ="), presenceEnd = source.indexOf("\n", presenceStart);
   const deliveryKeyStart = source.indexOf("  const reviewObserverDeliveryKey ="), deliveryKeyEnd = source.indexOf("\n", deliveryKeyStart);
   const inputScopeStart = source.indexOf("  const reviewInputHeld ="), inputScopeEnd = source.indexOf("  const notePulledReviewInput =", inputScopeStart);
+  const identityStart = source.indexOf("  const reviewObserverHash ="), identityEnd = source.indexOf("  const reviewObserverInputHash =", identityStart);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start); expect(sessionEnd).toBeGreaterThan(sessionStart);
   expect(reviewHeldStart).toBeGreaterThan(0); expect(reviewHeldEnd).toBeGreaterThan(reviewHeldStart);
   expect(presenceStart).toBeGreaterThan(0); expect(deliveryKeyStart).toBeGreaterThan(0); expect(inputScopeStart).toBeGreaterThan(0); expect(inputScopeEnd).toBeGreaterThan(inputScopeStart);
@@ -42,9 +43,10 @@ test("a failing optional title journal read cannot skip invocation, pending task
   let journalThrows = true, journalRow: unknown;
   const unexpected = () => { throw new Error("unrelated policy/effect path reached"); };
   const context = {
-    Buffer, HUB, randomUUID, definitionOf, isWsPeer, remoteEnvelope, sessionTitleBindings, isReviewObserverExcluded, progress:{clearPeer(){}},
+    Buffer, HUB, createHash, randomUUID, definitionOf, isWsPeer, remoteEnvelope, sessionTitleBindings, isReviewObserverExcluded, progress:{clearPeer(){}},
     bus, board, currentReviewObserverInputs, pendingReviewObserverInputs, readReviewObserverScope,
     reviewObserverInput: (id: string) => readReviewObserverScope(id) !== undefined,
+    ownedObserverInputs: new Map(), localObserverSessionIds: new WeakMap(), reviewObserverRuntimeSessions: new WeakMap(),
     firstTitleMessages: new Map(), titleBindings: { pi: { session: "native-session", delivery: "old-delivery", envelope: "old-envelope" } },
     journal: { get: () => { reads++; if (journalThrows) throw new Error("journal unavailable"); return journalRow; } },
     titleBindingFile: "unused", atomicPrivateJSON: unexpected, claudeSession: unexpected,
@@ -53,7 +55,7 @@ test("a failing optional title journal read cannot skip invocation, pending task
   };
   const script = new Bun.Transpiler({ loader: "ts" }).transformSync(
     `${source.slice(presenceStart, presenceEnd)}\n${source.slice(deliveryKeyStart, deliveryKeyEnd)}\n${source.slice(inputScopeStart, inputScopeEnd)}\n`
-    + source.slice(sessionStart, sessionEnd) + source.slice(reviewHeldStart, reviewHeldEnd) + source.slice(start, end));
+    + source.slice(sessionStart, sessionEnd) + source.slice(identityStart, identityEnd) + source.slice(reviewHeldStart, reviewHeldEnd) + source.slice(start, end));
   try {
     runInNewContext(script, context);
     const invoke = newEnvelope(HUB, "invocation", { kind: "invocation" }); invoke.refs = { invocation: invoke.id };

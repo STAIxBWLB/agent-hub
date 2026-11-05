@@ -206,6 +206,23 @@ test("lost provenance rows fail closed against the stored count and digest", () 
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("corrupt review provenance reopens as unknown while ordinary journal operations remain available", () => {
+  const { dir, journal } = open(), sessionHash = "a".repeat(64), inputHash = "b".repeat(64), db = (journal as unknown as { db: Database }).db;
+  try {
+    journal.holdReviewInput({ peer: "claude", sessionHash, inputHash });
+    const ordinary = newEnvelope("user", "ordinary journal row");
+    journal.createDelivery({ id: "ordinary-row", peer: "codex", state: "queued", createdAt: ordinary.ts, originals: [ordinary], out: [ordinary] });
+    db.query("UPDATE review_input_sessions SET input_hash='malformed' WHERE project_id='p' AND peer='claude'").run();
+    journal.close();
+    const reopened = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i2" });
+    expect(reopened.get("ordinary-row")).toMatchObject({ state: "queued", peer: "codex" });
+    expect(reopened.reviewInputState("claude", sessionHash)).toEqual({ state: "unknown" });
+    expect(reopened.hasReviewInputState()).toBe(true);
+    expect(() => reopened.holdReviewInput({ peer: "claude", sessionHash: "c".repeat(64), inputHash: "d".repeat(64) })).toThrow("inputHash is invalid");
+    reopened.close();
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("review provenance digests bind the completeness flags", () => {
   const { dir, journal } = open(), db = (journal as unknown as { db: Database }).db;
   try {

@@ -38,7 +38,7 @@ class ReviewOwner extends BasePeer {
   async deliver(envs: Envelope[], deliveryId?: string) { this.got.push(...envs); if (this.echo) this.onMessage?.("OWNER_ECHO_CANARY " + envs[0]!.body, { to: ["user"], inReplyTo: envs[0] }); this.afterDelivery?.(); if (this.deliveryGate) await this.deliveryGate; if (deliveryId) this.delivery({ id: deliveryId, state: "completed", reason: "synthetic owner consumed delivery" }); }
 }
 class PiTitleOwner extends ReviewOwner {
-  constructor(withSteer = false, nativeSession?: string) { super("pi", false, withSteer, nativeSession); }
+  constructor(withSteer = false, nativeSession = "fixture-pi-native-session") { super("pi", false, withSteer, nativeSession); }
   get titleSession() { return "pi-title-session"; }
   get sessionTitle() { return ""; }
 }
@@ -427,6 +427,7 @@ test("a new native session with a complete store and no prior hold can remember 
 test("review input without a stable session is refused, then held for the recorded session across restart", async () => {
   const f = await fixture(undefined, true);
   try {
+    Object.defineProperty(f.owner, "nativeSession", { value: undefined });
     const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "unbound handoff quote" });
     expect((await f.person.request({ t: "review_comment_send", task: f.task, ids: [saved.id] })).delivery).toBe("queued");
     let refusal: unknown;
@@ -485,7 +486,10 @@ test("recovery refuses an old target when persisted review input state cannot be
     const status = await f.person.request({ t: "status" });
     const olderTarget = DAEMON_FEATURES.filter(feature => feature !== "review_observer_input_state");
     const result = await f.person.request({ t: "recovery", op: "inspect", expectedInstanceId: status.status.instanceId, targetFeatures: olderTarget });
-    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("compatibility is unknown") });
+    expect(olderTarget).not.toContain("review_observer_input_state");
+    expect(result.ok).toBe(false);
+    expect(String(result.error)).toContain("unknown");
+    expect(String(result.error)).toMatch(/review_observer_input_state|review observer input/);
   } finally { await f.stop(); }
 });
 
@@ -517,11 +521,12 @@ test("a failed review-hold write keeps pull-only scope held and raises the recov
     claudeOwner.nativeStarted("mcp-inbox-session");
     f.daemon.bus.publish(newEnvelope("hub", "REVIEW_MCP_CANARY", { to: ["claude"], kind: "review", priority: "important", refs: { task: String(f.task), reviewPackage: "review:mcp-write-failure" } }));
     const inboxReply = await inboxPeer.request({ t: "inbox" }, 2000);
+    const heldForHint = structuredClone(inboxReply.held);
     expect(inboxReply).toMatchObject({ ok: false, error: expect.stringContaining("review input provenance unavailable"), held: { rows: expect.arrayContaining([
       expect.objectContaining({ id: pushed.deliveryId, revision: expect.any(Number), state: "accepted", senders: expect.arrayContaining(["user"]), kinds: expect.arrayContaining(["chat"]) }),
     ]) } });
     expect(JSON.stringify(inboxReply)).not.toContain("REVIEW_MCP_CANARY");
-    expect(renderHeldHint(inboxReply.held, Date.now(), false)).toContain("hub_delivery_resolve");
+    expect(renderHeldHint(heldForHint, Date.now(), false)).toContain("hub_delivery_resolve");
     const taskB = proposeOwnedTask(f.board, "codex", { title: "ordinary after failed hold write", class: "test", refs: { paths: ["outside.md"], commit: f.head } });
     const held = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "write failure cannot release pull scope", kind: "finding" } });
     expect(held.ok).toBe(false);

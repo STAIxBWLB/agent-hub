@@ -466,7 +466,8 @@ export class DeliveryJournal {
     this.db.run("CREATE TABLE IF NOT EXISTS review_input_incomplete_sessions (project_id TEXT NOT NULL, peer TEXT NOT NULL, session_hash TEXT NOT NULL, PRIMARY KEY(project_id,peer,session_hash))");
     const legacyColumns = this.db.query("PRAGMA table_info(review_input_holds)").all() as { name: string }[];
     const meta = this.readMeta();
-    const hasCurrentProvenance = this.reviewInputRows().length + this.reviewInputIncompletePeerRows().length + this.reviewInputIncompleteSessionRows().length > 0;
+    const hasCurrentProvenance = !!this.db.query("SELECT 1 FROM review_input_sessions WHERE project_id=? UNION ALL SELECT 1 FROM review_input_incomplete_peers WHERE project_id=? UNION ALL SELECT 1 FROM review_input_incomplete_sessions WHERE project_id=? LIMIT 1")
+      .get(this.projectId, this.projectId, this.projectId);
     if (legacyColumns.length && (!meta || legacyReviewInputMarkerAbsent(meta) && !hasCurrentProvenance)) {
       this.db.transaction(() => {
         const hasSession = legacyColumns.some(column => column.name === "session_hash"), hasHash = legacyColumns.some(column => column.name === "input_hash");
