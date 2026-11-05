@@ -719,28 +719,37 @@ export class DeliveryJournal {
         return;
       }
     }
-    const candidateIds: string[] = [];
+    const candidateIds = new Set<string>();
     try {
       const fenceIds = this.legacyReviewCandidateFenceIds ?? [];
       for (let offset = 0; offset < fenceIds.length; offset += 256) {
         const batch = fenceIds.slice(offset, offset + 256);
-        const rows = this.db.query(`SELECT d.id FROM json_each(?) fence
-          JOIN deliveries d ON d.project_id=? AND d.id=fence.value
-          WHERE d.state IN ('dispatching','accepted','needs_review')
-            AND EXISTS (SELECT 1 FROM json_each(d.originals) e
-              WHERE (json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review')
-                OR (json_extract(e.value,'$.from') NOT IN ('hub','user') AND json_extract(e.value,'$.kind') IN ('chat','status')
-                  AND json_type(e.value,'$.refs.reviewResponse')='text'))`)
-          .all(JSON.stringify(batch), this.projectId) as { id: unknown }[];
-        candidateIds.push(...rows.map(row => text(row.id, "legacy review delivery id", 256)));
-        if (candidateIds.length > MAX_REVIEW_INPUTS) { this.legacyReviewCandidatesOverflow = true; return; }
+        const rows = this.db.query(`WITH RECURSIVE roots(id) AS (
+            SELECT d.id FROM json_each(?) fence
+            JOIN deliveries d ON d.project_id=? AND d.id=fence.value
+            WHERE (d.state IN ('dispatching','accepted','needs_review')
+              OR (d.state='failed' AND EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id=d.project_id AND c.previous_id=d.id)))
+              AND EXISTS (SELECT 1 FROM json_each(d.originals) e
+                WHERE (json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review')
+                  OR (json_extract(e.value,'$.from') NOT IN ('hub','user') AND json_extract(e.value,'$.kind') IN ('chat','status')
+                    AND json_type(e.value,'$.refs.reviewResponse')='text'))
+          ), lineage(id) AS (
+            SELECT id FROM roots
+            UNION
+            SELECT child.id FROM deliveries child JOIN lineage parent ON child.previous_id=parent.id
+            WHERE child.project_id=? AND (child.state IN ('queued','dispatching','accepted','needs_review')
+              OR (child.state='failed' AND EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id=child.project_id AND c.previous_id=child.id)))
+          )
+          SELECT id FROM lineage LIMIT ?`).all(JSON.stringify(batch), this.projectId, this.projectId, MAX_REVIEW_INPUTS + 1) as { id: unknown }[];
+        for (const row of rows) candidateIds.add(text(row.id, "legacy review delivery id", 256));
+        if (candidateIds.size > MAX_REVIEW_INPUTS) { this.legacyReviewCandidatesOverflow = true; return; }
       }
     } catch {
       // Keep the frozen epoch fence and retry only after the journal advances.
       this.legacyReviewCandidatesOverflow = true;
       return;
     }
-    this.legacyReviewCandidateIds = new Set(candidateIds);
+    this.legacyReviewCandidateIds = candidateIds;
     this.legacyReviewCandidateFenceIds = undefined;
   }
   /** Check only captured pre-upgrade rows; current guarded deliveries carry their own provenance. */

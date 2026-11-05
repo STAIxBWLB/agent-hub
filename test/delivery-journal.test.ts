@@ -407,6 +407,38 @@ test("legacy coverage waits for its captured rows but not new guarded review del
   } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
 });
 
+test("legacy retry descendants stay in coverage across reopen and snapshot import", () => {
+  const source = open(), activeDir = mkdtempSync(join(tmpdir(), "ahub-legacy-retry-active-")), importedDir = mkdtempSync(join(tmpdir(), "ahub-legacy-retry-imported-"));
+  const active = new DeliveryJournal({ file: join(activeDir, "hub.db"), projectRoot: activeDir, projectId: "p", instanceId: "legacy-active" });
+  let reopened: DeliveryJournal | undefined;
+  const imported = new DeliveryJournal({ file: join(importedDir, "hub.db"), projectRoot: importedDir, projectId: "p", instanceId: "legacy-imported" });
+  try {
+    const review = newEnvelope("hub", "pre-upgrade retry review", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-retry-reopen" } });
+    const parent = source.journal.createDelivery({ id: "legacy-retry-parent", peer: "claude", state: "needs_review", createdAt: review.ts, originals: [review], out: [review] });
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    expect(active.importSnapshot(legacySnapshot, "legacy-retry-parent-import")).toBe(true);
+    const importedParent = active.get(parent.id)!;
+    active.resolve(importedParent.id, importedParent.revision, "retry", "retry handed legacy review");
+    const childId = "legacy-retry-parent:retry:1";
+    expect(active.get(childId)?.state).toBe("queued");
+    expect(active.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    const retrySnapshot = active.snapshot();
+    active.close();
+
+    reopened = new DeliveryJournal({ file: join(activeDir, "hub.db"), projectRoot: activeDir, projectId: "p", instanceId: "legacy-reopened" });
+    expect(reopened.get(childId)?.state).toBe("queued");
+    expect(reopened.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    expect(imported.importSnapshot(retrySnapshot, "legacy-retry-child-import")).toBe(true);
+    expect(imported.get(childId)?.state).toBe("queued");
+    expect(imported.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+
+    reopened.transition(childId, "completed");
+    expect(reopened.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+    imported.transition(childId, "completed");
+    expect(imported.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+  } finally { source.journal.close(); active.close(); reopened?.close(); imported.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(activeDir, { recursive: true, force: true }); rmSync(importedDir, { recursive: true, force: true }); }
+});
+
 test("import recaptures guarded reviews during legacy coverage until explicit disposition", () => {
   const oldSource = open(), sourceDir = mkdtempSync(join(tmpdir(), "ahub-legacy-recapture-source-")), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-recapture-target-"));
   const source = new DeliveryJournal({ file: join(sourceDir, "hub.db"), projectRoot: sourceDir, projectId: "p", instanceId: "legacy-source" });
