@@ -1319,7 +1319,8 @@ export class Bus {
 
   /** Host-only quarantine when a signed room outcome belongs to an invalidated recipient tuple. */
   holdInvalidatedRemoteOutcome(peerId: string, deliveryId: string, expectedRoom: string, expectedMember: string, currentGuard: () => boolean): boolean {
-    if (!parseRemotePeerId(peerId) || typeof expectedRoom !== "string" || !expectedRoom || expectedRoom.length > 256 ||
+    // Exact equality below inherits the room bound enforced at add/loadSnapshot.
+    if (!parseRemotePeerId(peerId) || typeof expectedRoom !== "string" || !expectedRoom ||
         !remoteFingerprint(expectedMember) || !this.journal || this.storageError || this.closed ||
         this.remoteQueueRooms.get(peerId) !== expectedRoom || this.remoteQueueMembers.get(peerId) !== expectedMember) return false;
     const row = this.journal.get(deliveryId);
