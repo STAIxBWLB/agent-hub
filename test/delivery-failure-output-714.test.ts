@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { renderQueueShow, renderStatus } from "../src/cli/output.ts";
+import { renderQueueShow, renderStatus, type StatusOutput } from "../src/cli/output.ts";
 import type { Span } from "../src/cli/console-state.ts";
 
 const now = 1_800_000_000_000;
@@ -18,12 +18,13 @@ test("status names each peer's unresolved failed count and its discard next step
 });
 
 test("status omits zero, unavailable and malformed failure counts without claiming there are none (#1178)", () => {
-  for (const data of [
+  const cases: StatusOutput[] = [
     { peers: {} },
     { peers: {}, deliveryFailures: {} },
     { peers: {}, deliveryFailures: { codex: 0, jcode: -1, pi: Number.NaN, kimi: 1.5 } },
     { peers: {}, deliveryError: "delivery journal unavailable" },
-  ]) {
+  ];
+  for (const data of cases) {
     const rendered = text(renderStatus(data, undefined, now));
     expect(rendered).not.toContain("failed deliveries");
     expect(rendered).not.toContain("--state failed");
