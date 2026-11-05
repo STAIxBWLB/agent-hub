@@ -478,7 +478,7 @@ test("an uncertain invocation is not resumed after restart and person discard fr
   f.a.bus.closeJournal(); await f.a.close();
   await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.owner), "old sender fenced before invocation recovery");
   f.control.phase = "after"; await f.restart("a");
-  await f.event.wait(() => f.a.bus.isHeld("codex@beta") && f.a.store?.applicationOutbox("work").some(row => row.deliveryId === held.id), "invocation stays held without an automatic resend");
+  await f.event.wait(() => f.a.bus.isHeld("codex@beta") && f.a.store?.applicationOutbox("work").some(row => row.deliveryId === held.id) === true, "invocation stays held without an automatic resend");
   expect(f.a.store!.applicationOutbox("work").find(row => row.deliveryId === held.id)?.state).toBe("accepted");
   expect(f.frames.filter(frame => frame.sender === f.owner && !frame.ephemeral).length).toBe(ownerFrames);
   const current = f.a.journal.get(held.id)!;
