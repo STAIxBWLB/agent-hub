@@ -78,7 +78,7 @@ test("an owned channel notification refusal records push error without taking a 
     daemon.bus.publish(newEnvelope("user", "channel body canary", { to: ["claude"], private: true }));
     await until(() => pushes.length === 1);
     const push = pushes[0]!;
-    const result = await peer.request({ t: "delivery_receipt", ...push, state: "needs_review", reason: "untrusted reason canary", failureCause: "untrusted cause canary" });
+    const result = await peer.request({ t: "delivery_receipt", deliveryId: push.deliveryId, generation: push.generation, state: "needs_review", reason: "untrusted reason canary", failureCause: "untrusted cause canary" });
     expect(result.ok).toBe(true);
     expect(daemon.bus.queueShow(push.deliveryId)).toMatchObject({ state: "needs_review", failureCause: "push error" });
     expect(daemon.bus.failedDeliveryCounts()).toEqual({});
