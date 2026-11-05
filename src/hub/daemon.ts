@@ -1471,7 +1471,7 @@ export async function startDaemon(opts: DaemonOptions) {
   type PendingReviewObserverInput = ReviewObserverInputState & { previous?: ReviewObserverInputState; sessionHash?: string; durableSessionHash?: string; heldSameTurnAtAdmission?: boolean };
   const currentReviewObserverInputs = new Map<PeerId, ReviewObserverInputState>();
   const pendingReviewObserverInputs = new Map<PeerId, PendingReviewObserverInput>();
-  const ordinaryReviewObserverInputs = new Map<PeerId, { sessionHash?: string; inputHash: string; owner?: PeerAdapter; transportGeneration?: string }>();
+  const ordinaryReviewObserverInputs = new Map<PeerId, { sessionHash?: string; inputHash: string; owner?: PeerAdapter; transportGeneration?: string | number }>();
   const stagedSessionlessOrdinaryInputs = new Map<PeerId, { deliveryKey: string; inputHash: string; owner: PeerAdapter; transportGeneration?: string | number; turnId: string }>();
   const reviewObserverRuntimeSessions = new WeakMap<object, string>();
   const reviewObserverSessionBindings = new Map<PeerId, string>();
@@ -1530,9 +1530,11 @@ export async function startDaemon(opts: DaemonOptions) {
     const staged = stagedSessionlessOrdinaryInputs.get(peer);
     if (!staged || staged.turnId === nextTurnId) return;
     const owner = bus.peers.get(peer), current = currentReviewObserverInputs.get(peer), pending = pendingReviewObserverInputs.get(peer);
+    const currentAnchorForNextTurn = current?.anchoredSubmission === true && (current.reviewHoldTurnId === undefined || current.reviewHoldTurnId === nextTurnId);
+    const pendingAnchorForNextTurn = pending?.anchoredSubmission === true && (pending.reviewHoldTurnId === undefined || pending.reviewHoldTurnId === nextTurnId);
     if (owner !== staged.owner || owner?.sessionGeneration !== staged.transportGeneration || reviewObserverStableSessionHash(peer)
-      || !current || current.deliveryKey !== staged.deliveryKey || current.reviewInputScoped || current.anchoredSubmission
-      || pending?.reviewInputScoped || pending?.anchoredSubmission) { stagedSessionlessOrdinaryInputs.delete(peer); return; }
+      || !current || current.deliveryKey !== staged.deliveryKey || current.reviewInputScoped || currentAnchorForNextTurn
+      || pending?.reviewInputScoped || pendingAnchorForNextTurn) { stagedSessionlessOrdinaryInputs.delete(peer); return; }
     try {
       if (journal.reviewInputEvidence(peer, undefined).provenance === "corrupt") return;
       journal.clearReviewInputIncomplete(peer);

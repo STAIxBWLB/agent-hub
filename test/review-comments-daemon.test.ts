@@ -1025,3 +1025,38 @@ test("an anchored approved hub_review latches its input until a new ordinary del
     expect(allowed.ok).toBe(true);
   } finally { await f.stop(); }
 });
+
+test("a sessionless anchored submission releases a staged ordinary replacement after its native turn ends", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    rmSync(join(f.stateDir, claudeStateFile("claude-session", "claude")), { force: true });
+    f.daemon.bus.peers.delete("claude");
+    const reviewer = new WsPeer("claude"), socket = { readyState: WebSocket.OPEN, data: { protocol: 2 }, send: () => {}, close: () => {} };
+    reviewer.claim(socket, true); reviewer.attach(socket); f.daemon.bus.add(reviewer);
+    expect("nativeSession" in reviewer).toBe(false);
+    reviewer.nativeStarted("anchored-review-turn-one");
+    f.board.update(f.task, "user", "sessionless reviewer", { reviewer: "claude" });
+    const done = await f.peer.request({ t: "task", op: "hub_task_done", args: { id: f.task, summary: "Document ready", refs: { commit: f.head } } });
+    expect(done.ok).toBe(true);
+    expect(f.daemon.bus.pull("claude")?.some(env => env.refs?.reviewPackage !== undefined)).toBe(true);
+
+    const finding = { id: "sessionless-latched-anchor", pass: "bugs", severity: "important", disposition: "fixed", path: "report.md", anchor: f.anchor };
+    const verdict = await f.conductor.request({ t: "task", op: "hub_review", args: { id: f.task, head: f.head, verdict: "approved", note: "fixed at the reviewed head", findings: [finding] } });
+    expect(verdict.ok).toBe(true);
+    const taskB = proposeOwnedTask(f.board, "claude", { title: "ordinary reviewer task", class: "test", refs: { paths: ["outside.md"], commit: f.head } });
+    expect((await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "anchored input remains held", kind: "finding" } })).ok).toBe(false);
+
+    f.daemon.bus.publish(newEnvelope("user", "ordinary input in anchored turn", { to: ["claude"], priority: "status", refs: { task: String(taskB.id) } }));
+    expect(f.daemon.bus.pull("claude")?.some(env => env.refs?.task === String(taskB.id))).toBe(true);
+    expect((await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "same anchored turn stays held", kind: "finding" } })).ok).toBe(false);
+    f.daemon.bus.preface("claude", "presence does not replace anchored input");
+    expect(f.daemon.bus.pull("claude")?.every(env => env.kind === "presence")).toBe(true);
+    expect((await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "presence leaves anchor hold", kind: "finding" } })).ok).toBe(false);
+
+    reviewer.nativeStopped("anchored-review-turn-one");
+    expect((await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "held through final turn output", kind: "finding" } })).ok).toBe(false);
+    reviewer.nativeStarted("ordinary-review-turn-two");
+    const released = await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary input is current in next turn", kind: "finding" } });
+    expect(released.ok).toBe(true);
+  } finally { await f.stop(); }
+});
