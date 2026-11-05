@@ -1,0 +1,20 @@
+# Hard-coded values inventory: how a key is classified (#1180, task #738)
+
+Date: 2026-11-05. Refs #1180. `scripts/inventory-hardcoded-values.classifications.json` is plain JSON that the generator parses as a map from key to class, so it has no place for a header: this file is that header. It was written **before** any key of the baseline was labelled, from two sources only: the K01 to K18 reasons of [the closure](2026-10-30-operational-settings-closure.md) and the finding of [the ratchet record](2026-11-05-hardcoded-values-ratchet.md) that a reader who knew only the closure agreed with the committed file on 58% of a sample. It is not fitted to the sample that checks it.
+
+A key names one literal in one function (`file:function:kind:name=value#n`). Ask the questions in order and stop at the first that answers. The class says **why the value is a constant**, not how important it is.
+
+1. **Test seam.** The literal is the fallback of an injection point that exists for tests or for an embedding caller, and the code says so: a constructor or helper option documented or named as a test seam (`/** Test seam ... */`, `*ForTest`, a port a test replaces). A bare `opts.x ?? N` is **not** a test seam by itself: see rule 5.
+2. **Contract.** The value is part of a representation, a wire or storage shape, or an accepted API: a protocol or schema number, a format or identifier width, a unit conversion (`1000`, `86400000`, `60`), an index or position in a stored or parsed structure, a bound that is part of a control message's or a tool's documented shape, `?? 0` or `Math.max(x, 1)` that gives the meaning of an absent or zero stored value, a default that mirrors an existing configuration key or published declaration. Changing it changes what stored or exchanged data means.
+3. **Safety floor.** The value bounds what comes from outside the hub's own control, or what could exhaust it: a cap on a path, name, id, command, request, model or foreign-hub text, a truncation of such text before it is shown or stored, a limit on a parser, a proof or a diagnostic read, a native-session ownership record limit. Changing it changes what untrusted input the hub accepts or shows.
+4. **Operational.** Everything else that tunes how the hub behaves without changing what its data means or what it accepts: timeouts, deadlines, polling and batching intervals, retry and backoff numbers, retention and window lengths, TTLs, hub-internal caps on its own queues, caches and lists, display and page sizes, benchmark and smoke-script deadlines and sizes, the numbers inside a backoff expression.
+5. **The three confusable cases, which the first reader got wrong** (the committed file treats each as operational unless rule 1 to 3 applies on its own):
+   - a **hub-internal cap** on the hub's own lists, queues, caches or batches (`slice(0, 50)` of the hub's own rows, a queue cap) is operational, not a safety floor. A cap on text that came from a peer, a model or another project is a safety floor.
+   - an **injected default** `opts.x ?? N`, `config.x ?? N`, `input.x ?? N` is operational: the injection point makes it tunable, it does not make it a seam. It is a test seam only under rule 1, and a contract only under rule 2.
+   - a **script or smoke deadline** (`scripts/`, `AbortSignal.timeout(N)`, a benchmark's window or size) is operational.
+
+A key that none of these decides is **not labelled**: it stays in the baseline and is reported for a ruling. The rules are the reason a label is written, so a label that needs a new rule adds that rule here first.
+
+## How a batch is checked
+
+Before a batch is written, a fresh blind sample of 80 already-decided keys is drawn at random with a recorded seed, each is labelled from the code with only these rules (the committed label is not shown), and the labels are compared with the file. The batch is written only at 85% agreement or more, and the figure and the disagreements go in the batch's PR. A sample that fails the bar sends the disagreement back to these rules before any key is labelled.
