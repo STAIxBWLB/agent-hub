@@ -848,3 +848,36 @@ test("#734 AC7: a sync from an agent that is not the conductor is refused; the p
   expect(agent.ok).toBe(false); expect(String(agent.error)).toContain("person's or the conductor's");
   expect((await task(a.person, "hub_task_handoff_sync")).ok).toBe(true);
 }, 60_000);
+
+// #734: the real `ahub` process for --list and --sync: argv parsing, the control socket, the new ops and the renderer.
+test("#734 the real ahub process shows --list with age and reachability and a cause line, runs --sync, and refuses a mixed form", async () => {
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 3_600_000 } });
+  const cli = async (project: Project, ...args: string[]) => {
+    const env = { ...process.env, NO_COLOR: "1", COLUMNS: "140" } as Record<string, string>;
+    for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") && key !== "AGENTHUB_HOME" || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CODEX_THREAD_ID", "KIMI_CODE"].includes(key)) delete env[key];
+    const proc = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", project.root, ...args], { cwd: project.root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    return { code: await proc.exited, stdout, stderr };
+  };
+  const sent = await cli(a, "task", "handoff", "--project", b.id, "Chore for B");
+  expect(sent.code, sent.stderr).toBe(0);
+  const list = await cli(a, "task", "handoff", "--list");
+  expect(list.code, list.stderr).toBe(0);
+  expect(list.stdout).toContain("Handoffs (1)"); expect(list.stdout).toMatch(/AGE\s+REACH/); expect(list.stdout).toMatch(/\d+s\s+reachable/);
+  const down = hideBoth(b);
+  const unreachable = await cli(a, "task", "handoff", "--list");
+  expect(unreachable.code, unreachable.stderr).toBe(0);
+  expect(unreachable.stdout).toMatch(/unreachable/); expect(unreachable.stdout).toContain("ahub up");                    // the cause and its next step, once, under the table
+  const json = JSON.parse((await cli(a, "task", "handoff", "--list", "--json")).stdout);
+  expect(json.handoffs[0]).toMatchObject({ reach: "unreachable" }); expect(typeof json.handoffs[0].ageMs).toBe("number");
+  down();
+  const synced = await cli(a, "task", "handoff", "--sync");
+  expect(synced.code, synced.stderr).toBe(0); expect(synced.stdout).toContain("Handoffs (1)"); expect(synced.stdout).toMatch(/reachable/);
+  for (const args of [["--list", "--sync"], ["--list", "--project", b.id], ["--sync", "a title"]]) {
+    const mixed = await cli(a, "task", "handoff", ...args);
+    expect(mixed.code, args.join(" ")).toBe(1); expect(mixed.stderr).toContain("usage: ahub task handoff --list | --sync");
+  }
+  // an agent shell cannot run either view: `task handoff` is the person's, whatever the flag
+  const agent = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", a.root, "task", "handoff", "--sync"], { cwd: a.root, env: { ...process.env, AGENTHUB_PEER_ID: "codex" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const agentErr = await new Response(agent.stderr).text(); expect(await agent.exited).toBe(1); expect(agentErr).toContain("codex cannot run ahub task");
+}, 120_000);
