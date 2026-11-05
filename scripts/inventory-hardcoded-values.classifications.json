@@ -918,6 +918,7 @@
   "src/hub/daemon.ts:<anonymous>:inline:String(view.detail).slice=1000#0": "safety floor",
   "src/hub/daemon.ts:<anonymous>:inline:e.env.body.slice=200#0": "safety floor",
   "src/hub/daemon.ts:<anonymous>:inline:m.slice=8#0": "operational",
+  "src/hub/daemon.ts:<anonymous>:inline:opts.handoffSyncBoundMs ?? 20_000=20_000#0": "test seam",
   "src/hub/daemon.ts:<anonymous>:inline:sanitize((error as Error).message).slice=160#0": "safety floor",
   "src/hub/daemon.ts:<anonymous>:inline:sanitize((error as Error).message).slice=160#1": "safety floor",
   "src/hub/daemon.ts:<anonymous>:inline:selected.slice=100#0": "operational",
