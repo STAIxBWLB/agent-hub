@@ -39,11 +39,14 @@ A key is labelled by a rule only when the rule is a pure function of its name, k
 
 | Rule | Label | Decided keys it covers | File agrees |
 | --- | --- | ---: | ---: |
-| R1 a `constant` named `*_MS`, except unit conversions (`DAY_MS`, `MIN_MS`, ...), `*DATE_MAX_MS` and `*WINDOW_MS` | operational | 51 | 94% |
+| R1 a `constant` named `*_MS`, except unit conversions (`DAY_MS`, `MIN_MS`, ...), `*DATE_MAX_MS`, `*WINDOW_MS` and the security exclusion R1x below | operational | 51 | 94% |
+| R1x a `*_MS` constant that bounds replay, revocation or rate: the window in which a replayable request is still accepted, how long a revoked or rotated credential stays valid, or the floor on how often an agent turn may be triggered | safety floor | 0 | none |
 | R2 an inline literal that is the argument of `setTimeout`, `setInterval`, `Bun.sleep`, `sleep`, `AbortSignal.timeout` or `this.backOff` | operational | 134 | 98% |
 | R3 an inline default named `*_s`, `*_min` or `*_ms` (a config-shaped value) | operational | 37 | 100% |
 | R5 a `0` or `1` that starts a reduce, loop or counter (`start`, `id`, `count`, `sum`, `i`, `*.reduce`) | operational | 8 | 100% |
 | R6 a `.slice` or `.substring` of error, output or message text in `scripts/benchmarks/` | safety floor | 28 | 96% |
+
+R1x is the conductor's ruling on the review of PR #1212, not a calibrated rule: the committed file had no decided key of that kind (its decided `*GRACE_MS` keys are process-kill grace periods and `RATE_LIMIT_MS` throttles a log line, all operational), so its agreement is not measured. It labels four baseline keys: `tool-request.ts` `MAX_FUTURE_MS` (the replay window of request ids), `broker/store.ts` and `rooms/store.ts` `GRACE_MS` (how long a rotated epoch's frames stay accepted, which bounds how long a revoked member's key still works) and `schedules.ts` `MIN_EVERY_MS` (the floor that stops a schedule triggering an agent turn more often than every 15 minutes, a spend guard).
 
 R4 (a `maxTokens` or `contextWindow` default, 97%) and R7 (a length bound in `src/adapters`, `src/models`, `src/local`, 91%) agree with the file, but no baseline key was labelled by R4, and R7's five baseline keys have no exact agreeing precedent, so they stay in the baseline. Taken together the rules agree with 303 of the 311 decided keys they cover (97.4%) and with 97% and 98% on the two halves of a by-file hold-out (files split by a hash of their path), which is the same data seen differently, not an independent reader.
 
