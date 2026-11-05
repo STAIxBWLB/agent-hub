@@ -1,7 +1,7 @@
 # Rooms presence producer cost
 
-Refs #1204, CI task 742. Source candidate and Linux evidence only at this stage;
-macOS reference measurements and exact-head hosted acceptance are pending.
+Refs #1204, CI task 742. Historical macOS comparisons and Linux candidate
+measurements are recorded below. macOS candidate acceptance is still pending.
 
 ## Failed jobs and revision attribution
 
@@ -71,6 +71,38 @@ cases retain four Bus persists.
 - A failed presence barrier remains an error of its reserved chat, rather than
   a successful empty send or an unhandled rejection.
 
+## Hosted macOS reference comparison
+
+The [reference job](https://github.com/STAIxBWLB/agent-hub/actions/runs/42106515415/job/127522644864)
+ran on Darwin arm64 with Bun 1.4.2. Each result below is the unchanged test with
+the same diagnostic preload; controlled scheduling is labelled separately.
+
+| Runtime and mode | Whole test | Flip phase | Reservations | Store transaction time in phase |
+| --- | ---: | ---: | ---: | ---: |
+| b7, natural | 17,806.52 ms | 17,110 ms | 1,000 | 1,194 ms |
+| b7, controlled idle entry | 18,798.21 ms | 16,656 ms | 1,000 | 1,438 ms |
+| b5c, natural | 698.92 ms | 4 ms | 0 | 0 ms |
+| b5c, controlled idle entry | 17,084.92 ms | 16,440 ms | 1,000 | 1,065 ms |
+| 3185, natural | 710.99 ms | 2 ms | 0 | 0 ms |
+| 3185, controlled idle entry | 17,604.82 ms | 16,902 ms | 1,000 | 1,139 ms |
+
+The slow producer therefore costs about 16.4-17.1 ms per flip on this runner.
+For 3185, sequence reservation accounts for 511 ms inside the overlapping
+1,139 ms Store transaction time; durable I/O is not the dominant measured time.
+The remaining seal/async producer work was not split into separate CPU/syscall
+traces. All cases retain four Bus persists, confirming the task-740 fix remains.
+
+The range's lower bound is not unconditionally fast: b7 naturally selects the
+slow path in this job. A monotonic good/bad bisect cannot assign the defect to a
+newer commit; exhaustive comparison of the two intervening commits shows the
+pre-existing scheduling path. This is not a claim that the failed jobs merely
+needed their timeout increased.
+
+The job completed all six cases above, then failed because abbreviated reference
+924 was absent from that checkout. That final workflow error does not invalidate
+the completed cases, but supplies no 924 measurement. The follow-up explicitly
+fetches its full SHA and checks the candidate separately.
+
 Controlled red evidence uses unchanged historical source with only the new
 regression file copied into an isolated checkout:
 
@@ -85,12 +117,11 @@ regression file copied into an isolated checkout:
 
 - Latest focused source check at 11e312 passed 12 tests, 0 failed, 94 expectations.
   Earlier 2452 passed 18 focused/backpressure tests and the controlled AC1 case.
-- The [temporary macOS reference run](https://github.com/STAIxBWLB/agent-hub/actions/runs/42106515415)
-  was last observed queued. It compares b7, b5c, 3185 and failed head 924,
-  natural and controlled modes, sequentially. Its workflow is diagnostic-only
-  and is not retained in the final change.
+- The reference run above measured b7, b5c and 3185, not 924. Its temporary
+  workflow is diagnostic-only and is not retained in the final change.
 - The original failed macOS jobs did not record per-flip counters. Attribution
-  of those executions to this reproduced path remains an inference until the
-  hosted measurements are available. Linux timing is not macOS acceptance.
+  of those exact executions to this reproduced path remains an inference;
+  hosted reference measurements establish the slow path, not candidate
+  acceptance. Linux timing is not macOS acceptance.
 - No original test assertion or timeout was changed. No Mac-local gate, live
   room enrollment, native-account acceptance or release is claimed.
