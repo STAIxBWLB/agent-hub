@@ -21,13 +21,13 @@ const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
 type Project = Awaited<ReturnType<typeof project>>;
-async function project(name: string, home: string, options: { roles?: Record<string, string[]>; features?: string[]; handoffRequestMs?: number; handoffCatchUpMs?: number; handoffWatchMs?: number; handoffCatchUpHold?: () => Promise<void>; handoffLogWindowMs?: number; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }> } = {}) {
+async function project(name: string, home: string, options: { roles?: Record<string, string[]>; features?: string[]; handoffRequestMs?: number; handoffCatchUpMs?: number; handoffWatchMs?: number; handoffCatchUpHold?: () => Promise<void>; handoffLogWindowMs?: number; handoffSyncBoundMs?: number; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }> } = {}) {
   const root = realPath(mkdtempSync(join(tmpdir(), `ahub-handoff-${name}-`))), stateDir = join(root, ".agenthub", "state");
   mkdirSync(stateDir, { recursive: true }); writeFileSync(join(root, ".agenthub", "config.json"), "{}");
   writeFileSync(join(root, ".agenthub", "routing.toml"), '[local]\nfixed_model = "coding"\n[signals]\npii_patterns = ["\\\\b\\\\d{6}-\\\\d{7}\\\\b"]\n' + (options.screen ? 'pii_screen = "local"\n' : ""));   // the shipped PII pattern (Korean resident numbers), and nothing else
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const registry = new Registry(join(home, "registry.db")), registered = registry.register(root); registry.close?.();
-  const daemon = await startDaemon({ cwd: root, stateDir, projectId: registered.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, notifier: () => {}, ...(options.screen ? { piiScreen: options.screen } : {}), ...(options.handoffRequestMs ? { handoffRequestMs: options.handoffRequestMs } : {}), ...(options.handoffCatchUpMs ? { handoffCatchUpMs: options.handoffCatchUpMs } : {}), ...(options.handoffLogWindowMs ? { handoffLogWindowMs: options.handoffLogWindowMs } : {}), ...(options.handoffWatchMs ? { handoffWatchMs: options.handoffWatchMs } : {}), ...(options.handoffCatchUpHold ? { handoffCatchUpHold: options.handoffCatchUpHold } : {}),
+  const daemon = await startDaemon({ cwd: root, stateDir, projectId: registered.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, notifier: () => {}, ...(options.screen ? { piiScreen: options.screen } : {}), ...(options.handoffRequestMs ? { handoffRequestMs: options.handoffRequestMs } : {}), ...(options.handoffCatchUpMs ? { handoffCatchUpMs: options.handoffCatchUpMs } : {}), ...(options.handoffLogWindowMs ? { handoffLogWindowMs: options.handoffLogWindowMs } : {}), ...(options.handoffSyncBoundMs ? { handoffSyncBoundMs: options.handoffSyncBoundMs } : {}), ...(options.handoffWatchMs ? { handoffWatchMs: options.handoffWatchMs } : {}), ...(options.handoffCatchUpHold ? { handoffCatchUpHold: options.handoffCatchUpHold } : {}),
     config: { ...DEFAULT_CONFIG, roles: options.roles ?? { claude: ["planner"], codex: ["implementer"] }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, research: { ...DEFAULT_CONFIG.research, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false },
@@ -898,4 +898,30 @@ test("#734 AC6: a sync that arrives while a catch-up pass is running waits for i
   release();
   expect((await one).ok).toBe(true); expect((await two).ok).toBe(true);
   expect(holds).toBeGreaterThanOrEqual(2);                                                                // at least one sync pass began after the held one ended; two waiting syncs run in turn
+}, 60_000);
+
+// #734 review: a sync must answer inside the caller's control timeout. A pass held longer than the bound does not make the sync time out: it answers with the list and says the pass is still running.
+test("#734 AC6: a sync whose pass outlasts the bound answers within it with the list and syncing: true, and the pass goes on", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 3_600_000, handoffSyncBoundMs: 700, handoffCatchUpHold: () => gate } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  expect((await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" })).ok).toBe(true);
+  const started = Date.now();
+  const reply = await task(a.person, "hub_task_handoff_sync");
+  const took = Date.now() - started;
+  expect(reply.ok, JSON.stringify(reply)).toBe(true);
+  expect(took).toBeGreaterThanOrEqual(650); expect(took).toBeLessThan(5_000);                           // it waited for the bound and no longer
+  expect(body(reply)).toMatchObject({ synced: false, syncing: true, pending: 1 });
+  expect(body(reply).handoffs).toHaveLength(1);                                                          // the list as it stands, not nothing
+  // the real process prints the list and the still-running line, and exits 0, while the pass is still held
+  const env = { ...process.env, NO_COLOR: "1", COLUMNS: "140" } as Record<string, string>;
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") && key !== "AGENTHUB_HOME" || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CODEX_THREAD_ID", "KIMI_CODE"].includes(key)) delete env[key];
+  const proc = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", a.root, "task", "handoff", "--sync"], { cwd: a.root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  expect(await proc.exited, err).toBe(0);
+  expect(out).toContain("Handoffs (1)"); expect(out).toContain("catch-up still running for 1 target"); expect(out).toContain("ahub task handoff --list");
+  release();
+  const after = await task(a.person, "hub_task_handoff_sync");                                           // the pass that was held finished; a new sync completes
+  expect(body(after)).toMatchObject({ synced: true }); expect(body(after).syncing).toBeUndefined();
 }, 60_000);

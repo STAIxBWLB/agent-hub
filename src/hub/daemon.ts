@@ -768,6 +768,8 @@ export interface DaemonOptions {
   handoffWatchMs?: number;
   /** Test seam (#733): awaited by each handoff catch-up pass once it has chosen its targets, so a test can hold a pass open while descriptors change. */
   handoffCatchUpHold?: () => Promise<void>;
+  /** Test seam (#734): how long `--sync` waits for the catch-up pass before it answers with the list and `syncing: true`, default 20 seconds (under the caller's 30 second control timeout). */
+  handoffSyncBoundMs?: number;
   /** Test seam (#734): the window in which one failed handoff notify or catch-up logs one line per target and cause, default 15 minutes. */
   handoffLogWindowMs?: number;
   /** Test seam: how often the scheduled security-scan baseline checks whether a scan is due, default one hour (the configured `every_h` still decides). */
@@ -5019,8 +5021,15 @@ export async function startDaemon(opts: DaemonOptions) {
       // #734 (AC6): the person's `ahub task handoff --sync` runs the catch-up now and reads the list again. A person or the configured conductor only: an agent's own list is the read above.
       case "hub_task_handoff_sync": {
         tasks.handoffSyncAuthority(by);
-        await handoffCatchUp(undefined, true);
-        return JSON.stringify({ handoffs: handoffListView(), synced: true });
+        // The pass asks its targets one after another (3 s to connect and 5 s per chunk each), so with several slow or down targets it can outlast the caller's control timeout. Wait for it at most
+        // the bound, then answer with the list as it is and say the pass is still running: it goes on in the background, and a generic "no answer from the hub" would name neither cause nor step.
+        const pass = handoffCatchUp(undefined, true).then(() => true as const, () => true as const);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const done = await Promise.race([pass, new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), opts.handoffSyncBoundMs ?? 20_000); })]);
+        clearTimeout(timer);
+        if (done) return JSON.stringify({ handoffs: handoffListView(), synced: true });
+        const pending = new Set(board.handoffOutboundOpen().filter(row => handoffCatchUpRow(row, Date.now())).map(row => row.remoteProject)).size;
+        return JSON.stringify({ handoffs: handoffListView(), synced: false, syncing: true, pending });
       }
       // #601: the person's own forms (a read is hub_study_show, which every connection may use). `by` is USER only on the console path; approval and close are never a tool.
       case "study_draft":
