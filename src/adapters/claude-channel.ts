@@ -212,6 +212,7 @@ const heldMetadataNeedsReviewOnly = (value: unknown): boolean => {
 };
 /** Fresh own-peer counts accompany all tool modes; only old plain sessions use advisory queued nudges. */
 async function withPendingHint<T>(result: T, recommendInbox = true): Promise<T> {
+  if (hub?.standby) return result;
   const r = result as { content?: { type: string; text?: string }[] };
   const appendQueued = (hint: string) => {
     // Preserve the inbox's existing first-block refusal/readback contract; counts remain separate advisory text.
@@ -340,9 +341,9 @@ async function connectLoop(): Promise<void> {
       hub = client;
       attempt = -1;
       standingBy = client.standby;
-      detached = client.standby ? `standing by for a person to hand over "${peerId}"` : undefined;
+      detached = client.standby ? `${HELD}; a person can hand it over with ahub peer takeover ${peerId}` : undefined;
       log(sessionJoin ? `connected to hub as the distinct session "${client.sessionId ?? "?"}", not as "${peerId}": it can send and read, and holds none of ${peerId}'s roles`
-        : client.standby ? `standing by: a person can take over "${peerId}" from this session` : `connected to hub as "${peerId}"`);
+        : client.standby ? `standing by: ${detached}` : `connected to hub as "${peerId}"`);
       // The tool list depends on the connected hub (its lifecycle): when it differs from what the host last listed,
       // ask the host to list it again (#490).
       if (listedTools !== undefined) void reannounce(client).catch(() => {});
@@ -442,6 +443,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 
 async function callTool(req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal) {
   const { name, arguments: args } = req.params;
+  if (hub?.standby) return text(detached ?? HELD);
   if (unidentified) return { ...text(UNIDENTIFIED), isError: true };
   if (!own) return { ...text(NO_PROJECT), isError: true };
   if (sessionJoin && !sessionSupported()) return { ...text(NO_SESSION_SUPPORT), isError: true };
