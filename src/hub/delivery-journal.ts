@@ -686,6 +686,7 @@ export class DeliveryJournal {
     return { version: REVIEW_INPUT_VERSION, instanceId, complete, coverageComplete, count, digest, holds, incompletePeers, incompleteSessions };
   }
   /** Snapshot the pre-existing handed review rows once while legacy coverage is incomplete. */
+  // ponytail: reopen/import recaptures conservatively; if measured restart timing makes guarded rows prolong coverage, persist a bounded IDs-only candidate fence in recovery snapshots, never envelope bodies or a metadata-version change.
   private captureLegacyReviewCandidates(force = false, importedFenceIds?: readonly string[]): void {
     this.legacyReviewCandidateIds = new Set();
     this.legacyReviewCandidatesCaptured = true;
