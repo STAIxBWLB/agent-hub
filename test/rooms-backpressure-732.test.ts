@@ -184,7 +184,7 @@ test("more than eight sequential stored receipts do not leak transport slots", a
       expect(encodeBase64url(await sha256(f.sent[n]!))).toBe(receipt.digest);
       f.guest.markStored("work", receipt.digest);
       f.internal.storedFrame(f.session, receipt.digest);
-      expect(f.guest.acknowledgeReceipt("work", receipt.digest)).toBe(true);
+      expect(f.guest.retireStoredReceipt("work", receipt.digest)).toBe(true);
       expect(f.session.outbound).toHaveLength(0);
       expect(f.guest.outbox("work")).toHaveLength(0);
     }

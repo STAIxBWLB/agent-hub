@@ -143,7 +143,11 @@ test("receipt ciphertext commits before chat ACK, replays until stored and retir
   expect(restored.receiptStored("work", item.digest)).toMatchObject({ digest: refreshed.digest, state: "accepted", expiresAt: first.expiresAt });
   expect("wire" in restored.receiptStored("work", item.digest)!).toBe(false);
   expect(restored.outbox("work")).toContainEqual(expect.objectContaining({ digest: pending.digest, kind: "receipt", receiptFor: item.digest, wire: reseal }));
-  expect(restored.acknowledgeReceipt("work", refreshed.digest)).toBe(true);
+  expect(restored.retireStoredReceipt("work", refreshed.digest)).toBe(true);
+  expect(restored.receiptStored("work", item.digest)).toMatchObject({ digest: pending.digest, state: "dispatching", expiresAt: first.expiresAt });
+  expect(restored.retireStoredReceipt("work", pending.digest)).toBe(false);
+  restored.markStored("work", pending.digest, decodeFrame(reseal).seq);
+  expect(restored.retireStoredReceipt("work", pending.digest)).toBe(true);
   expect(restored.receiptStored("work", item.digest)).toBeUndefined();
 });
 

@@ -992,14 +992,15 @@ export class RoomStore {
       return true;
     });
   }
-  acknowledgeReceipt(name: string, receiptDigest: string): boolean {
+  /** Broker storage ends this receipt attempt's local replay responsibility. */
+  retireStoredReceipt(name: string, receiptDigest: string): boolean {
     const state = this.get(name); if (!state || state.left) return false;
     if (!validDigest(receiptDigest)) fail("invalid");
     return this.transaction(() => {
-      const row = this.db.query<{ inbound_digest: string }, [string, string]>("SELECT inbound_digest FROM receipt_outbox WHERE room=? AND receipt_digest=?").get(state.current.room, receiptDigest);
+      const row = this.db.query("SELECT 1 FROM receipt_outbox WHERE room=? AND receipt_digest=? AND state='accepted'").get(state.current.room, receiptDigest);
       if (!row) return false;
-      this.db.query("DELETE FROM outbox WHERE room=? AND digest IN (SELECT receipt_digest FROM receipt_outbox WHERE room=? AND inbound_digest=?)").run(state.current.room, state.current.room, row.inbound_digest);
-      this.db.query("DELETE FROM receipt_outbox WHERE room=? AND inbound_digest=?").run(state.current.room, row.inbound_digest);
+      this.db.query("DELETE FROM outbox WHERE room=? AND digest=?").run(state.current.room, receiptDigest);
+      this.db.query("DELETE FROM receipt_outbox WHERE room=? AND receipt_digest=?").run(state.current.room, receiptDigest);
       return true;
     });
   }

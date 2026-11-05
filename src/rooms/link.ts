@@ -449,7 +449,11 @@ export class RoomLink {
     if (message.type === "stored") {
       const row = exact(message, ["v", "type", "digest", "seq", "duplicate"]);
       if (typeof row.digest !== "string" || !DIGEST.test(row.digest) || typeof row.seq !== "string" || !/^[1-9][0-9]{0,19}$/.test(row.seq) || typeof row.duplicate !== "boolean") fail();
-      if (this.options.store.receiptSendable(this.options.name, row.digest)) this.options.store.markStored(this.options.name, row.digest, row.seq);
+      const receipt = this.options.store.receiptSendable(this.options.name, row.digest);
+      if (receipt) {
+        this.options.store.markStored(this.options.name, row.digest, row.seq);
+        this.options.store.retireStoredReceipt(this.options.name, row.digest);
+      }
       this.storedFrame(session, row.digest);
       this.options.application?.stored(this.context(session, local.current.digest), { digest: row.digest, seq: row.seq });
       this.restoreReceipts(session);
@@ -458,7 +462,6 @@ export class RoomLink {
     if (message.type === "queue_ack") {
       const row = exact(message, ["v", "type", "digest"]);
       if (typeof row.digest !== "string" || !DIGEST.test(row.digest)) fail();
-      this.options.store.acknowledgeReceipt(this.options.name, row.digest);
       try { this.options.application?.transportAck?.(this.context(session, local.current.digest), { digest: row.digest }); }
       catch { /* A transport observer cannot change delivery or reconnect the link. */ }
       return;

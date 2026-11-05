@@ -1079,7 +1079,6 @@
   "src/rooms/status.ts:ROOM_LIMIT:constant:ROOM_LIMIT=64#0",
   "src/rooms/store.ts:<anonymous>:inline:input.plaintext.length > 65536=65536#0",
   "src/rooms/store.ts:APPLICATION_HISTORY_CAP:constant:APPLICATION_HISTORY_CAP=1000#0",
-  "src/rooms/store.ts:SCHEMA:constant:SCHEMA=4#0",
   "src/rooms/store.ts:applicationStatus:inline:rows.length < 200=200#0",
   "src/rooms/store.ts:applicationStatus:inline:this.db.query<ApplicationRow, [string, number, number]>(SELECT * FROM applications WHERE room=? AND state=disposed AND disposed_at>? ORDER BY disposed_at DESC,primary_digest LIMIT ?).all=200#0",
   "src/rooms/store.ts:applicationStatus:inline:this.db.query<RoomIncomingApplication, [string, string, number]>(SELECT application,sender,peer,state,primary_digest AS digest FROM applications WHERE room=? AND state=? ORDER BY created_at,primary_digest LIMIT ?).all=200#0",
