@@ -235,6 +235,31 @@ test("first confirmed SID binding clears a marker-only unknown without a RAM quo
   expect(journal.reviewInputEvidence(peer.id, sessionHash)).toMatchObject({ provenance: "available", incompletePeer: false, sessionState: "clean", retainedSessionHold: false });
 });
 
+test("a newly observed peer marker survives repeated reads of the same SID", () => {
+  const cwd = scratch(), file = join(cwd, "hub.db"), hash = (value: string) => createHash("sha256").update(value).digest("hex");
+  const peer = ports(new PlainPeer("codex"), { nativeSession: "same-confirmed-session" });
+  const journal = new DeliveryJournal({ file, projectRoot: cwd, projectId: "same-binding-marker", instanceId: "first" });
+  cleanup.push(() => journal.close());
+  const bus = new Bus({ batchMs: 0 }); bus.add(peer); cleanup.push(() => bus.closeJournal());
+  const currentReviewObserverInputs = new Map(), pendingReviewObserverInputs = new Map(), ordinaryReviewObserverInputs = new Map(), stagedSessionlessOrdinaryInputs = new Map();
+  const reviewObserverSessionBindings = new Map(), currentDaemonReviewObserverHolds = new Map(), restoredPullOnlyReviewHolds = new Map();
+  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "hasSessionlessOrdinaryObserverInput", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged", "reviewObserverDurableHeld"], {
+    bus, journal, USER, HUB, isWsPeer, definitionOf, claudeSession: () => ({}), createHash,
+    currentReviewObserverInputs, pendingReviewObserverInputs, ordinaryReviewObserverInputs, stagedSessionlessOrdinaryInputs,
+    reviewObserverSessionBindings, currentDaemonReviewObserverHolds, restoredPullOnlyReviewHolds,
+    ownedObserverInputs: new Map(), localObserverSessionIds: new WeakMap(),
+  });
+  const firstSession = hash("same-confirmed-session");
+  host.resetReviewObserverSessionIfChanged(peer.id); // Establish the first known SID binding.
+  journal.markReviewInputIncomplete(peer.id);
+  expect(host.reviewObserverDurableHeld(peer.id)).toBe(true);
+  expect(journal.reviewInputEvidence(peer.id, firstSession)).toMatchObject({ incompletePeer: true, sessionState: "unknown" });
+
+  ports(peer, { nativeSession: "new-confirmed-session" });
+  expect(host.reviewObserverDurableHeld(peer.id)).toBe(false);
+  expect(journal.reviewInputEvidence(peer.id, hash("new-confirmed-session"))).toMatchObject({ incompletePeer: false, sessionState: "clean" });
+});
+
 test("first stable SID binding persists a current RAM quote before clearing its peer marker", () => {
   const cwd = scratch(), file = join(cwd, "hub.db"), hash = (value: string) => createHash("sha256").update(value).digest("hex");
   const peer = ports(new PlainPeer("codex"), { nativeSession: "confirmed-session-c" });

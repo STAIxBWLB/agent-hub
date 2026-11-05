@@ -1595,7 +1595,11 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!current) return;
     const prior = reviewObserverSessionBindings.get(peer);
     if (prior) {
-      if (!bindUnboundReviewInputToSession(peer, current)) return;
+      const pending = pendingReviewObserverInputs.get(peer), currentInput = currentReviewObserverInputs.get(peer);
+      const heldUnboundQuote = pending?.unboundReviewInput === true && pending.held
+        || pending?.previous?.unboundReviewInput === true && pending.previous.held
+        || currentInput?.unboundReviewInput === true && currentInput.held;
+      if ((prior !== current || heldUnboundQuote) && !bindUnboundReviewInputToSession(peer, current)) return;
       bindReviewObserverSessionHash(peer, current); return;
     }
     ordinaryReviewObserverInputs.delete(peer); // A sessionless RAM proof never becomes identity evidence.
