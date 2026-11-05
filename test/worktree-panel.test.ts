@@ -388,7 +388,8 @@ test("the plugin's inbox alert reads a real daemon's snapshot: it appears once t
   const project: ProjectRecord = { id: "shelf3", root: f.cwd, stateDir: f.stateDir, basePort: 4700, instanceId: f.instanceId, pid: process.pid };
   const registry = { get: (id: string) => id === project.id ? project : undefined, list: () => [project], close() {} } as any;
   const lifecycle: Lifecycle = { inspectProject: async () => ({ state: "running", status: { instanceId: f.instanceId, peers: {} } }), startProject: async () => ({}), stopProject: async () => {} };
-  const provider = createProvider({ home, registry, lifecycle });
+  // #727: this test changes the daemon's settings out of band (not through the provider), so it asks for no inbox cache: what it checks is the alert's snapshot shape, not caching.
+  const provider = createProvider({ home, registry, lifecycle, inboxFreshMs: 0, inboxStaleMs: 0 });
   const items = async () => ((await provider.snapshot({ after: 0, panel: "inbox" })).items as any[]).filter(i => i.kind === "worktrees");
   // the first snapshot only warms the daemon's cache; the alert follows on the next poll, as the panel's 2 s poll would see it
   await items(); await Bun.sleep(500);

@@ -146,6 +146,10 @@ ${body}
 }
 
 interface ProjectRow { id: string; root: string; state: string; instanceId: string | null }
+/** #727: the inbox reply is bounded; `more` counts what was left out. Most urgent first: a decision waits on the person, then a review, a result, a candidate, an alert. */
+const INBOX_MAX_ITEMS = 50;
+const INBOX_GROUP_RANK: Record<InboxItem["group"], number> = { decision: 0, review: 1, result: 2, candidate: 3, alert: 4 };
+interface InboxReply { items: InboxItem[]; more: number }
 
 /** lifecycle.ts reaches the whole daemon (and files acon's import scan cannot parse); load it on first use only. */
 function lazyLifecycle(): Lifecycle {
@@ -158,7 +162,7 @@ function lazyLifecycle(): Lifecycle {
 }
 
 /** Build the provider over an injectable registry and lifecycle (tests use a temp home and fakes). */
-export function createProvider(options: { home: string; registry?: Registry; lifecycle?: Lifecycle; log?: (line: string) => void; spaceBudgetMs?: number; features?: readonly string[]; forwardTimeoutMs?: ManagerOptions["forwardTimeoutMs"] }): ConsoleProvider {
+export function createProvider(options: { home: string; registry?: Registry; lifecycle?: Lifecycle; log?: (line: string) => void; spaceBudgetMs?: number; features?: readonly string[]; forwardTimeoutMs?: ManagerOptions["forwardTimeoutMs"]; inboxFreshMs?: number; inboxStaleMs?: number; inboxProjectBudgetMs?: number }): ConsoleProvider {
   const registry = options.registry ?? new Registry(join(options.home, "registry.db"));
   const owned = !options.registry;
   const lifecycle = options.lifecycle ?? lazyLifecycle();
@@ -170,11 +174,28 @@ export function createProvider(options: { home: string; registry?: Registry; lif
     const listing = await list() as { projects: ProjectRow[] };
     return listing.projects.filter((p) => p.state === "running" && p.instanceId);
   }
-  async function inbox(): Promise<InboxItem[]> {
+  /**
+   * #727: one project's items from its last answer, reused for a project that did not answer in time, so a slow daemon neither blanks its rows nor restarts their `at`.
+   * Fenced by the action generation on both sides: an entry is written only by a computation that no action has overtaken, and read only in the generation it was written in, so an approval
+   * or an answer that has been given never comes back from here (a late project is then simply left out of that poll, which is the safe side).
+   */
+  const lastProjectItems = new Map<string, { generation: number; items: InboxItem[] }>();
+  /** The project's `agents` snapshot, or null when it did not answer within the budget or threw: the other projects' rows are never held back by it. */
+  const projectSnapshot = (project: ProjectRow) => within(act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "agents" }) as Promise<Record<string, unknown>>, INBOX_PROJECT_BUDGET_MS);
+  async function inbox(generation: number): Promise<InboxItem[]> {
     const items: InboxItem[] = [];
-    for (const project of await running()) {
-      const snap = await act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "agents" }) as Record<string, unknown>;
-      if (snap.ok === false) continue;
+    const projects = await running();
+    // The projects are asked at once: the answer takes as long as the slowest daemon, not the sum of them (#727).
+    const snaps = await Promise.all(projects.map(projectSnapshot));
+    for (const [index, project] of projects.entries()) {
+      const snap = snaps[index];
+      if (snap === null || snap === undefined) {
+        const last = lastProjectItems.get(project.id);
+        if (last && last.generation === inboxGeneration) items.push(...last.items);
+        continue;
+      }
+      if (snap.ok === false) { lastProjectItems.delete(project.id); continue; }
+      const firstItem = items.length;
       const name = project.root.split("/").filter(Boolean).pop() ?? project.id;
       for (const p of (snap.permissions as { id: string; peer: string; title: string; createdAt?: number; terminalOnly?: boolean; options: { optionId: string; kind: string; name: string }[] }[] | undefined) ?? []) {
         const id = `perm:${project.id}:${p.id}`;
@@ -224,11 +245,44 @@ export function createProvider(options: { home: string; registry?: Registry; lif
         items.push({ id, group: "review", kind: "review", title: `#${t.id} ${t.title}`.slice(0, 200), ...(t.owner ? { actor: t.owner } : {}), project: name, at,
           chip: { text: "review", tone: "neutral" }, verbs: [{ id: "open", label: "Open board", primary: true }], link: { panel: "board", params: { project: project.id } } });
       }
+      if (generation === inboxGeneration) lastProjectItems.set(project.id, { generation, items: items.slice(firstItem) });
     }
-    // Forget ids that left the inbox, so `seen` stays the size of what is waiting now.
+    for (const id of lastProjectItems.keys()) if (!projects.some((project) => project.id === id)) lastProjectItems.delete(id);
+    // Forget ids that left the inbox, so `seen` stays the size of what is waiting now. This runs on the whole list, before the cap, so a row below the cap keeps its `at`.
     const current = new Set(items.map((item) => item.id));
     for (const id of seen.keys()) if (!current.has(id)) seen.delete(id);
     return items;
+  }
+
+  /**
+   * #727: what acon polls. The expensive part (every running project's `agents` snapshot) is shared and cached:
+   *  - concurrent snapshots join one computation in flight;
+   *  - a result younger than `inboxFreshMs` is served as it is;
+   *  - a result younger than `inboxStaleMs` is served at once while one refresh runs in the background (nothing runs while nobody polls);
+   *  - older, or after any action (an approval or an answer changes what is waiting), the caller waits for a fresh computation.
+   * The reply is bounded: at most INBOX_MAX_ITEMS items, the most urgent first, and `more` says how many were left out.
+   */
+  const INBOX_FRESH_MS = options.inboxFreshMs ?? 1_000, INBOX_STALE_MS = options.inboxStaleMs ?? 10_000, INBOX_PROJECT_BUDGET_MS = options.inboxProjectBudgetMs ?? 2_000;
+  let inboxGeneration = 0, inboxCache: { generation: number; at: number; value: InboxReply } | undefined, inboxFlight: { generation: number; promise: Promise<InboxReply> } | undefined;
+  function inboxComputation(): Promise<InboxReply> {
+    if (inboxFlight && inboxFlight.generation === inboxGeneration) return inboxFlight.promise;
+    const generation = inboxGeneration;
+    const promise: Promise<InboxReply> = inbox(generation).then((all) => {
+      const ordered = [...all].sort((a, b) => INBOX_GROUP_RANK[a.group] - INBOX_GROUP_RANK[b.group] || (a.at < b.at ? -1 : a.at > b.at ? 1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const value: InboxReply = { items: ordered.slice(0, INBOX_MAX_ITEMS), more: Math.max(0, ordered.length - INBOX_MAX_ITEMS) };
+      if (!inboxCache || inboxCache.generation <= generation) inboxCache = { generation, at: Date.now(), value };
+      return value;
+    }).finally(() => { if (inboxFlight?.promise === promise) inboxFlight = undefined; });
+    inboxFlight = { generation, promise };
+    return promise;
+  }
+  async function inboxSnapshot(): Promise<InboxReply> {
+    if (inboxCache && inboxCache.generation === inboxGeneration) {
+      const age = Date.now() - inboxCache.at;
+      if (age < INBOX_FRESH_MS) return inboxCache.value;
+      if (age < INBOX_STALE_MS) { void inboxComputation().catch(() => {}); return inboxCache.value; }
+    }
+    return await inboxComputation();
   }
 
   /**
@@ -328,7 +382,7 @@ export function createProvider(options: { home: string; registry?: Registry; lif
         const { panel: _panel, projectId, instanceId, ...payload } = input;
         return await consoleControl({ projectId, instanceId }, input.panel, payload);
       }
-      if (input.panel === "inbox") return { items: await inbox() };
+      if (input.panel === "inbox") return { ...await inboxSnapshot() };
       if (input.panel === "space") return { scene: await space() };
       const view = (DASHBOARD_VIEWS as readonly string[]).includes(String(input.view)) ? input.view : (DASHBOARD_VIEWS as readonly string[]).includes(input.panel) ? input.panel : undefined;
       if (typeof input.projectId !== "string" || typeof input.instanceId !== "string") {
@@ -342,6 +396,14 @@ export function createProvider(options: { home: string; registry?: Registry; lif
       return { ...await act({ ...rest, action: "snapshot", ...(view ? { view } : {}) }) as Record<string, unknown>, reviewWritable: options.features?.includes("action.meta") === true };
     },
     async action(input, meta) {
+      // #727: an action changes what is waiting, so the cached inbox is dropped before it runs and again when it ends (a poll in between must not keep the old answer).
+      inboxGeneration++;
+      try { return await runAction(input, meta); } finally { inboxGeneration++; }
+    },
+    async close() { if (owned) registry.close(); },
+  };
+
+    async function runAction(input: Parameters<ConsoleProvider["action"]>[0], meta: ActionMeta | undefined): Promise<ActionResult> {
       const name = String(input.action);
       // #1053 T5: `answer` is accepted only with the console's own verified person meta, and never with page-supplied identity or target fields; anything else is refused before the hub.
       if (name === "answer") {
@@ -382,9 +444,7 @@ export function createProvider(options: { home: string; registry?: Registry; lif
       if (name === "approve" || name === "deny" || name === "open") return await inboxVerb(forward);
       const result = await act(forward) as Record<string, unknown>;
       return (result.ok === false ? { ok: false, error: String(result.error ?? "action failed"), ...(result.unconfirmed === true ? { unconfirmed: true as const } : {}) } : { ...result, ok: true }) as ActionResult;
-    },
-    async close() { if (owned) registry.close(); },
-  };
+    }
 }
 
 const plugin: ConsolePlugin = {
