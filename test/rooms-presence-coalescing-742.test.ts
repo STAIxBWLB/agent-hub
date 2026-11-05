@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { RoomLink } from "../src/rooms/link.ts";
-import type { RoomStore } from "../src/rooms/store.ts";
+import { RoomStore, type RoomOutgoingInput } from "../src/rooms/store.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { RoomMessage } from "../src/rooms/application.ts";
 import { createRoomEpoch, openFrame } from "../src/rooms/wire.ts";
 import { encodeBase64url, generateHubIdentity, sha256 } from "../src/rooms/crypto.ts";
@@ -139,6 +142,42 @@ test("concurrent chats reserve FIFO positions before waiting for the presence ba
     expect((await f.open(f.session.outbound[2]!.wire)).envelope.body).toBe("first chat");
     expect((await f.open(f.session.outbound[3]!.wire)).envelope.body).toBe("second chat");
   } finally { f.link.stop(); }
+});
+
+test("concurrent chat presence barriers preserve real durable outbox insertion order", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-presence-fifo-742-")), store = await RoomStore.open({ stateDir: join(root, "state") });
+  const guest = await generateHubIdentity(), entered = gate(), release = gate();
+  const created = await createRoomEpoch({ owner: store.identity, members: [
+    { ...store.identity.public, label: "owner", exposedPeers: ["codex"] },
+    { ...guest.public, label: "guest", exposedPeers: ["codex"] },
+  ] });
+  await store.install({ name: "work", broker: "ws://127.0.0.1:1/", wire: created.wire, expectedDigest: null });
+  let peers = [{ id: "codex", state: "idle" }], firstReserve = true;
+  const reserve = store.sequence.reserve.bind(store.sequence);
+  store.sequence.reserve = async binding => {
+    if (firstReserve) { firstReserve = false; entered.resolve(); await release.promise; }
+    return reserve(binding);
+  };
+  const session = { ws: { readyState: WebSocket.OPEN, bufferedAmount: 0, send() {}, close() {} }, generation: 1,
+    room: created.epoch.room, broker: "ws://127.0.0.1:1/", phase: "ready", roster: { digest: created.epoch.digest },
+    outbound: [] as { wire: Uint8Array; digest: string }[], outboundBytes: 0, frameSent: false, retryAttempt: 0,
+    pendingPresenceReplies: new Set<string>(), presenceAsked: false, requestPresenceReply: false, queue: [], queuedBytes: 0 };
+  const link = new RoomLink({ store, name: "work", presence: () => peers });
+  Object.assign(link, { running: true, generation: 1, session });
+  try {
+    const publishing = link.publishPresence(); await entered.promise;
+    peers = [{ id: "codex", state: "busy" }]; await link.publishPresence(); release.resolve(); await publishing;
+    const first = chat(), second = chat();
+    if (first.type !== "chat" || second.type !== "chat") throw new Error("expected chat fixture");
+    const input = (application: string): RoomOutgoingInput => ({ application, deliveryId: crypto.randomUUID(), remotePeer: "codex@guest",
+      peer: "codex", recipient: guest.public.fingerprint, ackTimeoutMs: 1000, ttlMs: 86400000 });
+    const one = input(first.envelope.id), two = input(second.envelope.id);
+    const firstWire = link.publishApplication(first, guest.public.fingerprint, one);
+    const secondWire = link.publishApplication(second, guest.public.fingerprint, two);
+    await Promise.all([firstWire, secondWire]);
+    expect(store.applicationOutbox("work").map(row => row.deliveryId)).toEqual([one.deliveryId, two.deliveryId]);
+    expect(store.applicationOutbox("work").map(row => row.application)).toEqual([first.envelope.id, second.envelope.id]);
+  } finally { release.resolve(); link.stop(); store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("a receipt commits its sealed FIFO frame without flushing deferred ordinary presence", async () => {
