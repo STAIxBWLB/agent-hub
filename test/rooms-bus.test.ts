@@ -186,6 +186,62 @@ test("a signed terminal receipt settles an active dispatching or accepted remote
   }
 });
 
+test("active remote invocation transport receipts notify the invocation ledger once without native evidence", async () => {
+  for (const state of ["completed", "failed_safe", "needs_review"] as const) {
+    const { bus, journal } = fixture(), target = new Peer(remote, room), receipts: Array<[string, string]> = [], uncertain: string[] = [];
+    let delivered = 0, memory = 0;
+    bus.add(target); bus.onInvocationReceipt = (id, receipt) => receipts.push([id, receipt]);
+    bus.onInvocationUncertain = id => uncertain.push(id);
+    bus.onDelivered = () => { delivered++; }; bus.onMemoryDelivery = () => { memory++; };
+    target.accepted = async (_envs, id) => target.onDelivery?.({ id: id!, state });
+    await target.start();
+    const env = newEnvelope("hub", `remote invocation ${state}`, { to: [remote], kind: "invocation" }); bus.publish(env);
+    const terminal = state === "failed_safe" ? "failed" : state;
+    await until(() => journal.list(remote).some(row => row.state === terminal && row.originals.some(original => original.id === env.id)) && !bus.hasInFlight(remote));
+    const row = journal.list(remote).find(item => item.originals.some(original => original.id === env.id))!;
+    expect(receipts).toEqual([[env.id, state]]);
+    expect(uncertain).toEqual(state === "needs_review" ? [env.id] : []);
+    expect(bus.isHeld(remote)).toBe(state === "needs_review");
+    expect(delivered).toBe(0); expect(memory).toBe(0); expect(journal.offerRead(remote, env.id)).toBe(false);
+    target.onDelivery?.({ id: row.id, state });
+    expect(receipts).toHaveLength(1);
+  }
+});
+
+test("remote invocation uncertainty stays held and a late receipt remains advisory", async () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room), receipts: Array<[string, string]> = [], held = deferred(); bus.add(target);
+  bus.onInvocationReceipt = (id, state) => receipts.push([id, state]);
+  target.accepted = async () => { await held.promise; };
+  await target.start();
+  const env = newEnvelope("hub", "person-only remote invocation", { to: [remote], kind: "invocation" }); bus.publish(env);
+  await until(() => journal.list(remote).some(row => row.state === "dispatching" && row.originals.some(original => original.id === env.id)));
+  const row = journal.list(remote).find(item => item.originals.some(original => original.id === env.id))!;
+  bus.holdInvocation(env.id, "remote invocation result is unknown", remote);
+  expect(journal.get(row.id)?.state).toBe("needs_review"); expect(bus.isHeld(remote)).toBe(true);
+  expect(bus.resumeRemotePending(target, row.id, "dispatching", () => true)).toBe(false);
+  expect(bus.settleRemoteReceipt(target, row.id, "completed", "late signed application receipt", () => true)).toBe(false);
+  expect(bus.noteLateRemoteReceipt(remote, row.id, "completed")).toBe(true);
+  expect(journal.get(row.id)?.state).toBe("needs_review"); expect(bus.isHeld(remote)).toBe(true);
+  expect(receipts).toEqual([]);
+  held.resolve();
+});
+
+test("a signed Store completion of an active remote invocation reaches transport ledger once", async () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room), receipts: Array<[string, string]> = [], held = deferred(); bus.add(target);
+  bus.onInvocationReceipt = (id, state) => receipts.push([id, state]);
+  target.accepted = async (_envs, id) => { target.onDelivery?.({ id: id!, state: "accepted" }); await held.promise; };
+  await target.start();
+  const env = newEnvelope("hub", "signed Store completion", { to: [remote], kind: "invocation" }); bus.publish(env);
+  await until(() => journal.list(remote).some(row => row.state === "accepted" && row.originals.some(original => original.id === env.id)));
+  const row = journal.list(remote).find(item => item.originals.some(original => original.id === env.id))!;
+  expect(bus.settleRemoteReceipt(target, row.id, "completed", "signed room application receipt", () => true)).toBe(true);
+  expect(journal.get(row.id)?.state).toBe("completed");
+  expect(receipts).toEqual([[env.id, "completed"]]);
+  expect(bus.settleRemoteReceipt(target, row.id, "completed", "duplicate receipt", () => true)).toBe(false);
+  expect(receipts).toHaveLength(1);
+  held.resolve();
+});
+
 test("late signed evidence for a known recipient never auto-completes needs_review", () => {
   const { bus, journal } = fixture(), target = new Peer(remote, room); bus.add(target);
   const env = newEnvelope("user", "evidence only", { to: [remote] }); bus.publish(env);

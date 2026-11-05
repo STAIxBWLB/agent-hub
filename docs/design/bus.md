@@ -130,7 +130,10 @@ dedupe horizon (30 days / 10,000 identities with settled-first eviction).
 A typed refusal before durable enqueue requeues the original without uncertainty
 or poison retry accounting. Online readiness and the ACK deadline trigger retries;
 the ACK deadline is not a terminal disposition. Queue TTL or a permanent refusal
-ends automatic sending. A remote uncertainty row does not block later queued work.
+ends automatic sending. An ordinary remote chat uncertainty row does not block later queued work.
+Invocation uncertainty retains its person-only ledger hold and is never automatically
+replayed or settled from late transport evidence. Active invocation receipts update
+only transport metadata, never native execution or task-offer read evidence.
 
 Each retry rechecks current room/member identity, exposure and privacy against the
 saved immutable application. A restart reconstructs active remote deliveries under

@@ -348,6 +348,7 @@ test("sender restart holds a dispatching Bus row whose durable room intent never
   f.a.bus.publish(env);
   await f.event.wait(() => f.a.journal.list("codex@beta").some(row => row.state === "dispatching" && row.originals.some(original => original.id === env.id))
     && f.a.store!.applicationOutbox("work").every(row => row.application !== env.id), "failed Store hold leaves the Bus row active in memory");
+  f.a.bus.closeJournal(); // Simulate a controller crash before the active row can settle locally.
   await f.a.close();
   await f.restart("a");
   await f.event.wait(() => f.a.journal.list("codex@beta").some(row => row.state === "needs_review" && row.reason?.includes("durable intent unavailable")
@@ -474,6 +475,7 @@ test("a terminal Store proof for a revoked recipient holds the old Bus tuple aft
   await owner.rotate("work", roomMembers(room.current).filter(member => member.fingerprint !== f.guest), room.current.digest, () => true);
   const ownerFrames = f.frames.filter(frame => frame.sender === f.owner && !frame.ephemeral).length;
   const disconnectAt = f.brokerEvents.length;
+  f.a.bus.closeJournal(); // Preserve the accepted journal row while the room Store has a revoked roster.
   await f.a.close();
   await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.owner), "old owner session fenced after revocation");
   f.control.phase = "after"; await f.restart("a");

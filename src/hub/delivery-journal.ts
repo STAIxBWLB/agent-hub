@@ -6,7 +6,7 @@ import type { Database } from "./db-schema.ts";
 import { openHubDatabase } from "./db-schema.ts";
 import type { BusSnapshot } from "./bus.ts";
 import type { QueuePressure } from "./queue-backpressure.ts";
-import { HUB, KINDS, USER, type Envelope, type Kind } from "./envelope.ts";
+import { HUB, KINDS, USER, isInvocationKind, type Envelope, type Kind } from "./envelope.ts";
 import { heldDeliveryHints } from "./delivery-hints.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 import { parseRemotePeerId } from "../rooms/application.ts";
@@ -441,7 +441,7 @@ export class DeliveryJournal {
         for (const row of this.db.query("SELECT * FROM task_offer_reads WHERE project_id = ?").all(this.projectId) as Record<string, unknown>[]) this.validateOfferRead(row);
         this.recoverRetryHistory(meta);
         this.recoverRetryEvidence();
-        this.recoverInterrupted();
+        this.recoverInterrupted(meta);
       })();
     }
     this.captureLegacyReviewCandidates(false, openDeliveryFenceIds);
@@ -814,12 +814,35 @@ export class DeliveryJournal {
       this.harden();
     });
   }
-  private recoverInterrupted(): void {
-    this.db
-      .query(
-        "UPDATE deliveries SET state = 'needs_review', revision = revision + 1, updated_at = ?, reason = COALESCE(reason, 'daemon stopped during delivery') WHERE project_id = ? AND state IN ('dispatching', 'accepted')",
-      )
-      .run(Date.now(), this.projectId);
+  private recoverInterrupted(meta: Record<string, unknown>): void {
+    const resumable = new Set<string>();
+    try {
+      const raw = JSON.parse(String(meta.bus_snapshot || "{}"));
+      const bus = raw && typeof raw === "object" && Object.keys(raw).length > 0 ? validateBus(raw) : undefined;
+      if (bus) {
+        const now = Date.now();
+        const active = this.db.query("SELECT * FROM deliveries WHERE project_id = ? AND state IN ('dispatching', 'accepted')").all(this.projectId) as Record<string, unknown>[];
+        for (const stored of active) {
+          const row = parseDelivery(stored), peer = row.peer;
+          if (!parseRemotePeerId(peer) || row.originals.length !== 1) continue;
+          const original = row.originals[0]!;
+          const room = bus.remoteQueueRooms?.[peer], member = bus.remoteQueueMembers?.[peer];
+          const expiry = bus.remoteQueueExpires?.[peer]?.[original.id];
+          if (isInvocationKind(original) || original.to?.includes(peer) !== true ||
+              typeof room !== "string" ||
+              typeof member !== "string" || !/^[0-9a-f]{64}$/.test(member) ||
+              !Number.isSafeInteger(expiry) || expiry! <= now) continue;
+          resumable.add(row.id);
+        }
+      }
+    } catch { /* Unreadable or unknown binding metadata keeps the conservative interruption rule. */ }
+
+    const now = Date.now();
+    const update = this.db.query(
+      "UPDATE deliveries SET state = 'needs_review', revision = revision + 1, updated_at = ?, reason = COALESCE(reason, 'daemon stopped during delivery') WHERE project_id = ? AND id = ? AND state IN ('dispatching', 'accepted')",
+    );
+    const active = this.db.query("SELECT id FROM deliveries WHERE project_id = ? AND state IN ('dispatching', 'accepted')").all(this.projectId) as { id: string }[];
+    for (const row of active) if (!resumable.has(row.id)) update.run(now, this.projectId, row.id);
   }
   private ensureOpen(): void {
     if (this.closed) throw new Error("delivery journal is closed");

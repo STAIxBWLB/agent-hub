@@ -1,6 +1,6 @@
 /** Host integration for X4. Remote identities carry chat, never local control authority. */
 import type { Bus } from "../hub/bus.ts";
-import { USER, MAX_HOP, type Envelope, type PeerState } from "../hub/envelope.ts";
+import { USER, MAX_HOP, isInvocationKind, type Envelope, type PeerState } from "../hub/envelope.ts";
 import type { RoomInvocationAuthorization } from "./boundary.ts";
 import { roomInvocationHash } from "../hub/room-invocations.ts";
 import { Limiter, PROJECT_LIMITS, type LimitsConfig } from "../hub/limits.ts";
@@ -323,6 +323,11 @@ export class RoomChat {
     if ((row.state !== "completed" && row.state !== "failed_safe") || row.disposition) return false;
     const outcome = row.lateReceipt?.outcome ?? row.state;
     const reason = row.lateReceipt?.reason ?? row.reason ?? (outcome === "completed" ? "admitted" : "boundary_refused");
+    const journalRow = this.options.bus.queueShow(row.deliveryId);
+    if (journalRow?.state === "needs_review" && journalRow.originals.some(isInvocationKind)) {
+      if (!this.options.bus.remoteDisposition(row.deliveryId)) this.options.bus.noteLateRemoteReceipt(row.remotePeer, row.deliveryId, outcome);
+      return false;
+    }
     const target = this.targets.get(row.remotePeer), state = binding.store.get(binding.name);
     const targetCurrent = target?.binding === binding && target.member === row.recipient && target.peer === row.peer;
     const proofCurrent = () => this.valid(binding) && binding.store.get(binding.name)?.current.room === binding.room

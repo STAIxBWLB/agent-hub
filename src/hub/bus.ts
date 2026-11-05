@@ -229,13 +229,13 @@ export class Bus {
     const delivery = this.invocationDeliveries.get(id), row = delivery && this.journal?.get(delivery);
     if (!row || !this.journal) {
       this.storageError = "uncertain invocation delivery evidence unavailable; inspect the invocation ledger before recovery";
-      if (target && !remoteId(target)) this.recoveryHeldPeers.add(target);
+      if (target) this.recoveryHeldPeers.add(target);
       this.onQueues?.();
       return;
     }
     this.journal.transition(row.id, "needs_review", reason);
     this.activeDeliveries.delete(row.id);
-    if (!remoteId(row.peer)) this.recoveryHeldPeers.add(row.peer);
+    this.recoveryHeldPeers.add(row.peer);
     this.onQueues?.();
   }
 
@@ -275,7 +275,7 @@ export class Bus {
       for (const id of state.manualPaused) { this.manualPaused.add(id); this.paused.add(id); }
       for (const row of this.journal.list()) {
         for (const env of row.originals) if (env.kind === "invocation") this.invocationDeliveries.set(env.id, row.id);
-        if (row.state === "dispatching" || row.state === "accepted" || row.state === "needs_review" && !remoteId(row.peer)) this.recoveryHeldPeers.add(row.peer);
+        if (row.state === "dispatching" || row.state === "accepted" || row.state === "needs_review" && (!remoteId(row.peer) || row.originals.some(isInvocationKind))) this.recoveryHeldPeers.add(row.peer);
       }
     }
   }
@@ -843,7 +843,7 @@ export class Bus {
     const queued = this.queues.get(peer) ?? [];
     const review = rows.filter((r) => r.state === "needs_review");
     const needsReview = review.length;
-    const blocked = rows.find((r) => (r.state === "needs_review" && !remoteId(peer)) || (["dispatching", "accepted"].includes(r.state) && !this.activeDeliveries.has(r.id)));
+    const blocked = rows.find((r) => (r.state === "needs_review" && (!remoteId(peer) || r.originals.some(isInvocationKind))) || (["dispatching", "accepted"].includes(r.state) && !this.activeDeliveries.has(r.id)));
     const liveAccepted = rows.filter((r) => r.state === "accepted" && this.activeDeliveries.get(r.id) === peer).map((r) => r.id);
     const hold = { ...(blocked ? { heldBy: blocked.id } : {}), ...(liveAccepted.length ? { liveAccepted } : {}) };
     const oldest = queued.reduce<number | undefined>((a, r) => a === undefined ? r.ts : Math.min(a, r.ts), undefined);
@@ -877,7 +877,9 @@ export class Bus {
       const last = this.lastDelivery.get(peer);
       if (before && last && last.out.length === before.out.length && last.out.every((env, index) => env.id === before.out[index]!.id)) this.lastDelivery.delete(peer);
       this.refreshRecoveryHold(peer);
-      if (!remoteId(peer)) for (const env of before?.originals ?? []) if (isInvocationKind(env)) this.onInvocationReceipt?.(env.id, "failed_safe");
+      for (const env of before?.originals ?? []) if (isInvocationKind(env)) {
+        try { this.onInvocationReceipt?.(env.id, "failed_safe"); } catch { /* a ledger observer cannot undo a durable signed refusal */ }
+      }
       this.onQueues?.();
       void this.drain(peer);
       return;
@@ -898,19 +900,23 @@ export class Bus {
       this.activeDeliveries.delete(id);
       if (remoteId(peer) && this.remoteTransport.get(id)?.peer === peer) this.remoteTransport.delete(id);
     }
-    if (state === "completed" || state === "failed" || state === "needs_review" && remoteId(peer)) { this.refreshRecoveryHold(peer); void this.drain(peer); }
-    if (!remoteId(peer) && (receipt.state === "completed" || receipt.state === "needs_review")) for (const env of before?.originals ?? []) if (isInvocationKind(env)) this.onInvocationReceipt?.(env.id, receipt.state);
-    if (state === "needs_review" && !remoteId(peer)) {
-      this.recoveryHeldPeers.add(peer);
-      for (const env of before?.originals ?? []) if (env.kind === "invocation") this.onInvocationUncertain?.(env.id);
+    for (const env of before?.originals ?? []) if (isInvocationKind(env) && (receipt.state === "completed" || receipt.state === "needs_review")) {
+      try { this.onInvocationReceipt?.(env.id, receipt.state); } catch { /* a ledger observer cannot undo a durable transport receipt */ }
     }
+    if (state === "needs_review" && (!remoteId(peer) || before?.originals.some(isInvocationKind))) {
+      this.recoveryHeldPeers.add(peer);
+      for (const env of before?.originals ?? []) if (env.kind === "invocation") {
+        try { this.onInvocationUncertain?.(env.id); } catch { /* uncertainty hold remains durable */ }
+      }
+    }
+    if (state === "completed" || state === "failed" || state === "needs_review" && remoteId(peer)) { this.refreshRecoveryHold(peer); void this.drain(peer); }
     this.onQueues?.();
   }
 
   private refreshRecoveryHold(peer: PeerId): void {
     if (!this.journal) return;
     // Live accepted notifications are awaiting explicit correlation, not crash recovery.
-    const blocked = this.journal.list(peer).some((r) => (r.state === "needs_review" && !remoteId(peer)) || (["dispatching", "accepted"].includes(r.state) && this.activeDeliveries.get(r.id) !== peer));
+    const blocked = this.journal.list(peer).some((r) => (r.state === "needs_review" && (!remoteId(peer) || r.originals.some(isInvocationKind))) || (["dispatching", "accepted"].includes(r.state) && this.activeDeliveries.get(r.id) !== peer));
     if (blocked) this.recoveryHeldPeers.add(peer); else this.recoveryHeldPeers.delete(peer);
   }
 
@@ -1193,6 +1199,7 @@ export class Bus {
     if (this.remoteQueueRooms.get(peer) !== source.remoteRoom || this.remoteQueueMembers.get(peer) !== source.remoteMember) return false;
     const row = this.journal.get(deliveryId);
     if (!row || row.peer !== peer || !["needs_review", "dispatching", "accepted"].includes(row.state) || row.originals.length !== 1 || row.originals[0]?.to?.includes(peer) !== true || this.journal.resolution(deliveryId)) return false;
+    if (row.state === "needs_review" && row.originals.some(isInvocationKind)) return false;
     const activeOwner = this.activeDeliveries.get(deliveryId);
     if (activeOwner !== undefined && activeOwner !== peer) return false;
     try { if (currentGuard() !== true) return false; } catch { return false; }
@@ -1210,6 +1217,9 @@ export class Bus {
     for (const env of row.originals) {
       this.attempts.delete(`${peer}:${env.id}`);
       this.remoteQueueExpires.get(peer)?.delete(env.id);
+    }
+    if (row.state !== "needs_review") for (const env of row.originals) if (isInvocationKind(env)) {
+      try { this.onInvocationReceipt?.(env.id, outcome); } catch { /* the durable room receipt remains settled */ }
     }
     this.refreshRecoveryHold(peer);
     this.emit({ t: "remote_delivery_settled", peer, deliveryId: row.id, outcome });
@@ -1338,6 +1348,7 @@ export class Bus {
     if (!journal || !this.remoteSendAllowed(source)) return false;
     const row = journal.get(deliveryId), env = row?.originals[0], expiry = env && this.remoteQueueExpires.get(peer)?.get(env.id);
     if (!row || row.peer !== peer || !["dispatching", "accepted", "needs_review"].includes(row.state) || row.originals.length !== 1 || env?.to?.includes(peer) !== true || journal.resolution(deliveryId) || !env || expiry === undefined || expiry <= Date.now()) return false;
+    if (row.state === "needs_review" && row.originals.some(isInvocationKind)) return false;
     if (state === "needs_review") return false;
     if ([...(this.queues.get(peer) ?? [])].some(item => item.id === env.id)) return false;
     if ([...this.activeDeliveries].some(([id, owner]) => owner === peer && id !== deliveryId)) return false;

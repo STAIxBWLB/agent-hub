@@ -24,6 +24,50 @@ test("journal survives a reopen and marks unsettled delivery for review", () => 
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("restart preserves only active remote chat deliveries with validated unexpired room metadata", () => {
+  const { dir, journal } = open(), now = Date.now();
+  const cases = [
+    { peer: "codex@hub-a", state: "dispatching" as const, kind: "chat" as const, bound: true, expiry: now + 60_000, resumable: true },
+    { peer: "kimi@hub-a", state: "accepted" as const, kind: "chat" as const, bound: true, expiry: now + 60_000, resumable: true },
+    { peer: "pi@hub-a", state: "dispatching" as const, kind: "chat" as const, bound: false, expiry: now + 60_000, resumable: false },
+    { peer: "qwen@hub-a", state: "accepted" as const, kind: "chat" as const, bound: true, expiry: undefined, resumable: false },
+    { peer: "agy@hub-a", state: "dispatching" as const, kind: "chat" as const, bound: true, expiry: now - 1, resumable: false },
+    { peer: "jcode@hub-a", state: "accepted" as const, kind: "invocation" as const, bound: true, expiry: now + 60_000, resumable: false },
+    { peer: "codex", state: "dispatching" as const, kind: "chat" as const, bound: false, expiry: undefined, resumable: false },
+  ];
+  const rows = cases.map(row => ({ ...row, env: newEnvelope(row.kind === "invocation" ? "hub" : "user", `active ${row.peer}`, {
+    to: [row.peer], ...(row.kind === "invocation" ? { kind: "invocation" as const } : {}),
+  }) }));
+  const rooms = Object.fromEntries(rows.filter(row => row.bound).map(row => [row.peer, `room-${row.peer}`]));
+  const members = Object.fromEntries(rows.filter(row => row.bound).map((row, index) => [row.peer, String(index + 1).padStart(64, "0")]));
+  const expiries = Object.fromEntries(rows.filter(row => row.expiry !== undefined).map(row => [row.peer, { [row.env.id]: row.expiry! }]));
+  const snapshot = {
+    schemaVersion: 1 as const,
+    queues: Object.fromEntries(rows.map(row => [row.peer, []])),
+    prefaces: {}, seen: [], attempts: {}, withdrawn: [],
+    remoteQueueRooms: rooms, remoteQueueMembers: members, remoteQueueExpires: expiries,
+  };
+  let reopened: DeliveryJournal | undefined;
+  try {
+    journal.persistBus(snapshot, []);
+    const before = new Map<string, number>();
+    for (const row of rows) {
+      const delivery = journal.createDelivery({ id: `delivery-${row.peer}`, peer: row.peer, state: row.state, createdAt: row.env.ts, originals: [row.env], out: [row.env] });
+      before.set(delivery.id, delivery.revision);
+    }
+    journal.close();
+    reopened = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "reopened" });
+    for (const row of cases) {
+      const id = `delivery-${row.peer}`, expected = row.resumable ? row.state : "needs_review";
+      expect(reopened.get(id)?.state).toBe(expected);
+      expect(reopened.get(id)?.revision).toBe(before.get(id)! + (row.resumable ? 0 : 1));
+      if (!row.resumable) expect(reopened.get(id)?.reason).toBe("daemon stopped during delivery");
+    }
+  } finally {
+    journal.close(); reopened?.close(); rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("resolution requires the observed revision and is idempotent", () => {
   const { dir, journal } = open();
   const env = newEnvelope("user", "work");

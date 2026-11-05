@@ -1278,15 +1278,16 @@ exposed local peer's queue**. It does not mean native or model execution. Person
 views say **completed (admitted)**. Broker `stored` means accepted ciphertext
 only; a transport retirement ACK is not application completion.
 
-Schema3 of the private `rooms.db` migrates schema1/2 without replacing identity,
+Schema5 of the private `rooms.db` migrates schema1 through 4 without replacing identity,
 pins, counters, floors or retained traffic. A receiver commits its crypto inbox,
 then application `pending -> dispatching` before publishing into the separate
 Bus journal. A crash or failure in that cross-DB publication window becomes
-`needs_review`, with no automatic republish or fabricated receipt. Sender
-`dispatching`/`accepted` rows become `needs_review` at restart. A same-process
-reconnect drains never-handed offline queues once. A late signed receipt is kept
-as evidence on `needs_review` and shown with the person's disposition view; it
-never auto-settles. Known safe refusals retain the Bus's existing poison policy.
+`needs_review`, with no automatic receiver republish or fabricated receipt.
+Sender `dispatching`/`accepted` rows recover from validated durable intent under
+the same application and delivery ids, retaining their original queue expiry.
+A valid late signed receipt may settle an unresolved sender hold; person
+dispositions and invalidated recipient bindings remain authoritative. Signed
+remote safe refusals are terminal; native poison-envelope policy is unchanged.
 
 Signed seq/floors are the permanent primary replay protection. Duplicate seqs
 are retired without a second admission; a known identical completed application
@@ -1310,16 +1311,17 @@ Offline Bus queues count toward the 200-per-room ceiling before transport starts
 `hub_send` refuses beyond it. Original host deadlines survive handoff and restart.
 Unknown legacy deadlines fail closed to `needs_review`. Machine-local
 `rooms.ack_timeout_s` defaults to 600 (1..86,400); `rooms.queue_ttl_h` defaults to
-24 (1..168). A single deadline-driven host timer handles ack/queue expiry. No
-uncertain work is silently retried. Explicit terminal-history retries without
+24 (1..168). A single deadline-driven host timer handles ACK retries and queue
+expiry. Only validated durable sender intent is retried automatically; missing
+or corrupt local evidence remains held. Explicit terminal-history retries without
 recipient proof refuse; the person can author a fresh message deliberately.
 An expired or missing original enqueue deadline also refuses a person retry
 before any disposition is recorded; a retry never invents a fresh TTL.
 
 The ACK deadline starts at durable application handoff, before a broker `stored`
-reply, and is never extended by that reply. An unstored frame therefore becomes
-`needs_review` within the same ACK timeout instead of holding the peer for the
-queue TTL. Known pre-admission capacity or journal-unavailable refusals retain
+reply, and is never extended by that reply. Its expiry schedules another attempt
+under the same application id, without resetting the original queue TTL. Queue
+expiry or a permanent refusal ends automatic sending. Known pre-admission capacity or journal-unavailable refusals retain
 their pending plaintext for the next online/disposition retry without preventing
 later room packets and receipts from being processed. Status reads apply no
 disposition. Settled chat plaintext rows are pruned independently of presence
