@@ -639,7 +639,20 @@ export class RoomLink {
     const digest = this.current(session).current.digest;
     const allowed = () => this.publicationCurrent(session, digest) && current();
     let queueStarted = false;
-    try { return await this.serialSend(async () => {
+    try {
+      let presenceWork: Promise<void> | undefined;
+      // A chat is the transport barrier for earlier observations. Receipts keep
+      // their durable-commit/ACK path and do not wait behind a new observation.
+      if (message.type === "chat" && this.republish) {
+        clearTimeout(this.republish); this.republish = undefined;
+        presenceWork = this.publishPresence();
+        // It may fail before reaching the serial lane. Observe rejection now;
+        // the reserved chat slot still awaits the original error below.
+        void presenceWork.catch(() => undefined);
+      }
+      // Reserve this chat's FIFO slot before yielding to the earlier observation.
+      return await this.serialSend(async () => {
+      if (presenceWork) await presenceWork;
       if (!allowed()) fail("state_changed");
       if (metadata && (session.outbound.length >= LIMITS.packets || session.outboundBytes + plaintext.byteLength > LIMITS.queuedBytes
         || session.ws.bufferedAmount > LIMITS.backpressure)) throw new RoomNotSentError();
@@ -695,6 +708,9 @@ export class RoomLink {
     const session = this.session;
     if (!session || session.phase !== "ready") return;
     if (this.publishing) { this.publishDirty = true; return; }
+    // Keep the already scheduled coalesced snapshot. Cancelling it on every
+    // state flip turns an awaited burst back into one durable seal per call.
+    if (this.republish && !this.replyPresence && !this.forcePresenceRequest) { this.publishDirty = true; return; }
     if (this.republish) clearTimeout(this.republish);
     this.republish = undefined; this.publishDirty = false;
     const forceRequest = this.forcePresenceRequest;
