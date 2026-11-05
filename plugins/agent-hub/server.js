@@ -13658,7 +13658,9 @@ var init_local_worker = __esm(() => {
               clearInterval(alive);
               throw error;
             }
-            const running = (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
+            const taskToolName = name.replace(/^mcp__[^ ]+__/, "");
+            const reviewNoteWrite = taskToolName === "hub_remember" || taskToolName === "hub_task_propose";
+            const running = reviewScope.excluded && reviewNoteWrite ? Promise.resolve("error: anchored review in this batch; save notes in a later turn") : (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
             const output = await running.finally(() => clearInterval(alive));
             if (turn !== this.turn)
               return "";
