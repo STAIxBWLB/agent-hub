@@ -1,7 +1,7 @@
 # Rooms presence producer cost
 
 Refs #1204, CI task 742. Historical macOS comparisons and Linux candidate
-measurements are recorded below. macOS candidate acceptance is still pending.
+measurements and targeted hosted macOS candidate acceptance are recorded below.
 
 ## Failed jobs and revision attribution
 
@@ -113,15 +113,40 @@ regression file copied into an isolated checkout:
 - The existing seed classifier accepted both as assertion failures, not timeouts
   or runtime diagnostics.
 
+## Hosted macOS candidate acceptance
+
+The [candidate job](https://github.com/STAIxBWLB/agent-hub/actions/runs/42110940560/job/127537997562)
+passed on Darwin arm64, Bun 1.4.2 at
+`e269d5c3be4a81fbd95220d760fb1f104fae3e3f`:
+
+- The unchanged, unprofiled AC1 test passed in 787.72 ms under its original
+  20-second guard.
+- All 19 focused close, coalescing and unchanged backpressure tests passed,
+  with 210 expectations and no failures.
+- Natural candidate profile: whole test 692.06 ms, flip phase 2 ms, no sequence
+  reservations or Store transactions in that phase.
+- Controlled idle-entry candidate profile: whole test 783.51 ms, flip phase
+  114 ms, six reservations and 26 Store transactions in that phase.
+- The explicitly fetched historical 924 head passed naturally in 669.40 ms,
+  but controlled idle entry took 18,277.53 ms (17,679 ms in the flip phase,
+  1,000 reservations, 2,883 Store transactions). Its transaction time was
+  2,082 ms, overlapping the 1,078 ms sequence-reservation time.
+
+This confirms the scheduling-dependent cause and candidate improvement on
+macOS without changing an assertion or timeout. The job is targeted evidence,
+not a full PR gate. Production source is unchanged since 11e312; subsequent
+changes add evidence and remove the temporary diagnostic workflows.
+
 ## Evidence limits
 
 - Latest focused source check at 11e312 passed 12 tests, 0 failed, 94 expectations.
   Earlier 2452 passed 18 focused/backpressure tests and the controlled AC1 case.
-- The reference run above measured b7, b5c and 3185, not 924. Its temporary
-  workflow is diagnostic-only and is not retained in the final change.
+- The first reference run measured b7, b5c and 3185; the successful candidate
+  job additionally measured the full 924 SHA. Neither temporary workflow is
+  retained in the final change.
 - The original failed macOS jobs did not record per-flip counters. Attribution
   of those exact executions to this reproduced path remains an inference;
-  hosted reference measurements establish the slow path, not candidate
-  acceptance. Linux timing is not macOS acceptance.
+  hosted reference measurements establish the slow path; the separate candidate
+  job supplies targeted macOS acceptance. Linux timing alone is not macOS acceptance.
 - No original test assertion or timeout was changed. No Mac-local gate, live
   room enrollment, native-account acceptance or release is claimed.
