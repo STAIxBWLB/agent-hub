@@ -776,3 +776,75 @@ test("#733 AC2: a descriptor change that arrives while a catch-up pass is runnin
   release();
   await until(() => caught(ids[0]!) && caught(ids[1]!), "C, queued behind the held pass, was caught up when it ended", 10_000);
 }, 60_000);
+
+// #734 (agent-hub#1203 T3): diagnostics and repair, over two real daemons. A target's status.json is edited the way a version skew or a restarted hub would leave it, and a daemon rewrites that file
+// on every bus event, so the edit is held in place for the length of the test.
+const holdStatus = (p: Project, edit: (status: any) => any) => {
+  const file = join(p.stateDir, "status.json");
+  const apply = () => { try { const now = JSON.parse(readFileSync(file, "utf8")); const next = edit(now); if (JSON.stringify(next) !== JSON.stringify(now)) writeFileSync(file, JSON.stringify(next)); } catch { /* mid-rewrite */ } };
+  const timer = setInterval(apply, 5); cleanup.push(() => clearInterval(timer)); apply();
+  return () => clearInterval(timer);
+};
+const logOf = (p: Project) => { try { return readFileSync(join(p.stateDir, "hub.log"), "utf8"); } catch { return ""; } };
+
+test("#734 AC7: a target whose wire version this hub cannot speak is named older_target with the upgrade step, and nothing is filed or recorded", async () => {
+  const { a, b } = await pair();
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  holdStatus(b, status => ({ ...status, protocol: 99, protocolMin: 99, protocolMax: 99 }));       // a hub from the future: no shared protocol
+  const refused = await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for a newer B" });
+  expect(refused.ok).toBe(false);
+  expect(String(refused.error)).toContain("another wire version"); expect(String(refused.error)).toContain("ahub upgrade"); expect(String(refused.error)).not.toContain("run `ahub up`");
+  const readB = boardOf(b), readA = boardOf(a);
+  try { expect(readB.board.list()).toEqual([]); expect(readA.board.handoffOutbound()).toEqual([]); } finally { readB.close(); readA.close(); }
+  expect(logOf(a)).toContain(`handoff to ${b.id} failed: wire version differs`);                  // one named line in the origin's log
+}, 60_000);
+
+test("#734 AC7: a hub that is not the instance the registry names is mismatch, not \"not running\"", async () => {
+  const { a, b } = await pair();
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  holdStatus(b, status => ({ ...status, instanceId: "i-some-other-instance" }));                  // another instance answers on B's descriptor
+  const refused = await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for a swapped B" });
+  expect(refused.ok).toBe(false);
+  expect(String(refused.error)).toContain("not the instance"); expect(String(refused.error)).toContain("ahub projects"); expect(String(refused.error)).not.toContain("run `ahub up`");
+}, 60_000);
+
+test("#734 AC6: --list shows each handoff's age and reachability, with the cause once; a target that is gone reads unreachable and --sync refreshes it", async () => {
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 3_600_000 } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const sent = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" }));
+  const list = async () => body(await task(a.person, "hub_task_handoffs")).handoffs as any[];
+  expect(await list()).toMatchObject([{ remoteProject: b.id, remoteTask: sent.task, reach: "reachable" }]);
+  expect((await list())[0].age).toMatch(/^\d+s$/); expect((await list())[0].ageMs).toBeGreaterThanOrEqual(0);
+  const restore = hideBoth(b);                                                                     // B's hub cannot be reached: no control token
+  const down = (await list())[0];
+  expect(down).toMatchObject({ reach: "unreachable" }); expect(String(down.cause)).toContain("ahub up");
+  // a sync while B is down logs once and leaves the row alone; once B is back it learns the state
+  { const codex = new FixturePeer("codex"); b.daemon.bus.add(codex); await codex.start(); }
+  const synced = await task(a.person, "hub_task_handoff_sync");
+  expect(synced.ok, JSON.stringify(synced)).toBe(true); expect(body(synced).synced).toBe(true);
+  expect(logOf(a)).toContain(`handoff catch-up of ${b.id} skipped: its hub is not running`);
+  restore();
+  expect(body(await task(a.person, "hub_task_handoff_sync")).handoffs[0]).toMatchObject({ reach: "reachable" });
+}, 60_000);
+
+test("#734 AC6: a project the registry no longer holds shows moved, logs once, and is never asked", async () => {
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 400, handoffWatchMs: 3_600_000, handoffLogWindowMs: 3_600_000 } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const sent = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for a B that moves" }));
+  const registry = new Registry(join(process.env.AGENTHUB_HOME!, "registry.db"));
+  try { (registry as any).db.run("DELETE FROM projects WHERE id = ?", [b.id]); } finally { registry.close?.(); }          // B's root moved or was removed: its id is a hash of the old root
+  const row = (body(await task(a.person, "hub_task_handoffs")).handoffs as any[])[0];
+  expect(row).toMatchObject({ remoteTask: sent.task, reach: "moved" }); expect(String(row.cause)).toContain("project not registered (moved?)");
+  await Bun.sleep(1_300);                                                                          // several catch-up periods
+  const lines = logOf(a).split("\n").filter(line => line.includes(`handoff catch-up of ${b.id} skipped: project not registered (moved?)`));
+  expect(lines).toHaveLength(1);                                                                   // once, not once per period
+}, 60_000);
+
+test("#734 AC7: a sync from an agent that is not the conductor is refused; the person's is not", async () => {
+  const { a, b } = await pair();
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" });
+  const agent = await task(planner, "hub_task_handoff_sync");
+  expect(agent.ok).toBe(false); expect(String(agent.error)).toContain("person's or the conductor's");
+  expect((await task(a.person, "hub_task_handoff_sync")).ok).toBe(true);
+}, 60_000);

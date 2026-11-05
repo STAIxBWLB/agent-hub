@@ -2144,6 +2144,15 @@ export class Tasks {
     if (by !== USER && !this.d.roles?.[by]?.includes("planner") && this.d.operational?.(by) !== true) throw new HandoffRefusal("no_authority", "a handoff needs the person, a configured planner or the conductor");
   }
 
+  /**
+   * #734 (AC6): who may ask the origin to catch up now (`ahub task handoff --sync`). The person, or the conductor acting on the person's instruction: the same bar as `handoffOutAuthority`
+   * without the planner role, because a sync starts no work and files nothing, but it does ask other projects' hubs, which a planner agent has no need to trigger.
+   */
+  handoffSyncAuthority(by: PeerId): void {
+    requireLocalTaskPeer(by);
+    if (by !== USER && this.d.operational?.(by) !== true) throw new HandoffRefusal("no_authority", "a handoff sync is the person's or the conductor's: ask them to run `ahub task handoff --sync`");
+  }
+
   /** ORIGIN side: remember what was handed over, once the target answered with its task id. */
   handoffSent(by: PeerId, target: { projectId: string }, remoteTask: number, title: string, localTask?: number): void {
     // #731: a row that already exists is never reset to "proposed": a replayed answer can arrive after the target's own event for the same task was recorded.

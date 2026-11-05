@@ -19,7 +19,17 @@ export function renderHandoffReceipt(receipt: unknown, columns?: number): Span[]
 export function renderHandoffs(data: unknown, columns?: number): Span[][] {
   const rows: any[] = Array.isArray((data as any)?.handoffs) ? (data as any).handoffs : [];
   if (!rows.length) return [[s("no handoffs: hand work that belongs to another project with `ahub task handoff --project <root|id> <title...>`", "muted")]];
-  return [...heading(`Handoffs (${rows.length})`, columns), ...grid(["PROJECT", "TASK", "STATE", "PR", "BY", "TITLE"], rows.map(row => [
+  // #734: a row from a hub that has no age or reach (an older daemon) shows "-" for both, never a guess.
+  const reach = (row: any): Span => {
+    const word = row.reach === "reachable" || row.reach === "unreachable" || row.reach === "moved" ? row.reach : undefined;
+    if (word === undefined) return s("-", "muted");
+    return s(word === "reachable" ? "reachable" : word === "moved" ? "moved" : "unreachable", word === "reachable" ? "success" : "attention");
+  };
+  const down = rows.filter(row => row.reach === "unreachable" || row.reach === "moved" ? typeof row.cause === "string" : false);
+  return [...heading(`Handoffs (${rows.length})`, columns), ...grid(["PROJECT", "TASK", "STATE", "AGE", "REACH", "PR", "BY", "TITLE"], rows.map(row => [
     s(String(row.remoteProject ?? "?").slice(0, 24), "issueRef"), s(`#${num(row.remoteTask)}`, "taskRef"), s(String(row.state ?? "?"), STATE_TONE[row.state]),
-    s(typeof row.pr === "number" ? `#${row.pr}` : "-"), s(String(row.originPeer ?? "?")), s(String(row.title ?? ""))]), columns)];
+    s(typeof row.age === "string" ? row.age : "-", "muted"), reach(row),
+    s(typeof row.pr === "number" ? `#${row.pr}` : "-"), s(String(row.originPeer ?? "?")), s(String(row.title ?? ""))]), columns),
+    // The cause of each unreachable or moved target, once per target and with its next step, so the column stays narrow and the person still learns what to run.
+    ...[...new Map(down.map(row => [String(row.remoteProject), String(row.cause)])).entries()].map(([project, cause]) => [s(`${String(project).slice(0, 24)}: ${cause.slice(0, 200)}`, "attention")])];
 }

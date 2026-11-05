@@ -13,7 +13,7 @@ export const HANDOFF_FIELDS = Object.freeze(["project", "title", "class", "detai
 export const HANDOFF_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export type HandoffRefusalCode =
-  | "invalid" | "too_large" | "unregistered" | "same_project" | "not_running" | "older_target" | "pii_turn" | "pii_task" | "no_authority" | "duplicate" | "outcome_unknown";
+  | "invalid" | "too_large" | "unregistered" | "same_project" | "not_running" | "older_target" | "pii_turn" | "pii_task" | "no_authority" | "duplicate" | "outcome_unknown" | "mismatch";
 
 /** A refusal always names its reason, and for the person-fixable ones the action. The code is for tests and logs, the message for the caller. */
 export class HandoffRefusal extends Error {
@@ -119,6 +119,56 @@ export function resolveTarget(name: string, projects: readonly RegisteredProject
   if (!match) throw new HandoffRefusal("unregistered", "that project is not in this machine's agent-hub registry; run `ahub projects` to see the registered ones, or `ahub up` in that project once");
   if (match.id === self.id || match.root === self.root) throw new HandoffRefusal("same_project", "that is this project: a task for this project goes through hub_task_propose");
   return match;
+}
+
+/**
+ * #734 (agent-hub#1203 H8): a failed connection to a target hub, named by its cause. The control client throws an `Error` with a `code`: 4426 (the wire versions share no
+ * protocol), 4404 (the hub or instance answering is not the one asked for), or a connect code (`AHUB_CONNECT_TIMEOUT`, `AHUB_CONNECT_UNREACHABLE`) or a socket close code. Each cause has
+ * its own next step, and none is "run `ahub up`" unless the hub really is not running: a version skew is fixed by upgrading, an instance mismatch by asking the right hub.
+ * Pure: the error's `code` and nothing from its message is read, so a target's text never decides a branch.
+ */
+export function handoffConnectFailure(error: unknown, target: { id: string; root: string }): { code: HandoffRefusalCode; reach: "unreachable"; cause: string; message: string } {
+  const code = typeof (error as { code?: unknown })?.code === "number" || typeof (error as { code?: unknown })?.code === "string" ? (error as { code: number | string }).code : undefined;
+  if (code === 4426) return { code: "older_target", reach: "unreachable", cause: "wire version differs",
+    message: `the hub of ${target.id} speaks another wire version than this one: upgrade whichever is older (\`ahub upgrade\` in ${target.root}, and the global CLI with \`bun add -g @staix/agent-hub\`), then hand the task off again` };
+  if (code === 4404) return { code: "mismatch", reach: "unreachable", cause: "another hub or instance answered",
+    message: `the hub answering for ${target.root} is not the instance this project's registry names (it was restarted, or another project took its port): run \`ahub projects\` to see what is registered, and \`ahub up\` in ${target.root} if it is not running` };
+  if (code === "AHUB_CONNECT_TIMEOUT") return { code: "not_running", reach: "unreachable", cause: "no answer in time",
+    message: `the hub of ${target.id} did not answer in time: it may be busy or stuck; check \`ahub status\` in ${target.root}, then hand the task off again (handoffs are not queued)` };
+  return { code: "not_running", reach: "unreachable", cause: "not running",
+    message: `the hub of ${target.id} did not answer; run \`ahub up\` in ${target.root}, then hand the task off again (handoffs are not queued)` };
+}
+
+/** One word for where a handoff row's target stands, shown by `ahub task handoff --list`. `moved` is a project id the registry no longer holds: its root changed or it was removed, and the id is a hash of the root. */
+export type HandoffReach = { reach: "reachable" } | { reach: "unreachable"; cause: string } | { reach: "moved"; cause: string };
+export function handoffReach(input: { registered: boolean; descriptor?: TargetDescriptor | undefined; lastFailure?: string | undefined }): HandoffReach {
+  if (!input.registered) return { reach: "moved", cause: "project not registered (moved?): run `ahub projects`, and `ahub up` in its new root" };
+  if (!input.descriptor) return { reach: "unreachable", cause: input.lastFailure ?? "not running: run `ahub up` in its root" };
+  if (!input.descriptor.features?.includes("task_handoff")) return { reach: "unreachable", cause: "too old for handoffs: upgrade it with `ahub upgrade`" };
+  return input.lastFailure ? { reach: "unreachable", cause: input.lastFailure } : { reach: "reachable" };
+}
+
+/** A person-readable age ("45s", "12m", "3h", "5d") for a row last updated `ms` ago. A negative or non-finite age reads "-": a clock that moved is not a duration. */
+export function handoffAge(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "-";
+  const s = Math.floor(ms / 1000);
+  if (s < 90) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 90) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
+}
+
+/**
+ * #734 (H7): at most one log line per target and cause in each window, so a target that stays down for a day writes a line per window and not a line per notify or catch-up. The state is a
+ * plain map the caller owns (one per daemon), bounded by `max` keys: past it the oldest key is forgotten, which can only let one extra line through, never suppress a new cause.
+ */
+export function handoffLogGate(seen: Map<string, number>, key: string, now: number, windowMs: number, max = 256): boolean {
+  const last = seen.get(key);
+  if (last !== undefined && now - last < windowMs && now >= last) return false;
+  seen.delete(key); seen.set(key, now);
+  while (seen.size > max) seen.delete(seen.keys().next().value as string);
+  return true;
 }
 
 /** What the target's own status descriptor says. A daemon that is not running, or does not know the handoff, is refused with the person's action. */

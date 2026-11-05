@@ -3,7 +3,7 @@ import { supersededDeliveryReason } from "../src/hub/delivery-superseded.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { parseHandoffArgs } from "../src/cli/handoff-args.ts";
 import { HANDOFF_CONNECT_MS, HANDOFF_CONTROL_TIMEOUT_MS, HANDOFF_LOOKUP_CONNECT_MS, HANDOFF_LOOKUP_REQUEST_MS, HANDOFF_REQUEST_MS, controlRequestTimeout } from "../src/hub/control-client.ts";
-import { HANDOFF_APPROVED_GRACE_MS, HANDOFF_KEY, HANDOFF_LIMITS, HANDOFF_STATES_CHUNK, handoffCatchUpRow, handoffChunks, HandoffRefusal, type HandoffRefusalCode, checkTarget, handoffOutcomeUnknown, handoffRequestDigest, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, resolveTarget } from "../src/hub/handoff.ts";
+import { handoffAge, handoffConnectFailure, handoffLogGate, handoffReach, HANDOFF_APPROVED_GRACE_MS, HANDOFF_KEY, HANDOFF_LIMITS, HANDOFF_STATES_CHUNK, handoffCatchUpRow, handoffChunks, HandoffRefusal, type HandoffRefusalCode, checkTarget, handoffOutcomeUnknown, handoffRequestDigest, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, resolveTarget } from "../src/hub/handoff.ts";
 
 const refusal = (run: () => unknown): HandoffRefusal => { try { run(); } catch (error) { if (error instanceof HandoffRefusal) return error; throw error; } throw new Error("expected a refusal"); };
 const good = { project: "p_aaaa", title: "Raise the exact pin", class: "implement", detail: "to 0.16.0", paths: ["package.json", "bun.lock"], issue: 12 };
@@ -223,4 +223,58 @@ test("#733 task ids go to the target in chunks of at most 200, in order, none dr
   expect(chunks.flat()).toEqual(ids);
   expect(handoffChunks([])).toEqual([]);
   expect(handoffChunks([7])).toEqual([[7]]);
+});
+
+// #734 (agent-hub#1203 T3, H6 to H8): failures named by cause, reachability, age and the log gate. Pure.
+const target = { id: "p_b", root: "/tmp/b-project" };
+const failure = (code: unknown) => handoffConnectFailure(Object.assign(new Error("x"), { code }), target);
+test("#734 AC7 a wire-version refusal (4426) is older_target with the upgrade step, never \"run ahub up\"", () => {
+  const f = failure(4426);
+  expect(f.code).toBe("older_target"); expect(f.reach).toBe("unreachable");
+  expect(f.message).toContain("ahub upgrade"); expect(f.message).toContain("/tmp/b-project"); expect(f.message).not.toContain("run `ahub up`");
+});
+test("#734 AC7 an instance-pin refusal (4404) is mismatch and says which hub answered, not that the hub is not running", () => {
+  const f = failure(4404);
+  expect(f.code).toBe("mismatch");
+  expect(f.message).toContain("ahub projects"); expect(f.message).toContain("not the instance");
+});
+test("#734 only an unreachable hub and a timeout say \"not running\"; a timeout names a stuck hub and not `ahub up`", () => {
+  expect(failure("AHUB_CONNECT_UNREACHABLE")).toMatchObject({ code: "not_running", cause: "not running" });
+  expect(failure("AHUB_CONNECT_UNREACHABLE").message).toContain("ahub up");
+  const slow = failure("AHUB_CONNECT_TIMEOUT");
+  expect(slow).toMatchObject({ code: "not_running", cause: "no answer in time" }); expect(slow.message).toContain("ahub status"); expect(slow.message).not.toContain("run `ahub up`");
+  expect(handoffConnectFailure(new Error("plain"), target).cause).toBe("not running");        // an error with no code is the generic case
+  expect(handoffConnectFailure(undefined, target).code).toBe("not_running");
+});
+test("#734 the failure is decided by the error's code, never by its message: a target's text cannot pick a branch", () => {
+  const forged = Object.assign(new Error("wire version mismatch 4426 4404 older"), { code: "AHUB_CONNECT_UNREACHABLE" });
+  expect(handoffConnectFailure(forged, target).code).toBe("not_running");
+  expect(handoffConnectFailure({ code: 4426, message: "run `ahub up`" }, target).message).not.toContain("run `ahub up`");
+  expect(failure(4426).message.length).toBeLessThan(400);                                          // fixed text, never echoing the error
+});
+test("#734 AC6 reachability: reachable, unreachable with a cause, and moved for a project the registry does not hold", () => {
+  const live = { features: ["task_handoff"] };
+  expect(handoffReach({ registered: true, descriptor: live })).toEqual({ reach: "reachable" });
+  expect(handoffReach({ registered: true })).toMatchObject({ reach: "unreachable", cause: expect.stringContaining("ahub up") });
+  expect(handoffReach({ registered: true, descriptor: { features: ["task_cancel"] } })).toMatchObject({ reach: "unreachable", cause: expect.stringContaining("ahub upgrade") });
+  expect(handoffReach({ registered: true, descriptor: live, lastFailure: "wire version differs" })).toEqual({ reach: "unreachable", cause: "wire version differs" });
+  const moved = handoffReach({ registered: false, descriptor: live });
+  expect(moved.reach).toBe("moved"); expect(moved).toMatchObject({ cause: expect.stringContaining("project not registered (moved?)") });   // the descriptor of a moved project is never trusted
+});
+test("#734 an age reads as seconds, minutes, hours or days, and a clock that moved reads \"-\"", () => {
+  expect(handoffAge(0)).toBe("0s"); expect(handoffAge(45_000)).toBe("45s"); expect(handoffAge(89_000)).toBe("89s");
+  expect(handoffAge(90_000)).toBe("1m"); expect(handoffAge(12 * 60_000)).toBe("12m"); expect(handoffAge(80 * 60_000)).toBe("80m"); expect(handoffAge(3 * 3_600_000)).toBe("3h");
+  expect(handoffAge(30 * 3_600_000)).toBe("30h"); expect(handoffAge(5 * 86_400_000)).toBe("5d");
+  expect(handoffAge(-1)).toBe("-"); expect(handoffAge(Number.NaN)).toBe("-"); expect(handoffAge(Infinity)).toBe("-");
+});
+test("#734 H7 the log gate lets one line per target and cause through each window, a new cause or window through again, and stays bounded", () => {
+  const seen = new Map<string, number>(), W = 1000;
+  expect(handoffLogGate(seen, "p_b|not running", 0, W)).toBe(true);
+  expect(handoffLogGate(seen, "p_b|not running", 500, W)).toBe(false);                             // same target and cause, inside the window
+  expect(handoffLogGate(seen, "p_b|wire version differs", 600, W)).toBe(true);                     // a new cause is a new line
+  expect(handoffLogGate(seen, "p_c|not running", 600, W)).toBe(true);                              // another target is its own
+  expect(handoffLogGate(seen, "p_b|not running", 1000, W)).toBe(true);                             // the window ended
+  expect(handoffLogGate(seen, "p_b|not running", 999, W)).toBe(true);                              // a clock that moved back lets one through, never silences it
+  for (let n = 0; n < 1000; n++) handoffLogGate(seen, `p_${n}|x`, 5000, W, 8);
+  expect(seen.size).toBeLessThanOrEqual(8);                                                        // bounded by max
 });

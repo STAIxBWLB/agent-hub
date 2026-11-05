@@ -166,7 +166,7 @@ import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, sta
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalPath, realPath, hubHome } from "./project.ts";
-import { HandoffRefusal, checkTarget, handoffCatchUpRow, handoffChunks, handoffOutcomeUnknown, parseHandoff, resolveTarget, handoffEventFor, type HandoffEvent } from "./handoff.ts";
+import { HandoffRefusal, checkTarget, handoffAge, handoffCatchUpRow, handoffChunks, handoffConnectFailure, handoffLogGate, handoffOutcomeUnknown, handoffReach, parseHandoff, resolveTarget, handoffEventFor, type HandoffEvent } from "./handoff.ts";
 import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, profileTaskTools, sessionTitleTools } from "./hub-tools.ts";
@@ -768,6 +768,8 @@ export interface DaemonOptions {
   handoffWatchMs?: number;
   /** Test seam (#733): awaited by each handoff catch-up pass once it has chosen its targets, so a test can hold a pass open while descriptors change. */
   handoffCatchUpHold?: () => Promise<void>;
+  /** Test seam (#734): the window in which one failed handoff notify or catch-up logs one line per target and cause, default 15 minutes. */
+  handoffLogWindowMs?: number;
   /** Test seam: how often the scheduled security-scan baseline checks whether a scan is due, default one hour (the configured `every_h` still decides). */
   securityScanEveryMs?: number;
   /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
@@ -4331,6 +4333,31 @@ export async function startDaemon(opts: DaemonOptions) {
     } catch { return false; }
   };
   /**
+   * #734 (AC6): the person's list of handoffs this project made, each with its age since the last report and whether its target can be reached now: `reachable`, `unreachable` with the cause
+   * (the last failure this hub logged, else what the registry and the target's descriptor say) or `moved` (the project id is not in the registry). Read from the registry and the descriptor
+   * files only: a list never opens a connection, so it answers at once and a slow target cannot hold it.
+   */
+  const handoffListView = () => {
+    const now = Date.now(), projects = registeredProjects(hubHome());
+    return tasks.handoffList().map(row => {
+      const project = projects.find(candidate => candidate.id === row.remoteProject);
+      const descriptor = project && readControl(project.stateDir);
+      const failure = handoffFailures.get(row.remoteProject);
+      const reach = handoffReach({ registered: project !== undefined, descriptor: descriptor && { ...(descriptor.features ? { features: descriptor.features } : {}) }, ...(failure ? { lastFailure: failure.cause } : {}) });
+      return { ...row, age: handoffAge(now - row.updatedAt), ageMs: Math.max(0, now - row.updatedAt), ...reach };
+    });
+  };
+  /**
+   * #734 (agent-hub#1203 H7): one log line per target and cause in each window (`handoffLogWindowMs`, 15 minutes), for a failed notify, catch-up or handoff. The cause is a fixed phrase
+   * (never a task title or the target's text), so a down target writes a line per window and not one per attempt. `handoffFailures` keeps the last cause per target, so `--list` can say why a
+   * target is unreachable without asking it again.
+   */
+  const handoffLogSeen = new Map<string, number>(), handoffFailures = new Map<string, { cause: string; at: number }>();
+  const handoffLog = (target: string, cause: string, line: string): void => {
+    handoffFailures.set(target, { cause, at: Date.now() });
+    if (handoffLogGate(handoffLogSeen, `${target}|${cause}`, Date.now(), opts.handoffLogWindowMs ?? 15 * 60_000)) log(line);
+  };
+  /**
    * #604 ORIGIN side. Order matters: the caller's authority and the PII gates run first (nothing has left this project), then the target is resolved from the machine registry and its own
    * status descriptor is read, and only then is the request sent. The target answers with the task id it created, which is recorded here. A refusal at any step leaves no row in either board.
    */
@@ -4349,15 +4376,20 @@ export async function startDaemon(opts: DaemonOptions) {
     const { project: _project, task: originTask, handoffKey: given, ...body } = request;
     const key = keyed ? given ?? randomUUID() : undefined;
     const requestMs = opts.handoffRequestMs ?? HANDOFF_REQUEST_MS;
-    const attempt = async (): Promise<{ reply: any } | { unreachable: true }> => {
+    const attempt = async (): Promise<{ reply: any } | { unreachable: unknown }> => {
       let client: ControlClient;
       try { client = await ControlClient.connect(target.stateDir, { role: "console", projectRoot: descriptor!.cwd ?? target.root }, HANDOFF_CONNECT_MS); }
-      catch { return { unreachable: true }; }
+      catch (error) { return { unreachable: error }; }
       try { return { reply: await client.request({ t: "task_handoff", origin: { projectId, peer: by, ...(originTask === undefined ? {} : { taskId: originTask }) }, request: key === undefined ? body : { ...body, handoffKey: key } }, requestMs) }; }
       finally { client.close(); }
     };
     const result = await attempt();
-    if ("unreachable" in result) throw new HandoffRefusal("not_running", `the hub of ${target.id} did not answer; run \`ahub up\` in ${target.root}, then hand the task off again (handoffs are not queued)`);
+    if ("unreachable" in result) {
+      // #734 (H8): a wire-version or instance-pin refusal is named for what it is, with the target's upgrade step, and never reported as "not running".
+      const failure = handoffConnectFailure(result.unreachable, target);
+      handoffLog(target.id, failure.cause, `handoff to ${target.id} failed: ${failure.cause}`);
+      throw new HandoffRefusal(failure.code, failure.message);
+    }
     // A timeout or a closed connection is not a refusal: the target may have written the task. With a key the same request is sent once more (the target answers a key it has with its task);
     // then the target is asked by key, and only then is the outcome reported as unknown, naming the key to retry with. The first attempt keeps running on the target after the origin stopped waiting, so
     // a refusal of the RESEND settles nothing about it (the resend's PII screen may refuse while the first one's still pending and later files the task): it is kept as a note, and the lookup still runs.
@@ -4420,13 +4452,15 @@ export async function startDaemon(opts: DaemonOptions) {
       try {
         const project = registeredProjects(hubHome()).find(candidate => candidate.id === origin.projectId);
         const descriptor = project && readControl(project.stateDir);
-        if (!project || !descriptor || !descriptor.features?.includes("task_handoff")) return;
+        if (!project) { handoffLog(origin.projectId, "project not registered (moved?)", `handoff follow-back to ${origin.projectId} not sent: project not registered (moved?)`); return; }
+        if (!descriptor) { handoffLog(origin.projectId, "not running", `handoff follow-back to ${origin.projectId} not sent: its hub is not running (its next catch-up reads the state)`); return; }
+        if (!descriptor.features?.includes("task_handoff")) { handoffLog(origin.projectId, "too old for handoffs", `handoff follow-back to ${origin.projectId} not sent: its hub is too old for handoffs`); return; }
         const sequenced = descriptor.features.includes("task_handoff_seq");
         if (!sequenced && (event === "changes_requested" || event === "reopened")) return;
         const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: descriptor.cwd ?? project.root }, 3000);
         try { await client.request({ t: "task_handoff_event", event: { projectId, remoteTask: task.id, state: event, ...(sequenced ? { seq } : {}), ...(typeof task.sdlc?.pr === "number" ? { pr: task.sdlc.pr } : {}), ...(handoffHead(task) ? { head: handoffHead(task) } : {}) } }, 5000); }
         finally { client.close(); }
-      } catch { /* the origin is down or refused: the origin's next catch-up reads the target's state */ }
+      } catch (error) { handoffLog(origin.projectId, handoffConnectFailure(error, { id: origin.projectId, root: origin.projectId }).cause, `handoff follow-back to ${origin.projectId} failed: ${handoffConnectFailure(error, { id: origin.projectId, root: origin.projectId }).cause} (its next catch-up reads the state)`); }
     })();
   };
   /**
@@ -4439,19 +4473,27 @@ export async function startDaemon(opts: DaemonOptions) {
   // new descriptor never loses its catch-up to the guard (it would otherwise wait for the next period, which is the delay this exists to remove).
   let handoffQueuedAll = false;
   const handoffQueued = new Set<string>();
-  const handoffCatchUp = async (only?: ReadonlySet<string>): Promise<void> => {
+  /** The pass that is running, so an awaited sync (`ahub task handoff --sync`, #734) can wait for it and then run its own: a sync answers with the state AFTER a pass that began when it was asked. */
+  let handoffRunning: Promise<void> | undefined;
+  const handoffCatchUp = async (only?: ReadonlySet<string>, wait = false): Promise<void> => {
     if (stopping) return;
-    if (handoffCatchUpRunning) { if (only === undefined) handoffQueuedAll = true; else for (const remote of only) handoffQueued.add(remote); return; }
+    if (handoffCatchUpRunning) {
+      if (wait) { await handoffRunning?.catch(() => {}); return handoffCatchUp(only, wait); }
+      if (only === undefined) handoffQueuedAll = true; else for (const remote of only) handoffQueued.add(remote);
+      return;
+    }
     handoffCatchUpRunning = true;
     let scope = only;
-    try {
+    const run = (async () => {
       for (;;) {
         await handoffCatchUpPass(scope);
         if (stopping || !handoffQueuedAll && !handoffQueued.size) return;
         scope = handoffQueuedAll ? undefined : new Set(handoffQueued);
         handoffQueuedAll = false; handoffQueued.clear();
       }
-    } finally { handoffCatchUpRunning = false; }
+    })();
+    handoffRunning = run;
+    try { await run; } finally { handoffCatchUpRunning = false; handoffRunning = undefined; }
   };
   const handoffCatchUpPass = async (only?: ReadonlySet<string>): Promise<void> => {
     const now = Date.now();
@@ -4466,7 +4508,9 @@ export async function startDaemon(opts: DaemonOptions) {
       try {
         const project = registeredProjects(hubHome()).find(candidate => candidate.id === remote);
         const descriptor = project && readControl(project.stateDir);
-        if (!project || !descriptor?.features?.includes("task_handoff")) continue;
+        if (!project) { handoffLog(remote, "project not registered (moved?)", `handoff catch-up of ${remote} skipped: project not registered (moved?)`); continue; }
+        if (!descriptor) { handoffLog(remote, "not running", `handoff catch-up of ${remote} skipped: its hub is not running`); continue; }
+        if (!descriptor.features?.includes("task_handoff")) { handoffLog(remote, "too old for handoffs", `handoff catch-up of ${remote} skipped: its hub is too old for handoffs`); continue; }
         const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: descriptor.cwd ?? project.root }, 3000);
         try {
           for (const chunk of handoffChunks(ids)) {
@@ -4475,7 +4519,8 @@ export async function startDaemon(opts: DaemonOptions) {
             if (reply.ok && Array.isArray(reply.states)) tasks.handoffCaughtUp(remote, reply.states);
           }
         } finally { client.close(); }
-      } catch { /* that target is down or refused: it is asked again at the next pass */ }
+        handoffFailures.delete(remote);   // this target answered: whatever failed before is over
+      } catch (error) { const failure = handoffConnectFailure(error, { id: remote, root: remote }); handoffLog(remote, failure.cause, `handoff catch-up of ${remote} failed: ${failure.cause} (asked again at the next pass)`); }
     }
   };
   /** #733: a target that restarted, or moved to a new control port, is caught up at once instead of at the next period. The first reading of a target only records it (the start-up pass covers it). */
@@ -4970,7 +5015,13 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_task_handoff":
         return JSON.stringify(await handoffOut(by, a));
       case "hub_task_handoffs":
-        return JSON.stringify({ handoffs: tasks.handoffList() });
+        return JSON.stringify({ handoffs: handoffListView() });
+      // #734 (AC6): the person's `ahub task handoff --sync` runs the catch-up now and reads the list again. A person or the configured conductor only: an agent's own list is the read above.
+      case "hub_task_handoff_sync": {
+        tasks.handoffSyncAuthority(by);
+        await handoffCatchUp(undefined, true);
+        return JSON.stringify({ handoffs: handoffListView(), synced: true });
+      }
       // #601: the person's own forms (a read is hub_study_show, which every connection may use). `by` is USER only on the console path; approval and close are never a tool.
       case "study_draft":
         return JSON.stringify(await tasks.studyDraft(by, a));
