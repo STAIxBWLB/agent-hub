@@ -174,18 +174,26 @@ export function createProvider(options: { home: string; registry?: Registry; lif
     const listing = await list() as { projects: ProjectRow[] };
     return listing.projects.filter((p) => p.state === "running" && p.instanceId);
   }
-  /** #727: one project's items from its last answer, reused for a project that did not answer in time, so a slow daemon neither blanks its rows nor restarts their `at`. */
-  const lastProjectItems = new Map<string, InboxItem[]>();
+  /**
+   * #727: one project's items from its last answer, reused for a project that did not answer in time, so a slow daemon neither blanks its rows nor restarts their `at`.
+   * Fenced by the action generation on both sides: an entry is written only by a computation that no action has overtaken, and read only in the generation it was written in, so an approval
+   * or an answer that has been given never comes back from here (a late project is then simply left out of that poll, which is the safe side).
+   */
+  const lastProjectItems = new Map<string, { generation: number; items: InboxItem[] }>();
   /** The project's `agents` snapshot, or null when it did not answer within the budget or threw: the other projects' rows are never held back by it. */
   const projectSnapshot = (project: ProjectRow) => within(act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "agents" }) as Promise<Record<string, unknown>>, INBOX_PROJECT_BUDGET_MS);
-  async function inbox(): Promise<InboxItem[]> {
+  async function inbox(generation: number): Promise<InboxItem[]> {
     const items: InboxItem[] = [];
     const projects = await running();
     // The projects are asked at once: the answer takes as long as the slowest daemon, not the sum of them (#727).
     const snaps = await Promise.all(projects.map(projectSnapshot));
     for (const [index, project] of projects.entries()) {
       const snap = snaps[index];
-      if (snap === null || snap === undefined) { items.push(...(lastProjectItems.get(project.id) ?? [])); continue; }
+      if (snap === null || snap === undefined) {
+        const last = lastProjectItems.get(project.id);
+        if (last && last.generation === inboxGeneration) items.push(...last.items);
+        continue;
+      }
       if (snap.ok === false) { lastProjectItems.delete(project.id); continue; }
       const firstItem = items.length;
       const name = project.root.split("/").filter(Boolean).pop() ?? project.id;
@@ -237,7 +245,7 @@ export function createProvider(options: { home: string; registry?: Registry; lif
         items.push({ id, group: "review", kind: "review", title: `#${t.id} ${t.title}`.slice(0, 200), ...(t.owner ? { actor: t.owner } : {}), project: name, at,
           chip: { text: "review", tone: "neutral" }, verbs: [{ id: "open", label: "Open board", primary: true }], link: { panel: "board", params: { project: project.id } } });
       }
-      lastProjectItems.set(project.id, items.slice(firstItem));
+      if (generation === inboxGeneration) lastProjectItems.set(project.id, { generation, items: items.slice(firstItem) });
     }
     for (const id of lastProjectItems.keys()) if (!projects.some((project) => project.id === id)) lastProjectItems.delete(id);
     // Forget ids that left the inbox, so `seen` stays the size of what is waiting now. This runs on the whole list, before the cap, so a row below the cap keeps its `at`.
@@ -259,7 +267,7 @@ export function createProvider(options: { home: string; registry?: Registry; lif
   function inboxComputation(): Promise<InboxReply> {
     if (inboxFlight && inboxFlight.generation === inboxGeneration) return inboxFlight.promise;
     const generation = inboxGeneration;
-    const promise: Promise<InboxReply> = inbox().then((all) => {
+    const promise: Promise<InboxReply> = inbox(generation).then((all) => {
       const ordered = [...all].sort((a, b) => INBOX_GROUP_RANK[a.group] - INBOX_GROUP_RANK[b.group] || (a.at < b.at ? -1 : a.at > b.at ? 1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const value: InboxReply = { items: ordered.slice(0, INBOX_MAX_ITEMS), more: Math.max(0, ordered.length - INBOX_MAX_ITEMS) };
       if (!inboxCache || inboxCache.generation <= generation) inboxCache = { generation, at: Date.now(), value };

@@ -188,3 +188,43 @@ test("p95 of the inbox snapshot over a realistic fleet (five projects at 150 to 
   // the work is not repeated per request: 17 polls with a second caller each, in about 5 s, asked each project far fewer than 34 times
   expect(Math.max(...Object.values(f.asked))).toBeLessThan(34);
 }, 30_000);
+
+// The per-project fallback must not resurrect an approval the person has already given (review of PR #1200).
+test("a settled approval does not come back from the per-project fallback when that project's next snapshot is late", async () => {
+  const f = fleet([{ id: "a", permissions: 1 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 150 });
+  expect((await f.inbox()).items).toHaveLength(1);                // warm: the fallback now holds the approval
+  const preview = await f.provider.action({ action: "approve", id: "perm:a:perm-0" });
+  if (!("needsConfirm" in preview)) throw new Error("expected a preview");
+  expect((await f.provider.action({ action: "approve", id: "perm:a:perm-0", confirmed: true, fingerprint: String(preview.fingerprint) })).ok).toBe(true);
+  f.live.a!.permissions = 0; f.live.a!.hang = true;               // settled, and the project is now slow to answer
+  expect((await f.inbox()).items).toEqual([]);                    // not the pre-action row
+  expect((await f.inbox()).items).toEqual([]);                    // and not on the next slow poll either
+});
+
+test("a computation that started before an action cannot repopulate the per-project fallback after it", async () => {
+  // the project answers in ~120 ms, inside its 200 ms budget, so the early computation really completes and would store its row
+  const f = fleet([{ id: "a", delayMs: 120, permissions: 1 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 200 });
+  const early = f.inbox();                                        // asked while the approval exists
+  await Bun.sleep(30);
+  await f.provider.action({ action: "pause", peer: "kimi", projectId: "a", instanceId: "i-a" } as never);   // an action lands while it is in flight
+  f.live.a!.permissions = 0; f.live.a!.hang = true;               // the approval is settled and the project is now slow
+  await early;                                                    // finishes in an older generation: it must not write the fallback
+  expect((await f.inbox()).items).toEqual([]);                    // the slow project is left out; had the early run stored its row it would come back here
+});
+
+test("a slow computation from before an action does not overwrite the newer fallback when it finally finishes", async () => {
+  // The early computation reads TWO approvals on arrival and answers after 400 ms. An action lands, the hub settles one approval, and a newer computation stores ONE row.
+  // When the early one finishes last it must not replace that entry with its two older rows: the next slow poll must fall back to the newer single row.
+  const f = fleet([{ id: "a", delayMs: 400, permissions: 2 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 5_000 });
+  const early = f.inbox();
+  await Bun.sleep(40);
+  await f.provider.action({ action: "pause", peer: "kimi", projectId: "a", instanceId: "i-a" } as never);
+  f.live.a!.permissions = 1; f.live.a!.delayMs = 0;
+  expect((await f.inbox()).items).toHaveLength(1);                // the newer generation stores one row
+  await early;                                                    // the older one ends last
+  // a short-budget provider cannot be swapped in, so read the fallback through a poll whose project hangs, bounded by our own timer
+  f.live.a!.hang = true;
+  const poll = f.inbox();
+  const outcome = await Promise.race([poll, Bun.sleep(5_500).then(() => null)]);
+  expect(outcome?.items).toHaveLength(1);                         // one row from the newer entry, never the older two
+}, 15_000);
