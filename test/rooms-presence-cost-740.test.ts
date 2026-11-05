@@ -33,7 +33,7 @@ test("a blocked presence burst reserves only its latest snapshot before the foll
     for (let n = 0; n < 1000; n++) { state = n % 2 === 0 ? "busy" : "idle"; await link.publishPresence(); }
     expect(reserved).toBe(before);
     expect(session.outbound).toHaveLength(2);
-    const env: RoomChatEnvelope = { id: crypto.randomUUID(), trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", body: "after latest presence", kind: "chat", priority: "normal", ts: Date.now() };
+    const env: RoomChatEnvelope = { id: crypto.randomUUID(), trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", body: "after latest presence", kind: "chat", priority: "status", ts: Date.now() };
     await link.publishApplication({ v: 1, type: "chat", envelope: env }, guest.public.fingerprint);
     expect(reserved).toBe(before + 2);
     expect(session.outbound).toHaveLength(3);
