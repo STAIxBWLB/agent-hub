@@ -12,7 +12,7 @@ import { RoomStore } from "../src/rooms/store.ts";
 import { RoomChat } from "../src/rooms/service.ts";
 import { RoomLink, RoomApplicationDeferredError, type RoomLinkContext } from "../src/rooms/link.ts";
 import { encodeRoomMessage, type RoomMessage } from "../src/rooms/application.ts";
-import { createInvite, createJoin, createRoomEpoch, openFrame, roomMembers, sealFrame, canonicalBytes } from "../src/rooms/wire.ts";
+import { createInvite, createJoin, createRoomEpoch, openFrame, roomMembers, sealFrame, canonicalBytes, verifyPublicFrame, verifyPublicRoster } from "../src/rooms/wire.ts";
 import { encodeBase64url, sha256, randomBytes } from "../src/rooms/crypto.ts";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -162,6 +162,7 @@ async function fullPhysicalInbox(reserved: number, withPresence = false, junkKin
   const requested = new Promise<void>(resolve => { firstRequest = resolve; }), refreshed = new Promise<void>(resolve => { freshObserved = resolve; });
   const junkApplication = crypto.randomUUID(), junkCanary = "fresh-capacity-chat-canary";
   const receivedChats: string[] = [], signedReceipts: unknown[] = [];
+  const storedDigests = new Set<string>();
   let counterpartyWork = Promise.resolve();
   const acknowledgements: string[] = [], gaps: string[] = [], observed: { member: string; peers: readonly { id: string; state: string }[] }[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
@@ -183,6 +184,14 @@ async function fullPhysicalInbox(reserved: number, withPresence = false, junkKin
           // this is separate from the blind relay's queue/ACK fixture above.
           const wire = typeof data === "string" ? new TextEncoder().encode(data) : Uint8Array.from(data);
           counterpartyWork = counterpartyWork.then(async () => {
+            // The real broker verifies and stores before forwarding. Its storage
+            // ACK releases the sender's single-frame transport pipeline.
+            const local = receiver.get("work")!;
+            const roster = await verifyPublicRoster({ wire: local.wire, pin: { room: local.current.room,
+              owner: receiver.identity.public.fingerprint, minEpoch: local.current.epoch, digest: local.current.digest } });
+            const proof = await verifyPublicFrame({ wire, roster });
+            const duplicate = storedDigests.has(proof.digest); storedDigests.add(proof.digest);
+            ws.send(canonicalBytes({ v: 1, type: "stored", digest: proof.digest, seq: proof.seq, duplicate }));
             const opened = await openFrame({ wire, identity: sender.identity, current: sender.get("work")!.current, replay: sender.replay });
             if (opened.status !== "accepted") return;
             sender.settleInbox("work", encodeBase64url(await sha256(wire)));
