@@ -403,8 +403,8 @@ messages, proposals and reviews. Peer starts, pause and resume may delegate
 operational console authority; task assign/escalate under the flag refuse. `--as-user`, person task labels,
 person-authored planning/release/memory/goal writes, SDLC record, spec and plan-departure acceptance, release authorization, design-spec stamps (`ahub specs stamp`), agent version trust, benchmark run,
 `ahub recovery reattach`, a `--fresh-session` dispose that would replace a repaired
-session's conversation (or whose scope cannot be read), and the pet
-composer are refused; presentation flags such as `--color` or `--verbose` before
+session's conversation (or whose scope cannot be read), `ahub answer` with an
+operand and the `ahub results` receipt forms are refused; presentation flags such as `--color` or `--verbose` before
 the recovery action do not hide it from this check. No argument text is copied into this audit.
 Delegated dashboard restrictions are bound to its server-issued ticket/session:
 operational settings/start/stop controls remain, but message, proposal and
@@ -479,7 +479,8 @@ start (Jcode). Memory changes and the other `goal` changes stay the person's
 while amem records their actor as the user. `task unassign` is a conductor form;
 it keeps the conductor as the board actor. `task cancel` remains separately
 available through `hub_task_cancel` only on the caller's own eligible task
-(#933), not as a conductor operation; `task role`, `task label` and
+(#933), and for the conductor only on an unaccepted task another project handed
+off (#1175), not as a general conductor operation; `task role`, `task label` and
 `ahub deliverables` retain their own-task checks. `models start|stop` remains
 Console. `restart --yes`,
 `upgrade --yes --to <exact-version>` and `recovery resume|abort` have the
@@ -571,7 +572,7 @@ Please report vulnerabilities privately through GitHub's "Report a vulnerability
 - The exchange creates a separate random session, valid for one hour without renewal, in an `HttpOnly; SameSite=Strict; Path=/` cookie named for this listener's port. Sessions and tickets live only in memory and die with the daemon. The page itself keeps one more cookie, `agent-hub-theme` (issue #246): script-set, `SameSite=Strict`, kept for a year for the whole `127.0.0.1` host, and read back only as one of `system`, `light` or `dark`. A second script-set cookie, `agent-hub-office` (issue #264), keeps the Office view choice under the same attributes and is read back only as `off`, `flat` or `isometric`. The #391 view split adds two more script-set cookies under the same attributes: `agent-hub-view`, read back only as one of the seven view names, and `agent-hub-column-focus`, read back only as one of the five board columns or empty. HTTP is loopback-only; the cookie is not a substitute for the origin checks.
 - Every request must have the exact listener Host. Every data or action request, including the ticket exchange and snapshot polling, must be POST with the exact listener Origin and JSON content type. Foreign and missing origins, missing or expired sessions, oversized bodies and unknown actions are rejected. There is no CORS support. The only unauthenticated GET is the fixed, data-free HTML shell. No files or paths are served dynamically.
 - Responses are non-cacheable, cannot be framed, suppress referrers, and use a content security policy restricting scripts/styles to the shipped inline content and connections to this origin. Browser text is rendered with textContent, never interpreted as HTML.
-- The browser receives a bounded redacted event stream, peer states and queue counts, public task views (with a task's screened changed-symbol observation, #684: ids, paths, names and kinds, never source or line spans, and its Code group, #684 phase 2c: those symbols marked against the plan's names, each name re-screened by the public metadata screen; a private task has no group and its plan names never enter the snapshot), budget windows, each peer's DOING line (#878: a native session title or current plan item, at most 120 characters, kept in daemon memory only and screened when observed and again when shown; a failed screen, a private turn or the peer's open PII task shows `[private]`), pending approvals, the settings rows (closed values and ids, the file each comes from) and each startable peer's start plan (issue #269), benchmark run summaries (issue #251): the newest runs in `~/.agenthub/bench/`, whichever project on this machine ran them, by suite name, arm label, state, the task id in progress, counts, tokens and times, never suite text, the Usage view (#683 U4), computed only while the Agents view is open: peer ids, UTC days and token counts with their source, budget pause, resume and reset events without their reason text, and per-task rows of the task id, a PII flag and token counts, never a title, and the office view's optional fields (issue #264): each peer's open turn (start time, attributed task id, attribution kind), a `checking` flag on tasks whose check is running, and warning `links` of overlapping, conflicting or cohort tasks (task and peer ids only, never paths, symbols or reasons; a PII task never joins a link, and a private or PII-attributed turn exposes no task id). Private envelope bodies and PII task text never cross this endpoint. Local-worker and Pi approval titles can contain PII, so their details remain terminal-only; the dashboard identifies the request and directs the operator to `ahub tail` before allowing it. Budget checkpoint summaries are also omitted.
+- The browser receives a bounded redacted event stream, peer states and queue counts, public task views (with a task's screened changed-symbol observation, #684: ids, paths, names and kinds, never source or line spans, and its Code group, #684 phase 2c: those symbols marked against the plan's names, each name re-screened by the public metadata screen; a private task has no group and its plan names never enter the snapshot), budget windows, each peer's DOING line (#878: a native session title or current plan item, at most 120 characters, kept in daemon memory only and screened when observed and again when shown; a failed screen, a private turn or the peer's open PII task shows `[private]`), pending approvals, the settings rows (closed values and ids, the file each comes from) and each startable peer's start plan (issue #269), benchmark run summaries (issue #251): the newest runs in `~/.agenthub/bench/`, whichever project on this machine ran them, by suite name, arm label, state, the task id in progress, counts, tokens and times, never suite text, the Usage view (#683 U4), computed only while the Agents view is open: peer ids, UTC days and token counts with their source, budget pause, resume and reset events without their reason text, and per-task rows of the task id, a PII flag and token counts, never a title, and the office view's optional fields (issue #264): each peer's open turn (start time, attributed task id, attribution kind), a `checking` flag on tasks whose check is running, and warning `links` of overlapping, conflicting or cohort tasks (task and peer ids only, never paths, symbols or reasons; a PII task never joins a link, and a private or PII-attributed turn exposes no task id). Private envelope bodies and PII task text never cross this endpoint. Local-worker and Pi approval titles can contain PII, so their details remain terminal-only; the dashboard identifies the request and directs the operator to `ahub tail` before allowing it. Budget checkpoint summaries are also omitted. An ordinary (not live-test) session's snapshot also carries the open questions with their full text, a private one included, for the person's answer form (#1053), and unread results with the detail built when shown (#1054). An explicit review refresh of one task adds its person review comment threads and placement, with PII and private-path comments as counts only (#1056).
 - The closed action list includes permission response, peer pause/resume, console message, task proposal/assignment and the settings actions below (set, undo, preview, reload, and the structural edit preview and apply of a settings session). Project-board actions add revision-fenced planning, Backlog pull/return/split/undo and release planning/state changes through Tasks; they do not tag, publish or write GitHub state. These use the existing daemon/task paths and budget pause rules. `start_peer` (issue #269) starts a peer from a closed list in the mode a person set, with a command the hub assembles: the request carries a peer id and nothing else. There is no generic control proxy, task-detail read, shell, file access, free-form configuration edit, budget override, launch of a caller-chosen command or daemon shutdown API.
 - The listener stops with the daemon. Expired sessions must be reopened with `ahub ui`; the page does not silently obtain new credentials.
 
@@ -612,30 +613,38 @@ its existing basename/worktree aliases and provider accounts can remain shared.
 
 `@staix/agent-hub/ui-plugin` runs inside the agent-console (`acon`) process as the
 same user. It holds no credential of its own: it reaches project hubs only through
-the multi-project manager's listing and forwarding above, which connect as the
-console with each project's control token, so it has exactly what `ahub ui --all`
-has. Every action must be on the manager's closed list and every view one of the
-seven view names, and there is no generic control proxy, task-detail read, shell,
-file access or caller-chosen command.
+the multi-project manager, which connects as the console with each project's
+control token. Beyond what `ahub ui --all` has, it uses dedicated manager ports the
+dashboard page cannot reach: `answer` (#1053), `receipt` (#1054) and the review port
+(`review_comment_put|delete|send`, `review_comments`, `review_blob`, #1056). Every
+write through them requires acon's verified `ActionMeta`, as described in those
+sections. Every other action must be on the manager's closed list and every view one
+of the seven view names. There is no generic control proxy, task-detail read, shell
+or caller-chosen command, and the only file read is the bounded review material of a
+public task (`review_blob`).
 
 - **Registration.** `ahub setup` writes `console/plugins/ahub.json` under the hub
   home (directory 0700, file 0600, atomic replace) with the module path and its
   sha256; acon refuses to load a module whose hash no longer matches.
 - **Confirmation.** Outward or destructive actions (`stop`, `permit`, `send`,
   `setting`, `setting_undo`, `setting_reload`, `config_edit_apply`, `start_peer`,
-  `backlog_split` and the inbox's Allow once and Deny) first answer `needsConfirm`
+  `backlog_split`, `worktree_override_set`, `worktrees_refresh_prs`,
+  `review_comment_send`, `review_comment_delete` and the inbox's Allow once and Deny) first answer `needsConfirm`
   with a preview and a fingerprint, a sha256 of the request's own fields; the call
   runs only when it comes back with `confirmed` and that fingerprint. The
   fingerprint binds a confirmation to one exact request, so a changed request needs
   a new confirmation; it is not a secret, and the confirm step is acon's host UI
   contract, not authentication. A process that can load the module already has the
   console's reach, and the hostile-agent boundary above applies unchanged.
-- **Inbox.** Items are the pending approvals and the in-review tasks whose reviewer
-  is the person, read from the same redacted dashboard snapshot: a local-worker or
+- **Inbox.** Items are the pending approvals, the in-review tasks whose reviewer
+  is the person, open questions (#1053) and, for a console that gives receipts
+  person evidence, unread results (#1054), read from the same dashboard snapshot: a local-worker or
   Pi approval shows only the fixed private stub and offers Deny, and Allow once for
   it is refused with "answer this approval with ahub permit". Allow once and Deny
   resolve to the hub's own `permit` with an option the pending request offers,
-  looked up again at the time of the call; nothing else is reachable from an item.
+  looked up again at the time of the call; nothing else is reachable from an approval
+  item. A question's Answer and a result's mark-read go only through the person-evidence
+  paths in "Questions a peer asks the person" and "Results a person's runs leave behind".
   Task titles are the public view's, so a PII task shows the `[pii]` stub.
 - **Space.** The Space scene is built only from the office model the dashboard
   already allowlists (#264): peer ids, conditions and counts, task ids, classes,
@@ -773,7 +782,12 @@ historical claude-mem database used only by the explicit read-only import.
 Sync starts only after a person configures a remote. Public GitHub remotes are
 refused; unknown visibility proceeds with a warning for the configured remote.
 Short-term segments, machine identity and the derived index are excluded from
-sync. Suggested graph edges are off by default and are not evidence until a
+sync. Sync and direct long-term writes apply the configured agent-mem sync policy
+narrowed by the hub's deny paths, PII patterns and project-private paths; a promotion
+that fails it leaves the note short-term (#1173). Status and logs carry only a closed
+cause and a declined count. `ahub memory declined` is person-only (refused to agent
+shells and `--live-test`) and shows row ids and rule categories, never note text or
+literal patterns. Suggested graph edges are off by default and are not evidence until a
 person confirms them. Operational details and limits: [hub memory](memory.md).
 
 ## Floating pet retirement (#1012)
@@ -797,13 +811,13 @@ checks; the retired window adds no alternative composer path.
 
 The `planner` setting is person-controlled: one peer id or a list of up to eight (#525-2). A valid pin determines the planner holders without adding them to the roster; otherwise configured rostered planner roles apply, then the first rostered peer in the closed planner catalog. The automatic choice is not written to disk. Each new non-PII task and each planner-created release records one effective planner from the same pure walk `ahub route explain` shows; only that planner or the person changes its planning. A bound planner keeps that authority while busy, paused or offline; one removed from the holders or the roster falls back to the current holders, and older rows with no binding, PII tasks included, keep holder-wide authority. Only the person moves a task's planner (`ahub task assign <id> <peer> --role planner`). Another holder may record a plan review without gaining the task's other planning powers; an agent cannot review its own plan while another rostered holder is not offline, and otherwise the receipt records `selfReview: true` with `planAuthor`. Planner guidance does not grant conductor authority or bypass roster, PII, WIP or owner capability checks.
 
-`cancelled` is closed, never approval. The person can cancel non-approved work with a reason and optional supersession reference; a planner can cancel only its own proposed/backlog work with no historical acceptance, and only as that task's effective planner. Current task revision, privacy and recovery/shutdown holds are checked before writing and again after awaited screening. Cancellation preserves history, releases reservations and overlap membership, writes no outcome memory, and does not stop native turns or delete branches/worktrees. Owner/reviewer stop notices remain relevant; earlier task requests become moot. Dependents remain blocked and receive ids-only advice, including backlog dependents.
+`cancelled` is closed, never approval. The person can cancel non-approved work with a reason and optional supersession reference; a planner can cancel only its own proposed/backlog work with no historical acceptance, and only as that task's effective planner. The configured, rostered conductor can cancel only a task another project handed this one (#1175), while it is proposed or backlog, nobody has accepted it, it has no execution evidence and it is not PII. Current task revision, privacy and recovery/shutdown holds are checked before writing and again after awaited screening. Cancellation preserves history, releases reservations and overlap membership, writes no outcome memory, and does not stop native turns or delete branches/worktrees. Owner/reviewer stop notices remain relevant; earlier task requests become moot. Dependents remain blocked and receive ids-only advice, including backlog dependents.
 
 Current daemons advertise `task_cancel` in hello and status metadata. A current CLI refuses cancellation against a daemon without that feature. Controlled upgrade/restart refuses an unsupported target while cancelled task ids exist; source prepare and commit recheck compatibility, and the rows are never rewritten as approved. In the same way it refuses a target without `task_planners` once a planner list or an instance planner is configured or any task or release planner binding or plan-review authorship is stored, even after that configuration is removed. A manually started older binary is outside this compatibility guarantee: it can display cancelled rows as open or fail to move them.
 
 Stall causes are persisted and deduplicated by cause and replanning revision. Planner advice joins its next delivery as bounded ids-only context; it does not manufacture an ordinary task turn. Pull-only offer attention clears only after acceptance, decline, supersession or durable positive evidence for that exact offer and recipient. Operator, hub or owner completion of an uncertain delivery is not evidence that the offer was read.
 
-`hub_delivery_retry` grants an eligible recipient one retry of its own `needs_review` work, never pause removal. `hub_delivery_resolve` (#1112) lets a local agent mark only its own `needs_review` row `completed` or `discard`, at the revision `hub_inbox` showed, with a public, screened reason recorded under its actor. It never replays the originals or changes task state. An unknown id, another peer's row and a row that is not `needs_review` share one refusal, so the answer never confirms another peer's row. The person, the hub, a remote peer, a paused or held peer, and recovery, shutdown or storage holds are refused. A row that carries an invocation stays person-only, because its outcome is uncertain. An explicit `hub_inbox` read may return newly queued messages behind such a hold, never the held originals, and only when no recovery, pause, lifecycle or storage fence applies. Durable per-original evidence survives journal pruning; unknown retry history or a used retry requires the person. Hub presence prefaces are excluded from attempted-work identity, so a shared context preface does not consume an unrelated message's retry. Delivery-only local and ACP peers (including Jcode) cannot invoke recipient retry; tool exposure hints do not replace the daemon's actual-adapter guard. Their held work requires person resolution. Before transport handoff, storage failure preserves the queue and preface; after handoff an uncertain effect is never automatically replayed.
+`hub_delivery_retry` grants an eligible recipient one retry of its own `needs_review` work, never pause removal. `hub_delivery_resolve` (#1112) lets a local agent mark only its own `needs_review` row `completed` or `discard`, at the revision `hub_inbox` showed, with a public, screened reason recorded under its actor. An attached Claude push-channel session may also settle its own `accepted` row that way (#1172); any other peer's `accepted` row is refused. It never replays the originals or changes task state. An unknown id, another peer's row and a row in neither state share one refusal, so the answer never confirms another peer's row. A channel `accepted` row that gets neither native completion nor that disposition within `bus.accepted_settle_ms` (default ten minutes) becomes `needs_review` with no replay. With `conductor.feed` on, the configured conductor gets one ids-only notice for an important, task or review timeout. The person, the hub, a remote peer, a paused or held peer, and recovery, shutdown or storage holds are refused. A row that carries an invocation stays person-only, because its outcome is uncertain. An explicit `hub_inbox` read may return newly queued messages behind such a hold, never the held originals, and only when no recovery, pause, lifecycle or storage fence applies. Durable per-original evidence survives journal pruning; unknown retry history or a used retry requires the person. Hub presence prefaces are excluded from attempted-work identity, so a shared context preface does not consume an unrelated message's retry. Delivery-only local and ACP peers (including Jcode) cannot invoke recipient retry; tool exposure hints do not replace the daemon's actual-adapter guard. Their held work requires person resolution. Before transport handoff, storage failure preserves the queue and preface; after handoff an uncertain effect is never automatically replayed.
 
 A declared instance whose only role is reviewer gets review requests, task messages addressed to it and the person's messages; agent chat, digests and presence are discarded and journaled, and it gets no memory recall (task 223). The headless Claude reviewer runs one new `claude -p` per review with `--setting-sources ""`, `--strict-mcp-config`, `--no-session-persistence`, tools limited to Read, Grep, Glob, `hub_review` and `hub_task_show`, and `dontAsk`. Its prompt holds hub facts and a bounded diff, never the builder's summary, and its `hub_task_show` drops the builder's notes. Changes touching `local.deny` or `pii.paths` are withheld and passed as `Read` deny rules, which Claude enforces, not the hub. Private tasks are never given to it. Its `hub_review` counts only while the child started for that task still runs; a stop or exit revokes it first, and surviving processes hold the delivery as `needs_review` and keep the reviewer busy.
 
@@ -811,7 +825,7 @@ A terminal Claude implementer or verifier instance (#525-5) owns write-class tas
 
 A planner-only instance (#525-6: `planner` without `implementer` or `verifier`) plans on the project checkout, so a declared `worktree` is refused. A Codex planner's `thread/start` and `thread/resume` are requested read-only, and a thread is adopted only when Codex's reply positively confirms a read-only sandbox; an unconfirmed or malformed reply refuses that RPC and closes the link before the hub adopts the thread or delivers work, and the current roles are rechecked before each injection. This is an initial ceiling, not confinement of the person's attached TUI, which can change its native sandbox later. A declared planner-only Claude channel instance gets no automatic grant from its facts hook for any tool but Read, LS, Glob and Grep, whatever the permission mode.
 
-The headless Claude implementer (#525-4) runs one owned `claude -p` child per turn in its declared worktree, with `--setting-sources ""`, `--strict-mcp-config`, native permission mode `default`, the hub's managed PreToolUse hook and `--permission-prompt-tool mcp__agent-hub__hub_permission_request`; never `--bare`, `acceptEdits`, `dontAsk` or `bypassPermissions`, and `never-ask` is refused. Each task keeps its own persisted session; unscoped chat reuses one only while exactly one task is in progress, and a `hub_inbox` read refuses a batch attributed to another task. The approval path fails closed: `hub_permission_request` is accepted only from the current child's launch and generation, goes to the console's existing approval queue and `approvals.timeout_s`, and offers allow-once and deny only, with no allow-always or session grant. A timeout, a prompt failure, a disconnect, a hub that is down or refusing, or a stale child binding answers deny; a failed hook decides nothing, so the call still waits for a person. The approval title is the tool name and a JSON rendering of the arguments passed through `sanitize()` and the public-text screen (any PII, secret or private-path match withholds the whole value as `[withheld]`, before any cut), never task text, cut at 600 characters with a `[cut, N chars]` marker; the original arguments stay with the child and are not logged. The MCP wire cannot tell a native permission dispatch from a call the model makes itself; a person allow still refers only to its original arguments. Automatic Bash authorization uses the separate single-use host wrapper contract below, never a caller-supplied tool id as native provenance. A stop holds an uncertain delivery until the owned process group is confirmed gone. The [native permission receipt](verification/2026-10-23-headless-claude-permissions.md) is model-free on Claude Code 2.1.309, [repeated on 2.1.310](verification/2026-10-26-claude-implementer-2.1.310.md), [on 2.1.314](verification/2026-10-31-claude-implementer-2.1.314.md) and [on 2.1.316](verification/2026-10-31-claude-implementer-2.1.316.md); it is not sandbox proof, and a real account, model and person interaction remains a live leg.
+The headless Claude implementer (#525-4) runs one owned `claude -p` child per turn in its declared worktree, with `--setting-sources ""`, `--strict-mcp-config`, native permission mode `default`, the hub's managed PreToolUse hook and `--permission-prompt-tool mcp__agent-hub__hub_permission_request`; never `--bare`, `acceptEdits`, `dontAsk` or `bypassPermissions`, and `never-ask` is refused. Each task keeps its own persisted session; unscoped chat reuses one only while exactly one task is in progress, and a `hub_inbox` read refuses a batch attributed to another task. The approval path fails closed: `hub_permission_request` is accepted only from the current child's launch and generation, goes to the console's existing approval queue and `approvals.timeout_s`, and offers allow-once and deny only, with no allow-always or session grant. A timeout, a prompt failure, a disconnect, a hub that is down or refusing, or a stale child binding answers deny; a failed hook decides nothing, so the call still waits for a person. The approval title is the tool name and a JSON rendering of the arguments passed through `sanitize()` and the public-text screen (any PII, secret or private-path match withholds the whole value as `[withheld]`, before any cut), never task text, cut at 600 characters with a `[cut, N chars]` marker; the original arguments stay with the child and are not logged. The MCP wire cannot tell a native permission dispatch from a call the model makes itself; a person allow still refers only to its original arguments. Automatic Bash authorization uses the separate single-use host wrapper contract below, never a caller-supplied tool id as native provenance. A stop holds an uncertain delivery until the owned process group is confirmed gone. The [native permission receipt](verification/2026-10-23-headless-claude-permissions.md) is model-free on Claude Code 2.1.309, [repeated on 2.1.310](verification/2026-10-26-claude-implementer-2.1.310.md), [on 2.1.314](verification/2026-10-31-claude-implementer-2.1.314.md), [on 2.1.316](verification/2026-10-31-claude-implementer-2.1.316.md) and [on 2.1.318](verification/2026-11-05-claude-implementer-2.1.318.md); it is not sandbox proof, and a real account, model and person interaction remains a live leg.
 
 The #845 host shell wrapper is the only automatic Bash path for a headless implementer. In `ask-when-needed`, a complete public input must pass the existing #816 read-only proof or the closed task-command proof, with an active owned task and registered worktree. Enabled action-policy classes still ask, and `ask`, PII handling and the `never-ask` refusal are unchanged. The native request and authenticated host response both name wrapper protocol 1, so an older plugin cannot drop the rewrite and execute an original command automatically.
 
@@ -887,6 +901,14 @@ role admission.
   separate `runner-attested` level described below; their fields never overwrite
   declared or host-measured evidence. Public experiment recording tools and the
   receipt CLI are the separate #602 slice.
+- **Claim evidence links (#931 T1).** `hub_evidence_record` is published only to
+  research-profile peers. It admits only the current in-progress owner of a stored
+  research task, outside a private turn, on a non-PII task and a registered public
+  source whose raw hash matches. The checks repeat after screening and inside the
+  append transaction. Its relation, projection hash and locator are declared
+  provenance, never an entailment judgment or host verification; person verdicts
+  stay the only judgment record. Receipts carry the link id, revision and task id
+  only, and arguments and results are excluded from capture.
 - **Privacy.** A campaign whose parent task is PII, or that names a private source,
   is private, and so is an attempt with a private task, input or output path.
   Public views keep ids, counts, states and provenance and stub every question,
@@ -946,7 +968,7 @@ A handoff crosses a project boundary, but not a security boundary: both projects
 belong to the same machine user. The origin daemon reads the target's control
 token file and connects to the target's daemon as the `console` role through
 `ControlClient`, like every control message; the hello checks the target's project
-root and instance. It sends that connection only the three handoff messages, and
+root and instance. It sends that connection only the four handoff messages, and
 it has no reach a same-user process lacks (see "What is not defended").
 
 - **Who may hand off.** `ahub task handoff` is Console in `classifyPeerCommand`;
@@ -956,21 +978,28 @@ it has no reach a same-user process lacks (see "What is not defended").
   the target's own `status.json` must advertise `task_handoff` and name no other project. A target
   that is not running is refused with the action; nothing is queued.
 - **No authority in the target.** The target answers `task_handoff`,
-  `task_handoff_event` and `task_handoff_states` to a console connection only, and
+  `task_handoff_event`, `task_handoff_by_key` and `task_handoff_states` to a console
+  connection only, and
   refuses a new handoff while it recovers or shuts down. The task is an ownerless proposal
   its own hub makes and routes. The origin project and peer are a record in
   `task_handoff_origin` and a line at the end of the detail, never an actor, a
   roster peer or a role: the origin cannot accept, review, approve, assign or
   cancel there.
 - **What crosses.** To the target: a title (300 characters), a class, a detail
-  (4,000), up to 16 repository-relative paths, a spec issue number, and the origin
-  project id, peer id and task id, at most 8 KiB in all. The request is parsed
+  (4,000), up to 16 repository-relative paths, a spec issue number, an optional
+  `duplicate_ok` reason (300, kept in the target's detail), a handoff key (a UUID,
+  sent only to a target that advertises `task_handoff_key`), and the origin project
+  id, peer id and task id, at most 8 KiB in all. The request is parsed
   closed on both sides: an unknown field, an accessor or a control character is
   refused, never dropped, and the target sanitizes before it stores. No memory,
   evidence, turn content or task history crosses. Back to the origin: an event
-  name, a PR number and a full 40-hex head, never the target's title, notes or
-  other text; the restart catch-up answers only for tasks whose recorded origin
-  is the asking project, with the same fields. The origin peer gets that as a
+  name, a sequence number, a PR number and a full 40-hex head, never the target's
+  title, notes or other text; a duplicate-issue refusal names only the target's own
+  open non-PII task ids. The catch-up (at start, every five minutes and when a
+  target's descriptor changes) and the key lookup answer only for tasks whose
+  recorded origin is the asking project, with the same fields. A key the target
+  already holds answers with the task it made and never files a second one; the
+  same key with a different request is refused. The origin peer gets that as a
   hub-written `kind: task` message.
 - **Privacy.** The origin refuses during a private turn and for a `[pii]` task
   named as the source, before anything leaves. The text itself is checked by the
@@ -1239,9 +1268,17 @@ receive a derived copy. Removed-instance and Local bindings are not retained.
 
 A result is the record that a run the person started has settled. Reading one and marking it read are separate acts, and only the person makes the second.
 
-- **A receipt is the person's, on every surface.** `result_seen`, `results` (`read-all`, `unread-last`) and the dashboard's `result_seen`, `results_read_all` and `results_unread_last` write or delete a receipt, and each is refused unless the caller is the console role or a dashboard session the console opened: a peer's connection, a `hub_send` body, a tool result or an agent shell (`ahub results` is the person's command and is in `liveTestRefusal`, so a delegated `--live-test` run is refused too) is text and never reaches the store. A snapshot, a listing and the Results section's refresh never write one; a poll is not a person looking (`test/results-dashboard-1054.test.ts`).
+- **A receipt is the person's, on every surface.** `result_seen`, `results` (`read-all`, `unread-last`) and the dashboard's `result_seen`, `results_read_all` and `results_unread_last` write or delete a receipt, and each is refused unless the caller is the console role or a dashboard session the console opened: a peer's connection, a `hub_send` body, a tool result or an agent shell (`ahub results` is the person's command, and its receipt forms `--read`, `--read-all` and `--unread-last` are in `liveTestRefusal`, so a delegated `--live-test` run of them is refused too; the bare listing stays allowed there) is text and never reaches the store. A snapshot, a listing and the Results section's refresh never write one; a poll is not a person looking (`test/results-dashboard-1054.test.ts`).
 - **From acon.** The plugin accepts `result_seen`, `results_read_all` and `results_unread_last` only when the console advertises `action.meta` and passes its own `meta` (`via: "console"`, a verified `identity` and `node`), which the page cannot set. Without it, or with page-supplied `identity`, `surface`, `person` or a completion key, the action is refused before any request reaches the hub (`test/results-plugin-1054.test.ts`). The project and the result come from the inbox item id the plugin built or, from the panel, from the project it is showing; acon's `seenAt` and `explicit` are accepted and dropped, because the hub stamps its own time. The write goes through a dedicated port (`projectConsole(...).receipt`) as a console-role control message on the `acon` surface, never through the dashboard's forwarding list, and a plugin that is not given the person's meta cannot widen that.
 - **A live-test dashboard** gets no results and is refused every receipt, in two places that each hold alone: the page server's live-test allowlist and the daemon's own guard (`test/results-dashboard-1054.test.ts`).
 - **Residual.** The same as `permit`: a vendor agent that can read the control token can act as the console (see "What is not defended"), and so can write a receipt. This feature does not narrow that and does not widen it. A receipt is not an authority: it clears an unread need and nothing else.
 - **Privacy.** No prompt or reply text is stored: a completion row keeps envelope ids only. The one-line detail shown beside a result (the head of the starting prompt) is built when the person looks, from the envelope the bus still holds, after `sanitize` (so it cannot forge a hub header) and the hub's secret, PII and private-path screens; it is thrown away after it is shown and is in no `hub.db` row, `hub.log` line, `events.jsonl` event, status field or memory capture (canary tests: `test/results-dashboard-1054.test.ts`, `test/completions-daemon.test.ts`). A private run shows `a private request` without its body being read, a head the screens refuse shows a withheld stub, and a request the bus no longer holds shows nothing. The title is built from the peer and the outcome, never from request text, and the `completion_seen` event carries the id and the surface.
 - **Not defended.** The detail is the person's own request shown back to them on their own surfaces, so a request that holds something the screens do not recognise is shown to the person who typed it. Marking a result read does not mean the person read it: the hub takes the console's word, and acon's seeing rule (agent-console#27) is what makes that word mean the result was in view.
+
+## Anchored review comments (#1056)
+
+Person comment writes (`review_comment_put`, `review_comment_delete`, `review_comment_send`) are console-role control messages, and their actor is always the person: the conductor, a planner and every peer are refused. From acon they require the console's verified `ActionMeta` (`via: "console"`, `identity`, `node`). Page-supplied `author`, `meta`, `personMeta`, `at`, `state` or `sentAt` fields are refused before any request, and delete and send also need acon's confirmation fingerprint. The standalone `ahub ui` page is read-only for comments.
+
+- **Material.** Placement material comes only from guarded immutable Git snapshots at the task's recorded head (declared refs, plan paths, or same-head verified PR paths), bounded per operation to eight files and eight seconds; a sent package is at most 12,000 bytes. `review_blob` refuses a PII task, and periodic snapshots make no comment-material Git or GitHub read. PII tasks and private paths keep comments on the board and count-only in every public view.
+- **Delivery.** A sent package carries the host-only `refs.reviewPackage` marker: the intended owner gets the body, while logs, stream projections, incoming labels, memory capture and observers get an ids-only stub; review markers a peer supplies are discarded. Open sent comments, anchored findings and unsettled review deliveries keep the original recipient's responses out of shared memory and observers until resolution, dismissal, task close or explicit disposition (#1192, #1205). The marker grants no task, console or PII authority.
+- **Retry and recovery.** A send is never retried automatically, and a queued receipt proves publication, not that the owner read it. A restart, upgrade or recovery onto a daemon lacking `review_comments` is refused while anchored comments are stored.

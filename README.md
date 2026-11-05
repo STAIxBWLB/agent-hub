@@ -30,9 +30,11 @@ ahub ui                                      # the web dashboard
 
 `ahub setup` also registers agent-hub as a plugin of the family console
 ([agent-console](https://github.com/STAIxBWLB/agent-console), `acon ui`): the same dashboard
-appears as a panel for every registered project, and pending approvals and reviews assigned
-to you reach the console inbox. The plugin is `@staix/agent-hub/ui-plugin`; it uses the
-dashboard manager's own listing and forwarding, so it adds no protocol and no action.
+appears as a panel for every registered project, and pending approvals, reviews assigned
+to you, questions agents ask you and, where acon supports them, unread results reach the
+console inbox. The plugin is `@staix/agent-hub/ui-plugin`; it uses the dashboard manager's
+own listing and forwarding, and an answer, a result receipt or a review comment sent from
+acon goes through a manager port of its own that needs acon's verified person.
 The plugin also feeds the console's Space view (Flat, Room and 3D): agents become actors
 at their desks, the task board's columns become zones, and task links and recent messages
 become links. The scene carries labels and states only, never message bodies or details.
@@ -102,7 +104,9 @@ defaults. The
   (`ahub schedule list`), a one-confirmation autonomy
   preset (`ahub autonomy on|off|status`), a worktree shelf that lists live and
   settled worktrees and removes the safe ones only on your confirmation
-  (`ahub worktrees`), structural config
+  (`ahub worktrees`), questions an agent asks you with `hub_ask` (answered with
+  `ahub answer`, the console's `A` or the acon inbox), the results of runs you
+  started (`ahub results`), structural config
   (instances, review, lifecycle) edited with a validated diff and a backup from the
   console or a dashboard settings session, token usage and quota
   history (`ahub usage` and the dashboard's Usage view), and `ahub upgrade`, which
@@ -113,7 +117,8 @@ defaults. The
 Run `ahub upgrade` in a project while its hub is running (`--project` selects
 another); other projects keep their version. Update the global CLI
 (`bun add -g @staix/agent-hub@<version>`) and run `ahub setup` for the plugin
-yourself. Read the notes for your version in
+yourself; `ahub upgrade` names that step when either is older than the daemon it
+installed. Read the notes for your version in
 the [Quickstart](docs/quickstart.md) ("Upgrading to ...") and the
 [Changelog](CHANGELOG.md) first: some releases need a one-time step, such as
 refreshing an agent's MCP entry.
@@ -137,7 +142,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-11-03-0.30.0.md) and the
+[release verification report](docs/verification/2026-11-05-0.31.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation

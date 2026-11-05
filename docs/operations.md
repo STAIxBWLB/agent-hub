@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.30.0 and control protocols 16 through 17. Live verification
+This guide describes ahub 0.31.0 and control protocols 16 through 17. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -1013,11 +1013,18 @@ plugin stale when the module changed after setup, so run `ahub setup` again afte
 - **Panels.** The plugin's panels are the dashboard's seven views, and the panel is the `ahub ui`
   page itself, following acon's theme. It reaches project hubs only through the manager's own
   listing and forwarding (`ahub ui --all`): registered project and instance ids, the manager's
-  closed action list and the seven view names. There is no new protocol or action.
+  closed action list and the seven view names. There is no new protocol. An answer, a result
+  receipt or a review comment sent from acon goes through a manager port of its own (`answer`,
+  `receipt`, `consoleControl`) that needs acon's verified person `meta`.
 - **Inbox.** acon's inbox lists each running project's pending approvals (Allow once / Deny,
-  answered with the hub's own `permit` and an option the request offers) and in-review tasks whose
-  reviewer is you (Open board). A local-worker or Pi approval stays deny-only there, as on the
-  dashboard: answer it with `ahub permit` after `ahub tail`.
+  answered with the hub's own `permit` and an option the request offers), open questions and unread
+  results (see the Questions and Results sections), the settled-worktree alert and in-review
+  tasks whose reviewer is you (Open board). A local-worker or Pi approval stays deny-only there, as on the
+  dashboard: answer it with `ahub permit` after `ahub tail`. A reply holds at most 50 items, most
+  urgent first (decisions, reviews, results, candidates, then alerts), and counts the rest (#1196).
+  Running projects are asked at once, each within about 2 s; a project that misses that keeps the
+  items it last returned unless an action has happened since. A poll within 1 s reuses the last
+  reply, one within 10 s gets it at once while a refresh runs, and any action drops it.
 - **Confirmation.** `stop`, `permit`, `send`, the settings writes (`setting`, `setting_undo`,
   `setting_reload`, `config_edit_apply`), `start_peer`, `backlog_split` and the inbox's Allow once
   and Deny answer `needsConfirm` with a preview first; acon runs them after you confirm.
@@ -1797,9 +1804,10 @@ ahub study experiments --campaign rc-0123456789ab [--after 50]   # read the reco
   ids, counts, states and provenance and stubs its text as `[pii]`. Study tool arguments and results are kept out
   of hub-managed memory capture.
 - **Upgrades.** The daemon advertises `research_records`, `research_dispatch`, `research_dropped_offers`,
-  `research_experiments`, `research_comparisons` and `research_runners`. While the matching rows exist (for
-  `research_runners`, stored runner receipts or any `research.runners` block), a restart, upgrade or
-  recovery onto a release without the feature is refused.
+  `research_experiments`, `research_comparisons`, `research_runners` and `research_evidence` (#931). While the
+  matching rows exist (for `research_runners`, stored runner receipts or any `research.runners` block; for
+  `research_evidence`, stored claim evidence links), a restart, upgrade or recovery onto a release without the
+  feature is refused.
 
 ## Hub memory
 
@@ -3503,12 +3511,15 @@ are not active pruning references.
 A scoped upgrade leaves the global CLI and shared Claude plugin unchanged.
 Update the CLI separately with `bun add --global @staix/agent-hub@<version>`, then
 run `ahub setup` for the plugin. `ahub doctor` reports either tool when its known
-version is older than the selected running daemon; it installs nothing.
+version is older than the selected running daemon; it installs nothing. After a
+completed or scheduled upgrade, `ahub upgrade` prints the same step when the CLI
+or the plugin is older than the daemon it installed (#1179). It prints nothing with
+`--json` or for `ahub restart`, and the advice never fails an upgrade.
 
 | Runtime | Control protocol window | Legacy status field |
 | --- | --- | --- |
 | 0.12.20 through 0.25.0 | 16 only | `protocol: 16` |
-| 0.26.0 through 0.30.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
+| 0.26.0 through 0.31.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
 
 New clients choose the highest common protocol. The protocol window remains 16
 through 17, so the published protocol-16 client and channel plugin remain usable; unrelated feature
@@ -3516,9 +3527,11 @@ capabilities still require their own labels. A disjoint window refuses with 4426
 The compatibility-floor `protocol` field remains readable by old clients.
 
 Release N-1 is counted in minor versions, separately from this protocol window
-(#1164, family contract entelecheia/ai-workspace#70). For 0.30.x, N-1 is 0.29.0,
-the latest published patch of 0.29.x. Every patch on 0.30.x keeps that release
-baseline. A change that cannot retain it needs a new minor release.
+(#1164, family contract entelecheia/ai-workspace#70). For 0.31.x, N-1 is 0.30.0,
+the latest published patch of 0.30.x (exact `@staix/agent-mem` 0.20.1, control
+protocol 17 with descriptor floor 16). Every patch on 0.31.x keeps that release
+baseline. A change that cannot retain it needs a new minor release. For 0.30.x
+the baseline was 0.29.0.
 
 In the minor release PR, together with its `package.json` version bump, query
 the published versions of `@staix/agent-hub`,
@@ -3541,8 +3554,8 @@ entries contain no new N-1 statement and inherit their minor line's baseline.
 `release-prepare` moves the Unreleased text mechanically; the release author
 adds this minor-only statement during preparation and checks the fixture bump
 in that release PR. Never amend a tagged release section. The 0.30.0 N-1
-record added by #1164 is explicitly dated in Unreleased as a post-release note;
-it was not part of the published 0.30.0 tag or tarball. Its MCP ceiling includes
+record added by #1164 is an explicitly dated post-release note, published in the
+0.31.0 section; it was not part of the published 0.30.0 tag or tarball. Its MCP ceiling includes
 0.29.0 free-form `plan.sources` values: 0.30.0 requires registered source ids
 and rechecks existing stored plans even when accept sends no new plan.
 No compatibility statement grants release consent.
@@ -6090,7 +6103,7 @@ settled stubs fit the current response ceiling.
 Work that belongs to another repository that runs agent-hub on this machine goes onto that repository's board, not into this session. Its own roles plan, implement and review it, and each state change it reaches is reported back here. The first case: after a library you maintain publishes a release, raising its exact pin in a consumer belongs on the consumer's board.
 
 ```
-ahub task handoff --project <root|id> [<class>] <title...> [--path <p>]... [--issue <n>] [--task <n>] [--detail <text>] [--duplicate-ok <reason>]
+ahub task handoff --project <root|id> [<class>] <title...> [--path <p>]... [--issue <n>] [--task <n>] [--detail <text>] [--duplicate-ok <reason>] [--key <uuid>]
 ```
 
 - `--project` is the other project's canonical root or its id from `ahub projects`. It must be registered and its hub must be running (`ahub up` in that project). Nothing is queued: a hub that is not running is refused with that action.
@@ -6185,7 +6198,7 @@ A peer asks with `hub_ask` (the same tool for Claude, Codex, Kimi, Jcode, Pi and
 - **Expiry.** `questions.ttl_s` (60 to 2592000, default 86400) expires an unanswered question. The peer gets a hub notice of kind `status`, never an answer, and a waiting call is told `cancelled` with reason `expired`.
 - **Restart.** Open questions are stored in `hub.db` and survive a restart. A waiting call ends `pending` at shutdown and at a recovery `prepare`; the row stays open and its answer takes the late path. A row whose peer is back with a different native session is cancelled (`session_changed`); a peer that reports no session is never cancelled for it.
 - **Bounds.** At most 8 open questions per peer and 64 in all: a loop of questions turns into a refusal, not a flood.
-- **Answering.** Three surfaces, one control message (`answer`, console only; `questions`, console only, lists the open rows). In `ahub console`, `A` answers the oldest open question key by key: a digit picks an option (single choice moves on, multi toggles and Enter moves on), `o` types free text where the question allows it (a paste goes into that text, printable characters only, so a pasted Enter or Esc cannot send or leave the answer), Esc leaves and the question stays open. The question and every numbered option are shown in a wrapped area (the body in panels mode, the stream in stream mode), never in the one-line footer, which holds only the keys and the text being typed, so no option is ever off screen while a digit can pick it. A question id is the agent's, so the flow keeps its picks in Maps: `constructor` and `toString` are valid ids; `n` (the attention key) opens the same flow for the question it selects. The last answer is sent at once with no confirm step: answering is neither outward nor destructive. `ahub answer` lists the open questions; `ahub answer <set> <question>=<option>[,<option>] [--other [<question>=]<text>]` answers one (person only: an agent shell is refused before it reaches the hub). In the acon console an open question is an inbox item (`group: decision`, `kind: question`, title `<peer> asks: <first prompt>`, a stub for a private question) whose `answer` verb carries a form built from the stored row; it needs a console that advertises `inbox.form` and `action.meta`, otherwise the item is a plain decision with an `open` verb that links to the Agents panel. The plugin accepts an answer only with the console's own verified person `meta` (`via: "console"`), and refuses one without it before it reaches the hub; the verified identity is recorded on the answered row and on its `question` event (`person`, acon answers only). A stale or superseded set answers `{ ok: false, error }` naming its terminal state.
+- **Answering.** Three surfaces, one control message (`answer`, console only; `questions`, console only, lists the open rows). In `ahub console`, `A` answers the oldest open question key by key: a digit picks an option (single choice moves on, multi toggles and Enter moves on), `o` types free text where the question allows it (a paste goes into that text, printable characters only, so a pasted Enter or Esc cannot send or leave the answer), Esc leaves and the question stays open. The question and every numbered option are shown in a wrapped area (the body in panels mode, the stream in stream mode), never in the one-line footer, which holds only the keys and the text being typed, so no option is ever off screen while a digit can pick it. A question id is the agent's, so the flow keeps its picks in Maps: `constructor` and `toString` are valid ids; `n` (the attention key) opens the same flow for the question it selects. The last answer is sent at once with no confirm step: answering is neither outward nor destructive. `ahub answer` lists the open questions; `ahub answer <set> <question>=<option>[,<option>]... [--other [<question>=]<text>]...` answers one set (person only: an agent shell is refused before it reaches the hub). In the acon console an open question is an inbox item (`group: decision`, `kind: question`, title `<peer> asks: <first prompt>`, a stub for a private question) whose `answer` verb carries a form built from the stored row; it needs a console that advertises `inbox.form` and `action.meta`, otherwise the item is a plain decision with an `open` verb that links to the Agents panel. The plugin accepts an answer only with the console's own verified person `meta` (`via: "console"`), and refuses one without it before it reaches the hub; the verified identity is recorded on the answered row and on its `question` event (`person`, acon answers only). A stale or superseded set answers `{ ok: false, error }` naming its terminal state.
 - **Attention.** An open question is a `question` need (level `act`) and the status `waiting` while one is open, ranked after approvals and permission defaults. It is level-triggered: viewing or listing it never clears it; only an answer, a supersede, a cancel or an expiry does. The model carries the set id, the asking peer and the time, never a prompt or an option. The console reads the list only from a hub whose status lists the `questions` feature, and prints one stream line (peer and count, no text) when a new question arrives.
 - **Recovery.** A new daemon feature label, `questions`, marks the protocol. Recovery refuses a target without it while a question is open or an answer is still owed (`target lacks questions`), because an older daemon would silently ignore the table; answer or cancel the questions first. A recovery `prepare` ends every waiting call as `pending` at once, so a waiting `hub_ask` never holds the prepare for its window. The Claude plugin reports a hub without the label as "this hub does not support questions".
 - **Events.** `question` records `set`, `peer`, `event` (`asked`, `answered`, `pending`, `superseded`, `cancelled`, `expired`, `unavailable`), `latencyMs`, `surface`, `reason`, `questions` (a count) and `private`; never any text.

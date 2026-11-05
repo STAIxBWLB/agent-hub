@@ -17,7 +17,7 @@ ahub setup                                # installs the channel plugin and a pr
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.30.0
+bun add -g github:STAIxBWLB/agent-hub#v0.31.0
 ahub setup
 ```
 
@@ -29,11 +29,12 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move a running project to a newer release later, run `ahub upgrade` in a
 terminal in that project: it reviews the plan with you, applies it and follows
-it; other projects keep their version.
+it; other projects keep their version. It then names the `bun add -g` and
+`ahub setup` step when your global CLI or plugin is older than the new daemon.
 
 ## Upgrading to 0.31.0
 
-TODO(agent): say what changes for a person who upgrades, or that nothing does until they use something new.
+Nothing changes until you use something new: the hub.db schema and control protocol are unchanged (16 through 17), and `@staix/agent-mem` stays at 0.20.1. Two defaults are new. An accepted channel delivery that is never confirmed moves to needs-review after 10 minutes (`bus.accepted_settle_ms`). A Claude session that only inherits `AGENTHUB_CHANNEL=1`, without the native channel launch, attaches tools-only and reads its messages with `hub_inbox`; `ahub status` names the mode. A 0.30.0 hub sending a handoff here is refused when the spec issue already has an open task, until it is upgraded and passes `--duplicate-ok`.
 
 `ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.31.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
@@ -250,6 +251,8 @@ or set `OMNIROUTE_API_KEY`. The `.agenthub/routing.toml` that `ahub init` writes
 | `ahub status` | peers, queues, pauses; `ahub budget` for quota windows |
 | `ahub usage [--by peer\|task\|issue\|pr\|release\|day\|model]` | tokens per group, each number with its source; `ahub usage limits` for pauses and resets |
 | `ahub worktrees` | live and settled worktrees; `ahub worktrees tidy` previews what is safe to remove, and only you confirm it with `--confirm <fingerprint>` |
+| `ahub answer` | the questions agents asked you with `hub_ask`; `ahub answer <set> <question>=<option>` answers one set, or press `A` in `ahub console` |
+| `ahub results [--unread]` | what the runs you started left behind, unread ones marked `*`; `--read <id>` or `--read-all` marks them read, listing never does |
 | `ahub agents` | which installed agent CLI versions the hub accepts; `ahub agents trust <id> <version>` accepts an untested one on this machine |
 | `ahub memory profile-check` | a person's read-only check of running memory bindings in the current registry |
 | `ahub ask <question>` | what the board, shared memory and the log say, with the ids the answer rests on |
@@ -273,7 +276,7 @@ benchmark runs every second. No build step, web server command or browser
 extension is needed.
 
 Use the page to pause/resume a peer, send a console message, propose/assign tasks,
-and allow/deny agent permission requests. Local-worker and Pi requests show no tool
+allow/deny agent permission requests and mark results read. Local-worker and Pi requests show no tool
 contents: inspect them with `ahub tail`, then use `ahub permit <id> <option>` to
 allow. They can be denied on the page. PII task details remain available only via
 `ahub task show <id>` in the terminal. The page also starts a peer in its start
