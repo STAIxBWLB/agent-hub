@@ -261,6 +261,9 @@ export class RoomChat {
     this.refreshTargets();
   }
   linkState(store: RoomStore, name: string, link: RoomLink, state: RoomLinkState): void {
+    // stop() fences callbacks as part of ordinary shutdown; it is not a room
+    // trust revocation and must leave durable outbound intents resumable.
+    if (this.stopped) return;
     const binding = this.bindings.get(name);
     if (!binding || binding.store !== store || binding.link !== link) return;
     binding.online = state === "online";
