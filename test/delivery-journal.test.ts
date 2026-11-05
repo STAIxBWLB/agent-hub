@@ -217,6 +217,7 @@ test("corrupt review provenance reopens as unknown while ordinary journal operat
     const reopened = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i2" });
     expect(reopened.get("ordinary-row")).toMatchObject({ state: "queued", peer: "codex" });
     expect(reopened.reviewInputState("claude", sessionHash)).toEqual({ state: "unknown" });
+    expect(reopened.reviewInputEvidence("claude", sessionHash)).toMatchObject({ provenance: "corrupt", sessionState: "unknown" });
     expect(reopened.reviewInputHealth()).toMatchObject({ state: "corrupt", cause: "provenance_corrupt" });
     expect(reopened.reviewInputHealth().nextStep).toContain("review-input provenance");
     expect(reopened.hasReviewInputState()).toBe(true);
@@ -239,6 +240,47 @@ test("review provenance digests bind the completeness flags", () => {
     expect(journal.reviewInputState("claude", "a".repeat(64))).toEqual({ state: "unknown" });
     db.query("UPDATE delivery_meta SET review_input_complete=1,review_input_coverage_complete=0 WHERE project_id='p'").run();
     expect(journal.reviewInputState("claude", "a".repeat(64))).toEqual({ state: "unknown" });
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("reopened incomplete provenance is corrupt and cannot release peer or session holds", () => {
+  const { dir, journal } = open(), peer = "claude", sessionHash = "a".repeat(64), inputHash = "b".repeat(64);
+  try {
+    journal.holdReviewInput({ peer, sessionHash, inputHash });
+    journal.markReviewInputIncomplete(peer);
+    (journal as unknown as { writeReviewInputProvenance(complete: boolean, coverageComplete: boolean): void }).writeReviewInputProvenance(false, true);
+    journal.close();
+
+    const reopened = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "incomplete-reopened" });
+    const reopenedDb = (reopened as unknown as { db: Database }).db;
+    try {
+      expect(reopened.reviewInputEvidence(peer, sessionHash)).toMatchObject({ provenance: "corrupt", sessionState: "unknown" });
+      expect(reopened.reviewInputHealth()).toMatchObject({ state: "corrupt", cause: "provenance_incomplete" });
+      expect(() => reopened.clearReviewInputIncomplete(peer)).toThrow("provenance is incomplete");
+      expect(() => reopened.clearReviewInput(peer, sessionHash)).toThrow("provenance is incomplete");
+      expect(reopenedDb.query("SELECT input_hash FROM review_input_sessions WHERE project_id='p' AND peer=? AND session_hash=?").get(peer, sessionHash)).toMatchObject({ input_hash: inputHash });
+      expect(reopenedDb.query("SELECT peer FROM review_input_incomplete_peers WHERE project_id='p' AND peer=?").get(peer)).toMatchObject({ peer });
+    } finally { reopened.close(); }
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("reopened bad provenance digest stays corrupt after restart marks completeness false", () => {
+  const { dir, journal } = open(), peer = "claude", sessionHash = "a".repeat(64), inputHash = "b".repeat(64);
+  const db = (journal as unknown as { db: Database }).db;
+  try {
+    journal.holdReviewInput({ peer, sessionHash, inputHash });
+    db.query("UPDATE delivery_meta SET review_input_digest=? WHERE project_id='p'").run("0".repeat(64));
+    journal.close();
+
+    const reopened = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "bad-digest-reopened" });
+    const reopenedDb = (reopened as unknown as { db: Database }).db;
+    try {
+      expect(reopenedDb.query("SELECT review_input_complete FROM delivery_meta WHERE project_id='p'").get()).toMatchObject({ review_input_complete: 0 });
+      expect(reopened.reviewInputEvidence(peer, sessionHash)).toMatchObject({ provenance: "corrupt", sessionState: "unknown" });
+      expect(reopened.reviewInputHealth()).toMatchObject({ state: "corrupt", cause: "provenance_corrupt" });
+      expect(() => reopened.clearReviewInputIncomplete(peer)).toThrow("integrity mismatch");
+      expect(() => reopened.clearReviewInput(peer, sessionHash)).toThrow("integrity mismatch");
+    } finally { reopened.close(); }
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -308,6 +350,20 @@ test("legacy coverage ignores queued review work but retains handed accepted wor
       expect(evidence.sessionState).toBe(state === "queued" ? "clean" : "unknown");
     } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
   }
+});
+
+test("legacy coverage retains a handed host-stamped review response until it settles", () => {
+  const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-response-"));
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-response" });
+  try {
+    const response = newEnvelope("codex", "review response", { kind: "chat", refs: { reviewResponse: "reviewer-request-7" } });
+    const row = source.journal.createDelivery({ id: "review-response", peer: "claude", state: "accepted", createdAt: response.ts, originals: [response], out: [response] });
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    expect(target.importSnapshot(legacySnapshot, "legacy-review-response")).toBe(true);
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    target.transition(row.id, "completed");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+  } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
 });
 
 test("legacy coverage completes after its final review delivery settles and prunes NULL clean receipts", () => {

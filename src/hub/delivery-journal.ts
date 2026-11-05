@@ -675,14 +675,15 @@ export class DeliveryJournal {
     const digest = reviewInputDigest(instanceId, REVIEW_INPUT_VERSION, complete, coverageComplete, count, holds, incompletePeers, incompleteSessions);
     return { version: REVIEW_INPUT_VERSION, instanceId, complete, coverageComplete, count, digest, holds, incompletePeers, incompleteSessions };
   }
-  /** Legacy coverage waits only for review deliveries that may already have been consumed. */
+  /** Legacy coverage waits for review deliveries that may already have been consumed. */
   private hasUnsettledReviewInput(): boolean {
     // deliveries_pending indexes these states by project; queued work is not consumption evidence.
     const row = this.db.query(`SELECT 1 FROM deliveries d
       WHERE d.project_id=? AND d.state IN ('dispatching','accepted','needs_review')
         AND EXISTS (SELECT 1 FROM json_each(d.originals) e
-          WHERE json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
-            AND json_type(e.value,'$.refs.reviewPackage')='text')
+          WHERE (json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review')
+            OR (json_extract(e.value,'$.from') NOT IN ('hub','user') AND json_extract(e.value,'$.kind') IN ('chat','status')
+              AND json_type(e.value,'$.refs.reviewResponse')='text'))
       LIMIT 1`).get(this.projectId);
     return !!row;
   }
@@ -822,6 +823,7 @@ export class DeliveryJournal {
     const hold = reviewInputHold(value, "review input hold");
     if (hold.inputHash === null) fail("review input hold requires a positive input hash");
     const prior = this.readReviewInputProvenance();
+    if (!prior.complete) fail("review input provenance is incomplete");
     const existing = prior.holds.find(row => row.peer === hold.peer && row.sessionHash === hold.sessionHash);
     const pending = prior.incompleteSessions.some(row => row.peer === hold.peer && row.sessionHash === hold.sessionHash);
     if (existing?.inputHash === hold.inputHash) return;
@@ -870,6 +872,7 @@ export class DeliveryJournal {
       this.refreshReviewInputCoverage();
       const peer = text(peerValue, "review input peer", 256), sessionHash = sessionHashValue === undefined ? undefined : hashText(sessionHashValue, "review input session hash");
       const provenance = this.readReviewInputProvenance();
+      if (!provenance.complete) return { provenance: "corrupt", coverageComplete: false, incompletePeer: false, incompleteSession: false, sessionState: "unknown" };
       const sessionState = this.reviewInputState(peer, sessionHash).state;
       return {
         provenance: "available",
@@ -888,7 +891,7 @@ export class DeliveryJournal {
     try {
       this.refreshReviewInputCoverage();
       const provenance = this.readReviewInputProvenance();
-      if (!provenance.complete) return { state: "incomplete", cause: "provenance_incomplete", nextStep: "Keep affected peers held and inspect the review-input provenance record." };
+      if (!provenance.complete) return { state: "corrupt", cause: "provenance_incomplete", nextStep: "Keep affected peers held and inspect or repair only review-input provenance, preserving delivery and task state." };
       if (provenance.incompletePeers.length || provenance.incompleteSessions.length) return { state: "incomplete", cause: "incomplete_markers", nextStep: "Verify the peer's next ordinary input or confirmed session change to clear its incomplete marker." };
       if (!provenance.coverageComplete) return { state: "incomplete", cause: "legacy_coverage", nextStep: "Allow existing review-marked deliveries to settle; coverage clears when the journal confirms none remain." };
       return { state: "healthy", cause: null, nextStep: "No action required." };
@@ -905,6 +908,7 @@ export class DeliveryJournal {
     this.ensureOpen();
     const peer = text(peerValue, "review input peer", 256), sessionHash = hashText(sessionHashValue, "review input session hash");
     const prior = this.readReviewInputProvenance(), existing = prior.holds.find(row => row.peer === peer && row.sessionHash === sessionHash);
+    if (!prior.complete) fail("review input provenance is incomplete");
     const pending = prior.incompleteSessions.some(row => row.peer === peer && row.sessionHash === sessionHash);
     const incompletePeer = prior.incompletePeers.includes(peer);
     const legacyConfirmation = !prior.coverageComplete && !existing && !pending;
@@ -931,6 +935,7 @@ export class DeliveryJournal {
   clearReviewInputIncomplete(peerValue: string): void {
     this.ensureOpen();
     const peer = text(peerValue, "incomplete review input peer", 256), prior = this.readReviewInputProvenance();
+    if (!prior.complete) fail("review input provenance is incomplete");
     if (!prior.incompletePeers.includes(peer)) return;
     this.transaction(() => {
       const current = this.readReviewInputProvenance();
@@ -968,6 +973,7 @@ export class DeliveryJournal {
     this.ensureOpen();
     const peer = text(peerValue, "incomplete review input peer", 256);
     const prior = this.readReviewInputProvenance();
+    if (!prior.complete) fail("review input provenance is incomplete");
     const sessionHash = sessionHashValue === undefined ? undefined : hashText(sessionHashValue, "incomplete review input session hash");
     if (sessionHash !== undefined && prior.incompleteSessions.some(row => row.peer === peer && row.sessionHash === sessionHash)) return;
     if (sessionHash === undefined && prior.incompletePeers.includes(peer)) return;
