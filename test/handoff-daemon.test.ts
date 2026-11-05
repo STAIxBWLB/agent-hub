@@ -21,13 +21,13 @@ const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
 type Project = Awaited<ReturnType<typeof project>>;
-async function project(name: string, home: string, options: { roles?: Record<string, string[]>; features?: string[]; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }> } = {}) {
+async function project(name: string, home: string, options: { roles?: Record<string, string[]>; features?: string[]; handoffRequestMs?: number; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }> } = {}) {
   const root = realPath(mkdtempSync(join(tmpdir(), `ahub-handoff-${name}-`))), stateDir = join(root, ".agenthub", "state");
   mkdirSync(stateDir, { recursive: true }); writeFileSync(join(root, ".agenthub", "config.json"), "{}");
   writeFileSync(join(root, ".agenthub", "routing.toml"), '[local]\nfixed_model = "coding"\n[signals]\npii_patterns = ["\\\\b\\\\d{6}-\\\\d{7}\\\\b"]\n' + (options.screen ? 'pii_screen = "local"\n' : ""));   // the shipped PII pattern (Korean resident numbers), and nothing else
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const registry = new Registry(join(home, "registry.db")), registered = registry.register(root); registry.close?.();
-  const daemon = await startDaemon({ cwd: root, stateDir, projectId: registered.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, notifier: () => {}, ...(options.screen ? { piiScreen: options.screen } : {}),
+  const daemon = await startDaemon({ cwd: root, stateDir, projectId: registered.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, notifier: () => {}, ...(options.screen ? { piiScreen: options.screen } : {}), ...(options.handoffRequestMs ? { handoffRequestMs: options.handoffRequestMs } : {}),
     config: { ...DEFAULT_CONFIG, roles: options.roles ?? { claude: ["planner"], codex: ["implementer"] }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, research: { ...DEFAULT_CONFIG.research, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false },
@@ -48,6 +48,7 @@ async function pair(options: { a?: Parameters<typeof project>[2]; b?: Parameters
 }
 const task = (client: ControlClient, op: string, args: Record<string, unknown> = {}) => client.request({ t: "task", op, args });
 const body = (reply: any) => { expect(reply.ok, JSON.stringify(reply)).toBe(true); return JSON.parse(reply.text); };
+const readOnly = (p: Project) => { const read = boardOf(p); const rows = { handoffOutbound: () => { try { return read.board.handoffOutbound(); } finally { read.close(); } } }; return rows; };
 const boardOf = (p: Project) => { const board = new Board(join(p.stateDir, "hub.db")); return { board, close: () => board.close() }; };
 
 test("AC1: a handoff from A to a running B creates an ownerless proposed task in B through Tasks, with its origin shown, and B's routing takes it from there", async () => {
@@ -450,4 +451,160 @@ test("#1175 the real ahub process passes --duplicate-ok, refuses a duplicate nam
   expect(admitted.code, admitted.stderr).toBe(0); expect(admitted.stdout).toContain(`Handed off to project ${b.id}`);
   expect(rowsOf(b)).toHaveLength(2);
   expect(rowsOf(b)[1]!.detail).toContain("duplicate acknowledged by the sender: separate leg");
+}, 60_000);
+
+// #731 (agent-hub#1203) T1, AC1: a target that answers after the origin's timeout leaves ONE task, and the same key returns it.
+test("#731 AC1: a target that answers after the origin's timeout files one task; the origin reports outcome_unknown with the key, a retry with it returns that task, and follow-backs arrive", async () => {
+  let release!: () => void, entered = 0;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  // the first screen call is held open past the origin's 300 ms request budget; later ones pass at once
+  const screen = async () => { if (entered++ < 2) await held; return { label: "clear" as const, ms: 0 }; };
+  const { a, b } = await pair({ a: { handoffRequestMs: 300 }, b: { screen } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const received: Envelope[] = [];
+  const listening = await a.connect({ role: "peer", peer: "claude", channel: true });
+  listening.onPush = message => { if (message.t === "deliver") received.push(...(message.envs ?? [message.env])); };
+  const first = task(planner, "hub_task_handoff", { project: b.id, title: "Chore that B files late" });
+  await until(() => entered >= 1, "B is screening the first attempt");
+  const unknown = await first;                                       // the origin's own timeout (and its one same-key resend) pass while B is still screening
+  expect(unknown.ok).toBe(false);
+  expect(String(unknown.error)).toContain("did not confirm");
+  const key = /--key ([0-9a-f-]{36})/.exec(String(unknown.error))?.[1];
+  expect(key, String(unknown.error)).toBeDefined();
+  expect(readOnly(a).handoffOutbound()).toEqual([]);                 // nothing is recorded as sent, and nothing is claimed as refused
+  release();                                                         // B now finishes BOTH attempts of the same key
+  await until(() => rowsOf(b).length >= 1, "B filed the task");
+  await Bun.sleep(300);
+  expect(rowsOf(b)).toHaveLength(1);                                 // one task, never two
+  const retried = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore that B files late", handoffKey: key }));
+  expect(retried).toMatchObject({ project: b.id, task: rowsOf(b)[0]!.id });
+  expect(rowsOf(b)).toHaveLength(1);
+  expect(readOnly(a).handoffOutbound()).toMatchObject([{ remoteProject: b.id, remoteTask: retried.task, state: "proposed" }]);   // now the origin knows the task, so follow-backs are not refused
+  const implementer = await b.connect({ role: "tools", peer: "codex" });
+  { const codex = new FixturePeer("codex"); b.daemon.bus.add(codex); await codex.start(); }
+  expect((await task(b.person, "task_assign", { id: retried.task, peer: "codex", role: "owner" })).ok).toBe(true);
+  expect((await task(implementer, "hub_task_accept", { id: retried.task })).ok).toBe(true);
+  await until(() => received.some(env => env.body === `agent-hub task ${retried.task} accepted`), "accepted reached A after the retry");
+}, 60_000);
+
+test("#731 AC1: the same key with a different request is refused, never answered with the earlier task; a malformed key is refused", async () => {
+  const { a, b } = await pair();
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const key = "6f1c2c0e-8b1a-4c3e-9d3a-1b2c3d4e5f60";
+  const sent = body(await task(planner, "hub_task_handoff", { project: b.id, title: "One request", handoffKey: key }));
+  expect(body(await task(planner, "hub_task_handoff", { project: b.id, title: "One request", handoffKey: key })).task).toBe(sent.task);   // the same request replays to the same task
+  const other = await task(planner, "hub_task_handoff", { project: b.id, title: "A different request", handoffKey: key });
+  expect(other.ok).toBe(false); expect(String(other.error)).toContain("already used for a different request");
+  const bad = await task(planner, "hub_task_handoff", { project: b.id, title: "x", handoffKey: "not-a-uuid" });
+  expect(bad.ok).toBe(false); expect(String(bad.error)).toContain("UUID");
+  expect(rowsOf(b)).toHaveLength(1);
+});
+
+test("#731 AC1: a replayed key is answered before the duplicate check, so a handoff that named a spec issue is not refused as a duplicate of itself", async () => {
+  const { a, b } = await pair();
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const key = "0b8f3f3e-2d52-4f7e-8f55-5a7a0f2d9c11";
+  const sent = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Spec work for #77", issue: 77, handoffKey: key }));
+  const replay = await task(planner, "hub_task_handoff", { project: b.id, title: "Spec work for #77", issue: 77, handoffKey: key });
+  expect(replay.ok, JSON.stringify(replay)).toBe(true); expect(body(replay).task).toBe(sent.task);
+  const fresh = await task(planner, "hub_task_handoff", { project: b.id, title: "Spec work for #77", issue: 77 });   // a NEW request on the same issue is still a duplicate
+  expect(fresh.ok).toBe(false); expect(String(fresh.error)).toContain("already has open");
+});
+
+test("#731: the task and its origin row are written together, and the by-key lookup answers only the asking project", async () => {
+  const { a, b } = await pair();
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const sent = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" }));
+  const read = boardOf(b);
+  try {
+    const origin = read.board.handoffOrigin(sent.task)!;
+    expect(origin.projectId).toBe(a.id);
+    // the key the origin minted is stored with the origin row; the lookup finds the task and answers nobody else
+    const row = (read.board as any).db.query("SELECT handoff_key FROM task_handoff_origin WHERE task_id=?").get(sent.task) as { handoff_key: string };
+    expect(row.handoff_key).toMatch(/^[0-9a-f-]{36}$/);
+    const console_ = await b.connect({ role: "console" });
+    const found = await console_.request({ t: "task_handoff_by_key", projectId: a.id, key: row.handoff_key });
+    expect(found).toMatchObject({ ok: true, found: true, task: sent.task, state: "proposed" });
+    const stranger = await console_.request({ t: "task_handoff_by_key", projectId: "p_someone_else", key: row.handoff_key });
+    expect(stranger).toMatchObject({ ok: true, found: false });
+    const agent = await b.connect({ role: "tools", peer: "codex" });
+    const refused = await agent.request({ t: "task_handoff_by_key", projectId: a.id, key: row.handoff_key });
+    expect(refused.ok).toBe(false); expect(refused.t).toBe("task_handoff_by_key");
+  } finally { read.close(); }
+});
+
+// #731, AC4 (H3): the follow-back names the remote task, not a local one, so a local task with the same number cannot make the bus drop it.
+test("#731 AC4: a follow-back is delivered even when the origin board has a cancelled or approved local task with the same number as the remote task", async () => {
+  const { a, b } = await pair();
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const received: Envelope[] = [];
+  const listening = await a.connect({ role: "peer", peer: "claude", channel: true });
+  listening.onPush = message => { if (message.t === "deliver") received.push(...(message.envs ?? [message.env])); };
+  // B first gets two tasks of its own, so the handed-off task is #3 there; A's local #3 is made, then cancelled
+  expect((await task(b.person, "hub_task_propose", { title: "b one", class: "implement" })).ok).toBe(true);
+  expect((await task(b.person, "hub_task_propose", { title: "b two", class: "implement" })).ok).toBe(true);
+  for (const title of ["a one", "a two", "a three"]) expect((await task(a.person, "hub_task_propose", { title, class: "implement" })).ok).toBe(true);
+  expect((await task(a.person, "hub_task_cancel", { id: 3, reason: "stale" })).ok).toBe(true);
+  const sent = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B", task: 1 }));
+  expect(sent.task).toBe(3);                                         // the remote task number equals A's cancelled local #3
+  { const codex = new FixturePeer("codex"); b.daemon.bus.add(codex); await codex.start(); }
+  const implementer = await b.connect({ role: "tools", peer: "codex" });
+  expect((await task(b.person, "task_assign", { id: sent.task, peer: "codex", role: "owner" })).ok).toBe(true);
+  expect((await task(implementer, "hub_task_accept", { id: sent.task })).ok).toBe(true);
+  await until(() => received.some(env => env.body === `agent-hub task 3 accepted`), "the follow-back reached A despite A's cancelled #3");
+  const env = received.find(e => e.body === "agent-hub task 3 accepted")!;
+  expect(env.refs).toEqual({ handoff: { project: b.id, task: 3 } });   // no refs.task: it is not about any local task
+});
+
+test("#731 AC7 of T1: an older target without task_handoff_key is sent no key and keeps today's behavior", async () => {
+  const { a, b } = await pair();
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const statusFile = join(b.stateDir, "status.json"), real = readFileSync(statusFile, "utf8");
+  const older = JSON.parse(real); older.features = older.features.filter((feature: string) => feature !== "task_handoff_key");
+  writeFileSync(statusFile, JSON.stringify(older));
+  const sent = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for an older B" }));
+  expect(sent.task).toBe(1);
+  const read = boardOf(b);
+  try { expect(((read.board as any).db.query("SELECT handoff_key, request_digest FROM task_handoff_origin").get())).toEqual({ handoff_key: null, request_digest: null }); } finally { read.close(); }
+  expect(DAEMON_FEATURES).toContain("task_handoff_key");
+}, 60_000);
+
+// #731 review: a refusal of the RESEND does not settle a first attempt whose outcome is unknown.
+test("#731 a resend refused while the first attempt is still screening ends as outcome_unknown with the key, never as a refusal; the retry with the key returns the task the first attempt filed", async () => {
+  let release!: () => void, calls = 0;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  // call 1 (the first attempt) is held open; call 2 (the resend) is refused by the screen as unknown; any later call is clear
+  const screen = async () => { const n = ++calls; if (n === 1) { await held; return { label: "clear" as const, ms: 0 }; } if (n === 2) return { label: "unknown" as const, ms: 0 }; return { label: "clear" as const, ms: 0 }; };
+  const { a, b } = await pair({ a: { handoffRequestMs: 300 }, b: { screen } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const reply = await task(planner, "hub_task_handoff", { project: b.id, title: "Chore whose resend is refused" });
+  expect(reply.ok).toBe(false);
+  expect(String(reply.error)).toContain("did not confirm");                                // not "invalid": the first attempt may still file it
+  expect(String(reply.error)).toContain("the resend was refused");
+  const key = /--key ([0-9a-f-]{36})/.exec(String(reply.error))?.[1];
+  expect(key, String(reply.error)).toBeDefined();
+  expect(readOnly(a).handoffOutbound()).toEqual([]);
+  release();                                                                               // the first attempt now clears its screen and files the task
+  await until(() => rowsOf(b).length === 1, "the first attempt filed the task");
+  const retried = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore whose resend is refused", handoffKey: key }));
+  expect(retried.task).toBe(rowsOf(b)[0]!.id);
+  expect(rowsOf(b)).toHaveLength(1);
+}, 60_000);
+
+test("#731 a resend that is refused after the first attempt filed the task is answered by the by-key lookup with that task, not reported as a refusal", async () => {
+  // call 1 (the first attempt) is held until the resend's screen starts; the resend's screen then lets the first attempt file the task before it refuses, so the lookup must find it
+  let calls = 0, release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const screen = async () => {
+    const n = ++calls;
+    if (n === 1) { await held; return { label: "clear" as const, ms: 0 }; }
+    release(); await Bun.sleep(150);
+    return { label: "unknown" as const, ms: 0 };
+  };
+  const { a, b } = await pair({ a: { handoffRequestMs: 300 }, b: { screen } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const sent = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore filed during recovery" }));
+  expect(rowsOf(b)).toHaveLength(1);
+  expect(sent.task).toBe(rowsOf(b)[0]!.id);                                                // the lookup established the task the first attempt filed
+  expect(readOnly(a).handoffOutbound()).toMatchObject([{ remoteProject: b.id, remoteTask: sent.task }]);
 }, 60_000);

@@ -166,7 +166,7 @@ import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, sta
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalPath, realPath, hubHome } from "./project.ts";
-import { HandoffRefusal, checkTarget, parseHandoff, resolveTarget, handoffEventFor, type HandoffEvent } from "./handoff.ts";
+import { HandoffRefusal, checkTarget, handoffOutcomeUnknown, parseHandoff, resolveTarget, handoffEventFor, type HandoffEvent } from "./handoff.ts";
 import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, profileTaskTools, sessionTitleTools } from "./hub-tools.ts";
@@ -196,7 +196,7 @@ import { ACCEPTED_SETTLE_TIMEOUT_REASON, DeliveryJournal } from "./delivery-jour
 import { assertHubDbCompatible } from "./db-schema.ts";
 import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { codeGroup } from "./task-code-group.ts";
-import { ControlClient, DAEMON_FEATURES, PROTOCOL, PROTOCOL_MIN, readControl, stateDirFor } from "./control-client.ts";
+import { ControlClient, DAEMON_FEATURES, HANDOFF_CONNECT_MS, HANDOFF_LOOKUP_CONNECT_MS, HANDOFF_LOOKUP_REQUEST_MS, HANDOFF_REQUEST_MS, PROTOCOL, PROTOCOL_MIN, readControl, stateDirFor } from "./control-client.ts";
 import { negotiateProtocol, protocolWindow } from "./protocol-window.ts";
 import { attachEvent, originOf, type Origin } from "./provenance.ts";
 import { mintSessionId, sessionGate } from "./session-identity.ts";
@@ -761,6 +761,8 @@ export interface DaemonOptions {
   schedulesHeld?: () => boolean;
   /** Test seam: replaces the PII screen's model call, so a test can hold a screen open. */
   piiScreen?: (text: string) => Promise<PiiVerdict>;
+  /** Test seam (#731): how long a handoff waits for the target's answer before it counts as outcome unknown, default 30 s. */
+  handoffRequestMs?: number;
   /** Test seam: how often the scheduled security-scan baseline checks whether a scan is due, default one hour (the configured `every_h` still decides). */
   securityScanEveryMs?: number;
   /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
@@ -4268,23 +4270,66 @@ export async function startDaemon(opts: DaemonOptions) {
     const target = resolveTarget(request.project, registeredProjects(hubHome()).map(project => ({ id: project.id, root: project.root, stateDir: project.stateDir })), self, canonicalPath);
     const descriptor = readControl(target.stateDir);
     checkTarget(target, descriptor && { ...(descriptor.features ? { features: descriptor.features } : {}), ...(descriptor.projectId ? { projectId: descriptor.projectId } : {}) });
-    let client: ControlClient;
-    try { client = await ControlClient.connect(target.stateDir, { role: "console", projectRoot: descriptor!.cwd ?? target.root }, 5000); }
-    catch { throw new HandoffRefusal("not_running", `the hub of ${target.id} did not answer; run \`ahub up\` in ${target.root}, then hand the task off again (handoffs are not queued)`); }
-    try {
-      const { project: _project, task: originTask, ...body } = request;
-      const reply = await client.request({ t: "task_handoff", origin: { projectId, peer: by, ...(originTask === undefined ? {} : { taskId: originTask }) }, request: body }, 30_000);
-      if (!reply.ok) {
-        const text = sanitize(String(reply.error ?? "the target refused the handoff")).slice(0, 300);
-        // #1175: a target from before the duplicate check refuses the new field as unknown; name the step instead of repeating its closed-shape error.
-        if (request.duplicate_ok !== undefined && /unknown field: duplicate_ok/.test(text)) throw new HandoffRefusal("older_target", `the hub of ${target.id} predates duplicate_ok: run \`ahub upgrade\` in ${target.root}, or hand the task off without duplicate_ok`);
-        throw new HandoffRefusal("invalid", text);
+    // #731 (agent-hub#1203): the request carries a key this origin minted (or the caller passed to retry), so the target files it once however many times it arrives. Only a target that advertises
+    // `task_handoff_key` is sent one: an older target refuses the unknown field, and keeps today's behavior without it.
+    const keyed = descriptor!.features?.includes("task_handoff_key") === true;
+    const { project: _project, task: originTask, handoffKey: given, ...body } = request;
+    const key = keyed ? given ?? randomUUID() : undefined;
+    const requestMs = opts.handoffRequestMs ?? HANDOFF_REQUEST_MS;
+    const attempt = async (): Promise<{ reply: any } | { unreachable: true }> => {
+      let client: ControlClient;
+      try { client = await ControlClient.connect(target.stateDir, { role: "console", projectRoot: descriptor!.cwd ?? target.root }, HANDOFF_CONNECT_MS); }
+      catch { return { unreachable: true }; }
+      try { return { reply: await client.request({ t: "task_handoff", origin: { projectId, peer: by, ...(originTask === undefined ? {} : { taskId: originTask }) }, request: key === undefined ? body : { ...body, handoffKey: key } }, requestMs) }; }
+      finally { client.close(); }
+    };
+    const result = await attempt();
+    if ("unreachable" in result) throw new HandoffRefusal("not_running", `the hub of ${target.id} did not answer; run \`ahub up\` in ${target.root}, then hand the task off again (handoffs are not queued)`);
+    // A timeout or a closed connection is not a refusal: the target may have written the task. With a key the same request is sent once more (the target answers a key it has with its task);
+    // then the target is asked by key, and only then is the outcome reported as unknown, naming the key to retry with. The first attempt keeps running on the target after the origin stopped waiting, so
+    // a refusal of the RESEND settles nothing about it (the resend's PII screen may refuse while the first one's still pending and later files the task): it is kept as a note, and the lookup still runs.
+    let reply = result.reply, resendRefused: string | undefined;
+    if (key !== undefined && handoffOutcomeUnknown(reply)) {
+      const again = await attempt();
+      if ("reply" in again) {
+        if (again.reply.ok === true || handoffOutcomeUnknown(again.reply)) reply = again.reply;
+        else resendRefused = sanitize(String(again.reply.error ?? "the resend was refused")).slice(0, 160);
       }
-      const remote = Number(reply.task);
-      if (!Number.isSafeInteger(remote) || remote < 1) throw new HandoffRefusal("invalid", "the target answered without a task id");
-      tasks.handoffSent(by, { projectId: target.id }, remote, request.title, request.task);
-      return { project: target.id, task: remote, state: String(reply.state ?? "proposed"), ...(typeof reply.note === "string" && reply.note ? { note: sanitize(reply.note).slice(0, 300) } : {}) };
-    } finally { client.close(); }
+    }
+    if (key !== undefined && handoffOutcomeUnknown(reply)) {
+      const found = await handoffStateByKey(target, descriptor!.cwd ?? target.root, key);
+      if (found) reply = { ok: true, task: found.task, state: found.state, byKey: found };
+    }
+    if (handoffOutcomeUnknown(reply)) {
+      const cause = sanitize(String(reply.error)).slice(0, 120) + (resendRefused ? `; the resend was refused: ${resendRefused}` : "");
+      throw new HandoffRefusal("outcome_unknown", key === undefined
+        ? `the hub of ${target.id} did not confirm the handoff (${cause}); it may exist on its board: check \`ahub board\` there before handing it off again. That hub is too old to take a handoff key (run \`ahub upgrade\` in ${target.root}), so a retry could file a second task`
+        : `the hub of ${target.id} did not confirm the handoff (${cause}); it may exist on its board. Retry with the same key and it is filed once: --key ${key} (handoffKey ${key} in hub_task_handoff)`);
+    }
+    if (!reply.ok) {
+      const text = sanitize(String(reply.error ?? "the target refused the handoff")).slice(0, 300);
+      // #1175: a target from before the duplicate check refuses the new field as unknown; name the step instead of repeating its closed-shape error.
+      if (request.duplicate_ok !== undefined && /unknown field: duplicate_ok/.test(text)) throw new HandoffRefusal("older_target", `the hub of ${target.id} predates duplicate_ok: run \`ahub upgrade\` in ${target.root}, or hand the task off without duplicate_ok`);
+      throw new HandoffRefusal("invalid", text);
+    }
+    const remote = Number(reply.task);
+    if (!Number.isSafeInteger(remote) || remote < 1) throw new HandoffRefusal("invalid", "the target answered without a task id");
+    tasks.handoffSent(by, { projectId: target.id }, remote, request.title, request.task);
+    // An answer that came from the by-key lookup, or a replay, may already be past "proposed": record where the target says it stands, so the origin is not behind until some later event.
+    const known = reply.byKey ?? (reply.replayed === true ? await handoffStateByKey(target, descriptor!.cwd ?? target.root, key) : undefined);
+    if (known && known.state !== "proposed") tasks.handoffCaughtUp(target.id, [known]);
+    return { project: target.id, task: remote, state: String(reply.state ?? "proposed"), ...(typeof reply.note === "string" && reply.note ? { note: sanitize(reply.note).slice(0, 300) } : {}) };
+  }
+  /** #731 ORIGIN side: where the task a handoff key made stands on the target, or undefined when it holds none or cannot be asked. Never throws: it only narrows an unknown outcome. */
+  async function handoffStateByKey(target: { id: string; stateDir: string; root: string }, projectRoot: string, key: string | undefined): Promise<{ task: number; state: string; pr?: number; head?: string } | undefined> {
+    if (key === undefined) return undefined;
+    try {
+      const client = await ControlClient.connect(target.stateDir, { role: "console", projectRoot }, HANDOFF_LOOKUP_CONNECT_MS);
+      try {
+        const reply = await client.request({ t: "task_handoff_by_key", projectId, key }, HANDOFF_LOOKUP_REQUEST_MS);
+        return reply.ok === true && reply.found === true && Number.isSafeInteger(reply.task) && typeof reply.state === "string" ? { task: reply.task, state: reply.state, ...(Number.isSafeInteger(reply.pr) ? { pr: reply.pr } : {}), ...(typeof reply.head === "string" ? { head: reply.head } : {}) } : undefined;
+      } finally { client.close(); }
+    } catch { return undefined; }
   }
   /** The head a handoff reports: the owner's `refs.commit`, else the receipt's verified head. Only a full 40-hex SHA crosses; anything else is dropped. */
   const handoffHead = (task: Task): string | undefined => { const head = task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead; return typeof head === "string" && /^[0-9a-f]{40}$/.test(head) ? head : undefined; };
@@ -11008,6 +11053,13 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "console") return void reply({ t: "task_handoff_event", ok: false, error: "a handoff event comes from another project's hub, not from an agent connection" });
         try { reply({ t: "task_handoff_event", ok: true, ...tasks.handoffEvent(msg.event) }); }
         catch (error) { reply({ t: "task_handoff_event", ok: false, error: error instanceof HandoffRefusal ? error.message : "the handoff event was refused" }); }
+        return;
+      }
+      case "task_handoff_by_key": {
+        // #731: the origin whose request got no answer asks where the task its key made stands. Console role only, only for the asking project's own key, and nothing is written.
+        if (c.role !== "console") return void reply({ t: "task_handoff_by_key", ok: false, error: "a handoff key lookup comes from another project's hub, not from an agent connection" });
+        try { const found = tasks.handoffStateByKey(msg.projectId, msg.key); reply({ t: "task_handoff_by_key", ok: true, found: found !== undefined, ...(found ?? {}) }); }
+        catch (error) { reply({ t: "task_handoff_by_key", ok: false, error: error instanceof HandoffRefusal ? error.message : "the handoff key lookup was refused" }); }
         return;
       }
       case "task_handoff_states": {

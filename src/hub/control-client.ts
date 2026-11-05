@@ -21,7 +21,7 @@ export const PROTOCOL = 17;
 /** The descriptor's legacy protocol field remains this floor for previous published clients. */
 export const PROTOCOL_MIN = 16;
 // Literal metadata is read without executing a recovery target; consistency is pinned in tests.
-export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "research_runners", "task_handoff", "session_identity", "schema_guard", "design_specs", "queue_discard_states", "tool_write_idempotency", "research_evidence", "review_comments", "questions", "accepted_delivery_settlement", "completions", "review_observer_input_state"] as const;
+export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "research_runners", "task_handoff", "session_identity", "schema_guard", "design_specs", "queue_discard_states", "tool_write_idempotency", "research_evidence", "review_comments", "questions", "accepted_delivery_settlement", "completions", "review_observer_input_state", "task_handoff_key"] as const;
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
 export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, 16, PROTOCOL] as const;
 
@@ -120,9 +120,21 @@ const instancePins = new Map<string, { instanceId: string }>();
 export const INVOCATION_CONTROL_TIMEOUT_MS = 3_665_000;
 export function controlRequestTimeout(msg: Record<string, unknown>, requested = 30_000): number {
   if (msg.t === "task" && msg.op === "hub_ask" && requested !== 0) return Math.max(Number.isFinite(requested) ? requested : 0, QUESTION_CONTROL_TIMEOUT_MS);
+  if (msg.t === "task" && msg.op === "hub_task_handoff" && requested !== 0) return Math.max(Number.isFinite(requested) ? requested : 0, HANDOFF_CONTROL_TIMEOUT_MS);
   return msg.t === "task" && msg.op === "hub_invoke" && requested !== 0
     ? Math.max(Number.isFinite(requested) ? requested : 0, INVOCATION_CONTROL_TIMEOUT_MS) : requested;
 }
+/**
+ * #731 (agent-hub#1203): `hub_task_handoff` can legitimately take longer than the default 30 s, because the origin's own recovery runs inside it: a connect and a request to the target, the same
+ * again for the resend with the same key, then a connect and a request for the by-key lookup. The caller (the CLI and the MCP path alike) must outlast that, or it reports a generic timeout before
+ * `outcome_unknown` can name the key to retry with. The budgets are shared with `handoffOut`, so changing one moves the deadline with it.
+ */
+export const HANDOFF_CONNECT_MS = 5_000;
+export const HANDOFF_REQUEST_MS = 30_000;
+export const HANDOFF_LOOKUP_CONNECT_MS = 3_000;
+export const HANDOFF_LOOKUP_REQUEST_MS = 5_000;
+/** Two attempts, one by-key lookup, and a margin for the hello and the reply to travel back. */
+export const HANDOFF_CONTROL_TIMEOUT_MS = 2 * (HANDOFF_CONNECT_MS + HANDOFF_REQUEST_MS) + HANDOFF_LOOKUP_CONNECT_MS + HANDOFF_LOOKUP_REQUEST_MS + 12_000;
 /**
  * #1053: `hub_ask` holds its request open for the daemon's bounded wait (at most `QUESTION_WAIT_MAX_MS`) plus a margin, so the client's own 30 s cap never turns a
  * working wait into "no answer from the hub". The daemon, not this bound, decides when the wait ends.
