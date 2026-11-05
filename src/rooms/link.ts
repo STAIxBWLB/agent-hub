@@ -52,8 +52,10 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const DIGEST = /^[A-Za-z0-9_-]{43}$/;
 const STATES: readonly string[] = ["idle", "busy", "paused", "offline"];
-interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean; retained?: () => boolean; onSent?: () => void }
+interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean; retained?: () => boolean; onSent?: () => void; afterInboundAck?: string }
 interface Session {
+  processingFrame?: string;
+  acknowledgedFrame?: string;
   pendingPresenceReplies: Set<string>;
   presenceAsked: boolean;
   presenceRoster?: string;
@@ -298,7 +300,7 @@ export class RoomLink {
     if (bytes.length > LIMITS.packetBytes || session.ws.bufferedAmount > LIMITS.backpressure) fail("limit");
     session.ws.send(bytes);
   }
-  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean, onSent?: () => void): void {
+  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean, onSent?: () => void, afterInboundAck?: string): void {
     this.current(session);
     // Only an unsent observation may be replaced. Never reorder an attempted frame.
     if (presence) {
@@ -306,7 +308,7 @@ export class RoomLink {
       if (at >= 0) session.outboundBytes -= session.outbound.splice(at, 1)[0]!.wire.byteLength;
     }
     if (session.outbound.length >= LIMITS.packets || session.outboundBytes + wire.byteLength > LIMITS.queuedBytes) fail("limit");
-    session.outbound.push({ wire, digest, presence, requestReply, current, retained, onSent }); session.outboundBytes += wire.byteLength;
+    session.outbound.push({ wire, digest, presence, requestReply, current, retained, onSent, afterInboundAck }); session.outboundBytes += wire.byteLength;
     this.pumpFrames(session);
   }
   private pumpFrames(session: Session): void {
@@ -325,6 +327,9 @@ export class RoomLink {
       void this.publishPresence().catch(() => this.retry(session));
       return;
     }
+    // A foreground receipt follows the chat ACK on the socket. Otherwise broker
+    // verification/storage of the receipt can pin the chat's one-packet slot.
+    if (frame.afterInboundAck && session.processingFrame === frame.afterInboundAck && session.acknowledgedFrame !== frame.afterInboundAck) return;
     this.send(session, frame.wire); session.frameSent = true;
     const onSent = frame.onSent; frame.onSent = undefined; onSent?.();
   }
@@ -539,6 +544,7 @@ export class RoomLink {
       else throw error;
     }
     const acceptedDigest = await this.frameDigest(bytes);
+    session.processingFrame = acceptedDigest;
     const latest = this.frameCurrent(session, frame);
     if (latest.current.digest !== digest) refused = "trust_changed";
     if (result?.status === "stale") {
@@ -579,6 +585,7 @@ export class RoomLink {
     // This ACK only retires ciphertext from the broker queue. A durable refusal
     // or stale drop is never a signed recipient application-completion receipt.
     this.retireFrame(session, frame, acceptedDigest);
+    session.processingFrame = undefined; session.acknowledgedFrame = undefined;
     await this.refreshPresenceIfCapacityFree().catch(() => undefined);
   }
   private retireFrame(session: Session, frame: FrameWire, digest: string): void {
@@ -588,6 +595,8 @@ export class RoomLink {
     if (this.options.store.applicationReceipt(this.options.name, digest)
       && !this.options.store.receiptStored(this.options.name, digest)) fail("unavailable");
     this.send(session, encodeBrokerControl({ v: 1, type: "received", digest }));
+    session.acknowledgedFrame = digest;
+    this.pumpFrames(session);
   }
   private restoreReceipts(session: Session): void {
     this.current(session);
@@ -597,7 +606,8 @@ export class RoomLink {
       if (session.outbound.length >= LIMITS.packets || session.outboundBytes + entry.wire.byteLength > LIMITS.queuedBytes) break;
       const roster = this.current(session).current.digest;
       this.queueFrame(session, entry.wire, entry.digest, false, () => this.publicationCurrent(session, roster), false,
-        () => this.options.store.receiptSendable(this.options.name, entry.digest));
+        () => this.options.store.receiptSendable(this.options.name, entry.digest), undefined,
+        entry.receiptFor === session.processingFrame ? entry.receiptFor : undefined);
     }
   }
   private async frameDigest(bytes: Uint8Array): Promise<string> {
@@ -665,7 +675,8 @@ export class RoomLink {
       try {
         this.queueFrame(session, wire, frameDigest, false, allowed, false,
           metadata ? () => this.options.store.applicationSendable(this.options.name, frameDigest)
-            : message.type === "receipt" ? () => this.options.store.receiptSendable(this.options.name, frameDigest) : undefined);
+            : message.type === "receipt" ? () => this.options.store.receiptSendable(this.options.name, frameDigest) : undefined,
+          undefined, message.type === "receipt" && message.frame === session.processingFrame ? message.frame : undefined);
       } catch (error) {
         // The durable outbox owns retry after local backpressure; this is no uncertainty.
         if (!allowed() || !(error instanceof RoomLinkError) || error.code !== "limit" || !metadata && message.type !== "receipt") throw error;
