@@ -201,6 +201,7 @@ test("takeover skips the oldest stale launch and promotes the next eligible live
   const result = await f.console_.request({ t: "peer_takeover", peer: "claude" });
   expect(result).toMatchObject({ ok: true, outcome: "requested", standbyId: eligibleId });
   await until(() => eligible.messages.some(row => row.t === "peer_attached"), "eligible standby attached");
+  await until(() => owner.closed() !== undefined, "old owner close consumed");
   expect(owner.closed()).toBe(4405);
   expect(stale.messages.some(row => row.t === "peer_attached")).toBe(false);
   const status = await f.console_.request({ t: "status" });
