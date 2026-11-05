@@ -364,25 +364,30 @@ for (const [command, expected] of reviewCases) {
   });
 }
 
-// #725 (#1193): a redirect to a device file writes no file, so `2>/dev/null` is not a destroy. The owner's ruling limits `/dev/fd/<n>` to 1 and 2: `> /dev/fd/3` reopens and truncates whatever file that
-// descriptor names. The exemption is the exact literal the command wrote, so a lookalike path or a second, real target on the same command still counts.
+// #725 (#1193): a redirect to /dev/null or /dev/tty writes no file, so `2>/dev/null` is not a destroy. The person's ruling keeps /dev/stdout, /dev/stderr and /dev/fd/<n> (1 and 2 included) destroys: they
+// reopen whatever file fd 1 or 2 already names and a `>` truncates it. The exemption is the exact literal the command wrote, so a lookalike path or a second, real target on the same command still counts.
 const deviceCases: Array<[string, ActionClass[]]> = [
   // AC1: the device targets are not outputs
   ["ls 2>/dev/null", []], ["ls >/dev/null", []], ["ls > /dev/null", []], ["ls 2> /dev/null", []], ["ls >/dev/null 2>&1", []], ["ls &>/dev/null", []], ["ls >|/dev/null", []], ["ls 2>>/dev/null", []],
   ["ls 2>\"/dev/null\"", []], ["ls 2>'/dev/null'", []],
-  ["cmd 2>/dev/stderr", []], ["cmd >/dev/stdout", []], ["cmd >/dev/tty", []], ["cmd >/dev/fd/1", []], ["cmd >/dev/fd/2", []],
+  ["cmd >/dev/tty", []], ["cmd 2>/dev/tty", []],
   ["git status 2>/dev/null", []], ["(ls >/dev/null)", []], ["sh -c 'ls 2>/dev/null'", []], ["echo $(ls 2>/dev/null)", []],
   ["ls -la ~/.claude/plugins/cache/agent-hub/ 2>&1 | head -20; grep -rln always-ask ~/.claude 2>/dev/null | head", []],
   ["for t in 40 41; do ahub task show $t --json 2>/dev/null | python3 -c x && echo saved $t; done", []],
+  // an append (`>>`) is not an output of the destroy rule for any target (`>>/tmp/x` is `[]` on main too), so it is unchanged here: the change neither adds nor removes it
+  ["cmd >>/dev/stdout", []], ["cmd >>/tmp/x", []],
   // a class the command earns on its own is unchanged
   ["git push 2>/dev/null", ["publish"]], ["git push >/dev/null 2>&1", ["publish"]],
-  // AC2: every other target keeps its classification
+  // AC2: every other target keeps its classification. The person's ruling narrowed AC1 to /dev/null and /dev/tty: /dev/stdout, /dev/stderr, /dev/fd/1 and /dev/fd/2 reopen the file that fd 1 or 2 already
+  // points at and a `>` truncates it (`sh -c 'echo x >/dev/stdout' >>/tmp/log` on Linux), so they stay destroys in every spelling
+  ["cmd 2>/dev/stderr", ["destroy"]], ["cmd >/dev/stdout", ["destroy"]], ["cmd >/dev/fd/1", ["destroy"]], ["cmd >/dev/fd/2", ["destroy"]], ["cmd 2>/dev/fd/2", ["destroy"]],
+  ["cmd &>/dev/stderr", ["destroy"]], ["cmd >|/dev/stdout", ["destroy"]], ["sh -c 'echo x >/dev/stdout' >>/tmp/log", ["destroy"]], ["cmd 2>/dev/null >/dev/stdout", ["destroy"]], ["cmd >/dev/stderr 2>/dev/null", ["destroy"]],
   ["git push </dev/null>/tmp/out", ["publish", "destroy"]], ["echo x >/tmp/out", ["destroy"]], ["echo x >../out", ["destroy"]], ["echo x >/dev/sda", ["destroy"]], ["echo x >~/x", ["destroy"]],
   ["echo x >/dev/fd/3", ["destroy"]], ["echo x >/dev/fd/10", ["destroy"]], ["echo x >/dev/fd/0", ["destroy"]], ["echo x >/dev/fd/01", ["destroy"]],
   ["echo x >/dev/zero", ["destroy"]], ["echo x >/dev/random", ["destroy"]],
   // lookalikes are not the literal: nothing is resolved, normalized or prefix-matched
   ["echo x >/dev/null/x", ["destroy"]], ["echo x >/dev//null", ["destroy"]], ["echo x >/dev/./null", ["destroy"]], ["echo x >/dev/../tmp/x", ["destroy"]],
-  ["echo x >/dev/null.bak", ["destroy"]], ["echo x >/dev/NULL", ["destroy"]], ["echo x >/dev/stdout/x", ["destroy"]], ["echo x >/dev/ttyS0", ["destroy"]],
+  ["echo x >/dev/null.bak", ["destroy"]], ["echo x >/dev/NULL", ["destroy"]], ["echo x >/dev/stdout/x", ["destroy"]], ["echo x >/dev/ttyS0", ["destroy"]], ["echo x >/dev/tty0", ["destroy"]], ["echo x >/dev/tty/x", ["destroy"]],
   // a device target does not hide a real one beside it, in either order
   ["echo x >/dev/null >/tmp/out", ["destroy"]], ["echo x 2>/dev/null >/tmp/out", ["destroy"]], ["echo x >/tmp/out 2>/dev/null", ["destroy"]], ["echo x >/dev/fd/3 2>/dev/null", ["destroy"]],
   ["echo x 2>/dev/null; echo y >/tmp/out", ["destroy"]], ["sh -c 'echo x >/dev/sda'", ["destroy"]], ["{ echo x >/dev/fd/3; }", ["destroy"]],

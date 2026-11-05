@@ -232,12 +232,12 @@ test("an earlier command on the same line that can change the facts ends the flo
 
 // #725 (#1193): a redirect to a device file is no longer a destroy, but it is still a redirect: the read-only fast path stays closed for the segment that has one, so the floor still ends for the rest of the line.
 test("#725 a device redirect on an earlier segment still ends the floor for a later push, and is no destroy by itself", () => {
-  for (const command of ["git status 2>/dev/null; git push origin feat/x", "ls >/dev/null; git push origin feat/x", "echo x 2>/dev/null && git push origin feat/x", "git diff >/dev/null; git push origin feat/x", "git status >/dev/stderr; git push origin feat/x"])
+  for (const command of ["git status 2>/dev/null; git push origin feat/x", "ls >/dev/null; git push origin feat/x", "echo x 2>/dev/null && git push origin feat/x", "git diff >/dev/null; git push origin feat/x", "git status >/dev/tty; git push origin feat/x"])
     expect(classes(command), command).toEqual(["publish"]);                       // the push asks (floor ended), and nothing adds destroy
   // the same line without the redirect keeps the floor
   expect(classes("git status; git push origin feat/x")).toEqual([]);
-  // a real target, or a descriptor above 2, still asks as destroy
-  for (const command of ["git status >/tmp/e; git push origin feat/x", "cat f >/dev/fd/3; git push origin feat/x", "git status >/dev/sda; git push origin feat/x"])
+  // a real target, a descriptor alias (stdout, stderr, any /dev/fd/<n>) or a lookalike still asks as destroy
+  for (const command of ["git status >/tmp/e; git push origin feat/x", "cat f >/dev/fd/3; git push origin feat/x", "git status >/dev/sda; git push origin feat/x", "git status >/dev/stderr; git push origin feat/x", "git status >/dev/stdout; git push origin feat/x", "git status >/dev/fd/1; git push origin feat/x"])
     expect(classes(command), command).toEqual(["publish", "destroy"]);
   // a release-grade push keeps asking, redirect or not
   expect(classes("git push origin main 2>/dev/null")).toEqual(["publish"]);
