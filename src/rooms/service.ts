@@ -610,8 +610,11 @@ export class RoomChat {
     let complete = true;
     for (const row of binding.store.applicationOutbox(binding.name)) if (!row.disposition) {
       const action = this.options.bus.remoteDisposition(row.deliveryId);
-      if (action) try { binding.store.disposeApplication(binding.name, row.deliveryId, action, true, () => this.valid(binding)
-        && binding.store.get(binding.name)?.current.digest === binding.digest && this.options.bus.remoteDisposition(row.deliveryId) === action); }
+      if (action) try {
+        const disposed = binding.store.disposeApplication(binding.name, row.deliveryId, action, true, () => this.valid(binding)
+          && binding.store.get(binding.name)?.current.digest === binding.digest && this.options.bus.remoteDisposition(row.deliveryId) === action);
+        if (disposed?.disposition === action) this.remotes.get(row.remotePeer)?.settled(row.deliveryId);
+      }
       catch { complete = false; }
     }
     this.refreshOutgoing(binding);
@@ -623,9 +626,10 @@ export class RoomChat {
       const row = binding.store.applicationOutbox(binding.name).find(row => row.deliveryId === deliveryId && row.remotePeer === peer);
       if (!row) continue;
       const room = binding.room, digest = binding.digest;
-      binding.store.disposeApplication(binding.name, deliveryId, action, true, () => this.valid(binding)
+      const disposed = binding.store.disposeApplication(binding.name, deliveryId, action, true, () => this.valid(binding)
         && binding.store.get(binding.name)?.current.room === room && binding.store.get(binding.name)?.current.digest === digest
         && this.options.bus.remoteDisposition(deliveryId) === action);
+      if (disposed?.disposition === action) this.remotes.get(peer)?.settled(deliveryId);
       this.personHeldInvocations.get(binding.name)?.delete(deliveryId);
       this.refreshOutgoing(binding); break;
     }
