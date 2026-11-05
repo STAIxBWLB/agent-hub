@@ -106,7 +106,6 @@ export class ClaudeImplementerPeer extends BasePeer {
   private binding: (() => boolean) | undefined;
   private command: readonly string[] | undefined;
   private deliveryId: string | undefined;
-  private deliveryAccepted = false;
   private inputReleased = false;
   private failureTrace: ClaudeFailureTrace | undefined;
   private sessions: ClaudeTaskSessions;
@@ -186,8 +185,9 @@ export class ClaudeImplementerPeer extends BasePeer {
       if (!group) { group = { task, envs: [] }; groups.push(group); }
       group.envs.push(env);
     }
-    const generation = this.generation; this.deliveryId = deliveryId; this.inputReleased = false; this.deliveryAccepted = false;
+    const generation = this.generation; this.deliveryId = deliveryId; this.inputReleased = false;
     this.abort = new AbortController(); this.setState("busy");
+    if (deliveryId) this.delivery({ id: deliveryId, state: "accepted" });
     // Register the run identity before any synchronous failure can publish idle.
     const running: Promise<void> = Promise.resolve().then(() => this.run(groups, generation, running));
     this.running = running;
@@ -215,7 +215,6 @@ export class ClaudeImplementerPeer extends BasePeer {
         this.observerSessionIdValue = turn.sessionId;
         this.currentInputContext = inputContext;
         this.options.beforeInput?.(inputContext, group.envs);
-        if (this.deliveryId && !this.deliveryAccepted) { this.deliveryAccepted = true; this.delivery({ id: this.deliveryId, state: "accepted" }); }
         const launchId = randomUUID(), directory = mkdtempSync(join(this.options.stateDir, "claude-child-")), settings = join(directory, "settings.json");
         let launchFailureTrace: ClaudeFailureTrace | undefined;
         this.cleanup = () => rmSync(directory, { recursive: true, force: true });

@@ -1465,7 +1465,6 @@ var init_reviewer_print = __esm(() => {
     childCurrent;
     reviewMcpClose;
     activeDeliveryId;
-    deliveryAccepted = false;
     batch;
     preparation;
     receipt;
@@ -1598,9 +1597,10 @@ var init_reviewer_print = __esm(() => {
       }
       const generation = ++this.generation;
       this.activeDeliveryId = deliveryId;
-      this.deliveryAccepted = false;
       this.batch = { targets: envs.map(reviewTarget), next: 0, failures: [] };
       this.setState("busy");
+      if (deliveryId)
+        this.delivery({ id: deliveryId, state: "accepted" });
       this.run(envs, generation).catch((error) => {
         if (generation !== this.generation)
           return;
@@ -1794,10 +1794,6 @@ ${facts}` : ""}`;
       } catch {
         this.observerSessionIdValue = undefined;
         throw new ReviewerInputAdmissionError;
-      }
-      if (this.activeDeliveryId && !this.deliveryAccepted) {
-        this.deliveryAccepted = true;
-        this.delivery({ id: this.activeDeliveryId, state: "accepted" });
       }
       let launch;
       const trace = { reviewCalled: false };
@@ -14257,7 +14253,6 @@ var init_claude_implementer = __esm(() => {
     binding;
     command;
     deliveryId;
-    deliveryAccepted = false;
     inputReleased = false;
     failureTrace;
     sessions;
@@ -14391,9 +14386,10 @@ var init_claude_implementer = __esm(() => {
       const generation = this.generation;
       this.deliveryId = deliveryId;
       this.inputReleased = false;
-      this.deliveryAccepted = false;
       this.abort = new AbortController;
       this.setState("busy");
+      if (deliveryId)
+        this.delivery({ id: deliveryId, state: "accepted" });
       const running = Promise.resolve().then(() => this.run(groups, generation, running));
       this.running = running;
       running.finally(() => {
@@ -14428,10 +14424,6 @@ var init_claude_implementer = __esm(() => {
           this.observerSessionIdValue = turn.sessionId;
           this.currentInputContext = inputContext;
           this.options.beforeInput?.(inputContext, group.envs);
-          if (this.deliveryId && !this.deliveryAccepted) {
-            this.deliveryAccepted = true;
-            this.delivery({ id: this.deliveryId, state: "accepted" });
-          }
           const launchId = randomUUID9(), directory = mkdtempSync5(join17(this.options.stateDir, "claude-child-")), settings = join17(directory, "settings.json");
           let launchFailureTrace;
           this.cleanup = () => rmSync6(directory, { recursive: true, force: true });

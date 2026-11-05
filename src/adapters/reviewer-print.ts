@@ -169,7 +169,6 @@ export class ReviewerPrintPeer extends BasePeer {
   private childCurrent: (() => boolean) | undefined;
   private reviewMcpClose: (() => void) | undefined;
   private activeDeliveryId: string | undefined;
-  private deliveryAccepted = false;
   private batch: ReviewBatch | undefined;
   private preparation: { abort: AbortController; done: Promise<ReviewerLaunch> } | undefined;
   private receipt: ReviewerIsolationReceipt | undefined;
@@ -272,9 +271,9 @@ export class ReviewerPrintPeer extends BasePeer {
     }
     const generation = ++this.generation;
     this.activeDeliveryId = deliveryId;
-    this.deliveryAccepted = false;
     this.batch = { targets: envs.map(reviewTarget), next: 0, failures: [] };
     this.setState("busy");
+    if (deliveryId) this.delivery({ id: deliveryId, state: "accepted" });
     void this.run(envs, generation).catch((error: Error) => {
       if (generation !== this.generation) return;
       this.settle("needs_review", `reviewer failed: ${error.message}`);
@@ -415,7 +414,6 @@ export class ReviewerPrintPeer extends BasePeer {
     this.observerSessionIdValue = sessionId;
     try { this.opts.beforeInput?.(inputContext, [env]); }
     catch { this.observerSessionIdValue = undefined; throw new ReviewerInputAdmissionError(); }
-    if (this.activeDeliveryId && !this.deliveryAccepted) { this.deliveryAccepted = true; this.delivery({ id: this.activeDeliveryId, state: "accepted" }); }
     let launch: ReviewerLaunch | undefined;
     const trace: ReviewerTraceState = { reviewCalled: false };
     this.activeTrace = { task, generation, value: trace };
