@@ -278,7 +278,7 @@ test("person inbox expiry schedules a retry only after an actual purge and coale
   changed = true; commands.expireInbox(); changed = false; commands.expireInbox();
   await new Promise<void>(resolve => setImmediate(resolve));
   expect(retries).toBe(1);
-  commands.stop();
+  await commands.stop();
 });
 
 

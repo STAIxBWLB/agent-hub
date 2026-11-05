@@ -139,7 +139,7 @@ async function hub(root: string, label: string, event: Signal, control: Control,
   let nativeStates = 0;
   bus.tap(eventRow => { if (eventRow.t === "state" && !eventRow.peer.includes("@")) { nativeStates++; commands.changed(); } event.notify(); });
   let closed = false;
-  return { label, cwd, stateDir, journal, bus, peer, commands, chat, get store() { return ownedStore; }, get link() { return ownedLink; }, get nativeStates() { return nativeStates; }, notices, close: async () => { if (closed) return; closed = true; commands.stop(); await peer.stop(); bus.closeJournal(); } };
+  return { label, cwd, stateDir, journal, bus, peer, commands, chat, get store() { return ownedStore; }, get link() { return ownedLink; }, get nativeStates() { return nativeStates; }, notices, close: async () => { if (closed) return; closed = true; await commands.stop(); await peer.stop(); bus.closeJournal(); } };
 }
 async function command(side: Hub, action: string, input: unknown) { return (await side.commands.preview(action, input, () => true)).commit(); }
 async function rows(side: Hub): Promise<Record<string, unknown>[]> { return ((await side.commands.rows("work"))[0]?.deliveries ?? []) as Record<string, unknown>[]; }

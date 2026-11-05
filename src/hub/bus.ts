@@ -161,6 +161,7 @@ export const NOTES_KEPT = 10;
  * it holds an `important` envelope, or `batchMax` envelopes, or its oldest one has waited `batchMs`.
  */
 export const ROOM_PROOF_UNAVAILABLE_REASON = "room delivery proof unavailable; inspect ahub queue show";
+export const ROOM_EPOCH_ROTATED_REASON = "room epoch rotated; inspect ahub queue show";
 
 export class Bus {
   readonly peers = new Map<PeerId, PeerAdapter>();
@@ -1365,6 +1366,23 @@ export class Bus {
         this.activeDeliveries.has(deliveryId) || this.remoteTransport.has(deliveryId)) return false;
     try { if (currentGuard() !== true) return false; } catch { return false; }
     return this.holdRemoteDeliveryMetadata(peerId, row, `room recipient proof no longer current after restart; inspect ahub queue show ${deliveryId}`);
+  }
+
+  /** Person-authorized epoch change: hold metadata only, without cancellation, replay or completion. */
+  holdRemoteEpochRotated(peerId: string, deliveryId: string, expectedRoom: string, expectedMember: string, currentGuard: () => boolean): boolean {
+    if (!parseRemotePeerId(peerId) || typeof expectedRoom !== "string" || !expectedRoom || !remoteFingerprint(expectedMember)
+      || !this.journal || this.storageError || this.closed
+      || this.remoteQueueRooms.get(peerId) !== expectedRoom || this.remoteQueueMembers.get(peerId) !== expectedMember) return false;
+    const row = this.journal.get(deliveryId), reason = `${ROOM_EPOCH_ROTATED_REASON} ${deliveryId}`;
+    if (!row || row.peer !== peerId || row.originals.length !== 1 || row.originals[0]?.to?.includes(peerId) !== true
+      || this.journal.resolution(deliveryId)) return false;
+    const active = this.activeDeliveries.get(deliveryId), transport = this.remoteTransport.get(deliveryId)?.peer;
+    if (active !== undefined && active !== peerId || transport !== undefined && transport !== peerId) return false;
+    if (!["dispatching", "accepted", "needs_review"].includes(row.state)) return false;
+    if (row.state === "needs_review" && row.reason !== reason && row.reason !== `${ROOM_PROOF_UNAVAILABLE_REASON} ${deliveryId}`) return false;
+    try { if (currentGuard() !== true) return false; } catch { return false; }
+    if (row.state === "needs_review" && row.reason === reason) return true;
+    return this.holdRemoteDeliveryMetadata(peerId, row, reason);
   }
 
   /** Resume the same delivery after the host revalidates its durable outbox proof. */

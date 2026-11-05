@@ -56,7 +56,7 @@ test("a response cannot replace an unsent presence refresh request behind a bloc
     const result = await openFrame({ wire: f.sent[1]!, identity: f.guest, current: f.epoch, replay: { accept: async () => ({ status: "accepted", gap: "0" }) } });
     expect(result.status).toBe("accepted");
     if (result.status === "accepted") expect(JSON.parse(new TextDecoder().decode(result.plaintext)).requestReply).toBe(true);
-  } finally { f.link.stop(); }
+  } finally { await f.link.stop(); }
 });
 
 test("queued presence rechecks exposure at actual send and stop clears queue_full backoff", async () => {
@@ -71,10 +71,10 @@ test("queued presence rechecks exposure at actual send and stop clears queue_ful
     const pending = f.session.outbound[0]!;
     f.internal.backoffFrame(f.session, pending.digest);
     expect(f.session.frameRetry).toBeDefined();
-    f.link.stop();
+    await f.link.stop();
     expect(f.session.outbound).toHaveLength(0);
     expect(f.link.connectionState).toBe("offline");
-  } finally { f.link.stop(); }
+  } finally { await f.link.stop(); }
 });
 
 
@@ -140,7 +140,7 @@ test("receipt commit is visible in the durable store before the chat transport A
     f.internal.retireFrame(f.session, incoming.frame, incoming.digest);
     expect(JSON.parse(new TextDecoder().decode(f.sent.at(-1)!))).toEqual({ v: 1, type: "received", digest: incoming.digest });
     expect(dispatchingReceipt(f.guest.receiptStored("work", incoming.digest)).wire).toEqual(receipt.stored.wire);
-  } finally { f.link.stop(); }
+  } finally { await f.link.stop(); }
 });
 
 test("a stopped session cannot ACK past its retained durable receipt", async () => {
@@ -152,7 +152,7 @@ test("a stopped session cannot ACK past its retained durable receipt", async () 
     expect(f.sent.some(wire => JSON.parse(new TextDecoder().decode(wire)).type === "received")).toBe(false);
     expect(dispatchingReceipt(f.guest.receiptStored("work", incoming.digest))).toMatchObject({ digest: receipt.digest, state: "dispatching", wire: receipt.stored.wire });
     expect(f.guest.outbox("work")).toContainEqual(expect.objectContaining({ digest: receipt.digest, kind: "receipt" }));
-  } finally { f.link.stop(); }
+  } finally { await f.link.stop(); }
 });
 
 test("cap one ACKs after receipt commit and sends the unchanged sealed receipt when capacity returns", async () => {
@@ -177,7 +177,7 @@ test("cap one ACKs after receipt commit and sends the unchanged sealed receipt w
     expect(f.sent[2]).toEqual(receipt.stored.wire);
     f.guest.markStored("work", receipt.digest, decodeFrame(receipt.stored.wire).seq);
     expect(f.guest.receiptStored("work", incoming.digest)).toMatchObject({ digest: receipt.digest, state: "accepted" });
-  } finally { f.link.stop(); }
+  } finally { await f.link.stop(); }
 });
 
 test("more than eight sequential stored receipts do not leak transport slots", async () => {
@@ -194,7 +194,7 @@ test("more than eight sequential stored receipts do not leak transport slots", a
       expect(f.guest.outbox("work")).toHaveLength(0);
     }
     expect(f.sent).toHaveLength(9);
-  } finally { f.link.stop(); }
+  } finally { await f.link.stop(); }
 });
 
 test("receiveFrame commits a durable application receipt before ACK and sends the signed receipt after it", async () => {
@@ -234,5 +234,5 @@ test("receiveFrame commits a durable application receipt before ACK and sends th
     expect(verified.status).toBe("accepted");
     if (verified.status !== "accepted") throw new Error("expected a verified signed receipt frame");
     expect(decodeRoomMessage(verified.plaintext)).toMatchObject({ type: "receipt", frame: chatDigest, application });
-  } finally { f.link.stop(); }
+  } finally { await f.link.stop(); }
 });

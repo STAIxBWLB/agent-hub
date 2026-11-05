@@ -4,7 +4,7 @@ import { readSdlcPr } from "./sdlc.ts";
 import type { ActionMeta } from "@staix/agent-console/contract";
 import { isReviewObserverExcluded, reviewCaptureExcluded } from "./memory-policy.ts";
 import { RoomStoreError } from "../rooms/store.ts";
-import { RoomCommands, type RoomPreview } from "../rooms/commands.ts";
+import { RoomCommands, RoomRotationHoldError, type RoomPreview } from "../rooms/commands.ts";
 import { queueBackpressurePolicy, type QueueBackpressurePolicy } from "./queue-backpressure.ts";
 import { RoomChat, type RoomInvocationIngress } from "../rooms/service.ts";
 import { RoomInvocations, roomInvocationHash } from "./room-invocations.ts";
@@ -10788,7 +10788,9 @@ export async function startDaemon(opts: DaemonOptions) {
         const personRoom = c.role === "console";
         const roomCurrent = () => !stopping && !recoveryActive() && !bus.isRecoveryHeld
           && sock.data === client && sock.readyState === WebSocket.OPEN && personRoom;
-        const roomFailure = () => reply({ ok: false, error: "room operation refused; check room state, authority and arguments" });
+        const roomFailure = (error?: unknown) => error instanceof RoomRotationHoldError
+          ? reply({ ok: false, code: "epoch_rotated_hold_unavailable", error: error.message })
+          : reply({ ok: false, error: "room operation refused; check room state, authority and arguments" });
         if (msg.op === "list" || msg.op === "status") {
           if (msg.input !== undefined && (!msg.input || typeof msg.input !== "object" || Array.isArray(msg.input)
             || Object.keys(msg.input).some(key => key !== "name") || (msg.input.name !== undefined && typeof msg.input.name !== "string"))) return roomFailure();
@@ -10831,7 +10833,7 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!roomCurrent()) return roomFailure();
             const ticket = crypto.randomUUID();
             roomTickets.set(sock, { id: ticket, expires: Date.now() + 30_000, preview });
-            reply({ ok: true, owner: preview.owner, member: preview.member, ticket });
+            reply({ ok: true, owner: preview.owner, member: preview.member, ticket, ...(preview.outstanding ? { outstanding: preview.outstanding } : {}) });
           }, roomFailure);
           return;
         }
@@ -11312,7 +11314,7 @@ export async function startDaemon(opts: DaemonOptions) {
   async function stopOnce(): Promise<void> {
     stopping = true;
     controlWriteTelemetry?.stop();
-    roomCommands.stop();
+    const roomsStopped = roomCommands.stop().catch(() => { log("room shutdown failed; inspect ahub room status after restart"); });
     tasks.stopQueuePressureRechecks();
     const studiesStopped = tasks.stopStudies();
     const reviewCommentsStopped = tasks.stopReviewComments();
@@ -11346,7 +11348,7 @@ export async function startDaemon(opts: DaemonOptions) {
         await Promise.race([Promise.all([schedulesPass?.catch(() => undefined), ...manualSchedulePasses, studiesStopped, reviewCommentsStopped]), new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); timer.unref?.(); })]);
         clearTimeout(timer);
       }
-      await Promise.all([terminalReadsStopped, codeFactsStopped, implementerShellStopped]);
+      await Promise.all([terminalReadsStopped, codeFactsStopped, implementerShellStopped, roomsStopped]);
       await terminalLaunches.settled();
       // A peer can still be inside memory recall or its native handshake when kill arrives.
       // Drain those starts before taking the final owned-process snapshot.

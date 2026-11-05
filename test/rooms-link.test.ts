@@ -12,7 +12,7 @@ import { RoomLink, type RoomLinkState, type RoomPresencePeer } from "../src/room
 const clients: FakeBrokerClient[] = [];
 const roots: string[] = [], stores: RoomStore[] = [], links: RoomLink[] = [], brokers: BrokerRuntime[] = [], fakes: ReturnType<typeof Bun.serve>[] = [];
 afterEach(async () => {
-  for (const link of links.splice(0)) link.stop();
+  for (const link of links.splice(0)) await link.stop();
   for (const client of clients.splice(0)) client.close();
   for (const broker of brokers.splice(0)) await broker.stop();
   for (const fake of fakes.splice(0)) await fake.stop(true);
@@ -170,7 +170,7 @@ test("a refused signed presence is durably retired so later valid broker traffic
   expect(f.owner.pendingInbox("test")).toEqual([]);
   expect(f.owner.refused("test").map(({ digest, reason }) => ({ digest, reason }))).toEqual([{ digest, reason: "invalid_presence" }]);
   expect(JSON.stringify(f.owner.refused("test"))).not.toContain("unexposed");
-  owner.link.stop(); f.owner.close();
+  await owner.link.stop(); f.owner.close();
   const restored = await storeAt(f.root, "owner");
   expect(restored.refused("test").map(({ digest, reason }) => ({ digest, reason }))).toEqual([{ digest, reason: "invalid_presence" }]);
 });
@@ -183,7 +183,7 @@ test("broker challenge authentication accepts independent host clocks in either 
     await guest.link.start(); await guest.online();
     expect(owner.link.status().state).toBe("online");
     expect(guest.link.status().state).toBe("online");
-    owner.link.stop(); guest.link.stop();
+    await owner.link.stop(); await guest.link.stop();
   }
 });
 
@@ -401,7 +401,7 @@ test("a verified owner upgrade holds one old ciphertext without replay, plaintex
 
 for (const mode of ["before-ready", "two"] as const) {
   test(`owner upgrade deferral refuses ${mode === "two" ? "a second in-flight ciphertext" : "a generic pre-handshake ciphertext"} without replay or ACK`, async () => {
-    const f = await ownerUpgradeBroker(mode); await f.link.start(); await f.closed(); f.link.stop();
+    const f = await ownerUpgradeBroker(mode); await f.link.start(); await f.closed(); await f.link.stop();
     expect(f.replayCalls()).toBe(0); expect(f.observations).toEqual([]); expect(f.acks).toEqual([]);
     expect(f.f.owner.pendingInbox("test")).toEqual([]); expect(f.f.owner.refused("test")).toEqual([]);
   });

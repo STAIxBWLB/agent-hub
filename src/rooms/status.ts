@@ -18,6 +18,8 @@ const PEER_STATES = new Set<PeerState>(["idle", "busy", "paused", "offline"]);
 export interface RoomStatusPeer {
   id: string;
   state: PeerState;
+  presence?: PeerState | "unknown";
+  liveness?: "untracked";
 }
 
 export interface RoomRelayStats {
@@ -95,8 +97,13 @@ function remotePeers(value: unknown, remaining: number): RoomStatusPeer[] | null
     if (!plainRecord(item)) return null;
     const id = ownData(item, "id"), state = ownData(item, "state");
     if (typeof id !== "string" || !parseRemotePeerId(id) || typeof state !== "string" || !PEER_STATES.has(state as PeerState) || ids.has(id)) return null;
+    const presenceField = ownField(item, "presence"), livenessField = ownField(item, "liveness");
+    if (presenceField.present && !Object.hasOwn(presenceField, "value") || livenessField.present && !Object.hasOwn(livenessField, "value")) return null;
+    const presence = presenceField.value, liveness = livenessField.value;
+    if (presence !== undefined && presence !== "unknown" && (typeof presence !== "string" || !PEER_STATES.has(presence as PeerState))) return null;
+    if (liveness !== undefined && liveness !== "untracked") return null;
     ids.add(id);
-    result.push({ id, state: state as PeerState });
+    result.push({ id, state: state as PeerState, ...(presence !== undefined ? { presence: presence as RoomStatusPeer["presence"] } : {}), ...(liveness === "untracked" ? { liveness } : {}) });
   }
   return result;
 }

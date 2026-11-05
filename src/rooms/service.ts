@@ -1,5 +1,5 @@
 /** Host integration for X4. Remote identities carry chat, never local control authority. */
-import { ROOM_PROOF_UNAVAILABLE_REASON, type Bus } from "../hub/bus.ts";
+import { ROOM_EPOCH_ROTATED_REASON, ROOM_PROOF_UNAVAILABLE_REASON, type Bus } from "../hub/bus.ts";
 import { USER, MAX_HOP, isInvocationKind, type Envelope, type PeerState } from "../hub/envelope.ts";
 import type { RoomInvocationAuthorization } from "./boundary.ts";
 import { roomInvocationHash } from "../hub/room-invocations.ts";
@@ -13,6 +13,7 @@ import { RoomPolicy } from "./policy.ts";
 import { RemotePeer } from "./remote-peer.ts";
 import { parseRemotePeerId, roomReceiptReasonText, type RoomMessage, type RoomReceiptReason, type RoomChatEnvelope } from "./application.ts";
 import { RoomApplicationDeferredError, RoomNotSentError, type RoomLink, type RoomLinkApplication, type RoomLinkContext, type RoomLinkState, type RoomPresencePeer } from "./link.ts";
+import { ROOM_PRESENCE_MISSES, ROOM_REFRESH_MS, roomRefreshPeriod } from "./liveness.ts";
 
 export interface RoomInvocationIdentity { room: string; member: string; epoch: string; current: () => boolean }
 export interface RoomInvocationIngress {
@@ -20,7 +21,7 @@ export interface RoomInvocationIngress {
   current: () => boolean; claim: () => boolean;
 }
 export interface RoomChatOptions {
-  bus: Bus; cwd: string; now?: () => number;
+  bus: Bus; cwd: string; now?: () => number; refreshMs?: number;
   routing: () => Routing; piiPaths: () => readonly string[];
   senderPrivate: (peer: string) => boolean | undefined;
   taskPrivate: (id: number) => boolean | undefined;
@@ -34,7 +35,7 @@ export interface RoomChatOptions {
   notice?: (value: { code: "application_capacity"; room: string; count: number } | { code: "sequence_gap"; room: string; sender: string; count: string }) => void;
 }
 export interface RoomMetrics { since: number; outbound: number | null; inbound: number | null; withheld: number | null }
-interface Binding { store: RoomStore; name: string; room: string; link: RoomLink; digest: string; online: boolean; states: Map<string, PeerState> }
+interface Binding { store: RoomStore; name: string; room: string; link: RoomLink; digest: string; rosterMembers: string; online: boolean; states: Map<string, PeerState>; observedAt: Map<string, number>; tracked?: boolean }
 interface Target { binding: Binding; member: string; peer: string }
 const ACTIVE = new Set(["dispatching", "accepted", "needs_review"]);
 function completedText(reason?: RoomReceiptReason): string {
@@ -69,6 +70,9 @@ export class RoomChat {
   private readonly outgoing = new Map<string, { binding: Binding; row: RoomOutgoing }>();
   private readonly resuming = new Set<string>();
   private readonly personHeldInvocations = new Map<string, Set<string>>();
+  private readonly refreshMs: number;
+  private presenceClockHighWater?: number;
+  private presenceClockInvalid = false;
   private evidenceCache?: Map<string, { peer: string; roomState: string; disposition?: string; lateReceipt?: string; refusalReason?: string }>;
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = false;
@@ -78,8 +82,9 @@ export class RoomChat {
   readonly application: RoomLinkApplication;
   constructor(private readonly options: RoomChatOptions) {
     this.policy = new RoomPolicy(options.cwd);
+    this.refreshMs = roomRefreshPeriod(options.refreshMs ?? ROOM_REFRESH_MS);
     let since: number | null = null;
-    try { const value = this.now(); if (Number.isSafeInteger(value) && value >= 0) since = value; } catch { /* Observation failure never disables transport construction. */ }
+    try { const value = this.now(); if (Number.isSafeInteger(value) && value >= 0) { since = value; this.presenceClockHighWater = value; } } catch { /* Observation failure never disables transport construction. */ }
     this.metricsSince = since;
     this.application = {
       members: context => { if (context.current()) this.bind(context.store, context.name, context.link); },
@@ -107,6 +112,50 @@ export class RoomChat {
     };
   }
   private now(): number { return this.options.now?.() ?? Date.now(); }
+  /** Local receipt time only; remote timestamps never participate in freshness. */
+  private presenceNow(mutate = true): number | undefined {
+    let now: number;
+    try { now = this.now(); } catch { now = NaN; }
+    if (!Number.isSafeInteger(now) || now < 0 || this.presenceClockHighWater !== undefined && now < this.presenceClockHighWater) {
+      if (mutate && !this.presenceClockInvalid) {
+        for (const binding of this.bindings.values()) if (this.livenessTracked(binding) !== false) binding.observedAt.clear();
+        for (const [id, remote] of this.remotes) {
+          const target = this.targets.get(id);
+          if (target && this.livenessTracked(target.binding) !== false) remote.presence("offline", false);
+        }
+      }
+      if (mutate) this.presenceClockInvalid = true;
+      return undefined;
+    }
+    if (mutate) {
+      if (this.presenceClockHighWater === undefined || now > this.presenceClockHighWater) this.presenceClockHighWater = now;
+      this.presenceClockInvalid = false;
+    }
+    return now;
+  }
+  private livenessTracked(binding: Binding): boolean | undefined {
+    return binding.tracked;
+  }
+  private memberFresh(binding: Binding, member: string, now: number | undefined): boolean {
+    if (this.livenessTracked(binding) === false) return true;
+    if (now === undefined || this.presenceClockInvalid) return false;
+    const seen = binding.observedAt.get(member);
+    return seen !== undefined && now >= seen && now - seen < this.refreshMs * ROOM_PRESENCE_MISSES;
+  }
+  private advisoryPresence(id: string, target: Target): PeerState | "unknown" {
+    if (this.livenessTracked(target.binding) !== false && !this.memberFresh(target.binding, target.member, this.presenceNow(false))) return "unknown";
+    return target.peer === USER ? "idle" : target.binding.states.get(id) ?? "offline";
+  }
+  private advisoryLiveness(target: Target): "untracked" | undefined {
+    return this.livenessTracked(target.binding) === false ? "untracked" : undefined;
+  }
+  private targetSendable(id: string): boolean {
+    const target = this.targets.get(id);
+    if (!target || !target.binding.online) return false;
+    const fresh = this.memberFresh(target.binding, target.member, this.presenceNow());
+    if (!fresh) this.remotes.get(id)?.presence("offline", false);
+    return fresh;
+  }
   private wakeRemotes(binding: Binding): void {
     for (const [id, remote] of this.remotes) if (this.targets.get(id)?.binding === binding) remote.wake();
   }
@@ -145,11 +194,18 @@ export class RoomChat {
   bind(store: RoomStore, name: string, link: RoomLink): void {
     if (this.stopped) return;
     const state = store.get(name), digest = state?.current.digest; if (!digest || !state) return;
-    const room = state.current.room, counted = this.counts.get(name);
+    const room = state.current.room, rosterMembers = roomMembers(state.current).map(member => member.fingerprint).sort().join(","), counted = this.counts.get(name);
     if (counted?.room !== room && (counted || this.counts.size < 64)) this.counts.set(name, { room, outbound: 0, inbound: 0, withheld: 0 });
     const saved = this.bindings.get(name);
-    const binding = saved?.store === store && saved.link === link && saved.room === room ? saved : { store, name, room, link, digest, online: false, states: new Map<string, PeerState>() };
-    if (binding.digest !== digest) { binding.states.clear(); binding.online = false; binding.digest = digest; }
+    const binding: Binding = saved?.store === store && saved.link === link && saved.room === room ? saved : {
+      store, name, room, link, digest, rosterMembers, online: false, states: new Map<string, PeerState>(), observedAt: new Map<string, number>(),
+    };
+    const tracked = link.livenessTracked;
+    if (binding.digest !== digest || binding.rosterMembers !== rosterMembers
+      || tracked !== undefined && binding.tracked !== undefined && tracked !== binding.tracked) {
+      binding.states.clear(); binding.observedAt.clear(); binding.online = false; binding.digest = digest; binding.rosterMembers = rosterMembers;
+    }
+    if (tracked !== undefined) binding.tracked = tracked;
     this.bindings.set(name, binding);
     this.reconcileDispositions(binding);
     this.refreshInvocationHolds(binding);
@@ -165,6 +221,7 @@ export class RoomChat {
     } };
   }
   private refreshTargets(): void {
+    const now = this.presenceNow();
     const candidates = new Map<string, Target[]>();
     for (const binding of this.bindings.values()) {
       const state = binding.store.get(binding.name);
@@ -225,7 +282,7 @@ export class RoomChat {
               this.count(binding, "outbound", withheld === true);
             }
             finally { this.refreshOutgoing(binding); this.queueChanged(); }
-          }, ready: () => this.options.bus.remoteSendAllowed(remote!), waiting: () => this.queueChanged(),
+          }, ready: () => this.options.bus.remoteSendAllowed(remote!) && this.targetSendable(id), waiting: () => this.queueChanged(),
           notSent: deliveryId => this.options.bus.requeueRemoteNotSent(remote!, deliveryId),
           queued: deliveryId => {
             const selected = this.targets.get(id);
@@ -292,7 +349,9 @@ export class RoomChat {
     }
     for (const [id, remote] of this.remotes) {
       const target = this.targets.get(id);
-      remote.presence(target?.peer === USER ? "idle" : target?.binding.states.get(id) ?? "offline", target?.binding.online === true);
+      const fresh = target && this.livenessTracked(target.binding) === false ? true : target ? this.memberFresh(target.binding, target.member, now) : false;
+      const state = !fresh ? "offline" : target?.peer === USER ? "idle" : target?.binding.states.get(id) ?? "offline";
+      remote.presence(state, target?.binding.online === true && fresh);
     }
     this.options.roster?.([...this.targets.keys()]);
   }
@@ -302,14 +361,17 @@ export class RoomChat {
       && this.policy.get(binding.name).includes(peer)
       && roomMembers(state.current).some(member => member.fingerprint === binding.store.identity.public.fingerprint && member.exposedPeers.includes(peer));
   }
-  presence(store: RoomStore, name: string, link: RoomLink, value: { member: string; peers: readonly RoomPresencePeer[] }): void {
+  presence(store: RoomStore, name: string, link: RoomLink, value: { member: string; peers: readonly RoomPresencePeer[]; restored?: true }): void {
     const binding = this.bindings.get(name), state = store.get(name);
     if (!binding || binding.store !== store || binding.link !== link || !state || !this.valid(binding)) return;
     const member = roomMembers(state.current).find(row => row.fingerprint === value.member);
     if (!member) return;
     for (const peer of member.exposedPeers) binding.states.delete(`${peer}@${member.label}`);
     for (const peer of value.peers) if (member.exposedPeers.includes(peer.id)) binding.states.set(`${peer.id}@${member.label}`, peer.state);
+    const now = this.presenceNow();
+    if (value.restored !== true && now !== undefined) binding.observedAt.set(member.fingerprint, now);
     this.refreshTargets();
+    this.queueChanged();
   }
   linkState(store: RoomStore, name: string, link: RoomLink, state: RoomLinkState): void {
     // stop() fences callbacks as part of ordinary shutdown; it is not a room
@@ -566,6 +628,16 @@ export class RoomChat {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined; if (this.stopped || !this.bindings.size) return;
     let next = this.options.bus.nextRemoteExpiry();
+    const presenceNow = this.presenceNow();
+    if (presenceNow !== undefined) {
+      if ([...this.bindings.values()].some(binding => this.livenessTracked(binding) !== false && [...binding.observedAt.values()].some(seenAt =>
+        presenceNow - seenAt >= this.refreshMs * ROOM_PRESENCE_MISSES))) this.refreshTargets();
+      for (const binding of this.bindings.values()) if (this.livenessTracked(binding) !== false) for (const seenAt of binding.observedAt.values()) {
+        const staleAt = seenAt + this.refreshMs * ROOM_PRESENCE_MISSES;
+        if (staleAt <= presenceNow) continue;
+        next = next === undefined ? staleAt : Math.min(next, staleAt);
+      }
+    }
     for (const { binding, row } of this.outgoing.values()) if ((row.state === "dispatching" || row.state === "accepted") && !row.disposition) {
       const due = Math.min(row.expiresAt, binding.online ? row.ackDeadline ?? Infinity : Infinity); next = next === undefined ? due : Math.min(next, due);
     }
@@ -588,6 +660,9 @@ export class RoomChat {
   }
   tick(): void {
     if (this.stopped) return;
+    const presenceNow = this.presenceNow();
+    if (presenceNow === undefined || [...this.bindings.values()].some(binding => this.livenessTracked(binding) !== false && [...binding.observedAt.values()].some(seenAt =>
+      presenceNow - seenAt >= this.refreshMs * ROOM_PRESENCE_MISSES))) this.refreshTargets();
     this.options.bus.expireRemoteQueues(this.now());
     for (const binding of this.bindings.values()) if (this.valid(binding)) {
       try {
@@ -664,7 +739,7 @@ export class RoomChat {
     const digest = state?.current.digest;
     const proofCurrent = () => this.storeProofCurrent(binding, row, remote, target, digest);
     if (!target || !state || target.binding !== binding || !proofCurrent()) { remote.deferResume(row.deliveryId); return; }
-    const ready = () => binding.online && this.options.bus.remoteSendAllowed(remote);
+    const ready = () => binding.online && this.options.bus.remoteSendAllowed(remote) && this.memberFresh(binding, row.recipient, this.presenceNow());
     if (!ready()) { remote.waitForReady(row.deliveryId); return; }
     let readinessLost = false;
     const current = () => {
@@ -756,20 +831,50 @@ export class RoomChat {
     const row = this.evidenceCache.get(deliveryId); if (!row || row.peer !== peer) return undefined;
     const { peer: _peer, ...view } = row; return view;
   }
+  /** Hold only the sealed intents captured by the person's committed epoch change. */
+  epochRotated(store: RoomStore, name: string, previousDigest: string, expected: readonly RoomOutgoing[]): boolean {
+    const state = store.get(name);
+    if (this.stopped || !state || state.left || state.current.digest === previousDigest) return false;
+    let complete = true;
+    for (const before of expected) {
+      const current = () => {
+        const room = store.get(name), row = store.applicationOutbox(name).find(row => row.deliveryId === before.deliveryId);
+        return !this.stopped && !!room && !room.left && room.current.digest === state.current.digest
+          && !!row && row.application === before.application && row.remotePeer === before.remotePeer && row.recipient === before.recipient
+          && row.state === "needs_review" && row.reason === "boundary_refused" && !row.disposition;
+      };
+      if (!current()) { complete = false; continue; }
+      if (!this.options.bus.holdRemoteEpochRotated(before.remotePeer, before.deliveryId, state.current.room, before.recipient, current)) {
+        complete = false; continue;
+      }
+      const remote = this.remotes.get(before.remotePeer);
+      if (remote?.remoteRoom === state.current.room && remote.remoteMember === before.recipient) remote.settled(before.deliveryId);
+    }
+    this.evidenceCache = undefined;
+    return complete;
+  }
   rows(name: string): Record<string, unknown>[] {
     const binding = this.bindings.get(name); if (!binding) return [];
     const incoming = binding.store.applicationStatus(name);
-    return [...binding.store.applicationOutbox(name).sort((a, b) => Number(!ACTIVE.has(a.state) || !!a.disposition) - Number(!ACTIVE.has(b.state) || !!b.disposition) || b.createdAt - a.createdAt).slice(0, 200).map(row => ({ direction: "outbound", id: row.deliveryId, application: row.application, peer: row.remotePeer, state: row.state === "completed" ? completedText(row.reason) : row.state, ...(row.disposition ? { disposition: row.disposition } : {}), ...(row.lateReceipt ? { lateReceipt: lateReceiptText(row.lateReceipt) } : {}), ...(refusalReason(row) ? { refusalReason: refusalReason(row) } : {}) })),
+    const outgoing = binding.store.applicationOutbox(name).sort((a, b) => Number(!ACTIVE.has(a.state) || !!a.disposition) - Number(!ACTIVE.has(b.state) || !!b.disposition) || b.createdAt - a.createdAt).slice(0, 200), epochHolds = new Set<string>();
+    for (const peer of new Set(outgoing.map(row => row.remotePeer))) {
+      for (const row of this.options.bus.queueList(peer, true)) if (row.state === "needs_review" && row.reason === `${ROOM_EPOCH_ROTATED_REASON} ${row.id}`) epochHolds.add(row.id);
+    }
+    return [...outgoing.map(row => ({ direction: "outbound", id: row.deliveryId, application: row.application, peer: row.remotePeer, state: row.state === "completed" ? completedText(row.reason) : row.state, ...(row.disposition ? { disposition: row.disposition } : {}), ...(row.lateReceipt ? { lateReceipt: lateReceiptText(row.lateReceipt) } : {}), ...(epochHolds.has(row.deliveryId) ? { holdReason: "epoch rotated" } : refusalReason(row) ? { refusalReason: refusalReason(row) } : {}) })),
       ...incoming.rows.map(row => ({ direction: "inbound", id: row.digest, application: row.application, state: row.state === "disposed" ? `disposed (${row.disposition}, by person)` : row.state, peer: row.peer, ...(row.disposedAt ? { disposedAt: row.disposedAt } : {}) })),
       { direction: "inbound", pending: incoming.pending, needsReview: incoming.needsReview, truncated: incoming.truncated }];
   }
-  peers(name: string): { id: string; state: PeerState }[] {
-    return [...this.targets].filter(([, target]) => target.binding.name === name && target.peer !== USER).map(([id]) => ({ id, state: this.remotes.get(id)?.state ?? "offline" })).sort((a, b) => a.id.localeCompare(b.id));
+  peers(name: string): { id: string; state: PeerState; presence?: PeerState | "unknown"; liveness?: "untracked" }[] {
+    return [...this.targets].filter(([, target]) => target.binding.name === name && target.peer !== USER)
+      .map(([id, target]) => ({ id, state: this.remotes.get(id)?.state ?? "offline", presence: this.advisoryPresence(id, target), ...(this.advisoryLiveness(target) ? { liveness: "untracked" as const } : {}) })).sort((a, b) => a.id.localeCompare(b.id));
   }
   /** A bounded status list, separate from the explicit detail query above. */
-  peersForStatus(name: string): { id: string; state: PeerState }[] | null {
+  peersForStatus(name: string): { id: string; state: PeerState; presence?: PeerState | "unknown"; liveness?: "untracked" }[] | null {
     const ids = this.statusTargets.get(name);
-    return ids ? ids.map(id => ({ id, state: this.remotes.get(id)?.state ?? "offline" })) : null;
+    return ids ? ids.map(id => {
+      const target = this.targets.get(id)!;
+      return { id, state: this.remotes.get(id)?.state ?? "offline", presence: this.advisoryPresence(id, target), ...(this.advisoryLiveness(target) ? { liveness: "untracked" as const } : {}) };
+    }) : null;
   }
   stop(): void {
     if (this.stopped) return; this.stopped = true;
