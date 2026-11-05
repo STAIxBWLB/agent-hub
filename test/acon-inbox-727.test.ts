@@ -16,6 +16,8 @@ interface Spec { id: string; delayMs?: number; permissions?: number; reviews?: n
 function fleet(specs: Spec[], options: { inboxFreshMs?: number; inboxStaleMs?: number; inboxProjectBudgetMs?: number } = {}) {
   const home = mkdtempSync(join(tmpdir(), "ahub-inbox727-")); dirs.push(home);
   const asked: Record<string, number> = {};
+  const open: Record<string, number> = {}, peak: Record<string, number> = {};   // #730: snapshots a project is answering at once, and the most it ever had
+  const listing = { delayMs: 0, asked: 0 };                                    // #730: the project listing (inspectProject) of the lifecycle
   const live: Record<string, { delayMs: number; permissions: number; reviews: number; hang: boolean }> = {};
   const projects: ProjectRecord[] = [];
   for (const spec of specs) {
@@ -30,8 +32,10 @@ function fleet(specs: Spec[], options: { inboxFreshMs?: number; inboxStaleMs?: n
           asked[spec.id] = (asked[spec.id] ?? 0) + 1;
           const state = live[spec.id]!;
           if (state.hang) return;
+          open[spec.id] = (open[spec.id] ?? 0) + 1; peak[spec.id] = Math.max(peak[spec.id] ?? 0, open[spec.id]!);
           const { permissions: permissionCount, reviews: reviewCount } = state;   // what the hub knows when the question ARRIVES: an answer delayed past a later change still describes the earlier state
           if (state.delayMs) await Bun.sleep(state.delayMs);
+          open[spec.id]!--;
           const permissions = Array.from({ length: permissionCount }, (_, n) => ({ t: "permission", id: `perm-${n}`, peer: "kimi", title: `run ${n}`, createdAt: (spec.decisionsAt ?? 1_790_000_000_000) + n,
             options: [{ optionId: "yes", kind: "allow_once", name: "Allow" }, { optionId: "no", kind: "reject_once", name: "Deny" }] }));
           const tasks = Array.from({ length: reviewCount }, (_, n) => ({ id: 100 + n, title: `review ${n}`, state: "in_review", owner: "codex", reviewer: "user" }));
@@ -47,13 +51,13 @@ function fleet(specs: Spec[], options: { inboxFreshMs?: number; inboxStaleMs?: n
   }
   const registry = { get: (id: string) => projects.find((p) => p.id === id), list: () => projects, close() {} } as any;
   const lifecycle: Lifecycle = {
-    inspectProject: async (project) => ({ state: "running", status: { instanceId: (project as ProjectRecord).instanceId, peers: {} } }) as any,
+    inspectProject: async (project) => { listing.asked++; if (listing.delayMs) await Bun.sleep(listing.delayMs); return { state: "running", status: { instanceId: (project as ProjectRecord).instanceId, peers: {} } } as any; },
     startProject: async () => ({}), stopProject: async () => {},
   };
   const provider = createProvider({ home, registry, lifecycle, ...options });
   const inbox = async () => await provider.snapshot({ after: 0, panel: "inbox" }) as { items: { id: string; group: string; at: string; project?: string }[]; more: number };
   const total = () => Object.values(asked).reduce((sum, n) => sum + n, 0);
-  return { provider, inbox, asked, total, live };
+  return { provider, inbox, asked, total, live, peak, listing };
 }
 const time = async <T,>(work: () => Promise<T>): Promise<[T, number]> => { const t = performance.now(); const value = await work(); return [value, performance.now() - t]; };
 
@@ -228,3 +232,48 @@ test("a slow computation from before an action does not overwrite the newer fall
   const outcome = await Promise.race([poll, Bun.sleep(5_500).then(() => null)]);
   expect(outcome?.items).toHaveLength(1);                         // one row from the newer entry, never the older two
 }, 15_000);
+
+// #730 r1200-m1: the project listing is bounded like space()'s, and a slow one falls back to the last listing.
+test("a slow project listing is bounded to half the project budget and falls back to the last listing; it is asked once while it is pending", async () => {
+  const f = fleet([{ id: "a", delayMs: 10 }, { id: "b", delayMs: 10 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 400 });
+  expect((await f.inbox()).items).toHaveLength(2);                // warm: the last listing holds both projects
+  f.listing.delayMs = 3_000; f.listing.asked = 0;
+  for (let poll = 0; poll < 3; poll++) {
+    const [reply, ms] = await time(f.inbox);
+    expect(ms).toBeLessThan(900);                                 // listing budget 200 ms plus the snapshots, not the 3 s listing
+    expect(reply.items.map((i) => i.project).sort()).toEqual(["a-project", "b-project"]);
+  }
+  expect(f.listing.asked).toBe(2);                                // one listing in flight (it inspects each of the two projects once), joined by every poll
+});
+
+// #730 r1200-m2: a slow project's snapshot in flight is reused, not asked again by every poll.
+test("a slow project is asked once while its snapshot is pending, across several polls, and its last rows stay meanwhile", async () => {
+  const f = fleet([{ id: "a", delayMs: 0 }, { id: "slow", delayMs: 0 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 100 });
+  const warm = await f.inbox();
+  expect(warm.items).toHaveLength(2);
+  const before = f.asked.slow!;
+  f.live.slow!.delayMs = 700;
+  for (let poll = 0; poll < 4; poll++) {
+    const reply = await f.inbox();
+    expect(reply.items.map((i) => i.project).sort()).toEqual(["a-project", "slow-project"]);   // late rows come from the last answer
+    await Bun.sleep(50);
+  }
+  expect(f.asked.slow).toBe(before + 1);                          // four polls, one question
+  expect(f.peak.slow).toBe(1);                                    // never two at once
+  expect(f.asked.a).toBe(before + 4);                             // a prompt project is still asked on every poll
+  await Bun.sleep(700);                                           // the pending one finishes
+  f.live.slow!.delayMs = 0;
+  await f.inbox();                                                // the next poll asks afresh
+  expect(f.asked.slow).toBe(before + 2);
+});
+
+test("a slow project's pending snapshot is not joined across an action: the answer that began before it is never served after it", async () => {
+  const f = fleet([{ id: "a", delayMs: 600, permissions: 1 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 100 });
+  void f.inbox();                                                 // starts the slow snapshot in generation 0
+  await Bun.sleep(150);
+  await f.provider.action({ action: "pause", peer: "kimi", projectId: "a", instanceId: "i-a" } as never);
+  const asked = f.asked.a!;
+  f.live.a!.permissions = 0;
+  await f.inbox();
+  expect(f.asked.a).toBe(asked + 1);                              // a new generation asks again
+});
