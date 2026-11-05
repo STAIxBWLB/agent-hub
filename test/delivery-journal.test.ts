@@ -107,14 +107,17 @@ test("review input provenance is ID-only, snapshot-restorable and session-scoped
     target.clearReviewInput(hold.peer, hold.sessionHash);
     expect(target.hasReviewInputState()).toBe(false);
     expect(target.reviewInputState(hold.peer, hold.sessionHash)).toEqual({ state: "clean" });
-    expect(target.reviewInputState(hold.peer)).toEqual({ state: "unknown" });
-    expect(target.snapshot().reviewInputProvenance?.holds).toEqual([{ ...hold, inputHash: null }]);
+    expect(target.reviewInputState(hold.peer)).toEqual({ state: "clean" }); // Complete coverage makes absence clean after N3 prunes NULL receipts.
+    expect(target.snapshot().reviewInputProvenance?.holds).toEqual([]);
+    expect((target as unknown as { db: Database }).db.query("SELECT 1 FROM review_input_sessions WHERE project_id='p' AND input_hash IS NULL LIMIT 1").get()).toBeNull();
 
     const legacyTargetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-review-input-"));
     const legacyTarget = new DeliveryJournal({ file: join(legacyTargetDir, "hub.db"), projectRoot: legacyTargetDir, projectId: "p", instanceId: "legacy", operationId: "restore-legacy" });
     try {
       const { reviewInputProvenance: _marker, ...legacySnapshot } = snapshot;
       expect(legacyTarget.importSnapshot(legacySnapshot, "restore-legacy")).toBe(true);
+      const unresolvedReview = newEnvelope("hub", "legacy review still awaiting disposition", { kind: "review", to: ["new-peer"], refs: { reviewPackage: "reviewer-request-legacy" } });
+      legacyTarget.createDelivery({ id: "legacy-review-unsettled", peer: "new-peer", state: "needs_review", createdAt: unresolvedReview.ts, originals: [unresolvedReview], out: [unresolvedReview] });
       expect(legacyTarget.reviewInputState("new-peer", "d".repeat(64))).toEqual({ state: "unknown" });
       expect(legacyTarget.hasReviewInputState()).toBe(true);
       legacyTarget.clearReviewInput("new-peer", "d".repeat(64)); // A positive ordinary ACK confirms only this session.
@@ -325,7 +328,11 @@ test("verified input clears only its own peer marker and selected session eviden
     journal.markReviewInputIncomplete("codex", incompleteSession);
     journal.clearReviewInputIncomplete("claude"); // New native SID confirmation has no stable session receipt to clear.
     expect(journal.reviewInputEvidence("claude")).toMatchObject({ provenance: "available", incompletePeer: false, sessionState: "clean" });
-    expect(journal.reviewInputState("codex", sessionA)).toEqual({ state: "held", inputHash: hashA });
+    expect(journal.reviewInputEvidence("codex", sessionA)).toMatchObject({ incompletePeer: true, sessionState: "unknown" });
+    expect(journal.snapshot().reviewInputProvenance?.holds).toEqual([
+      { peer: "codex", sessionHash: sessionA, inputHash: hashA },
+      { peer: "codex", sessionHash: sessionB, inputHash: hashB },
+    ]);
 
     journal.clearReviewInput("codex", sessionA); // Verified ordinary input releases its own marker and SID.
     expect(journal.reviewInputState("codex", sessionA)).toEqual({ state: "clean" });
@@ -406,7 +413,9 @@ test("closed observer cleanup compare-and-deletes only the matching session rece
     journal.clearReviewInput(peer, sessionB);
     expect(journal.forgetClosedObserverInput(peer, sessionB, hashB)).toBe(false);
     expect(journal.reviewInputState(peer, sessionB)).toEqual({ state: "clean" });
-    expect(journal.forgetClosedObserverInput(peer, sessionB, null)).toBe(true);
+    expect(journal.forgetClosedObserverInput(peer, sessionB, null)).toBe(false); // N3 already pruned the NULL receipt; absence is clean.
+    expect(journal.reviewInputState(peer, sessionB)).toEqual({ state: "clean" });
+    expect((journal as unknown as { db: Database }).db.query("SELECT 1 FROM review_input_sessions WHERE project_id='p' AND peer=? AND session_hash=?").get(peer, sessionB)).toBeNull();
     expect(journal.hasReviewInputState()).toBe(false);
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
 });
