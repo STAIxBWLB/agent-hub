@@ -3428,9 +3428,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (peer.includes("@")) return;
     resetReviewObserverSessionIfChanged(peer);
     if (!presenceOnlyDelivery(originals)) {
-      const previous = pendingReviewObserverInputs.get(peer) ?? currentReviewObserverInputs.get(peer), reviewInputScoped = reviewInputHeld(peer, originals), turnId = turns.get(peer)?.id;
+      const pendingBefore = pendingReviewObserverInputs.get(peer), previous = pendingBefore ?? currentReviewObserverInputs.get(peer), reviewInputScoped = reviewInputHeld(peer, originals), turnId = turns.get(peer)?.id;
       const durableHeld = reviewObserverDurableHeld(peer), heldSameTurnAtAdmission = turnId !== undefined && durableHeld && previous?.held !== true;
-      const stableSessionHash = reviewObserverStableSessionHash(peer), unboundReviewInput = !stableSessionHash && (reviewInputScoped || previous?.unboundReviewInput === true || previous?.previous?.unboundReviewInput === true);
+      const stableSessionHash = reviewObserverStableSessionHash(peer), unboundReviewInput = !stableSessionHash && (reviewInputScoped || previous?.unboundReviewInput === true || pendingBefore?.previous?.unboundReviewInput === true);
       const reviewHoldTurnId = reviewInputScoped ? turnId : previous?.reviewHoldTurnId;
       if (reviewInputScoped) { ordinaryReviewObserverInputs.delete(peer); stagedSessionlessOrdinaryInputs.delete(peer); }
       pendingReviewObserverInputs.set(peer, { deliveryKey: reviewObserverDeliveryKey(originals), outputKey: reviewObserverDeliveryKey(bus.lastDeliveredTo(peer)), ...(turnId ? { turnId } : {}), ...(turnId === undefined ? { awaitingTurn: true } : {}), ...(reviewObserverSessionHash(peer) ? { sessionHash: reviewObserverSessionHash(peer) } : {}), ...(stableSessionHash ? { durableSessionHash: stableSessionHash } : {}), held: reviewInputScoped || (!previous && durableHeld) || heldSameTurnAtAdmission, reviewInputScoped, ...(unboundReviewInput ? { unboundReviewInput: true } : {}), ...(heldSameTurnAtAdmission ? { heldSameTurnAtAdmission: true } : {}),
