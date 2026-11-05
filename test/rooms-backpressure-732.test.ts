@@ -3,13 +3,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RoomLink } from "../src/rooms/link.ts";
-import { RoomStore } from "../src/rooms/store.ts";
+import { RoomStore, type RoomStoredReceipt } from "../src/rooms/store.ts";
 import { encodeRoomMessage } from "../src/rooms/application.ts";
 import { canonicalBytes, createInvite, createJoin, createRoomEpoch, decodeFrame, openFrame, sealFrame } from "../src/rooms/wire.ts";
 import { encodeBase64url, generateHubIdentity, sha256 } from "../src/rooms/crypto.ts";
 
 const roots: string[] = [], stores: RoomStore[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+function dispatchingReceipt(row: RoomStoredReceipt | undefined): Extract<RoomStoredReceipt, { state: "dispatching" }> {
+  if (!row || row.state !== "dispatching") throw new Error("expected a durable dispatching room receipt");
+  return row;
+}
 
 async function transport() {
   const owner = await generateHubIdentity(), guest = await generateHubIdentity();
@@ -78,9 +82,10 @@ async function durableTransport() {
   const root = mkdtempSync(join(tmpdir(), "ahub-room-receipt-")); roots.push(root);
   const owner = await RoomStore.open({ stateDir: join(root, "owner") }), guest = await RoomStore.open({ stateDir: join(root, "guest") });
   stores.push(owner, guest);
+  const broker = "ws://127.0.0.1:1/";
   const initial = await createRoomEpoch({ owner: owner.identity, members: [{ ...owner.identity.public, label: "owner", exposedPeers: ["codex"] }] });
-  await owner.install({ name: "work", broker: "ws://127.0.0.1:1/", wire: initial.wire, expectedDigest: null });
-  const token = await createInvite({ epoch: initial.epoch, owner: owner.identity, broker: initial.broker, expiresAt: Date.now() + 600000 });
+  await owner.install({ name: "work", broker, wire: initial.wire, expectedDigest: null });
+  const token = await createInvite({ epoch: initial.epoch, owner: owner.identity, broker, expiresAt: Date.now() + 600000 });
   await owner.saveInvite("work", token);
   const request = await createJoin({ invite: token, identity: guest.identity, label: "guest", exposedPeers: ["codex"] });
   guest.savePendingJoin("work", { invite: token, request });
@@ -118,7 +123,7 @@ async function admittedChat(f: Awaited<ReturnType<typeof durableTransport>>, bod
 
 async function queueDurableReceipt(f: Awaited<ReturnType<typeof durableTransport>>, incoming: Awaited<ReturnType<typeof admittedChat>>) {
   const digest = await f.link.publishApplication(incoming.message, f.owner.identity.public.fingerprint);
-  return { digest, stored: f.guest.receiptStored("work", incoming.digest)! };
+  return { digest, stored: dispatchingReceipt(f.guest.receiptStored("work", incoming.digest)) };
 }
 
 test("receipt commit is visible in the durable store before the chat transport ACK", async () => {
@@ -129,7 +134,7 @@ test("receipt commit is visible in the durable store before the chat transport A
     expect(f.guest.outbox("work")).toContainEqual(expect.objectContaining({ digest: receipt.digest, kind: "receipt", wire: receipt.stored.wire }));
     f.internal.retireFrame(f.session, incoming.frame, incoming.digest);
     expect(JSON.parse(new TextDecoder().decode(f.sent.at(-1)!))).toEqual({ v: 1, type: "received", digest: incoming.digest });
-    expect(f.guest.receiptStored("work", incoming.digest)?.wire).toEqual(receipt.stored.wire);
+    expect(dispatchingReceipt(f.guest.receiptStored("work", incoming.digest)).wire).toEqual(receipt.stored.wire);
   } finally { f.link.stop(); }
 });
 
@@ -140,7 +145,7 @@ test("a stopped session cannot ACK past its retained durable receipt", async () 
     f.link.stop();
     expect(() => f.internal.retireFrame(f.session, incoming.frame, incoming.digest)).toThrow();
     expect(f.sent.some(wire => JSON.parse(new TextDecoder().decode(wire)).type === "received")).toBe(false);
-    expect(f.guest.receiptStored("work", incoming.digest)).toMatchObject({ digest: receipt.digest, state: "dispatching", wire: receipt.stored.wire });
+    expect(dispatchingReceipt(f.guest.receiptStored("work", incoming.digest))).toMatchObject({ digest: receipt.digest, state: "dispatching", wire: receipt.stored.wire });
     expect(f.guest.outbox("work")).toContainEqual(expect.objectContaining({ digest: receipt.digest, kind: "receipt" }));
   } finally { f.link.stop(); }
 });
@@ -165,7 +170,7 @@ test("cap one ACKs after receipt commit and sends the unchanged sealed receipt w
     expect(f.sent).toHaveLength(3);
     expect(encodeBase64url(await sha256(f.sent[2]!))).toBe(receipt.digest);
     expect(f.sent[2]).toEqual(receipt.stored.wire);
-    expect(f.guest.receiptStored("work", incoming.digest)?.wire).toEqual(receipt.stored.wire);
+    expect(f.guest.receiptStored("work", incoming.digest)).toMatchObject({ digest: receipt.digest, state: "accepted" });
   } finally { f.link.stop(); }
 });
 

@@ -101,7 +101,7 @@ test("retry uses a fresh cipher frame, keeps its canonical delivery and settles 
   expect(retry.frameDigest).not.toBe(first.frameDigest);
   expect(f.owner.applicationSendable("work", first.frameDigest)).toBe(false);
   expect(f.owner.applicationSendable("work", retry.frameDigest!)).toBe(true);
-  expect(f.owner.outbox("work").map(row => row.digest)).toEqual([retry.frameDigest]);
+  expect(f.owner.outbox("work").map(row => row.digest)).toEqual([retry.frameDigest!]);
   const dir = locations.get(f.owner)!; f.owner.close(); f.owner = await opened(f.clock, dir);
   expect(f.owner.applicationOutbox("work")).toMatchObject([expect.objectContaining({ digest: first.outgoing.digest, state: "dispatching", ackDeadline: f.now() + 100 })]);
   expect(await f.owner.outgoingMessage("work", envelope.id)).toEqual({ v: 1, type: "chat", envelope });
@@ -117,6 +117,7 @@ test("receipt ciphertext commits before chat ACK, replays until stored and retir
   expect(f.guest.claimApplication("work", item.digest)).toBe(true);
   f.guest.finishApplication("work", item.digest, "completed", "admitted");
   const message = f.guest.applicationReceipt("work", item.digest)!;
+  if (message.type !== "receipt") throw new Error("expected application receipt");
   const forgedWire = await sealed(f.guest, f.owner, { ...message, peer: "codex" });
   await expect(f.guest.queueReceipt("work", item.digest, forgedWire, { ttlMs: 1000 })).rejects.toMatchObject({ code: "untrusted" });
   expect(f.guest.outbox("work")).toEqual([]);

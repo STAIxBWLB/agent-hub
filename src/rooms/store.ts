@@ -236,14 +236,14 @@ export class RoomStore {
       if (version! < 5) db.exec(`
         CREATE TABLE application_attempts (room TEXT NOT NULL, digest TEXT NOT NULL, delivery_id TEXT NOT NULL, application TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(room,digest)) WITHOUT ROWID;
         CREATE INDEX application_attempts_delivery ON application_attempts(room,delivery_id);
-        CREATE TABLE receipt_outbox (room TEXT NOT NULL, inbound_digest TEXT NOT NULL, receipt_digest TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, state TEXT NOT NULL, recipient TEXT NOT NULL, PRIMARY KEY(room,inbound_digest,receipt_digest)) WITHOUT ROWID;
+        CREATE TABLE receipt_outbox (room TEXT NOT NULL, inbound_digest TEXT NOT NULL, receipt_digest TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, state TEXT NOT NULL, recipient TEXT NOT NULL, epoch TEXT NOT NULL, roster_digest TEXT NOT NULL, PRIMARY KEY(room,inbound_digest,receipt_digest)) WITHOUT ROWID;
         CREATE UNIQUE INDEX receipt_outbox_frame ON receipt_outbox(room,receipt_digest);
         INSERT INTO application_attempts(room,digest,delivery_id,application,created_at) SELECT room,digest,delivery_id,application,created_at FROM application_outbox;
         PRAGMA user_version=5;
       `);
       const attemptColumns = ["room", "digest", "delivery_id", "application", "created_at"];
       for (const table of ["application_attempts", "receipt_outbox"]) {
-        if (db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map(row => row.name).join(",") !== (table === "application_attempts" ? attemptColumns.join(",") : "room,inbound_digest,receipt_digest,created_at,expires_at,state,recipient")) fail("unsupported");
+        if (db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map(row => row.name).join(",") !== (table === "application_attempts" ? attemptColumns.join(",") : "room,inbound_digest,receipt_digest,created_at,expires_at,state,recipient,epoch,roster_digest")) fail("unsupported");
       }
       for (const [index, fields] of Object.entries({ application_attempts_delivery: ["room", "delivery_id"], receipt_outbox_frame: ["room", "receipt_digest"] })) {
         if (db.query<{ name: string }, []>(`PRAGMA index_info(${index})`).all().map(row => row.name).join(",") !== fields.join(",")) fail("unsupported");
@@ -330,7 +330,7 @@ export class RoomStore {
       invites: "length(name)>32 OR length(id)>43 OR length(digest)>43 OR length(request_digest)>43",
       outbox: "length(room)>43 OR length(digest)>43 OR length(state)>16",
       application_attempts: "length(room)>43 OR length(digest)>43 OR length(delivery_id)>256 OR length(application)>256",
-      receipt_outbox: "length(room)>43 OR length(inbound_digest)>43 OR length(receipt_digest)>43 OR length(state)>16 OR length(recipient)>64",
+      receipt_outbox: "length(room)>43 OR length(inbound_digest)>43 OR length(receipt_digest)>43 OR length(state)>16 OR length(recipient)>64 OR length(epoch)>20 OR length(roster_digest)>43",
       pending_joins: "length(name)>32",
       refusals: "length(room)>43 OR length(digest)>43 OR length(reason)>32",
     };
@@ -417,7 +417,7 @@ export class RoomStore {
       if (!validSelection(row.selection)) fail("corrupt");
     }
     await this.validateApplications();
-    this.validateReceiptOutbox();
+    await this.validateReceiptOutbox();
     await this.validatePersonInbox();
   }
 
@@ -517,21 +517,24 @@ export class RoomStore {
     return attempt?.delivery_id === row.delivery_id ? "valid" : "invalid";
   }
 
-  private validateReceiptOutbox(): void {
+  private async validateReceiptOutbox(): Promise<void> {
     const maximum = ROOM_STORE_LIMITS.rooms * ROOM_APPLICATION_RETENTION.aliasesPerRoom;
     if (this.db.query("SELECT room,inbound_digest FROM receipt_outbox GROUP BY room,inbound_digest HAVING SUM(state='dispatching')>1 LIMIT 1").get()) fail("corrupt");
-    for (const row of this.db.query<{ room: string; inbound_digest: string; receipt_digest: string; created_at: number; expires_at: number; state: string; recipient: string }, []>(`SELECT * FROM receipt_outbox LIMIT ${maximum + 1}`).all()) {
+    for (const row of this.db.query<{ room: string; inbound_digest: string; receipt_digest: string; created_at: number; expires_at: number; state: string; recipient: string; epoch: string; roster_digest: string }, []>(`SELECT * FROM receipt_outbox LIMIT ${maximum + 1}`).all()) {
       if (!this.byRoom(row.room) || !validDigest(row.inbound_digest) || !validDigest(row.receipt_digest) || !Number.isSafeInteger(row.created_at) || row.created_at <= 0 || row.created_at > this.now()
         || !Number.isSafeInteger(row.expires_at) || row.expires_at <= row.created_at || row.expires_at - row.created_at > 604_800_000 || !["dispatching", "accepted"].includes(row.state)
-        || !/^[a-f0-9]{64}$/.test(row.recipient)) fail("corrupt");
+        || !/^[a-f0-9]{64}$/.test(row.recipient) || positiveU64(row.epoch) !== row.epoch || !validDigest(row.roster_digest)) fail("corrupt");
       const incoming = this.applicationFor(row.room, row.inbound_digest);
-      const outgoing = this.db.query<{ wire: Uint8Array; room: string; state: string }, [string, string]>("SELECT wire,room,state FROM outbox WHERE room=? AND digest=?").get(row.room, row.receipt_digest);
+      const outgoing = this.db.query<{ wire: Uint8Array; roster: Uint8Array; room: string; state: string }, [string, string]>("SELECT wire,roster,room,state FROM outbox WHERE room=? AND digest=?").get(row.room, row.receipt_digest);
       if (!incoming || !isTerminal(incoming.state) || incoming.sender !== row.recipient) fail("corrupt");
       if (row.state === "dispatching" && (!outgoing || outgoing.room !== row.room || outgoing.state !== "dispatching")) fail("corrupt");
       if (row.state === "accepted" && outgoing && (outgoing.room !== row.room || outgoing.state !== "accepted")) fail("corrupt");
       if (outgoing) {
-        const frame = decodeFrame(outgoing.wire);
-        if (frame.recipients.length !== 1 || frame.recipients[0] !== incoming.sender) fail("corrupt");
+        const installed = this.byRoom(row.room)!, owner = decodeRoster(installed.wire).owner;
+        const roster = await verifyPublicRoster({ wire: outgoing.roster, pin: { room: row.room, owner, minEpoch: "0" } });
+        const frame = await verifyPublicFrame({ wire: outgoing.wire, roster });
+        if (frame.digest !== row.receipt_digest || frame.room !== row.room || frame.epoch !== row.epoch || frame.rosterDigest !== row.roster_digest
+          || frame.sender !== this.identity.public.fingerprint || frame.recipients.length !== 1 || frame.recipients[0] !== incoming.sender) fail("corrupt");
       }
     }
   }
@@ -902,16 +905,16 @@ export class RoomStore {
   }
   receiptSendable(name: string, receiptDigest: string): boolean {
     const state = this.get(name); if (!state || state.left || !validDigest(receiptDigest)) return false;
-    const row = this.db.query<{ wire: Uint8Array; expires_at: number }, [string, string, number]>("SELECT o.wire,r.expires_at FROM receipt_outbox r JOIN outbox o ON o.room=r.room AND o.digest=r.receipt_digest WHERE r.room=? AND r.receipt_digest=? AND r.state='dispatching' AND r.expires_at>? AND o.state='dispatching'")
+    const row = this.db.query<{ wire: Uint8Array; expires_at: number; epoch: string; roster_digest: string }, [string, string, number]>("SELECT o.wire,r.expires_at,r.epoch,r.roster_digest FROM receipt_outbox r JOIN outbox o ON o.room=r.room AND o.digest=r.receipt_digest WHERE r.room=? AND r.receipt_digest=? AND r.state='dispatching' AND r.expires_at>? AND o.state='dispatching'")
       .get(state.current.room, receiptDigest, this.now());
     if (!row) return false;
     const frame = decodeFrame(row.wire), recipient = frame.recipients[0], now = this.now();
     const members = roomMembers(state.current);
     const currentMember = recipient && members.some(member => member.fingerprint === recipient);
     const senderCurrent = members.some(member => member.fingerprint === this.identity.public.fingerprint);
-    const currentEpoch = frame.epoch === state.current.epoch && frame.rosterDigest === state.current.digest;
-    const previousEpoch = state.previous && now < state.previous.expiresAt && frame.epoch === state.previous.epoch.epoch && frame.rosterDigest === state.previous.epoch.digest;
-    return frame.digest === receiptDigest && frame.room === state.current.room && frame.sender === this.identity.public.fingerprint
+    const currentEpoch = row.epoch === state.current.epoch && row.roster_digest === state.current.digest;
+    const previousEpoch = state.previous && now < state.previous.expiresAt && row.epoch === state.previous.epoch.epoch && row.roster_digest === state.previous.epoch.digest;
+    return row.epoch === frame.epoch && validDigest(row.roster_digest) && frame.room === state.current.room && frame.sender === this.identity.public.fingerprint
       && frame.recipients.length === 1 && currentMember === true && senderCurrent && (currentEpoch || previousEpoch === true);
   }
   async queueReceipt(name: string, inboundDigest: string, wire: Uint8Array, options: { ttlMs: number; replaceExisting?: boolean }, current?: () => boolean): Promise<RoomStoredReceipt> {
@@ -974,7 +977,7 @@ export class RoomStore {
       const expires = first?.expires_at ?? now + options.ttlMs;
       if (!Number.isSafeInteger(expires)) fail("invalid");
       this.db.query("INSERT INTO outbox(room,digest,wire,roster,state) VALUES(?,?,?,?,'dispatching')").run(frame.room, frame.digest, wire, state.wire);
-      this.db.query("INSERT INTO receipt_outbox(room,inbound_digest,receipt_digest,created_at,expires_at,state,recipient) VALUES(?,?,?,?,?,'dispatching',?)").run(frame.room, inboundDigest, frame.digest, now, expires, frame.recipients[0]!);
+      this.db.query("INSERT INTO receipt_outbox(room,inbound_digest,receipt_digest,created_at,expires_at,state,recipient,epoch,roster_digest) VALUES(?,?,?,?,?,'dispatching',?,?,?)").run(frame.room, inboundDigest, frame.digest, now, expires, frame.recipients[0]!, frame.epoch, frame.rosterDigest);
       return { digest: frame.digest, wire: copy(wire), state: "dispatching", kind: "receipt", receiptFor: inboundDigest, expiresAt: expires };
     });
   }
@@ -1025,11 +1028,13 @@ export class RoomStore {
     const sealed = this.db.query<{ digest: string; wire: Uint8Array; roster: Uint8Array }, [string, string]>("SELECT a.digest,o.wire,o.roster FROM application_attempts a JOIN outbox o ON o.room=a.room AND o.digest=a.digest WHERE a.room=? AND a.delivery_id=? ORDER BY a.created_at DESC,o.rowid DESC LIMIT 1").get(row.room, row.delivery_id);
     if (!sealed) return undefined;
     const frame = decodeFrame(sealed.wire), installed = decodeRoster(state.wire);
-    if (frame.digest !== sealed.digest || frame.room !== state.current.room || frame.sender !== this.identity.public.fingerprint
+    if (await digest(sealed.wire) !== sealed.digest || frame.room !== state.current.room || frame.sender !== this.identity.public.fingerprint
       || frame.recipients.length !== 1 || frame.recipients[0] !== row.recipient) fail("corrupt");
-    const epoch = await acceptRoomEpoch({ wire: sealed.roster, identity: this.identity, pin: { room: state.current.room, owner: installed.owner, minEpoch: frame.epoch, digest: frame.rosterDigest } });
-    if (epoch.epoch !== state.current.epoch && (!state.previous || this.now() >= state.previous.expiresAt || epoch.epoch !== state.previous.epoch.epoch || epoch.digest !== state.previous.epoch.digest)
-      || epoch.epoch === state.current.epoch && epoch.digest !== state.current.digest) fail("state_changed");
+    const selected = frame.epoch === state.current.epoch ? state.current
+      : state.previous && now < state.previous.expiresAt && frame.epoch === state.previous.epoch.epoch ? state.previous.epoch : undefined;
+    if (!selected) fail("state_changed");
+    const epoch = await acceptRoomEpoch({ wire: sealed.roster, identity: this.identity, pin: { room: state.current.room, owner: installed.owner, minEpoch: selected.epoch, digest: selected.digest } });
+    if (epoch.epoch !== selected.epoch || epoch.digest !== selected.digest) fail("state_changed");
     const plaintext = await openOwnFrame({ wire: sealed.wire, identity: this.identity, epoch });
     let message: RoomMessage; try { message = decodeRoomMessage(plaintext); } catch { fail("corrupt"); }
     if (message.type !== "chat" || message.envelope.id !== row.application || message.envelope.to !== row.peer) fail("corrupt");
