@@ -247,6 +247,35 @@ test("ClaudeImplementer uses its actual persistent task SID and per-input releas
   } finally { await peer.stop().catch(() => {}); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("ClaudeImplementer cancellation after partial stdin keeps needs_review without observer release", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-review-owned-partial-")), stateDir = join(root, "state"), marker = join(root, "first-stdin-chunk");
+  mkdirSync(stateDir, { recursive: true });
+  const script = join(root, "paused-stdin.js");
+  writeFileSync(script, "const fs=require('node:fs');\n"
+    + "const marker=" + JSON.stringify(marker) + ";\n"
+    + "let recorded=false;\nprocess.stdin.on('data',()=>{if(!recorded){recorded=true;fs.writeFileSync(marker,'first-data');process.stdin.pause();}});\n"
+    + "setInterval(()=>{},1000);\n", { mode: 0o700 });
+  let observerReleases = 0;
+  const receipts: string[] = [];
+  const peer = new ClaudeImplementerPeer("claude-implementer-partial", {
+    cwd: root, stateDir, projectRoot: root, instanceId: "fixture-instance", server: script, factsHook: script,
+    systemPrompt: "fixture", watchdogMs: 5000, command: [process.execPath, script], mode: "ask",
+    prove: async () => () => true, admit: () => true, chatTask: () => undefined,
+    inputReleased: () => { observerReleases++; },
+  });
+  try {
+    await peer.start();
+    peer.onDelivery = receipt => { receipts.push(receipt.state); };
+    await peer.deliver([newEnvelope("user", "x".repeat(850_000), { to: [peer.id] })], "partial-input");
+    await waitUntil(() => existsSync(marker));
+    expect(readFileSync(marker, "utf8")).toBe("first-data");
+    expect(observerReleases).toBe(0);
+    await peer.stop("fixture stops after child accepted only the first stdin chunk");
+    expect(receipts).toContain("needs_review");
+    expect(observerReleases).toBe(0);
+  } finally { await peer.stop().catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("a review-scoped ReviewerPrint refusal trace is withheld while a clean review trace remains visible", async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-review-owned-diagnostic-")), marker = join(root, "child-events.jsonl"), script = childScript(join(root, "fake-print.js"), marker);
   const lines: string[] = [];

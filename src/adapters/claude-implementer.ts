@@ -240,10 +240,12 @@ export class ClaudeImplementerPeer extends BasePeer {
             try { launchFailureTrace = this.options.failureTrace?.(Object.freeze({ ...launch }), provenVersion(this.binding!)); }
             catch { launchFailureTrace = undefined; }
             this.failureTrace = launchFailureTrace;
+            // Admission is synchronous and fenced; settlement must treat the child as having received input
+            // even if cancellation interrupts a later stdin flush callback.
+            this.inputReleased = true;
           },
           onInputReleased: () => {
             if (!current() || this.currentInputContext !== inputContext) return;
-            this.inputReleased = true;
             this.options.inputReleased?.(inputContext, group.envs);
           },
           onLeaderExit: () => { sealFailureTrace(launchFailureTrace); this.active = undefined; this.childAbort?.abort(); this.childAbort = undefined; },

@@ -14476,11 +14476,11 @@ var init_claude_implementer = __esm(() => {
                 launchFailureTrace = undefined;
               }
               this.failureTrace = launchFailureTrace;
+              this.inputReleased = true;
             },
             onInputReleased: () => {
               if (!current() || this.currentInputContext !== inputContext)
                 return;
-              this.inputReleased = true;
               this.options.inputReleased?.(inputContext, group.envs);
             },
             onLeaderExit: () => {
