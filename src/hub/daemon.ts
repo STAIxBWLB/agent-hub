@@ -2552,7 +2552,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const handedOver = row.outcome === "queued" && !bus.queueIds(row.target).includes(row.id);
       if (row.outcome === "queued" && !handedOver) withdrawInvocation(row, "expired", "the target did not receive it before the deadline; nothing ran");
       else {
-        if (row.class !== "read" || invocations.relay(row.id)) bus.holdInvocation(row.id, "invocation result deadline passed; outcome is uncertain", row.target);
+        if (row.class !== "read" || invocations.relay(row.id)) bus.holdInvocation(row.id, "invocation result deadline passed; outcome is uncertain", row.target, "timeout");
         finishInvocation(row, row.class === "read" && !invocations.relay(row.id) ? "timeout" : "needs_review", { reason: row.class === "read" && !invocations.relay(row.id) ? "the target received it but gave no result before the deadline; it may still run" : "the target received it but gave no result before the deadline; check it by hand" });
       }
     }

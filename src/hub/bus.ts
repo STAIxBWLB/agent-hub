@@ -228,7 +228,7 @@ export class Bus {
   }
 
   /** Hold the existing delivery rather than cancelling native work or replaying an uncertain effect. */
-  holdInvocation(id: string, reason: string, target?: PeerId): void {
+  holdInvocation(id: string, reason: string, target?: PeerId, failureCause?: DeliveryFailureCause): void {
     const delivery = this.invocationDeliveries.get(id), row = delivery && this.journal?.get(delivery);
     if (!row || !this.journal) {
       this.storageError = "uncertain invocation delivery evidence unavailable; inspect the invocation ledger before recovery";
@@ -236,7 +236,7 @@ export class Bus {
       this.onQueues?.();
       return;
     }
-    this.journal.transition(row.id, "needs_review", reason);
+    this.journal.transition(row.id, "needs_review", reason, undefined, failureCause ?? row.failureCause ?? "turn aborted");
     this.activeDeliveries.delete(row.id);
     this.recoveryHeldPeers.add(row.peer);
     this.onQueues?.();
@@ -1177,8 +1177,9 @@ export class Bus {
         const index = queue.findIndex(item => item.id === env.id);
         if (index >= 0) queue.splice(index, 1);
         const known = this.remoteQueueExpires.get(peer)?.has(env.id);
+        const failureCause: DeliveryFailureCause = known && this.remoteQueueRooms.has(peer) && this.remoteQueueMembers.has(peer) ? "timeout" : "push error";
         this.remoteQueueExpires.get(peer)?.delete(env.id);
-        this.pendingOutcomes.push({ id: crypto.randomUUID(), peer, state: "needs_review", createdAt: now, originals: [env], out: [env], reason: !known ? "remote queue expiry unavailable after restore" : !this.remoteQueueRooms.has(peer) ? "remote queue room binding unavailable after restore" : !this.remoteQueueMembers.has(peer) ? "remote queue member binding unavailable after restore" : "remote queue expired before recipient admission" });
+        this.pendingOutcomes.push({ id: crypto.randomUUID(), peer, state: "needs_review", createdAt: now, originals: [env], out: [env], failureCause, reason: !known ? "remote queue expiry unavailable after restore" : !this.remoteQueueRooms.has(peer) ? "remote queue room binding unavailable after restore" : !this.remoteQueueMembers.has(peer) ? "remote queue member binding unavailable after restore" : "remote queue expired before recipient admission" });
       }
       this.persist();
     } catch (error) {
@@ -1259,7 +1260,7 @@ export class Bus {
     if (env.to?.includes(peer) !== true) return false;
     const expiry = this.remoteQueueExpires.get(peer)?.get(env.id);
     if (expiry === undefined || expiry <= Date.now()) {
-      this.deliveryReceipt(peer, { id: deliveryId, state: "needs_review", reason: expiry === undefined ? "remote queue expiry unavailable after restore" : "remote queue expired before recipient admission" });
+      this.deliveryReceipt(peer, { id: deliveryId, state: "needs_review", failureCause: expiry === undefined ? "push error" : "timeout", reason: expiry === undefined ? "remote queue expiry unavailable after restore" : "remote queue expired before recipient admission" });
       return true;
     }
     const queue = this.queues.get(peer) ?? [], beforeQueue = [...queue];
@@ -1308,7 +1309,7 @@ export class Bus {
   }
 
   private holdRemoteDeliveryMetadata(peer: PeerId, row: JournalDelivery, reason: string): boolean {
-    try { this.journal!.transition(row.id, "needs_review", reason, row.revision); }
+    try { this.journal!.transition(row.id, "needs_review", reason, row.revision, row.failureCause ?? "push error"); }
     catch (error) {
       if (error instanceof Error && /stale delivery revision|unknown delivery|already has a person disposition/.test(error.message)) return false;
       this.storageError = "delivery journal unavailable";
