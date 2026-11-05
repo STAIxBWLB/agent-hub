@@ -1614,7 +1614,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (state === "clean") {
         currentReviewObserverInputs.delete(peer); pendingReviewObserverInputs.delete(peer);
         ordinaryReviewObserverInputs.delete(peer); currentDaemonReviewObserverHolds.delete(peer);
-        restoredPullOnlyReviewHolds.delete(peer); ownedObserverInputs.delete(peer); bus.resetLastDelivery(peer);
+        restoredPullOnlyReviewHolds.delete(peer); ownedObserverInputs.delete(peer);
       }
     }
     bindReviewObserverSessionHash(peer, current);

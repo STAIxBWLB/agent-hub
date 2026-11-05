@@ -285,6 +285,41 @@ test("first stable SID binding persists a current RAM quote before clearing its 
   expect(journal.reviewInputEvidence(peer.id, oldSessionHash)).toMatchObject({ sessionState: "held", retainedSessionHold: true });
 });
 
+test("first SID discovery preserves an invocation answer parent until an actual SID change", async () => {
+  const cwd = scratch(), file = join(cwd, "hub.db"), hash = (value: string) => createHash("sha256").update(value).digest("hex");
+  let nativeSession: string | undefined;
+  const callee = new PlainPeer("codex"), other = new PlainPeer("pi");
+  Object.defineProperty(callee, "nativeSession", { get: () => nativeSession });
+  const journal = new DeliveryJournal({ file, projectRoot: cwd, projectId: "invocation-first-binding", instanceId: "first" });
+  journal.holdReviewInput({ peer: callee.id, sessionHash: hash("previous-session"), inputHash: hash("prior-review") });
+  const bus = new Bus({ journal, batchMs: 0 }); bus.add(callee); bus.add(other); await Promise.all([callee.start(), other.start()]);
+  cleanup.push(() => bus.closeJournal(), () => callee.stop(), () => other.stop());
+  const request = newEnvelope(HUB, "invocation request", { to: [callee.id], kind: "invocation", refs: { invocation: "fixture-invocation" } });
+  bus.publish(request);
+  for (let i = 0; i < 100 && !bus.lastDeliveredTo(callee.id).some(env => env.id === request.id); i++) await Bun.sleep(5);
+  expect(bus.lastDeliveredTo(callee.id).some(env => env.id === request.id)).toBe(true);
+  const answers: string[][] = [];
+  bus.onAnswer = (_peer, _text, handed) => { answers.push(handed.map(env => env.id)); return true; };
+
+  const currentReviewObserverInputs = new Map([[callee.id, { deliveryKey: JSON.stringify(["previous-session-review"]), held: true, reviewInputScoped: false }]]);
+  const pendingReviewObserverInputs = new Map(), ordinaryReviewObserverInputs = new Map(), stagedSessionlessOrdinaryInputs = new Map();
+  const reviewObserverSessionBindings = new Map(), currentDaemonReviewObserverHolds = new Map(), restoredPullOnlyReviewHolds = new Map();
+  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindUnboundReviewInputToSession", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
+    bus, journal, isWsPeer, definitionOf, claudeSession: () => ({}), createHash,
+    currentReviewObserverInputs, pendingReviewObserverInputs, ordinaryReviewObserverInputs, stagedSessionlessOrdinaryInputs,
+    reviewObserverSessionBindings, currentDaemonReviewObserverHolds, restoredPullOnlyReviewHolds,
+    ownedObserverInputs: new Map(), localObserverSessionIds: new WeakMap(),
+  });
+  nativeSession = "first-observed-session";
+  host.resetReviewObserverSessionIfChanged(callee.id);
+  expect(bus.lastDeliveredTo(callee.id).some(env => env.id === request.id)).toBe(true);
+  callee.onMessage?.("named invocation answer", { inReplyTo: request });
+  expect(answers).toEqual([[request.id]]);
+  nativeSession = "confirmed-session-after-change";
+  host.resetReviewObserverSessionIfChanged(callee.id);
+  expect(bus.lastDeliveredTo(callee.id)).toEqual([]); // A real confirmed SID change still fences the old answer parent.
+});
+
 test("a changed SID persists an unbound RAM quote before clearing its peer marker", () => {
   const cwd = scratch(), file = join(cwd, "hub.db"), hash = (value: string) => createHash("sha256").update(value).digest("hex");
   const peer = ports(new PlainPeer("codex"), { nativeSession: "confirmed-session-b" });
