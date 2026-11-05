@@ -6550,8 +6550,9 @@ settled id invalidates the preview. Bus-only unsealed work is excluded.
 RoomStore uses its existing schema and `boundary_refused` reason to quarantine
 old active intents atomically with the epoch and remove sendable ciphertext.
 T2's crash-gap quarantine remains the recovery fence, not a new T3 repair.
-T3 gives matching local Bus deliveries `needs_review` with fixed reason
-`epoch rotated`, visible in current room status. Terminal rows and person
+T3 gives matching local Bus deliveries `needs_review` with fixed journal reason
+`room epoch rotated; inspect ahub queue show <id>` and room-status
+`holdReason: "epoch rotated"`. Terminal rows and person
 dispositions remain authoritative; rotation is not completion, replay or
 cancellation. A committed rotation whose local journal hold cannot be written
 returns `epoch_rotated_hold_unavailable` with an inspection step, without

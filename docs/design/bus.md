@@ -174,7 +174,7 @@ unresolved RoomStore delivery ids. The commit quiesces link application
 publication and rechecks that exact id set and the current roster digest.
 RoomStore atomically quarantines old active intents as `needs_review` with the
 existing `boundary_refused` reason and drops their sendable ciphertext. The local
-Bus hold uses the fixed reason `epoch rotated`; current room status names it.
+Bus holds use `room epoch rotated; inspect ahub queue show <id>`; current room status exposes `holdReason: "epoch rotated"`.
 Bus-only unsealed work stays queued. This is no completion, replay or cancellation;
 terminal rows and person dispositions remain unchanged. T2 already supplied the
 crash-gap quarantine; T3 adds the person preview and named local hold.

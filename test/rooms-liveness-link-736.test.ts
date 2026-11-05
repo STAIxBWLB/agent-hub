@@ -261,7 +261,9 @@ test("idle request reaches connected C after A's crossed broadcast reply replace
   // C is authenticated and already holds the first durable frame without ACK;
   // the other seven durable rows precede every later ephemeral observation.
   const blocked = await c.take("frame");
-  expect(encodeBase64url(await sha256(blocked))).toBe(durable[0]);
+  const firstDurable = durable[0];
+  if (!firstDurable) throw new Error("expected the first of eight durable C packets");
+  expect(encodeBase64url(await sha256(blocked))).toBe(firstDurable);
   const requested = signal<string>(), replied = signal<string>();
   observe = async wire => {
     const frame = decodeFrame(wire);
@@ -284,8 +286,10 @@ test("idle request reaches connected C after A's crossed broadcast reply replace
   expect(internal.session?.pendingPresenceReplies.has(cStore.identity.public.fingerprint)).toBe(true);
   for (let n = 0; n < durable.length; n++) {
     const wire = n === 0 ? blocked : await c.take("frame");
-    expect(encodeBase64url(await sha256(wire))).toBe(durable[n]);
-    await c.ack(durable[n]!);
+    const expectedDigest = durable[n];
+    if (!expectedDigest) throw new Error("expected every durable C packet digest");
+    expect(encodeBase64url(await sha256(wire))).toBe(expectedDigest);
+    await c.ack(expectedDigest);
   }
   const readPresence = async () => {
     const wire = await c.take("frame"), frame = decodeFrame(wire);
@@ -329,4 +333,127 @@ test("idle request reaches connected C after A's crossed broadcast reply replace
   expect(responses).toBeLessThanOrEqual(2); // B request plus exactly one A refresh.
   expect(a.link.connectionState).toBe("online"); expect(b.link.connectionState).toBe("online");
   expect(f.owner.pendingInbox("work")).toEqual([]);
+});
+
+async function coalescedChatBarrier() {
+  const f = await fixture(), sent: Uint8Array[] = [], firstEntered = signal(), secondEntered = signal(), releaseFirst = signal(), releaseSecond = signal();
+  const row = f.owner.get("work")!;
+  const session = { ws: { readyState: WebSocket.OPEN, bufferedAmount: 0, send: (wire: Uint8Array) => { sent.push(Uint8Array.from(wire)); }, close() {} },
+    generation: 1, room: row.current.room, broker: row.broker, phase: "ready", roster: { digest: row.current.digest }, ephemeral: true,
+    outbound: [] as { digest: string; wire: Uint8Array }[], outboundBytes: 0, frameSent: false, retryAttempt: 0,
+    pendingPresenceReplies: new Set<string>(), presenceAsked: false, requestPresenceReply: false,
+    queue: [], queuedBytes: 0, handshake: undefined, frameRetry: undefined as ReturnType<typeof setTimeout> | undefined };
+  let state = "idle", reservations = 0;
+  const link = new RoomLink({ store: f.owner, name: "work", presence: () => [{ id: "codex", state }] }); links.push(link);
+  const internal = link as unknown as { running: boolean; generation: number; session: unknown; republish?: ReturnType<typeof setTimeout>;
+    storedFrame(session: unknown, digest: string): void; receive(session: unknown, data: ArrayBuffer): void };
+  internal.running = true; internal.generation = 1; internal.session = session;
+  const reserve = f.owner.sequence.reserve;
+  f.owner.sequence.reserve = async input => {
+    const seq = await reserve(input); reservations++;
+    if (reservations === 1) { firstEntered.resolve(); await releaseFirst.promise; }
+    if (reservations === 2) { secondEntered.resolve(); await releaseSecond.promise; }
+    return seq;
+  };
+  const first = link.publishPresence(); await bounded(firstEntered.promise);
+  state = "busy"; await link.publishPresence(); releaseFirst.resolve(); await first;
+  expect(internal.republish).toBeDefined();
+  const id = crypto.randomUUID();
+  const message = { v: 1 as const, type: "chat" as const, envelope: {
+    id, trace: crypto.randomUUID(), hop: 0, from: "codex", to: "kimi", kind: "chat" as const, priority: "status" as const, body: "chat behind deferred presence", ts: Date.now(),
+  } };
+  const outgoing = { deliveryId: crypto.randomUUID(), application: id, remotePeer: "kimi@guest",
+    recipient: f.guest.identity.public.fingerprint, peer: "kimi", ackTimeoutMs: 1000, ttlMs: 60000 };
+  return { f, link, internal, session, sent, secondEntered, releaseSecond, message, outgoing,
+    reservations: () => reservations, restore: () => { releaseFirst.resolve(); releaseSecond.resolve(); f.owner.sequence.reserve = reserve; } };
+}
+
+test("a chat reserves its deferred-presence barrier before a quiesce and rechecks admission afterwards", async () => {
+  const f = await coalescedChatBarrier();
+  const sending = f.link.publishApplication(f.message, f.outgoing.recipient, f.outgoing).then(
+    () => { throw new Error("quiesced barrier chat unexpectedly queued"); }, error => error,
+  );
+  let release: (() => void) | undefined;
+  try {
+    await bounded(f.secondEntered.promise);
+    let drained = false;
+    const quiescing = f.link.quiesceApplications().then(value => { drained = true; return value; });
+    expect(f.internal.republish).toBeUndefined();
+    expect(drained).toBe(false); expect(f.reservations()).toBe(2);
+    f.releaseSecond.resolve();
+    expect(await bounded(sending)).toMatchObject({ code: "not_sent" });
+    release = await bounded(quiescing);
+    expect(f.f.owner.applicationOutbox("work")).toEqual([]);
+    // Both observations stay ahead of the later admitted application.
+    for (const queued of [...f.session.outbound]) f.internal.storedFrame(f.session, queued.digest);
+    release(); release(); f.restore();
+    const digest = await f.link.publishApplication(f.message, f.outgoing.recipient, f.outgoing);
+    const sentChat = f.sent[f.sent.length - 1];
+    if (!sentChat) throw new Error("expected the admitted chat frame");
+    expect(encodeBase64url(await sha256(sentChat))).toBe(digest);
+    expect(f.f.owner.applicationOutbox("work")).toHaveLength(1);
+  } finally { f.restore(); release?.(); await sending; }
+});
+
+test("stop fences a chat waiting behind deferred presence before its final offline seal", async () => {
+  const f = await coalescedChatBarrier();
+  const sending = f.link.publishApplication(f.message, f.outgoing.recipient, f.outgoing).then(
+    () => { throw new Error("stopped barrier chat unexpectedly queued"); }, error => error,
+  );
+  let stopping: Promise<void> | undefined;
+  try {
+    await bounded(f.secondEntered.promise);
+    stopping = f.link.stop();
+    const head = f.session.outbound[0];
+    if (!head) throw new Error("expected an attempted presence head");
+    f.releaseSecond.resolve();
+    expect(await bounded(sending)).toMatchObject({ code: "not_sent" });
+    // A genuine correlated storage control releases the attempted pre-stop head.
+    f.internal.receive(f.session, Uint8Array.from(canonicalBytes({ v: 1, type: "stored", digest: head.digest, seq: decodeFrame(head.wire).seq, duplicate: false })).buffer);
+    // Await the final seal through the same send tail; its storage wait is ended
+    // by the bounded stop deadline, never by fabricating final storage evidence.
+    await stopping;
+    expect(f.f.owner.applicationOutbox("work")).toEqual([]);
+    expect(f.reservations()).toBe(3); // First observation, withdrawn snapshot, offline.
+    expect(f.sent).toHaveLength(2);
+    const final = f.sent[1];
+    if (!final) throw new Error("expected final offline presence after head storage");
+    const opened = await openFrame({ wire: final, identity: f.f.guest.identity, current: f.f.guest.get("work")!.current,
+      replay: { accept: async () => ({ status: "accepted", gap: "0" }) } });
+    if (opened.status !== "accepted") throw new Error("expected authenticated offline presence");
+    expect(JSON.parse(new TextDecoder().decode(opened.plaintext))).toEqual({ v: 1, type: "presence", peers: [{ id: "codex", state: "offline" }] });
+  } finally { f.restore(); await sending; await stopping; }
+});
+
+test("busy application traffic does not postpone an ephemeral periodic refresh", async () => {
+  const refreshQueued = signal(), receivingChat = signal(), releaseChat = signal(), observed = signal();
+  let inspect: ((wire: Uint8Array) => Promise<void>) | undefined;
+  const f = await fixture(false, { verifyFrame: async input => {
+    const proof = await verifyPublicFrame(input); await inspect?.(input.wire); return proof;
+  } });
+  let clock = 0;
+  const a = linked(f.owner, { refreshMs: 50, now: () => clock, presence: () => [{ id: "codex", state: "busy" }] });
+  const b = linked(f.guest, { refreshMs: 50, now: () => 0, presence: () => [{ id: "kimi", state: "busy" }],
+    application: { members() {}, online: async () => {}, stored() {}, receive: async () => { receivingChat.resolve(); await releaseChat.promise; } },
+    onPresence: value => { if (clock > 0 && value.member === f.owner.identity.public.fingerprint) observed.resolve(); } });
+  await a.link.start(); await a.online(); await b.link.start(); await b.online();
+  await a.link.publishApplication({ v: 1, type: "chat", envelope: {
+    id: crypto.randomUUID(), trace: crypto.randomUUID(), hop: 0, from: "codex", to: "kimi", kind: "chat", priority: "status", body: "in-progress raw application turn", ts: Date.now(),
+  } }, f.guest.identity.public.fingerprint);
+  try {
+    await bounded(receivingChat.promise);
+    inspect = async wire => {
+      const frame = decodeFrame(wire);
+      if (frame.sender !== f.owner.identity.public.fingerprint || !frame.ephemeral) return;
+      const opened = await openFrame({ wire, identity: f.guest.identity, current: f.guest.get("work")!.current,
+        replay: { accept: async () => ({ status: "accepted", gap: "0" }) } });
+      if (opened.status !== "accepted") throw new Error("expected authenticated busy refresh");
+      const payload = JSON.parse(new TextDecoder().decode(opened.plaintext)) as { requestReply?: boolean };
+      if (payload.requestReply === true) refreshQueued.resolve();
+    };
+    clock = 50;
+    await bounded(refreshQueued.promise); // B is still processing the raw chat.
+    expect(a.link.connectionState).toBe("online"); expect(b.link.connectionState).toBe("online");
+    releaseChat.resolve(); await bounded(observed.promise);
+  } finally { releaseChat.resolve(); }
 });
