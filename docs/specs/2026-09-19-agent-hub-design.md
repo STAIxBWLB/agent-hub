@@ -1171,6 +1171,8 @@ at most 8 pending packets/2 MiB per link, 1 MiB packet/backpressure limits and a
 minutes and do not block local work. Stop, leave, replacement and rotation fence
 all awaited work by link generation.
 
+With latest-per-sender coalescing, A awaiting C can have its queued request replaced by A's broadcast reply to B, so C sees the request only on A's next state change or reconnect; task #736 idle refresh or per-(sender,recipient) coalescing is the upgrade path.
+
 Presence is an encrypted, signed frame containing only exposed peer ids and closed
 idle/busy/paused/offline states. It is sent on connection and coalesced peer-state
 changes, skipping identical snapshots except explicit peer refresh exchanges,
@@ -6486,3 +6488,18 @@ The implementation contract for #929 R1 and R3 and for #1018 is `docs/specs/2026
 The current contract is recorded in [Task Board](../design/task-board.md#anchored-review-packages-1056). Optional finding anchors use the published acon review shape, with stricter hub UTF-8 write bounds. Person drafts are board-local until one explicit console-authorized Send creates one immutable package and one count-only history entry. Owner completion can claim sent comment IDs resolved without claiming person verification. Placement is recomputed over guarded task-scoped Git/projection material; stored anchors never move.
 
 The acon plugin uses `ActionMeta` and `host.ui.review` from the published DOM-free 0.1.3 contract as types only; there is no new runtime dependency or renderer. A private/PII view withholds text, and trusted package markers exclude quote/body content from logs, tails, incoming labels and memory capture without making a public task private. Recovery sections are optional for older snapshots. The owner's live document package-format confirmation remains a separate manual check; fixture and code evidence do not claim that confirmation.
+
+### Receipt publication ordering (#1204 T1)
+
+A chat ciphertext transport ACK follows its signed receipt's actual socket send.
+If another outbound frame is awaiting storage, the ACK is deferred outside the
+serial receive handler until that receipt reaches the wire, so stored controls
+can still progress. Stop/reconnect fences the deferred ACK. This is not durable
+receipt storage proof; #1204 T2 adds the stored-ACK and receipt-outbox guarantee.
+
+A session keeps its refresh request pending for every asked recipient until a
+validated presence from that member arrives. Later non-reply snapshots retain
+requestReply while anyone is pending; replies never carry requestReply. The set
+is bounded by the current roster and resets at reconnect or membership change.
+
+When a receipt is queued behind a confirmed queue_full head, T1 ACKs the chat to free broker capacity while retaining the receipt in bounded RAM; a crash or session loss before its send can lose it, and task #735's durable receipt outbox closes this exception.

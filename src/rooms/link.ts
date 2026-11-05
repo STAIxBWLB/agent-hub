@@ -45,8 +45,13 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const DIGEST = /^[A-Za-z0-9_-]{43}$/;
 const STATES: readonly string[] = ["idle", "busy", "paused", "offline"];
-interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean; retained?: () => boolean }
+interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean; retained?: () => boolean; onSent?: () => void }
+interface ReceiptSend { digest: string; recipient: string; promise: Promise<void>; resolve: () => void; sent: boolean; acknowledged?: boolean; release?: () => void }
 interface Session {
+  receiptSends: Map<string, ReceiptSend>;
+  pendingPresenceReplies: Set<string>;
+  presenceAsked: boolean;
+  presenceRoster?: string;
   outbound: PendingFrame[];
   outboundBytes: number;
   frameSent: boolean;
@@ -173,6 +178,7 @@ export class RoomLink {
     if (!this.publicationCurrent(session, row.current.digest) || !this.options.store.ordinaryInboxAvailable(this.options.name, bytes)) return;
     // Intent survives coalescing, ordinary responses and publication failure.
     // Only an actually sent request with current capacity may clear the numeric flag.
+    if (!this.forcePresenceRequest) { session.pendingPresenceReplies.clear(); session.presenceAsked = false; }
     session.requestPresenceReply = true; this.forcePresenceRequest = true;
     try { await this.publishPresence(); }
     catch (error) { this.retry(session); throw error; }
@@ -242,7 +248,7 @@ export class RoomLink {
     if (session) {
       clearTimeout(session.handshake);
       if (session.frameRetry) clearTimeout(session.frameRetry);
-      session.outbound.length = 0; session.outboundBytes = 0;
+      session.outbound.length = 0; session.outboundBytes = 0; session.receiptSends.clear(); session.pendingPresenceReplies.clear();
       session.queue.length = 0; session.queuedBytes = 0; session.deferredFrame = undefined;
       try { session.ws.close(1000, "disconnected"); } catch { /* already closed */ }
     }
@@ -273,7 +279,7 @@ export class RoomLink {
     try { ws = new WebSocket(url.href, { headers: { "x-agent-hub-ephemeral": "1" } }); } catch { this.retry(); return; }
     ws.binaryType = "arraybuffer";
     const generation = ++this.generation;
-    const session: Session = { ws, generation, room: row.current.room, broker: row.broker, phase: "challenge", outbound: [], outboundBytes: 0, frameSent: false, retryAttempt: 0, queue: [], queuedBytes: 0, processing: false, initialRoster: true, requestPresenceReply: true,
+    const session: Session = { ws, generation, room: row.current.room, broker: row.broker, phase: "challenge", receiptSends: new Map(), pendingPresenceReplies: new Set(), presenceAsked: false, outbound: [], outboundBytes: 0, frameSent: false, retryAttempt: 0, queue: [], queuedBytes: 0, processing: false, initialRoster: true, requestPresenceReply: true,
       handshake: setTimeout(() => this.retry(session), LIMITS.handshakeMs) };
     session.handshake.unref?.();
     this.session = session;
@@ -287,7 +293,7 @@ export class RoomLink {
     if (bytes.length > LIMITS.packetBytes || session.ws.bufferedAmount > LIMITS.backpressure) fail("limit");
     session.ws.send(bytes);
   }
-  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean): void {
+  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean, onSent?: () => void): void {
     this.current(session);
     // Only an unsent observation may be replaced. Never reorder an attempted frame.
     if (presence) {
@@ -295,8 +301,15 @@ export class RoomLink {
       if (at >= 0) session.outboundBytes -= session.outbound.splice(at, 1)[0]!.wire.byteLength;
     }
     if (session.outbound.length >= LIMITS.packets || session.outboundBytes + wire.byteLength > LIMITS.queuedBytes) fail("limit");
-    session.outbound.push({ wire, digest, presence, requestReply, current, retained }); session.outboundBytes += wire.byteLength;
+    session.outbound.push({ wire, digest, presence, requestReply, current, retained, onSent }); session.outboundBytes += wire.byteLength;
+    this.releaseQueueFullAcks(session);
     this.pumpFrames(session);
+  }
+  private releaseQueueFullAcks(session: Session): void {
+    if (!session.frameRetry) return;
+    for (const receipt of session.receiptSends.values()) {
+      if (!receipt.sent && !receipt.acknowledged && session.outbound.findIndex(frame => frame.digest === receipt.digest) > 0) receipt.release?.();
+    }
   }
   private pumpFrames(session: Session): void {
     if (session.frameSent || session.frameRetry || !session.outbound.length) return;
@@ -315,10 +328,7 @@ export class RoomLink {
       return;
     }
     this.send(session, frame.wire); session.frameSent = true;
-    if (frame.requestReply) {
-      session.requestPresenceReply = false;
-      if (this.retiredPresenceBytes && this.options.store.ordinaryInboxAvailable(this.options.name, this.retiredPresenceBytes)) this.retiredPresenceBytes = 0;
-    }
+    const onSent = frame.onSent; frame.onSent = undefined; onSent?.();
   }
   private storedFrame(session: Session, digest: string): void {
     if (session.outbound[0]?.digest !== digest) return;
@@ -338,6 +348,8 @@ export class RoomLink {
       try { this.pumpFrames(session); } catch { this.retry(session); }
     }, delay);
     session.frameRetry.unref?.();
+    this.releaseQueueFullAcks(session);
+    this.pumpFrames(session);
   }
   private receive(session: Session, data: unknown): void {
     if (this.session !== session || !this.running) return;
@@ -397,6 +409,10 @@ export class RoomLink {
         if (roster.owner !== this.options.store.identity.public.fingerprint || BigInt(roster.epoch) >= BigInt(local.current.epoch)) fail("untrusted");
         session.ownerUpgrading = true;
         this.send(session, local.wire); return;
+      }
+      if (session.presenceRoster !== roster.digest) {
+        session.presenceRoster = roster.digest; session.pendingPresenceReplies.clear(); session.presenceAsked = false;
+        session.requestPresenceReply = true; session.lastPresence = undefined;
       }
       session.ephemeral = ready.ephemeral === true;
       session.phase = "ready"; session.ownerUpgrading = false; clearTimeout(session.handshake); this.attempts = 0;
@@ -544,6 +560,8 @@ export class RoomLink {
       } else {
         const peers = presence(result.plaintext, sender.exposedPeers);
         this.current(session, digest);
+        session.pendingPresenceReplies.delete(frame.sender);
+        if (session.presenceAsked && session.pendingPresenceReplies.size === 0) session.requestPresenceReply = false;
         try { this.options.onPresence?.({ member: frame.sender, peers }); } catch { /* validated observation only */ }
         this.current(session, digest);
         this.options.store.settleInbox(this.options.name, acceptedDigest);
@@ -559,8 +577,26 @@ export class RoomLink {
     this.frameCurrent(session, frame);
     // This ACK only retires ciphertext from the broker queue. A durable refusal
     // or stale drop is never a signed recipient application-completion receipt.
-    this.send(session, encodeBrokerControl({ v: 1, type: "received", digest: acceptedDigest }));
+    this.retireFrame(session, frame, acceptedDigest);
     await this.refreshPresenceIfCapacityFree().catch(() => undefined);
+  }
+  private retireFrame(session: Session, frame: FrameWire, digest: string): void {
+    const receipt = session.receiptSends.get(digest);
+    const ack = () => {
+      if (receipt?.acknowledged) return;
+      this.frameCurrent(session, frame);
+      this.send(session, encodeBrokerControl({ v: 1, type: "received", digest }));
+      if (receipt) { receipt.acknowledged = true; receipt.release = undefined; }
+      if ((!receipt || receipt.sent) && session.receiptSends.get(digest) === receipt) session.receiptSends.delete(digest);
+    };
+    if (!receipt || receipt.sent) { ack(); return; }
+    // ponytail: confirmed queue_full can trap a receipt behind the chat occupying
+    // broker capacity. ACK that chat but keep its receipt in bounded RAM; loss of
+    // this session before send can lose it. Task #735's durable receipt outbox closes this gap.
+    receipt.release = ack;
+    this.releaseQueueFullAcks(session);
+    // All other ACKs wait for actual receipt send outside the serial stored lane.
+    void receipt.promise.then(ack).catch(() => this.retry(session));
   }
   private async frameDigest(bytes: Uint8Array): Promise<string> {
     return encodeBase64url(await sha256(bytes));
@@ -589,6 +625,10 @@ export class RoomLink {
     const allowed = () => this.publicationCurrent(session, digest) && current();
     return this.serialSend(async () => {
       if (!allowed()) fail("state_changed");
+      if (message.type === "receipt") {
+        const pending = session.receiptSends.get(message.frame);
+        if (pending) { if (pending.recipient !== recipient) fail("untrusted"); return pending.digest; }
+      }
       const row = this.current(session, digest);
       if (!roomMembers(row.current).some(member => member.fingerprint === recipient) || recipient === this.options.store.identity.public.fingerprint) fail("untrusted");
       const wire = await sealFrame({ epoch: row.current, identity: this.options.store.identity, recipients: [recipient], plaintext, sequence: this.options.store.sequence });
@@ -596,7 +636,25 @@ export class RoomLink {
       const record = metadata ? await this.options.store.queueApplication(this.options.name, wire, metadata, allowed) : undefined;
       const frameDigest = record?.digest ?? await this.frameDigest(wire);
       if (!allowed()) fail("state_changed");
-      this.queueFrame(session, wire, frameDigest, false, allowed, false, record ? () => this.options.store.applicationSendable(this.options.name, frameDigest) : undefined);
+      let receipt: ReceiptSend | undefined;
+      if (message.type === "receipt") {
+        if (session.receiptSends.size >= LIMITS.packets) fail("limit");
+        let resolve!: () => void;
+        const promise = new Promise<void>(done => { resolve = done; });
+        receipt = { digest: frameDigest, recipient, promise, resolve, sent: false };
+        session.receiptSends.set(message.frame, receipt);
+      }
+      try {
+        this.queueFrame(session, wire, frameDigest, false, allowed, false,
+          record ? () => this.options.store.applicationSendable(this.options.name, frameDigest) : undefined,
+          receipt ? () => {
+            receipt!.sent = true; receipt!.resolve();
+            if (message.type === "receipt" && session.receiptSends.get(message.frame) === receipt) session.receiptSends.delete(message.frame);
+          } : undefined);
+      } catch (error) {
+        if (message.type === "receipt" && session.receiptSends.get(message.frame) === receipt) session.receiptSends.delete(message.frame);
+        throw error;
+      }
       return frameDigest;
     });
   }
@@ -606,7 +664,8 @@ export class RoomLink {
     if (this.publishing) { this.publishDirty = true; return; }
     if (this.republish) clearTimeout(this.republish);
     this.republish = undefined; this.publishDirty = false;
-    const response = this.replyPresence && !this.forcePresenceRequest;
+    const forceRequest = this.forcePresenceRequest;
+    const response = this.replyPresence && !forceRequest;
     if (response) this.replyPresence = false;
     this.forcePresenceRequest = false;
     let sent = false;
@@ -622,8 +681,8 @@ export class RoomLink {
       await this.serialSend(async () => {
         if (!this.publicationCurrent(session, row.current.digest)) return;
         const requestReply = !response && session.requestPresenceReply;
-        const presenceKey = JSON.stringify([row.current.digest, recipients, peers]);
-        if (!requestReply && !response && session.lastPresence === presenceKey) return;
+        const presenceKey = JSON.stringify([row.current.digest, recipients, peers, requestReply]);
+        if (!response && !forceRequest && session.lastPresence === presenceKey) return;
         const wire = await sealFrame({ epoch: row.current, identity, recipients, plaintext: canonicalBytes({ v: 1, type: "presence", peers, ...(requestReply ? { requestReply: true } : {}) }), ...(session.ephemeral ? { ephemeral: true as const } : {}), sequence: this.options.store.sequence });
         if (!this.publicationCurrent(session, row.current.digest)) return;
         // Machine-local exposure can change during reserve/encryption/signing even
@@ -632,7 +691,14 @@ export class RoomLink {
         if (!this.publicationCurrent(session, row.current.digest)) return;
         const allowed = new Set(this.currentPresence(own.exposedPeers).map(peer => peer.id));
         if (peers.some(peer => !allowed.has(peer.id))) return;
-        this.queueFrame(session, wire, frameDigest, requestReply, () => this.publicationCurrent(session, row.current.digest) && peers.every(peer => this.currentPresence(own.exposedPeers).some(value => value.id === peer.id)), true); session.lastPresence = presenceKey; sent = true;
+        this.queueFrame(session, wire, frameDigest, requestReply,
+          () => this.publicationCurrent(session, row.current.digest) && peers.every(peer => this.currentPresence(own.exposedPeers).some(value => value.id === peer.id)), true, undefined,
+          requestReply ? () => {
+            if (!session.presenceAsked) { session.pendingPresenceReplies = new Set(recipients); session.presenceAsked = true; }
+            session.requestPresenceReply = session.pendingPresenceReplies.size > 0;
+            if (this.retiredPresenceBytes && this.options.store.ordinaryInboxAvailable(this.options.name, this.retiredPresenceBytes)) this.retiredPresenceBytes = 0;
+          } : undefined);
+        session.lastPresence = presenceKey; sent = true;
       });
     } catch (error) {
       this.retry(session); // Existing bounded reconnect, never a self-polling refresh retry.

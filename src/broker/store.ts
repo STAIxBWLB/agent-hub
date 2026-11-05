@@ -405,6 +405,9 @@ export class BrokerStore {
         if (order < 0n) fail("conflict");
       }
       if (proof.ephemeral) {
+        // ponytail: while A awaits C, A's broadcast reply to B may replace C's request;
+        // C waits for A's next state change/reconnect. Task #736 idle refresh or
+        // per-(sender,recipient) coalescing closes this latest-per-sender ceiling.
         this.removeEphemeral(proof.room, proof.sender);
         const connected = new Set(onlineRecipients);
         recipients = recipients.filter(recipient => connected.has(recipient));

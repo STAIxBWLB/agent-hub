@@ -464,6 +464,34 @@ test("queue_full keeps the durable frame and retries its digest after broker cap
   expect((await f.a.commands.rows("work"))[0]?.state).toBe("online");
 });
 
+test("a receipt behind rejected reconnect presence lets a cap-one broker release the admitted chat", async () => {
+  const f = await mesh(600, 1);
+  await f.event.wait(() => f.broker.stats().queuedFrames === 0, "initial ciphertext queues drained");
+  const at = f.brokerEvents.length; await f.b.close();
+  await f.event.wait(() => f.brokerEvents.slice(at).some(row => row.event === "disconnected" && row.member === f.guest), "recipient link offline");
+  const env = newEnvelope("user", "admit once through cap-one reconnect", { to: ["codex@beta"] });
+  f.a.bus.publish(env);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "accepted" && f.broker.stats().queuedFrames === 1, "actual application occupies the only broker slot");
+  const eventsBefore = f.brokerEvents.length, framesBefore = f.frames.length;
+  // Hold verification of beta's initial presence while its application is admitted.
+  // The chat cannot be ACKed through the ordinary receipt-send path while that
+  // presence owns beta's transport head, forcing the known-queue_full exception.
+  f.control.holdSender = f.guest; f.control.hold = true;
+  try {
+    await f.restart("b");
+    await f.event.wait(() => f.control.entered && f.b.peer.got.some(row => row.id === env.id), "reconnect presence is in flight while beta has admitted the original chat");
+    expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+    expect(f.frames.slice(framesBefore).some(frame => frame.sender === f.guest && frame.ephemeral)).toBe(true);
+    f.control.hold = false; f.control.gate.release();
+    await f.event.wait(async () => f.brokerEvents.slice(eventsBefore).some(row => row.event === "refused" && row.member === f.guest && row.code === "queue_full")
+      && f.frames.slice(framesBefore).some(frame => frame.sender === f.guest && !frame.ephemeral)
+      && (await outbound(f.a, env.id))?.state === "completed (admitted)", "rejected presence frees the input ACK path and the retained signed receipt follows after capacity returns");
+    expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+    expect(f.a.store!.applicationOutbox("work").filter(row => row.application === env.id)).toHaveLength(1);
+    expect(f.a.journal.unresolved("codex@beta").some(row => row.originals.some(item => item.id === env.id))).toBe(false);
+  } finally { f.control.hold = false; f.control.gate.release(); }
+});
+
 test("a discarded queue_full application is never retried when broker capacity returns", async () => {
   const f = await mesh(600, 1);
   await f.event.wait(() => f.broker.stats().queuedFrames === 0, "initial ciphertext queues drained");
@@ -503,6 +531,63 @@ test("a discarded queue_full application is never retried when broker capacity r
   expect(f.b.peer.got.some(item => item.id === env.id)).toBe(false);
   expect(f.frames.filter(frame => frame.sender === f.owner && frame.digest === target.digest)).toHaveLength(attemptsBeforeDiscard);
 });
+
+test("a replaced presence snapshot keeps its pending reply request until the recipient answers", async () => {
+  const f = await mesh(), gate = deferred();
+  const blocker: RoomMessage = { v: 1, type: "chat", envelope: { id: crypto.randomUUID(), trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", kind: "chat", priority: "status", body: "hold recipient before queued presence", ts: f.control.now } };
+  const online = f.a.chat.application.online, receive = f.b.chat.application.receive;
+  const alphaAccept = f.a.store!.replay.accept, betaAccept = f.b.store!.replay.accept;
+  const observations: { recipient: "alpha" | "beta"; requestReply: boolean; state: unknown }[] = [];
+  let entered = false, prime = true;
+  const observe = (recipient: "alpha" | "beta", input: Parameters<typeof alphaAccept>[0]) => {
+    const packet = JSON.parse(new TextDecoder().decode(input.plaintext)) as { type: string; requestReply?: boolean; peers?: { id: string; state: string }[] };
+    if (packet.type === "presence") {
+      observations.push({ recipient, requestReply: packet.requestReply === true, state: packet.peers?.find(peer => peer.id === "codex")?.state });
+      f.event.notify();
+    }
+  };
+  // Observe only plaintext already signature-checked by the real receiving link;
+  // production replay admission still runs, and the broker remains ciphertext-only.
+  f.a.store!.replay.accept = async input => { observe("alpha", input); return alphaAccept(input); };
+  f.b.store!.replay.accept = async input => { observe("beta", input); return betaAccept(input); };
+  f.b.chat.application.receive = async (context, input) => {
+    if (input.message?.type === "chat" && input.message.envelope.id === blocker.envelope.id) {
+      entered = true; f.event.notify(); await gate.promise;
+    }
+    return receive(context, input);
+  };
+  f.a.chat.application.online = async context => {
+    await online(context);
+    if (prime) { prime = false; await context.link.publishApplication(blocker, f.guest); }
+  };
+  try {
+    f.control.phase = "pending-presence-request"; f.a.link!.refresh();
+    await f.event.wait(() => entered && f.frames.some(frame => frame.sender === f.owner && frame.ephemeral && frame.phase === "pending-presence-request"), "request presence queued behind the recipient's unacknowledged durable packet");
+    const beforeReplacement = observations.length, betaBeforeReplacement = observations.filter(row => row.recipient === "beta").length;
+    const freshObservations = () => observations.slice(beforeReplacement);
+    f.control.phase = "replacement-presence";
+    f.a.bus.pause("codex"); await f.a.link!.publishPresence();
+    await f.event.wait(() => f.frames.some(frame => frame.sender === f.owner && frame.ephemeral && frame.phase === "replacement-presence") && f.broker.stats().queuedFrames === 2, "normal state update replaces the pending broker presence");
+    expect(observations.filter(row => row.recipient === "beta")).toHaveLength(betaBeforeReplacement);
+    gate.release();
+    await f.event.wait(() => freshObservations().some(row => row.recipient === "beta" && row.state === "paused" && row.requestReply) && freshObservations().some(row => row.recipient === "alpha"), "recipient answers the request carried by the replacement snapshot");
+    expect(freshObservations().filter(row => row.recipient === "alpha").every(row => !row.requestReply)).toBe(true);
+    // Forward chat barriers flush both transports without changing alpha's native
+    // paused state. Reply snapshots must not request another reply or echo forever.
+    for (let n = 0; n < 3; n++) {
+      const env = newEnvelope("user", `presence reply-loop barrier ${n}`, { to: ["codex@beta"] });
+      f.a.bus.publish(env);
+      await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "forward transport barrier after presence reply");
+      expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+    }
+    expect(freshObservations().filter(row => row.recipient === "alpha").every(row => !row.requestReply)).toBe(true);
+    expect(observations.length - beforeReplacement).toBeLessThanOrEqual(8);
+    expect(f.b.bus.stateOf("codex@alpha")).toBe("paused");
+  } finally {
+    gate.release(); f.a.chat.application.online = online; f.b.chat.application.receive = receive;
+    f.a.store!.replay.accept = alphaAccept; f.b.store!.replay.accept = betaAccept;
+  }
+}, 20000);
 
 test("new links retain the closed legacy frame shape when a broker does not advertise ephemeral", async () => {
   const NativeWebSocket = globalThis.WebSocket, readyKeys: string[][] = [];

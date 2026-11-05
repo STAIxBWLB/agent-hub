@@ -115,3 +115,13 @@ Ephemeral replacement preserves a recipient's outstanding one-packet transport
 slot until its matching ACK or the original TTL/grace bound expires. Only the
 pending replacement coalesces; a newer observation never refreshes the handed
 packet's deadline. Unsupported recipients never receive the new frame shape.
+
+Ordinary receipt publication preserves socket-send-before-chat-transport-ACK ordering via
+a per-session deferred fence outside the serial receive queue. A refresh request
+remains on non-reply snapshots until all asked members supply validated presence;
+replies never request a reply. The bounded round resets on reconnect or roster
+change. The latest-per-sender crossing ceiling and its #736 upgrade path are
+recorded in the rooms spec; durable stored-ACK receipt recovery remains T2.
+
+The confirmed queue_full escape and bounded-RAM crash/session-loss ceiling are
+recorded in the rooms spec; task #735 replaces that exception with durable receipts.
