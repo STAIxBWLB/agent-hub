@@ -43,12 +43,13 @@ test("an explicit manual pause still persists and survives a journal reopen", ()
 });
 
 test("resume still persists the queued delivery it actually drains", async () => {
-  const first = opened(); let complete!: () => void;
+  const first = opened(); let complete!: () => void; let deliveredId = "";
   const completed = new Promise<void>(resolve => { complete = resolve; });
   class Peer extends BasePeer {
     async start() { this.setState("idle"); }
     async stop() { this.setState("offline"); }
     async deliver(envs: Envelope[], id?: string) {
+      deliveredId = id!;
       expect(first.journal.get(id!)?.state).toBe("dispatching");
       expect(first.journal.get(id!)?.originals.map(env => env.id)).toEqual(envs.map(env => env.id));
       this.delivery({ id: id!, state: "completed" }); complete();
@@ -60,7 +61,7 @@ test("resume still persists the queued delivery it actually drains", async () =>
   expect(queued.state).toBe("queued"); const before = first.journal.revision();
   first.bus.resume(peer.id); await completed;
   expect(first.journal.revision()).toBeGreaterThan(before);
-  const row = first.journal.list(peer.id).find(item => item.originals.some(original => original.id === env.id))!;
+  const row = first.journal.get(deliveredId)!;
   expect(row.state).toBe("completed"); expect(first.bus.queueIds(peer.id)).toEqual([]);
   await peer.stop(); first.bus.closeJournal();
   const restored = opened(first.root);
