@@ -13,7 +13,7 @@ const servers: { stop(force?: boolean): void }[] = [];
 afterEach(() => { for (const s of servers.splice(0)) s.stop(true); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
 interface Spec { id: string; delayMs?: number; permissions?: number; reviews?: number; hang?: boolean; decisionsAt?: number }
-function fleet(specs: Spec[], options: { inboxFreshMs?: number; inboxStaleMs?: number; inboxProjectBudgetMs?: number } = {}) {
+function fleet(specs: Spec[], options: { inboxFreshMs?: number; inboxStaleMs?: number; inboxProjectBudgetMs?: number } = {}, listing: { delayMs: number } = { delayMs: 0 }) {
   const home = mkdtempSync(join(tmpdir(), "ahub-inbox727-")); dirs.push(home);
   const asked: Record<string, number> = {};
   const live: Record<string, { delayMs: number; permissions: number; reviews: number; hang: boolean }> = {};
@@ -47,13 +47,13 @@ function fleet(specs: Spec[], options: { inboxFreshMs?: number; inboxStaleMs?: n
   }
   const registry = { get: (id: string) => projects.find((p) => p.id === id), list: () => projects, close() {} } as any;
   const lifecycle: Lifecycle = {
-    inspectProject: async (project) => ({ state: "running", status: { instanceId: (project as ProjectRecord).instanceId, peers: {} } }) as any,
+    inspectProject: async (project) => { if (listing.delayMs) await Bun.sleep(listing.delayMs); return { state: "running", status: { instanceId: (project as ProjectRecord).instanceId, peers: {} } } as any; },
     startProject: async () => ({}), stopProject: async () => {},
   };
   const provider = createProvider({ home, registry, lifecycle, ...options });
   const inbox = async () => await provider.snapshot({ after: 0, panel: "inbox" }) as { items: { id: string; group: string; at: string; project?: string }[]; more: number };
   const total = () => Object.values(asked).reduce((sum, n) => sum + n, 0);
-  return { provider, inbox, asked, total, live };
+  return { provider, inbox, asked, total, live, listing };
 }
 const time = async <T,>(work: () => Promise<T>): Promise<[T, number]> => { const t = performance.now(); const value = await work(); return [value, performance.now() - t]; };
 
@@ -228,3 +228,31 @@ test("a slow computation from before an action does not overwrite the newer fall
   const outcome = await Promise.race([poll, Bun.sleep(5_500).then(() => null)]);
   expect(outcome?.items).toHaveLength(1);                         // one row from the newer entry, never the older two
 }, 15_000);
+
+test("#1196 follow-up: a slow project listing is bounded by the project budget and falls back to the last listing", async () => {
+  const f = fleet([{ id: "a" }, { id: "b" }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 300 });
+  expect((await f.inbox()).items).toHaveLength(2);                 // a fast first listing becomes the fallback
+  f.listing.delayMs = 2_000;                                       // every daemon's status now takes 2 s
+  const [reply, ms] = await time(f.inbox);
+  expect(ms).toBeLessThan(1_000);                                  // unbounded, the poll would wait the full 2 s
+  expect(reply.items).toHaveLength(2);                             // served from the last listing
+});
+
+test("#1196 follow-up: a slow project's snapshot still in flight is reused, so the daemon is asked once across several polls", async () => {
+  const f = fleet([{ id: "fast" }, { id: "slow", delayMs: 1_500 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 200 });
+  for (let n = 0; n < 4; n++) await f.inbox();                      // each poll gives up on "slow" after 200 ms
+  expect(f.asked.slow).toBe(1);                                    // without reuse: one question per poll
+  expect(f.asked.fast).toBe(4);
+  await Bun.sleep(1_500);
+  await f.inbox();                                                 // once it settled, the next poll asks again
+  expect(f.asked.slow).toBe(2);
+});
+
+test("#1196 follow-up: an action starts a new question even while the earlier one is still in flight", async () => {
+  const f = fleet([{ id: "slow", delayMs: 800 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 100 });
+  await f.inbox();
+  expect(f.asked.slow).toBe(1);
+  await f.provider.action({ action: "open", projectId: "slow", instanceId: "i-slow" } as any, undefined);
+  await f.inbox();                                                 // a question asked before the action never answers a poll after it
+  expect(f.asked.slow).toBe(2);
+});

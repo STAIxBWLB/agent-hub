@@ -181,10 +181,27 @@ export function createProvider(options: { home: string; registry?: Registry; lif
    */
   const lastProjectItems = new Map<string, { generation: number; items: InboxItem[] }>();
   /** The project's `agents` snapshot, or null when it did not answer within the budget or threw: the other projects' rows are never held back by it. */
-  const projectSnapshot = (project: ProjectRow) => within(act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "agents" }) as Promise<Record<string, unknown>>, INBOX_PROJECT_BUDGET_MS);
+  /**
+   * #1196 follow-up: a project's `agents` snapshot still running past its budget is reused by the next poll instead of asking that daemon again, so a slow daemon gets one question at a time.
+   * Reuse stays within one action generation: a question asked before an approval or an answer never answers a poll made after it.
+   */
+  const projectFlight = new Map<string, { generation: number; work: Promise<Record<string, unknown>> }>();
+  const projectSnapshot = (project: ProjectRow) => {
+    let flight = projectFlight.get(project.id);
+    if (!flight || flight.generation !== inboxGeneration) {
+      const work = act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "agents" }) as Promise<Record<string, unknown>>;
+      const entry = { generation: inboxGeneration, work };
+      flight = entry;
+      projectFlight.set(project.id, entry);
+      work.finally(() => { if (projectFlight.get(project.id) === entry) projectFlight.delete(project.id); }).catch(() => {});
+    }
+    return within(flight.work, INBOX_PROJECT_BUDGET_MS);
+  };
   async function inbox(generation: number): Promise<InboxItem[]> {
     const items: InboxItem[] = [];
-    const projects = await running();
+    // #1196 follow-up: the listing asks every daemon for its status, so it gets the project budget and falls back to the last listing, as space() does.
+    const listing = running().then((rows) => { lastRunning = rows; return rows; }, () => lastRunning);
+    const projects = await within(listing, INBOX_PROJECT_BUDGET_MS) ?? lastRunning;
     // The projects are asked at once: the answer takes as long as the slowest daemon, not the sum of them (#727).
     const snaps = await Promise.all(projects.map(projectSnapshot));
     for (const [index, project] of projects.entries()) {
