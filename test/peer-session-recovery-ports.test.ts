@@ -166,7 +166,7 @@ test("restored or unreadable review provenance excludes the actual memory observ
   const bus = new Bus({ batchMs: 0 }); bus.add(peer); cleanup.push(() => bus.closeJournal());
   const recorded: string[] = [];
   let host: any;
-  host = hostVariables(["contextSession", "contextPii", "reviewObserverHash", "reviewObserverSessionHash", "reviewObserverStableSessionHash", "hasSessionlessOrdinaryObserverInput", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged", "reviewObserverDurableHeld", "reviewObserverInput", "reviewObserverHeld", "memoryObservations"], {
+  host = hostVariables(["contextSession", "contextPii", "reviewObserverHash", "reviewObserverSessionHash", "reviewObserverStableSessionHash", "hasSessionlessOrdinaryObserverInput", "bindUnboundReviewInputToSession", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged", "reviewObserverDurableHeld", "reviewObserverInput", "reviewObserverHeld", "memoryObservations"], {
     bus, journal, HUB, USER, createHash, randomUUID, isWsPeer, definitionOf, claudeSession: () => { throw new Error("unexpected Claude read"); },
     turns: new Map(), board: { peerTaskSignals: () => [], get: () => undefined, hasReviewObserverScope: () => false }, isClosedTaskState,
     currentReviewObserverInputs: new Map(), pendingReviewObserverInputs: new Map(), ordinaryReviewObserverInputs: new Map(), stagedSessionlessOrdinaryInputs: new Map(), reviewObserverRuntimeSessions: new WeakMap(),
@@ -207,7 +207,7 @@ test("first stable SID binding clears only the peer marker and preserves other-s
   const currentReviewObserverInputs = new Map(), pendingReviewObserverInputs = new Map();
   const ordinaryReviewObserverInputs = new Map(), stagedSessionlessOrdinaryInputs = new Map();
   const reviewObserverSessionBindings = new Map(), currentDaemonReviewObserverHolds = new Map(), restoredPullOnlyReviewHolds = new Map();
-  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
+  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindUnboundReviewInputToSession", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
     bus, isWsPeer, definitionOf, claudeSession: () => ({}), createHash,
     currentReviewObserverInputs, pendingReviewObserverInputs,
     ordinaryReviewObserverInputs, stagedSessionlessOrdinaryInputs, reviewObserverSessionBindings,
@@ -227,7 +227,7 @@ test("first confirmed SID binding clears a marker-only unknown without a RAM quo
   const bus = new Bus({ batchMs: 0 }); bus.add(peer); cleanup.push(() => bus.closeJournal());
   const maps = { currentReviewObserverInputs: new Map(), pendingReviewObserverInputs: new Map(), ordinaryReviewObserverInputs: new Map(), stagedSessionlessOrdinaryInputs: new Map(),
     reviewObserverSessionBindings: new Map(), currentDaemonReviewObserverHolds: new Map(), restoredPullOnlyReviewHolds: new Map(), ownedObserverInputs: new Map(), localObserverSessionIds: new WeakMap() };
-  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
+  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindUnboundReviewInputToSession", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
     bus, journal, isWsPeer, definitionOf, claudeSession: () => ({}), createHash, ...maps,
   });
   const sessionHash = hash("fresh-confirmed-session");
@@ -243,7 +243,7 @@ test("a newly observed peer marker survives repeated reads of the same SID", () 
   const bus = new Bus({ batchMs: 0 }); bus.add(peer); cleanup.push(() => bus.closeJournal());
   const currentReviewObserverInputs = new Map(), pendingReviewObserverInputs = new Map(), ordinaryReviewObserverInputs = new Map(), stagedSessionlessOrdinaryInputs = new Map();
   const reviewObserverSessionBindings = new Map(), currentDaemonReviewObserverHolds = new Map(), restoredPullOnlyReviewHolds = new Map();
-  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "hasSessionlessOrdinaryObserverInput", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged", "reviewObserverDurableHeld"], {
+  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "hasSessionlessOrdinaryObserverInput", "bindUnboundReviewInputToSession", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged", "reviewObserverDurableHeld"], {
     bus, journal, USER, HUB, isWsPeer, definitionOf, claudeSession: () => ({}), createHash,
     currentReviewObserverInputs, pendingReviewObserverInputs, ordinaryReviewObserverInputs, stagedSessionlessOrdinaryInputs,
     reviewObserverSessionBindings, currentDaemonReviewObserverHolds, restoredPullOnlyReviewHolds,
@@ -272,7 +272,7 @@ test("first stable SID binding persists a current RAM quote before clearing its 
   const currentReviewObserverInputs = new Map([[peer.id, { deliveryKey: JSON.stringify(["review-envelope"]), held: true, reviewInputScoped: true, anchoredSubmission: true, unboundReviewInput: true, reviewHoldTurnId: "source-turn" }]]);
   const pendingReviewObserverInputs = new Map(), ordinaryReviewObserverInputs = new Map(), stagedSessionlessOrdinaryInputs = new Map();
   const reviewObserverSessionBindings = new Map(), currentDaemonReviewObserverHolds = new Map(), restoredPullOnlyReviewHolds = new Map();
-  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
+  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindUnboundReviewInputToSession", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
     bus, isWsPeer, definitionOf, claudeSession: () => ({}), createHash,
     currentReviewObserverInputs, pendingReviewObserverInputs, ordinaryReviewObserverInputs, stagedSessionlessOrdinaryInputs,
     reviewObserverSessionBindings, currentDaemonReviewObserverHolds, restoredPullOnlyReviewHolds,
@@ -297,7 +297,7 @@ test("a changed SID persists an unbound RAM quote before clearing its peer marke
   const currentReviewObserverInputs = new Map([[peer.id, { deliveryKey: JSON.stringify(["new-sessionless-review"]), held: true, reviewInputScoped: true, unboundReviewInput: true, reviewHoldTurnId: "unbound-turn" }]]);
   const pendingReviewObserverInputs = new Map(), ordinaryReviewObserverInputs = new Map(), stagedSessionlessOrdinaryInputs = new Map();
   const reviewObserverSessionBindings = new Map([[peer.id, oldSessionHash]]), currentDaemonReviewObserverHolds = new Map([[peer.id, oldSessionHash]]), restoredPullOnlyReviewHolds = new Map();
-  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
+  const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindUnboundReviewInputToSession", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
     bus, isWsPeer, definitionOf, claudeSession: () => ({}), createHash,
     currentReviewObserverInputs, pendingReviewObserverInputs, ordinaryReviewObserverInputs, stagedSessionlessOrdinaryInputs,
     reviewObserverSessionBindings, currentDaemonReviewObserverHolds, restoredPullOnlyReviewHolds,
