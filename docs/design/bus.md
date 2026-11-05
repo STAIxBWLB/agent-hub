@@ -33,6 +33,11 @@ The bus applies limits to a sender, sender-recipient pair, important messages, a
 
 The in-memory bus schedules messages; `DeliveryJournal` durably records an individual transport attempt and the original envelopes behind any rendered output. A peer receipt such as `accepted` or `completed` describes transport, not the corresponding task's acceptance, completion, or approval. That separation lets a timeout or restart remain explicitly uncertain without inventing a task outcome ([#37](https://github.com/STAIxBWLB/agent-hub/issues/37)).
 
+A closed bus returns an empty publication outcome before provenance, privacy,
+journal preflight, observers or queue mutation. Deferred publication has the same
+fence. A storage failure while the bus is open still fails rather than becoming
+an apparently successful empty send.
+
 For #1055, `Bus.onDelivered(peer, originals, deliveryId?)` exposes the existing
 journal delivery ID to the observer at the first positive transport ACK. The
 optional argument accompanies the original envelopes, including when the
@@ -80,6 +85,14 @@ Once coverage is complete, NULL clean-session receipts may be pruned because com
 Role reassignment cannot clear the original recipient's observer exclusion while a review envelope remains queued, recovery-deferred or unsettled. The journal supplies recipient/task-scoped metadata independently of current task roles; explicit disposition ends that delivery scope. Sent person comments independently retain their saved package recipient until resolution or person dismissal.
 
 ## Room presence and broker backpressure (#1204 T1)
+
+Ordinary observations reuse an already scheduled coalesced republish instead of
+cancelling it and sealing a new frame on every awaited state flip. Responses and
+forced refresh requests retain priority. A chat flushes earlier deferred presence
+and reserves its own serial slot before yielding, preserving concurrent chat and
+durable-outbox FIFO. Receipts retain their existing durable-commit/ACK path and do
+not wait behind an additional ordinary observation. Actual-send exposure,
+recipient, currency and capacity fences remain unchanged.
 
 Presence carries a signed optional `ephemeral: true` frame header. The broker can
 read this metadata but cannot decrypt the presence body. It retains only the
