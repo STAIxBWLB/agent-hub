@@ -65,6 +65,44 @@ export function moveUnreleased(changelog: string, version: string): string {
   if (new RegExp(`^## ${version.replaceAll(".", "\\.")}[ \\t]*$`, "m").test(changelog)) throw new Error(`CHANGELOG.md already has a ${version} section`);
   return `${changelog.slice(0, heading.index)}## Unreleased\n\n## ${version}\n\n${body}\n${next ? `\n${rest.slice(next.index)}` : ""}`;
 }
+/**
+ * #718 (#1179): `ahub upgrade` upgrades one project's daemon and does not update the global CLI or the shared Claude plugin, so every "Upgrading to <v>" note must tell the person to.
+ * One sentence, owned here: the release skeleton writes it, `tagPreflight` refuses a release whose section lacks it, and `ahub upgrade` prints the same words when the CLI or the plugin is older
+ * than the daemon it just upgraded. It names the exact version, never a range.
+ */
+export const globalUpdateStep = (version: string): string =>
+  `\`ahub upgrade\` does not update the global CLI or the shared Claude plugin: run \`bun add -g @staix/agent-hub@${version}\` and then \`ahub setup\` yourself, and \`ahub doctor\` warns while either is older than a running daemon.`;
+
+const headingFor = (version: string) => new RegExp(`^## Upgrading to ${version.replaceAll(".", "\\.")}[ \\t]*$`, "m");
+/** The body of the "## Upgrading to <version>" section (up to the next `## ` heading), or undefined when the document has none. */
+export function upgradeSection(quickstart: string, version: string): string | undefined {
+  const heading = headingFor(version).exec(quickstart);
+  if (!heading) return undefined;
+  const rest = quickstart.slice(heading.index + heading[0].length), next = /^## /m.exec(rest);
+  return next ? rest.slice(0, next.index) : rest;
+}
+/** Whether that section carries the step for exactly this version: the install command and `ahub setup`, both in it. */
+export const hasGlobalUpdateStep = (section: string | undefined, version: string): boolean =>
+  section !== undefined && section.includes(`bun add -g @staix/agent-hub@${version}`) && /`ahub setup`/.test(section);
+
+/**
+ * Gives docs/quickstart.md its "## Upgrading to <version>" section when it has none, above the previous one, and adds the step to a section that lacks it. Idempotent: a section that already has the
+ * step is returned unchanged. The section's prose is the release author's to write; this only guarantees the step cannot be missing.
+ */
+export function ensureUpgradeNote(quickstart: string, version: string): string {
+  const step = globalUpdateStep(version), heading = headingFor(version).exec(quickstart);
+  if (!heading) {
+    const first = /^## Upgrading to /m.exec(quickstart);
+    const block = `## Upgrading to ${version}\n\n${AGENT_TODO}: say what changes for a person who upgrades, or that nothing does until they use something new.\n\n${step}\n\n`;
+    if (!first) throw new Error("docs/quickstart.md has no `## Upgrading to <version>` section to put the new one above");
+    return `${quickstart.slice(0, first.index)}${block}${quickstart.slice(first.index)}`;
+  }
+  if (hasGlobalUpdateStep(upgradeSection(quickstart, version), version)) return quickstart;
+  const start = heading.index + heading[0].length, rest = quickstart.slice(start), next = /^## /m.exec(rest);
+  const body = (next ? rest.slice(0, next.index) : rest).replace(/\s+$/, "");
+  return `${quickstart.slice(0, start)}${body}\n\n${step}\n${next ? `\n${rest.slice(next.index)}` : ""}`;
+}
+
 export function setReadmeStatus(readme: string, version: string): string {
   if (!/^Status: [^,\s]+,/m.test(readme)) throw new Error("README.md has no `Status: <version>,` line");
   return readme.replace(/^Status: [^,\s]+,/m, `Status: ${version},`);
@@ -125,6 +163,10 @@ export function tagPreflight(root: string, version: string, ports: TagPorts): Pr
 
   const docs = ports.run([process.execPath, join(root, "scripts/check-docs.mjs"), "--require-fresh", "--committed", root], { cwd: root });
   if (docs.code !== 0) refusals.push(`documentation stamps are not fresh at HEAD (${(docs.stderr || docs.stdout).trim().split("\n").filter(line => /ERROR|stale/.test(line)).slice(0, 3).join("; ") || "check-docs failed"})`);
+
+  const quickstart = show("docs/quickstart.md");
+  if (quickstart === undefined || !hasGlobalUpdateStep(upgradeSection(quickstart, version), version)) refusals.push(`docs/quickstart.md at HEAD has no "Upgrading to ${version}" section with the global CLI and plugin step: run \`bun scripts/release-prepare.ts\` on the release branch, or add \`bun add -g @staix/agent-hub@${version}\` and then \`ahub setup\` to that section`);
+  else if (upgradeSection(quickstart, version)!.includes(AGENT_TODO)) refusals.push(`docs/quickstart.md "Upgrading to ${version}" still has ${AGENT_TODO} markers`);
 
   const report = git("ls-tree", "-r", "--name-only", commit, "docs/verification");
   const reports = report.stdout.split("\n").filter(path => new RegExp(`/\\d{4}-\\d{2}-\\d{2}-${version.replaceAll(".", "\\.")}\\.md$`).test(path));
@@ -192,8 +234,8 @@ export function prepareRelease(root: string, opts: { version?: string; dryRun: b
   else if (RELEASE_VERSION.test(version) && branch !== `release/${version}`) refusals.push(`the branch is ${branch}, expected release/${version}`);
   if (git("diff-index", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--").code !== 0 || git("diff-index", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--").code !== 0 || git("ls-files", "--others", "--exclude-standard").stdout.trim()) refusals.push("the working tree is not clean: commit or stash first");
   const changelog = opts.read("CHANGELOG.md");
-  let nextChangelog = "", nextReadme = "", nextPackage = "";
-  try { nextChangelog = moveUnreleased(changelog, version); nextReadme = setReadmeStatus(opts.read("README.md"), version); nextPackage = setPackageVersion(opts.read("package.json"), version); }
+  let nextChangelog = "", nextReadme = "", nextPackage = "", nextQuickstart = "";
+  try { nextChangelog = moveUnreleased(changelog, version); nextReadme = setReadmeStatus(opts.read("README.md"), version); nextPackage = setPackageVersion(opts.read("package.json"), version); nextQuickstart = ensureUpgradeNote(opts.read("docs/quickstart.md"), version); }
   catch (error) { refusals.push(error instanceof Error ? error.message : String(error)); }
   if (refusals.length) return { ok: false, refusals };
 
@@ -201,7 +243,7 @@ export function prepareRelease(root: string, opts: { version?: string; dryRun: b
   const plan: PreparationPlan = { current, version, bump, lastTag, subjects, prs: prNumbers(subjects), receipts: added, branch };
   if (opts.dryRun) return { ok: true, plan, wrote: false, stale: [] };
 
-  opts.write("package.json", nextPackage); opts.write("README.md", nextReadme); opts.write("CHANGELOG.md", nextChangelog);
+  opts.write("package.json", nextPackage); opts.write("README.md", nextReadme); opts.write("CHANGELOG.md", nextChangelog); opts.write("docs/quickstart.md", nextQuickstart);
   const built = opts.run(["bun", "run", "build"], { cwd: root });
   if (built.code !== 0) return { ok: false, refusals: [`bun run build failed: ${(built.stderr || built.stdout).trim().split("\n").slice(-2).join(" ")}`] };
   opts.write(`docs/verification/${opts.today}-${version}.md`, reportSkeleton(plan, git("rev-parse", "--short=8", "HEAD").stdout.trim()));

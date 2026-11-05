@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { AGENT_TODO, bumpFor, fileReader, moveUnreleased, nextVersion, prepareRelease, realRun, reportSkeleton, restampDocuments, setPackageVersion, setReadmeStatus, type Run } from "../scripts/lib/release-plan.ts";
+import { AGENT_TODO, bumpFor, ensureUpgradeNote, fileReader, globalUpdateStep, hasGlobalUpdateStep, moveUnreleased, nextVersion, prepareRelease, realRun, reportSkeleton, restampDocuments, setPackageVersion, setReadmeStatus, upgradeSection, type Run } from "../scripts/lib/release-plan.ts";
 
 // #787 P3b: release preparation, with every git operation in a scratch repository whose only remote is a bare directory on this disk.
 // Nothing here can reach GitHub, push a tag anywhere real, publish, or grant the person's consent: the consent port is a fake the test sets.
@@ -29,6 +29,7 @@ function repo(options: { version?: string; subjects?: string[] } = {}) {
   write("package.json", `{\n  "name": "fixture",\n  "version": "0.1.0"\n}\n`);
   write("README.md", "Status: 0.1.0, control protocol 13.\n");
   for (const doc of DOCS.slice(1)) write(doc, "Fixture\n");
+  write("docs/quickstart.md", "Fixture\n\n## Upgrading to 0.1.0\n\nFirst.\n");   // #718: release-prepare puts the next note above the newest one
   write("src/covered.ts", "initial\n");
   write("CHANGELOG.md", "# Changelog\n\n## Unreleased\n\n## 0.1.0\n\n- first\n");
   mkdirSync(join(work, "scripts"), { recursive: true });
@@ -79,6 +80,13 @@ test("preparation on a release branch writes version, README, CHANGELOG and a re
   expect(JSON.parse(r.read("package.json")).version).toBe("0.2.0");
   expect(r.read("README.md")).toContain("Status: 0.2.0,");
   expect(r.read("CHANGELOG.md")).toContain("## Unreleased\n\n## 0.2.0\n\n- a feature (#12)");
+  // #718 (#1179): the new Upgrading note exists above the previous one, carries the global CLI and plugin step, and leaves a TODO for the release author's own prose.
+  const quickstart = r.read("docs/quickstart.md");
+  expect(quickstart.indexOf("## Upgrading to 0.2.0")).toBeGreaterThan(-1);
+  expect(quickstart.indexOf("## Upgrading to 0.2.0")).toBeLessThan(quickstart.indexOf("## Upgrading to 0.1.0"));
+  expect(hasGlobalUpdateStep(upgradeSection(quickstart, "0.2.0"), "0.2.0")).toBe(true);
+  expect(upgradeSection(quickstart, "0.2.0")).toContain(AGENT_TODO);
+  expect(upgradeSection(quickstart, "0.1.0")).toBe("\n\nFirst.\n");   // the previous release's note is untouched
   const report = r.read("docs/verification/2026-10-27-0.2.0.md");
   expect(report).toContain("# 0.2.0 release verification");
   expect(report).toContain("`docs/verification/2026-10-20-some-receipt.md`");
@@ -89,6 +97,30 @@ test("preparation on a release branch writes version, README, CHANGELOG and a re
   // Preparation never restamps and never tags.
   expect(existsSync(join(r.work, "docs/verified.json"))).toBe(false);
   expect(r.git("tag", "--list")).toBe("v0.1.0");
+});
+
+// #718 (#1179): the Upgrading note can no longer lose the global CLI and plugin step.
+test("ensureUpgradeNote creates the note above the newest one, completes a note that lacks the step, never duplicates it, and refuses a document with no notes", () => {
+  const doc = "# Quickstart\n\nintro\n\n## Upgrading to 0.1.0\n\nFirst.\n";
+  const created = ensureUpgradeNote(doc, "0.2.0");
+  expect(created.startsWith("# Quickstart\n\nintro\n\n## Upgrading to 0.2.0\n\n")).toBe(true);
+  expect(created).toContain(globalUpdateStep("0.2.0"));
+  expect(created.endsWith("## Upgrading to 0.1.0\n\nFirst.\n")).toBe(true);
+  expect(ensureUpgradeNote(created, "0.2.0")).toBe(created);                         // idempotent
+  // a note the author already wrote, without the step: the step is appended to that section only
+  const authored = "intro\n\n## Upgrading to 0.2.0\n\nThe hub pins amem 0.21.0.\n\n## Upgrading to 0.1.0\n\nFirst.\n";
+  const completed = ensureUpgradeNote(authored, "0.2.0");
+  expect(completed).toBe(`intro\n\n## Upgrading to 0.2.0\n\nThe hub pins amem 0.21.0.\n\n${globalUpdateStep("0.2.0")}\n\n## Upgrading to 0.1.0\n\nFirst.\n`);
+  expect(upgradeSection(completed, "0.1.0")).toBe("\n\nFirst.\n");
+  // the last section of the document gets it too, and a step for another version does not count
+  const last = ensureUpgradeNote("## Upgrading to 0.2.0\n\nText.", "0.2.0");
+  expect(hasGlobalUpdateStep(upgradeSection(last, "0.2.0"), "0.2.0")).toBe(true);
+  expect(hasGlobalUpdateStep(upgradeSection(`## Upgrading to 0.2.0\n\n${globalUpdateStep("0.1.9")}\n`, "0.2.0"), "0.2.0")).toBe(false);
+  expect(hasGlobalUpdateStep(undefined, "0.2.0")).toBe(false);
+  // 0.2.0 must not match 0.2.01 or 10.2.0 (the heading is exact, the dots are literal)
+  expect(upgradeSection("## Upgrading to 10.2.0\n\nx\n", "0.2.0")).toBeUndefined();
+  expect(upgradeSection("## Upgrading to 0x2x0\n\nx\n", "0.2.0")).toBeUndefined();
+  expect(() => ensureUpgradeNote("# Quickstart\n\nno notes\n", "0.2.0")).toThrow("no `## Upgrading to <version>` section");
 });
 
 test("a dry run reports the plan and writes nothing", () => {

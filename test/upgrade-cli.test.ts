@@ -716,3 +716,87 @@ test("installed-layout restart preserves an off-roster peer queue and open task 
     if (stuck.length) throw new Error(`hub daemon(s) survived SIGTERM and SIGKILL: ${stuck.join(", ")}`);
   }
 }, 30_000);
+
+// #718 (#1179): `ahub upgrade --yes` only schedules a detached runner, so the step for the global CLI and the plugin is printed right after "scheduled", from a real hub, a real plan and the real
+// `claude plugin list` probe (a fake `claude` on PATH). The runner is a stub that exits at once: nothing is staged and no registry or network is reached (the fake npm answers the one metadata query).
+test("upgrade --yes ends with the global CLI and plugin step when the plugin is older than the target, is silent when it is current or unreadable, and never prints it in --json", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-upgrade-step-"));
+  mkdirSync(join(temp, "project")); mkdirSync(join(temp, "bin"));
+  const root = realpathSync(join(temp, "project")), home = join(temp, "home");
+  const { VERSION } = await import("../src/version.ts");
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  env.AGENTHUB_HOME = home;
+  env.PATH = `${join(temp, "bin")}:${env.PATH}`;
+  writeFileSync(join(temp, "bin/npm"), `#!/bin/sh\ncase "$*" in\n  "view @staix/agent-hub@${VERSION} version dist.integrity --json") echo '{"version":"${VERSION}","dist.integrity":"sha512-test"}' ;;\n  *) exit 1 ;;\nesac\n`);
+  const claudeMode = join(temp, "claude-mode");
+  writeFileSync(join(temp, "bin/claude"), `#!/bin/sh
+mode=$(cat ${JSON.stringify(claudeMode)} 2>/dev/null)
+case "$1 $2 $3" in
+  "plugin list --json")
+    case "$mode" in
+      old) echo '[{"id":"agent-hub@agent-hub","scope":"user","version":"0.0.1"}]' ;;
+      current) echo '[{"id":"agent-hub@agent-hub","scope":"user","version":"${VERSION}"}]' ;;
+      broken) exit 1 ;;
+      *) echo '[]' ;;
+    esac ;;
+  *) exit 0 ;;
+esac
+`);
+  const stub = join(temp, "bin/stub-bun");
+  writeFileSync(stub, "#!/bin/sh\nexit 0\n");
+  for (const file of ["npm", "claude"]) chmodSync(join(temp, "bin", file), 0o755);
+  chmodSync(stub, 0o755);
+  const main = join(import.meta.dir, "../src/cli/main.js"), wrapper = join(temp, "cli.ts");
+  // The detached recovery runner is spawned with process.execPath: pointing it at the stub keeps the test from staging a release. Everything else in the CLI runs as in a terminal.
+  writeFileSync(wrapper, `const args = JSON.parse(process.env.CLI_ARGV!);
+if (process.env.STUB_RUNNER === "1") process.execPath = ${JSON.stringify(stub)};
+process.argv = [${JSON.stringify(process.execPath)}, ${JSON.stringify(main)}, ...args];
+await import(${JSON.stringify(main)});
+`);
+  const cli = async (args: string[], mode?: string) => {
+    if (mode) writeFileSync(claudeMode, mode);
+    // only an upgrade swaps the detached runner for the stub: `init`, `up` and `kill` start the real daemon
+    const p = Bun.spawn([process.execPath, wrapper], { cwd: root, env: { ...env, STUB_RUNNER: args[0] === "upgrade" ? "1" : "0", CLI_ARGV: JSON.stringify(["--project", root, ...args]) }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    return { code, out, err };
+  };
+  const pids = new Set<number>();
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  try {
+    expect((await cli(["init"])).code).toBe(0);
+    writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, omniroute: { urls: [] } }));
+    expect((await cli(["up"])).code).toBe(0);
+    const client = await ControlClient.connect(join(root, ".agenthub/state"), { role: "console", projectRoot: root });
+    try { const reply = (await client.request({ t: "status" })).status; if (typeof reply?.pid === "number") pids.add(reply.pid); } finally { client.close(); }
+    const step = "ahub upgrade does not update the global CLI or the shared Claude plugin.";
+    // an older plugin: the step says setup, once, after the scheduling line
+    const old = await cli(["upgrade", "--to", VERSION, "--yes"], "old");
+    expect({ code: old.code, scheduled: /Recovery operation [a-f0-9-]{36} scheduled/.test(old.out) }).toEqual({ code: 0, scheduled: true });
+    expect(old.out.indexOf(step)).toBeGreaterThan(old.out.indexOf("scheduled"));
+    expect(old.out.split(step)).toHaveLength(2);
+    expect(old.out).toContain(`The installed plugin is older than the daemon this upgrade installs (${VERSION}): run \`ahub setup\` yourself.`);
+    // each later run needs the previous operation's lock released: the stub runner never claims it, so remove the receipt it left
+    const clear = () => { rmSync(join(home, "recovery"), { recursive: true, force: true }); };
+    clear();
+    // a current plugin, no plugin, and a probe that fails: nothing to say, and the upgrade still schedules
+    for (const mode of ["current", "none", "broken"]) {
+      const quiet = await cli(["upgrade", "--to", VERSION, "--yes"], mode);
+      expect({ mode, code: quiet.code, scheduled: /scheduled/.test(quiet.out), step: quiet.out.includes(step) }).toEqual({ mode, code: 0, scheduled: true, step: false });
+      clear();
+    }
+    // --json is the raw document: no extra lines on stdout
+    const json = await cli(["upgrade", "--to", VERSION, "--yes", "--json"], "old");
+    expect(json.code).toBe(0);
+    expect(() => JSON.parse(json.out)).not.toThrow();
+    expect(json.out).not.toContain("does not update the global CLI");
+    expect(json.err).not.toContain("does not update the global CLI");
+  } finally {
+    try { await cli(["kill"]); } catch { /* best effort; the pid sweep below is the guarantee */ }
+    try { const manifest = JSON.parse(readFileSync(join(home, "manager", "status.json"), "utf8")); if (typeof manifest?.pid === "number") pids.add(manifest.pid); } catch { /* no manager */ }
+    for (const pid of pids) { try { process.kill(pid, "SIGTERM"); } catch { /* gone */ } }
+    for (let n = 0; n < 100 && [...pids].some(alive); n++) await Bun.sleep(50);
+    for (const pid of pids) if (alive(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    rmSync(temp, { recursive: true, force: true });
+  }
+}, 60_000);

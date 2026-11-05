@@ -51,6 +51,11 @@ export interface UpgradeHost {
   entry: string;
   /** This CLI's version. */
   version: string;
+  /**
+   * #718 (#1179): lines to print after the upgrade completed, under the summary: the global CLI or the shared Claude plugin is older than the upgraded daemon and `ahub upgrade` does not update either.
+   * Never part of a blocked, cancelled or abandoned operation, and empty when nothing is older or the versions are unknown.
+   */
+  afterCompleted?(op: RecoveryOperation): Promise<string[]> | string[];
 }
 
 function emit(io: ScreenIO, lines: readonly string[]): void { for (const line of lines) io.out(line); }
@@ -68,6 +73,13 @@ async function summary(host: UpgradeHost, io: ScreenIO, op: RecoveryOperation): 
   if (!io.presentation) return;
   const live = await host.endInspection?.(op).catch(() => ({} as Record<string, Inspection | undefined>));
   emit(io, renderSummary(op, live ?? {}, io.presentation));
+}
+/** #718: the update step for the global CLI and plugin, once, after a completed upgrade (both callers have just seen `completed`). A host that cannot read the versions, or a failure reading them, prints nothing: it is advice, never a failure. */
+async function globalUpdate(host: UpgradeHost, io: ScreenIO, op: RecoveryOperation): Promise<void> {
+  if (op.plan.kind !== "upgrade") return;
+  let lines: string[] = [];
+  try { lines = await host.afterCompleted?.(op) ?? []; } catch { /* advice only */ }
+  for (const line of lines) human(io, line);
 }
 const clock = (io: ScreenIO) => io.presentation?.now() ?? Date.now();
 
@@ -236,7 +248,7 @@ export async function operationScreen(host: UpgradeHost, io: ScreenIO, id: strin
   for (let acted = false, reset = false; ;) {
     if (io.interrupted()) return "quit";
     const op = host.read(id), runner = host.runner(id);
-    if (op.phase === "completed") { if (io.presentation) await summary(host, io, op); else human(io, `${op.plan.kind} to ${op.plan.version} completed`); return "completed"; }
+    if (op.phase === "completed") { if (io.presentation) await summary(host, io, op); else human(io, `${op.plan.kind} to ${op.plan.version} completed`); await globalUpdate(host, io, op); return "completed"; }
     if (op.phase === "cancelled") {
       if (io.presentation) await summary(host, io, op);
       else human(io, `operation ${id} is ${op.disposition ? "ended (abandoned, not completed)" : "cancelled"}; the recovery lock is free`);
@@ -351,7 +363,7 @@ export async function planScreen(host: UpgradeHost, io: ScreenIO): Promise<void>
       try { op = await host.apply(plan, () => io.interrupted()); } catch (error) { human(io, `ahub: ${(error as Error).message}`); continue; }
       human(io, `operation ${op.id} started; Enter opens its menu, Ctrl+C leaves, and neither stops the ${plan.kind}`);
       const end = await follow(host, io, op.id);
-      if (end === "completed") { if (io.presentation) await summary(host, io, host.read(op.id)); else human(io, `${plan.kind} to ${plan.version} completed`); return; }
+      if (end === "completed") { if (io.presentation) await summary(host, io, host.read(op.id)); else human(io, `${plan.kind} to ${plan.version} completed`); await globalUpdate(host, io, host.read(op.id)); return; }
       if (end === "left") return;
       // Blocked, cancelled or left to its runner: the lock check above opens its screen, or plans again once it is free.
     }

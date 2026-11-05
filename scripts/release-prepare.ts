@@ -33,9 +33,9 @@ if (args[0] === "restamp") {
     console.log(`release-prepare: native acceptance receipts since ${plan.lastTag}: ${plan.receipts.length ? plan.receipts.join(", ") : "none"}`);
     if (!result.wrote) console.log("release-prepare: dry run, nothing written");
     else {
-      console.log(`release-prepare: wrote package.json, README.md, CHANGELOG.md, the bundle and docs/verification/*-${plan.version}.md`);
+      console.log(`release-prepare: wrote package.json, README.md, CHANGELOG.md, docs/quickstart.md (the Upgrading to ${plan.version} note, with the global CLI and plugin step), the bundle and docs/verification/*-${plan.version}.md`);
       console.log(`release-prepare: ${result.stale.length} stale document${result.stale.length === 1 ? "" : "s"} to review before restamping: ${result.stale.join(", ") || "none"}`);
-      console.log("release-prepare: next, fill every TODO(agent) in the report, review and restamp, open the release PR, merge it with a MERGE COMMIT, then ask the person for `ahub sdlc authorize-release`");
+      console.log("release-prepare: next, fill every TODO(agent) in the report and in the new quickstart note, review and restamp, open the release PR, merge it with a MERGE COMMIT, then ask the person for `ahub sdlc authorize-release`");
     }
   }
 }
