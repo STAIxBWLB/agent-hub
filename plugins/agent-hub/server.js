@@ -1267,6 +1267,7 @@ class OwnedPrintChild {
     });
     const frameLimit = options.maxFrameBytes ?? 256 * 1024, outputLimit = options.maxOutputBytes ?? 4 * 1024 * 1024;
     let buffer = "", outputBytes = 0;
+    let inputFailed = false;
     const current = () => !this.limited && options.current?.() !== false;
     const limit = () => {
       if (!this.limited) {
@@ -1279,7 +1280,9 @@ class OwnedPrintChild {
         options.onError?.(error);
         reject(error);
       });
-      child.stdin.on("error", () => {});
+      child.stdin.on("error", () => {
+        inputFailed = true;
+      });
       child.once("spawn", () => {
         trackGroup(child);
         if (!current()) {
@@ -1288,7 +1291,13 @@ class OwnedPrintChild {
         }
         options.onSpawn?.();
         if (current())
-          child.stdin.end(options.input);
+          child.stdin.end(options.input, () => {
+            if (inputFailed || !current())
+              return;
+            try {
+              options.onInputReleased?.();
+            } catch {}
+          });
         else
           child.stdin.destroy();
       });
@@ -1413,7 +1422,7 @@ function reviewerNoVerdictLine(peer, diagnostic, safeRefusal, withheld = false) 
   const line = safeRefusal === undefined ? undefined : Array.from(sanitize(safeRefusal).replace(/\s+/g, " ")).filter((char) => !/\p{C}/u.test(char)).slice(0, 240).join("");
   return prefix + detail + (diagnostic.refusal === undefined && diagnostic.hostRefusal === undefined ? "" : `; refusal: ${line ?? "withheld"}`);
 }
-var ReviewerUnavailableError, ReviewerAdmissionError, REVIEWER_FALLBACK_UNCONFIRMED = "reviewer fallback unconfirmed: ", reviewTarget = (env) => {
+var ReviewerUnavailableError, ReviewerAdmissionError, ReviewerInputAdmissionError, REVIEWER_FALLBACK_UNCONFIRMED = "reviewer fallback unconfirmed: ", reviewTarget = (env) => {
   const task = reviewTask(env);
   if (task === undefined || env.private)
     return;
@@ -1444,6 +1453,8 @@ var init_reviewer_print = __esm(() => {
       this.reason = reason;
     }
   };
+  ReviewerInputAdmissionError = class ReviewerInputAdmissionError extends Error {
+  };
   ReviewerPrintPeer = class ReviewerPrintPeer extends BasePeer {
     opts;
     hubNative = true;
@@ -1457,10 +1468,17 @@ var init_reviewer_print = __esm(() => {
     batch;
     preparation;
     receipt;
+    observerSessionIdValue;
     get isolationReceipt() {
       return this.receipt;
     }
+    reviewObserverInputHeld() {
+      return this.opts.reviewObserverHeld?.() ?? false;
+    }
     reviewing;
+    get observerSessionId() {
+      return this.observerSessionIdValue;
+    }
     reviewSeq = 0;
     runningBinding;
     activeTrace;
@@ -1622,6 +1640,11 @@ var init_reviewer_print = __esm(() => {
         } catch (error) {
           if (generation !== this.generation)
             return;
+          if (error instanceof ReviewerInputAdmissionError) {
+            failure = { state: started ? "needs_review" : "failed_safe", reason: "review input provenance unavailable" };
+            batch.next = envs.length;
+            break;
+          }
           if (error instanceof ReviewerAdmissionError) {
             this.opts.log?.(`[${this.id}] review of task #${task} skipped: ${error.reason === "stale_binding" ? "stale binding" : "review policy changed"}`);
             if (error.reason === "policy_changed") {
@@ -1766,25 +1789,40 @@ var init_reviewer_print = __esm(() => {
       const input = `${frame(env)}${facts ? `
 
 ${facts}` : ""}`;
+      const sessionId = randomUUID2();
+      const inputContext = Object.freeze({ sessionId, inputId: randomUUID2() });
+      this.observerSessionIdValue = sessionId;
+      try {
+        this.opts.beforeInput?.(inputContext, [env]);
+      } catch {
+        this.observerSessionIdValue = undefined;
+        throw new ReviewerInputAdmissionError;
+      }
       let launch;
       const trace = { reviewCalled: false };
       this.activeTrace = { task, generation, value: trace };
       const mcp = this.opts.backend.taskMcp ? this.opts.taskMcp?.(task, () => generation === this.generation && this.reviewToken(task) !== undefined && this.opts.bindingCurrent?.(task, binding) !== false) : undefined;
-      let mcpClosed = false;
+      let mcpClosed = false, mcpCloseConfirmed = false;
       const closeMcp = () => {
         if (mcpClosed)
           return;
         mcpClosed = true;
-        mcp?.close();
+        try {
+          mcp?.close();
+          mcpCloseConfirmed = true;
+        } catch {
+          this.opts.log?.(`[${this.id}] reviewer task MCP cleanup incomplete`);
+        }
         if (this.reviewMcpClose === closeMcp)
           this.reviewMcpClose = undefined;
       };
       this.reviewMcpClose = closeMcp;
       let ownedChild, releasing;
+      let inputReleased = false, childClosed = false, launchCleanupConfirmed = false;
       let policyTimer;
       const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
       try {
-        launch = await this.prepare(randomUUID2(), input, task, mcp?.config);
+        launch = await this.prepare(sessionId, input, task, mcp?.config);
         if (generation !== this.generation)
           throw new ReviewerAdmissionError("stale_binding");
         this.assertAdmission(env, task, binding);
@@ -1802,6 +1840,10 @@ ${facts}` : ""}`;
           input,
           current: () => generation === this.generation,
           stop: launch.stop,
+          onInputReleased: () => {
+            inputReleased = true;
+            this.opts.inputReleased?.(inputContext, [env]);
+          },
           onError: () => {
             if (this.child === child)
               this.child = undefined;
@@ -1840,6 +1882,7 @@ ${facts}` : ""}`;
         this.childCleanup = release;
         this.childCurrent = launch.watchCurrent ? launch.current : undefined;
         const code = await child.done;
+        childClosed = true;
         if (this.child === child)
           this.child = undefined;
         return { code, quota, trace };
@@ -1854,10 +1897,16 @@ ${facts}` : ""}`;
             await release();
             if (this.childCleanup === release)
               this.childCleanup = undefined;
+            launchCleanupConfirmed = true;
           }
         } catch {
           this.opts.log?.(`[${this.id}] reviewer isolation cleanup incomplete`);
         }
+        const closedWithoutChild = !ownedChild || ownedChild.process.pid === undefined;
+        if (mcpCloseConfirmed && launchCleanupConfirmed && (closedWithoutChild || inputReleased && childClosed))
+          try {
+            this.opts.inputFinished?.(inputContext, [env]);
+          } catch {}
       }
     }
     settle(state, reason) {
@@ -13365,6 +13414,9 @@ var init_local_worker = __esm(() => {
     get titleSession() {
       return this.sessionId;
     }
+    get observerSessionId() {
+      return this.sessionId;
+    }
     async setSessionTitle(title, onlyIfUnnamed, current) {
       if (typeof title !== "string" || !title.trim() || [...title].length > 80 || typeof onlyIfUnnamed !== "boolean")
         return { ok: false, reason: "invalid", error: "Session title must contain 1-80 normalized characters and use a conditional-write flag; correct the title request and try again." };
@@ -13399,6 +13451,8 @@ var init_local_worker = __esm(() => {
     approvalAnswerEpoch;
     approvalStopReason = "";
     activeDeliveryId;
+    currentObserverInputContext;
+    observerInputReleasedId;
     sandboxProfile;
     lastServedBy = "";
     constructor(id, opts) {
@@ -13415,6 +13469,7 @@ var init_local_worker = __esm(() => {
           if (signal.aborted)
             throw new Error("turn cancelled before model request");
           const tools = judge ? undefined : [...this.toolSchemas(), ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : []];
+          this.releaseObserverInput(this.currentObserverInputContext, envs);
           const result = await this.opts.omni.chat({ model, messages, ...tools ? { tools } : {}, ...judge ? { max_tokens: maxTokens ?? 2048 } : {} }, { signal, ...pii ? { onCampusOnly: true } : {} });
           this.recordUsage(result, model, task);
           if (generation !== this.turn)
@@ -13455,6 +13510,16 @@ var init_local_worker = __esm(() => {
           this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
         throw new Error(`${this.id} is ${this.state}`);
       }
+      const inputContext = Object.freeze({ sessionId: this.observerSessionId, inputId: randomUUID7() });
+      try {
+        this.opts.beforeInput?.(inputContext, envs);
+      } catch {
+        if (deliveryId)
+          this.delivery({ id: deliveryId, state: "failed_safe", reason: "review input provenance unavailable" });
+        throw new Error("review input provenance unavailable");
+      }
+      this.currentObserverInputContext = inputContext;
+      this.observerInputReleasedId = undefined;
       const turn = ++this.turn;
       this.budgetStopReason = "";
       this.approvalExpiries = 0;
@@ -13473,17 +13538,15 @@ var init_local_worker = __esm(() => {
       const requestedPolicy = this.opts.turnPolicy?.(envs);
       const policy = envs.some((env) => env.private) ? { ...requestedPolicy, pii: true } : requestedPolicy;
       const remoteTurn = envs.some(remoteEnvelope);
-      const reviewTurn = envs.some(isReviewObserverExcluded);
-      const sensitiveTurn = remoteTurn || reviewTurn;
+      const reviewScope = { excluded: envs.some(isReviewObserverExcluded) };
       const preserveHistory = !policy?.pii && !remoteTurn;
-      const retainHistory = preserveHistory && !reviewTurn;
       const labelTurn = this.beginRouteTurn(turn, !!policy?.pii || envs.some((env) => env.private), policy?.task);
       let completed = false;
       const reply = { inReplyTo: replyParent(envs), to: replyAudience(envs), ...policy?.pii ? { to: [USER], private: true, priority: "important", ...policy.task ? { refs: { task: policy.task } } : {} } : {} };
-      this.run(envs, turn, msgs, progress, policy, reply).then((answer) => {
+      this.run(envs, turn, msgs, progress, policy, reply, reviewScope).then((answer) => {
         if (turn !== this.turn)
           return;
-        if (retainHistory)
+        if (preserveHistory && !reviewScope.excluded)
           this.commit(msgs);
         if (answer)
           this.onMessage?.(answer, reply);
@@ -13494,10 +13557,10 @@ var init_local_worker = __esm(() => {
         if (turn !== this.turn)
           return;
         if (e instanceof ApprovalWaitStop) {
-          const message = remoteTurn ? "remote turn failed" : reviewTurn ? "review turn failed" : e.message;
+          const message = remoteTurn ? "remote turn failed" : reviewScope.excluded ? "review turn failed" : e.message;
           this.completeMissingToolResults(msgs, "not run: turn ended after unanswered approvals");
           msgs.push({ role: "assistant", content: message });
-          if (retainHistory)
+          if (preserveHistory && !reviewScope.excluded)
             this.commit(msgs);
           this.onMessage?.(message, reply);
           if (deliveryId && this.activeDeliveryId === deliveryId)
@@ -13506,10 +13569,10 @@ var init_local_worker = __esm(() => {
         }
         if (this.budgetStopReason && !(e instanceof ExecutionBudgetStop))
           e = new ExecutionBudgetStop(this.budgetStopReason);
-        const message = remoteTurn ? "remote turn failed" : reviewTurn ? "review turn failed" : e.message;
+        const message = remoteTurn ? "remote turn failed" : reviewScope.excluded ? "review turn failed" : e.message;
         this.opts.log?.(`[${this.id}] turn failed: ${message}`);
         if (e instanceof ExecutionBudgetStop) {
-          this.reportBudgetStop(e, msgs, progress, reply, !retainHistory, deliveryId, remoteTurn, reviewTurn);
+          this.reportBudgetStop(e, msgs, progress, reply, !preserveHistory || reviewScope.excluded, deliveryId, remoteTurn, reviewScope.excluded);
           return;
         }
         if (!progress.sideEffects) {
@@ -13519,9 +13582,9 @@ var init_local_worker = __esm(() => {
             this.onFailed?.(envs);
           return;
         }
-        const note = sensitiveTurn ? message : `(turn failed after ${progress.sideEffects} tool call(s) with side effects: ${message.slice(0, 200)}. The work may be partial; check before repeating it.) ${progress.last}`.trim();
+        const note = remoteTurn || reviewScope.excluded ? message : `(turn failed after ${progress.sideEffects} tool call(s) with side effects: ${message.slice(0, 200)}. The work may be partial; check before repeating it.) ${progress.last}`.trim();
         msgs.push({ role: "assistant", content: note });
-        if (retainHistory)
+        if (preserveHistory && !reviewScope.excluded)
           this.commit(msgs);
         this.onMessage?.(note, reply);
         if (deliveryId && this.activeDeliveryId === deliveryId)
@@ -13549,13 +13612,11 @@ var init_local_worker = __esm(() => {
       this.abort?.abort();
       super.onWatchdog();
     }
-    async run(envs, turn, msgs, progress, policy, reply) {
+    async run(envs, turn, msgs, progress, policy, reply, reviewScope) {
       const { maxSteps = 30 } = this.opts;
       const turnSignal = this.abort.signal;
       const remoteTurn = envs.some(remoteEnvelope);
       const capture = policy?.pii || remoteTurn ? undefined : this.opts.capture;
-      const reviewTurn = envs.some(isReviewObserverExcluded);
-      const turnCapture = reviewTurn ? undefined : capture;
       if (policy?.pii && !await this.opts.omni.onCampus()) {
         return "Refused: this is a PII task and the only reachable gateway is off campus (Cloudflare Access). Connect the VPN and assign it again.";
       }
@@ -13578,10 +13639,12 @@ var init_local_worker = __esm(() => {
             return "";
           if (concluded === undefined)
             continue;
-          if (usedTools)
-            turnCapture?.summarize(concluded);
+          if (usedTools && !reviewScope.excluded)
+            capture?.summarize(concluded);
           return concluded;
         }
+        if (res.message.tool_calls.some((call) => call.function.name.replace(/^mcp__[^ ]+__/, "") === "hub_review" && reviewCaptureExcluded(call.function.name, call.function.arguments)))
+          reviewScope.excluded = true;
         const results = [];
         try {
           for (const call of res.message.tool_calls) {
@@ -13595,7 +13658,9 @@ var init_local_worker = __esm(() => {
               clearInterval(alive);
               throw error;
             }
-            const running = (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
+            const taskToolName = name.replace(/^mcp__[^ ]+__/, "");
+            const reviewNoteWrite = taskToolName === "hub_remember" || taskToolName === "hub_task_propose";
+            const running = reviewScope.excluded && reviewNoteWrite ? Promise.resolve("error: anchored review in this batch; save notes in a later turn") : (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
             const output = await running.finally(() => clearInterval(alive));
             if (turn !== this.turn)
               return "";
@@ -13610,18 +13675,18 @@ var init_local_worker = __esm(() => {
               this.abort?.abort();
               throw new ApprovalWaitStop(this.approvalStopReason);
             }
-            if (!remoteTurn && !reviewTurn && name !== "hub_set_title" && name !== "hub_ask" && !reviewCaptureExcluded(name, call.function.arguments))
+            if (!remoteTurn && !reviewScope.excluded && name !== "hub_set_title" && name !== "hub_ask" && !reviewCaptureExcluded(name, call.function.arguments))
               this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
-            if (name !== "hub_send" && name !== "doc_read" && name !== "web_fetch" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name))
-              turnCapture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
+            if (!reviewScope.excluded && name !== "hub_send" && name !== "doc_read" && name !== "web_fetch" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name))
+              capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
           }
         } finally {
           if (results.length)
             this.routes.observeResults(res.routeDecision, res.message, results);
         }
       }
-      if (usedTools)
-        turnCapture?.summarize(progress.last);
+      if (usedTools && !reviewScope.excluded)
+        capture?.summarize(progress.last);
       this.opts.onLimit?.("steps");
       return `(stopped after ${maxSteps} steps) ${progress.last}`.trim();
     }
@@ -13754,10 +13819,19 @@ var init_local_worker = __esm(() => {
       if (routed)
         return routed;
       await this.requireBudget(envs, "model_calls");
+      this.releaseObserverInput(this.currentObserverInputContext, envs);
       const res = await omni.chat({ model: fixedModel, messages, tools }, { signal, ...policy?.pii ? { onCampusOnly: true } : {} });
       this.lastServedBy = `omniroute ${fixedModel} (provider ${res.provider ?? "?"})`;
       this.recordUsage(res, fixedModel, task);
       return res;
+    }
+    releaseObserverInput(context, envs) {
+      if (!context || this.currentObserverInputContext !== context || this.observerInputReleasedId === context.inputId)
+        return;
+      this.observerInputReleasedId = context.inputId;
+      try {
+        this.opts.inputReleased?.(context, envs);
+      } catch {}
     }
     beginRouteTurn(generation, pii, task) {
       let id;
@@ -14189,6 +14263,8 @@ var init_claude_implementer = __esm(() => {
     sessions;
     stopping;
     stoppingTarget;
+    observerSessionIdValue;
+    currentInputContext;
     mode;
     constructor(id, options) {
       super(id, options.watchdogMs);
@@ -14208,6 +14284,9 @@ var init_claude_implementer = __esm(() => {
     }
     get sessionGeneration() {
       return this.active?.generation;
+    }
+    get observerSessionId() {
+      return this.observerSessionIdValue;
     }
     ownedTools(launchId) {
       return typeof launchId === "string" && this.active?.launchId === launchId && !this.abort?.signal.aborted ? this.active : undefined;
@@ -14346,6 +14425,10 @@ var init_claude_implementer = __esm(() => {
               this.options.notify?.(`${this.id}: task #${group.task} session fresh; recorded transcript is missing`);
             }
           }
+          const inputContext = Object.freeze({ sessionId: turn.sessionId, inputId: randomUUID9() });
+          this.observerSessionIdValue = turn.sessionId;
+          this.currentInputContext = inputContext;
+          this.options.beforeInput?.(inputContext, group.envs);
           const launchId = randomUUID9(), directory = mkdtempSync5(join17(this.options.stateDir, "claude-child-")), settings = join17(directory, "settings.json");
           let launchFailureTrace;
           this.cleanup = () => rmSync6(directory, { recursive: true, force: true });
@@ -14391,6 +14474,11 @@ var init_claude_implementer = __esm(() => {
               }
               this.failureTrace = launchFailureTrace;
               this.inputReleased = true;
+            },
+            onInputReleased: () => {
+              if (!current() || this.currentInputContext !== inputContext)
+                return;
+              this.options.inputReleased?.(inputContext, group.envs);
             },
             onLeaderExit: () => {
               sealFailureTrace(launchFailureTrace);

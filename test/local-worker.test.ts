@@ -728,6 +728,89 @@ test("#1056 review capture admission is fixed for its turn, ordinary next turns 
 });
 
 
+test("#1056 anchored hub_review submission excludes its final quote from capture and worker history", async () => {
+  const quote = "ANCHORED_REVIEW_SUBMITTED_QUOTE_CANARY";
+  const summaries: string[] = [], observations: unknown[] = [];
+  const capture = {
+    init: () => {},
+    observe: (row: unknown) => observations.push(row),
+    summarize: (text: string) => summaries.push(text),
+    end: async () => {},
+  } as unknown as Capture;
+  const ctx = await setup(body => {
+    const user = String(body.messages.findLast(message => message.role === "user")?.content);
+    if (user.includes("ordinary next input")) return body.messages.at(-1)?.role === "tool"
+      ? { content: "ordinary answer" }
+      : { tool_calls: [toolCall("read", { path: "a.txt" })] };
+    if (body.messages.at(-1)?.role === "tool") return { content: quote };
+    return { tool_calls: [toolCall("read", { path: "a.txt" }), toolCall("hub_review", { id: 7, verdict: "changes_requested", findings: [{ id: "F1", anchor: { path: "a.txt", exact: quote } }] })] };
+  }, {
+    capture,
+    taskTool: async name => { expect(name).toBe("hub_review"); return "error: anchored review refused"; },
+  });
+  ctx.bus.publish(newEnvelope("user", "plain request to review task #7", { to: ["local"], priority: "important" }));
+  await until(() => ctx.said.length === 1, "anchored review response");
+  expect(ctx.said[0]!.body).toBe(quote);
+  expect(summaries).toEqual([]);
+  expect(observations).toEqual([]);
+
+  ctx.bus.publish(newEnvelope("user", "ordinary next input", { to: ["local"], priority: "important" }));
+  await until(() => ctx.said.length === 2, "ordinary follow-up response");
+  const followUp = ctx.model.requests.at(-1)!;
+  expect(JSON.stringify(followUp.body.messages)).not.toContain(quote);
+  expect(observations.length).toBeGreaterThan(0);
+  expect(summaries).toEqual(["ordinary answer"]);
+});
+
+
+test("#1056 local review turns refuse remember and task proposals until a later ordinary turn", async () => {
+  const quote = "LOCAL_ANCHORED_REVIEW_NOTE_QUOTE_CANARY", taskCalls: { name: string; text: string }[] = [];
+  const ctx = await setup((_body, call) => {
+    if (call === 1) return { tool_calls: [
+      toolCall("hub_remember", { text: quote }),
+      toolCall("hub_task_propose", { title: "review quote follow-up", class: "implement" }),
+      toolCall("hub_review", { id: 7, verdict: "changes_requested", findings: [{ id: "F1", anchor: { path: "a.txt", exact: quote } }] }),
+    ] };
+    if (call === 2) return { tool_calls: [
+      toolCall("hub_remember", { text: "retry after refused anchor" }),
+      toolCall("hub_task_propose", { title: "retry proposal after refused anchor", class: "implement" }),
+    ] };
+    if (call === 3) return { content: "review turn complete" };
+    if (call === 4) return { tool_calls: [
+      toolCall("hub_remember", { text: "ordinary later note" }),
+      toolCall("hub_task_propose", { title: "ordinary later proposal", class: "implement" }),
+    ] };
+    return { content: "ordinary turn complete" };
+  }, { taskTool: async (name, args) => {
+    taskCalls.push({ name, text: JSON.stringify(args) });
+    return name === "hub_review" ? "error: anchored review submission refused" : "saved";
+  } });
+
+  ctx.bus.publish(newEnvelope("user", "review task #7 and save useful follow-up", { to: ["local"], priority: "important" }));
+  await until(() => ctx.said.length === 1, "anchored review turn conclusion");
+  expect(taskCalls.map(call => call.name)).toEqual(["hub_review"]);
+  expect(taskCalls[0]!.text).toContain(quote);
+  const reviewToolResults = ctx.model.requests[1]!.body.messages.filter((message: { role: string }) => message.role === "tool");
+  expect(reviewToolResults.map((message: { content: string }) => message.content)).toEqual([
+    "error: anchored review in this batch; save notes in a later turn",
+    "error: anchored review in this batch; save notes in a later turn",
+    "error: anchored review submission refused",
+  ]);
+  const postAnchorResults = ctx.model.requests[2]!.body.messages.filter((message: { role: string }) => message.role === "tool").slice(-2);
+  expect(postAnchorResults.map((message: { content: string }) => message.content)).toEqual([
+    "error: anchored review in this batch; save notes in a later turn",
+    "error: anchored review in this batch; save notes in a later turn",
+  ]);
+
+  ctx.bus.publish(newEnvelope("user", "ordinary later turn", { to: ["local"], priority: "important" }));
+  await until(() => ctx.said.length === 2, "ordinary later turn conclusion");
+  expect(taskCalls.map(call => call.name)).toEqual(["hub_review", "hub_remember", "hub_task_propose"]);
+  expect(taskCalls.at(-2)!.text).toContain("ordinary later note");
+  expect(taskCalls.at(-1)!.text).toContain("ordinary later proposal");
+  expect(JSON.stringify(ctx.model.requests[3]!.body.messages)).not.toContain(quote);
+});
+
+
 test("#1056 provider failure during a public review turn never logs or retains its quote", async () => {
   const secret="REVIEW_FAILURE_QUOTE_CANARY";
   const ctx=await setup(()=>({content:secret,tool_calls:[toolCall("edit",{path:"a.txt",old:"two",new:"2"})]}));

@@ -47,11 +47,13 @@ async function fixture(checking = false, screened = false, durable = false, held
   const text = "First line\nQuoted line\nLast line\n", hash = createHash("sha256").update(text).digest("hex");
   const checkResolvers: ((result: { code: number; timedOut: boolean; tail: string }) => void)[] = [];
   const checkWaiters: (() => void)[] = [];
+  const reviewObserverInputs = new Set<string>();
   const screenedTexts: string[] = [], routing = loadRouting(cwd);
   if (screened) { routing.signals.pii_screen = "local"; routing.constraints.pii = "local_only"; }
   const deps: TasksDeps = {
     cwd, board, bus, project: "fixture", roles: { codex: ["implementer"], claude: ["implementer", "reviewer"] },
     routing: () => routing, piiPaths: [], wipLimit: () => 3, notify: () => {},
+    reviewObserverInput: peer => reviewObserverInputs.has(peer), onReviewObserverInput: peer => { reviewObserverInputs.add(peer); },
     ...(screened ? { piiScreen: async (value: string) => { screenedTexts.push(value); return { label: value.includes("SUMMARY_WITHHELD_CANARY") ? "pii" as const : "clear" as const, ms: 1 }; } } : {}),
     reviewMaterials: async (_task, requests) => ({ head: "a".repeat(40), materials: requests.map(request => ({ state: "available" as const, path: request.path, side: request.side ?? "head", text, rawHash: hash, contentHash: hash })) }),
     ...(checking ? { check: () => "fixture-check", runCheck: () => new Promise<{ code: number; timedOut: boolean; tail: string }>(resolve => { checkResolvers.push(resolve); checkWaiters.shift()?.(); }) } : {}),
@@ -59,7 +61,9 @@ async function fixture(checking = false, screened = false, durable = false, held
   const tasks = new Tasks(deps), task = await tasks.propose("codex", { owner: "codex", title: "Review lifecycle fixture", class: "implement", refs: { commit: "a".repeat(40), paths: ["notes/report.md"] } });
   const anchor: ReviewAnchor = { path: "notes/report.md", side: "head", contentHash: hash, selectors: [{ kind: "lineRange", startLine: 2, endLine: 2 }] };
   const draft = await tasks.reviewCommentPut("user", { task: task.id, commit: "a".repeat(40), anchor, body: "Please address this review comment" });
-  return { cwd, board, reopenBoard: () => { board.close(); board = new Board(database); return board; }, bus, owner, observer, tasks, task, draft, screenedTexts, nextCheck: () => new Promise<void>(resolve => checkWaiters.push(resolve)), finishCheck: (result: { code: number; timedOut: boolean; tail: string }) => { const resolve = checkResolvers.shift(); if (!resolve) throw new Error("no check is waiting"); resolve(result); } };
+  return { cwd, board, reopenBoard: () => { board.close(); board = new Board(database); return board; }, bus, owner, observer, tasks, task, draft, anchor, screenedTexts,
+    markReviewObserverInput: (peer: string) => reviewObserverInputs.add(peer), clearReviewObserverInput: (peer: string) => reviewObserverInputs.delete(peer),
+    nextCheck: () => new Promise<void>(resolve => checkWaiters.push(resolve)), finishCheck: (result: { code: number; timedOut: boolean; tail: string }) => { const resolve = checkResolvers.shift(); if (!resolve) throw new Error("no check is waiting"); resolve(result); } };
 }
 
 async function fileAnchoredFinding(f: Awaited<ReturnType<typeof fixture>>, taskId = f.task.id) {
@@ -76,10 +80,27 @@ async function fileAnchoredFinding(f: Awaited<ReturnType<typeof fixture>>, taskI
   }]);
 }
 
+async function ordinaryInput(f: Awaited<ReturnType<typeof fixture>>, peer: "codex" | "claude", body: string) {
+  const target = peer === "codex" ? f.owner : f.observer;
+  const delivered = target.waitFor(envelope => envelope.body === body);
+  f.bus.publish(newEnvelope("hub", body, { to: [peer], kind: "task" }));
+  await delivered;
+  f.clearReviewObserverInput(peer);
+}
+
+async function deliveredReviewInput(f: Awaited<ReturnType<typeof fixture>>, peer: "codex" | "claude", task: number) {
+  const target = peer === "codex" ? f.owner : f.observer;
+  return target.waitFor(envelope => envelope.kind === "review" && envelope.refs?.task === String(task) && typeof envelope.refs.reviewPackage === "string");
+}
+
 test("open review scope survives intervening chat, blocks memory, and leaves owner done text visible", async () => {
   const f = await fixture();
   await f.tasks.reviewCommentSend("user", { task: f.task.id });
-  f.bus.publish(newEnvelope("hub", "ordinary intervening chat", { to: ["codex"], kind: "task" }));
+  await deliveredReviewInput(f, "codex", f.task.id);
+  await ordinaryInput(f, "codex", "ordinary intervening chat");
+  const unrelated = await f.tasks.propose("codex", { owner: "codex", title: "Ordinary task B", class: "implement" });
+  expect(await f.tasks.remember("codex", { task: unrelated.id, text: "task B note" })).toContain("memory is disabled");
+  expect(await f.tasks.remember("codex", { text: "untagged ordinary note" })).toContain("memory is disabled");
   let refusal: unknown;
   try { await f.tasks.remember("codex", { task: f.task.id, text: "memory attempt" }); } catch (error) { refusal = error; }
   expect(refusal).toBeInstanceOf(PreEffectToolRefusal);
@@ -90,41 +111,46 @@ test("open review scope survives intervening chat, blocks memory, and leaves own
   expect(completion.note).toContain("Addressed review summary");
   expect(completion.withheld).toBeUndefined();
   expect(f.board.reviewComments(f.task.id, f.task.created)[0]?.lifecycle).toBe("resolved");
+  expect(f.board.hasReviewObserverScope("claude", f.task.id)).toBe(false);
   expect(await f.tasks.remember("codex", { task: f.task.id, text: "after resolution" })).toContain("memory is disabled");
 });
 
 test("review input remains excluded from memory through the completion call until ordinary input arrives", async () => {
   const f = await fixture();
   await f.tasks.reviewCommentSend("user", { task: f.task.id });
+  await deliveredReviewInput(f, "codex", f.task.id);
+  f.markReviewObserverInput("codex"); // host current-turn provenance for the quote in the submitted summary
   const quote = "REVIEW_SUMMARY_QUOTE_CANARY";
   const done = await f.tasks.done("codex", f.task.id, `Addressed review in the review turn ${quote}`, undefined, undefined, undefined, [f.draft.id]);
   expect(done.reviewer).toBe("claude");
   expect(done.history.findLast(entry => entry.event === "done")?.note).toContain(`Addressed review in the review turn ${quote}`);
   expect(f.board.reviewComments(f.task.id, f.task.created)[0]?.lifecycle).toBe("resolved");
   const reviewEnvelope = f.observer.received.find(envelope => envelope.kind === "review" && envelope.refs?.task === String(f.task.id));
-  expect(reviewEnvelope?.refs?.reviewPackage).toMatch(/^review-/);
+  expect(reviewEnvelope?.refs?.reviewPackage).toMatch(/^reviewer-request-/);
   expect(reviewEnvelope && isReviewObserverExcluded(reviewEnvelope)).toBe(true);
   expect(reviewEnvelope?.body).toContain(quote); // the assigned reviewer still receives the owner's summary
   expect(JSON.stringify(redactBusEvent({ t: "envelope", env: reviewEnvelope! }))).not.toContain(quote);
 
   let refusal: unknown;
-  try { await f.tasks.remember("codex", { task: f.task.id, text: "same review turn memory" }); } catch (error) { refusal = error; }
+  const taskB = await f.tasks.propose("codex", { owner: "codex", title: "Task B during review input", class: "implement" });
+  try { await f.tasks.remember("codex", { task: taskB.id, text: "same review turn memory" }); } catch (error) { refusal = error; }
   expect(refusal).toBeInstanceOf(PreEffectToolRefusal);
   expect((refusal as Error).message).toContain("current review input");
 
   const ordinary = "ordinary input after review completion";
-  const delivered = f.owner.waitFor(envelope => envelope.body === ordinary);
-  f.bus.publish(newEnvelope("hub", ordinary, { to: ["codex"], kind: "task" }));
-  await delivered;
-  expect(await f.tasks.remember("codex", { task: f.task.id, text: "after ordinary input" })).toContain("memory is disabled");
-  expect(f.board.hasReviewObserverScope("claude", f.task.id)).toBe(true);
-  expect(f.reopenBoard().hasReviewObserverScope("claude", f.task.id)).toBe(true);
+  await ordinaryInput(f, "codex", ordinary);
+  expect(await f.tasks.remember("codex", { task: taskB.id, text: "after ordinary input" })).toContain("memory is disabled");
+  expect(await f.tasks.remember("codex", { text: "after ordinary untagged input" })).toContain("memory is disabled");
+  expect(f.board.hasReviewObserverScope("claude", f.task.id)).toBe(false);
+  expect(f.reopenBoard().hasReviewObserverScope("claude", f.task.id)).toBe(false);
 });
 
 test("an owner's unrelated task remains visible while another task has open review comments", async () => {
   const f = await fixture();
   await f.tasks.reviewCommentSend("user", { task: f.task.id });
+  await deliveredReviewInput(f, "codex", f.task.id);
   const unrelated = await f.tasks.propose("codex", { owner: "codex", title: "Unrelated work", class: "implement", refs: { paths: ["src/unrelated.ts"] } });
+  await ordinaryInput(f, "codex", "ordinary input for unrelated task B");
   const observerTask = await f.tasks.propose("claude", { owner: "claude", title: "Observe unrelated work", class: "implement", refs: { paths: ["src/unrelated.ts"] } });
   f.tasks.accept("claude", observerTask.id);
   expect(f.board.get(observerTask.id)).toMatchObject({ owner: "claude", state: "in_progress" });
@@ -144,6 +170,9 @@ test("a former owner keeps review observer scope for a journaled package until i
   const reassigned = await f.tasks.assignTo(f.task.id, "claude", "user");
   expect(reassigned.owner).toBe("claude");
   expect(f.bus.hasUnsettledReviewScope("codex", f.task.id)).toBe(true);
+  const unrelated = await f.tasks.propose("codex", { owner: "codex", title: "Unrelated with queued Task A review", class: "implement" });
+  expect(await f.tasks.remember("codex", { task: unrelated.id, text: "unrelated queued-task note" })).toContain("memory is disabled");
+  expect(await f.tasks.remember("codex", { text: "untagged after queued Task A review" })).toContain("memory is disabled");
   let refusal: unknown;
   try { await f.tasks.remember("codex", { task: f.task.id, text: "former owner memory attempt" }); } catch (error) { refusal = error; }
   expect(refusal).toBeInstanceOf(PreEffectToolRefusal);
@@ -153,18 +182,49 @@ test("a former owner keeps review observer scope for a journaled package until i
 test("anchored finding scope survives restart and intervening reviewer chat", async () => {
   const f = await fixture();
   await fileAnchoredFinding(f);
+  await deliveredReviewInput(f, "codex", f.task.id);
   expect(f.board.hasReviewObserverScope("claude", f.task.id)).toBe(true);
-  f.bus.publish(newEnvelope("hub", "ordinary intervening chat", { to: ["claude"], kind: "task" }));
+  await ordinaryInput(f, "claude", "ordinary intervening chat");
   const reopened = f.reopenBoard();
   expect(reopened.hasReviewObserverScope("claude", f.task.id)).toBe(true);
   expect(reopened.hasReviewObserverScope("codex", f.task.id)).toBe(true);
   expect(reopened.hasReviewObserverScope("claude", 987654)).toBe(false);
 });
 
+test("anchored Task A stays task-scoped after ordinary Task B input, while its submitted review input blocks globally", async () => {
+  const f = await fixture();
+  await fileAnchoredFinding(f);
+  expect(f.board.hasReviewObserverScope("claude", f.task.id)).toBe(true);
+  const taskB = await f.tasks.propose("claude", { owner: "claude", title: "Ordinary Task B", class: "implement" });
+  let refusal: unknown;
+  try { await f.tasks.remember("claude", { task: taskB.id, text: "current anchored review turn" }); } catch (error) { refusal = error; }
+  expect(refusal).toBeInstanceOf(PreEffectToolRefusal);
+  expect((refusal as Error).message).toContain("current review input");
+
+  const ordinary = "ordinary reviewer input after Task A";
+  await ordinaryInput(f, "claude", ordinary);
+  expect(await f.tasks.remember("claude", { task: taskB.id, text: "Task B note" })).toContain("memory is disabled");
+  expect(await f.tasks.remember("claude", { text: "untagged note after Task B input" })).toContain("memory is disabled");
+  await expect(f.tasks.remember("claude", { task: f.task.id, text: "Task A remains held" })).rejects.toBeInstanceOf(PreEffectToolRefusal);
+});
+
+test("an anchor-bearing hub_review input is latched before reviewer authority refuses it", async () => {
+  const f = await fixture();
+  const before = f.board.get(f.task.id)!.history.length;
+  await expect(f.tasks.review("codex", f.task.id, "changes_requested", "untrusted review", undefined, "a".repeat(40), undefined, [{
+    id: "untrusted-anchor", pass: "bugs", severity: "important", disposition: "open", anchor: f.anchor,
+  }])).rejects.toBeInstanceOf(PreEffectToolRefusal);
+  expect(f.board.get(f.task.id)!.history).toHaveLength(before);
+  const unrelated = await f.tasks.propose("codex", { owner: "codex", title: "Unrelated after refused review", class: "implement" });
+  await expect(f.tasks.remember("codex", { task: unrelated.id, text: "must remain out of this input" })).rejects.toMatchObject({ message: expect.stringContaining("current review input") });
+});
+
 test("an anchored finding on another task does not hide the owner's unrelated completion", async () => {
   const f = await fixture();
   await fileAnchoredFinding(f);
+  await deliveredReviewInput(f, "codex", f.task.id);
   const unrelated = await f.tasks.propose("codex", { owner: "codex", title: "Unrelated anchored work", class: "implement", refs: { paths: ["src/unrelated.ts"] } });
+  await ordinaryInput(f, "codex", "ordinary Task B input after Task A review");
   const observerTask = await f.tasks.propose("claude", { owner: "claude", title: "Observe unrelated anchored work", class: "implement", refs: { paths: ["src/unrelated.ts"] } });
   f.tasks.accept("claude", observerTask.id);
   expect(f.tasks.overlapTasks(f.board.get(unrelated.id)!)).toContain(observerTask.id);

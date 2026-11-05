@@ -18,6 +18,7 @@ import type { ChatMessage, ChatResult, OmniRoute, ToolCall } from "../omniroute/
 import { safeModelLabel } from "../omniroute/usage.ts";
 import { effectiveLocalRoute } from "../hub/routing.ts";
 import type { ExecutionBudgetDecision } from "../hub/execution-budget.ts";
+import type { OwnedInputContext, OwnedInputObserver } from "./claude-print-child.ts";
 
 export interface LocalOptions {
   profile?: import("../hub/profiles.ts").ProfileSelection;
@@ -50,6 +51,10 @@ export interface LocalOptions {
   capture?: Capture;
   /** Runs a hub task tool (hub_task_*, hub_review, hub_remember) as this peer. Absent = the tools are not offered. */
   taskTool?: (name: string, args: Record<string, unknown>, turn: { pii: boolean; signal?: AbortSignal }) => Promise<string>;
+  /** Final per-turn input binding after the Bus pre-handoff hold; never a native-session authority port. */
+  beforeInput?: OwnedInputObserver;
+  /** Actual local model handoff metadata; never a budget, native-session or task-authority port. */
+  inputReleased?: OwnedInputObserver;
   /** Successful provider responses only; usage may be absent when the gateway omits it. Never includes prompt data. */
   onUsage?: (record: { id: string; at: string; usage?: ChatResult["usage"]; requestedModel: string; servedModel?: string; provider?: string; task?: number }) => void;
   /** Atomic task/run admission immediately before every model request or tool execution. */
@@ -93,6 +98,8 @@ export class LocalPeer extends BasePeer {
   private title = "";
   get sessionTitle(): string { return this.title; }
   get titleSession(): string { return this.sessionId; }
+  /** Privacy-only identity for review-observer provenance; intentionally not PeerAdapter.nativeSession. */
+  get observerSessionId(): string { return this.sessionId; }
   async setSessionTitle(title: string, onlyIfUnnamed: boolean, current?: () => boolean): Promise<SessionTitleResult> {
     if (typeof title !== "string" || !title.trim() || [...title].length > 80 || typeof onlyIfUnnamed !== "boolean") return { ok: false, reason: "invalid", error: "Session title must contain 1-80 normalized characters and use a conditional-write flag; correct the title request and try again." };
     if (this.state === "offline") return { ok: false, reason: "invalid", error: "Local worker session is offline; start the peer and check ahub status before naming it." };
@@ -119,6 +126,8 @@ export class LocalPeer extends BasePeer {
   private approvalAnswerEpoch: number | undefined;
   private approvalStopReason = "";
   private activeDeliveryId: string | undefined;
+  private currentObserverInputContext: OwnedInputContext | undefined;
+  private observerInputReleasedId: string | undefined;
   private readonly sandboxProfile: string; // built once: profile() spawns git and must stay off the per-call path
   /** What served the last call, for `ahub status`. */
   lastServedBy = "";
@@ -136,6 +145,7 @@ export class LocalPeer extends BasePeer {
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
         if (signal.aborted) throw new Error("turn cancelled before model request");
         const tools = judge ? undefined : [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : [])];
+        this.releaseObserverInput(this.currentObserverInputContext, envs);
         const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
         this.recordUsage(result, model, task);
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
@@ -177,6 +187,14 @@ export class LocalPeer extends BasePeer {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
       throw new Error(`${this.id} is ${this.state}`);
     }
+    const inputContext: OwnedInputContext = Object.freeze({ sessionId: this.observerSessionId, inputId: randomUUID() });
+    try { this.opts.beforeInput?.(inputContext, envs); }
+    catch {
+      if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "review input provenance unavailable" });
+      throw new Error("review input provenance unavailable");
+    }
+    this.currentObserverInputContext = inputContext;
+    this.observerInputReleasedId = undefined;
     const turn = ++this.turn;
     this.budgetStopReason = "";
     this.approvalExpiries = 0; this.approvalAnswerEpoch = undefined; this.approvalStopReason = "";
@@ -192,19 +210,17 @@ export class LocalPeer extends BasePeer {
     const requestedPolicy = this.opts.turnPolicy?.(envs);
     const policy = envs.some(env => env.private) ? { ...requestedPolicy, pii: true } : requestedPolicy;
     const remoteTurn = envs.some(remoteEnvelope);
-    const reviewTurn = envs.some(isReviewObserverExcluded);
-    const sensitiveTurn = remoteTurn || reviewTurn;
+    const reviewScope = { excluded: envs.some(isReviewObserverExcluded) };
     const preserveHistory = !policy?.pii && !remoteTurn;
-    const retainHistory = preserveHistory && !reviewTurn;
     const labelTurn = this.beginRouteTurn(turn, !!policy?.pii || envs.some(env => env.private), policy?.task);
     let completed = false;
     // A PII turn speaks to the console user only, and privately: its answer must not be broadcast to cloud-hosted peers.
     // The task id travels with it, so the board can keep the text (`ahub task show`) while tail and log show a stub.
     const reply: EnvelopeOpts = { inReplyTo: replyParent(envs), to: replyAudience(envs), ...(policy?.pii ? { to: [USER], private: true, priority: "important" as const, ...(policy.task ? { refs: { task: policy.task } } : {}) } : {}) };
-    this.run(envs, turn, msgs, progress, policy, reply)
+    this.run(envs, turn, msgs, progress, policy, reply, reviewScope)
       .then((answer) => {
         if (turn !== this.turn) return;
-        if (retainHistory) this.commit(msgs); // Private, remote and review turns never enter later local capture through model history.
+        if (preserveHistory && !reviewScope.excluded) this.commit(msgs); // Private, remote and review turns never enter later local capture through model history.
         if (answer) this.onMessage?.(answer, reply);
         if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "completed" });
         completed = true;
@@ -212,19 +228,19 @@ export class LocalPeer extends BasePeer {
       .catch((e: Error) => {
         if (turn !== this.turn) return; // aborted by the watchdog or stop(): nothing to report, nothing was committed
         if (e instanceof ApprovalWaitStop) {
-          const message = remoteTurn ? "remote turn failed" : reviewTurn ? "review turn failed" : e.message;
+          const message = remoteTurn ? "remote turn failed" : reviewScope.excluded ? "review turn failed" : e.message;
           this.completeMissingToolResults(msgs, "not run: turn ended after unanswered approvals");
           msgs.push({ role: "assistant", content: message });
-          if (retainHistory) this.commit(msgs);
+          if (preserveHistory && !reviewScope.excluded) this.commit(msgs);
           this.onMessage?.(message, reply);
           if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "completed", reason: message });
           return; // even without effects, an unanswered approval must not trigger safe replay
         }
         if (this.budgetStopReason && !(e instanceof ExecutionBudgetStop)) e = new ExecutionBudgetStop(this.budgetStopReason);
-        const message = remoteTurn ? "remote turn failed" : reviewTurn ? "review turn failed" : e.message;
+        const message = remoteTurn ? "remote turn failed" : reviewScope.excluded ? "review turn failed" : e.message;
         this.opts.log?.(`[${this.id}] turn failed: ${message}`);
         if (e instanceof ExecutionBudgetStop) {
-          this.reportBudgetStop(e, msgs, progress, reply, !retainHistory, deliveryId, remoteTurn, reviewTurn);
+          this.reportBudgetStop(e, msgs, progress, reply, !preserveHistory || reviewScope.excluded, deliveryId, remoteTurn, reviewScope.excluded);
           return;
         }
         if (!progress.sideEffects) {
@@ -234,9 +250,9 @@ export class LocalPeer extends BasePeer {
         }
         // Tools already changed things. Redelivering would redo approved writes and commits, so report instead.
         // A model call is the only thing that throws here, and every tool call before it has its result: msgs is consistent.
-        const note = sensitiveTurn ? message : `(turn failed after ${progress.sideEffects} tool call(s) with side effects: ${message.slice(0, 200)}. The work may be partial; check before repeating it.) ${progress.last}`.trim();
+        const note = remoteTurn || reviewScope.excluded ? message : `(turn failed after ${progress.sideEffects} tool call(s) with side effects: ${message.slice(0, 200)}. The work may be partial; check before repeating it.) ${progress.last}`.trim();
         msgs.push({ role: "assistant", content: note });
-        if (retainHistory) this.commit(msgs);
+        if (preserveHistory && !reviewScope.excluded) this.commit(msgs);
         this.onMessage?.(note, reply);
         if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: message });
       })
@@ -265,14 +281,13 @@ export class LocalPeer extends BasePeer {
     progress: { sideEffects: number; last: string },
     policy: { route?: string; fixedModel?: string; pii: boolean; task?: string } | undefined,
     reply: EnvelopeOpts,
+    reviewScope: { excluded: boolean },
   ): Promise<string> {
     const { maxSteps = 30 } = this.opts;
     const turnSignal = this.abort!.signal;
     // Remote text/tool output is never memory evidence, even beside ordinary local work in the same turn.
     const remoteTurn = envs.some(remoteEnvelope);
     const capture = policy?.pii || remoteTurn ? undefined : this.opts.capture;
-    const reviewTurn = envs.some(isReviewObserverExcluded);
-    const turnCapture = reviewTurn ? undefined : capture;
     // Unknown gateway state is never permission to send PII.
     if (policy?.pii && !(await this.opts.omni.onCampus())) {
       return "Refused: this is a PII task and the only reachable gateway is off campus (Cloudflare Access). Connect the VPN and assign it again.";
@@ -293,9 +308,10 @@ export class LocalPeer extends BasePeer {
         const concluded = await this.conclude(msgs, policy, turn, step, maxSteps, progress.last, turnSignal, res.routeDecision);
         if (turn !== this.turn) return "";
         if (concluded === undefined) continue;
-        if (usedTools) turnCapture?.summarize(concluded);
+        if (usedTools && !reviewScope.excluded) capture?.summarize(concluded);
         return concluded;
       }
+      if (res.message.tool_calls.some(call => call.function.name.replace(/^mcp__[^ ]+__/, "") === "hub_review" && reviewCaptureExcluded(call.function.name, call.function.arguments))) reviewScope.excluded = true;
       const results: ChatMessage[] = [];
       try {
         for (const call of res.message.tool_calls) {
@@ -306,7 +322,13 @@ export class LocalPeer extends BasePeer {
             await this.requireBudget(envs, "tool_calls");
             if (turnSignal.aborted) throw new ExecutionBudgetStop(this.budgetStopReason || "turn cancelled before tool execution");
           } catch (error) { clearInterval(alive); throw error; }
-          const running = (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e: Error) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
+          const taskToolName = name.replace(/^mcp__[^ ]+__/, "");
+          const reviewNoteWrite = taskToolName === "hub_remember" || taskToolName === "hub_task_propose";
+          const running = reviewScope.excluded && reviewNoteWrite
+            ? Promise.resolve("error: anchored review in this batch; save notes in a later turn")
+            : (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool
+              ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e: Error) => `error: ${e.message}`)
+              : runTool(name, call.function.arguments, ctx);
           const output = await running.finally(() => clearInterval(alive));
           if (turn !== this.turn) return "";
           this.touch();
@@ -315,15 +337,15 @@ export class LocalPeer extends BasePeer {
           const result: ChatMessage = { role: "tool", tool_call_id: call.id, content: output, is_error: toolResultFailed(name, output) };
           msgs.push(result); results.push(result);
           if (this.approvalStopReason) { this.abort?.abort(); throw new ApprovalWaitStop(this.approvalStopReason); }
-          if (!remoteTurn && !reviewTurn && name !== "hub_set_title" && name !== "hub_ask" && !reviewCaptureExcluded(name, call.function.arguments)) this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
+          if (!remoteTurn && !reviewScope.excluded && name !== "hub_set_title" && name !== "hub_ask" && !reviewCaptureExcluded(name, call.function.arguments)) this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
           // Hub tool arguments/results are not capture evidence; Tasks owns its screened memory writes.
           // doc_read text is converted document content (a converter can surface hidden text), never memory evidence: not captured, whatever the turn.
           // web_fetch text is a third party's page and its URL is the model's own request: neither is memory evidence either (#515b).
-          if (name !== "hub_send" && name !== "doc_read" && name !== "web_fetch" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name)) turnCapture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
+          if (!reviewScope.excluded && name !== "hub_send" && name !== "doc_read" && name !== "web_fetch" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name)) capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
         }
       } finally { if (results.length) this.routes.observeResults(res.routeDecision, res.message, results); }
     }
-    if (usedTools) turnCapture?.summarize(progress.last);
+    if (usedTools && !reviewScope.excluded) capture?.summarize(progress.last);
     this.opts.onLimit?.("steps");
     return `(stopped after ${maxSteps} steps) ${progress.last}`.trim();
   }
@@ -436,10 +458,17 @@ export class LocalPeer extends BasePeer {
     const routed = await this.hubCall(route, messages, policy, signal);
     if (routed) return routed;
     await this.requireBudget(envs, "model_calls");
+    this.releaseObserverInput(this.currentObserverInputContext, envs);
     const res = await omni.chat({ model: fixedModel, messages, tools }, { signal, ...(policy?.pii ? { onCampusOnly: true } : {}) });
     this.lastServedBy = `omniroute ${fixedModel} (provider ${res.provider ?? "?"})`;
     this.recordUsage(res, fixedModel, task);
     return res;
+  }
+
+  private releaseObserverInput(context: OwnedInputContext | undefined, envs: Envelope[]): void {
+    if (!context || this.currentObserverInputContext !== context || this.observerInputReleasedId === context.inputId) return;
+    this.observerInputReleasedId = context.inputId;
+    try { this.opts.inputReleased?.(context, envs); } catch { /* observer metadata never changes the local model result */ }
   }
 
   private beginRouteTurn(generation: number, pii: boolean, task?: string): string {

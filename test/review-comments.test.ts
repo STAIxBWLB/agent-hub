@@ -171,6 +171,22 @@ test("an explicit retry uses the same durable package and envelope without creat
   expect(f.owner.received[0]?.id).toBe(original.id); expect(f.board.reviewCommentsIntegrity()).toEqual(snapshot);
 });
 
+test("saved package resend refuses failed and discarded receipts without claiming queued or replaying", async () => {
+  for (const state of ["failed", "discarded"] as const) {
+    const f = await fixture(false, true), draft = await f.draft(), sent = await f.tasks.reviewCommentSend("user", { task: f.task.id, ids: [draft.id] });
+    const journal = (f.bus as unknown as { journal: DeliveryJournal }).journal;
+    const delivery = f.bus.queueList().find(row => row.originals.some(env => env.refs?.reviewPackage === sent.packageId));
+    expect(delivery).toBeDefined();
+    journal.transition(delivery!.id, state, `fixture ${state} receipt`);
+    const received = f.owner.received.length;
+    const error = await refusal(f.tasks.reviewCommentSend("user", { task: f.task.id, packageId: sent.packageId }));
+    expect(error.message).toContain(`delivery is ${state}`);
+    expect(error.message).toContain(`ahub queue list --peer codex`);
+    expect(error.message).toContain(`ahub queue show <delivery-id>`);
+    expect(f.owner.received).toHaveLength(received);
+  }
+});
+
 test("a sent package keeps its original owner scoped after task reassignment and across restart", async () => {
   const f = await fixture(false, true), draft = await f.draft(); await f.tasks.reviewCommentSend("user", { task: f.task.id, ids: [draft.id] });
   const beforeMove = f.board.get(f.task.id)!;

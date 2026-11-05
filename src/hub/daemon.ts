@@ -146,7 +146,9 @@ import { taskShellSandboxRestrictions } from "./task-shell-sandbox.ts";
 import { hostShellEnvironment } from "../local/shell-environment.ts";
 import { hubGitArgv, hubGitEnv, hubGitSync } from "./git.ts";
 import { isLocalPeer, type LocalPeer } from "../adapters/local-worker.ts";
+import { isClaudeImplementerPeer } from "../adapters/claude-implementer.ts";
 import { isReviewerPrintPeer, reviewerNoVerdictLine, reviewerUnavailableReason, ReviewerUnavailableError, REVIEWER_FALLBACK_UNCONFIRMED, type ReviewerPrintPeer } from "../adapters/reviewer-print.ts";
+import type { OwnedInputContext } from "../adapters/claude-print-child.ts";
 import { createReviewerMcpSession, type ReviewerToolName } from "../adapters/reviewer-mcp.ts";
 import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
 import { reviewDiff } from "../adapters/claude-print.ts";
@@ -188,7 +190,7 @@ import { githubOriginRepository, githubRemoteRepository } from "./task-repositor
 import { TaskWorktrees, originVerdict } from "./task-worktree.ts";
 import { displayPath, shelfInsideRoot, partition, readWorktreeFacts, type ShelfRow } from "./worktree-shelf.ts";
 import { PrObservations, refreshPrStates, refreshTargets } from "./worktree-prs.ts";
-import { Bus } from "./bus.ts";
+import { Bus, ReviewInputHandoffError } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { ACCEPTED_SETTLE_TIMEOUT_REASON, DeliveryJournal } from "./delivery-journal.ts";
 import { assertHubDbCompatible } from "./db-schema.ts";
@@ -1465,9 +1467,111 @@ export async function startDaemon(opts: DaemonOptions) {
   const requestedPeerStops = new Set<string>();
   const queuePolicy = () => queueBackpressurePolicy(config.tasks.queue_backpressure);
   let readReviewObserverScope: ((peer: PeerId) => string | undefined) | undefined;
+  type ReviewObserverInputState = { deliveryKey: string; outputKey?: string; turnId?: string; inputId?: string; awaitingTurn?: boolean; held: boolean; reviewInputScoped: boolean; heldSameTurnAtAdmission?: boolean; anchoredSubmission?: boolean };
+  type PendingReviewObserverInput = ReviewObserverInputState & { previous?: ReviewObserverInputState; sessionHash?: string; durableSessionHash?: string; heldSameTurnAtAdmission?: boolean };
+  const currentReviewObserverInputs = new Map<PeerId, ReviewObserverInputState>();
+  const pendingReviewObserverInputs = new Map<PeerId, PendingReviewObserverInput>();
+  const ordinaryReviewObserverInputs = new Map<PeerId, { sessionHash: string; inputHash: string }>();
+  const reviewObserverRuntimeSessions = new WeakMap<object, string>();
+  const reviewObserverSessionBindings = new Map<PeerId, string>();
+  const currentDaemonReviewObserverHolds = new Map<PeerId, string>();
+  const restoredPullOnlyReviewHolds = new Map<PeerId, string>();
+  const ownedReviewInputGuardPeers = new WeakSet<object>();
+  const ownedReviewInputReleasePeers = new WeakSet<object>();
+  const localObserverSessionIds = new WeakMap<object, () => string>();
+  const ownedObserverInputs = new Map<PeerId, { owner: PeerAdapter; context: OwnedInputContext; sessionHash: string; inputHash: string; deliveryKey: string; reviewScoped: boolean; heldSameTurnAtAdmission: boolean; reviewerEphemeral?: true; closed?: boolean; supersededByReviewInput?: boolean; released: boolean }>();
+  const reviewObserverDeliveryKey = (envs: readonly Envelope[]): string => JSON.stringify(envs.map(env => env.id).sort());
+  const reviewObserverHash = (value: string): string => createHash("sha256").update(value).digest("hex");
+  const reviewObserverSessionHash = (peer: PeerId): string | undefined => {
+    const owner = bus.peers.get(peer), localSession = owner && localObserverSessionIds.get(owner)?.();
+    const owned = ownedObserverInputs.get(peer);
+    if (owned && owned.owner === owner) return reviewObserverHash(owned.context.sessionId);
+    if (localSession) return reviewObserverHash(localSession);
+    const session = contextSession(peer);
+    if (session) return reviewObserverHash(session);
+    if (!owner) return undefined;
+    // ponytail: adapters without stable session ids stay unknown across restart when prior peer receipts exist; upgrade when they expose verifiable native session and turn provenance.
+    let runtimeSession = reviewObserverRuntimeSessions.get(owner);
+    if (!runtimeSession) { runtimeSession = randomUUID(); reviewObserverRuntimeSessions.set(owner, runtimeSession); }
+    return reviewObserverHash(`runtime:${runtimeSession}`);
+  };
+  const reviewObserverStableSessionHash = (peer: PeerId): string | undefined => {
+    const owner = bus.peers.get(peer), localSession = owner && localObserverSessionIds.get(owner)?.();
+    const owned = ownedObserverInputs.get(peer);
+    if (owned && owned.owner === owner) return reviewObserverHash(owned.context.sessionId);
+    if (localSession) return reviewObserverHash(localSession);
+    // Claude launch ids fence a process attachment, not native conversation identity; resuming the same session must keep its review hold.
+    const session = definitionOf(peer)?.transport === "claude-channel"
+      ? claudeSession(peer).sessionId
+      : contextSession(peer);
+    return session ? reviewObserverHash(session) : undefined;
+  };
+  const reviewObserverInputHash = (envs: readonly Envelope[], turnId?: string): string => reviewObserverHash(turnId ?? envs.map(env => env.id).sort().join("\n"));
+  const bindReviewObserverSessionHash = (peer: PeerId, current: string, preservePendingDelivery = false): void => {
+    const prior = reviewObserverSessionBindings.get(peer);
+    if (current && prior && current !== prior) {
+      currentReviewObserverInputs.delete(peer);
+      const pending = preservePendingDelivery ? pendingReviewObserverInputs.get(peer) : undefined;
+      if (preservePendingDelivery && pending) {
+        delete pending.previous; delete pending.anchoredSubmission; delete pending.heldSameTurnAtAdmission;
+        pending.held = false; pending.reviewInputScoped = false;
+      } else pendingReviewObserverInputs.delete(peer);
+      ordinaryReviewObserverInputs.delete(peer);
+      currentDaemonReviewObserverHolds.delete(peer);
+      restoredPullOnlyReviewHolds.delete(peer);
+      ownedObserverInputs.delete(peer);
+      bus.resetLastDelivery(peer);
+    }
+    reviewObserverSessionBindings.set(peer, current);
+  };
+  const resetReviewObserverSessionIfChanged = (peer: PeerId): void => {
+    const current = reviewObserverStableSessionHash(peer);
+    if (!current) return;
+    const prior = reviewObserverSessionBindings.get(peer);
+    if (prior) { bindReviewObserverSessionHash(peer, current); return; }
+    const currentInput = currentReviewObserverInputs.get(peer), pendingInput = pendingReviewObserverInputs.get(peer);
+    const transientHeld = currentInput?.held === true || currentInput?.reviewInputScoped === true || currentInput?.anchoredSubmission === true
+      || pendingInput?.held === true || pendingInput?.reviewInputScoped === true || pendingInput?.previous?.held === true || pendingInput?.anchoredSubmission === true;
+    if (transientHeld) {
+      let state: "clean" | "held" | "unknown" = "unknown";
+      try { state = journal.reviewInputState(peer, current).state; } catch { /* unknown is held */ }
+      if (state === "clean") {
+        currentReviewObserverInputs.delete(peer); pendingReviewObserverInputs.delete(peer);
+        ordinaryReviewObserverInputs.delete(peer); currentDaemonReviewObserverHolds.delete(peer);
+        restoredPullOnlyReviewHolds.delete(peer); ownedObserverInputs.delete(peer); bus.resetLastDelivery(peer);
+      }
+    }
+    bindReviewObserverSessionHash(peer, current);
+  };
+  const reviewObserverDurableHeld = (peer: PeerId): boolean => {
+    if (peer === USER || peer === HUB || peer.includes("@") || !definitionOf(peer)) return false;
+    resetReviewObserverSessionIfChanged(peer);
+    const stableSessionHash = reviewObserverStableSessionHash(peer);
+    const stickySession = restoredPullOnlyReviewHolds.get(peer);
+    if (stickySession && stableSessionHash && stickySession !== stableSessionHash) restoredPullOnlyReviewHolds.delete(peer);
+    try {
+      const state = journal.reviewInputState(peer, stableSessionHash).state;
+      if (state !== "clean" && bus.peers.get(peer)?.pullOnly && currentDaemonReviewObserverHolds.get(peer) !== stableSessionHash)
+        restoredPullOnlyReviewHolds.set(peer, stableSessionHash ?? "unbound");
+      return state !== "clean" || restoredPullOnlyReviewHolds.has(peer);
+    } catch { return true; }
+  };
+  const restoredPullOnlyReviewHeld = (peer: PeerId): boolean => restoredPullOnlyReviewHolds.has(peer);
+  const presenceOnlyDelivery = (envs: readonly Envelope[]): boolean => envs.length === 0 || envs.every(env => env.from === HUB && env.kind === "presence");
   let remotePending = (_room: string): readonly string[] => [];
   let remoteQueueChanged = () => {};
   const bus: Bus = new Bus({ rostered: membershipAllowed, ...busReaders, trackQueuePressure: () => { const policy = queuePolicy(); return policy.max_queued > 0 || policy.max_oldest_s > 0; }, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
+    beforeReviewInputHandoff: (peer, envs) => {
+      const owner = bus.peers.get(peer);
+      if (owner && ownedReviewInputGuardPeers.has(owner)) {
+        if (!presenceOnlyDelivery(envs) && reviewInputHeld(peer, envs)) {
+          const activeInput = ownedObserverInputs.get(peer);
+          if (activeInput?.owner === owner) activeInput.supersededByReviewInput = true;
+        }
+        return;
+      }
+      if (!presenceOnlyDelivery(envs) && reviewInputHeld(peer, envs)) requireReviewObserverHold(peer, envs);
+    },
     remotePending: room => remotePending(room),
     remotePrivate: (env): boolean => {
       const task = env.refs?.task;
@@ -1480,6 +1584,7 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     doing: (peer, kind, text) => observeDoing(peer, kind, text),
     reviewObserverScope: peer => readReviewObserverScope ? readReviewObserverScope(peer) : "review-scope-unavailable",
+    reviewObserverInputExcluded: (peer, envs) => reviewInputHeld(peer, envs) || reviewObserverInput(peer),
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (isWsPeer(p)) p.notifyQueued(counts); } });
   startupCleanup.push(() => bus.closeJournal());
   const claudeLaunchProof = createClaudeLaunchProof({ stateDir: opts.stateDir, cwd: opts.cwd, instanceId, definitionOf, peer: peer => bus.peers.get(peer) });
@@ -1939,7 +2044,183 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const inboxPolling = new InboxPolling();
   const board = new Board(join(opts.stateDir, "hub.db"));
-  readReviewObserverScope = peer => board.hasReviewObserverScope(peer) || bus.hasUnsettledReviewScope(peer) ? "open-review-comments" : undefined;
+  const reviewInputHeld = (peer: PeerId, envs: readonly Envelope[]): boolean => {
+    if (envs.some(isReviewObserverExcluded)) return true;
+    const taskIds = envs.flatMap(env => {
+      if (env.from !== HUB || env.kind !== "review" || typeof env.refs?.task !== "string" || !/^[1-9][0-9]*$/.test(env.refs.task)) return [];
+      const task = Number(env.refs.task);
+      return Number.isSafeInteger(task) ? [task] : [];
+    });
+    try { return taskIds.some(task => board.hasReviewObserverScope(peer, task)); }
+    catch { return taskIds.length > 0; }
+  };
+  const notePulledReviewInput = (peer: PeerId, envs: readonly Envelope[]): void => {
+    if (presenceOnlyDelivery(envs)) return;
+    resetReviewObserverSessionIfChanged(peer);
+    const deliveryKey = reviewObserverDeliveryKey(envs), prior = pendingReviewObserverInputs.get(peer) ?? currentReviewObserverInputs.get(peer), turnId = turns.get(peer)?.id;
+    const reviewInputScoped = reviewInputHeld(peer, envs);
+    const sameTurnHeld = turnId !== undefined && prior?.turnId === turnId && prior.held;
+    const durableHeld = reviewObserverDurableHeld(peer);
+    const stableSessionHash = reviewObserverStableSessionHash(peer);
+    const held = reviewInputScoped || sameTurnHeld || restoredPullOnlyReviewHeld(peer)
+      || turnId !== undefined && durableHeld || !stableSessionHash && durableHeld;
+    if (held) ordinaryReviewObserverInputs.delete(peer);
+    if (held) progress.clearPeer(peer);
+    currentReviewObserverInputs.set(peer, { deliveryKey, outputKey: reviewObserverDeliveryKey(bus.lastDeliveredTo(peer)), ...(turnId ? { turnId } : {}), ...(turnId === undefined ? { awaitingTurn: true } : {}), held,
+      reviewInputScoped, ...(turnId !== undefined && durableHeld ? { heldSameTurnAtAdmission: true } : {}), ...(sameTurnHeld && prior?.anchoredSubmission ? { anchoredSubmission: true } : {}) });
+    pendingReviewObserverInputs.delete(peer);
+    if (!held && stableSessionHash) {
+      const inputHash = reviewObserverInputHash(envs, turnId);
+      ordinaryReviewObserverInputs.delete(peer);
+      try {
+        journal.clearReviewInput(peer, stableSessionHash);
+        ordinaryReviewObserverInputs.set(peer, { sessionHash: stableSessionHash, inputHash });
+        currentDaemonReviewObserverHolds.delete(peer);
+      }
+      catch {
+        try { journal.markReviewInputIncomplete(peer, stableSessionHash); } catch { /* a failed state mutation remains held in RAM */ }
+        const current = currentReviewObserverInputs.get(peer); if (current?.deliveryKey === deliveryKey) current.held = true;
+      }
+    }
+  };
+  const reviewObserverInput = (peer: PeerId): boolean => {
+    resetReviewObserverSessionIfChanged(peer);
+    const pending = pendingReviewObserverInputs.get(peer);
+    return (pending ? pending.held || pending.previous?.held === true : currentReviewObserverInputs.get(peer)?.held === true) || reviewObserverDurableHeld(peer);
+  };
+  const requireReviewObserverHold = (peer: PeerId, envs: readonly Envelope[], latchedSubmission = false): void => {
+    resetReviewObserverSessionIfChanged(peer);
+    if (peer === USER || peer === HUB || peer.includes("@") || !definitionOf(peer)) return;
+    const sessionHash = reviewObserverStableSessionHash(peer);
+    if (!sessionHash) {
+      if (latchedSubmission) {
+        try { journal.markReviewInputIncomplete(peer); } catch { /* current daemon still refuses and keeps its RAM latch */ }
+        const key = reviewObserverDeliveryKey(envs), current = currentReviewObserverInputs.get(peer);
+        if (current) { current.held = true; current.reviewInputScoped = true; }
+        else currentReviewObserverInputs.set(peer, { deliveryKey: key, held: true, reviewInputScoped: true });
+      }
+      throw new Error("review input provenance unavailable; delivery held until the peer's session can be identified");
+    }
+    ordinaryReviewObserverInputs.delete(peer);
+    const ownedInput = ownedObserverInputs.get(peer);
+    const inputHash = ownedInput?.sessionHash === sessionHash ? ownedInput.inputHash : reviewObserverInputHash(envs, turns.get(peer)?.id);
+    if (ownedInput && ownedInput.owner === bus.peers.get(peer) && ownedInput.sessionHash === sessionHash) { ownedInput.reviewScoped = true; ownedInput.supersededByReviewInput = true; }
+    try {
+      journal.holdReviewInput({ peer, sessionHash, inputHash });
+      currentDaemonReviewObserverHolds.set(peer, sessionHash);
+    }
+    catch {
+      try { journal.markReviewInputIncomplete(peer, sessionHash); } catch { /* refusal remains held in daemon memory */ }
+      const key = reviewObserverDeliveryKey(envs), current = currentReviewObserverInputs.get(peer);
+      if (current) { current.held = true; current.reviewInputScoped = true; }
+      else currentReviewObserverInputs.set(peer, { deliveryKey: key, held: true, reviewInputScoped: true });
+      throw new Error("review input provenance could not be stored; delivery remains held");
+    }
+  };
+  const ownedObserverInputHash = (context: OwnedInputContext, envs: readonly Envelope[]): string =>
+    reviewObserverHash(JSON.stringify([context.inputId, envs.map(env => env.id).sort()]));
+  const beforeOwnedObserverInput = (peer: PeerId, owner: PeerAdapter, context: OwnedInputContext, envs: readonly Envelope[], reviewerEphemeral = false): void => {
+    if (bus.peers.get(peer) !== owner || !Object.isFrozen(context) || typeof context.sessionId !== "string" || !context.sessionId || typeof context.inputId !== "string" || !context.inputId) throw new Error("owned review input admission changed");
+    const sessionHash = reviewObserverHash(context.sessionId), deliveryKey = reviewObserverDeliveryKey(envs), inputHash = ownedObserverInputHash(context, envs);
+    const priorOwned = ownedObserverInputs.get(peer);
+    if (reviewerEphemeral && priorOwned?.owner === owner && priorOwned.reviewerEphemeral && priorOwned.closed && !priorOwned.reviewScoped && priorOwned.sessionHash !== sessionHash) {
+      try { journal.forgetClosedObserverInput(peer, priorOwned.sessionHash, null); } catch { /* clean-receipt pruning is best-effort; the current SID remains explicit */ }
+    }
+    bindReviewObserverSessionHash(peer, sessionHash, true);
+    const reviewScoped = reviewInputHeld(peer, envs), pending = pendingReviewObserverInputs.get(peer), prior = currentReviewObserverInputs.get(peer);
+    const heldSameTurnAtAdmission = pending?.heldSameTurnAtAdmission === true || prior?.heldSameTurnAtAdmission === true;
+    ownedObserverInputs.set(peer, { owner, context, inputHash, deliveryKey, sessionHash, reviewScoped, heldSameTurnAtAdmission, ...(reviewerEphemeral ? { reviewerEphemeral: true as const } : {}), released: false });
+    let state = journal.reviewInputState(peer, sessionHash).state;
+    if (reviewScoped) {
+      ordinaryReviewObserverInputs.delete(peer);
+      try {
+        journal.holdReviewInput({ peer, sessionHash, inputHash });
+        currentDaemonReviewObserverHolds.set(peer, sessionHash);
+        state = "held";
+      } catch {
+        try { journal.markReviewInputIncomplete(peer, sessionHash); } catch { /* refusal remains held in daemon memory */ }
+        const key = pending?.deliveryKey ?? deliveryKey, current = currentReviewObserverInputs.get(peer);
+        if (current) { current.held = true; current.reviewInputScoped = true; }
+        else currentReviewObserverInputs.set(peer, { deliveryKey: key, held: true, reviewInputScoped: true });
+        throw new Error("review input provenance could not be stored; native input remains held");
+      }
+    }
+    const held = reviewScoped || heldSameTurnAtAdmission || state !== "clean";
+    if (pending) {
+      pending.sessionHash = sessionHash;
+      pending.durableSessionHash = sessionHash;
+      pending.inputId = context.inputId;
+      pending.held = held;
+      pending.reviewInputScoped = reviewScoped;
+    }
+    currentReviewObserverInputs.set(peer, { deliveryKey, inputId: context.inputId, outputKey: reviewObserverDeliveryKey(bus.lastDeliveredTo(peer)), ...(turns.get(peer)?.id ? { turnId: turns.get(peer)!.id } : {}), held, reviewInputScoped: reviewScoped, ...(heldSameTurnAtAdmission ? { heldSameTurnAtAdmission: true } : {}) });
+  };
+  const ownedObserverInputReleased = (peer: PeerId, owner: PeerAdapter, context: OwnedInputContext, envs: readonly Envelope[]): void => {
+    const owned = ownedObserverInputs.get(peer);
+    if (bus.peers.get(peer) !== owner || !owned || owned.owner !== owner || owned.context !== context || owned.context.inputId !== context.inputId) return;
+    if (owned.released) return;
+    const local = localObserverSessionIds.has(owner);
+    owned.released = true;
+    const currentInput = currentReviewObserverInputs.get(peer), pendingInput = pendingReviewObserverInputs.get(peer);
+    if (owned.reviewScoped || owned.heldSameTurnAtAdmission || owned.supersededByReviewInput || currentInput?.anchoredSubmission || pendingInput?.anchoredSubmission || reviewInputHeld(peer, envs)) {
+      if (local && ownedObserverInputs.get(peer) === owned) ownedObserverInputs.delete(peer);
+      return;
+    }
+    const { sessionHash, inputHash, deliveryKey } = owned;
+    ordinaryReviewObserverInputs.delete(peer);
+    try {
+      journal.clearReviewInput(peer, sessionHash);
+      ordinaryReviewObserverInputs.set(peer, { sessionHash, inputHash });
+      currentDaemonReviewObserverHolds.delete(peer);
+      const current = currentReviewObserverInputs.get(peer);
+      if (current?.inputId === context.inputId) { current.held = false; current.reviewInputScoped = false; delete current.heldSameTurnAtAdmission; delete current.anchoredSubmission; }
+      const pending = pendingReviewObserverInputs.get(peer);
+      if (pending?.inputId === context.inputId) { pending.held = false; pending.reviewInputScoped = false; delete pending.heldSameTurnAtAdmission; delete pending.anchoredSubmission; }
+    } catch {
+      try { journal.markReviewInputIncomplete(peer, sessionHash); } catch { /* release metadata failure remains fail-closed */ }
+      const current = currentReviewObserverInputs.get(peer); if (current) current.held = true;
+      const pending = pendingReviewObserverInputs.get(peer); if (pending) pending.held = true;
+    }
+    if (local && ownedObserverInputs.get(peer) === owned) ownedObserverInputs.delete(peer);
+  };
+  const finishOwnedReviewerInput = (peer: PeerId, owner: PeerAdapter, context: OwnedInputContext, _envs: readonly Envelope[]): void => {
+    const owned = ownedObserverInputs.get(peer);
+    if (bus.peers.get(peer) !== owner || !owned || owned.owner !== owner || owned.context !== context || !owned.reviewerEphemeral) return;
+    owned.closed = true;
+    if (owned.reviewScoped) {
+      try {
+        if (journal.forgetClosedObserverInput(peer, owned.sessionHash, owned.inputHash)) currentDaemonReviewObserverHolds.delete(peer);
+      } catch { try { journal.markReviewInputIncomplete(peer, owned.sessionHash); } catch { /* cleanup failure remains unknown */ } }
+    }
+    // Leave the in-memory exclusion latched through reviewer diagnostics and delivery settlement; the next session bind resets it.
+    // ponytail: prior-generation clean ReviewerPrint receipts may remain across restart within the journal's 4096-row bound; upgrade to persisted closed-context proof for safe cross-restart NULL receipt pruning.
+  };
+  const latchReviewObserverInput = (peer: PeerId): void => {
+    resetReviewObserverSessionIfChanged(peer);
+    ordinaryReviewObserverInputs.delete(peer);
+    const pending = pendingReviewObserverInputs.get(peer);
+    if (pending) { pending.held = true; pending.anchoredSubmission = true; pending.reviewInputScoped = true; requireReviewObserverHold(peer, bus.lastDeliveredTo(peer), true); return; }
+    const known = currentReviewObserverInputs.get(peer);
+    if (known) { known.held = true; known.anchoredSubmission = true; known.reviewInputScoped = true; requireReviewObserverHold(peer, bus.lastDeliveredTo(peer), true); return; }
+    const current = bus.lastDeliveredTo(peer), turnId = turns.get(peer)?.id;
+    currentReviewObserverInputs.set(peer, { deliveryKey: reviewObserverDeliveryKey(current), outputKey: reviewObserverDeliveryKey(current), ...(turnId ? { turnId } : {}), ...(turnId === undefined ? { awaitingTurn: true } : {}), held: true, reviewInputScoped: true, anchoredSubmission: true });
+    requireReviewObserverHold(peer, current, true);
+  };
+  const noteSteeredReviewInput = (peer: PeerId, envs: readonly Envelope[]): void => {
+    if (presenceOnlyDelivery(envs) || !reviewInputHeld(peer, envs)) return;
+    progress.clearPeer(peer);
+    ordinaryReviewObserverInputs.delete(peer);
+    const pending = pendingReviewObserverInputs.get(peer);
+    if (pending) { pending.held = true; pending.reviewInputScoped = true; return; }
+    const current = currentReviewObserverInputs.get(peer), turnId = turns.get(peer)?.id;
+    if (current) {
+      current.held = true; current.reviewInputScoped = true;
+      if (turnId) current.turnId = turnId;
+    } else {
+      currentReviewObserverInputs.set(peer, { deliveryKey: reviewObserverDeliveryKey(envs), outputKey: reviewObserverDeliveryKey(bus.lastDeliveredTo(peer)), ...(turnId ? { turnId } : {}), ...(turnId === undefined ? { awaitingTurn: true } : {}), held: true, reviewInputScoped: true });
+    }
+  };
+  readReviewObserverScope = peer => reviewObserverInput(peer) ? "open-review-comments" : undefined;
   const reviewObserverHeld = (peer: PeerId): boolean => {
     try { return readReviewObserverScope ? readReviewObserverScope(peer) !== undefined : true; }
     catch { return true; }
@@ -2307,6 +2588,8 @@ export async function startDaemon(opts: DaemonOptions) {
     operational: by => { const scope = operationalContext.getStore(); if (!scope || scope.actor !== by) return false; scope.current(); return true; },
     // #223 R4: fresh only when the verdict comes from a reviewer session the hub started for this task's review.
     reviewContext: (by, task) => !!definitionOf(by)?.reviewer && (bus.peers.get(by) as ReviewerPrintPeer | undefined)?.reviewing === task ? "fresh" : "continuing",
+    reviewObserverInput,
+    onReviewObserverInput: latchReviewObserverInput,
     // Proof belongs to the adapter generation actually started in the validated root. A role-only
     // reload cannot turn a canonical reviewer process into an isolated implementation owner.
     ownerIsolation: () => Object.fromEntries(extraIds.map(id => {
@@ -2836,7 +3119,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!first && owner?.sessionTitle === "" && owner.titleSession && binding?.session === owner.titleSession) {
         try {
           const row = journal.get(binding.delivery), env = row?.originals.find(env => env.id === binding.envelope);
-          if (row?.peer === id && env && !remoteEnvelope(env) && !isReviewObserverExcluded(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(id, first); }
+          if (row?.peer === id && env && !row.originals.some(isReviewObserverExcluded) && !remoteEnvelope(env) && !isReviewObserverExcluded(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(id, first); }
         } catch { /* unknown optional label evidence never fails live status */ }
       }
       if (!view && owner?.sessionTitle === "" && first?.owner === owner && first.session === owner.titleSession) view = unnamedSessionLabel(first.env.body, value => first.env.private === true || titlePrivate(id, value), first.env.ts);
@@ -3005,6 +3288,14 @@ export async function startDaemon(opts: DaemonOptions) {
   const pendingPersonDelivery = new Map<PeerId, { envelope: string; private: boolean }>();
   bus.onDeliver = (peer, originals) => {
     if (peer.includes("@")) return;
+    resetReviewObserverSessionIfChanged(peer);
+    if (!presenceOnlyDelivery(originals)) {
+      const previous = pendingReviewObserverInputs.get(peer) ?? currentReviewObserverInputs.get(peer), reviewInputScoped = reviewInputHeld(peer, originals), turnId = turns.get(peer)?.id;
+      const durableHeld = reviewObserverDurableHeld(peer), heldSameTurnAtAdmission = turnId !== undefined && durableHeld && previous?.held !== true;
+      if (reviewInputScoped) ordinaryReviewObserverInputs.delete(peer);
+      pendingReviewObserverInputs.set(peer, { deliveryKey: reviewObserverDeliveryKey(originals), outputKey: reviewObserverDeliveryKey(bus.lastDeliveredTo(peer)), ...(turnId ? { turnId } : {}), ...(turnId === undefined ? { awaitingTurn: true } : {}), ...(reviewObserverSessionHash(peer) ? { sessionHash: reviewObserverSessionHash(peer) } : {}), ...(reviewObserverStableSessionHash(peer) ? { durableSessionHash: reviewObserverStableSessionHash(peer) } : {}), held: reviewInputScoped || (!previous && durableHeld) || heldSameTurnAtAdmission, reviewInputScoped, ...(heldSameTurnAtAdmission ? { heldSameTurnAtAdmission: true } : {}),
+        ...(previous ? { previous: { ...previous } } : {}) });
+    }
     pendingPersonDelivery.delete(peer);
     const person = originals.find(env => env.from === USER && env.kind !== "answer");
     if (person && settles(peer)) pendingPersonDelivery.set(peer, { envelope: person.id, private: originals.some(env => env.private === true) });
@@ -3017,14 +3308,49 @@ export async function startDaemon(opts: DaemonOptions) {
     if (task !== undefined) pendingDeliveryTask.set(peer, task);
   };
   bus.onDelivered = (peer, originals, deliveryId) => {
-    if (originals.some(isReviewObserverExcluded)) progress.clearPeer(peer);
     if (peer.includes("@")) return;
-    try {
+    const presenceOnly = presenceOnlyDelivery(originals), reviewInputScoped = !presenceOnly && reviewInputHeld(peer, originals);
+    const pendingReviewInput = pendingReviewObserverInputs.get(peer), activeTurnId = turns.get(peer)?.id ?? pendingReviewInput?.turnId;
+    const previousInput = pendingReviewInput?.previous ?? currentReviewObserverInputs.get(peer);
+    const previousHeldSameTurn = activeTurnId !== undefined && (previousInput?.turnId === activeTurnId && previousInput.held === true || pendingReviewInput?.heldSameTurnAtAdmission === true && pendingReviewInput.turnId === activeTurnId);
+    const observerExcludedBatch = !presenceOnly && (reviewInputScoped || pendingReviewInput?.held === true || previousHeldSameTurn);
+    if (observerExcludedBatch) progress.clearPeer(peer);
+    if (!presenceOnly) {
+      const reviewInputKey = reviewObserverDeliveryKey(originals);
+      if (pendingReviewInput?.deliveryKey === reviewInputKey) {
+        pendingReviewObserverInputs.delete(peer);
+        currentReviewObserverInputs.set(peer, { deliveryKey: reviewInputKey, outputKey: reviewObserverDeliveryKey(bus.lastDeliveredTo(peer)), ...(activeTurnId ? { turnId: activeTurnId } : {}), ...(pendingReviewInput.inputId ? { inputId: pendingReviewInput.inputId } : {}), ...(activeTurnId === undefined ? { awaitingTurn: true } : {}),
+          held: pendingReviewInput.held || previousHeldSameTurn, reviewInputScoped: pendingReviewInput.reviewInputScoped,
+          ...(pendingReviewInput.heldSameTurnAtAdmission ? { heldSameTurnAtAdmission: true } : {}),
+          ...(pendingReviewInput.anchoredSubmission || previousHeldSameTurn && previousInput?.anchoredSubmission ? { anchoredSubmission: true } : {}) });
+      }
+      else if (!pendingReviewInput) currentReviewObserverInputs.set(peer, { deliveryKey: reviewInputKey, outputKey: reviewObserverDeliveryKey(bus.lastDeliveredTo(peer)), ...(activeTurnId ? { turnId: activeTurnId } : {}), ...(activeTurnId === undefined ? { awaitingTurn: true } : {}),
+        held: reviewInputScoped || previousHeldSameTurn, reviewInputScoped, ...(previousHeldSameTurn ? { heldSameTurnAtAdmission: true } : {}), ...(previousHeldSameTurn && previousInput?.anchoredSubmission ? { anchoredSubmission: true } : {}) });
+      const durableSessionHash = reviewObserverStableSessionHash(peer);
+      const inputReleaseOwner = bus.peers.get(peer);
+      if (durableSessionHash && pendingReviewInput?.deliveryKey === reviewInputKey && pendingReviewInput.sessionHash === reviewObserverSessionHash(peer) && pendingReviewInput.durableSessionHash === durableSessionHash && (!inputReleaseOwner || !ownedReviewInputReleasePeers.has(inputReleaseOwner)) && !pendingReviewInput.reviewInputScoped && !reviewInputScoped && !previousHeldSameTurn) {
+        const inputHash = reviewObserverInputHash(originals, activeTurnId);
+        ordinaryReviewObserverInputs.delete(peer);
+        try {
+          journal.clearReviewInput(peer, durableSessionHash);
+          ordinaryReviewObserverInputs.set(peer, { sessionHash: durableSessionHash, inputHash });
+          currentDaemonReviewObserverHolds.delete(peer);
+          const current = currentReviewObserverInputs.get(peer);
+          if (current?.deliveryKey === reviewInputKey) { current.held = false; current.reviewInputScoped = false; delete current.heldSameTurnAtAdmission; delete current.anchoredSubmission; }
+        } catch {
+          try { journal.markReviewInputIncomplete(peer, durableSessionHash); } catch { /* the RAM latch remains held */ }
+          const current = currentReviewObserverInputs.get(peer);
+          if (current?.deliveryKey === reviewInputKey) current.held = true;
+          /* the retained row or this RAM latch continues to hold until a later verified ordinary ACK */
+        }
+      }
+    }
+    if (!presenceOnly && !reviewObserverInput(peer)) try {
       const owner = bus.peers.get(peer); let first = firstTitleMessages.get(peer);
       const retained = titleBindings[peer];
       if (!first && owner?.titleSession && retained?.session === owner.titleSession) {
         const row = journal.get(retained.delivery), env = row?.originals.find(env => env.id === retained.envelope);
-        if (row?.peer === peer && env && !remoteEnvelope(env) && !isReviewObserverExcluded(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(peer, first); }
+        if (row?.peer === peer && env && !row.originals.some(isReviewObserverExcluded) && !remoteEnvelope(env) && !isReviewObserverExcluded(env)) { first = { owner, session: owner.titleSession, env }; firstTitleMessages.set(peer, first); }
       }
       if (definitionOf(peer)?.title === "hub" && owner && (!first || first.owner !== owner || first.session !== owner.titleSession)) {
         const env = originals.find(env => !(env.from === HUB && env.kind === "presence") && !remoteEnvelope(env) && !isReviewObserverExcluded(env));
@@ -3046,7 +3372,19 @@ export async function startDaemon(opts: DaemonOptions) {
     const turn = turns.get(peer);
     supervisionTurns.set(peer, { id: turn?.id ?? `supervision-${randomUUID()}`, at: turn?.start ?? Date.now(), ...(turn?.tokens ? { tokens: turn.tokens } : {}), ...(contextSession(peer) ? { session: contextSession(peer) } : {}) });
   };
-  bus.onDeliveryFailed = peer => { pendingDeliveryTask.delete(peer); pendingPersonDelivery.delete(peer); deliveredAwaitingTurn.delete(peer); supervisionTurns.delete(peer); };
+  bus.onPulled = (peer, originals) => { notePulledReviewInput(peer, originals); };
+  bus.onSteering = (peer, originals) => { noteSteeredReviewInput(peer, originals); };
+  bus.onDeliveryFailed = peer => {
+    pendingDeliveryTask.delete(peer); pendingPersonDelivery.delete(peer); deliveredAwaitingTurn.delete(peer); supervisionTurns.delete(peer);
+    const pending = pendingReviewObserverInputs.get(peer);
+    if (pending) {
+      pendingReviewObserverInputs.delete(peer);
+      if (pending.held) currentReviewObserverInputs.set(peer, { deliveryKey: pending.deliveryKey, ...(pending.outputKey ? { outputKey: pending.outputKey } : {}), ...(pending.turnId ? { turnId: pending.turnId } : {}), ...(pending.inputId ? { inputId: pending.inputId } : {}), ...(pending.awaitingTurn ? { awaitingTurn: true } : {}), held: true,
+        reviewInputScoped: pending.reviewInputScoped, ...(pending.heldSameTurnAtAdmission ? { heldSameTurnAtAdmission: true } : {}), ...(pending.anchoredSubmission ? { anchoredSubmission: true } : {}) });
+      else if (pending.previous) currentReviewObserverInputs.set(peer, pending.previous);
+      else currentReviewObserverInputs.delete(peer);
+    }
+  };
   const finishSupervisionTurn = (peer: PeerId) => {
     const receipt = supervisionTurns.get(peer);
     if (!receipt) return;
@@ -5737,6 +6075,16 @@ export async function startDaemon(opts: DaemonOptions) {
         } catch (error) { snapshotFailure(`the write scope of ${id}`, error); }
         const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? null;
         turns.set(e.peer, { id, capture, start: Date.now(), tokens: 0, writeTasks, branches, writeScope, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, commit: start.commit, reflog: start.reflog, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
+        const pendingReviewInput = pendingReviewObserverInputs.get(e.peer);
+        if (pendingReviewInput) { pendingReviewInput.turnId = id; delete pendingReviewInput.awaitingTurn; }
+        else {
+          const input = currentReviewObserverInputs.get(e.peer), last = bus.lastDeliveredTo(e.peer);
+          if (input && !presenceOnlyDelivery(last) && (input.awaitingTurn || input.outputKey === reviewObserverDeliveryKey(last))) {
+            input.turnId = id; delete input.awaitingTurn;
+            input.held = input.reviewInputScoped;
+            if (!input.reviewInputScoped) delete input.anchoredSubmission;
+          }
+        }
         event({ type: "turn_start", peer: e.peer, turn: id });
         // #1054: the turn that consumes a person's message starts a run; any later turn of an open run is a continuation. Never throws into the state tap.
         try {
@@ -6948,6 +7296,8 @@ export async function startDaemon(opts: DaemonOptions) {
         sdlcStages: lifecycleConfig.stages,
         sdlcCriteria: lifecycleConfig.mode !== "off",
         taskTool: (name, a, turn) => name === "hub_ask" && turn.signal ? invocationRequestSignal.run({ signal: turn.signal, current: () => !turn.signal!.aborted }, () => taskOp(peer, name, a, true, turn.pii)) : taskOp(peer, name, a, true, turn.pii),
+        beforeInput: (context, envs) => beforeOwnedObserverInput(peer, local, context, envs),
+        inputReleased: (context, envs) => ownedObserverInputReleased(peer, local, context, envs),
         titlePreface: () => titlePreface(peer),
         turnPolicy: (envs) => {
           const policy = tasks.turnPolicy(envs);
@@ -6959,6 +7309,8 @@ export async function startDaemon(opts: DaemonOptions) {
         maxSteps: config.local.max_steps,
         log,
       }) }) as LocalPeer;
+      localObserverSessionIds.set(local, () => local.observerSessionId);
+      ownedReviewInputReleasePeers.add(local);
       recoveryTaskPreface(peer);
       await ensurePreface(peer); startCurrent?.();
       executionOwners.set(peer, { owner: local, cwd: executionCwd });
@@ -6982,6 +7334,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const implementer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: selected, mcpServers: [], daemon: DAEMON_PORTS["claude-implementer"]({
         cwd: executionCwd, stateDir: opts.stateDir, projectRoot: opts.cwd, instanceId, server: SERVER_JS,
         factsHook: join(import.meta.dir, "..", "cli", "facts-hook.ts"), systemPrompt: sessionRoleContract(peer), mode: selected, watchdogMs: config.watchdog_ms, ...(declarations[peer]?.model ? { model: declarations[peer].model } : {}),
+        beforeInput: (context, envs) => beforeOwnedObserverInput(peer, implementer, context, envs),
+        inputReleased: (context, envs) => ownedObserverInputReleased(peer, implementer, context, envs),
         admit: env => {
           try {
             if (env.private || !currentRoot() || bus.peers.get(peer) !== implementer) return false;
@@ -7022,6 +7376,10 @@ export async function startDaemon(opts: DaemonOptions) {
             ...(total !== undefined ? { totalTokens: total } : {}), ...taskAttribution(peer, task) });
         }, notify,
       }) });
+      if (isClaudeImplementerPeer(implementer)) {
+        ownedReviewInputGuardPeers.add(implementer);
+        ownedReviewInputReleasePeers.add(implementer);
+      }
       startCurrent?.(); await implementer.start();
       try {
         startCurrent?.();
@@ -7047,6 +7405,10 @@ export async function startDaemon(opts: DaemonOptions) {
         watchdogMs: config.watchdog_ms,
         privatePaths: [opts.stateDir, ...(config.pii?.paths ?? []), ...config.local.deny],
         bindingCurrent: (task,binding) => tasks.reviewBindingCurrent(peer,task,binding),
+        beforeInput: (context, envs) => beforeOwnedObserverInput(peer, reviewer, context, envs, true),
+        inputReleased: (context, envs) => ownedObserverInputReleased(peer, reviewer, context, envs),
+        inputFinished: (context, envs) => finishOwnedReviewerInput(peer, reviewer, context, envs),
+        reviewObserverHeld: () => reviewObserverHeld(peer) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded),
         taskMcp: (task, current) => createReviewerMcpSession({ task, current, tools: [...TASK_TOOLS, ...CONDUCTOR_TOOLS],
           call: (name, args) => taskOp(peer, name, args, true, contextPii(peer)),
           onTool: (tool, refusal) => { if (bus.peers.get(peer) === reviewer) reviewer.recordToolTrace(task, { tool, ...(refusal === undefined ? {} : { refusal }) }); } }),
@@ -7065,7 +7427,8 @@ export async function startDaemon(opts: DaemonOptions) {
         onUsage: usage => void addTokens(peer, (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)),
         onNoVerdict: (diagnostic, current) => {
           const task = board.get(diagnostic.task);
-          const visible = current() && bus.peers.get(peer) === reviewer && !!task && !tasks.isPii(task) && !contextPii(peer)
+          const observerHeld = reviewer.reviewObserverInputHeld();
+          const visible = current() && bus.peers.get(peer) === reviewer && !!task && !tasks.isPii(task) && !contextPii(peer) && !observerHeld
             && tasks.reviewBindingCurrent(peer, diagnostic.task, diagnostic);
           // Screen the complete refusal before any sanitization or bound; no task text or model output is logged.
           const hostSafe = visible && !diagnostic.refusalUncertain && (diagnostic.hostRefusal === undefined || boundedSafe(diagnostic.hostRefusal) && tasks.publicMetadataText(diagnostic.hostRefusal));
@@ -7086,6 +7449,10 @@ export async function startDaemon(opts: DaemonOptions) {
         },
         log,
       }) }) as ReviewerPrintPeer;
+      if (isReviewerPrintPeer(reviewer)) {
+        ownedReviewInputGuardPeers.add(reviewer);
+        ownedReviewInputReleasePeers.add(reviewer);
+      }
       try { startCurrent?.(); await reviewer.start(); startCurrent?.(); }
       catch (error) {
         await reviewer.stop().catch(() => {});
@@ -8567,6 +8934,24 @@ export async function startDaemon(opts: DaemonOptions) {
         return "target lacks task_handoff; stored handoffs require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("review_comments")) && board.hasReviewCommentsState())
         return "target lacks review_comments; stored anchored comments require a supporting daemon";
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("review_observer_input_state")) {
+        let heldReviewInput = false;
+        try { heldReviewInput = journal.hasReviewInputState(); } catch { return "review observer input compatibility is unknown; retained privacy state could not be read"; }
+        const readReviewInputState = (id: PeerId): "clean" | "held" | "unknown" => {
+          resetReviewObserverSessionIfChanged(id);
+          const current = currentReviewObserverInputs.get(id), pending = pendingReviewObserverInputs.get(id);
+          if (current?.held || current?.reviewInputScoped || pending?.held || pending?.reviewInputScoped) return "held";
+          try { return journal.reviewInputState(id, reviewObserverStableSessionHash(id)).state; }
+          catch { return "unknown"; }
+        };
+        const relevantPeers = new Set<PeerId>([
+          ...[...bus.peers].filter(([id, peer]) => !id.includes("@") && peer.state !== "offline" && !!definitionOf(id)).map(([id]) => id),
+          ...(recoveryPeerSnapshot?.filter(saved => saved.state !== "offline" && !!definitionOf(saved.id)).map(saved => saved.id) ?? []),
+        ]);
+        const states = [...relevantPeers].map(readReviewInputState);
+        if (states.includes("unknown")) return "target lacks review_observer_input_state; review input compatibility is unknown and retained privacy state could not be confirmed";
+        if (heldReviewInput || states.includes("held")) return "target lacks review_observer_input_state; held review input requires a supporting daemon";
+      }
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_experiments")) && board.hasResearchExperimentState())
         return "target lacks research_experiments; persisted experiment records require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_comparisons")) && board.hasResearchComparisonState())
@@ -9295,7 +9680,10 @@ export async function startDaemon(opts: DaemonOptions) {
             const envs = bus.pull(peer, { allowNeedsReviewHold: true });
             if (!envs) return void reply({ ok: false, error: queueHold(peer) ?? "delivery held", held: inboxHeldMetadata(peer, true), waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
             return void reply({ ok: true, envs, held: inboxHeldMetadata(peer, true), waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
-          } catch { return void reply({ ok: false, error: "delivery journal unavailable" }); }
+          } catch (error) {
+            if (error instanceof ReviewInputHandoffError) return void reply({ ok: false, error: error.message, held: inboxHeldMetadata(peer, true), waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
+            return void reply({ ok: false, error: "delivery journal unavailable" });
+          }
         }
         // The attached session can explicitly claim queued work even during a native turn (#493).
         // Pull and push share holds and journal settlement; work read here is completed, never pushed again.
@@ -9324,7 +9712,10 @@ export async function startDaemon(opts: DaemonOptions) {
           writeStatus();
           if (envs.length) log(`${peer.id} read ${envs.length} queued message(s) through hub_inbox`);
           return void reply({ ok: true, envs, held: inboxHeldMetadata(peer.id, true), waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id), ...(polling ? { pollingAdvice: { count: polling.count, minutes: polling.minutes } } : {}) });
-        } catch { return void reply({ ok: false, error: "delivery journal unavailable" }); }
+        } catch (error) {
+          if (error instanceof ReviewInputHandoffError) return void reply({ ok: false, error: error.message, held: inboxHeldMetadata(peer.id, true), waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id) });
+          return void reply({ ok: false, error: "delivery journal unavailable" });
+        }
       }
       case "delivery_complete": {
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;

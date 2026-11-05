@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import { OwnedPrintChild, PrintChildCleanupError } from "./claude-print-child.ts";
+import { OwnedPrintChild, PrintChildCleanupError, type OwnedInputContext, type OwnedInputObserver } from "./claude-print-child.ts";
 import { randomUUID } from "node:crypto";
 import { HUB, frame, sanitize } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
@@ -31,6 +31,7 @@ export class ReviewerUnavailableError extends Error {
 class ReviewerAdmissionError extends Error {
   constructor(readonly reason: "stale_binding" | "policy_changed") { super("review admission changed"); }
 }
+class ReviewerInputAdmissionError extends Error {}
 
 export interface ReviewerPrintUsage { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
 export interface ReviewerIsolationReceipt {
@@ -136,6 +137,13 @@ export interface ReviewerPrintOptions {
   /** Synchronous host task/privacy/policy fence, checked again after awaited preparation. */
   admit?(env: Envelope): boolean;
   bindingCurrent?(task: number, binding: ReviewerReviewBinding): boolean;
+  /** Private-profile observer input provenance only; never a native resume or budget identity. */
+  beforeInput?: OwnedInputObserver;
+  inputReleased?: OwnedInputObserver;
+  /** Host privacy state for the currently attached reviewer input, read only for diagnostics. */
+  reviewObserverHeld?(): boolean;
+  /** Runs after this fresh child group, task MCP and launch cleanup are confirmed closed. */
+  inputFinished?: OwnedInputObserver;
 }
 
 type ReviewTarget = Omit<ReviewerFailure, "cause">;
@@ -166,9 +174,13 @@ export class ReviewerPrintPeer extends BasePeer {
   private batch: ReviewBatch | undefined;
   private preparation: { abort: AbortController; done: Promise<ReviewerLaunch> } | undefined;
   private receipt: ReviewerIsolationReceipt | undefined;
+  private observerSessionIdValue: string | undefined;
   get isolationReceipt(): ReviewerIsolationReceipt | undefined { return this.receipt; }
+  reviewObserverInputHeld(): boolean { return this.opts.reviewObserverHeld?.() ?? false; }
   /** The task whose review the running child was started for (R4: the hub records `fresh` for its verdict). */
   reviewing: number | undefined;
+  /** Privacy-only identity for a fresh review profile; never part of resume or budget authority. */
+  get observerSessionId(): string | undefined { return this.observerSessionIdValue; }
   private reviewSeq = 0;
   private runningBinding: { task: number; binding: ReviewerReviewBinding } | undefined;
   private activeTrace: { task: number; generation: number; value: ReviewerTraceState } | undefined;
@@ -288,6 +300,11 @@ export class ReviewerPrintPeer extends BasePeer {
       try { result = await this.review(env, task, generation); }
       catch (error) {
         if (generation !== this.generation) return;
+        if (error instanceof ReviewerInputAdmissionError) {
+          failure = { state: started ? "needs_review" : "failed_safe", reason: "review input provenance unavailable" };
+          batch.next = envs.length;
+          break;
+        }
         if (error instanceof ReviewerAdmissionError) {
           this.opts.log?.(`[${this.id}] review of task #${task} skipped: ${error.reason === "stale_binding" ? "stale binding" : "review policy changed"}`);
           if (error.reason === "policy_changed") {
@@ -395,18 +412,30 @@ export class ReviewerPrintPeer extends BasePeer {
     let facts: string | undefined;
     try { facts = this.opts.facts?.(env); } catch (error) { this.opts.log?.(`[${this.id}] review facts for task #${task} failed: ${(error as Error).message}`); }
     const input = `${frame(env)}${facts ? `\n\n${facts}` : ""}`;
+    const sessionId = randomUUID();
+    const inputContext: OwnedInputContext = Object.freeze({ sessionId, inputId: randomUUID() });
+    this.observerSessionIdValue = sessionId;
+    try { this.opts.beforeInput?.(inputContext, [env]); }
+    catch { this.observerSessionIdValue = undefined; throw new ReviewerInputAdmissionError(); }
     let launch: ReviewerLaunch | undefined;
     const trace: ReviewerTraceState = { reviewCalled: false };
     this.activeTrace = { task, generation, value: trace };
     const mcp = this.opts.backend.taskMcp ? this.opts.taskMcp?.(task, () => generation === this.generation && this.reviewToken(task) !== undefined && this.opts.bindingCurrent?.(task,binding) !== false) : undefined;
-    let mcpClosed=false;
-    const closeMcp=()=>{ if(mcpClosed)return; mcpClosed=true; mcp?.close(); if(this.reviewMcpClose===closeMcp)this.reviewMcpClose=undefined; };
+    let mcpClosed = false, mcpCloseConfirmed = false;
+    const closeMcp = () => {
+      if (mcpClosed) return;
+      mcpClosed = true;
+      try { mcp?.close(); mcpCloseConfirmed = true; }
+      catch { this.opts.log?.(`[${this.id}] reviewer task MCP cleanup incomplete`); }
+      if (this.reviewMcpClose === closeMcp) this.reviewMcpClose = undefined;
+    };
     this.reviewMcpClose=closeMcp;
     let ownedChild: OwnedPrintChild | undefined, releasing: Promise<void> | undefined;
+    let inputReleased = false, childClosed = false, launchCleanupConfirmed = false;
     let policyTimer: ReturnType<typeof setInterval> | undefined;
     const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
     try {
-    launch = await this.prepare(randomUUID(), input, task, mcp?.config);
+    launch = await this.prepare(sessionId, input, task, mcp?.config);
     if (generation !== this.generation) throw new ReviewerAdmissionError("stale_binding");
     this.assertAdmission(env, task, binding);
     if (launch.current?.() === false) throw new ReviewerUnavailableError("reviewer isolation changed before child spawn", "binary");
@@ -415,6 +444,7 @@ export class ReviewerPrintPeer extends BasePeer {
     const child = new OwnedPrintChild({ peer: this.id, command: launch.command, args: launch.args,
       cwd: launch.cwd ?? this.opts.cwd, env: launch.env, envMode: launch.envMode, input,
       current: () => generation === this.generation, stop: launch.stop,
+      onInputReleased: () => { inputReleased = true; this.opts.inputReleased?.(inputContext, [env]); },
       onError: () => { if (this.child === child) this.child = undefined; },
       onSpawn: () => {
         this.runningBinding={task,binding};
@@ -441,14 +471,22 @@ export class ReviewerPrintPeer extends BasePeer {
     this.childCleanup = release;
     this.childCurrent = launch.watchCurrent ? launch.current : undefined;
     const code = await child.done;
+    childClosed = true;
     if (this.child === child) this.child = undefined;
     return { code, quota, trace };
     } finally {
       if (this.activeTrace?.value === trace) this.activeTrace = undefined;
       closeMcp();
       if (policyTimer) clearInterval(policyTimer);
-      try { if (!ownedChild || this.child !== ownedChild) { await release(); if (this.childCleanup === release) this.childCleanup = undefined; } }
-      catch { this.opts.log?.(`[${this.id}] reviewer isolation cleanup incomplete`); }
+      try {
+        if (!ownedChild || this.child !== ownedChild) {
+          await release(); if (this.childCleanup === release) this.childCleanup = undefined;
+          launchCleanupConfirmed = true;
+        }
+      } catch { this.opts.log?.(`[${this.id}] reviewer isolation cleanup incomplete`); }
+      const closedWithoutChild = !ownedChild || ownedChild.process.pid === undefined;
+      if (mcpCloseConfirmed && launchCleanupConfirmed && (closedWithoutChild || inputReleased && childClosed))
+        try { this.opts.inputFinished?.(inputContext, [env]); } catch { /* receipt cleanup never changes the review verdict */ }
     }
   }
 

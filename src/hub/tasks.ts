@@ -183,6 +183,10 @@ export interface TasksDeps {
   privateTurn?: (peer: PeerId) => boolean;
   /** #223 R4: the hub's reading of a verdict's context (`fresh` only for a reviewer session started for this review). */
   reviewContext?: (by: PeerId, task: number) => "fresh" | "continuing" | undefined;
+  /** Current-turn input carries review material or anchored findings; it expires on the next ordinary input. */
+  reviewObserverInput?: (peer: PeerId) => boolean;
+  /** Latch an anchor-bearing hub_review input before its first await or effect, even if the verdict is refused. */
+  onReviewObserverInput?: (peer: PeerId) => void;
   /** #852: what a reviewer reads. `code` (the fixed sandboxed reviewers by default, or a local `review_scope`) reads the code only; unset or `full` also runs tests and reads CI. */
   reviewScope?: (peer: PeerId) => ReviewScope;
   /** #223 R2: a reviewer-only instance gets review facts, not the builder's done summary. */
@@ -467,6 +471,27 @@ export interface DeliverableRow {
   files: { id: string; path?: string; format: string; version?: string; sha256: string; bytes: number; private?: true; state?: DeliverableStatus["state"] }[];
 }
 
+/** Detect an own anchor field without invoking model-provided accessors or proxy traps. */
+function hasReviewAnchorInput(raw: unknown): boolean {
+  if (raw === undefined || !Array.isArray(raw)) return false;
+  if (types.isProxy(raw)) return true;
+  try {
+    if (Object.getPrototypeOf(raw) !== Array.prototype || Object.getOwnPropertySymbols(raw).length || raw.length > 64) return true;
+    const descriptors = Object.getOwnPropertyDescriptors(raw);
+    for (let index = 0; index < raw.length; index++) {
+      const entry = descriptors[String(index)];
+      if (!entry || !Object.hasOwn(entry, "value") || !entry.enumerable) return true;
+      const item: unknown = entry.value;
+      if (!item || typeof item !== "object") continue;
+      if (types.isProxy(item)) return true;
+      const prototype = Object.getPrototypeOf(item);
+      if (prototype !== Object.prototype && prototype !== null) return true;
+      if (Object.getOwnPropertyDescriptor(item, "anchor")) return true;
+    }
+    return false;
+  } catch { return true; }
+}
+
 export class Tasks {
   private readonly findingPlacements = new WeakMap<ReviewReadiness, { binding: string; placements: Map<string, ReviewAnchorStatus>; placementOnly: boolean }>();
   private findingPlacementBinding(task: Task): string {
@@ -484,7 +509,11 @@ export class Tasks {
     return placements;
   }
   private reviewObserverTurn(by: PeerId, task?: number): boolean {
-    try { return this.d.board.hasReviewObserverScope(by, task) || this.d.bus.hasUnsettledReviewScope(by, task) || this.d.bus.lastDeliveredTo(by).some(env => isReviewObserverExcluded(env) && (task === undefined || env.refs?.task === String(task))); } catch { return true; }
+    try {
+      if (this.d.reviewObserverInput?.(by) === true || this.d.bus.lastDeliveredTo(by).some(isReviewObserverExcluded)) return true;
+      if (task === undefined) return false;
+      return this.d.board.hasReviewObserverScope(by, task) || this.d.bus.hasUnsettledReviewScope(by, task);
+    } catch { return true; }
   }
   async reviewCommentPut(by: PeerId, input: unknown, meta?: ActionMeta): Promise<ReviewCommentMutation> {
     const author = this.reviewPerson(by, meta), check = this.requestCheck(by, () => this.reviewCommentHold());
@@ -576,6 +605,7 @@ export class Tasks {
         check();
         const status = this.d.bus.reviewEnvelopeStatus(env.id);
         if (status === "unknown") throw new PreEffectToolRefusal("saved review package delivery history is unavailable; inspect ahub queue list --peer " + packet.owner + " and sent comments before retrying");
+        if (status === "failed" || status === "discarded") throw new PreEffectToolRefusal(`saved review package delivery is ${status}; inspect ahub queue list --peer ${packet.owner} and ahub queue show <delivery-id> before retrying`);
         if (status === "absent") {
           if (packet.publicationEvidenceVersion !== 1) throw new PreEffectToolRefusal(`saved review package ${packageId} has no retained delivery proof; inspect the owner's queue and sent comments before retrying`);
           if (packet.visibleIds === undefined) throw new PreEffectToolRefusal("saved review package has no privacy binding; inspect the owner's queue and sent comments, then dismiss or recreate the package");
@@ -589,7 +619,11 @@ export class Tasks {
         try {
           const targets = this.d.bus.publishReviewEnvelope(env);
           if (!targets.includes(packet.owner)) throw new Error("owner not queued");
-        } catch { throw new PreEffectToolRefusal("saved review package delivery history is unavailable or publication failed; inspect ahub queue list --peer " + packet.owner + " and sent comments before retrying"); }
+        } catch {
+          const current = this.d.bus.reviewEnvelopeStatus(env.id);
+          if (current === "failed" || current === "discarded") throw new PreEffectToolRefusal(`saved review package delivery is ${current}; inspect ahub queue list --peer ${packet.owner} and ahub queue show <delivery-id> before retrying`);
+          throw new PreEffectToolRefusal("saved review package delivery history is unavailable or publication failed; inspect ahub queue list --peer " + packet.owner + " and sent comments before retrying");
+        }
         this.d.board.markReviewCommentPackageQueued(packageId);
         return { task: taskId, packageId, count: packet.ids.length, delivery: "queued" };
       });
@@ -7180,7 +7214,7 @@ export class Tasks {
     const comments = this.d.board.reviewCommentCounts(task.id, task.created);
     const quoteMaterial = task.history.some(entry => entry.reviewFindings?.items.some(item => item.anchor !== undefined))
       || comments.sent + comments.resolved + comments.dismissed > 0;
-    return this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(quoteMaterial ? { reviewPackage: `review-${crypto.randomUUID()}` } : {}), ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) })).includes(reviewer);
+    return this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(quoteMaterial ? { reviewPackage: `reviewer-request-${crypto.randomUUID()}` } : {}), ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) })).includes(reviewer);
   }
 
   /** #785 P1b: remember a review the hub held as premature, so a green CI at this exact head can re-offer it once. Also watches that head. */
@@ -7363,6 +7397,10 @@ export class Tasks {
   }
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown): Promise<Task> {
+    if (by !== USER && hasReviewAnchorInput(findings)) {
+      try { this.d.onReviewObserverInput?.(by); }
+      catch { throw new PreEffectToolRefusal("the anchored review input could not be privately scoped; retry after ordinary new input"); }
+    }
     const requestCheck = this.requestCheck(by);
     if (typeof id !== "number" && !(typeof id === "string" && /^\s*\d+\s*$/.test(id))) this.need(id, false, true);
     const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
@@ -7936,7 +7974,7 @@ export class Tasks {
     const title = String(input.title ?? "").trim();
     if (by !== USER) {
       let scoped = false;
-      try { scoped = this.reviewObserverTurn(by); } catch { throw new PreEffectToolRefusal("shared memory is held because the open review scope (sent comments, anchored findings, unsettled delivery or current review input) could not be checked; inspect ahub task list after recovery"); }
+      try { scoped = this.reviewObserverTurn(by, task?.id); } catch { throw new PreEffectToolRefusal("shared memory is held because the open review scope (sent comments, anchored findings, unsettled delivery or current review input) could not be checked; inspect ahub task list after recovery"); }
       if (scoped) throw new PreEffectToolRefusal(`shared memory is held while an open review scope (sent comments, anchored findings, unsettled delivery or current review input) exists; complete or review the task, ask the person to dismiss comments if appropriate, inspect ahub queue list --peer ${by} and explicitly settle any delivery, then wait for ordinary new input after completion`);
     }
     if (this.isPii({ signals: detectSignals({ title, detail: text, refs: {} }, this.d.routing(), this.d.cwd) })) throw new Error("this note matches a PII pattern and is not saved: shared memory excludes private data");
